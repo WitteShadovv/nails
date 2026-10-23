@@ -134,6 +134,18 @@ new-fuzz-target name:
 doctest:
     cargo test --doc --workspace --all-features --locked
 
+# Run the tests of the side workspaces alone: setup/, and gui/ once it exists,
+# each a workspace of its own whose tests `test` runs too. CI's side-tests job
+# runs this. Only the root workspace has a .config/nextest.toml, so these runs
+# name nextest's default profile, also where NEXTEST_PROFILE selects `ci`.
+side-tests:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo nextest run --manifest-path setup/Cargo.toml --profile default --all-features --locked --no-fail-fast
+    if [ -f gui/Cargo.toml ]; then
+        cargo nextest run --manifest-path gui/Cargo.toml --profile default --all-features --locked --no-fail-fast --no-tests=pass
+    fi
+
 # Prove the unit tests do not depend on execution order. No test mutates the
 # shared process environment (they inject a RuntimeEnv instead), and a leak
 # through any remaining shared state surfaces only under a threaded, shuffled
@@ -213,7 +225,7 @@ kernel-tests:
 check: fmt-check lint line-count fuzz-targets test
 
 # Everything the ci.yml Rust jobs run, for reproducing the gate locally.
-ci-rust: fmt-check lint line-count fuzz-targets coverage doctest
+ci-rust: fmt-check lint line-count fuzz-targets coverage doctest side-tests
 
 # --- Dependency policy ---
 

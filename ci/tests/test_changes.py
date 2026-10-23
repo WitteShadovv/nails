@@ -1,21 +1,30 @@
-"""Tests for ci/changes.py, the path filter of ci.yml."""
+"""Tests for ci/changes.py, the path filter of ci.yml, and for that of e2e.yml."""
 
 from __future__ import annotations
 
 import contextlib
 import io
 import os
+import re
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from ci import changes
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# The crates of the root workspace that the nails binary never links: flake.nix
+# builds it from their manifests alone, so their sources cannot change a VM
+# test, and a change to them must not boot one.
+NOT_IN_THE_BINARY = frozenset({"nails-oracle"})
+
 NOTHING = {
     "rust": False,
     "fuzz": False,
+    "side": False,
     "deps": False,
     "nix": False,
     "workflows": False,
@@ -25,6 +34,7 @@ NOTHING = {
 EVERYTHING = {
     "rust": True,
     "fuzz": True,
+    "side": True,
     "deps": True,
     "nix": True,
     "workflows": True,
@@ -37,6 +47,21 @@ def only(*names: str) -> dict[str, bool]:
     return {**NOTHING, **dict.fromkeys(names, True)}
 
 
+def workspace_members() -> list[str]:
+    """The members of the root Cargo workspace."""
+    with (REPO_ROOT / "Cargo.toml").open("rb") as handle:
+        members: list[str] = tomllib.load(handle)["workspace"]["members"]
+    return members
+
+
+def e2e_filter() -> re.Pattern[str] | None:
+    """The path filter of e2e.yml's plan job, or None when it has none."""
+    workflow = REPO_ROOT / ".github" / "workflows" / "e2e.yml"
+    text = workflow.read_text(encoding="utf-8")
+    match = re.search(r"^\s*relevant='([^']+)'$", text, re.MULTILINE)
+    return re.compile(match[1]) if match else None
+
+
 class SelectTest(unittest.TestCase):
     def test_documentation_runs_the_docs_check(self) -> None:
         paths = ["README.md", "CHANGELOG.md", "ROADMAP.md", "docs/ci.md", "LICENSE"]
@@ -47,12 +72,16 @@ class SelectTest(unittest.TestCase):
 
     def test_rust_source_runs_the_rust_jobs(self) -> None:
         for path in (
+            "nails-api/src/exit.rs",
             "nails-base/src/lib.rs",
             "nails-core/src/lib.rs",
             "nails-forensics/src/lib.rs",
+            "nails-oracle/src/verdict.rs",
             "nails-platform/src/lib.rs",
             "nails-session/src/lib.rs",
+            "nails-teardown/src/lib.rs",
             "nails-cli/tests/cli_integration.rs",
+            "nails-core/benches/performance.rs",
             "benches/performance.rs",
             ".cargo/config.toml",
             ".config/nextest.toml",
@@ -60,9 +89,21 @@ class SelectTest(unittest.TestCase):
             "clippy.toml",
             "justfile",
             "scripts/check-line-count.sh",
+            "scripts/check-orphan-modules.sh",
         ):
             with self.subTest(path=path):
                 self.assertTrue(changes.select([path])["rust"])
+
+    def test_every_workspace_crate_runs_the_rust_jobs(self) -> None:
+        # A crate the filter left out would let a pull request that changes
+        # only that crate pass without building or testing anything.
+        members = workspace_members()
+        self.assertTrue(members)
+        for member in members:
+            with self.subTest(member=member):
+                source = changes.select([f"{member}/src/lib.rs"])
+                self.assertEqual(source, only("rust"))
+                self.assertTrue(changes.select([f"{member}/Cargo.toml"])["rust"])
 
     def test_fuzz_crate_runs_its_own_filter(self) -> None:
         for path in (
@@ -75,6 +116,21 @@ class SelectTest(unittest.TestCase):
                 self.assertEqual(changes.select([path]), only("fuzz"))
         self.assertEqual(changes.select(["fuzz/Cargo.toml"]), only("fuzz", "deps"))
         self.assertEqual(changes.select(["docs/fuzz/notes.md"]), only("docs"))
+
+    def test_side_workspaces_run_their_own_filter(self) -> None:
+        for path in (
+            "setup/nails-setup/src/wordlist.rs",
+            "setup/nails-setup/data/eff_large_wordlist.txt",
+            "setup/Cargo.lock",
+            "gui/nails-gui/src/main.rs",
+            "gui/Cargo.lock",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("side"))
+        for path in ("setup/Cargo.toml", "setup/nails-setup/Cargo.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("side", "deps"))
+        self.assertEqual(changes.select(["docs/setup/notes.md"]), only("docs"))
 
     def test_source_file_is_not_a_dependency_change(self) -> None:
         self.assertEqual(changes.select(["nails-core/src/state.rs"]), only("rust"))
@@ -164,6 +220,53 @@ class SelectTest(unittest.TestCase):
                 self.assertFalse(changes.select([path])["sbom"])
 
 
+class E2EFilterTest(unittest.TestCase):
+    """The path filter of e2e.yml covers everything the binary is built from."""
+
+    def setUp(self) -> None:
+        relevant = e2e_filter()
+        if relevant is None:
+            self.fail("e2e.yml has no relevant='...' path filter")
+        self.relevant = relevant
+
+    def test_every_workspace_crate_of_the_binary_runs_the_suite(self) -> None:
+        members = workspace_members()
+        self.assertLessEqual(NOT_IN_THE_BINARY, set(members))
+        for member in members:
+            with self.subTest(member=member):
+                # cargo reads every member's manifest to resolve the workspace,
+                # so each one is part of the binary's source.
+                self.assertTrue(self.relevant.search(f"{member}/Cargo.toml"))
+                source = self.relevant.search(f"{member}/src/lib.rs")
+                if member in NOT_IN_THE_BINARY:
+                    self.assertIsNone(source)
+                else:
+                    self.assertTrue(source)
+
+    def test_what_the_binary_is_built_from_runs_the_suite(self) -> None:
+        for path in (
+            "nails-api/src/exit.rs",
+            "nails-oracle/Cargo.toml",
+            ".cargo/config.toml",
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(self.relevant.search(path))
+
+    def test_other_rust_sources_leave_the_suite_alone(self) -> None:
+        for path in (
+            "nails-oracle/src/verdict.rs",
+            "setup/nails-setup/src/wordlist.rs",
+            "gui/nails-gui/src/main.rs",
+            "fuzz/Cargo.toml",
+            "docs/ci.md",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(self.relevant.search(path))
+
+
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(
         [
@@ -248,6 +351,7 @@ class MainTest(unittest.TestCase):
             [
                 "rust=true",
                 "fuzz=true",
+                "side=true",
                 "deps=true",
                 "nix=true",
                 "workflows=true",
@@ -263,6 +367,7 @@ class MainTest(unittest.TestCase):
                 [
                     "rust=true",
                     "fuzz=true",
+                    "side=true",
                     "deps=true",
                     "nix=true",
                     "workflows=true",
@@ -278,6 +383,7 @@ class MainTest(unittest.TestCase):
                 [
                     "rust=false",
                     "fuzz=false",
+                    "side=false",
                     "deps=true",
                     "nix=false",
                     "workflows=false",

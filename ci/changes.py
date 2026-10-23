@@ -28,14 +28,21 @@ from pathlib import Path
 
 FILTERS: dict[str, re.Pattern[str]] = {
     # Everything cargo reads, plus the files that decide how the Rust jobs run.
+    # Every crate of the root workspace lives in a nails-*/ directory, so a new
+    # crate runs the Rust jobs without an edit here; ci/tests checks each member
+    # of the root Cargo.toml against this pattern.
     "rust": re.compile(
-        r"^(nails-base/|nails-cli/|nails-core/|nails-forensics/|nails-platform/|nails-session/|nails-teardown/|benches/|\.cargo/|\.config/nextest\.toml$"
+        r"^(nails-[^/]+/|benches/|\.cargo/|\.config/nextest\.toml$"
         r"|Cargo\.(toml|lock)$|rust-toolchain\.toml$|(clippy|rustfmt)\.toml$"
         r"|justfile$|scripts/check-[^/]+\.sh$)"
     ),
     # The fuzz crate, a workspace of its own: the lint job checks its lock and
     # its formatting.
     "fuzz": re.compile(r"^fuzz/"),
+    # The side workspaces, setup/ and gui/, each a Cargo workspace of its own
+    # outside the root one: the lint job checks their formatting and clippy,
+    # and the side-tests job runs their tests.
+    "side": re.compile(r"^(setup|gui)/"),
     # The dependency graph and its policy; the advisory check gates on these.
     "deps": re.compile(r"^(Cargo\.lock|deny\.toml|(.+/)?Cargo\.toml)$"),
     # The flake and what it evaluates besides the Rust sources.

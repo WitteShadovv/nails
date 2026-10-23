@@ -143,7 +143,10 @@ jobs:
       # It filters this workflow's own pull request and push runs only: a
       # dispatch or a call (which sets MODE_INPUT) asked for its tests.
       # CACHE_INPUT is empty for the events that have no inputs, which use
-      # the cache.
+      # the cache. The Rust paths are what flake.nix builds the binary from
+      # (sourceFiles): the crates it links, nails-oracle's manifest alone,
+      # .cargo/, the workspace manifest and lock and the toolchain pin;
+      # ci/tests checks every crate of the workspace against them.
       - name: Select mode, runner, tests, cache and base revision
         id: select
         env:
@@ -182,7 +185,7 @@ jobs:
           fi
 
           if [ -z "$MODE_INPUT" ] && { [ "$EVENT_NAME" = pull_request ] || [ "$EVENT_NAME" = push ]; }; then
-            relevant='^(nails-base/|nails-core/|nails-cli/|nails-forensics/|nails-platform/|nails-session/|nails-teardown/|nix/|ci/e2e/|\.github/actions/setup-nix/|\.github/workflows/e2e\.yml$|scripts/run-e2e-tests\.sh$|flake\.(nix|lock)$|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
+            relevant='^(nails-api/|nails-base/|nails-core/|nails-cli/|nails-forensics/|nails-oracle/Cargo\.toml$|nails-platform/|nails-session/|nails-teardown/|\.cargo/|nix/|ci/e2e/|\.github/actions/setup-nix/|\.github/workflows/e2e\.yml$|scripts/run-e2e-tests\.sh$|flake\.(nix|lock)$|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
             # An unknown base (new branch, force push) counts as a change.
             if [ -n "$base" ] && ! git diff --name-only "$base" HEAD | grep -qE "$relevant"; then
               echo "No change under the E2E paths since $base; nothing to test."

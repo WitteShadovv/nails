@@ -4,20 +4,23 @@
 # tests) and escapes both clippy and the test runner. A file counts as declared
 # when some source file resolves to it through a `mod <name>;` declaration or a
 # `#[path = "..."]` include, following the same resolution rules rustc uses.
+# Every crate directory of the repository (nails-*/) is checked, as
+# check-line-count.sh counts them, so a new crate needs no edit here.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_ROOTS=(
-  "$REPO_ROOT/nails-base/src"
-  "$REPO_ROOT/nails-core/src"
-  "$REPO_ROOT/nails-forensics/src"
-  "$REPO_ROOT/nails-oracle/src"
-  "$REPO_ROOT/nails-platform/src"
-  "$REPO_ROOT/nails-session/src"
-  "$REPO_ROOT/nails-cli/src"
-  "$REPO_ROOT/nails-teardown/src"
-)
+SOURCE_ROOTS=("$REPO_ROOT"/nails-*/src)
+
+# A pattern that matches nothing stays as written, and find fails on it inside
+# the process substitutions below without failing the script, which would then
+# report no orphans; refuse a missing tree instead.
+for root in "${SOURCE_ROOTS[@]}"; do
+  if [ ! -d "$root" ]; then
+    echo "ERROR: no Rust source tree at ${root#"$REPO_ROOT"/}" >&2
+    exit 1
+  fi
+done
 
 # Resolve a `mod <module_name>;` (optionally carrying a `#[path = "..."]`
 # attribute) declared in `current_file` to the concrete file it names, echoing
