@@ -111,6 +111,8 @@ cargo-vet records, under `supply-chain/`, why each third-party crate in the main
 
 A new or updated dependency that no audit covers turns that lane red. Run `cargo vet` to see what is missing, then either review the crate and record it with `cargo vet certify`, or record an exemption with `cargo vet add-exemption`. The `setup/` and `gui/` workspaces are not vetted yet.
 
+Importing another audit set, a new `[imports]` entry in `supply-chain/config.toml`, also needs that repository's license and copyright holder added to the `supply-chain/imports.lock` annotation in `REUSE.toml`. cargo-vet copies audit records from the set into `imports.lock`, and they stay under the license of the repository that publishes them.
+
 ### Run locally
 
 The tools come from the flake dev shell:
