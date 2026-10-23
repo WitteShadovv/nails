@@ -8,7 +8,8 @@
 //! `--device` that is not mounted, has no entry there, so step three reads its
 //! superblock and partition table instead. A clean scan of such a source is a
 //! clean result only when every filesystem on it is one the scan reads
-//! verbatim; anything else is a blind spot, reported "not checked":
+//! verbatim and the source holds all of it; anything else is a blind spot,
+//! reported "not checked":
 //!
 //! - a filesystem that can compress file contents (btrfs, f2fs, bcachefs),
 //!   found by its own magic, so a stale signature of another format beside it
@@ -17,16 +18,17 @@
 //!   ciphertext: its unlocked mapping is what to scan;
 //! - an LVM physical volume, whose logical volumes the scan does not identify;
 //! - storage on which no filesystem is identified at all (zfs, an encrypted
-//!   volume without a header, raw data);
-//! - a filesystem that spans more bytes than the source holds, as an image
-//!   whose copy stopped early does;
+//!   volume without a header, raw data), even where an ext4 or xfs magic
+//!   shows over a block size no such filesystem uses;
+//! - a filesystem, a partition, or the disk a GPT was written for, that runs
+//!   past the end of the source, as on an image whose copy stopped early;
 //! - first blocks that cannot be read.
 //!
 //! A source with a partition table (a whole disk) is classified partition by
 //! partition, and a blind spot on any partition, named by its number, makes
 //! the whole source one.
 
-use crate::forensic::layout::{self, Signature, TableKind};
+use crate::forensic::layout::{self, Partition, RecordedSize, Signature, TableKind};
 use crate::forensic::raw::RawSource;
 use std::io;
 
@@ -73,6 +75,30 @@ fn truncated(fstype: &str, recorded: u64, available: u64) -> String {
     )
 }
 
+/// Why a source that ends before the disk its GPT was written for is not
+/// checked.
+fn disk_cut_short(recorded: u64, available: u64) -> String {
+    format!(
+        "the partition table was written for a disk of {recorded} bytes, but the source holds \
+         only {available} of them, so the rest was never read"
+    )
+}
+
+/// Why a partition the source does not hold in full is not checked.
+fn partition_cut_short(partition: &Partition, available: u64) -> String {
+    let unread = if partition.start >= available {
+        "none of it was read"
+    } else {
+        "the rest of it was never read"
+    };
+    format!(
+        "it runs from byte {} to byte {}, but the source holds only {available} bytes, so \
+         {unread}",
+        partition.start,
+        partition.end()
+    )
+}
+
 /// What the region of `source` from `start` to `end` holds, for a raw
 /// plaintext scan.
 fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
@@ -91,54 +117,75 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
         Signature::Format(fstype) => match super::scan_blind_spot(fstype, "") {
             Some(blind) => Region::Hidden(blind.reason().to_string()),
             None => match layout::recorded_size(source, start, fstype)? {
-                Some(recorded) if recorded > end - start => {
+                RecordedSize::Bytes(recorded) if recorded > end - start => {
                     Region::Hidden(truncated(fstype, recorded, end - start))
                 }
-                _ => Region::Verbatim,
+                // An ext4 or xfs magic over a superblock with a block size no
+                // such filesystem uses matched other bytes by chance, the
+                // ciphertext of a volume without a header among them.
+                RecordedSize::Implausible => Region::Unidentified,
+                RecordedSize::Bytes(_) | RecordedSize::Unrecorded => Region::Verbatim,
             },
         },
         Signature::Unknown => Region::Unidentified,
     })
 }
 
+/// Why a clean scan of `partition` of `source` is not a clean result, or
+/// `None` when the source holds all of it and it holds a filesystem a raw
+/// plaintext scan reads verbatim.
+fn partition_blind_spot(source: &RawSource, partition: &Partition) -> Option<String> {
+    if partition.end() > source.size() {
+        return Some(partition_cut_short(partition, source.size()));
+    }
+    match region(source, partition.start, partition.end()) {
+        Ok(Region::Verbatim) => None,
+        Ok(Region::Hidden(reason)) => Some(reason),
+        Ok(Region::Unidentified) => Some(UNIDENTIFIED.to_string()),
+        Err(err) => Some(unreadable(&err)),
+    }
+}
+
 /// Why a clean scan of `source` is not a clean result, or `None` when every
-/// filesystem on it is one a raw plaintext scan reads verbatim.
+/// filesystem on it is one a raw plaintext scan reads verbatim and the source
+/// holds all of it.
 ///
 /// A blind spot at offset 0 decides at once. Otherwise a source without a
 /// partition table is conclusive only when offset 0 holds a filesystem read
-/// verbatim; with a table, each partition is classified, whatever offset 0
-/// shows, and a blind spot on any of them, named by its number, decides.
+/// verbatim. With a table, each partition is classified, whatever offset 0
+/// shows, and a blind spot on any of them, named by its number, decides: a
+/// partition the source does not hold in full is one. So is a source shorter
+/// than the disk its GPT was written for. Only a GPT that breaks its own
+/// rules in front of a filesystem read verbatim is set aside: it is what an
+/// older table left when that filesystem was made on the whole disk, its
+/// entries written over.
 pub(super) fn blind_spot(source: &RawSource) -> Option<String> {
-    let whole = match region(source, 0, source.size()) {
+    let size = source.size();
+    let whole = match region(source, 0, size) {
         Ok(Region::Hidden(reason)) => return Some(reason),
         Ok(whole) => whole,
         Err(err) => return Some(unreadable(&err)),
     };
-    let table = match layout::read_table(source) {
+    let table = match layout::recorded_table(source) {
         Ok(table) => table,
         Err(err) => return Some(unreadable(&err)),
     };
-    if table.table == TableKind::None {
-        return match whole {
-            Region::Verbatim => None,
-            _ => Some(UNIDENTIFIED.to_string()),
-        };
+    let verbatim = matches!(whole, Region::Verbatim);
+    if table.table == TableKind::None || (verbatim && !table.consistent) {
+        return (!verbatim).then(|| UNIDENTIFIED.to_string());
     }
-    if table.partitions.is_empty() {
-        return Some(UNIDENTIFIED.to_string());
-    }
-    let reasons: Vec<String> = table
-        .partitions
-        .iter()
-        .filter_map(|partition| {
-            let reason = match region(source, partition.start, partition.end()) {
-                Ok(Region::Verbatim) => return None,
-                Ok(Region::Hidden(reason)) => reason,
-                Ok(Region::Unidentified) => UNIDENTIFIED.to_string(),
-                Err(err) => unreadable(&err),
-            };
-            Some(format!("partition {}: {reason}", partition.number))
-        })
+    let mut reasons: Vec<String> = table
+        .disk_end
+        .filter(|&recorded| recorded > size)
+        .map(|recorded| disk_cut_short(recorded, size))
+        .into_iter()
         .collect();
+    if table.partitions.is_empty() {
+        reasons.push(UNIDENTIFIED.to_string());
+    }
+    reasons.extend(table.partitions.iter().filter_map(|partition| {
+        partition_blind_spot(source, partition)
+            .map(|reason| format!("partition {}: {reason}", partition.number))
+    }));
     (!reasons.is_empty()).then(|| reasons.join("; "))
 }

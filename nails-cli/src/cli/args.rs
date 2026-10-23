@@ -503,9 +503,11 @@ pub struct RehearseScanArgs {
     /// An image of the unlocked decoy filesystem, or of a whole disk, whose
     /// partitions are then classified one by one from their raw superblocks.
     /// An encrypted container (scan its unlocked mapping instead), a
-    /// compressing or copy-on-write filesystem, storage the scan does not
-    /// identify, or an image that ends before its filesystem does is reported
-    /// not checked rather than clean, and an empty image is not scanned.
+    /// compressing or copy-on-write filesystem, or storage the scan does not
+    /// identify is reported not checked rather than clean. So is an image cut
+    /// short: an ext4 or xfs image that ends before its filesystem does, or a
+    /// whole-disk image that ends before a partition its table lists or
+    /// before the disk its GPT was written for. An empty image is not scanned.
     #[arg(long = "image", value_name = "IMAGE", value_hint = ValueHint::FilePath, requires = "offline")]
     pub images: Vec<std::path::PathBuf>,
 

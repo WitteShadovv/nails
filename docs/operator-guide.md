@@ -841,8 +841,12 @@ checked, never as clean:
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
   instead;
 - storage on which the scan identifies no filesystem at all;
-- an image that ends before the filesystem it holds (ext4 or xfs), as a copy
-  that stopped early leaves it.
+- an image cut short, as a copy that stopped early leaves it: an ext4 or xfs
+  image that ends before its filesystem does, or a whole-disk image that ends
+  before a partition its table lists, or before the disk its GPT was written
+  for. The scan cannot tell when a bare filesystem of another kind, such as
+  vfat or swap, was cut short, so check that a copy finished before you scan
+  it.
 
 A mounted device is judged by its mount. A device that is not mounted
 (`--device`) or an image (`--offline --image`) has no mount to judge it by, so

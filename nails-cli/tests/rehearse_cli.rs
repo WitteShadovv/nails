@@ -101,6 +101,21 @@ impl Harness {
         path
     }
 
+    /// A sparse image of `len` bytes with `writes` at their offsets, as far as
+    /// they fit: what lies past `len` is cut off, as a copy that stopped there
+    /// leaves it.
+    fn cut_image(&self, name: &str, len: u64, writes: &[(u64, &[u8])]) -> PathBuf {
+        let path = self.dir.path().join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        for (offset, bytes) in writes {
+            file.seek(SeekFrom::Start(*offset)).unwrap();
+            file.write_all(bytes).unwrap();
+        }
+        file.set_len(len).unwrap();
+        file.sync_all().unwrap();
+        path
+    }
+
     fn token_file(&self) -> PathBuf {
         let path = self.dir.path().join("token");
         std::fs::write(&path, format!("{TOKEN}\n")).unwrap();
@@ -358,6 +373,96 @@ fn an_offline_scan_of_a_whole_disk_names_the_partition_it_cannot_check() {
             .is_some_and(|reason| reason.starts_with("partition 2: ")),
         "{device:#}"
     );
+}
+
+#[test]
+fn an_offline_scan_of_a_whole_disk_cut_short_is_no_clean_pass() {
+    // A copy of a disk that stopped early holds its partition table but not
+    // every partition the table lists: whatever the partitions it does hold
+    // are, the scan cannot vouch for the disk.
+    let harness = Harness::new();
+    let token = harness.token_file();
+    // A 64 MiB GPT disk: an ESP from 1 MiB to 17 MiB, then a LUKS container
+    // to the end of the disk.
+    let mut protective = [0u8; 512];
+    protective[450] = 0xEE;
+    protective[510..].copy_from_slice(&[0x55, 0xAA]);
+    let mut header = [0u8; 92];
+    header[..8].copy_from_slice(b"EFI PART");
+    header[32..40].copy_from_slice(&131_071u64.to_le_bytes()); // backup header block
+    header[40..48].copy_from_slice(&34u64.to_le_bytes()); // first usable block
+    header[48..56].copy_from_slice(&131_038u64.to_le_bytes()); // last usable block
+    header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries block
+    header[80..84].copy_from_slice(&128u32.to_le_bytes());
+    header[84..88].copy_from_slice(&128u32.to_le_bytes());
+    let mut entries = [0u8; 256];
+    for (entry, (first, last)) in entries
+        .chunks_mut(128)
+        .zip([(2048u64, 34_815u64), (34_816, 131_038)])
+    {
+        entry[..16].fill(0xAF);
+        entry[32..40].copy_from_slice(&first.to_le_bytes());
+        entry[40..48].copy_from_slice(&last.to_le_bytes());
+    }
+    let gpt: [(u64, &[u8]); 5] = [
+        (0, &protective),
+        (512, &header),
+        (1024, &entries),
+        ((1 << 20) + 0x52, b"FAT32   "),
+        (17 << 20, b"LUKS\xba\xbe\x00\x02"),
+    ];
+    // An MBR disk: swap from 1 MiB to 17 MiB, then a btrfs to 49 MiB.
+    let mut dos = [0u8; 512];
+    for (index, (kind, start, sectors)) in [(0x82u8, 2048u32, 32_768u32), (0x83, 34_816, 65_536)]
+        .into_iter()
+        .enumerate()
+    {
+        let entry = 446 + 16 * index;
+        dos[entry + 4] = kind;
+        dos[entry + 8..entry + 12].copy_from_slice(&start.to_le_bytes());
+        dos[entry + 12..entry + 16].copy_from_slice(&sectors.to_le_bytes());
+    }
+    dos[510..].copy_from_slice(&[0x55, 0xAA]);
+    let mbr: [(u64, &[u8]); 3] = [
+        (0, &dos),
+        ((1 << 20) + 0xff6, b"SWAPSPACE2"),
+        ((17 << 20) + 0x1_0040, b"_BHRfS_M"),
+    ];
+
+    // Cut inside the ESP, right where the LUKS container starts, and inside
+    // the swap.
+    for (name, len, writes) in [
+        ("gpt-cut-in-esp.raw", 10u64 << 20, &gpt[..]),
+        ("gpt-cut-at-luks.raw", 17 << 20, &gpt[..]),
+        ("mbr-cut-in-swap.raw", 12 << 20, &mbr[..]),
+    ] {
+        let image = harness.cut_image(name, len, writes);
+        let output = harness.run(&[
+            "--ascii",
+            "rehearse",
+            "scan",
+            "--offline",
+            "--image",
+            path(&image),
+            "--token-file",
+            path(&token),
+        ]);
+
+        assert_eq!(output.status.code(), Some(9), "{name}: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("partition 2: it runs from byte 17825792"),
+            "{name}: {stdout}"
+        );
+        assert!(
+            stdout.contains("so none of it was read"),
+            "{name}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("not found on the scanned devices"),
+            "{name}: {stdout}"
+        );
+    }
 }
 
 #[test]
