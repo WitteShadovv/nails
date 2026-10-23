@@ -382,11 +382,18 @@ fn a_started_soft_reboot_leaves_the_prepared_entry_alone() {
     let target = FakeTarget::default();
     let host = FakeEntryHost::default();
 
-    m.trigger_entry_on(&machine, &target, &host).unwrap();
+    let finishes = activation_finishes(|| {
+        m.trigger_entry_on(&machine, &target, &host).unwrap();
+    });
 
     assert_eq!(*target.started.borrow(), ["soft-reboot.target"]);
     assert!(machine.paths.plan().exists());
     assert_eq!(host.reloads.get(), 0);
+    assert_eq!(
+        finishes,
+        vec![true],
+        "the activation ends once its soft-reboot is enqueued"
+    );
 }
 
 #[test]
@@ -404,7 +411,11 @@ fn a_refused_soft_reboot_rolls_the_entry_back_and_resets_the_record() {
     };
     let host = FakeEntryHost::default();
 
-    let error = m.trigger_entry_on(&machine, &target, &host).unwrap_err();
+    let mut result = None;
+    let finishes = activation_finishes(|| {
+        result = Some(m.trigger_entry_on(&machine, &target, &host));
+    });
+    let error = result.unwrap().unwrap_err();
 
     assert_eq!(
         error.to_string(),
@@ -413,6 +424,11 @@ fn a_refused_soft_reboot_rolls_the_entry_back_and_resets_the_record() {
     assert!(!machine.paths.runtime().exists());
     assert_eq!(host.reloads.get(), 1);
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
+    assert_eq!(
+        finishes,
+        vec![false],
+        "a soft-reboot PID 1 refused ends the activation as a failure"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -609,9 +625,10 @@ fn a_step_that_fails_while_a_cancel_is_pending_reports_the_cancel() {
 
 /// Run `body` with an event-collecting reporter installed on this thread and
 /// return the `success` of each `finish` the session flow raised, in order.
-/// `progress::finish` is called from exactly one site in the crate (the end of
-/// `enter_session_on`), so this is precisely what a watching front end sees as
-/// the activation ending.
+/// The session flow alone calls `progress::finish`: at the end of an entry that
+/// failed, and once the soft-reboot of a prepared one is enqueued or refused,
+/// so this is precisely what a watching front end sees as the activation
+/// ending.
 fn activation_finishes(body: impl FnOnce()) -> Vec<bool> {
     let sink = crate::reporter::CollectingSink::new();
     {
@@ -822,13 +839,19 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         };
         let host = FakeEntryHost::default();
 
-        let outcome = m
-            .enter_session_no_preflight_on(&machine, &options, &host)
-            .unwrap();
+        let mut outcome = None;
+        let finishes = activation_finishes(|| {
+            outcome = Some(
+                m.enter_session_no_preflight_on(&machine, &options, &host)
+                    .unwrap(),
+            );
+        });
 
-        let EnterOutcome::Prepared { entry, elapsed } = outcome else {
+        let Some(EnterOutcome::Prepared { entry, elapsed }) = outcome else {
             panic!("expected a prepared entry, got {outcome:?}");
         };
+        // Prepared is not the end: the soft-reboot is still to be enqueued.
+        assert!(finishes.is_empty(), "{finishes:?}");
         // The plan is armed for the entry, read from the given mount table,
         // and written where the soft-reboot will find it.
         assert_eq!(entry.plan.decoy_root.source, Path::new("/dev/vda2"));
@@ -864,7 +887,10 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
             refuse: true,
             ..FakeTarget::default()
         };
-        assert!(m.trigger_entry_on(&machine, &target, &host).is_err());
+        let finishes = activation_finishes(|| {
+            assert!(m.trigger_entry_on(&machine, &target, &host).is_err());
+        });
+        assert_eq!(finishes, vec![false]);
 
         // Nothing of the entry is left, and the record is back to inactive.
         let mounts = read_mountinfo().unwrap();

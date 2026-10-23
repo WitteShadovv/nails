@@ -301,6 +301,58 @@ fn failing_check_is_reported_through_tracing() {
     );
 }
 
+/// A watching event stream sees every check of the registry, in execution
+/// order, with its outcome: the run hands each result on as its check ends.
+#[test]
+fn every_check_reaches_a_watching_event_stream_in_order() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_mounted(hidden_root, false);
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs, config, state_path);
+    let options = PreflightOptions {
+        overlay_only: true,
+        read_only: true,
+        ..PreflightOptions::default()
+    };
+    let names = manager.preflight_registry(&options).unwrap().names();
+
+    let sink = crate::reporter::CollectingSink::new();
+    {
+        let reporter = crate::reporter::EventReporter::new(sink.clone());
+        let _scope =
+            crate::reporter::progress::install(crate::reporter::progress::shared(reporter));
+        let _ = manager.run_preflight_checks(&options);
+    }
+    let checks: Vec<(String, nails_api::CheckOutcome)> = sink
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            nails_api::Event::Check { name, outcome, .. } => Some((name, outcome)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        checks
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        names
+    );
+    assert!(
+        checks.contains(&("hidden-volume".to_string(), nails_api::CheckOutcome::Fail)),
+        "{checks:?}"
+    );
+}
+
 /// The routine pre-flight events stay at debug level: at the default
 /// verbosity the console shows only what needs the operator.
 #[test]

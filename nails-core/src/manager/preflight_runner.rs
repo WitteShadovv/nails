@@ -418,8 +418,14 @@ impl<F: Filesystem> NailsManager<F> {
             ..options.clone()
         })?;
 
-        // Run all checks (always get full results for display)
-        let (results, all_passed) = registry.run_all_detailed(&self.filesystem);
+        // Run all checks (always get full results for display). A caller
+        // watching the typed event stream sees each check the moment it ends,
+        // in execution order; with no event reporter installed this is a no-op
+        // and the tracing lines below are the only record.
+        let (results, all_passed) =
+            registry.run_all_detailed_with(&self.filesystem, |name, result| {
+                crate::reporter::progress::check(name, check_outcome(result), result.message());
+            });
 
         // Report each check and collect failures, as tracing events only: the
         // core never prints check results itself. A warning is the one result
@@ -430,10 +436,6 @@ impl<F: Filesystem> NailsManager<F> {
         let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
 
         for (name, result) in &results {
-            // A caller watching the typed event stream sees each check as it is
-            // reported, in execution order; with no event reporter installed
-            // this is a no-op and the tracing lines below are the only record.
-            crate::reporter::progress::check(name, check_outcome(result), result.message());
             match result {
                 crate::preflight::CheckResult::Pass(msg) => {
                     tracing::debug!(check = %name, result = "pass", msg = %msg, "Preflight check passed");

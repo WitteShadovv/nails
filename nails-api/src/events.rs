@@ -63,7 +63,9 @@ pub enum Event {
         /// The one-line result message.
         message: String,
     },
-    /// The operation ended.
+    /// The operation ended. An activation ends once its soft-reboot is
+    /// enqueued (`success`), or when it failed or was rolled back before that,
+    /// a soft-reboot that could not be enqueued included.
     Finished {
         /// Whether it succeeded.
         success: bool,
