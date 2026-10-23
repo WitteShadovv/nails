@@ -50,19 +50,27 @@ yanked = "deny"
 #       { id = "RUSTSEC-0000-0000", reason = "dev-only, never shipped" },
 #   ]
 
-# zvariant, zbus_names and zvariant_derive are unmaintained with no fixed
-# versions published; they are pulled in transitively by zbus. Re-evaluate
-# by the expiry below.
+# zvariant, zbus_names and zvariant_derive are unmaintained because zbus 6.0.0
+# (2026-10-16) took them in: zvariant as its `wire` module, zbus_names as its
+# `names` module, and the derive macros with them. RustSec lists no patched
+# version because the remedy is no new release of these crates but a move to
+# zbus 6. Only zbus 5, a direct dependency of nails-session, pulls them in,
+# so the fix is ours to make: move nails-session to zbus 6. That is a port, not
+# a version bump: zbus 6 removes the blocking API the sleep guard and its tests
+# use (synchronous code runs the async API through zbus::block_on) and replaces
+# the async-io feature with default-rt. Make the move, or record why it still
+# waits, by the expiry below.
 ignore = [
-    # zvariant is unmaintained; no fixed version is published.
+    # zvariant: part of zbus 6 as zbus::wire; gone once nails-session moves.
     # expires: 2027-01-31
-    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, no fixed version published" },
-    # zbus_names is unmaintained; no fixed version is published.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, merged into zbus 6; fixed by moving nails-session from zbus 5 to 6" },
+    # zbus_names: part of zbus 6 as zbus::names; gone once nails-session moves.
     # expires: 2027-01-31
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, no fixed version published" },
-    # zvariant_derive is unmaintained; no fixed version is published.
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, merged into zbus 6; fixed by moving nails-session from zbus 5 to 6" },
+    # zvariant_derive: its macros are part of zbus 6; gone once nails-session
+    # moves.
     # expires: 2027-01-31
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, no fixed version published" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, merged into zbus 6; fixed by moving nails-session from zbus 5 to 6" },
 ]
 
 # =============================================================================
