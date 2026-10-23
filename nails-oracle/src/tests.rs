@@ -815,3 +815,163 @@ fn an_invalid_canary_locus_fails_the_run() {
     assert!(invalid_canary(&v), "{v:?}");
     assert!(!v.canary_detected);
 }
+
+// --- a self-check is bound to the channel it pins ---------------------------
+
+#[test]
+fn a_positive_control_on_the_wrong_channel_is_not_detected() {
+    // A positive control names the channel that must surface it; every shipped
+    // control pins bulk_extractor. The same value carried only under a different
+    // channel does not satisfy it, so the scan has not proven the pinned channel
+    // can see a trace and the run is blind, never clean. The sentinel sits on
+    // every image under the wrong channel, so it subtracts as noise and the only
+    // thing under test is the channel gate: dropping the tool check in
+    // locator_matches would wrongly count this as detected.
+    let wrong_channel = Finding::new(Tool::Plaso, "email", "wtmpdb-boot@oracle.example");
+    let scans = Scans {
+        before: set([canary_finding(), wrong_channel.clone()]),
+        control: set([canary_finding(), wrong_channel.clone()]),
+        after: set([canary_finding(), wrong_channel]),
+    };
+    let control = PositiveControl {
+        name: "wtmpdb-boot".into(),
+        tool: Some(Tool::BulkExtractor),
+        path: "email".into(),
+        field: Some("wtmpdb-boot@oracle.example".into()),
+        note: None,
+    };
+    let policy = OraclePolicy {
+        allowlist: allow(vec![]),
+        controls: controls(vec![control]),
+    };
+    let v = decide(&scans, &policy);
+    assert_eq!(v.status, Status::Fail, "{:?}", v.failures);
+    assert!(
+        v.blind,
+        "a control met only on the wrong channel leaves the scan blind"
+    );
+    assert!(control_missing(&v, "wtmpdb-boot"));
+    assert!(!v.positive_controls[0].detected);
+}
+
+#[test]
+fn a_canary_on_the_wrong_channel_is_not_detected() {
+    // The canary is pinned to its channel the same way. The reserved address
+    // carried only under a different channel than the canary names does not
+    // prove coverage, so the run fails with a missing canary. A valid control is
+    // present and met, so the only failure is the canary, isolating the channel
+    // gate on the canary path (check_canary / any_match).
+    let wrong_channel = Finding::new(Tool::Plaso, "email", "canary@oracle.example");
+    let scans = Scans {
+        before: set([wrong_channel.clone()]),
+        control: set([wrong_channel.clone()]),
+        after: set([wrong_channel, control_finding()]),
+    };
+    let v = decide(&scans, &clean_policy());
+    assert_eq!(v.status, Status::Fail, "{:?}", v.failures);
+    assert!(!v.canary_detected);
+    assert!(
+        v.failures
+            .iter()
+            .any(|f| matches!(f, Failure::CanaryMissing { .. }))
+    );
+}
+
+#[test]
+fn a_null_tool_control_is_detected_through_any_channel() {
+    // A control with no pinned channel (tool null) is satisfied by a matching
+    // finding from whichever channel surfaces it. Here the match arrives through
+    // plaso while the control names only the path and value. A gate that refused
+    // a null tool, instead of reading it as "any channel", would mark this blind.
+    let any_channel = PositiveControl {
+        name: "any-channel".into(),
+        tool: None,
+        path: "/var/log/wtmp.db".into(),
+        field: Some("linux:wtmp:event".into()),
+        note: None,
+    };
+    let scans = Scans {
+        before: set([canary_finding()]),
+        control: set([canary_finding()]),
+        after: set([canary_finding(), control_finding()]),
+    };
+    let policy = OraclePolicy {
+        allowlist: allow(vec![]),
+        controls: controls(vec![any_channel]),
+    };
+    let v = decide(&scans, &policy);
+    assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
+    assert!(!v.blind);
+    assert!(v.positive_controls[0].detected);
+    assert_eq!(v.counts.self_checks, 1);
+    assert_eq!(v.counts.unexplained, 0);
+}
+
+// --- each configured positive control is weighed on its own -----------------
+
+#[test]
+fn a_detected_control_does_not_excuse_a_second_missing_one() {
+    // Each positive control must be detected in its own right. With two valid
+    // controls and only the first planted, the run is blind and names the second
+    // as missing even though the first was found. A loop that stopped at the
+    // first detected control, or set blind only when none were detected, would
+    // pass this as clean.
+    let second = PositiveControl {
+        name: "lastlog2".into(),
+        tool: Some(Tool::BulkExtractor),
+        path: "email".into(),
+        field: Some("lastlog2@oracle.example".into()),
+        note: None,
+    };
+    let scans = Scans {
+        before: set([canary_finding()]),
+        control: set([canary_finding()]),
+        after: set([canary_finding(), control_finding()]),
+    };
+    let policy = OraclePolicy {
+        allowlist: allow(vec![]),
+        controls: controls(vec![control_cfg(), second]),
+    };
+    let v = decide(&scans, &policy);
+    assert_eq!(v.status, Status::Fail, "{:?}", v.failures);
+    assert!(v.blind);
+    assert!(control_missing(&v, "lastlog2"));
+    assert!(!control_missing(&v, "wtmpdb-boot"));
+    assert_eq!(v.positive_controls.len(), 2);
+    assert_eq!(v.positive_controls[0].name, "wtmpdb-boot");
+    assert!(v.positive_controls[0].detected);
+    assert_eq!(v.positive_controls[1].name, "lastlog2");
+    assert!(!v.positive_controls[1].detected);
+}
+
+#[test]
+fn a_configured_but_rejected_control_fails_rather_than_passing_clean() {
+    // A configured control that is rejected as too broad is not the same as no
+    // control configured: it must fail the run on its own, not fall through to
+    // clean and not be reported as "no positive control". The world is otherwise
+    // clean, so only the rejected locus can make it fail.
+    let too_broad = PositiveControl {
+        name: "logs".into(),
+        tool: None,
+        path: "/var/log".into(),
+        field: None,
+        note: None,
+    };
+    let scans = Scans {
+        before: set([canary_finding()]),
+        control: set([canary_finding()]),
+        after: set([canary_finding()]),
+    };
+    let policy = OraclePolicy {
+        allowlist: allow(vec![]),
+        controls: controls(vec![too_broad]),
+    };
+    let v = decide(&scans, &policy);
+    assert_eq!(v.status, Status::Fail, "{:?}", v.failures);
+    assert!(invalid_control(&v, "logs"), "{v:?}");
+    assert!(
+        !v.failures.contains(&Failure::NoPositiveControl),
+        "a configured-but-rejected control must not read as none configured: {:?}",
+        v.failures
+    );
+}
