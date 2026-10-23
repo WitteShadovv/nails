@@ -33,6 +33,11 @@ of this changelog for that version becomes the release notes word for word, and
   records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage
   history, and the GRUB boot-success counter on Fedora. Each is listed in the decoy requirements and
   threat model with where it lives, how it is checked and how to avoid it.
+- `nails activate` and `nails check` take a buried, per-run `--allow-discards` expert flag that turns
+  the discards-over-the-hidden-volume refusal into a warning for one activation. It changes nothing
+  about the encryption mapping and is never stored in `nails.toml`. It is distinct from cryptsetup's
+  open-time `--allow-discards` (the option that turns discards on in the first place); the safe fix
+  is still to re-open the volume with discards off. See docs/backends.md.
 
 ### Changed
 
@@ -105,7 +110,8 @@ of this changelog for that version becomes the release notes word for word, and
 - The persistent-decoy risk override is a per-run flag only. `--accept-persistent-decoy` is renamed
   `--allow-persistent-decoy` (on `activate` and `check`), matching `--allow-decoy-storage`, and the
   storable `accept_persistent_decoy` key is removed from `nails.toml`, so a fail-closed check can no
-  longer be turned off for good. A config file that still sets the key is refused as an unknown key.
+  longer be turned off for good. A config file that still sets the key is refused with a note that it
+  is now the per-run `--allow-persistent-decoy` flag.
 - `reset-upper` is renamed `discard` and hidden from the command list. It still takes a path, lists
   what it would delete and confirms first; its `--json` envelope now reports the command and its
   error code as `discard`.

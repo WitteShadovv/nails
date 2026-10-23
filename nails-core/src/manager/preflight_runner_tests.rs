@@ -155,19 +155,21 @@ fn check_and_activation_build_the_same_checks_from_the_same_flags() {
             .expect("registry builds")
             .names()
     };
-    for bits in 0..8u8 {
-        let (overlay_only, allow_persistent_decoy, allow_decoy_storage) =
-            (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+    for bits in 0..16u8 {
+        let (overlay_only, allow_persistent_decoy, allow_decoy_storage, allow_discards) =
+            (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
         let check = PreflightOptions {
             overlay_only,
             allow_persistent_decoy,
             allow_decoy_storage,
+            allow_discards,
             ..PreflightOptions::default()
         };
         let activation = crate::manager::EnterOptions {
             overlay_only,
             allow_persistent_decoy,
             allow_decoy_storage,
+            allow_discards,
             ..crate::manager::EnterOptions::default()
         }
         .preflight();
@@ -593,6 +595,86 @@ fn backend_entries_runs_right_after_the_hidden_volume_check() {
         .expect("registry builds")
         .names();
     assert_eq!(&names[..2], &["hidden-volume", "backend-entries"]);
+}
+
+/// The buried `--allow-discards` override threads from `PreflightOptions` into
+/// the backend-detect check: on a hidden root whose dm-crypt mapping forwards
+/// TRIM, the registry fails closed by default and only warns once the flag is
+/// set. The check's own fail/warn behaviour is covered in
+/// `backend_detect/tests.rs`; this proves the option reaches it through
+/// `build_registry`.
+#[test]
+fn allow_discards_option_reaches_the_backend_detect_check() {
+    let hidden_root = "/mnt/hidden";
+    let config = Config {
+        hidden_volume_root: std::path::PathBuf::from(hidden_root),
+        ..explicit_config()
+    };
+    // A plain dm-crypt mapping (253:3) under the hidden root with a non-zero
+    // discard_max_bytes: discards reach the physical device below it.
+    let fixture = || {
+        let fs = MockFilesystem::new();
+        fs.mock_set_file_content(
+            "/proc/self/mountinfo",
+            &format!(
+                "23 1 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
+                 40 23 253:3 / {hidden_root} rw - ext4 /dev/mapper/hidden rw\n"
+            ),
+        );
+        fs.mock_set_file_content("/sys/dev/block/253:3/dev", "0:0\n");
+        fs.mock_set_file_content(
+            "/sys/dev/block/253:3/uevent",
+            "MAJOR=0\nMINOR=0\nDEVNAME=dm-3\nDEVTYPE=disk\n",
+        );
+        fs.mock_set_file_content("/sys/dev/block/253:3/dm/uuid", "CRYPT-PLAIN-hidden\n");
+        fs.mock_set_file_content("/sys/dev/block/253:3/queue/discard_max_bytes", "4096\n");
+        fs
+    };
+    let verdict = |allow_discards: bool| {
+        let fs = fixture();
+        let inputs = RegistryInputs {
+            options: PreflightOptions {
+                allow_discards,
+                ..PreflightOptions::default()
+            },
+            current_state: SystemState::Inactive,
+            flake_target_already_validated: false,
+            selected_flake_dir: None,
+            discovered_target: crate::platform::HostTarget::None,
+            operator: None,
+            caller_path: None,
+            host_profile: None,
+        };
+        build_registry(&fs, &config, &inputs, None)
+            .expect("registry builds")
+            .run_all_detailed(&fs)
+            .0
+            .into_iter()
+            .find(|(name, _)| name == "backend-detect")
+            .map(|(_, result)| result)
+            .expect("the backend-detect check runs")
+    };
+
+    // Fail-closed by default: the flag never reached the check.
+    let refused = verdict(false);
+    assert!(refused.is_fail(), "default must fail closed: {refused:?}");
+    assert!(
+        refused
+            .message()
+            .contains("Discards are enabled over the hidden volume"),
+        "{refused:?}"
+    );
+
+    // With the per-run override the same stack only warns.
+    let accepted = verdict(true);
+    assert!(
+        accepted.is_warn(),
+        "--allow-discards must downgrade the refusal to a warning: {accepted:?}"
+    );
+    assert!(
+        accepted.message().contains("accepted for this run"),
+        "{accepted:?}"
+    );
 }
 
 /// A manager over a mock host whose os-release is `os_release`, with the host

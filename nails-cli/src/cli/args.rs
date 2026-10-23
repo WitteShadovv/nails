@@ -280,6 +280,19 @@ pub struct ActivateArgs {
     /// are still refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
+
+    /// Accept discards over the hidden volume for this run (expert override)
+    ///
+    /// By default activation refuses when discards (TRIM) reach the hidden
+    /// volume: forwarding TRIM to the physical device leaves a readable map of
+    /// used and free blocks where a deniable volume should look like random
+    /// data, and writing an outer volume with discards on can destroy a hidden
+    /// volume inside it. This expert override turns that refusal into a warning
+    /// for this activation only and cannot be stored. It is distinct from
+    /// cryptsetup's open-time `--allow-discards`, which is what enables
+    /// discards; prefer re-opening the volume with discards off instead.
+    #[arg(long)]
+    pub allow_discards: bool,
 }
 
 /// `nails deactivate` arguments
@@ -530,6 +543,14 @@ pub struct CheckArgs {
     /// fail.
     #[arg(long)]
     pub allow_decoy_storage: bool,
+
+    /// Report discards over the hidden volume as a warning instead of a failure (expert override)
+    ///
+    /// Mirrors `activate --allow-discards` so `check`/`--dry-run` reflects what
+    /// activation would do. A per-run expert override that is never stored and
+    /// is distinct from cryptsetup's open-time `--allow-discards`.
+    #[arg(long)]
+    pub allow_discards: bool,
 }
 
 /// `nails config` subcommands

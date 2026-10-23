@@ -93,6 +93,7 @@ pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
         overlay_only: args.overlay_only,
         allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
+        allow_discards: args.allow_discards,
         ..PreflightOptions::default()
     }
 }

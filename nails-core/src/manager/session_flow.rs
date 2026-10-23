@@ -33,6 +33,11 @@ pub struct EnterOptions {
     /// (`--allow-decoy-storage`). The activation's own writes accept it, the
     /// pre-flight check warns, and the plan records it.
     pub allow_decoy_storage: bool,
+    /// Accept discards over the hidden volume for this run (the buried
+    /// `--allow-discards` expert flag): the backend-detect pre-flight check
+    /// then warns instead of refusing. Per run only; there is no stored
+    /// equivalent.
+    pub allow_discards: bool,
 }
 
 impl EnterOptions {
@@ -44,6 +49,7 @@ impl EnterOptions {
             overlay_only: self.overlay_only,
             allow_persistent_decoy: self.allow_persistent_decoy,
             allow_decoy_storage: self.allow_decoy_storage,
+            allow_discards: self.allow_discards,
             ..PreflightOptions::default()
         }
     }

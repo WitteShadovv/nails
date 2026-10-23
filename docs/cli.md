@@ -145,6 +145,9 @@ EXAMPLES:
 * `--allow-decoy-storage` — Use a hidden root that this computer's own storage seems to hold
 
    By default activation refuses a root that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it): everything the session writes there lands on this computer's disk. Use this flag only for storage you know this computer does not use, such as a disk its fstab lists but never mounts. It turns those refusals into a warning, adds a line to the logout confirmation and records the choice for `status`. A folder that is no mount point, a root with a second filesystem mounted over it, storage that cannot be judged, and a decoy entry that opens the volume are still refused.
+* `--allow-discards` — Accept discards over the hidden volume for this run (expert override)
+
+   By default activation refuses when discards (TRIM) reach the hidden volume: forwarding TRIM to the physical device leaves a readable map of used and free blocks where a deniable volume should look like random data, and writing an outer volume with discards on can destroy a hidden volume inside it. This expert override turns that refusal into a warning for this activation only and cannot be stored. It is distinct from cryptsetup's open-time `--allow-discards`, which is what enables discards; prefer re-opening the volume with discards off instead.
 
 
 
@@ -365,6 +368,9 @@ EXAMPLES:
 * `--allow-decoy-storage` — Report a hidden root on this computer's own storage as a warning
 
    Mirrors `activate --allow-decoy-storage`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
+* `--allow-discards` — Report discards over the hidden volume as a warning instead of a failure (expert override)
+
+   Mirrors `activate --allow-discards` so `check`/`--dry-run` reflects what activation would do. A per-run expert override that is never stored and is distinct from cryptsetup's open-time `--allow-discards`.
 
 
 

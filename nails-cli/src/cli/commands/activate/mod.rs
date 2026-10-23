@@ -111,6 +111,7 @@ fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
         nixos_flake: args.nixos_flake.clone(),
         allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
+        allow_discards: args.allow_discards,
     }
 }
 
@@ -120,6 +121,7 @@ fn activate_options(args: &ActivateArgs) -> ActivateOptions {
         overlay_only: args.overlay_only,
         allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
+        allow_discards: args.allow_discards,
     }
 }
 
