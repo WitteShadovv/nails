@@ -299,16 +299,15 @@ carve_restore() {
       fi
       ;;
     *)
-      # Fail closed. The restore channel is the only one that catches a
-      # path-keyed residue -- a new leftover file whose bytes are not
-      # distinctively carvable, an empty directory, a symlink -- so leaving it
-      # empty for a filesystem it cannot carve would let a decoy that carries
-      # such a trace pass as clean (nails-oracle drops bulk_extractor's carved
-      # recorders on the premise that restore recovers every real file by its
-      # path). An unrecognised filesystem is therefore a hard error, not a
-      # skipped channel. Add a carver for it (see README.md) or scan a btrfs or
-      # ext{2,3,4} image.
-      echo "run-scan: no restore carver for filesystem '$fstype' on $img; failing closed. A skipped restore channel could certify a decoy that carries a file-level trace as clean. Add a carver for '$fstype' (see ci/oracle/README.md) or scan a btrfs or ext{2,3,4} image." >&2
+      # Fail closed. The restore channel recovers every on-image path -- a
+      # new leftover file whose bytes are not distinctively carvable, an empty
+      # directory, a symlink -- and nails-oracle leans on it (it drops
+      # bulk_extractor's carved recorders on the premise that restore recovers
+      # every real file by its path). A filesystem it cannot carve is
+      # therefore a hard error with its reason, not a skipped channel; the
+      # verdict would fail an empty channel too. Add a carver for it (see
+      # README.md) or scan a btrfs or ext{2,3,4} image.
+      echo "run-scan: no restore carver for filesystem '$fstype' on $img; failing closed, since the scan cannot look at its files. Add a carver for '$fstype' (see ci/oracle/README.md) or scan a btrfs or ext{2,3,4} image." >&2
       exit 1
       ;;
   esac

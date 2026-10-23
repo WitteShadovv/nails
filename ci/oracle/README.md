@@ -72,11 +72,10 @@ A carve must report no error and must hold the canary's file
 (`/var/lib/nails-oracle/canary.txt` on the synthetic images,
 `/var/lib/nails-oracle/canary` on the real ones), or the run fails: debugfs
 exits 0 even when it cannot open the image, so its own status proves nothing. A
-filesystem with no carver here (xfs, f2fs, bcachefs, zfs) fails the run closed
-rather than leaving this channel empty: a silently empty restore channel could
-pass a decoy that carries a path-keyed trace (a new leftover file, an empty
-directory, a symlink) as clean. Add a carver to `carve_restore` in
-`run-scan.sh` to certify such a decoy.
+filesystem with no carver here (xfs, f2fs, bcachefs, zfs) stops the run with
+that reason rather than leaving this channel empty, which would fail the verdict
+anyway. Add a carver to `carve_restore` in `run-scan.sh` to certify such a
+decoy.
 
 ## allowlist.json — the citation rule
 
