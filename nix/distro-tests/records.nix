@@ -16,8 +16,9 @@ let
   entry = distro: image: release: { inherit distro image release; };
 
   # Recent Debian installs wtmpdb at priority "standard"; the generic cloud
-  # image omits it, so a standard install is reproduced by installing it before
-  # measuring. Its boot writer is what names a boot row "soft-reboot".
+  # image omits it, so a standard install is reproduced by installing it; the
+  # test then power-cycles before it measures. Its boot writer is what names a
+  # boot row "soft-reboot".
   debianInstall = ''
     set -eu
     export DEBIAN_FRONTEND=noninteractive
@@ -26,8 +27,9 @@ let
       sleep 5
     done
     apt-get install -y wtmpdb
-    # The boot writer records the boot row on start and the shutdown row on
-    # stop; enable it so a soft-reboot (and the way back) exercises it.
+    # The boot writer records the boot row on start and the shutdown time on
+    # stop; enable it so the power cycle, the way back and the control
+    # soft-reboot all exercise it.
     systemctl enable wtmpdb-update-boot.service
   '';
 in

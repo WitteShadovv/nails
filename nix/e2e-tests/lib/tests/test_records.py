@@ -25,6 +25,7 @@ def _utmp_record(
     host: str = "",
     pid: int = 0,
     tv_sec: int = 0,
+    tv_usec: int = 0,
 ) -> bytes:
     """Pack one 384-byte glibc ``struct utmpx`` the way wtmp/btmp store it."""
     return rec._UTMP_STRUCT.pack(
@@ -38,7 +39,7 @@ def _utmp_record(
         0,
         0,
         tv_sec,
-        0,
+        tv_usec,
         0,
         0,
         0,
@@ -256,6 +257,28 @@ class DiffTest(unittest.TestCase):
         self.assertEqual(len(added), 1)
         self.assertTrue(diff["seed_changed"])
 
+    def test_soft_reboot_row_added_on_top_of_a_soft_reboot_control(self) -> None:
+        # The row as wtmpdb 0.73 writes it on Debian 13: a boot row whose User
+        # names the soft-reboot. A control that soft-reboots holds one already;
+        # the session's second one must still be flagged.
+        row = {"Type": 2, "User": "soft-reboot", "TTY": "~", "RemoteHost": "6.12"}
+        control = rec.RecordCapture(
+            label="control", wtmpdb=[{"ID": 1, "Login": 1, **row}]
+        )
+        session = rec.RecordCapture(
+            label="session",
+            wtmpdb=[{"ID": 1, "Login": 1, **row}, {"ID": 2, "Login": 2, **row}],
+        )
+        diff = rec.diff_captures(control, session)
+        added = diff["wtmpdb_added"]
+        assert isinstance(added, list)
+        self.assertEqual(len(added), 1)
+        self.assertTrue(diff["session_adds_soft_reboot_row"])
+        # And a session that adds nothing is not flagged.
+        self.assertFalse(
+            rec.diff_captures(control, control)["session_adds_soft_reboot_row"]
+        )
+
     def test_capture_from_tree_reads_present_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -323,6 +346,169 @@ class BackdatedBootTest(unittest.TestCase):
         self.assertIsNone(
             rec.last_boot_record(rec.parse_utmp(_utmp_record(7, user="root")))
         )
+
+
+# One session on a decoy, in microseconds: the power cycle the reference
+# captured, the activation's shutdown, and the way back.
+COLD = 1_700_000_000_000_000
+ACTIVATION = COLD + 600_000_000
+WAY_BACK = COLD + 4_200_000_000
+WINDOW = ((WAY_BACK - 30_000_000) / 1e6, (WAY_BACK + 20_000_000) / 1e6)
+
+
+def _boot(
+    row_id: int, login: int, user: str = "reboot", logout: int | None = None
+) -> dict[str, object]:
+    return {
+        "ID": row_id,
+        "Type": 2,
+        "User": user,
+        "Login": login,
+        "Logout": logout,
+        "TTY": "~",
+        "RemoteHost": "6.12.48+deb13-amd64",
+        "Service": None,
+    }
+
+
+class WtmpdbWayBackTest(unittest.TestCase):
+    reference = [_boot(1, COLD)]
+
+    def test_a_reboot_row_at_the_way_back_reads_as_a_power_cycle(self) -> None:
+        after = [_boot(1, COLD, logout=ACTIVATION), _boot(2, WAY_BACK)]
+        self.assertEqual(
+            rec.wtmpdb_way_back_problems(self.reference, after, WINDOW), []
+        )
+
+    def test_the_soft_reboot_row_is_reported(self) -> None:
+        # What wtmpdb writes on the way back when it reaches the bus, or when it
+        # cannot and the decoy has been up for more than five minutes.
+        after = [
+            _boot(1, COLD, logout=ACTIVATION),
+            _boot(2, WAY_BACK, user="soft-reboot"),
+        ]
+        problems = rec.wtmpdb_way_back_problems(self.reference, after, WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("'soft-reboot'", problems[0])
+
+    def test_a_reboot_row_dated_to_the_cold_boot_is_reported(self) -> None:
+        # What wtmpdb writes kept from the bus within five minutes of uptime:
+        # the kernel's start, before the shutdown that precedes it.
+        after = [_boot(1, COLD, logout=ACTIVATION), _boot(2, COLD + 3)]
+        problems = rec.wtmpdb_way_back_problems(self.reference, after, WINDOW)
+        self.assertTrue(any("backdated" in p for p in problems), problems)
+        self.assertTrue(any("outside the way back" in p for p in problems), problems)
+
+    def test_a_boot_left_without_its_shutdown_reads_as_a_crash(self) -> None:
+        after = [_boot(1, COLD), _boot(2, WAY_BACK)]
+        problems = rec.wtmpdb_way_back_problems(self.reference, after, WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("crash", problems[0])
+
+    def test_more_or_fewer_rows_than_one_boot_are_reported(self) -> None:
+        closed = _boot(1, COLD, logout=ACTIVATION)
+        for after in (
+            [closed],
+            [closed, _boot(2, WAY_BACK), _boot(3, WAY_BACK + 5)],
+        ):
+            problems = rec.wtmpdb_way_back_problems(self.reference, after, WINDOW)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("a power cycle adds one", problems[0])
+
+    def test_boot_logins_are_listed_in_insertion_order(self) -> None:
+        login_row = {"ID": 2, "Type": 7, "User": "user", "Login": COLD + 9}
+        rows = [_boot(3, WAY_BACK), login_row, _boot(1, COLD, logout=ACTIVATION)]
+        self.assertEqual(rec.wtmpdb_boot_logins(rows), [COLD, WAY_BACK])
+        self.assertEqual(rec.wtmpdb_boot_logins([]), [])
+
+    def test_a_row_stamped_long_after_the_way_back_is_reported(self) -> None:
+        late = WAY_BACK + 600_000_000
+        after = [_boot(1, COLD, logout=ACTIVATION), _boot(2, late)]
+        problems = rec.wtmpdb_way_back_problems(self.reference, after, WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("outside the way back", problems[0])
+
+
+def _classic(*records: bytes) -> list[dict[str, object]]:
+    return rec.parse_utmp(b"".join(records))
+
+
+# The same session in classic-wtmp seconds.
+C_COLD, C_ACTIVATION, C_WAY_BACK = 1_700_000_000, 1_700_000_600, 1_700_004_200
+C_WINDOW = (C_WAY_BACK - 30.0, C_WAY_BACK + 20.0)
+REFERENCE = (
+    _utmp_record(2, user="reboot", line="~", tv_sec=C_COLD, tv_usec=11),
+    _utmp_record(1, user="runlevel", line="~", tv_sec=C_COLD + 4),
+    _utmp_record(6, user="LOGIN", line="tty1", pid=600, tv_sec=C_COLD + 5),
+)
+SHUTDOWN = _utmp_record(1, user="shutdown", line="~", tv_sec=C_ACTIVATION)
+
+
+class ClassicWayBackTest(unittest.TestCase):
+    reference = _classic(*REFERENCE)
+
+    def test_a_boot_at_the_way_back_reads_as_a_power_cycle(self) -> None:
+        after = _classic(
+            *REFERENCE,
+            SHUTDOWN,
+            _utmp_record(2, user="reboot", line="~", tv_sec=C_WAY_BACK, tv_usec=42),
+            _utmp_record(1, user="runlevel", line="~", tv_sec=C_WAY_BACK + 2),
+            _utmp_record(6, user="LOGIN", line="tty1", pid=1625, tv_sec=C_WAY_BACK + 3),
+        )
+        self.assertEqual(
+            rec.classic_way_back_problems(self.reference, after, C_WINDOW), []
+        )
+
+    def test_a_boot_carrying_the_cold_boot_time_is_reported(self) -> None:
+        after = _classic(
+            *REFERENCE,
+            SHUTDOWN,
+            _utmp_record(2, user="reboot", line="~", tv_sec=C_COLD, tv_usec=11),
+            _utmp_record(1, user="runlevel", line="~", tv_sec=C_WAY_BACK + 2),
+        )
+        problems = rec.classic_way_back_problems(self.reference, after, C_WINDOW)
+        self.assertTrue(any("before an earlier record" in p for p in problems))
+        self.assertTrue(any("outside the way back" in p for p in problems))
+
+    def test_a_cleared_microsecond_field_is_reported(self) -> None:
+        after = _classic(
+            *REFERENCE,
+            SHUTDOWN,
+            _utmp_record(2, user="reboot", line="~", tv_sec=C_WAY_BACK),
+            _utmp_record(1, user="runlevel", line="~", tv_sec=C_WAY_BACK + 2),
+        )
+        problems = rec.classic_way_back_problems(self.reference, after, C_WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("microsecond", problems[0])
+
+    def test_a_record_of_the_start_before_its_boot_is_reported(self) -> None:
+        # A boot stamped later than the run level of its own start: the
+        # reconcile step's clock, rather than the switch, would do that.
+        after = _classic(
+            *REFERENCE,
+            SHUTDOWN,
+            _utmp_record(2, user="reboot", line="~", tv_sec=C_WAY_BACK + 5, tv_usec=1),
+            _utmp_record(1, user="runlevel", line="~", tv_sec=C_WAY_BACK + 2),
+        )
+        problems = rec.classic_way_back_problems(self.reference, after, C_WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("dated before its boot", problems[0])
+
+    def test_a_start_without_a_run_level_record_is_reported(self) -> None:
+        after = _classic(
+            *REFERENCE,
+            SHUTDOWN,
+            _utmp_record(2, user="reboot", line="~", tv_sec=C_WAY_BACK, tv_usec=42),
+        )
+        problems = rec.classic_way_back_problems(self.reference, after, C_WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("run-level", problems[0])
+
+    def test_no_boot_added_is_reported(self) -> None:
+        after = _classic(*REFERENCE, SHUTDOWN)
+        problems = rec.classic_way_back_problems(self.reference, after, C_WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("a power cycle adds one", problems[0])
 
 
 if __name__ == "__main__":
