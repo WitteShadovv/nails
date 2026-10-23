@@ -286,29 +286,37 @@ mod tests {
         let fs = MockFilesystem::new();
         fs.mock_add_file("/etc/os-release", "ID=nixos\nVERSION_ID=\"24.11\"\n");
         fs.mock_add_file("/proc/1/comm", "systemd");
-        // An all-platform session class present on disk...
+        // All-platform session classes present on disk: one every host writes,
+        // and Plymouth's boot log, which a NixOS decoy booting with Plymouth
+        // writes as the other families do...
         fs.mock_add_file("/var/log/sudo.log", "activation command line");
-        // ...and an FHS-only session class present on disk (Plymouth's boot log
-        // belongs to the Debian/Fedora/Arch families, never to NixOS).
         fs.mock_add_file("/var/log/boot.log", "boot messages");
+        // ...and a Fedora-only session class present on disk (Fedora's GRUB
+        // environment block, which no NixOS decoy keeps).
+        fs.mock_add_file("/boot/grub2/grubenv", "boot_success=1");
 
         let verifier = Verifier::new(fs);
         let findings = verifier.check_catalog_paths(ResidueKind::Session);
         let messages: Vec<&str> = findings.iter().map(|f| f.message.as_str()).collect();
 
-        // The all-platform row applies to a NixOS host, so the probe fires and
-        // the present path is reported: this proves the probe machinery ran.
+        // The all-platform rows apply to a NixOS host, so their probes fire and
+        // the present paths are reported: this proves the probe machinery ran.
+        for id in ["[sudo-logfile]", "[plymouth-boot-log]"] {
+            assert!(
+                messages.iter().any(|m| m.contains(id)),
+                "an all-platform catalog row must apply to a detected NixOS host ({id}): \
+                 {messages:?}"
+            );
+        }
+        // The Fedora-only row does NOT apply to a NixOS host, so its present
+        // path is filtered out. If `catalog_platform` returned `None` (every
+        // row applies), this Fedora-only class would be reported — so this
+        // assertion fails the moment the host platform is not consulted.
         assert!(
-            messages.iter().any(|m| m.contains("[sudo-logfile]")),
-            "an all-platform catalog row must apply to a detected NixOS host: {messages:?}"
-        );
-        // The FHS-only row does NOT apply to a NixOS host, so its present path
-        // is filtered out. If `catalog_platform` returned `None` (every row
-        // applies), this FHS-only class would be reported — so this assertion
-        // fails the moment the host platform is not consulted.
-        assert!(
-            !messages.iter().any(|m| m.contains("[plymouth-boot-log]")),
-            "an FHS-only catalog row must be filtered out on a detected NixOS host: {messages:?}"
+            !messages
+                .iter()
+                .any(|m| m.contains("[grubenv-boot-success]")),
+            "a Fedora-only catalog row must be filtered out on a detected NixOS host: {messages:?}"
         );
     }
 

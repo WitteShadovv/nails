@@ -413,17 +413,17 @@ mod platforms {
             assert!(!reaches("grubenv-boot-success", other), "{other:?}");
         }
 
-        // chrony, Plymouth's boot log and snapper belong to the FHS families,
-        // not to NixOS.
-        for id in ["chrony-drift", "plymouth-boot-log", "snapper-timeline"] {
-            for fhs in [debian, fedora, arch] {
-                assert!(reaches(id, fhs), "{id} on {fhs:?}");
-            }
-            assert!(!reaches(id, nixos), "{id} on NixOS");
-        }
-
-        // The copy-on-write and NetworkManager classes span every family.
-        for id in ["btrfs-cow-history", "networkmanager-connection-records"] {
+        // chrony, Plymouth and snapper run on any family, NixOS included
+        // (services.chrony, boot.plymouth, services.snapper), and a path probe
+        // finds nothing where they never ran, so they span every family, as do
+        // the copy-on-write and NetworkManager classes.
+        for id in [
+            "chrony-drift",
+            "plymouth-boot-log",
+            "snapper-timeline",
+            "btrfs-cow-history",
+            "networkmanager-connection-records",
+        ] {
             for h in [nixos, debian, fedora, arch] {
                 assert!(reaches(id, h), "{id} on {h:?}");
             }

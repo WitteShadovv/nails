@@ -530,17 +530,20 @@ pub(super) const ROWS: &[ResidueClass] = &[
         residual: true,
         conclusion: None,
     },
-    // Cross-distro residue: classes the FHS families and copy-on-write storage
-    // add on top of the systemd defaults the rows above describe. The ones a
-    // Fedora or Arch boot would confirm are catalogued from their documented
-    // residue now, with the live assertion left to the cross-distro probe.
+    // Cross-distro residue: classes the other distributions' daemons and
+    // copy-on-write storage add on top of the systemd defaults the rows above
+    // describe. The ones a Fedora or Arch boot would confirm are catalogued from
+    // their documented residue now, with the live assertion left to the
+    // cross-distro probe. A daemon any family can run, NixOS included, is
+    // probed on every host: a path probe finds nothing where the daemon never
+    // ran, so only a path that one family alone writes is scoped to it.
     ResidueClass {
         id: "chrony-drift",
         title: "chrony clock drift and RTC records",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/lib/chrony"]),
-        platforms: Platforms::FHS,
-        risk: "chrony, a clock daemon some FHS distributions default to for NTP (Fedora does; Debian and Ubuntu use systemd-timesyncd instead), keeps its measured drift and real-time-clock offset under /var/lib/chrony and rewrites them periodically and at shutdown, so on a decoy that runs it the files date when the machine last ran.",
+        platforms: Platforms::ALL,
+        risk: "chrony, the time-sync daemon Fedora installs by default and Ubuntu installs on new systems since 25.10 (26.04 among them; Debian uses systemd-timesyncd, and NixOS runs chrony when services.chrony is enabled), keeps its measured drift and real-time-clock offset under /var/lib/chrony and rewrites them periodically and at shutdown, so on a decoy that runs it the files date when the machine last ran.",
         preflight: Probe::Paths {
             paths: &["/var/lib/chrony"],
             severity: ProbeSeverity::Info,
@@ -587,8 +590,8 @@ pub(super) const ROWS: &[ResidueClass] = &[
         title: "Plymouth boot log",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/boot.log"]),
-        platforms: Platforms::FHS,
-        risk: "Plymouth records the boot console to /var/log/boot.log on the FHS families. The way back is a boot of the decoy, so on a persistent decoy the file's latest entries hold the way back's boot messages and their time, where a plain power cycle would not place a boot mid-day.",
+        platforms: Platforms::ALL,
+        risk: "Plymouth, where the decoy boots with it, records the boot console to /var/log/boot.log. The way back is a boot of the decoy, so on a persistent decoy the file's latest entries hold the way back's boot messages and their time, where a plain power cycle would not place a boot mid-day.",
         preflight: Probe::None(
             "the decoy writes it during the boot the way back performs, not before",
         ),
@@ -610,7 +613,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         title: "Snapper timeline snapshots",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/.snapshots", "/var/lib/snapper"]),
-        platforms: Platforms::FHS,
+        platforms: Platforms::ALL,
         risk: "Snapper keeps timeline snapshots of btrfs subvolumes and a bookkeeping record of each under /.snapshots and /var/lib/snapper, every one stamped with its time. A timeline snapshot taken while the machine runs dates that activity, and an older snapshot preserves decoy state for an examiner to compare.",
         preflight: Probe::Paths {
             paths: &["/.snapshots", "/var/lib/snapper"],

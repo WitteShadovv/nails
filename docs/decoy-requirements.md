@@ -382,6 +382,11 @@ uptime points to use the decoy does not account for.
   `/var/lib/systemd/timesync/clock` at each sync and at shutdown. The session's
   touches go to the upper, but the decoy's own shutdown before the session and
   its start after it stamp the decoy copy.
+- **chrony's drift and clock files.** A decoy that runs chrony instead (the
+  default on Fedora, and on Ubuntu installed since 25.10, 26.04 among them)
+  rewrites its measured drift and real-time-clock offset under
+  `/var/lib/chrony` periodically and at shutdown, which dates the decoy's runs
+  the same way. A NixOS decoy runs it when `services.chrony` is enabled.
 - **Persistent timer stamps.** Timers with `Persistent=true` record their last
   run under `/var/lib/systemd/timers`. Runs during the session land in the
   upper; at the next decoy boot, missed timers catch up at once, which dates the
@@ -390,7 +395,7 @@ uptime points to use the decoy does not account for.
   firmware. No software can change or hide this; a decoy that is used normally
   keeps its logged uptime plausible.
 
-If `/var` is on a wiped-on-boot tmpfs, the first two are wiped at every boot
+If `/var` is on a wiped-on-boot tmpfs, the first three are wiped at every boot
 anyway. `verify` reports their timestamps as notes, so you can see what an
 examiner would see.
 
