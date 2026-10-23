@@ -152,12 +152,29 @@ jobs:
           cat "$RUNNER_TEMP/oracle/verdict.json" 2>/dev/null \
             || echo "(no verdict.json: the scan did not reach the verdict)"
 
+      # The scan runs as root, and the carved restore trees keep the decoy's
+      # root-only modes (etc/credstore is 0700), which the upload cannot read.
+      # Hand the verdict and the analysis outputs to the runner user. The
+      # bulk_extractor build and the image working copy stay out of the
+      # artifact.
+      - name: Make the outputs readable for the upload
+        if: ${{ !cancelled() }}
+        run: |
+          for p in "$RUNNER_TEMP/oracle/verdict.json" "$RUNNER_TEMP/oracle/outputs"; do
+            if [ -e "$p" ]; then
+              sudo chown -R "$(id -u):$(id -g)" "$p"
+              chmod -R u+rwX "$p"
+            fi
+          done
+
       - name: Upload the verdict and analysis outputs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-real-verdict
-          path: ${{ runner.temp }}/oracle/
+          path: |
+            ${{ runner.temp }}/oracle/verdict.json
+            ${{ runner.temp }}/oracle/outputs/
 
   # A run nobody watches: a red verdict opens or comments on the tracking issue,
   # a later green run closes it.
