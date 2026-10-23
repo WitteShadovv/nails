@@ -38,7 +38,9 @@ of this changelog for that version becomes the release notes word for word, and
   leave on a persistent decoy: chrony's drift and real-time-clock files, NetworkManager connection
   records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage
   history, and the GRUB boot-success counter on Fedora. Each is listed in the decoy requirements and
-  threat model with where it lives, how it is checked and how to avoid it.
+  threat model with where it lives, how it is checked and how to avoid it. The chrony, Plymouth and
+  snapper probes run on every decoy, NixOS included, and report their files wherever the decoy runs
+  the daemon. Fedora installs chrony by default, and so does Ubuntu on new systems since 25.10.
 - `nails activate` and `nails check` take a per-run `--allow-discards` expert flag that turns the
   discards-over-the-hidden-volume refusal into a warning for one activation. It is buried in the
   long help: `--help` lists it, `-h` does not. It changes nothing about the encryption mapping and
