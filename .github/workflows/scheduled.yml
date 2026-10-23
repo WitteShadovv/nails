@@ -415,7 +415,10 @@ jobs:
   # Watches the pinned upstream cloud images the distro tests boot. It fails
   # before an enabled entry's pin is due to lapse from its download mirror, so
   # there is time to repin, and when an enabled entry's image URL stops
-  # resolving. The staged (disabled) Fedora and Arch entries are not a failure.
+  # resolving: an upstream entry's own URL, or the dated Debian and Ubuntu
+  # URLs nix-vm-test pins at the revision flake.lock locks. It also fails when
+  # it could check no enabled entry, rather than pass having checked nothing.
+  # The staged (disabled) Fedora and Arch entries are not checked.
   distro-images-link-check:
     name: Distro image links
     needs: tasks

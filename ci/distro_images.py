@@ -3,10 +3,10 @@
 The table is plain data in ``nix/distro-tests/images.json``; the flake turns it
 into VM tests (nix/distro-tests/images.nix). This module is the other half of
 the mirror seam: it validates the table, it is the weekly link check that fails
-before a pinned upstream image is due to lapse, and it bumps a pin to the latest
-upstream build (an SHA256 the distribution publishes, converted to the
-subresource-integrity form ``fetchurl`` expects -- the image itself is never
-downloaded here).
+before a pinned upstream image is due to lapse or once its URL is gone, and it
+bumps a pin to the latest upstream build (an SHA256 the distribution publishes,
+converted to the subresource-integrity form ``fetchurl`` expects -- the image
+itself is never downloaded here).
 
 Subcommands::
 
@@ -16,6 +16,11 @@ Subcommands::
 
 ``check`` and ``link-check`` are what CI runs; ``repin`` is the pin bump, run
 from a networked host (or the scheduled lane) and committed as a one-line diff.
+
+A ``nix-vm-test`` entry is a dated upstream URL as well: nix-vm-test pins it in
+its own ``<distro>/images.json``, at the revision ``flake.lock`` locks, and the
+upstream mirror can prune it like any other build. The link check reads that
+list and probes the URL; a newer nix-vm-test lock is what repins such an entry.
 """
 
 from __future__ import annotations
@@ -23,16 +28,19 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime
+import http.client
 import json
 import re
 import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 TABLE_PATH = REPO / "nix" / "distro-tests" / "images.json"
+LOCK_PATH = REPO / "flake.lock"
 
 # The placeholder hash an entry carries until it is pinned for real. It is the
 # well-known Nix "fake" SHA256, so an enabled entry that still has it is caught
@@ -54,9 +62,18 @@ USER_AGENT = "nails-distro-images/1"
 FEDORA_RELEASES = "https://download.fedoraproject.org/pub/fedora/linux/releases"
 ARCH_IMAGES = "https://geo.mirror.pkgbuild.com/images"
 
+# Where a locked GitHub revision's files are served raw, and the system whose
+# image a nix-vm-test pin names (the VM tests are x86_64-linux only).
+RAW_GITHUB = "https://raw.githubusercontent.com"
+NIX_VM_TEST_SYSTEM = "x86_64-linux"
+
 
 class RepinError(Exception):
     """A pin could not be resolved from upstream."""
+
+
+class LinkError(Exception):
+    """The URL an entry pins could not be worked out."""
 
 
 def load_table(path: Path = TABLE_PATH) -> dict[str, dict]:
@@ -94,11 +111,11 @@ def _problems_for_entry(name: str, entry: object) -> list[str]:
     out: list[str] = []
     if not isinstance(entry, Mapping):
         return [f"{name}: entry must be an object"]
-    for field, kind in _FIELD_TYPES.items():
-        if field not in entry:
-            out.append(f"{name}: missing {field!r}")
-        elif not isinstance(entry[field], kind):
-            out.append(f"{name}: {field} must be {kind.__name__}")
+    for key, kind in _FIELD_TYPES.items():
+        if key not in entry:
+            out.append(f"{name}: missing {key!r}")
+        elif not isinstance(entry[key], kind):
+            out.append(f"{name}: {key} must be {kind.__name__}")
     if out:
         return out
     if entry["osId"] not in KNOWN_OS_IDS:
@@ -149,7 +166,15 @@ def validate(table: Mapping[str, object]) -> list[str]:
     return problems
 
 
-# --- link check ---------------------------------------------------------------
+# --- network ------------------------------------------------------------------
+
+Fetcher = Callable[[str], bytes]
+
+
+def _fetch(url: str, *, timeout: float = 60.0) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
 
 
 def _url_ok(url: str, *, timeout: float = 30.0) -> bool:
@@ -161,8 +186,94 @@ def _url_ok(url: str, *, timeout: float = 30.0) -> bool:
     except urllib.error.HTTPError as error:
         # Some mirrors refuse HEAD; a 405 is not a dead link.
         return error.code == 405
-    except (urllib.error.URLError, TimeoutError, ValueError):
+    except (OSError, http.client.HTTPException, ValueError):
         return False
+
+
+# --- link check ---------------------------------------------------------------
+
+
+def load_lock(path: Path = LOCK_PATH) -> dict:
+    """Read the flake lock, which pins the nix-vm-test revision."""
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def nix_vm_test_list_url(lock: Mapping, distro: str) -> str:
+    """Where the nix-vm-test revision ``flake.lock`` locks lists a distro's images."""
+    try:
+        locked = lock["nodes"]["nix-vm-test"]["locked"]
+        kind, owner, repo, rev = (
+            locked["type"],
+            locked["owner"],
+            locked["repo"],
+            locked["rev"],
+        )
+    except (KeyError, TypeError):
+        raise LinkError("flake.lock locks no nix-vm-test revision") from None
+    if kind != "github":
+        raise LinkError(f"flake.lock locks nix-vm-test as {kind!r}, not on GitHub")
+    return f"{RAW_GITHUB}/{owner}/{repo}/{rev}/{distro}/images.json"
+
+
+def nix_vm_test_url(source: Mapping, lock: Mapping, fetch: Fetcher) -> str:
+    """The upstream image URL a nix-vm-test pin stands for.
+
+    nix-vm-test lists its images per system as ``{image: {"name": <url>,
+    "hash": <sha256>}}`` and fetches ``name`` with ``fetchurl``.
+    """
+    listing = nix_vm_test_list_url(lock, str(source.get("distro")))
+    image = str(source.get("image"))
+    try:
+        url = json.loads(fetch(listing))[NIX_VM_TEST_SYSTEM][image]["name"]
+    except (OSError, http.client.HTTPException, ValueError) as error:
+        raise LinkError(f"cannot read {listing}: {error}") from None
+    except (KeyError, TypeError):
+        raise LinkError(
+            f"{listing} pins no {NIX_VM_TEST_SYSTEM} image {image!r}"
+        ) from None
+    if not isinstance(url, str) or not url:
+        raise LinkError(f"{listing} names no URL for image {image!r}")
+    return url
+
+
+def _locked_nix_vm_test_url() -> Callable[[Mapping], str]:
+    """Resolve nix-vm-test pins against flake.lock, read once on first use."""
+    lock: dict | None = None
+
+    def resolve(source: Mapping) -> str:
+        nonlocal lock
+        if lock is None:
+            try:
+                lock = load_lock()
+            except (OSError, ValueError) as error:
+                raise LinkError(f"cannot read {LOCK_PATH.name}: {error}") from None
+        return nix_vm_test_url(source, lock, _fetch)
+
+    return resolve
+
+
+def _pinned_url(source: Mapping, resolve: Callable[[Mapping], str]) -> str:
+    """The image URL an upstream or a nix-vm-test source pins."""
+    if source.get("kind") == "nix-vm-test":
+        return resolve(source)
+    url = source.get("url")
+    if not url:
+        raise LinkError("its upstream source names no URL")
+    return str(url)
+
+
+@dataclass
+class LinkReport:
+    """The link check's failures, and which enabled entries it checked.
+
+    ``checked`` and ``unchecked`` hold one line per enabled entry: its name and
+    what was checked, or why nothing could be.
+    """
+
+    failures: list[str] = field(default_factory=list)
+    checked: list[str] = field(default_factory=list)
+    unchecked: list[str] = field(default_factory=list)
 
 
 def link_check(
@@ -171,47 +282,61 @@ def link_check(
     today: datetime.date | None = None,
     offline: bool = False,
     url_ok: Callable[[str], bool] = _url_ok,
-) -> list[str]:
-    """Return the failures for the enabled, upstream-pinned entries.
+    pin_url: Callable[[Mapping], str] | None = None,
+) -> LinkReport:
+    """Check the pin of every enabled entry.
 
-    An entry fails when its pin is within ``LEAD_DAYS`` of ``upstreamUntil`` (so
-    there is time to repin before the image drops off its mirror) or, unless
-    ``offline``, when its URL is unreachable. Disabled entries are never a
-    failure here; they are staged on purpose.
+    An entry fails when its pin is within ``LEAD_DAYS`` of ``upstreamUntil`` or
+    past it (so there is time to repin before the image drops off its mirror)
+    and, unless ``offline``, when the image URL it pins does not answer: an
+    upstream entry's own URL, or the one nix-vm-test pins for a nix-vm-test
+    entry (``pin_url``, by default read from nix-vm-test's image list at the
+    revision ``flake.lock`` locks). Disabled entries are staged on purpose and
+    never checked. A run that could check no enabled entry fails as well: a
+    pass would claim a check that never happened.
     """
     today = today or datetime.date.today()
-    failures: list[str] = []
+    resolve = pin_url or _locked_nix_vm_test_url()
+    report = LinkReport()
     for name, entry in table.items():
         if not entry.get("enabled"):
             continue
         source = entry.get("source", {})
-        if source.get("kind") != "upstream":
-            continue
+        kind = source.get("kind")
+        done: list[str] = []
         until = entry.get("upstreamUntil")
         if until is not None:
+            done.append(f"lapses {until}")
             lapses = datetime.date.fromisoformat(str(until))
             if today >= lapses - datetime.timedelta(days=LEAD_DAYS):
-                failures.append(
+                report.failures.append(
                     f"{name}: upstream pin lapses {until}"
                     f" (within {LEAD_DAYS} days or past); repin it"
                 )
-        if not offline:
-            url = source.get("url")
-            if url and not url_ok(url):
-                failures.append(f"{name}: upstream image URL is unreachable: {url}")
-    return failures
+        if not offline and kind in ("upstream", "nix-vm-test"):
+            try:
+                url = _pinned_url(source, resolve)
+            except LinkError as error:
+                done.append("its pin unreadable")
+                report.failures.append(f"{name}: {error}")
+            else:
+                done.append(f"probed {url}")
+                if not url_ok(url):
+                    report.failures.append(f"{name}: image URL is unreachable: {url}")
+        if done:
+            report.checked.append(f"{name}: {', '.join(done)}")
+        elif kind in ("upstream", "nix-vm-test"):
+            report.unchecked.append(f"{name}: offline, and no upstreamUntil")
+        else:
+            report.unchecked.append(f"{name}: a {kind} source has no URL to probe")
+    if not report.checked:
+        report.failures.append(
+            "no enabled entry could be checked, so nothing is known to be current"
+        )
+    return report
 
 
 # --- repin --------------------------------------------------------------------
-
-Fetcher = Callable[[str], bytes]
-
-
-def _fetch(url: str, *, timeout: float = 60.0) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
-
 
 # A directory listing (the mirrors' autoindex) links each file and dated build
 # directory by href; these pull the image name or the build out of that listing.
@@ -296,26 +421,49 @@ def repin_entry(entry: dict, fetch: Fetcher) -> bool:
     return changed
 
 
+@dataclass
+class RepinResult:
+    """The entries a repin changed, and those it could not resolve, with why."""
+
+    changed: list[str] = field(default_factory=list)
+    failed: dict[str, str] = field(default_factory=dict)
+
+
 def repin(
     table: dict[str, dict],
     names: Sequence[str],
     *,
-    fetch: Fetcher = _fetch,
-) -> list[str]:
-    """Repin the named entries (or every resolvable one); returns those changed."""
+    fetch: Fetcher | None = None,
+) -> RepinResult:
+    """Repin the named entries, or with no names every pinned resolvable one.
+
+    Without names, a pending entry is left out: it is declared before its
+    release exists (Fedora 45 before it ships), so its upstream has nothing to
+    pin yet, and it is pinned for the first time by naming it. An entry that
+    does not resolve is recorded in ``failed`` and the others are still
+    repinned, so one missing release never holds back the bumps of the rest.
+    An unknown name is a RepinError before anything is fetched.
+    """
+    unknown = [name for name in names if name not in table]
+    if unknown:
+        raise RepinError(f"unknown entry {unknown[0]!r}")
     if not names:
         names = [
             name
             for name, entry in table.items()
             if str(entry.get("source", {}).get("family")) in RESOLVERS
+            and entry.get("source", {}).get("kind") != "pending"
         ]
-    changed: list[str] = []
+    result = RepinResult()
     for name in names:
-        if name not in table:
-            raise RepinError(f"unknown entry {name!r}")
-        if repin_entry(table[name], fetch):
-            changed.append(name)
-    return changed
+        try:
+            changed = repin_entry(table[name], fetch or _fetch)
+        except (RepinError, OSError, http.client.HTTPException, ValueError) as error:
+            result.failed[name] = str(error)
+            continue
+        if changed:
+            result.changed.append(name)
+    return result
 
 
 def write_table(table: Mapping[str, dict], path: Path = TABLE_PATH) -> None:
@@ -337,12 +485,19 @@ def _cmd_check(_: argparse.Namespace) -> int:
 
 def _cmd_link_check(args: argparse.Namespace) -> int:
     today = datetime.date.fromisoformat(args.date) if args.date else None
-    failures = link_check(load_table(), today=today, offline=args.offline)
-    if failures:
-        for failure in failures:
+    report = link_check(load_table(), today=today, offline=args.offline)
+    for line in report.checked:
+        print(f"distro images link check: checked {line}")
+    for line in report.unchecked:
+        print(f"distro images link check: not checked {line}")
+    if report.failures:
+        for failure in report.failures:
             print(f"distro images link check: {failure}", file=sys.stderr)
         return 1
-    print("distro images link check: every enabled upstream pin is current.")
+    print(
+        f"distro images link check: the {len(report.checked)} checked pin(s) "
+        "are current."
+    )
     return 0
 
 
@@ -353,14 +508,27 @@ def _cmd_repin(args: argparse.Namespace) -> int:
         print("repin: name an entry or pass --all", file=sys.stderr)
         return 2
     try:
-        changed = repin(table, names)
+        result = repin(table, names)
     except RepinError as error:
         print(f"repin: {error}", file=sys.stderr)
         return 1
-    if changed:
+    if result.changed:
         write_table(table)
-        print("repinned: " + ", ".join(changed))
-    else:
+        print("repinned: " + ", ".join(result.changed))
+        # How long an image stays on its mirror is the mirror's policy, which
+        # no listing states, so the lapse date is left for a person to set.
+        for name in result.changed:
+            until = table[name].get("upstreamUntil")
+            if until is not None:
+                print(
+                    f"repin: {name}: upstreamUntil is left at {until}; "
+                    "check it against the new image"
+                )
+    for name, why in result.failed.items():
+        print(f"repin: {name}: {why}", file=sys.stderr)
+    if result.failed:
+        return 1
+    if not result.changed:
         print("repin: every pin was already current.")
     return 0
 
@@ -374,12 +542,20 @@ def main(argv: list[str] | None = None) -> int:
 
     link = sub.add_parser("link-check", help="fail before an enabled pin lapses")
     link.add_argument("--date", help="treat this YYYY-MM-DD as today")
-    link.add_argument("--offline", action="store_true", help="skip the URL probe")
+    link.add_argument(
+        "--offline",
+        action="store_true",
+        help="check the upstreamUntil dates only, with no network request",
+    )
     link.set_defaults(func=_cmd_link_check)
 
     rep = sub.add_parser("repin", help="bump upstream pins to the latest build")
     rep.add_argument("names", nargs="*", help="entries to repin")
-    rep.add_argument("--all", action="store_true", help="repin every entry")
+    rep.add_argument(
+        "--all",
+        action="store_true",
+        help="repin every pinned entry (a pending one only by its name)",
+    )
     rep.set_defaults(func=_cmd_repin)
 
     args = parser.parse_args(argv)
