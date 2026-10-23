@@ -33,3 +33,9 @@ serde_json = { workspace = true }
 # `verdict` function takes a `Catalog` value, so its tests inject a synthetic
 # one and never pull this in.
 nails-forensics = { path = "../nails-forensics" }
+
+[dev-dependencies]
+# Property-test backstop over the verdict engine's reconciliation invariants
+# (src/verdict_proptest.rs). Dev-only, so it never reaches the shipped binary;
+# `std`-only, matching the workspace proptest.
+proptest = { workspace = true }
