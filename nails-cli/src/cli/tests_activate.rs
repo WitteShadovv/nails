@@ -33,13 +33,8 @@ fn activate_defaults_to_prompting_with_preflight() {
 
 #[test]
 fn activate_accepts_its_flags() {
-    let args = activate(&[
-        "-y",
-        "--no-preflight",
-        "--overlay-only",
-        "--accept-persistent-decoy",
-    ]);
-    assert!(args.yes && args.no_preflight && args.overlay_only && args.accept_persistent_decoy);
+    let args = activate(&["-y", "--overlay-only", "--allow-persistent-decoy"]);
+    assert!(args.yes && args.overlay_only && args.allow_persistent_decoy);
     assert_eq!(
         activate(&["--nixos-flake", "/mnt/data/nixos#my-host"])
             .nixos_flake

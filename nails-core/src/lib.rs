@@ -8,7 +8,7 @@
 //! whole-root overlay.
 //!
 //! This crate holds the orchestration that needs every area at once: the
-//! manager (enter, leave, recover, reset-upper), the pre-flight registry and
+//! manager (enter, leave, recover, discard), the pre-flight registry and
 //! the checks that read several areas, and `status`. It re-exports every
 //! module of the library crates below it under its own name, so a front end
 //! talks to one library:

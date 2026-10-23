@@ -153,7 +153,7 @@ in
     with subtest("run a full activate/populate/deactivate workflow"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         canonical_activate(
-            headless_config, "--overlay-only --accept-persistent-decoy", "activate"
+            headless_config, "--overlay-only --allow-persistent-decoy", "activate"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
         machine.succeed("su - testuser -c 'mkdir -p ~/work/project'")

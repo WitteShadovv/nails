@@ -61,7 +61,7 @@ in
 
         # Image the decoy configuration NAILS actually guarantees: a VOLATILE
         # decoy. NAILS refuses to activate on a persistent-journald decoy by
-        # default (docs/decoy-requirements.md, accept_persistent_decoy), because
+        # default (docs/decoy-requirements.md, --allow-persistent-decoy), because
         # what the decoy logs while it shuts down for the soft-reboot and starts
         # again -- the /mnt/data mount/unmount, the dm-crypt filesystem, the
         # soft-reboot markers -- would survive on its disk. The forensic profile
@@ -175,7 +175,7 @@ in
         # volume must be freshly set up immediately before the session, as in
         # forensic/06.
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        # No --accept-persistent-decoy: the decoy is volatile (journald override
+        # No --allow-persistent-decoy: the decoy is volatile (journald override
         # above), so NAILS's persistent-decoy preflight passes and activation
         # runs the default, supported path.
         canonical_activate(headless_config, "--overlay-only", "activate")

@@ -45,7 +45,7 @@ fn a_cancel_is_a_neutral_notice() {
     let style = crate::cli::output::OutputSettings::default().stderr_style();
     for message in [
         "Deactivation cancelled; nothing was changed.",
-        "Reset cancelled; nothing was removed.",
+        "Discard cancelled; nothing was removed.",
     ] {
         let mut out = Vec::new();
         write_cancelled(&mut out, style, message);

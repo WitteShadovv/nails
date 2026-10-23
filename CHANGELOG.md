@@ -48,8 +48,8 @@ of this changelog for that version becomes the release notes word for word, and
   forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
   deniable volume should look like uniform random data, and writing an outer volume with discards
   on can destroy a hidden volume inside it. A LUKS2 mapping with runtime or stored discards is
-  included, and a RAM-only zram device is excepted. The refusal holds even under `--no-preflight`,
-  like the decoy-entry and decoy-flake refusals, and names no device-mapper node.
+  included, and a RAM-only zram device is excepted. Every activation runs the refusal, like the
+  decoy-entry and decoy-flake refusals, and it names no device-mapper node.
 - A derivative of a supported distribution — one whose os-release `ID_LIKE` names `debian` or
   `ubuntu`, such as Linux Mint — now runs with a warning that NAILS has not tested it, instead of
   being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
@@ -98,6 +98,18 @@ of this changelog for that version becomes the release notes word for word, and
   Codes 2, 3, 4, 5, 6, 7, 8 and 9 keep their meaning. Scripts that read the removed JSON field names,
   that treated a declined prompt as exit 1, or that parsed `activate --json` as a stream of lines must
   be updated. A JSON schema per command ships under `docs/schemas/`.
+- The `--no-preflight` flag is removed. Activation always runs the full pre-flight registry, so the
+  decoy-entry (`backend-entries`), decoy-flake (`nixos-build-target`) and discard (`backend-detect`)
+  refusals the flag used to leave in place now run as part of every activation. Drop `--no-preflight`
+  from any script.
+- The persistent-decoy risk override is a per-run flag only. `--accept-persistent-decoy` is renamed
+  `--allow-persistent-decoy` (on `activate` and `check`), matching `--allow-decoy-storage`, and the
+  storable `accept_persistent_decoy` key is removed from `nails.toml`, so a fail-closed check can no
+  longer be turned off for good. A config file that still sets the key is refused as an unknown key.
+- `reset-upper` is renamed `discard` and hidden from the command list. It still takes a path, lists
+  what it would delete and confirms first; its `--json` envelope now reports the command and its
+  error code as `discard`.
+- The `doctor` alias for `check` is removed. Run `check`.
 
 ### Fixed
 

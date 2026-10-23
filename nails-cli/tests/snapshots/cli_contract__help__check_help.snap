@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Check readiness to activate without making any changes (alias: doctor)
+Check readiness to activate without making any changes
 
 Usage: nails check [OPTIONS]
 
@@ -26,10 +26,10 @@ Options:
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 
-      --accept-persistent-decoy
+      --allow-persistent-decoy
           Report a persistent decoy posture as a warning instead of a failure
 
-          Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
+          Mirrors `activate --allow-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
 
   -q, --quiet
           Print only errors and the final result
@@ -63,7 +63,6 @@ Options:
 
 EXAMPLES:
   nails check                         Report readiness to activate
-  nails doctor                        Same, via the alias
   nails check --overlay-only          Skip the hidden NixOS build checks
 
 ----- stderr -----

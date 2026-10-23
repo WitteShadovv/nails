@@ -142,7 +142,7 @@ in
         machine.succeed("cp /mnt/data/nixos/flake.nix /mnt/data/nixos/flake.nix.good")
         machine.succeed("echo 'this is not nix' > /mnt/data/nixos/flake.nix")
         rc, out = machine.execute(
-            f"nails --config {CONFIG} activate -y --no-preflight --nixos-flake {FLAKE} 2>&1"
+            f"nails --config {CONFIG} activate -y --nixos-flake {FLAKE} 2>&1"
         )
         machine.log(out)
         assert rc != 0, "a broken hidden configuration must refuse the entry"

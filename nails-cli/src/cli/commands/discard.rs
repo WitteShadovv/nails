@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! reset-upper command handler
+//! discard command handler
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -9,13 +9,13 @@ use std::path::Path;
 use nails_core::app::discard_upper::DiscardData;
 use nails_core::output::Mark;
 
-use crate::cli::args::ResetUpperArgs;
+use crate::cli::args::DiscardArgs;
 use crate::cli::output::envelope::{
     Envelope, EnvelopePrint, ErrorBody, report_cancelled, report_error,
 };
 use crate::cli::output::{ExitStatus, OutputSettings};
 
-/// Execute the reset-upper command.
+/// Execute the discard command.
 ///
 /// Deletes a path's hidden copy from the root upper on the hidden volume
 /// (`<upper>/<path>`), and the layers of a separate decoy filesystem mounted
@@ -35,16 +35,16 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
-    args: &ResetUpperArgs,
+    args: &DiscardArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
     use nails_core::NailsError;
 
     let json = settings.is_json();
 
-    // reset-upper deletes data on the hidden volume, so it must not run against
+    // discard deletes data on the hidden volume, so it must not run against
     // a config file the operator did not mean.
-    let loaded = match super::load_config_or_report(config_override, "reset-upper", json) {
+    let loaded = match super::load_config_or_report(config_override, "discard", json) {
         Ok(loaded) => loaded,
         Err(status) => return status,
     };
@@ -52,12 +52,12 @@ pub fn execute(
     let ready = nails_core::app::discard_upper::prepare(env, loaded.into_config());
 
     // Hold the exclusive state lock while we plan and delete, so a concurrent
-    // activation cannot mount the target out from under the reset.
+    // activation cannot mount the target out from under the discard.
     let _state_lock = match super::acquire_state_lock_or_report(
         ready.hidden_root(),
         nails_core::hidden_root::Allow::Nothing,
         ready.state_path(),
-        "reset-upper",
+        "discard",
         json,
     ) {
         Ok(lock) => lock,
@@ -73,22 +73,22 @@ pub fn execute(
             };
             return report_error(
                 json,
-                "reset-upper",
+                "discard",
                 status,
-                ErrorBody::new("reset_upper", e.to_string()),
+                ErrorBody::new("discard", e.to_string()),
             );
         }
     };
 
     if plan.is_empty() {
         if json {
-            Envelope::success("reset-upper", DiscardData::from_plan(&plan)).print();
+            Envelope::success("discard", DiscardData::from_plan(&plan)).print();
         } else {
             println!(
                 "{}",
                 settings.stdout_style().marked(
                     Mark::Info,
-                    format_args!("Nothing to reset for {}", plan.target.display())
+                    format_args!("Nothing to discard for {}", plan.target.display())
                 )
             );
         }
@@ -110,11 +110,11 @@ pub fn execute(
         } else {
             return report_error(
                 json,
-                "reset-upper",
+                "discard",
                 ExitStatus::Usage,
                 ErrorBody::new(
                     "needs_confirmation",
-                    "reset-upper deletes the target's hidden upper and needs confirmation, but stdin is not a terminal; pass -y/--yes to run non-interactively",
+                    "discard deletes the target's hidden upper and needs confirmation, but stdin is not a terminal; pass -y/--yes to run non-interactively",
                 ),
             );
         }
@@ -123,21 +123,21 @@ pub fn execute(
     if let Err(e) = ready.apply(&plan) {
         return report_error(
             json,
-            "reset-upper",
+            "discard",
             ExitStatus::Failed,
-            ErrorBody::new("reset_upper", e.to_string()),
+            ErrorBody::new("discard", e.to_string()),
         );
     }
 
     if json {
-        Envelope::success("reset-upper", DiscardData::from_plan(&plan)).print();
+        Envelope::success("discard", DiscardData::from_plan(&plan)).print();
     } else {
         let style = settings.stdout_style();
         println!(
             "{}",
             style.marked(
                 Mark::Pass,
-                format_args!("Reset the hidden upper for {}", plan.target.display())
+                format_args!("Discarded the hidden upper for {}", plan.target.display())
             )
         );
         for path in plan.removals() {
@@ -153,9 +153,9 @@ pub fn execute(
 }
 
 /// The notice of an answer other than yes at the prompt, from the catalogue.
-const CANCELLED: &str = nails_core::catalog::CANCEL_RESET.text;
+const CANCELLED: &str = nails_core::catalog::CANCEL_DISCARD.text;
 
-/// Ask before deleting ([`confirm_reset`]), on stderr (`err`) so stdout stays
+/// Ask before deleting ([`confirm_discard`]), on stderr (`err`) so stdout stays
 /// clean for `--json`. On an answer other than yes, report the cancel, which
 /// removed nothing, and return the status to exit with: the neutral notice
 /// `activate` gives on `err`, or under `--json` the error envelope with the
@@ -166,14 +166,14 @@ fn confirm_or_cancel(
     err: &mut impl std::io::Write,
     input: &mut impl std::io::BufRead,
 ) -> Option<ExitStatus> {
-    if confirm_reset(settings, plan, err, input) {
+    if confirm_discard(settings, plan, err, input) {
         return None;
     }
     Some(report_cancelled(
         err,
         settings.is_json(),
         settings.stderr_style(),
-        "reset-upper",
+        "discard",
         CANCELLED,
     ))
 }
@@ -182,7 +182,7 @@ fn confirm_or_cancel(
 /// warning and the list of directories go to `out`, the answer is read from
 /// `input`. Only `y` or `yes` (any case) confirms; anything else, or a read
 /// error, declines.
-fn confirm_reset(
+fn confirm_discard(
     settings: &OutputSettings,
     plan: &nails_core::ResetUpperPlan,
     out: &mut impl std::io::Write,
@@ -206,7 +206,7 @@ fn confirm_reset(
     if plan.resets_nix_store {
         let _ = writeln!(
             out,
-            "    WARNING: resetting /nix drops the hidden Nix database and store paths."
+            "    WARNING: discarding /nix drops the hidden Nix database and store paths."
         );
     }
     let _ = write!(out, "    Continue? [y/N]: ");
@@ -220,5 +220,5 @@ fn confirm_reset(
 }
 
 #[cfg(test)]
-#[path = "reset_upper_tests.rs"]
+#[path = "discard_tests.rs"]
 mod tests;

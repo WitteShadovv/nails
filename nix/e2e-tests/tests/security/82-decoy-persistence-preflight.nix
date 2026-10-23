@@ -11,7 +11,7 @@
 #   1. `nails check` and `nails activate` both refuse, naming each persistent
 #      sink and the override; the refused activation leaves the plain decoy
 #      root, no next root and no root upper on the hidden volume.
-#   2. With --accept-persistent-decoy the activation soft-reboots into the
+#   2. With --allow-persistent-decoy the activation soft-reboots into the
 #      hidden root, and deactivation returns to the plain decoy.
 { self, pkgs, ... }:
 let
@@ -56,7 +56,7 @@ in
         "Storage=volatile",
         "syslog.service",
         "auditd",
-        "--accept-persistent-decoy",
+        "--allow-persistent-decoy",
     ]
 
     machine.start()
@@ -94,9 +94,9 @@ in
             f"nails --config {CONFIG} activate -y --overlay-only",
         )
 
-    with subtest("--accept-persistent-decoy overrides the refusal"):
+    with subtest("--allow-persistent-decoy overrides the refusal"):
         canonical_activate(
-            CONFIG, "--overlay-only --accept-persistent-decoy", "activate-accepted"
+            CONFIG, "--overlay-only --allow-persistent-decoy", "activate-accepted"
         )
         status = read_status_json(config_path=CONFIG)
         assert status["place"] == "hidden", status

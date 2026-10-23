@@ -66,10 +66,13 @@ in
     def start_activation(label):
         """Start an activation that stops in its hidden build, as its own
         process group, and wait until the build runs."""
+        # TODO(KVM): confirm this VM's decoy passes full pre-flight now that
+        # --no-preflight is gone, so the activation still reaches its hidden
+        # build and the interruption point exists.
         machine.succeed(
             "setsid sh -c "
             + shlex.quote(
-                f"nails --config {CONFIG} activate -y --no-preflight "
+                f"nails --config {CONFIG} activate -y "
                 f"--nixos-flake {FLAKE}#slow > /mnt/data/{label}.log 2>&1"
             )
             + " </dev/null >/dev/null 2>&1 &"

@@ -377,7 +377,7 @@ pub fn keep_closure(
             return Err(NailsError::NixOSError(format!(
                 "the hidden system needs /nix/store/{name}, which is gone from the store (the \
                  decoy deleted it before it was kept on the hidden volume); rebuild the hidden \
-                 system with a binary cache, or reset its store with `reset-upper /nix`"
+                 system with a binary cache, or reset its store with `discard /nix`"
             )));
         }
         pending(&path, &upper.join(name), &mut items).map_err(|e| NailsError::io(&path, e))?;

@@ -10,8 +10,8 @@
 //!
 //! # What it inspects
 //!
-//! Fail-closed (refuse activation unless the operator opts in with
-//! `--accept-persistent-decoy` or `accept_persistent_decoy = true`):
+//! Fail-closed (refuse activation unless the operator opts in for this run with
+//! `--allow-persistent-decoy`):
 //! - systemd-journald `Storage=` persisting the journal to `/var/log/journal`
 //!   on the decoy disk (see [`super::journald_storage`]),
 //! - an active syslog or audit daemon (`rsyslog`, `syslog-ng`, `metalog`,
@@ -67,8 +67,8 @@ const NIXOS_UPGRADE_TIMER: &str = "/etc/systemd/system/timers.target.wants/nixos
 #[derive(Debug)]
 pub struct DecoyPersistenceCheck {
     /// When set, the fail-closed findings are reported as a warning instead of a
-    /// failure. Wired from `--accept-persistent-decoy` or the config key.
-    accept_persistent_decoy: bool,
+    /// failure. Wired from the per-run `--allow-persistent-decoy` flag.
+    allow_persistent_decoy: bool,
     /// Whether the host carries a NixOS config layer. Gates the NixOS-only
     /// `nixos-upgrade.timer` sub-check.
     is_nixos: bool,
@@ -78,11 +78,11 @@ pub struct DecoyPersistenceCheck {
 }
 
 impl DecoyPersistenceCheck {
-    /// Create the check. `accept_persistent_decoy` mirrors the override;
+    /// Create the check. `allow_persistent_decoy` mirrors the override;
     /// `is_nixos` enables the NixOS maintenance-timer sub-check.
-    pub fn new(accept_persistent_decoy: bool, is_nixos: bool) -> Self {
+    pub fn new(allow_persistent_decoy: bool, is_nixos: bool) -> Self {
         Self {
-            accept_persistent_decoy,
+            allow_persistent_decoy,
             is_nixos,
             root: PathBuf::from("/"),
         }
@@ -253,9 +253,9 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
 
         if !blockers.is_empty() {
             let findings = blockers.join("; ");
-            if self.accept_persistent_decoy {
+            if self.allow_persistent_decoy {
                 let mut msg = format!(
-                    "persistent decoy posture accepted via accept_persistent_decoy: {findings}. \
+                    "persistent decoy posture allowed via --allow-persistent-decoy: {findings}. \
                      Records written before the overlays are mounted may survive on the decoy disk."
                 );
                 if !warnings.is_empty() {
@@ -267,8 +267,8 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                 format!("decoy keeps a persistent record of the hidden session: {findings}."),
                 "Make the decoy amnesic (Storage=volatile for journald, set in journald.conf \
                  or a journald.conf.d/*.conf drop-in; no rsyslog/syslog-ng/auditd), \
-                 or pass --accept-persistent-decoy / set accept_persistent_decoy = true in \
-                 nails.toml to accept the risk. See docs/decoy-requirements.md.",
+                 or pass --allow-persistent-decoy to allow the risk for this run. \
+                 See docs/decoy-requirements.md.",
             ));
         }
 

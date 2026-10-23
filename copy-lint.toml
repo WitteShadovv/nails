@@ -27,7 +27,7 @@ max-columns = 80
 # `nails`, because the binary is not on PATH.
 commands = [
     "activate", "deactivate", "status", "emergency", "rehearse", "gui",
-    "init", "discard", "recover", "verify", "check", "config", "reset-upper",
+    "init", "discard", "recover", "verify", "check", "config",
     "completions",
 ]
 

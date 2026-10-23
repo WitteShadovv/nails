@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Check (alias `doctor`) command handler.
+//! Check command handler.
 //!
 //! A strictly read-only readiness check. It loads the configuration, then calls
 //! the [`readiness`](nails_core::app::readiness) operation, which builds the same
@@ -27,7 +27,7 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// The command name used in the JSON envelope and error reports.
 const COMMAND: &str = "check";
 
-/// Execute the `check`/`doctor` command.
+/// Execute the `check` command.
 ///
 /// Returns [`ExitStatus::Ok`] when every check passed (warnings allowed),
 /// [`ExitStatus::PreflightRefused`] when any check failed,
@@ -91,7 +91,7 @@ pub fn execute(
 pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
     PreflightOptions {
         overlay_only: args.overlay_only,
-        accept_persistent_decoy: args.accept_persistent_decoy,
+        allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
         ..PreflightOptions::default()
     }

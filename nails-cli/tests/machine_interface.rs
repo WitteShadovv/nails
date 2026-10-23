@@ -330,7 +330,7 @@ fn activate_json_is_one_envelope_not_a_stream() {
         .arg("--no-log-file")
         .arg("--config")
         .arg(&config_path)
-        .args(["activate", "--no-preflight", "--json"])
+        .args(["activate", "--json"])
         .output()
         .unwrap();
 

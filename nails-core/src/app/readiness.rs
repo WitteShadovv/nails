@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `readiness` operation (the CLI's `check`/`doctor`): a strictly read-only
+//! The `readiness` operation (the CLI's `check`): a strictly read-only
 //! check of whether activation would run.
 //!
 //! It builds the same pre-flight registry activation would run, runs it without

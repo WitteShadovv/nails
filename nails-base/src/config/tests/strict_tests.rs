@@ -84,8 +84,8 @@ fn a_retired_key_says_it_was_removed() {
 
 #[test]
 fn keys_without_an_effect_are_rejected() {
-    // Nothing ever read these: preflight checks are skipped only by
-    // `activate --no-preflight`, and log rotation is not wired up.
+    // Nothing ever read these: there is no stored pre-flight switch, and log
+    // rotation is not wired up.
     for key in [
         "preflight_checks = false",
         "max_log_size_mb = 20",

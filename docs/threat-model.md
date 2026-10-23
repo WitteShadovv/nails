@@ -266,7 +266,7 @@ How the code upholds this:
   device it is stored on), or carries `tcrypt-hidden` for a device on its drive
   or one that cannot be found, is such an enabler: the `backend-entries`
   pre-flight check refuses activation while one exists, and no flag overrides
-  it: `activate --no-preflight` still runs it on its own. A line that opens only
+  it. A line that opens only
   another volume on the same drive warns.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
@@ -315,8 +315,7 @@ the parts of the container that changed. `--allow-decoy-storage` (on `init`,
 warning; activation then repeats it in the logout confirmation, the session
 plan records it for `status`, and `rehearse plant` refuses, since a rehearsal
 on that storage cannot pass. The override never covers a folder, a covered
-root, storage that cannot be judged, or `backend-entries`. `--no-preflight`
-does not skip the gate.
+root, storage that cannot be judged, or `backend-entries`.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or

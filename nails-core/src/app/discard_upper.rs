@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `discard-upper` operation (the CLI's `reset-upper`): drop a path's hidden
+//! The `discard-upper` operation (the CLI's `discard`): drop a path's hidden
 //! copy so the decoy's own files show through again at the next entry.
 //!
 //! It deletes a path's hidden copy from the root upper on the hidden volume and

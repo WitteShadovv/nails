@@ -84,11 +84,11 @@ pub const CANCEL_DEACTIVATE: Message = Message {
     surface: Surface::Cli,
 };
 
-/// The notice a discard (reset of a path's hidden upper) cancelled at the
-/// prompt prints.
-pub const CANCEL_RESET: Message = Message {
-    id: "reset.cancelled",
-    text: "Reset cancelled; nothing was removed.",
+/// The notice a discard of a path's hidden upper cancelled at the prompt
+/// prints.
+pub const CANCEL_DISCARD: Message = Message {
+    id: "discard.cancelled",
+    text: "Discard cancelled; nothing was removed.",
     note: "Shown when the operator answers no at the prompt that discards a path's hidden \
            changes. The same text is the --json error message.",
     placeholders: &[],
@@ -104,5 +104,5 @@ pub const CATALOG: &[Message] = &[
     REHEARSE_GUIDE_DONE,
     CANCEL_ACTIVATE,
     CANCEL_DEACTIVATE,
-    CANCEL_RESET,
+    CANCEL_DISCARD,
 ];

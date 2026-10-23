@@ -6,9 +6,8 @@
 # the decoy's disk:
 #
 #   1. a folder of /srv: init, `activate -y --overlay-only` (with and without
-#      --no-preflight, with and without --allow-decoy-storage) and check refuse
-#      it with not_separate_volume (exit 4), and the folder stays empty with its
-#      mtime and ctime unchanged;
+#      --allow-decoy-storage) and check refuse it with not_separate_volume
+#      (exit 4), and the folder stays empty with its mtime and ctime unchanged;
 #   2. a btrfs subvolume of /pool mounted on its own is refused; its mount
 #      table line shows the same device as /pool's, while stat shows another
 #      (the judge relies on the first);
@@ -25,7 +24,7 @@
 #      neither the tmpfs nor the volume below receives anything;
 #  10. a decoy crypttab line that opens the data disk, then one with
 #      tcrypt-hidden for it or for a device that cannot be found, fails the
-#      backend-entries check (exit 4), and so does `activate --no-preflight`;
+#      backend-entries check (exit 4), and so does `activate`;
 #      a line for another device passes, tcrypt-hidden or not; a decoy fstab
 #      line for the data disk or its mapping fails it too;
 #  11. the accepted case: a whole session runs on a LUKS container file on
@@ -148,7 +147,7 @@ in
                 ],
             )
             assert_result_not_contains(result, ["warning: --allow-decoy-storage"])
-        for flags in ["", " --no-preflight", " --allow-decoy-storage"]:
+        for flags in ["", " --allow-decoy-storage"]:
             result = run_command_capture(
                 "gate-activate",
                 f"nails --config {config} --json activate -y --overlay-only{flags}",
@@ -341,10 +340,11 @@ in
             row = check_row(last_json(result), "backend-entries")
             assert row["status"] == "fail", row
             assert line.split()[0] + " /dev/" in row["message"], row
-        # --no-preflight skips the other checks, never this one.
+        # Activation runs the full registry, so this refusal fires there too.
+        # TODO(KVM): confirm full pre-flight passes here now that --no-preflight is gone
         result = run_command_capture(
-            "gate-entries-no-preflight",
-            f"nails --config {data_config} --json activate -y --overlay-only --no-preflight",
+            "gate-entries-activate",
+            f"nails --config {data_config} --json activate -y --overlay-only",
         )
         assert_exit_code(result, 4)
         assert '"backend-entries"' in result["stdout"], result

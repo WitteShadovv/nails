@@ -255,13 +255,6 @@ fn render_template(root: &Path, title: &str) -> String {
 # never on the decoy.
 # nixos_flake = {flake_value}
 
-# Accept a persistent decoy posture instead of refusing activation. Activation
-# fails closed when the decoy keeps forensic traces: a persistent journald
-# journal on the decoy disk, or an active rsyslog/syslog-ng/auditd. Set true (or
-# pass --accept-persistent-decoy) to accept that risk. See
-# docs/decoy-requirements.md.
-# accept_persistent_decoy = false
-
 # How the hidden session relates to the decoy account.
 #   "shared-home" (default): the hidden session starts from the decoy home (the
 #     root overlay's lower). The decoy's accounts, keys and app profiles are live

@@ -3,7 +3,7 @@ source: nails-cli/tests/cli_contract.rs
 info:
   program: nails
   args:
-    - reset-upper
+    - discard
     - "--help"
 ---
 success: true
@@ -11,7 +11,7 @@ exit_code: 0
 ----- stdout -----
 Delete a path's hidden copy from the hidden root's upper
 
-Usage: nails reset-upper [OPTIONS] <TARGET>
+Usage: nails discard [OPTIONS] <TARGET>
 
 Arguments:
   <TARGET>
@@ -24,7 +24,7 @@ Options:
   -y, --yes
           Proceed without the confirmation prompt
 
-          Without this flag reset-upper lists what it would delete and confirms on a terminal, refusing to run without one.
+          Without this flag discard lists what it would delete and confirms on a terminal, refusing to run without one.
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
@@ -55,7 +55,7 @@ Options:
           Print help (see a summary with '-h')
 
 EXAMPLES:
-  nails reset-upper /home             Delete the hidden copy of /home
-  nails reset-upper /nix -y           Delete the hidden /nix without prompting
+  nails discard /home             Delete the hidden copy of /home
+  nails discard /nix -y           Delete the hidden /nix without prompting
 
 ----- stderr -----

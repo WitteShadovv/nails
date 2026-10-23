@@ -57,7 +57,7 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["verify", "--help"],
     &["check", "--help"],
     &["init", "--help"],
-    &["reset-upper", "--help"],
+    &["discard", "--help"],
     &["rehearse", "--help"],
     &["config", "--help"],
     &["config", "path", "--help"],
@@ -302,7 +302,6 @@ const PUBLIC_COMMANDS: &[&str] = &[
     "recover",
     "status",
     "verify",
-    "reset-upper",
     "config",
 ];
 
@@ -778,7 +777,7 @@ fn emergency_schema_accepts_the_hot_path_report() {
 }
 
 // ---------------------------------------------------------------------------
-// init / recover / reset-upper schemas: representative-document round-trip
+// init / recover / discard schemas: representative-document round-trip
 //
 // These commands write to the hidden volume, or act on a live next root, and
 // need a real target to run for real (covered in the VM tier). Here we only
@@ -854,11 +853,11 @@ fn recover_schema_accepts_the_clean_degraded_and_error_envelopes() {
 }
 
 #[test]
-fn reset_upper_schema_accepts_the_removal_and_cancel_envelopes() {
-    let schema = load_schema("reset-upper");
-    // A completed reset: the removed directories ride in data (DiscardData).
+fn discard_schema_accepts_the_removal_and_cancel_envelopes() {
+    let schema = load_schema("discard");
+    // A completed discard: the removed directories ride in data (DiscardData).
     let removed = serde_json::json!({
-        "schema_version": 2, "command": "reset-upper", "ok": true,
+        "schema_version": 2, "command": "discard", "ok": true,
         "data": {
             "target": "/home",
             "removed": ["/mnt/data/root-upper/home", "/mnt/data/mounts/home"]
@@ -866,17 +865,17 @@ fn reset_upper_schema_accepts_the_removal_and_cancel_envelopes() {
     });
     assert_matches_schema(&schema, &removed);
 
-    // Nothing to reset: an ok envelope with an empty removal list.
+    // Nothing to discard: an ok envelope with an empty removal list.
     let nothing = serde_json::json!({
-        "schema_version": 2, "command": "reset-upper", "ok": true,
+        "schema_version": 2, "command": "discard", "ok": true,
         "data": {"target": "/home", "removed": []}
     });
     assert_matches_schema(&schema, &nothing);
 
     // A declined confirmation is the one cancel shape: an error, no data.
     let cancelled = serde_json::json!({
-        "schema_version": 2, "command": "reset-upper", "ok": false,
-        "error": {"code": "cancelled", "message": "Reset cancelled; nothing was deleted.", "next": null}
+        "schema_version": 2, "command": "discard", "ok": false,
+        "error": {"code": "cancelled", "message": "Discard cancelled; nothing was removed.", "next": null}
     });
     assert_matches_schema(&schema, &cancelled);
 }
@@ -1128,12 +1127,8 @@ fn exit_code_11_verify_critical_on_active_state() {
 fn no_log_file_is_written_when_logging_is_off() {
     let harness = Harness::new();
     harness.write_state(SystemState::Inactive);
-    // reset-upper is a writing command; with --no-log-file it must leave no log.
-    let _ = run(
-        &harness.config,
-        &[],
-        &["reset-upper", CONTRACT_TARGET, "-y"],
-    );
+    // discard is a writing command; with --no-log-file it must leave no log.
+    let _ = run(&harness.config, &[], &["discard", CONTRACT_TARGET, "-y"]);
     let mut found = Vec::new();
     collect_logs(&harness.hidden_root, &mut found);
     collect_logs(&harness.log_path, &mut found);
@@ -1164,19 +1159,19 @@ mod kernel_tests {
     use nails_core::test_support::Rerun;
 
     #[test]
-    fn reset_upper_follows_the_live_view_not_an_active_record() {
+    fn discard_follows_the_live_view_not_an_active_record() {
         let _ = Rerun::new(test_path!(
-            reset_upper_follows_the_live_view_not_an_active_record
+            discard_follows_the_live_view_not_an_active_record
         ))
         .in_user_mount_ns()
         .run(|| {
-            // reset-upper is refused only inside the hidden root. On the decoy
+            // discard is refused only inside the hidden root. On the decoy
             // an active record left behind does not block it. The state lock
             // refuses an unmounted hidden root, so the root is a tmpfs.
             let harness = write_active(Harness::on_a_volume());
-            let (code, value) = run_json(&harness.config, &["reset-upper", CONTRACT_TARGET, "-y"]);
+            let (code, value) = run_json(&harness.config, &["discard", CONTRACT_TARGET, "-y"]);
             assert_eq!(code, 0, "{value:#}");
-            assert_eq!(value["command"], "reset-upper");
+            assert_eq!(value["command"], "discard");
             assert_eq!(value["ok"], true);
         });
     }

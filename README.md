@@ -72,6 +72,27 @@ deniability, come from the storage backend you choose; see
 The [architecture overview](docs/architecture.md#why-one-overlay-over-the-whole-root)
 explains why the session takes the whole root and what that costs.
 
+## Non-goals
+
+NAILS keeps a small, fixed feature set and adds to it only with a reason. It
+deliberately does not, and will not, provide:
+
+- autologin of any kind;
+- a text-mode (TUI) interface, or remote control;
+- more than one hidden session or privilege level;
+- a duress password, or any wipe-on-duress mechanism;
+- support for phones, or for cloud servers;
+- an in-app updater;
+- a settings editor, autostart, or notifications on the decoy;
+- a tray icon;
+- an inactivity trigger that ends a session on its own;
+- configuration presets;
+- telemetry of any kind.
+
+Several of these are safety choices, not missing conveniences: a duress
+password, an autologin or an inactivity trigger would each add a secret, or a
+way for a session to end, that a person under stress could not reason about.
+
 ## Threat model in brief
 
 NAILS is built for one adversary: someone who gets **offline access to the
@@ -112,10 +133,10 @@ model is written down; read it before relying on NAILS.
 | Requirement | Notes |
 |---|---|
 | A supported host | NixOS, Debian 13, or Ubuntu 24.04 or 26.04, with **systemd 254 or newer**. A later Debian or Ubuntu release runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
-| An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise; `--accept-persistent-decoy` overrides the journal, syslog and audit refusals, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
+| An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog and audit refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
-| Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `status`, `verify`, `config` and `reset-upper` with `sudo` too, as the examples do, so they can read and write root-owned files: the configuration `init` writes is readable by root only. |
+| Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `status`, `verify`, `config` and `discard` with `sudo` too, as the examples do, so they can read and write root-owned files: the configuration `init` writes is readable by root only. |
 | A local account | The account you run `sudo` from must be in `/etc/passwd`: the static binary does not use NSS, so LDAP or SSSD accounts cannot be resolved. |
 
 <details>
@@ -148,11 +169,11 @@ Also refused by the pre-flight checks:
   decoy's storage, an image file on a decoy filesystem, a filesystem that shows
   no disk it stores its data on (an overlay, FUSE, a network filesystem), or a
   root with a second filesystem mounted over it. The attach gate refuses these
-  before anything is written, `--no-preflight` included; `--allow-decoy-storage`
+  before anything is written; `--allow-decoy-storage`
   turns the refusal of the decoy's storage into a warning, and never covers a
   folder, a covered root or storage that cannot be judged (`hidden-volume`);
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
-  volume (`backend-entries`, which `--no-preflight` does not skip either);
+  volume (`backend-entries`);
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's
@@ -416,7 +437,7 @@ upgrade or rebuild, the hidden session still sees its own older copy.
 - watch free space with `df -h /mnt/data`; `nails check` fails when it drops
   below `minimum_space_mb`;
 - run `nix-collect-garbage -d` and clear caches **inside** the hidden session;
-- from the decoy, `sudo /mnt/data/nails reset-upper <PATH>` deletes a path's
+- from the decoy, `sudo /mnt/data/nails discard <PATH>` deletes a path's
   hidden copy so the decoy's own files show through again (it asks first, and is
   refused in the hidden session).
 
@@ -438,7 +459,7 @@ decoy and everything NAILS puts in `/run` is gone at power-off.
 | `deactivate` refuses or fails | Run `nails emergency`. |
 | The hidden session hangs | Switch to a text console (Ctrl+Alt+F2), log in and run `nails emergency`. A stuck service can delay `deactivate` by up to 90 s; `emergency` does not wait. |
 | The hidden volume failed (USB pulled, I/O errors) | Run the RAM copy activation left behind: `sudo /run/overlay-runtime/control emergency`. Power off if that does not respond. |
-| The hidden volume is full | Free space inside the session, or deactivate and `reset-upper` a large path from the decoy. Never delete files out of the upper by hand. |
+| The hidden volume is full | Free space inside the session, or deactivate and `discard` a large path from the decoy. Never delete files out of the upper by hand. |
 | Power loss or crash | The decoy boots normally. If `nails status` reports a mismatched state, run `nails recover` once. |
 
 The full runbook, including cleaning up by hand when `recover` cannot run, is in
@@ -470,7 +491,7 @@ the decoy user in the decoy home seen through the overlay; the `fresh-home`
 persona gives it an empty home instead. See
 [persona modes](docs/configuration.md#persona-modes).
 
-**Does it work on a persistent decoy?** Only with `--accept-persistent-decoy`,
+**Does it work on a persistent decoy?** Only with `--allow-persistent-decoy`,
 and then the decoy's journal records the soft-reboots and the activation
 command. Prefer an amnesic decoy.
 
@@ -490,7 +511,7 @@ The binary lives on the hidden volume, so every invocation uses its full path.
 | Command | Where | Purpose |
 |---|---|---|
 | `init <PATH>` | decoy | Lay out a mounted hidden volume |
-| `check` | decoy | Report readiness to activate, changing nothing (alias `doctor`) |
+| `check` | decoy | Report readiness to activate, changing nothing |
 | `activate` | decoy | Soft-reboot into the hidden session |
 | `deactivate` | hidden session | Soft-reboot back to the plain decoy (`--poweroff` to power off) |
 | `emergency` | either | Kill the hidden session at once and return (or power off); on the decoy, remove an interrupted activation |
@@ -498,7 +519,7 @@ The binary lives on the hidden volume, so every invocation uses its full path.
 | `status` | either | The live session, security posture and hidden-volume space |
 | `verify` | hidden session | Scan for known artifacts (live, or `--offline` against a decoy image) |
 | `rehearse` | both | Plant a canary in a hidden session, then scan the raw decoy disk for it |
-| `reset-upper <PATH>` | decoy | Delete a path's hidden copy from the hidden root's upper |
+| `discard <PATH>` | decoy | Delete a path's hidden copy from the hidden root's upper |
 | `config path\|show\|validate` | either | Locate, inspect or check the configuration file |
 | `completions <SHELL>` | either | Print a shell completion script |
 
@@ -563,8 +584,8 @@ your setup before running the new binary.
   moves to `<hidden-root>/root/upper/etc/nixos/`; run `nails init` again to
   place it.
 - **NixOS flake decoys.** A decoy whose `/etc/nixos` is a flake needs a hidden
-  flake: activation refuses to build the decoy's own flake, `--no-preflight`
-  included, also when `nixos_flake` or `--nixos-flake` names it
+  flake: activation refuses to build the decoy's own flake, also when
+  `nixos_flake` or `--nixos-flake` names it
   (`/etc/nixos#host`, the form 0.2's examples used, `path:/etc/nixos`,
   `git+file:///etc/nixos`, `path:/etc?dir=nixos` or a link to it) and when
   `<hidden-root>/nixos` is a link to it, because it would leave out the hidden

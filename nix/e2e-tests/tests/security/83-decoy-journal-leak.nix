@@ -2,7 +2,7 @@
 #
 # The decoy here keeps a persistent journal (forensic-vm-config sets
 # Storage=persistent) and the operator accepts it with
-# --accept-persistent-decoy, so a leak would be durable. Two channels are
+# --allow-persistent-decoy, so a leak would be durable. Two channels are
 # probed:
 #   - a `logger` line inside the hidden session: the hidden journald writes it
 #     into the root overlay, so it lands in the upper on the hidden volume and
@@ -70,7 +70,7 @@ in
         # The config lives on the hidden volume, never on the imaged decoy disk.
         config = "/mnt/data/config/nails.toml"
         write_headless_config(config)
-        canonical_activate(config, "--overlay-only --accept-persistent-decoy", "activate")
+        canonical_activate(config, "--overlay-only --allow-persistent-decoy", "activate")
         machine.succeed(f"logger -t session {hidden_jrnl_token}")
         machine.succeed("journalctl --sync")
         assert hidden_jrnl_token in machine.succeed(

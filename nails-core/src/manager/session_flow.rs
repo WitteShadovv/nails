@@ -22,13 +22,11 @@ use std::path::PathBuf;
 /// What `activate` asked for.
 #[derive(Debug, Clone, Default)]
 pub struct EnterOptions {
-    /// Skip the pre-flight checks (expert use).
-    pub skip_preflight: bool,
     /// Enter with the decoy's own system: no hidden NixOS build (on FHS the
     /// hidden configuration is whatever the upper's `/etc` holds anyway).
     pub overlay_only: bool,
-    /// Accept a persistent decoy posture.
-    pub accept_persistent_decoy: bool,
+    /// Allow a persistent decoy posture for this activation.
+    pub allow_persistent_decoy: bool,
     /// The running binary, copied to RAM for the panic path.
     pub binary: PathBuf,
     /// Accept a hidden root on storage the attach gate takes for the decoy's
@@ -44,7 +42,7 @@ impl EnterOptions {
     pub fn preflight(&self) -> PreflightOptions {
         PreflightOptions {
             overlay_only: self.overlay_only,
-            accept_persistent_decoy: self.accept_persistent_decoy,
+            allow_persistent_decoy: self.allow_persistent_decoy,
             allow_decoy_storage: self.allow_decoy_storage,
             ..PreflightOptions::default()
         }
@@ -208,7 +206,22 @@ impl<F: Filesystem> NailsManager<F> {
         options: &EnterOptions,
         host: &dyn EntryHost,
     ) -> Result<EnterOutcome> {
-        let result = self.enter_session_inner(machine, options, host);
+        // Activation always runs the full pre-flight registry.
+        self.enter_session_running(machine, options, host, true)
+    }
+
+    /// Prepare the entry, running the pre-flight registry only when
+    /// `run_preflight` is set. Activation always sets it; the `run_preflight =
+    /// false` path exists for the tests that exercise the entry mechanics
+    /// directly, without the registry reading the real host.
+    fn enter_session_running(
+        &mut self,
+        machine: &Machine,
+        options: &EnterOptions,
+        host: &dyn EntryHost,
+        run_preflight: bool,
+    ) -> Result<EnterOutcome> {
+        let result = self.enter_session_inner(machine, options, host, run_preflight);
         // Mark the end of the activation for a watching event stream, unless
         // there was nothing to do (already in the hidden root).
         if !matches!(result, Ok(EnterOutcome::AlreadyActive)) {
@@ -217,11 +230,23 @@ impl<F: Filesystem> NailsManager<F> {
         result
     }
 
+    /// Prepare the entry without the pre-flight registry (tests only).
+    #[cfg(test)]
+    fn enter_session_no_preflight_on(
+        &mut self,
+        machine: &Machine,
+        options: &EnterOptions,
+        host: &dyn EntryHost,
+    ) -> Result<EnterOutcome> {
+        self.enter_session_running(machine, options, host, false)
+    }
+
     fn enter_session_inner(
         &mut self,
         machine: &Machine,
         options: &EnterOptions,
         host: &dyn EntryHost,
+        run_preflight: bool,
     ) -> Result<EnterOutcome> {
         if self.session_view_on(machine).is_hidden() {
             return Ok(EnterOutcome::AlreadyActive);
@@ -233,15 +258,11 @@ impl<F: Filesystem> NailsManager<F> {
         // What the operator accepted holds for every write of this activation.
         self.allow = options.allow();
         let nixos = self.require_supported_host(machine)?;
-        // A decoy entry that opens the hidden volume, the decoy's own flake as
-        // the hidden system, and discards forwarded to the physical device
-        // over the hidden volume are refused in every case; --no-preflight
-        // skips the other checks only.
-        if options.skip_preflight {
-            cancellable(|| self.run_backend_entries_check())?;
-            self.refuse_decoy_flake(options.overlay_only)?;
-            cancellable(|| self.run_backend_detect_check())?;
-        } else {
+        // The full pre-flight registry stages the hidden configuration and then
+        // runs every check, the decoy-entry refusal (`backend-entries`), the
+        // decoy's-own-flake refusal (`nixos-build-target`) and the discard
+        // refusal (`backend-detect`) among them.
+        if run_preflight {
             cancellable(|| self.stage_hidden_config(options.overlay_only))?;
             cancellable(|| self.run_preflight_checks(&options.preflight()))?;
         }

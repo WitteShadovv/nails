@@ -68,7 +68,7 @@ in
         config_path = "/mnt/data/config/nails.toml"
         write_headless_config(config_path)
         canonical_activate(
-            config_path, "--overlay-only --accept-persistent-decoy", "activate"
+            config_path, "--overlay-only --allow-persistent-decoy", "activate"
         )
         session.assert_hidden_root(machine)
 

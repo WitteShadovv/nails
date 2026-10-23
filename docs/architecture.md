@@ -118,7 +118,7 @@ and the transition step before anything else is initialised.
   turns results into the documented exit codes. It contains no activation logic:
   it builds a request, hands it to the library, and formats what comes back.
 - **`nails-core`** ties the areas together: the manager (enter, leave,
-  recover, reset-upper), the pre-flight registry and the checks that need
+  recover, discard), the pre-flight registry and the checks that need
   several areas, and `status`. It re-exports every module of the crates below
   under its own name (`nails_core::config`, `nails_core::verify`, …), so the
   CLI talks to one library.

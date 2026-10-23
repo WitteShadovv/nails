@@ -178,14 +178,13 @@ pub enum Commands {
     Verify(VerifyArgs),
     /// Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
     Rehearse(RehearseArgs),
-    /// Check readiness to activate without making any changes (alias: doctor)
-    #[command(alias = "doctor")]
+    /// Check readiness to activate without making any changes
     Check(CheckArgs),
     /// Initialize NAILS directory structure on a hidden volume
     Init(InitArgs),
     /// Delete a path's hidden copy from the hidden root's upper
-    #[command(name = "reset-upper")]
-    ResetUpper(ResetUpperArgs),
+    #[command(name = "discard", hide = true)]
+    Discard(DiscardArgs),
     /// Inspect and check the configuration file (nails.toml)
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -229,10 +228,6 @@ EXAMPLES:
   nails activate --overlay-only       Enter with the decoy's own system (NixOS)
   nails activate --dry-run            Preview without changing anything")]
 pub struct ActivateArgs {
-    /// Skip pre-flight checks (DANGEROUS - expert use only)
-    #[arg(long)]
-    pub no_preflight: bool,
-
     /// Proceed without the confirmation prompt
     ///
     /// Without this flag activation prompts on a terminal and refuses to run
@@ -260,16 +255,16 @@ pub struct ActivateArgs {
     #[arg(long)]
     pub overlay_only: bool,
 
-    /// Accept a persistent decoy posture instead of refusing activation
+    /// Allow a persistent decoy posture instead of refusing activation
     ///
     /// By default activation refuses a host that keeps forensic traces on the
     /// decoy disk: a persistent systemd-journald journal, or an active
     /// rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for
     /// the soft-reboot, and while it starts again afterwards, would survive on
-    /// the decoy disk. This flag accepts that risk (and overrides
-    /// `accept_persistent_decoy` in `nails.toml`).
+    /// the decoy disk. This flag allows that risk for this activation only and
+    /// cannot be stored.
     #[arg(long)]
-    pub accept_persistent_decoy: bool,
+    pub allow_persistent_decoy: bool,
 
     /// Use a hidden root that this computer's own storage seems to hold
     ///
@@ -501,12 +496,11 @@ pub struct RehearseScanArgs {
     pub max_bytes: Option<u64>,
 }
 
-/// `nails check` (alias `doctor`) arguments
+/// `nails check` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(after_long_help = "\
 EXAMPLES:
   nails check                         Report readiness to activate
-  nails doctor                        Same, via the alias
   nails check --overlay-only          Skip the hidden NixOS build checks")]
 pub struct CheckArgs {
     /// Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
@@ -523,10 +517,10 @@ pub struct CheckArgs {
 
     /// Report a persistent decoy posture as a warning instead of a failure
     ///
-    /// Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run`
+    /// Mirrors `activate --allow-persistent-decoy` so `check`/`--dry-run`
     /// reflects what activation would do.
     #[arg(long)]
-    pub accept_persistent_decoy: bool,
+    pub allow_persistent_decoy: bool,
 
     /// Report a hidden root on this computer's own storage as a warning
     ///
@@ -607,13 +601,13 @@ pub struct InitArgs {
     pub no_hardware_config: bool,
 }
 
-/// `nails reset-upper` arguments
+/// `nails discard` arguments
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(after_long_help = "\
 EXAMPLES:
-  nails reset-upper /home             Delete the hidden copy of /home
-  nails reset-upper /nix -y           Delete the hidden /nix without prompting")]
-pub struct ResetUpperArgs {
+  nails discard /home             Delete the hidden copy of /home
+  nails discard /nix -y           Delete the hidden /nix without prompting")]
+pub struct DiscardArgs {
     /// Path whose hidden copy to delete (e.g. /home, /etc, /nix); the decoy's
     /// own files show through again
     #[arg(value_hint = ValueHint::DirPath)]
@@ -621,7 +615,7 @@ pub struct ResetUpperArgs {
 
     /// Proceed without the confirmation prompt
     ///
-    /// Without this flag reset-upper lists what it would delete and confirms on
+    /// Without this flag discard lists what it would delete and confirms on
     /// a terminal, refusing to run without one.
     #[arg(short = 'y', long)]
     pub yes: bool,
@@ -693,6 +687,7 @@ mod tests {
     fn internal_subcommands_are_hidden_from_help() {
         let command = Cli::command();
         for name in [
+            "discard",
             "watch",
             "sleep-guard",
             "transition",
@@ -718,28 +713,28 @@ mod tests {
     }
 
     #[test]
-    fn reset_upper_parses_target_and_yes() {
-        let cli = parse(&["reset-upper", "/home", "-y"]).expect("should parse");
+    fn discard_parses_target_and_yes() {
+        let cli = parse(&["discard", "/home", "-y"]).expect("should parse");
         match cli.command {
-            Commands::ResetUpper(args) => {
+            Commands::Discard(args) => {
                 assert_eq!(args.target, PathBuf::from("/home"));
                 assert!(args.yes);
             }
-            other => panic!("expected reset-upper, got {other:?}"),
+            other => panic!("expected discard, got {other:?}"),
         }
     }
 
     #[test]
-    fn reset_upper_requires_a_target() {
-        assert!(parse(&["reset-upper"]).is_err());
+    fn discard_requires_a_target() {
+        assert!(parse(&["discard"]).is_err());
     }
 
     #[test]
-    fn reset_upper_defaults_to_prompting() {
-        let cli = parse(&["reset-upper", "/nix"]).expect("should parse");
+    fn discard_defaults_to_prompting() {
+        let cli = parse(&["discard", "/nix"]).expect("should parse");
         match cli.command {
-            Commands::ResetUpper(args) => assert!(!args.yes),
-            other => panic!("expected reset-upper, got {other:?}"),
+            Commands::Discard(args) => assert!(!args.yes),
+            other => panic!("expected discard, got {other:?}"),
         }
     }
 

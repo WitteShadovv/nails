@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Unit tests for the `reset-upper` prompt and its cancel.
+//! Unit tests for the `discard` prompt and its cancel.
 
 use super::*;
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ fn plan(target: &str, removals: &[&str]) -> nails_core::ResetUpperPlan {
 /// text shown.
 fn confirm(plan: &nails_core::ResetUpperPlan, answer: &[u8]) -> (bool, String) {
     let mut out = Vec::new();
-    let verdict = confirm_reset(
+    let verdict = confirm_discard(
         &OutputSettings::default(),
         plan,
         &mut out,
@@ -47,16 +47,16 @@ fn the_prompt_lists_every_removal_before_asking() {
 }
 
 #[test]
-fn resetting_nix_warns_about_the_store_and_database() {
+fn discarding_nix_warns_about_the_store_and_database() {
     let (_, shown) = confirm(&plan("/nix", &["/mnt/data/root/upper/nix"]), b"\n");
     assert!(
-        shown.contains("WARNING: resetting /nix drops the hidden Nix database"),
+        shown.contains("WARNING: discarding /nix drops the hidden Nix database"),
         "{shown}"
     );
 }
 
 #[test]
-fn only_yes_in_any_case_confirms_the_reset() {
+fn only_yes_in_any_case_confirms_the_discard() {
     let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
     for answer in ["y\n", "YES\n", "  Yes  \n"] {
         assert!(confirm(&plan, answer.as_bytes()).0, "{answer:?}");
@@ -71,7 +71,7 @@ fn only_yes_in_any_case_confirms_the_reset() {
 /// An answer other than yes reads as `activate`'s cancel: the neutral notice
 /// after the prompt, no error, and exit 130. A yes goes on without one.
 #[test]
-fn a_declined_reset_is_a_neutral_notice_and_exits_130() {
+fn a_declined_discard_is_a_neutral_notice_and_exits_130() {
     let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
     let ask = |answer: &[u8]| {
         let mut err = Vec::new();
@@ -87,7 +87,7 @@ fn a_declined_reset_is_a_neutral_notice_and_exits_130() {
         let (status, shown) = ask(answer.as_bytes());
         assert_eq!(status, Some(ExitStatus::Cancelled), "{answer:?}");
         assert!(
-            shown.ends_with("Continue? [y/N]: \u{25cb} Reset cancelled; nothing was removed.\n"),
+            shown.ends_with("Continue? [y/N]: \u{25cb} Discard cancelled; nothing was removed.\n"),
             "{shown}"
         );
         assert!(!shown.contains("error:"), "{shown}");
