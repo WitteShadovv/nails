@@ -18,3 +18,9 @@ publish = false
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+# Pins the vendored word list to EFF's file by its SHA-256. The same crate and
+# version the main workspace ships, and test-only, so nothing new is built into
+# the binary.
+sha2 = "0.11"
