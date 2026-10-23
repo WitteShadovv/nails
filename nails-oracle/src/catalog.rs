@@ -12,7 +12,7 @@
 //!
 //! [`verdict`]: crate::verdict::verdict
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// The residue-catalog row fields a citation resolves to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,12 @@ pub struct CatalogRow {
     /// The row's channel paths; empty for a `Channel::Mechanism` row, which
     /// vouches for a trace that is not pinned to a fixed path.
     pub channel_paths: Vec<String>,
+    /// Whether the row is a residual channel the overlay cannot cover. Only
+    /// such a row can explain a difference: any other row names a trace the
+    /// overlay must prevent, so that trace showing in `after` is a leak.
+    pub residual: bool,
+    /// The doc section that explains the row, `<file>.md#<anchor>`.
+    pub doc_anchor: String,
 }
 
 /// The slice of the residue catalog the oracle consults: every citable row by
@@ -33,20 +39,22 @@ pub struct CatalogRow {
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     rows: BTreeMap<String, CatalogRow>,
-    anchors: BTreeSet<String>,
+    /// Each doc anchor a row points at, and whether a residual row is among
+    /// those that do.
+    anchors: BTreeMap<String, bool>,
 }
 
 impl Catalog {
-    /// Build from explicit rows and doc anchors. Used by the engine's tests to
-    /// pin down exactly which citations are valid.
-    pub fn from_rows(
-        rows: impl IntoIterator<Item = CatalogRow>,
-        anchors: impl IntoIterator<Item = String>,
-    ) -> Self {
-        Self {
-            rows: rows.into_iter().map(|row| (row.id.clone(), row)).collect(),
-            anchors: anchors.into_iter().collect(),
+    /// Build from explicit rows; the doc anchors are the rows' own. Used by the
+    /// engine's tests to pin down exactly which citations are valid.
+    pub fn from_rows(rows: impl IntoIterator<Item = CatalogRow>) -> Self {
+        let mut catalog = Self::default();
+        for row in rows {
+            let residual = catalog.anchors.entry(row.doc_anchor.clone()).or_default();
+            *residual |= row.residual;
+            catalog.rows.insert(row.id.clone(), row);
         }
+        catalog
     }
 
     /// The row with this id, or `None` when the id is not catalogued. Mirrors
@@ -55,11 +63,13 @@ impl Catalog {
         self.rows.get(id)
     }
 
-    /// Whether this `<file>.md#<anchor>` citation resolves to a doc section a
-    /// catalog row points at. Every such anchor is one the catalog's own tests
+    /// Whether this `<file>.md#<anchor>` citation is a doc section a catalog
+    /// row points at: `None` when no row does, `Some(true)` when a residual
+    /// row is among them and `Some(false)` when only rows the overlay must
+    /// cover point at it. Every such anchor is one the catalog's own tests
     /// prove resolves to a real heading.
-    pub fn anchor_exists(&self, anchor: &str) -> bool {
-        self.anchors.contains(anchor)
+    pub fn anchor(&self, anchor: &str) -> Option<bool> {
+        self.anchors.get(anchor).copied()
     }
 
     /// How many rows are catalogued.
@@ -77,22 +87,17 @@ impl Catalog {
     /// regenerate and no chance of drift.
     pub fn from_forensics() -> Self {
         use nails_forensics::residue_catalog::{Channel, catalog};
-        let mut rows = Vec::new();
-        let mut anchors = BTreeSet::new();
-        for row in catalog() {
-            let channel_paths = match row.channel {
+        Self::from_rows(catalog().iter().map(|row| CatalogRow {
+            id: row.id.to_string(),
+            risk: row.risk.to_string(),
+            mitigation: row.mitigation.to_string(),
+            channel_paths: match row.channel {
                 Channel::Paths(paths) => paths.iter().map(|p| p.to_string()).collect(),
                 Channel::Mechanism(_) => Vec::new(),
-            };
-            rows.push(CatalogRow {
-                id: row.id.to_string(),
-                risk: row.risk.to_string(),
-                mitigation: row.mitigation.to_string(),
-                channel_paths,
-            });
-            anchors.insert(row.doc_anchor.to_string());
-        }
-        Self::from_rows(rows, anchors)
+            },
+            residual: row.residual,
+            doc_anchor: row.doc_anchor.to_string(),
+        }))
     }
 }
 
@@ -100,30 +105,57 @@ impl Catalog {
 mod tests {
     use super::*;
 
-    fn sample() -> Catalog {
-        Catalog::from_rows(
-            [CatalogRow {
-                id: "var-lib-nixos".into(),
-                risk: "rewritten every boot".into(),
-                mitigation: "compare against a control run".into(),
-                channel_paths: vec!["/var/lib/nixos".into()],
-            }],
-            ["threat-model.md#known-residual-changes".into()],
-        )
+    fn row(id: &str, residual: bool, doc_anchor: &str) -> CatalogRow {
+        CatalogRow {
+            id: id.into(),
+            risk: format!("{id} risk"),
+            mitigation: format!("{id} mitigation"),
+            channel_paths: Vec::new(),
+            residual,
+            doc_anchor: doc_anchor.into(),
+        }
     }
 
     #[test]
     fn rows_and_anchors_resolve_only_when_present() {
-        let catalog = sample();
+        let catalog = Catalog::from_rows([row(
+            "timesync-clock",
+            true,
+            "decoy-requirements.md#session-time-records",
+        )]);
         assert_eq!(catalog.len(), 1);
         assert!(!catalog.is_empty());
         assert_eq!(
-            catalog.row("var-lib-nixos").unwrap().risk,
-            "rewritten every boot"
+            catalog.row("timesync-clock").unwrap().risk,
+            "timesync-clock risk"
         );
         assert!(catalog.row("no-such-row").is_none());
-        assert!(catalog.anchor_exists("threat-model.md#known-residual-changes"));
-        assert!(!catalog.anchor_exists("threat-model.md#invented"));
+        assert_eq!(
+            catalog.anchor("decoy-requirements.md#session-time-records"),
+            Some(true)
+        );
+        assert_eq!(catalog.anchor("threat-model.md#invented"), None);
+    }
+
+    #[test]
+    fn an_anchor_is_residual_when_any_row_pointing_at_it_is() {
+        // Two rows share a section: it stays citable through the residual one
+        // whichever order they come in, and a section only a row the overlay
+        // must cover points at is known but not residual.
+        let shared = "threat-model.md#residual-channels";
+        for rows in [
+            [row("a", false, shared), row("b", true, shared)],
+            [row("b", true, shared), row("a", false, shared)],
+        ] {
+            let mut rows = Vec::from(rows);
+            rows.push(row("c", false, "threat-model.md#known-residual-changes"));
+            let catalog = Catalog::from_rows(rows);
+            assert_eq!(catalog.anchor(shared), Some(true));
+            assert_eq!(
+                catalog.anchor("threat-model.md#known-residual-changes"),
+                Some(false)
+            );
+        }
     }
 
     #[test]
@@ -145,12 +177,19 @@ mod tests {
             .expect("var-lib-nixos is catalogued");
         assert_eq!(nixos.channel_paths, ["/var/lib/nixos"]);
         assert!(!nixos.risk.trim().is_empty());
+        // A leak the overlay must prevent, so it can never excuse a difference.
+        assert!(!nixos.residual);
         // A Channel::Mechanism row carries no channel paths.
         let boot = catalog
             .row("login-boot-records")
             .expect("login-boot-records is catalogued");
         assert!(boot.channel_paths.is_empty());
-        assert!(catalog.row("timesync-clock").is_some());
-        assert!(catalog.anchor_exists("threat-model.md#residual-channels"));
+        assert!(boot.residual);
+        assert_eq!(boot.doc_anchor, "threat-model.md#residual-channels");
+        assert!(catalog.row("timesync-clock").is_some_and(|r| r.residual));
+        assert_eq!(
+            catalog.anchor("threat-model.md#residual-channels"),
+            Some(true)
+        );
     }
 }

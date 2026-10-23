@@ -12,7 +12,9 @@
 //! A [`Finding`] is keyed by `(tool, path, field)`. The meaning of `path` and
 //! `field` is tool-specific and documented on [`Finding`]; the verdict logic
 //! treats them opaquely, which is what keeps it independent of the best-effort
-//! parsers in [`crate::scan`].
+//! parsers in [`crate::scan`]. The one thing it knows of a channel is whether
+//! it reports one entry per path ([`Tool::one_entry_per_path`]), which decides
+//! how a change at that path is weighed.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -22,11 +24,12 @@ use std::collections::BTreeSet;
 #[serde(rename_all = "snake_case")]
 pub enum Tool {
     /// `btrfs restore` or `debugfs rdump`: an entry (a file, a directory or a
-    /// symlink) recovered from the image's live tree.
+    /// symlink) recovered from the image's live tree, with what it holds.
     BtrfsRestore,
-    /// `bulk_extractor`: a feature (an e-mail address, a URL, ...) carved from
-    /// anywhere in the image, including free space and stale extents — the
-    /// channel that still sees a deleted-but-not-overwritten trace.
+    /// `bulk_extractor`: a feature (an e-mail address, a URL, ...) or a
+    /// login record carved from anywhere in the image, including free space
+    /// and stale extents — the channel that still sees a
+    /// deleted-but-not-overwritten trace.
     BulkExtractor,
     /// `plaso` / `log2timeline`: a timeline event parsed from a log or record,
     /// the format-aware channel that reads the *content* of a record rather
@@ -38,6 +41,32 @@ impl Tool {
     /// Every analysis channel. A real scan must hear from each of them on every
     /// image (see [`crate::verdict::scan_verdict`]).
     pub const ALL: [Tool; 3] = [Tool::BtrfsRestore, Tool::BulkExtractor, Tool::Plaso];
+
+    /// Whether the channel reports one entry per path on an image, so that a
+    /// path holds one value that a later image can replace: the restore
+    /// channel, whose finding at a path is that entry's kind and content. A
+    /// different value there is a change of that entry, and a path whose value
+    /// the control cycle changed too is one a plain reboot rewrites. The other
+    /// channels report many findings under one path (the records of a file,
+    /// the values of a feature type), each its own trace.
+    pub fn one_entry_per_path(self) -> bool {
+        matches!(self, Tool::BtrfsRestore)
+    }
+}
+
+/// How a residue finding differs between `before` and `after`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Change {
+    /// New in `after`: neither `before` nor the control cycle has it.
+    Added,
+    /// A restore entry `before` and the control cycle agree on holds another
+    /// value in `after`: a file whose content changed, a symlink pointed
+    /// elsewhere, an entry of another kind at the same path.
+    Changed,
+    /// In `before` and in the control cycle, but gone from `after`: a file, a
+    /// record or a feature the session removed.
+    Removed,
 }
 
 /// One normalized observation from one tool over one image.
@@ -47,12 +76,15 @@ impl Tool {
 /// meaning of `path` and `field` depends on `tool`:
 ///
 /// - [`Tool::BtrfsRestore`]: `path` is the absolute on-image path of a
-///   recovered entry; `field` is its kind: empty for a file (its mere
-///   presence), `dir` for a directory, `symlink` for a symbolic link.
+///   recovered entry; `field` is its kind and content: `sha256:<digest>` for a
+///   file, `dir` for a directory, `symlink:<target>` for a symbolic link and
+///   `other` for anything else a carver recovers.
 /// - [`Tool::BulkExtractor`]: `path` is the feature *type* (`email`, `url`,
-///   ...); `field` is the feature *value*.
-/// - [`Tool::Plaso`]: `path` is the event's source path; `field` is the event
-///   descriptor (its data type or message).
+///   `utmp_carved`, ...); `field` is the feature *value*, or for a carved
+///   object its content (a login record's fields, or a content hash).
+/// - [`Tool::Plaso`]: `path` is the event's source path, or `journal` for a
+///   systemd-journal line; `field` is the event's data type, followed for a
+///   record by the content fields that say what it records.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Finding {
     /// The tool that surfaced it.
@@ -122,22 +154,32 @@ impl Scans {
 }
 
 /// One cited exemption: a location that is expected to differ in `after`, and
-/// exactly one residue-catalog row (or threat-model section) that says why.
+/// exactly one residual residue-catalog row (or threat-model section) that says
+/// why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowEntry {
-    /// The locus this entry covers. An absolute path covers that path and
-    /// everything beneath it; a bare word is a [`Tool::BulkExtractor`] feature
-    /// type, which must be paired with a specific `field`.
+    /// The exact locus this entry covers: an absolute path covers that path
+    /// alone, never anything beneath it; a bare word is a feature type or
+    /// another locus that is not a path (`journal`), which must be paired with
+    /// a specific `field`.
     pub path: String,
-    /// When set, only findings whose `field` equals this are covered; when
-    /// absent, any `field` at `path` is covered.
+    /// When set, only the finding whose `field` equals this is covered. When
+    /// absent, the entry covers the restore channel's finding at `path`, the
+    /// entry itself, whatever it holds; a record or a feature is covered only
+    /// by naming it, so no entry can wave through every record of a file.
     #[serde(default)]
     pub field: Option<String>,
-    /// Exactly one citation: a residue-catalog `id` (kebab-case, no `#`) or a
-    /// threat-model doc anchor (`<file>.md#<anchor>`). The field is required, so
-    /// there is no way to exempt a location for no stated reason.
+    /// Exactly one citation: a residue-catalog `id` (kebab-case, no `#`) of a
+    /// residual row, or a threat-model doc anchor (`<file>.md#<anchor>`) a
+    /// residual row points at. The field is required, so there is no way to
+    /// exempt a location for no stated reason.
     pub cite: String,
+    /// Covers the finding's removal from `after` instead of its arrival or
+    /// change: a trace the session is expected to delete is cited apart from
+    /// one it is expected to leave.
+    #[serde(default)]
+    pub removed: bool,
     /// Optional human note. Ignored by the engine.
     #[serde(default)]
     pub note: Option<String>,
@@ -158,6 +200,8 @@ pub struct Allowlist {
 
 /// A record planted on the `after` image that the scan must detect. Missing it
 /// means the scan cannot see a trace it should, so no clean verdict is trusted.
+/// It counts as detected only when `before` and the control cycle lack it, so
+/// a value the baseline already carries can never stand in for the planted one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PositiveControl {
@@ -243,6 +287,16 @@ mod tests {
         assert_eq!(scans.image(ImageLabel::Before), &one("/before"));
         assert_eq!(scans.image(ImageLabel::Control), &one("/control"));
         assert_eq!(scans.image(ImageLabel::After), &one("/after"));
+    }
+
+    #[test]
+    fn only_the_restore_channel_reports_one_entry_per_path() {
+        // The verdict compares the restore channel path by path and the other
+        // channels finding by finding: a wrong answer would weigh a file's
+        // records as one value, or a file's content as a set of records.
+        assert!(Tool::BtrfsRestore.one_entry_per_path());
+        assert!(!Tool::BulkExtractor.one_entry_per_path());
+        assert!(!Tool::Plaso.one_entry_per_path());
     }
 
     #[test]

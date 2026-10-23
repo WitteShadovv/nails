@@ -1,20 +1,15 @@
 {
-  "_comment": "Cited allowlist for the NAILS forensic oracle. Each entry names one specific location that is expected to differ in the 'after' image and exactly one residue-catalog id (or threat-model doc anchor, '<file>.md#<anchor>') that explains why. The oracle rejects an entry that cites nothing, cites an unknown row, names a whole top-level directory or system subtree (e.g. /var, /var/lib, /nix, /nix/store), uses a glob, or sits outside the cited row's own channel. A bulk_extractor feature entry must set 'field' to the exact value. There is deliberately no wholesale var/ or nix/ exemption: those are where residue lands, so they are scanned, not skipped. The oracle prints the cited row's own risk and mitigation to justify each kept difference.",
+  "_comment": "Cited allowlist for the NAILS forensic oracle. Each entry names one exact location that is expected to differ in the 'after' image and exactly one residual residue-catalog id (or a threat-model doc anchor '<file>.md#<anchor>' that a residual row points at) that explains why. An entry covers its exact path only, never anything beneath it, and without a 'field' only the restore channel's entry at that path; a record or a feature is covered only by naming its exact value in 'field'. 'removed': true covers the entry's removal from 'after' instead of its arrival or change. The oracle rejects an entry that cites nothing, cites an unknown row, cites a row that is not residual (a trace the overlay must prevent, which is a leak when it shows), names a whole top-level directory or system subtree (e.g. /var, /var/lib, /nix, /nix/store), uses a glob, or sits outside the cited row's own channel. Whatever a plain reboot also changes is subtracted by the control cycle and needs no entry. The oracle prints the cited row's own risk and mitigation to justify each kept difference.",
   "entries": [
-    {
-      "path": "/var/lib/nixos",
-      "cite": "var-lib-nixos",
-      "note": "The decoy rewrites the declarative user and id maps on every boot; the content varies run to run, so it escapes control-cycle subtraction yet is not a leak."
-    },
     {
       "path": "/var/lib/systemd/timesync/clock",
       "cite": "timesync-clock",
-      "note": "timesyncd stamps this file at every sync and at shutdown; a known info-level time residual, not a trace of the hidden session."
+      "note": "timesyncd creates this file at its first sync and stamps its time at every sync and at shutdown. The oracle compares the file's presence and content, which stays empty, not its time, so this covers only the file first appearing in 'after'."
     },
     {
-      "path": "/var/lib/systemd/timers",
+      "path": "/var/lib/systemd/timers/stamp-fstrim.timer",
       "cite": "timer-stamps",
-      "note": "Persistent-timer stamp files move with ordinary timer activity."
+      "note": "The stamp of the decoy's own weekly fstrim.timer (Persistent=true), which a catch-up run at the decoy's next boot can create. A stamp of any other timer under /var/lib/systemd/timers, one only the hidden system runs, is a leak and is not covered."
     }
   ]
 }

@@ -14,14 +14,13 @@
 # self-check collapses across the images and subtracts away.
 #
 # What 'after' adds, and nothing else:
-#   - one e-mail-shaped sentinel appended in place to each of three baseline
-#     carriers (a wtmpdb login row, a lastlog2 row, a pacman history line), each
-#     carrying a unique reserved @oracle.example address. bulk_extractor carves
-#     the address from the raw image bytes with no format-aware parser, so each
-#     surfaces as an exact (bulk_extractor, email, <address>) finding that the
-#     ci/oracle/controls.json positive controls pin. The carrier files already
-#     exist on before/control with baseline content, so only the address is new
-#     and the file paths are unchanged.
+#   - three reserved @oracle.example addresses in the unallocated space past
+#     the end of its filesystem: each image file is one MiB longer than the
+#     filesystem in it, a tail no file covers and before/control leave zero.
+#     No file, path or record changes. bulk_extractor reads the whole image,
+#     unallocated space included, and carves each address with no format-aware
+#     parser, so each surfaces as an exact (bulk_extractor, email, <address>)
+#     finding that the ci/oracle/controls.json positive controls pin.
 # A coverage canary (a reserved @oracle.example address, rotatable per run via
 # ORACLE_CANARY) is planted on every image at an otherwise-uncovered path, so
 # finding it proves the scan read the image.
@@ -47,14 +46,15 @@ out=$(cd "$out" && pwd)
 mnt="$out/.mnt"
 
 # Deterministic knobs; every default is overridable so the scan can rotate the
-# canary and the sentinels per run without editing this script.
+# canary per run without editing this script.
 IMG_SIZE=${IMG_SIZE:-512M}
 CONTACTS=${ORACLE_CONTACTS:-300}
 LOGLINES=${ORACLE_LOGLINES:-500}
 CANARY=${ORACLE_CANARY:-canary@oracle.example}
-WTMP_SENTINEL=${ORACLE_WTMP_SENTINEL:-wtmpdb-boot@oracle.example}
-LASTLOG_SENTINEL=${ORACLE_LASTLOG_SENTINEL:-lastlog2@oracle.example}
-PKG_SENTINEL=${ORACLE_PKG_SENTINEL:-pkg-history@oracle.example}
+# The positive-control sentinels, as ci/oracle/controls.json pins them.
+SENTINELS=(unallocated-1@oracle.example unallocated-2@oracle.example unallocated-3@oracle.example)
+# The unallocated tail past the filesystem's end, where 'after' carries them.
+TAIL=$((1024 * 1024))
 FS_UUID=${ORACLE_FS_UUID:-0a0a0a0a-0b0b-0c0c-0d0d-0e0e0e0e0e0e}
 FS_LABEL=${ORACLE_FS_LABEL:-decoy}
 STAMP="${ORACLE_STAMP:-2026-01-01 00:00:00 +0000}"
@@ -75,7 +75,7 @@ mkdir -p "$mnt"
 populate_base() {
   local r=$1 i
   mkdir -p \
-    "$r/etc" "$r/home/user/docs" "$r/var/log" "$r/var/lib/lastlog" \
+    "$r/etc" "$r/home/user/docs" "$r/var/log" \
     "$r/var/lib/nixos" "$r/var/lib/systemd/timesync" "$r/var/lib/systemd/timers" \
     "$r/var/lib/nails-oracle"
 
@@ -104,63 +104,44 @@ EOF
   done >>"$r/var/log/app.log"
 
   # Representative decoy residue paths. Identical on every image, so the control
-  # subtraction removes them; on a real image they are what the cited allowlist
-  # entries (var-lib-nixos, timesync-clock, timer-stamps) vouch for.
+  # subtraction removes them; on a real image only a plain reboot or a cited
+  # residual entry (timesync-clock, timer-stamps) accounts for a change there.
   printf 'user:1000\n' >"$r/var/lib/nixos/declarative-users"
   printf '1000 1000\n' >"$r/var/lib/nixos/uid-map"
-  printf 'clock\n' >"$r/var/lib/systemd/timesync/clock"
-  printf 'stamp\n' >"$r/var/lib/systemd/timers/stamp-logrotate.timer"
-
-  # Baseline login/boot and package carriers, with no reserved oracle address.
-  # On 'after', apply_after_changes appends one sentinel line to each in place.
-  cat >"$r/var/log/wtmp.db" <<'EOF'
-# synthetic wtmpdb login/boot carrier
-boot	~	localhost	2026-01-01T00:00:00+00:00
-login	root	localhost	2026-01-01T00:01:00+00:00
-login	user	localhost	2026-01-01T00:02:00+00:00
-EOF
-  cat >"$r/var/lib/lastlog/lastlog2.db" <<'EOF'
-# synthetic lastlog2 last-login carrier
-root	pts/0	localhost	2026-01-01T00:01:00+00:00
-user	tty1	localhost	2026-01-01T00:02:00+00:00
-EOF
-  cat >"$r/var/log/pacman.log" <<'EOF'
-[2026-01-01T00:00:00+0000] [PACMAN] Running 'pacman -Syu'
-[2026-01-01T00:00:01+0000] [ALPM] installed base (3.0-1)
-[2026-01-01T00:00:02+0000] [ALPM] installed coreutils (9.5-1)
-EOF
+  : >"$r/var/lib/systemd/timesync/clock"
+  : >"$r/var/lib/systemd/timers/stamp-logrotate.timer"
 
   # Coverage canary on every image (rotatable via ORACLE_CANARY).
   printf '# NAILS forensic-oracle coverage canary (synthetic)\ncanary address: %s\n' \
     "$CANARY" >"$r/var/lib/nails-oracle/canary.txt"
 }
 
-# apply_after_changes <root>: the only differences the 'after' image carries.
-# Each sentinel is a reserved @oracle.example address in a text field, appended
-# in place so the carrier's path is unchanged and only the address is new.
-apply_after_changes() {
-  local r=$1
-  printf 'login\tnails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
-    "$WTMP_SENTINEL" >>"$r/var/log/wtmp.db"
-  printf 'nails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
-    "$LASTLOG_SENTINEL" >>"$r/var/lib/lastlog/lastlog2.db"
-  printf '[2026-01-01T00:05:00+0000] [ALPM] installed nails-oracle-marker (%s)\n' \
-    "$PKG_SENTINEL" >>"$r/var/log/pacman.log"
+# plant_after_sentinels <image-path> <filesystem-bytes>: the only difference the
+# 'after' image carries. Each sentinel is a reserved @oracle.example address,
+# written on its own 4 KiB block of the unallocated tail past the filesystem's
+# end, so no file, path or record changes and only the carved address is new.
+plant_after_sentinels() {
+  local img=$1 fs_bytes=$2 i
+  for i in "${!SENTINELS[@]}"; do
+    printf 'nails-oracle positive control: %s\n' "${SENTINELS[$i]}" |
+      dd of="$img" oflag=seek_bytes seek="$((fs_bytes + i * 4096))" conv=notrunc status=none
+  done
 }
 
 # make_one_image <image-path> <label>
 make_one_image() {
-  local img=$1 label=$2
+  local img=$1 label=$2 fs_bytes
   rm -f "$img"
   truncate -s "$IMG_SIZE" "$img"
-  mkfs.btrfs -f -m single -d single -U "$FS_UUID" -L "$FS_LABEL" "$img" >/dev/null
+  fs_bytes=$(($(stat -c %s "$img") - TAIL))
+  mkfs.btrfs -f -m single -d single -b "$fs_bytes" -U "$FS_UUID" -L "$FS_LABEL" "$img" >/dev/null
   mount -o loop "$img" "$mnt"
   populate_base "$mnt"
-  if [ "$label" = after ]; then apply_after_changes "$mnt"; fi
   # Fixed mtimes so the tree is deterministic regardless of build order.
   find "$mnt" -depth -exec touch -h -d "$STAMP" {} +
   sync
   umount "$mnt"
+  if [ "$label" = after ]; then plant_after_sentinels "$img" "$fs_bytes"; fi
   printf '  built %-8s -> %s\n' "$label" "$img" >&2
 }
 

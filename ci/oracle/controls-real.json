@@ -1,26 +1,26 @@
 {
-  "_comment": "Scan self-checks for the NAILS forensic oracle in REAL-image mode (ORACLE_IMAGES_DIR). run-scan.sh selects this file instead of controls.json when scanning the before/control/after.raw the e2e disk-forensics harness retained (nix/e2e-tests/tests/forensic/13-oracle-images.nix). The three positive controls are @oracle.example addresses that run-scan.sh injects, in place, into the baseline carrier files on a THROWAWAY working copy of after.raw only (before.raw, control.raw and the retained after.raw are never modified); the carrier files themselves (/var/log/wtmp.db, /var/lib/lastlog/lastlog2.db, /var/log/pacman.log) were planted address-free on the decoy before the baseline snapshot, so they are present on all three images and only the injected address is new. bulk_extractor carves each address from the raw image bytes with no format-aware parser, so each surfaces at the exact (bulk_extractor, email, <address>) key pinned below -- the same addresses the synthetic controls.json uses, so the pins are reusable. The canary is the reserved address the e2e spec plants at /var/lib/nails-oracle/canary on every image; bulk_extractor carves it the same way, so its scan key is (bulk_extractor, email, canary@oracle.example). Because the canary is fixed at e2e time, run-scan.sh does NOT rotate it in this mode. Keep these in step with what forensic/13 plants and what run-scan.sh injects.",
+  "_comment": "Scan self-checks for the NAILS forensic oracle in REAL-image mode (ORACLE_IMAGES_DIR). run-scan.sh selects this file instead of controls.json when scanning the before/control/after.raw the e2e disk-forensics harness retained (nix/e2e-tests/tests/forensic/13-oracle-images.nix). The three positive controls are reserved @oracle.example addresses that run-scan.sh writes into a THROWAWAY working copy of after.raw only (before.raw, control.raw and the retained after.raw are never modified), each into its own unallocated block of the copy's ext4 filesystem that holds nothing but zeros, byte by byte and with no mount. So no file, path or record changes, nothing after.raw holds is overwritten, and only the carved address is new. bulk_extractor reads the whole image, free space included, and carves each address with no format-aware parser, at the exact (bulk_extractor, email, <address>) key pinned below -- the same addresses the synthetic controls.json uses. A control counts as detected only when 'after' carries it and before and control do not. This proves the channel that reads free space sees a string planted there, the class a leaked-then-deleted trace falls in. The canary is the reserved address the e2e spec plants at /var/lib/nails-oracle/canary on every image; bulk_extractor carves it the same way, so its scan key is (bulk_extractor, email, canary@oracle.example). Because the canary is fixed at e2e time, run-scan.sh does NOT rotate it in this mode. Keep these in step with what forensic/13 plants and what run-scan.sh injects.",
   "positive_controls": [
     {
-      "name": "wtmpdb-boot",
+      "name": "unallocated-1",
       "tool": "bulk_extractor",
       "path": "email",
-      "field": "wtmpdb-boot@oracle.example",
-      "note": "Injected as the remote-host text column of a wtmpdb login row appended to /var/log/wtmp.db on the after working copy."
+      "field": "unallocated-1@oracle.example",
+      "note": "Written into a zero-filled free block of the after working copy, about a quarter into its filesystem."
     },
     {
-      "name": "lastlog2",
+      "name": "unallocated-2",
       "tool": "bulk_extractor",
       "path": "email",
-      "field": "lastlog2@oracle.example",
-      "note": "Injected as the remote-host text column of a lastlog2 row appended to /var/lib/lastlog/lastlog2.db on the after working copy."
+      "field": "unallocated-2@oracle.example",
+      "note": "Written into a zero-filled free block of the after working copy, about half way into its filesystem."
     },
     {
-      "name": "pkg-history",
+      "name": "unallocated-3",
       "tool": "bulk_extractor",
       "path": "email",
-      "field": "pkg-history@oracle.example",
-      "note": "Injected as a comment in a pacman history line appended to /var/log/pacman.log on the after working copy."
+      "field": "unallocated-3@oracle.example",
+      "note": "Written into a zero-filled free block of the after working copy, about three quarters into its filesystem."
     }
   ],
   "canary": {
