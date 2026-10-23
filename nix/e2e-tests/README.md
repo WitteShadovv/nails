@@ -423,9 +423,11 @@ weekly and on demand, never on the gate.
 
 - `soak-reentry`: takes one VM through hundreds of activate/deactivate cycles in
   a single boot, beside neighbour VMs that cycle on their own, and asserts every
-  re-entry reaches the hidden root's backdoor within the deadline and the decoy
-  stays clean. It keeps the soft-reboot re-entry hang closed, which only paired,
-  repeated activations under parallel-VM host load ever exposed.
+  re-entry reaches the hidden root's backdoor within the deadline. Every 25
+  cycles, and after the last, it checks that each canary the hidden sessions
+  wrote so far is in the upper and that none of them reached the decoy disk.
+  It keeps the soft-reboot re-entry hang closed, which only paired, repeated
+  activations under parallel-VM host load ever exposed.
 
 ## Research spikes (`tests/research/`)
 
