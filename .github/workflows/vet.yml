@@ -1,0 +1,62 @@
+name: Vet
+
+# A non-blocking supply-chain lane. cargo-vet checks that every third-party
+# crate in the dependency graph is covered either by an imported public audit
+# (the Bytecode Alliance, Mozilla, Google, Embark, ISRG and Zcash audit sets,
+# recorded in supply-chain/config.toml) or by a recorded exemption under
+# supply-chain/. It never gates the merge: the single required status is
+# ci.yml's `gate`, and this lane is deliberately kept out of it, so a new
+# dependency that is not yet audited surfaces here as a red advisory run
+# without blocking the change. Adopting cargo-vet on more of the graph means
+# replacing exemptions with audits over time, not turning this lane into a gate.
+#
+# --locked uses the committed supply-chain/imports.lock, so the result is
+# reproducible and never drifts with an upstream audit update between runs.
+
+on:
+  pull_request:
+    branches: [main, next]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "flake.lock"
+      - "supply-chain/**"
+      - ".github/workflows/vet.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vet-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  vet:
+    name: vet
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # cargo-vet reads the graph through `cargo metadata`.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      # cargo-vet comes from the flake's pinned nixpkgs, the same build the dev
+      # shell uses and the one that writes supply-chain/imports.lock. The
+      # install-action manifest stops at 0.10.0, which cannot parse the
+      # trusted-publisher entries newer releases record.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Audit the dependency graph
+        run: nix shell --inputs-from . nixpkgs#cargo-vet nixpkgs#just --command just vet
