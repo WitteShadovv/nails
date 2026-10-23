@@ -150,16 +150,10 @@ impl Rehearsal {
     /// The live hidden session this runs in, from the live mount table and plan;
     /// `None` outside one.
     fn live_session(&self) -> Option<LiveSession> {
-        match crate::session::probe(
+        live_session_of(crate::session::probe(
             &crate::session::Paths::system(),
             &self.config.hidden_volume_root,
-        ) {
-            SessionView::Hidden(plan) => Some(LiveSession {
-                entered_at: plan.entered_at,
-            }),
-            SessionView::HiddenWithoutPlan(_) => Some(LiveSession { entered_at: None }),
-            _ => None,
-        }
+        ))
     }
 
     fn load(&self) -> Result<Option<RehearsalState>, String> {
@@ -286,10 +280,7 @@ impl Rehearsal {
             env: Some(&operator_env),
             host_channels: true,
         });
-        if !channels
-            .iter()
-            .any(|c| c.planted() && c.kind == rehearse::ChannelKind::OverlayFile)
-        {
+        if nothing_planted(&channels) {
             return Err(PlantError::Fail(RehearseFailure::new(
                 ExitStatus::InvalidState,
                 "nothing_planted",
@@ -476,6 +467,31 @@ impl Rehearsal {
         let hidden = root.canonicalize().unwrap_or_else(|_| root.clone());
         Ok(rehearse::default_scan_targets(&mounts, &swaps, &hidden))
     }
+}
+
+/// The live hidden session in `view`, `None` outside one. A hidden root whose
+/// plan cannot be read is still a live session, one with no entry time, so a
+/// scan there is refused as in the planting session and a reset is refused as
+/// in any session, rather than either reading it as the decoy.
+fn live_session_of(view: SessionView) -> Option<LiveSession> {
+    match view {
+        SessionView::Hidden(plan) => Some(LiveSession {
+            entered_at: plan.entered_at,
+        }),
+        SessionView::HiddenWithoutPlan(_) => Some(LiveSession { entered_at: None }),
+        _ => None,
+    }
+}
+
+/// Whether no overlaid tree took the canary. The canary file in an overlay
+/// whose upper is on the hidden volume is what shows the session's writes
+/// stayed off the decoy's disk; with only the other channels planted (the
+/// home, the log, a process) a scan could prove nothing, so the plant is
+/// refused.
+fn nothing_planted(channels: &[rehearse::ChannelRecord]) -> bool {
+    !channels
+        .iter()
+        .any(|c| c.planted() && c.kind == rehearse::ChannelKind::OverlayFile)
 }
 
 /// Whether a scan must be refused: it would read the disks from the hidden
@@ -800,5 +816,110 @@ mod tests {
             false
         ));
         assert!(!refuses_same_session(None, &in_session(100), false, false));
+    }
+
+    /// A plan for the live-session view, entered at `entered_at`.
+    fn plan(entered_at: u64) -> Box<nails_teardown::whole_root::plan::Plan> {
+        use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
+        let json = serde_json::json!({
+            "version": PLAN_VERSION,
+            "hidden_root": "/mnt/data",
+            "upper": "/mnt/data/root/upper",
+            "work": "/mnt/data/root/work",
+            "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+            "decoy": {"init": "/sbin/init"},
+            "hidden": {"init": "/sbin/init"},
+            "entered_at": entered_at,
+        });
+        Box::new(Plan::from_json(&json.to_string()).expect("a minimal plan"))
+    }
+
+    #[test]
+    fn a_hidden_root_is_a_live_session_with_its_entry_time() {
+        assert_eq!(
+            live_session_of(SessionView::Hidden(plan(100))),
+            Some(LiveSession {
+                entered_at: Some(100)
+            })
+        );
+    }
+
+    /// A hidden root whose `/run` plan cannot be read is still a live session:
+    /// read as the decoy, a scan there would read the disks before the
+    /// session's writes reach them and a reset would change the uppers under
+    /// the mounted overlay.
+    #[test]
+    fn a_hidden_root_without_its_plan_is_still_a_live_session() {
+        let session = live_session_of(SessionView::HiddenWithoutPlan(
+            "no session plan in /run (upper /mnt/data/root/upper)".to_string(),
+        ));
+        assert_eq!(session, Some(LiveSession { entered_at: None }));
+
+        // A canary planted there, in this boot: the scan is refused.
+        let state = RehearsalState {
+            planted_entered_at: None,
+            ..planted()
+        };
+        let here = Here {
+            session,
+            boot_id: Some("b1".to_string()),
+            soft_reboots: None,
+        };
+        assert!(refuses_same_session(Some(&state), &here, false, false));
+    }
+
+    #[test]
+    fn the_decoy_and_an_entry_under_way_are_no_live_session() {
+        assert_eq!(live_session_of(SessionView::Decoy), None);
+        assert_eq!(live_session_of(SessionView::Entering(plan(100))), None);
+        assert_eq!(
+            live_session_of(SessionView::Interrupted {
+                plan: Some(plan(100)),
+                nextroot_mounted: true,
+            }),
+            None
+        );
+    }
+
+    /// A channel record of `kind`, planted or skipped.
+    fn channel(kind: rehearse::ChannelKind, planted: bool) -> rehearse::ChannelRecord {
+        rehearse::ChannelRecord {
+            kind,
+            location: "/somewhere".to_string(),
+            upper_copy: None,
+            skipped: (!planted).then(|| "not planted".to_string()),
+        }
+    }
+
+    /// A plant that no overlaid tree took is refused, however many of the
+    /// other channels took the canary: a scan of the log, a process or the
+    /// home alone could prove nothing.
+    #[test]
+    fn a_plant_without_an_overlay_file_is_nothing_planted() {
+        use rehearse::ChannelKind::{
+            HomeFile, Notification, OverlayFile, ProcessCmdline, RecentFiles, SystemLog,
+        };
+        assert!(nothing_planted(&[]));
+        assert!(nothing_planted(&[
+            channel(OverlayFile, false),
+            channel(HomeFile, true),
+            channel(RecentFiles, true),
+            channel(SystemLog, true),
+            channel(ProcessCmdline, true),
+            channel(Notification, true),
+        ]));
+    }
+
+    /// One overlaid tree that took the canary is enough, whatever else was
+    /// skipped.
+    #[test]
+    fn a_plant_with_an_overlay_file_is_planted() {
+        use rehearse::ChannelKind::{HomeFile, OverlayFile, SystemLog};
+        assert!(!nothing_planted(&[
+            channel(OverlayFile, false),
+            channel(OverlayFile, true),
+            channel(HomeFile, false),
+            channel(SystemLog, false),
+        ]));
     }
 }
