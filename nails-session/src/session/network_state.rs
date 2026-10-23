@@ -33,7 +33,16 @@ pub fn record(
     out: &Path,
 ) {
     let record = NetworkRecord::capture(sys_class_net, proc_hostname, etc_hostname, run);
-    if write_private_atomic(out, &record.encode()).is_err() {
+    write_record(out, &record.encode(), write_private_atomic);
+}
+
+/// Write `bytes` to `out` with `write`; on failure remove any file at `out`,
+/// so a stale record from a PRIOR successful write is never left behind for
+/// the way back to read and apply as a (now wrong) network identity. The
+/// writer is a parameter so a test can inject a failure with a stale file in
+/// place; production always passes [`write_private_atomic`].
+fn write_record(out: &Path, bytes: &[u8], write: impl Fn(&Path, &[u8]) -> std::io::Result<()>) {
+    if write(out, bytes).is_err() {
         let _ = std::fs::remove_file(out);
     }
 }
