@@ -367,7 +367,7 @@ has the whole catalog.
 | [Hidden kernel records imported by the decoy journal](#residual-channels) | Records logged after the hidden journald stopped (PID 1's stop lines, a late /dev/kmsg writer) would be imported by the decoy journal, on disk with a persistent journal. | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `journal-scan` |
 | [Network state the hidden session created or changed](operator-guide.md#how-it-works) | The clean way back now restores this before the switch: it deletes the virtual links the hidden session created, sets each device's MAC back where the session changed it (taking the device down for the change when its driver refuses it while the device is up), restores the hostname on a decoy without /etc/hostname, and puts the per-link NetworkManager and systemd-resolved state under /run back as it was at entry. A normal return therefore leaves none of these on the decoy but a MAC address the way back still cannot set back, which stays on its device until power-off, and the decoy's NetworkManager does not adopt a session link or record a profile for it in /var/lib/NetworkManager/timestamps. The residue can still remain after an exit that does not run the clean way back, such as an emergency that does not power off. | A clean `deactivate` now restores the decoy's network state on its own, so the links, MAC and hostname a session changed no longer need taking down by hand. End an emergency with `emergency --poweroff`, which powers off before the decoy's NetworkManager starts, so nothing a session changed can linger. | none: a link the decoy adopted looks like one the decoy made itself |
 | [Soft-reboot counter and boot ID](#residual-channels) | Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. | Power off after the session; keep the decoy journal volatile. | none: RAM only, gone at power-off |
-| [Login and boot records around a switch](#residual-channels) | A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian with wtmpdb the boot row would be named soft-reboot; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Both are entries ordinary use never writes. On every family the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low. | On Debian and Ubuntu the way back keeps the wtmpdb boot writer from recording soft-reboot and corrects a backdated classic-wtmp boot record to the time the decoy came back, without masking either writer, so no row goes missing and the login and boot records read as one clean power cycle. The process numbers of the records written after the way back still continue from the decoy's boot on every family, a weaker tell a later release addresses; power off after the session to leave none of it. | none: the records are the decoy's own; the remaining process-number difference needs a cold-boot baseline to judge |
+| [Login and boot records around a switch](#residual-channels) | A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian 13 with wtmpdb the boot row would be named soft-reboot, or, with the writer kept from the system bus before the kernel has been up for five minutes, dated to the decoy's cold boot, which wtmpdb last lists as a crash; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Ordinary use writes none of these. Where the decoy keeps classic wtmp, the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low; they stay in the file on the decoy disk, next to the low numbers of every earlier boot. | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. The Debian 13 path has not yet been verified in a VM: until a release says it has, end Debian 13 sessions with deactivate --poweroff. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. The process numbers of the records written after the way back still continue from the decoy's boot; only ending the session with --poweroff, which has no way back, leaves none of them. | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran |
 | [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) | Anyone with a shell sees with findmnt that the decoy's root and the mounts its initrd made (such as the store bind) were made again after the boot, where a plain soft-reboot keeps them. A mount made after the boot by hand or by a service comes back as well, where a plain soft-reboot unmounts it. A decoy mount the way back cannot make again (a filesystem that another mount covers at a place the session carries, NixOS's /etc overlay) is missing until it is mounted again. | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | none: RAM only, gone at power-off |
 | [EFI NVRAM, RTC and firmware pstore](#invariant) | These are not filesystem writes, so the overlay cannot redirect them; other software in the session can write them. | NAILS never writes NVRAM; avoid firmware tools inside the session. | none: EFI variables and firmware storage are not part of a disk image |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) | RAM holds hidden-session data until the machine is powered off; a warm reboot does not clear it. | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | `memory-swap` |
@@ -431,25 +431,50 @@ no drift remains.
 **Login and boot records: one clean power cycle, bar the process numbers.**
 
 A session reaches the decoy again through a soft-reboot, and the decoy's own
-boot writers record that start. On Debian the wtmpdb boot writer names the boot
-row `soft-reboot` when the service manager reports one; on a service manager
-that keeps the userspace start time across a soft-reboot (systemd 255 and
-earlier, as on Ubuntu 24.04), the classic-wtmp boot record carries the decoy's
-first boot time, so the file holds a boot stamped before the shutdown that
-precedes it. Neither is written by an ordinary power cycle.
+boot writers record that start. On Debian 13 the wtmpdb boot writer names the
+boot row `soft-reboot` when the service manager reports a soft-reboot. When it
+cannot ask, it still does once the kernel has been up for five minutes, and
+before that it dates a `reboot` row to the decoy's cold boot, which `wtmpdb
+last` then lists as a crash. On a service manager that keeps the userspace start
+time across a soft-reboot (systemd 255 and earlier, as on Ubuntu 24.04), the
+classic-wtmp boot record carries the decoy's first boot time, so the file holds
+a boot stamped before the shutdown that precedes it. An ordinary power cycle
+writes none of this.
 
-The way back neutralises both without masking a writer, so no shutdown row goes
-missing: it keeps the wtmpdb boot writer from recording `soft-reboot` (the
-writer falls back to `reboot`) and corrects a backdated classic-wtmp boot record
-to the time the decoy came back. After a full session the decoy's login and boot
-records then read as a shutdown and a later boot, one clean power cycle. The
-cross-distro login- and boot-record test under `nix/distro-tests` asserts this
-against a power-cycle control on the affected families.
+The way back dates the decoy's start with the time of the switch, read from the
+kernel's boot clock just before it, and neutralises both without masking a
+writer, so no shutdown row goes missing. It starts the wtmpdb boot writer in a
+time namespace whose boot clock starts at the switch, kept from the system bus:
+the writer takes its fallback, finds an uptime of seconds and itself writes the
+`reboot` row a power cycle writes, stamped with the time of the switch. The word
+`soft-reboot` never reaches the disk, and the database holds what one insert
+leaves. A decoy that changes the writer's unit with a file of its own, or runs a
+kernel older than Linux 6.2, gets its writer as it is, which records the
+soft-reboot. A backdated classic-wtmp boot record is corrected in place to the
+same time, before anyone can log in, without updating the file's access time.
+After a full session the decoy's login and boot records then read as a shutdown
+and a later boot, one clean power cycle. The cross-distro login- and boot-record
+test under `nix/distro-tests` checks this on Debian 13 and Ubuntu 24.04 against
+a power cycle with the record writers installed, with the way back past five
+minutes of uptime. The Debian 13 path has not yet been verified in a VM: until
+a release says it has, end Debian 13 sessions with `nails deactivate
+--poweroff` (or `nails emergency --poweroff`).
 
-One weaker difference is left for a later release: the getty and login records
-written after the way back carry process numbers that continue from the decoy's
-boot, where a fresh kernel would start them low. Noticing it needs a cold-boot
-baseline, and it is gone at the next real power-off.
+What does this lives in `/run` and leaves traces in RAM only, until the next
+power-off. The decoy's journal shows a one-shot unit,
+`overlay-runtime-boot.service`, start and finish, and `systemctl status` shows
+it and the wtmpdb writer's unit loaded from files that are gone, the writer's
+unit with the start command and the drop-in the way back gave it. `nails
+verify` reports any of the pieces still in `/run` when their step never ran.
+
+One difference is left. Where the decoy keeps classic wtmp (Ubuntu 24.04 and
+NixOS do), the getty and login records written after the way back carry process
+numbers that continue from the decoy's boot, where a fresh kernel starts them
+low. These records are written to the decoy disk and stay after any later
+power-off, next to the low numbers of every earlier boot in the same file, so
+the file itself holds the baseline that sets them apart. wtmpdb keeps no process
+numbers. Only a session ended with `deactivate --poweroff` (or `emergency
+--poweroff`), which has no way back, leaves none of it.
 
 ## Evaluation scope
 
