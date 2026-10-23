@@ -394,11 +394,12 @@ journal that starts late:
   and puts the per-link NetworkManager and systemd-resolved state below `/run`
   back as it was at entry. The decoy's NetworkManager therefore does not adopt
   a session link as connected externally or record a profile for it in
-  `/var/lib/NetworkManager/timestamps` on the decoy disk. The residue remains
-  only after an exit that does not run the clean way back, such as an emergency
-  that does not power off. End such a session with `emergency --poweroff`, which
-  powers off before the decoy's NetworkManager starts, so nothing the session
-  changed can linger.
+  `/var/lib/NetworkManager/timestamps` on the decoy disk. A plain `emergency`
+  leaves none of it either: by default it returns through the same clean way
+  back and restores the network just as `deactivate` does, and the variants
+  that end otherwise (`--poweroff`, `--reboot`, or a degraded reboot) power off
+  or reboot instead, where the decoy's NetworkManager starts fresh and nothing
+  the session changed lingers.
 - on a volatile decoy, a journal that starts at the return. The way back
   deletes the runtime journal the decoy shared with the hidden session, so the
   decoy's own records from before the session (the activation's sudo line, the
@@ -1201,9 +1202,10 @@ global VPN-autoconnect switch, so disable it per profile with `nmcli connection
 modify <vpn> connection.autoconnect no`. The clean way back now undoes what the
 snippet changed on the running system: it sets the random MAC address back on
 the decoy's device and restores the hostname on a decoy without
-`/etc/hostname`, so a normal `deactivate` leaves neither on the decoy. Either
-can remain only after an emergency that does not power off, so end such a
-session with `emergency --poweroff`.
+`/etc/hostname`, so a normal `deactivate` leaves neither on the decoy. A plain
+`emergency` restores them the same way, returning through the clean way back by
+default; `--poweroff` and `--reboot` power off or reboot instead, where the
+decoy starts fresh. Neither the MAC nor the hostname lingers on the decoy.
 
 ### Network anonymity and Tor
 
