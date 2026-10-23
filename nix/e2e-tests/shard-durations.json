@@ -49,6 +49,7 @@
   "session-nixos-hidden-system": 193,
   "session-nixos-store-gc": 325,
   "session-readme-captures": 20,
+  "session-refused-switch": 45,
   "session-sleep-guard": 72,
   "shell-history-fish": 31,
   "shell-history-zsh": 34,
