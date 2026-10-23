@@ -6,13 +6,15 @@
 //! Activation runs on the decoy and prepares the whole-root session: the
 //! pre-flight checks, the hidden NixOS configuration (built into the next
 //! root's store), the overlay at `/run/nextroot` and the armed plan. It prints
-//! its result and then enqueues the soft-reboot, which stops every program of
-//! the decoy and starts the hidden userspace inside the overlay: the operator
-//! is logged out and logs in again at the hidden session's login screen (a
+//! its result and enqueues the soft-reboot, which stops every program of the
+//! decoy and starts the hidden userspace inside the overlay: the operator is
+//! logged out and logs in again at the hidden session's login screen (a
 //! display manager set to log an account in automatically logs it in again, as
 //! at boot; NAILS logs nobody in). As its last step it SIGKILLs the decoy's
 //! interactive shells, so none of them writes the activation command to its
-//! history file on the decoy disk.
+//! history file on the decoy disk. A person reads the result before that last
+//! step, which ends the terminal; under `--json` the one envelope follows it,
+//! so it reports whether the soft-reboot was enqueued.
 
 use crate::cli::args::ActivateArgs;
 use crate::cli::output::envelope::{ErrorBody, report_error};
@@ -22,6 +24,7 @@ use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
 use nails_core::app::activate::{self, ActivateOptions, Prepared, ReadyActivation};
 use nails_core::hidden_root::Refusal;
 use nails_core::manager::EnterOutcome;
+use nails_core::session::Entry;
 use nails_core::{CliOverrides, NailsError, Verbosity};
 use std::io::IsTerminal;
 use std::time::Instant;
@@ -274,19 +277,41 @@ pub fn execute(
             };
         }
     };
-    // The time the state file records, which `status` shows as well.
-    print_result(
-        settings,
-        &ActivateResult::Entering(&entry),
-        elapsed.as_secs_f64(),
-    );
-    crate::cli::output::flush_stdio();
-
     // The point of no return: kill the decoy's shells so none writes the
-    // activation command to its history, then enqueue the soft-reboot.
-    // Everything above is already on the terminal; a failure below still
-    // reaches the log.
-    if let Err(error) = ready.commit(&entry) {
+    // activation command to its history, then enqueue the soft-reboot. The
+    // time reported is the one the state file records, which `status` shows
+    // as well.
+    let status = commit_and_report(settings, &entry, elapsed.as_secs_f64(), || {
+        ready.commit(&entry)
+    });
+    drop(_state_lock);
+    status
+}
+
+/// Commit the prepared `entry` with `commit` and report it, returning the
+/// status to exit with.
+///
+/// A person reads the result before the commit, which kills the decoy's
+/// shells and ends the terminal: the lines come first, and a failure to
+/// enqueue the soft-reboot follows them on stderr. Under `--json` the one
+/// envelope reports the outcome instead, so it is printed only once the
+/// soft-reboot is enqueued: a failure is the only envelope, never one after a
+/// success. The process outlives the commit long enough to print it, since a
+/// mutating command catches SIGTERM and ignores SIGHUP, but a reader the
+/// switch stops first may not read it.
+fn commit_and_report(
+    settings: &OutputSettings,
+    entry: &Entry,
+    elapsed: f64,
+    commit: impl FnOnce() -> Result<(), NailsError>,
+) -> ExitStatus {
+    let json = settings.is_json();
+    let result = ActivateResult::Entering(entry);
+    if !json {
+        print_result(settings, &result, elapsed);
+        crate::cli::output::flush_stdio();
+    }
+    if let Err(error) = commit() {
         return report_error(
             json,
             "activate",
@@ -295,7 +320,10 @@ pub fn execute(
                 .with_hint("the next root was removed again; nothing changed"),
         );
     }
-    drop(_state_lock);
+    if json {
+        print_result(settings, &result, elapsed);
+        crate::cli::output::flush_stdio();
+    }
     if entry.warnings.is_empty() {
         ExitStatus::Ok
     } else {

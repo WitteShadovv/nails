@@ -3,7 +3,9 @@
 
 use super::execute;
 use crate::cli::args::ActivateArgs;
-use crate::cli::output::OutputSettings;
+use crate::cli::output::test_support::{envelope, stdout_lines};
+use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
+use nails_core::NailsError;
 use std::path::PathBuf;
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::activate::tests::subprocess_activate_entrypoint";
@@ -11,7 +13,7 @@ const SUBPROCESS_TEST_NAME: &str = "cli::commands::activate::tests::subprocess_a
 fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::process::Output {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
-        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture", "--quiet"])
         .env("NAILS_ACTIVATE_SUBPROCESS_CASE", case);
 
     if let Some(path) = config_path {
@@ -78,9 +80,144 @@ fn subprocess_activate_entrypoint() {
             &dry_run,
             config,
         ),
+        "commit-json-enqueued" => report_commit(&json(), &["hidden kernel differs"], Ok(())),
+        "commit-json-refused" => report_commit(&json(), &[], Err(refused())),
+        "commit-human-enqueued" => report_commit(&ascii, &[], Ok(())),
+        "commit-human-refused" => report_commit(&ascii, &[], Err(refused())),
         other => panic!("unknown activate subprocess case: {other}"),
     };
     crate::cli::chokepoint::exit_process(status.code());
+}
+
+fn json() -> OutputSettings {
+    OutputSettings {
+        mode: OutputMode::Json,
+        ..OutputSettings::default()
+    }
+}
+
+/// What the stand-in for the commit prints on stdout when it runs: the moment
+/// the soft-reboot would be enqueued.
+const ENQUEUED: &str = "<the soft-reboot is enqueued here>";
+
+/// The error the commit returns when systemd refuses the soft-reboot.
+fn refused() -> NailsError {
+    NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
+}
+
+/// Report the commit of a prepared entry with `warnings`, through a stand-in
+/// for the commit that prints [`ENQUEUED`] and then gives `outcome`.
+fn report_commit(
+    settings: &OutputSettings,
+    warnings: &[&str],
+    outcome: Result<(), NailsError>,
+) -> ExitStatus {
+    use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
+    let plan = Plan::from_json(
+        &serde_json::json!({
+            "version": PLAN_VERSION,
+            "hidden_root": "/mnt/data",
+            "upper": "/mnt/data/root/upper",
+            "work": "/mnt/data/root/work",
+            "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+            "decoy": {"init": "/sbin/init"},
+            "hidden": {"init": "/sbin/init"},
+        })
+        .to_string(),
+    )
+    .expect("a minimal plan");
+    let entry = nails_core::session::Entry {
+        plan,
+        decisions: Vec::new(),
+        warnings: warnings.iter().map(|warning| warning.to_string()).collect(),
+    };
+    super::commit_and_report(settings, &entry, 1.0, || {
+        crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+        outcome
+    })
+}
+
+/// Under `--json` a soft-reboot that cannot be enqueued is the only envelope
+/// on stdout: printed after the attempt, `ok` false with the error
+/// `soft_reboot`, exit 1. The prepared result never comes first for a reader
+/// of the first line to trust.
+#[test]
+fn a_soft_reboot_that_fails_is_the_only_envelope() {
+    let output = run_subprocess("commit-json-refused", None);
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    assert_eq!(lines[0], ENQUEUED, "{output:?}");
+    let value = envelope("activate", &lines[1]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "soft_reboot", "{value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.ends_with("nothing changed")),
+        "{value}"
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+/// An enqueued soft-reboot is one success envelope, printed once it is
+/// enqueued; with a warning it is still `ok`, and exits 9.
+#[test]
+fn an_enqueued_soft_reboot_is_one_envelope_printed_after_it() {
+    let output = run_subprocess("commit-json-enqueued", None);
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    assert_eq!(lines[0], ENQUEUED, "{output:?}");
+    let value = envelope("activate", &lines[1]);
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["data"]["status"], "entering_with_warnings", "{value}");
+    assert_eq!(
+        value["data"]["warnings"][0], "hidden kernel differs",
+        "{value}"
+    );
+    assert_eq!(output.status.code(), Some(9), "{output:?}");
+}
+
+/// A person reads the result before the commit, which ends the terminal,
+/// however the commit goes; a failure to enqueue the soft-reboot follows on
+/// stderr.
+#[test]
+fn a_person_reads_the_result_before_the_commit() {
+    for (case, code) in [("commit-human-enqueued", 0), ("commit-human-refused", 1)] {
+        let output = run_subprocess(case, None);
+        let lines = stdout_lines(&output);
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("[PASS] Hidden session prepared in 1.0s"),
+            "{case}: {output:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.starts_with('{')),
+            "{case}: {output:?}"
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some(ENQUEUED),
+            "{case}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.contains(
+                "error: Invalid state: systemctl could not enqueue soft-reboot.target\n  \
+                 the next root was removed again; nothing changed"
+            ),
+            code == 1,
+            "{case}: {stderr}"
+        );
+        assert_eq!(output.status.code(), Some(code), "{case}: {output:?}");
+    }
 }
 
 #[test]

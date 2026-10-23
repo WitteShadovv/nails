@@ -3,10 +3,12 @@
 
 //! Output formatting for the activate command.
 //!
-//! Activation prints its result *before* it enqueues the soft-reboot, because
-//! the switch ends the terminal it runs in. Under `--json` it is one envelope:
-//! the line stream of version 1 is gone, so a reader sees exactly one document,
-//! as every other command gives (a window watches progress on its own channel).
+//! For a person, activation prints its result *before* it enqueues the
+//! soft-reboot, because the switch ends the terminal it runs in. Under `--json`
+//! it is one envelope, printed once the soft-reboot is enqueued, so a failure
+//! to enqueue it is the only document: the line stream of version 1 is gone,
+//! so a reader sees exactly one document, as every other command gives (a
+//! window watches progress on its own channel).
 
 use nails_core::NailsError;
 use nails_core::output::Mark;

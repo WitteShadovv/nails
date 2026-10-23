@@ -13,9 +13,10 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use nails_core::NailsError;
 use nails_core::app::deactivate::Prepared;
 use nails_core::output::Mark;
-use nails_core::session::LeaveTo;
+use nails_core::session::{LeaveReport, LeaveTo};
 
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::deactivate::{deactivate_error_body, print_deactivate_json};
@@ -99,34 +100,56 @@ pub fn execute(
     } else {
         LeaveTo::Decoy
     };
-    // Print before enqueueing: the soft-reboot stops this terminal.
-    if json {
-        print_deactivate_json(args.poweroff);
-    } else {
+    leave_and_report(settings, to, |to| ready.leave(to))
+}
+
+/// Commit the way back with `leave` and report it, returning the status to
+/// exit with.
+///
+/// A person reads the result before the switch, which stops the terminal: the
+/// lines come first, and a failure to prepare or enqueue it follows them on
+/// stderr. Under `--json` the one envelope reports the outcome instead, so it
+/// is printed only once the soft-reboot (or the power-off) is enqueued: a
+/// failure is the only envelope, never one after a success. The process
+/// outlives the switch long enough to print it, since a mutating command
+/// catches SIGTERM and ignores SIGHUP, but a reader the switch stops first may
+/// not read it.
+fn leave_and_report(
+    settings: &OutputSettings,
+    to: LeaveTo,
+    leave: impl FnOnce(LeaveTo) -> Result<LeaveReport, NailsError>,
+) -> ExitStatus {
+    let json = settings.is_json();
+    let poweroff = to == LeaveTo::Poweroff;
+    if !json {
         let style = settings.stdout_style();
         crate::cli::output::println_tolerating_broken_pipe(&style.marked(
             Mark::Pass,
-            if args.poweroff {
+            if poweroff {
                 "Ending the hidden session and powering off"
             } else {
                 "Ending the hidden session: soft-rebooting back to the decoy"
             },
         ));
-        if !args.poweroff {
+        if !poweroff {
             crate::cli::output::println_tolerating_broken_pipe(
                 "  The decoy starts at its own login screen in a few seconds (a display manager \
                  set to log an account in automatically logs it in again, as at boot).",
             );
         }
+        crate::cli::output::flush_stdio();
     }
-    crate::cli::output::flush_stdio();
-    match ready.leave(to) {
+    match leave(to) {
         Ok(report) => {
             tracing::debug!(
                 backend_closing = ?report.deferred,
                 unmounted = ?report.unmounted,
                 "the way back is enqueued"
             );
+            if json {
+                print_deactivate_json(poweroff);
+                crate::cli::output::flush_stdio();
+            }
             ExitStatus::Ok
         }
         Err(e) => report_error(

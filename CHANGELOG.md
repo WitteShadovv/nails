@@ -220,6 +220,13 @@ of this changelog for that version becomes the release notes word for word, and
   whose address it still cannot set back keeps the session's address until power-off, and nothing tells
   you so: end a session that changed a MAC address with `--poweroff` when that address must never reach
   the decoy.
+- `activate --json` and `deactivate --json` print their one envelope only once the soft-reboot (or
+  the power-off) is enqueued, so it reports whether that worked. They printed a success envelope
+  before enqueueing it, and a failure to enqueue it followed as a second, error envelope: a script
+  that read the first line took a failed switch for a success. A failure is now the only envelope,
+  with `ok` false and exit 1. The switch stops the reader too, so a reader stopped first may not
+  read a success. Without `--json` the output is unchanged: it still comes before the switch, which
+  ends the terminal.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

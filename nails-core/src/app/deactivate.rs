@@ -6,11 +6,12 @@
 //!
 //! The way back prepares the decoy root at `/run/nextroot`, marks the hidden
 //! backend for closing, records the state inactive and enqueues the soft-reboot.
-//! A front end confirms with the operator and prints before the switch (the
-//! soft-reboot stops its terminal), so the operation is split: [`prepare`]
-//! builds the manager and refuses outside a hidden session, and
+//! A front end confirms with the operator and shows a person the result before
+//! the switch (the soft-reboot stops its terminal), so the operation is split:
+//! [`prepare`] builds the manager and refuses outside a hidden session, and
 //! [`ReadyDeactivation::leave`] commits the way back once the front end has
-//! confirmed, taken the state lock and printed.
+//! confirmed, taken the state lock and, for a person, printed. A
+//! machine-readable result waits for the commit, so it reports the outcome.
 
 use std::path::Path;
 
@@ -41,8 +42,9 @@ impl ReadyDeactivation {
         &self.manager.config().state_file_path
     }
 
-    /// Commit the way back: enqueue the soft-reboot (or the power-off). The
-    /// caller prints its success line first, because this stops the terminal.
+    /// Commit the way back: enqueue the soft-reboot (or the power-off). A
+    /// caller that shows a person the result prints it first, because this
+    /// stops the terminal; a machine-readable result waits for the outcome.
     pub fn leave(mut self, to: LeaveTo) -> Result<LeaveReport, NailsError> {
         let view = self.manager.session_view();
         let host = RealTargetHost::for_plan(match &view {

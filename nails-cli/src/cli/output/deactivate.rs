@@ -4,9 +4,10 @@
 //! Output formatting for the deactivate command.
 //!
 //! Deactivation enqueues the soft-reboot back to the decoy (or a power-off),
-//! so its machine-readable result is a small typed envelope printed before the
-//! switch, and its failures are mapped to a structured error that folds the
-//! remedy into its `message` (the error body carries no separate hint field).
+//! so its machine-readable result is a small typed envelope printed once the
+//! switch is enqueued, and its failures are mapped to a structured error that
+//! folds the remedy into its `message` (the error body carries no separate hint
+//! field).
 
 use nails_core::NailsError;
 use serde::Serialize;
@@ -20,8 +21,8 @@ pub struct DeactivateData {
     status: &'static str,
 }
 
-/// Print the success envelope for a deactivation that is returning to the
-/// decoy, or powering off when `poweroff` is set.
+/// Print the success envelope for a deactivation whose soft-reboot back to the
+/// decoy, or power-off when `poweroff` is set, is enqueued.
 pub fn print_deactivate_json(poweroff: bool) {
     let data = DeactivateData {
         status: if poweroff {
