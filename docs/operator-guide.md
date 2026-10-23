@@ -1380,10 +1380,17 @@ DMA-read it. An IOMMU set to remap DMA is the hardware defence against this. The
 `dma-protection` pre-flight check reads whether the IOMMU is remapping DMA
 (from `/sys` and the kernel command line) and whether a Thunderbolt/USB4
 controller reports DMA protection (`iommu_dma_protection`), and warns when a
-live memory attacker could read RAM over the bus; like the MOR bit it cannot
-enable the firmware's DMA protection for you, so the fix is to turn VT-d/AMD-Vi
-and Kernel DMA Protection on in BIOS/UEFI setup and, above all, to power off
-before the machine leaves your control.
+live memory attacker could read RAM over the bus. It judges each IOMMU group:
+where the kernel leaves the IOMMU off by default (no `intel_iommu=on`, as on
+NixOS), the firmware's Kernel DMA Protection still turns it on, but remaps only
+the devices behind a Thunderbolt or USB4 port and leaves every internal device,
+and any card added to an internal PCIe or M.2 slot, identity-mapped, so the
+check warns about the identity-mapped groups even while a docked device's group
+is remapped. Like the MOR bit it cannot enable the firmware's DMA protection
+for you, so the fix is to turn VT-d/AMD-Vi and Kernel DMA Protection on in
+BIOS/UEFI setup (and `intel_iommu=on` on the decoy kernel command line where
+the kernel does not remap by default) and, above all, to power off before the
+machine leaves your control.
 
 ### What has not been validated on hardware
 

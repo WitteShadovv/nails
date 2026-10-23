@@ -28,6 +28,14 @@ of this changelog for that version becomes the release notes word for word, and
   `cryptsetup --version` reports. No released cryptsetup opens such a volume, and nothing outside
   the encrypted header reveals the algorithm, so it advises making both the outer and the hidden
   VeraCrypt volume with PBKDF2.
+- `check` and activation warn when a DMA-capable device could read RAM over the bus: the kernel does
+  not remap DMA through an IOMMU, some devices' IOMMU groups are identity-mapped, or a Thunderbolt or
+  USB4 controller reports no DMA protection. Each group counts on its own, so a kernel that leaves
+  the IOMMU off by default (no `intel_iommu=on`, as on NixOS) and has it turned on only by the
+  firmware's Kernel DMA Protection, which remaps the Thunderbolt and USB4 devices and leaves every
+  internal device and slot identity-mapped, warns even while a docked device's group is remapped.
+  NAILS cannot change the firmware setting; the warning says how, and to power off before the
+  machine leaves your control.
 - `nails activate` and `nails check` refuse a decoy with a pending offline system update staged
   (a `/system-update` or `/etc/system-update` marker, on the decoy or in the overlay upper), which
   would otherwise be applied inside the hidden session and reboot the machine out from under it.
