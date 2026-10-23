@@ -314,13 +314,18 @@ pub(crate) fn label(id: &str) -> Option<&'static str> {
 /// Classify a non-NixOS systemd host against the family table.
 ///
 /// - A named refusal (Enterprise Linux, SteamOS) is declined by name first.
-/// - A table `ID` is resolved by its row: an admitted base is version-gated, a
-///   non-admitted base is refused as product data, and a derivative follows its
-///   base family (a warning once the base is admitted, a refusal until then).
-/// - A non-table `ID` whose `ID_LIKE` names `debian` or `ubuntu` is accepted
-///   provisionally, with a warning that NAILS has not tested the derivative.
+/// - A table `ID` is resolved by its row, whatever `ID_LIKE` says: an admitted
+///   base is version-gated, a non-admitted base is refused as product data, and
+///   a derivative follows its base family (a warning once the base is admitted,
+///   a refusal until then).
 /// - A non-table `ID` whose `ID_LIKE` names `fedora`, `rhel`, `centos` or `arch`
-///   is refused, naming the family NAILS has not validated.
+///   anywhere is refused, naming the first such family in the list's
+///   closest-first order. This holds whatever else `ID_LIKE` names: a host that
+///   declares kinship with a family NAILS has not validated is refused rather
+///   than run as a Debian derivative, even when `debian` comes first.
+/// - Otherwise, a non-table `ID` whose `ID_LIKE` names `debian` or `ubuntu` is
+///   accepted provisionally, with a warning that NAILS has not tested the
+///   derivative.
 /// - Anything else — an unknown or missing `ID` — is refused.
 pub(crate) fn classify(
     id: Option<&str>,
@@ -339,6 +344,15 @@ pub(crate) fn classify(
         }
     }
 
+    // An unvalidated family wins over a Debian-family token, wherever each
+    // stands in `ID_LIKE`: the host is refused rather than admitted.
+    if let Some(family) = family_from_id_like(id_like) {
+        return Classification {
+            family: Some(family),
+            support: FamilySupport::Refused(unvalidated_like_reason(id, family)),
+        };
+    }
+
     if id_like
         .iter()
         .any(|token| token == "debian" || token == "ubuntu")
@@ -346,13 +360,6 @@ pub(crate) fn classify(
         return Classification {
             family: Some(Family::Debian),
             support: FamilySupport::Untested(derivative_warning(Family::Debian)),
-        };
-    }
-
-    if let Some(family) = family_from_id_like(id_like) {
-        return Classification {
-            family: Some(family),
-            support: FamilySupport::Refused(unvalidated_like_reason(id, family)),
         };
     }
 
@@ -386,9 +393,10 @@ fn base_admitted(family: Family) -> bool {
         .any(|row| row.kind == Kind::Base && row.family == family && row.admitted)
 }
 
-/// A family named by an `ID_LIKE` token, for an `ID` the table does not list.
-/// `debian`/`ubuntu` are handled separately (provisional accept), so only the
-/// unvalidated families resolve here.
+/// The first family NAILS has not validated that an `ID_LIKE` token names, in
+/// the list's closest-first order, for an `ID` the table does not list.
+/// `debian` and `ubuntu` are not among them: they admit a derivative only when
+/// no token names an unvalidated family.
 fn family_from_id_like(id_like: &[String]) -> Option<Family> {
     for token in id_like {
         match token.as_str() {

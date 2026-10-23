@@ -65,7 +65,9 @@ of this changelog for that version becomes the release notes word for word, and
   `ubuntu`, such as Linux Mint — now runs with a warning that NAILS has not tested it, instead of
   being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
   (RHEL, CentOS, AlmaLinux, Rocky, Oracle) and SteamOS are each refused with a reason that names
-  them and says NAILS has not yet validated them.
+  them and says NAILS has not yet validated them. A host whose `ID_LIKE` names `debian` or `ubuntu`
+  and also `fedora`, `rhel`, `centos` or `arch` is refused, naming that family, wherever each
+  stands in the list; 0.3.0-rc.3 accepted it as a Debian derivative.
 - `check` and activation now warn on Ubuntu 26.04 instead of treating it as a clean tested release.
   A known upstream issue affects it: after the switch into the hidden session, AppArmor blocks chrony
   and CUPS from reaching systemd and the journal, so the clock does not sync and printing times out,

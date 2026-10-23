@@ -183,9 +183,11 @@ the code never branches on "is this NixOS?" directly.
      that builds the hidden system into the next root's store.
    - `FhsPlatform` — the backend for Debian-family hosts: Debian 13 and newer,
      Ubuntu 24.04 and newer, and provisionally derivatives whose `ID_LIKE`
-     names `debian` or `ubuntu`. The hidden configuration is whatever the
-     upper's `/etc` holds. (A Debian 12 host is refused by the support table;
-     its systemd could not soft-reboot either.) The support table also lists
+     names `debian` or `ubuntu`. A derivative whose `ID_LIKE` also names
+     `fedora`, `rhel`, `centos` or `arch`, anywhere in the list, is refused
+     instead. The hidden configuration is whatever the upper's `/etc` holds.
+     (A Debian 12 host is refused by the support table; its systemd could not
+     soft-reboot either.) The support table also lists
      the releases NAILS targets. Its automated VM tests cover Debian 13 and
      Ubuntu 24.04; Ubuntu 26.04 is a supported target checked by hand, with an
      automated image still to be added. Any other release it admits carries a
