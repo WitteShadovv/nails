@@ -40,18 +40,18 @@ def e2e_sources() -> list[Path]:
 
 
 def node_names_in(text: str, shown: object) -> Iterator[str]:
-    """The VM node names one E2E source statically defines, in order.
+    """The VM node names one E2E source defines, in order.
 
     A node is named as ``nodes.<name>`` or as a key of a ``nodes = {`` block,
     one per line two spaces deeper than the block (nixfmt layout). The block
-    runs to its closing brace, dedented to the block's own indent, whether that
-    ends the statement (``};``), stands alone, or is merged onto with ``//``.
+    runs to its closing brace, dedented to the block's own indent, which must
+    end the statement (``};``).
 
-    An attrset merged on with ``//`` -- ``builtins.listToAttrs (map (name:
-    {...}) names)`` in the soak lane -- builds its nodes at eval time, so it has
-    no static key in the literal and is not scanned. Any other ``nodes =``, or
-    any unrecognised entry at a key's depth, raises rather than hide a node;
-    ``shown`` names the file in that error.
+    Every node must be named in the literal: a block merged with another
+    attrset (``} // builtins.listToAttrs ...``) builds nodes at eval time,
+    whose names no text scan can read, so it raises, as does any other
+    ``nodes =`` and any unrecognised entry at a key's depth, rather than let a
+    node past the socket budget unseen; ``shown`` names the file in the error.
     """
     for match in re.finditer(rf"\bnodes\.({NIX_NAME})", text):
         yield match[1]
@@ -61,6 +61,11 @@ def node_names_in(text: str, shown: object) -> Iterator[str]:
             raise AssertionError(f"{shown}: unrecognised {block[0].strip()!r}")
         for line in text[block.end() :].splitlines():
             if line.startswith(f"{indent}}}"):
+                if line.strip() != "};":
+                    raise AssertionError(
+                        f"{shown}: the nodes block ends in {line.strip()!r}, "
+                        "not '};': name every node in the literal"
+                    )
                 break
             if len(line) - len(line.lstrip()) != len(indent) + 2:
                 continue
@@ -745,10 +750,11 @@ class NodeNameScanTest(unittest.TestCase):
         )
         self.assertEqual(list(node_names_in(text, "t.nix")), ["server", "client"])
 
-    def test_a_dynamic_merge_scans_the_static_keys_and_stops(self) -> None:
-        # The soak lane: a static attrset merged with a listToAttrs/map that
-        # builds its nodes at eval time. Only the static `soaker` is a key here;
-        # the mapped block must neither crash the scan nor be read as a node.
+    def test_a_dynamic_merge_fails(self) -> None:
+        # A static attrset merged with a listToAttrs/map builds its nodes at
+        # eval time: their names never reach the scan, so a name too long for
+        # the socket budget would pass unseen. The soak lane once did this
+        # with a 12-byte name.
         text = (
             "  nodes = {\n"
             "    soaker = _: decoyNode;\n"
@@ -760,7 +766,15 @@ class NodeNameScanTest(unittest.TestCase):
             "    }) neighbours\n"
             "  );\n"
         )
-        self.assertEqual(list(node_names_in(text, "soak.nix")), ["soaker"])
+        with self.assertRaisesRegex(
+            AssertionError, r"soak\.nix: the nodes block ends in '}', not '};'"
+        ):
+            list(node_names_in(text, "soak.nix"))
+
+    def test_a_merge_on_the_closing_line_fails(self) -> None:
+        text = "  nodes = {\n    machine = _: { };\n  } // extraNodes;\n"
+        with self.assertRaisesRegex(AssertionError, r"ends in '} // extraNodes;'"):
+            list(node_names_in(text, "bad.nix"))
 
     def test_a_dynamic_entry_inside_the_literal_still_fails(self) -> None:
         # Inside the braces, at a key's depth, a construct with no node name is
