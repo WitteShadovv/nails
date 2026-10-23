@@ -6,12 +6,13 @@
 //! Activation runs on the decoy: the pre-flight checks, the hidden NixOS
 //! configuration, the overlay at `/run/nextroot` and the armed plan, then the
 //! soft-reboot that stops every decoy program and starts the hidden userspace.
-//! A front end confirms with the operator and prints before the switch (which
-//! stops its terminal), so the operation is split: [`prepare`] builds the
-//! manager and runs the gates (already-active, the attach gate, the trusted-state
-//! check) without writing to the hidden volume, [`ReadyActivation::enter`] stages
-//! the entry, and [`ReadyActivation::commit`] kills the decoy's shells and
-//! enqueues the soft-reboot. The attach gate decides before anything is written.
+//! A front end confirms with the operator and shows a person the result before
+//! the switch (which stops its terminal; a machine-readable result waits for
+//! the commit), so the operation is split: [`prepare`] builds the manager and
+//! runs the gates (already-active, the attach gate, the trusted-state check)
+//! without writing to the hidden volume, [`ReadyActivation::enter`] stages the
+//! entry, and [`ReadyActivation::commit`] kills the decoy's shells and enqueues
+//! the soft-reboot. The attach gate decides before anything is written.
 
 use std::path::Path;
 

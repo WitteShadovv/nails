@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/deactivate.schema.json",
   "title": "NAILS deactivate --json",
-  "description": "Machine-readable deactivate envelope (contract version 2), printed before the soft-reboot back to the decoy (or the power-off): one document with schema_version, command, ok, and either data or error. A declined prompt is the shared cancel shape: an error with the code `cancelled`, exit 130.",
+  "description": "Machine-readable deactivate envelope (contract version 2): exactly one document on stdout with schema_version, command, ok, and either data or error. It reports the outcome: a success is printed only once the soft-reboot back to the decoy (or the power-off) is enqueued, so a failure to prepare or enqueue it is the one document (ok false, exit 1) and never follows a success. The switch then stops every program of the hidden session, the reader included, so a reader stopped first may not read the success. ok is true only when the exit code is 0 or 9. A declined prompt is the shared cancel shape: an error with the code `cancelled`, exit 130.",
   "type": "object",
   "additionalProperties": false,
   "required": [

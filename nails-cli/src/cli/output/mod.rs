@@ -86,6 +86,8 @@ pub mod refusal;
 pub mod rehearse;
 pub mod settings;
 pub mod status;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod verify;
 
 // Re-export commonly used formatters

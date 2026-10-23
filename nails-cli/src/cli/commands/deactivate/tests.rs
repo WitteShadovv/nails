@@ -3,12 +3,125 @@
 
 use super::execute;
 use crate::cli::args::DeactivateArgs;
+use crate::cli::output::test_support::{envelope, stdout_lines};
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
+use nails_core::NailsError;
+use nails_core::session::{LeaveReport, LeaveTo};
 
 fn json() -> OutputSettings {
     OutputSettings {
         mode: OutputMode::Json,
         ..OutputSettings::default()
+    }
+}
+
+const SUBPROCESS_TEST_NAME: &str =
+    "cli::commands::deactivate::tests::subprocess_deactivate_entrypoint";
+
+/// What the stand-in for the way back prints on stdout when it runs: the
+/// moment the soft-reboot would be enqueued.
+const ENQUEUED: &str = "<the way back is enqueued here>";
+
+/// Run `case` of [`subprocess_deactivate_entrypoint`] in a child process, so
+/// the test sees its real stdout and exit code.
+fn run_subprocess(case: &str) -> std::process::Output {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture", "--quiet"])
+        .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", case)
+        .output()
+        .expect("failed to run deactivate subprocess test")
+}
+
+/// The error the way back returns when systemd refuses the soft-reboot.
+fn refused() -> NailsError {
+    NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
+}
+
+/// Report a way back through a stand-in for it that prints [`ENQUEUED`] and
+/// then succeeds or fails, as the case says, and exit with the status.
+#[test]
+fn subprocess_deactivate_entrypoint() {
+    let Ok(case) = std::env::var("NAILS_DEACTIVATE_SUBPROCESS_CASE") else {
+        return;
+    };
+    let ascii = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let (settings, to, outcome) = match case.as_str() {
+        "json-enqueued" => (json(), LeaveTo::Poweroff, Ok(LeaveReport::default())),
+        "json-refused" => (json(), LeaveTo::Decoy, Err(refused())),
+        "human-enqueued" => (ascii, LeaveTo::Decoy, Ok(LeaveReport::default())),
+        "human-refused" => (ascii, LeaveTo::Decoy, Err(refused())),
+        other => panic!("unknown deactivate subprocess case: {other}"),
+    };
+    let status = super::leave_and_report(&settings, to, |_| {
+        crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+        outcome
+    });
+    crate::cli::chokepoint::exit_process(status.code());
+}
+
+/// Under `--json` a way back that cannot be enqueued is the only envelope on
+/// stdout: printed after the attempt, `ok` false with the error, exit 1. No
+/// success envelope comes first for a reader of the first line to trust.
+#[test]
+fn a_way_back_that_fails_is_the_only_envelope() {
+    let output = run_subprocess("json-refused");
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    assert_eq!(lines[0], ENQUEUED, "{output:?}");
+    let value = envelope("deactivate", &lines[1]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "invalid_state", "{value}");
+    assert_eq!(value["error"]["next"]["command"], "emergency", "{value}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+/// An enqueued way back is one success envelope, printed once it is enqueued.
+#[test]
+fn an_enqueued_way_back_is_one_envelope_printed_after_it() {
+    let output = run_subprocess("json-enqueued");
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    assert_eq!(lines[0], ENQUEUED, "{output:?}");
+    let value = envelope("deactivate", &lines[1]);
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["data"]["status"], "poweroff_requested", "{value}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+/// A person reads the result before the switch, which stops the terminal,
+/// however the switch goes; a failure to enqueue it follows on stderr.
+#[test]
+fn a_person_reads_the_result_before_the_way_back() {
+    for (case, code) in [("human-enqueued", 0), ("human-refused", 1)] {
+        let output = run_subprocess(case);
+        assert_eq!(
+            stdout_lines(&output),
+            [
+                "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
+                "  The decoy starts at its own login screen in a few seconds (a display manager \
+                 set to log an account in automatically logs it in again, as at boot).",
+                ENQUEUED,
+            ],
+            "{case}: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.contains("error: systemctl could not enqueue soft-reboot.target"),
+            code == 1,
+            "{case}: {stderr}"
+        );
+        assert_eq!(output.status.code(), Some(code), "{case}: {output:?}");
     }
 }
 
