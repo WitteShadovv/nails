@@ -135,7 +135,10 @@ impl<F: Filesystem> NailsManager<F> {
         let candidates = [layout.in_upper(target), mounts.join(escape_path(target))];
         let mut removals = Vec::new();
         for candidate in candidates {
-            if self.filesystem.path_exists(&candidate)? {
+            // A symlink counts whatever it points at: in the upper it names a
+            // path of the hidden root, which the decoy may well not have (a
+            // staged update's `/system-update`).
+            if self.filesystem.path_exists(&candidate)? || self.filesystem.is_symlink(&candidate)? {
                 removals.push(candidate);
             }
         }
@@ -146,10 +149,11 @@ impl<F: Filesystem> NailsManager<F> {
         })
     }
 
-    /// Apply a [`ResetUpperPlan`]: remove what it found.
+    /// Apply a [`ResetUpperPlan`]: remove what it found. A symlink is removed
+    /// itself, never what it points at.
     pub fn apply_reset_upper(&self, plan: &ResetUpperPlan) -> Result<()> {
         for path in &plan.removals {
-            if self.filesystem.is_directory(path)? {
+            if !self.filesystem.is_symlink(path)? && self.filesystem.is_directory(path)? {
                 self.filesystem.remove_dir_all(path)?;
             } else {
                 self.filesystem.remove_file(path)?;
@@ -193,6 +197,33 @@ mod tests {
             .plan_reset_upper_on(Path::new("/home"), &SessionView::Decoy)
             .unwrap();
         assert!(again.is_empty());
+    }
+
+    #[test]
+    fn discard_removes_a_dangling_symlink_in_the_upper_and_never_its_target() {
+        // A staged update's marker in the upper: a symlink to a payload of the
+        // hidden root, which the decoy does not have, so it dangles here.
+        let root = tempfile::tempdir().unwrap();
+        let upper = root.path().join("root/upper");
+        std::fs::create_dir_all(&upper).unwrap();
+        std::os::unix::fs::symlink("/nails-test-no-such-payload", upper.join("system-update"))
+            .unwrap();
+        // And one to a directory that exists: only the link goes.
+        let kept = root.path().join("kept");
+        std::fs::create_dir_all(kept.join("inside")).unwrap();
+        std::os::unix::fs::symlink(&kept, upper.join("linked")).unwrap();
+
+        let m = manager(root.path());
+        for target in ["/system-update", "/linked"] {
+            let plan = m
+                .plan_reset_upper_on(Path::new(target), &SessionView::Decoy)
+                .unwrap();
+            assert_eq!(plan.removals.len(), 1, "{target}: {plan:?}");
+            m.apply_reset_upper(&plan).unwrap();
+        }
+        assert!(std::fs::symlink_metadata(upper.join("system-update")).is_err());
+        assert!(std::fs::symlink_metadata(upper.join("linked")).is_err());
+        assert!(kept.join("inside").is_dir(), "the link's target must stay");
     }
 
     #[test]

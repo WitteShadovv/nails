@@ -256,6 +256,9 @@ of this changelog for that version becomes the release notes word for word, and
   now warns with either flag too. The probes now come only after every precondition that can be
   read, so an obstruction or a missing base hardware configuration is refused with the target
   untouched.
+- `nails discard` deletes a symlink the hidden session left at the path also when it points to
+  nothing on the decoy, as a staged update's `/system-update` does; it reported nothing to delete.
+  A symlink is deleted itself, never what it points at.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
