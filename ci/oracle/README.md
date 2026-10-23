@@ -241,6 +241,14 @@ widen into a blanket residue exemption.
 `tool` pins the channel that must surface a check (any channel when `null`).
 Keep these in step with what `make-sample-images.sh` and `run-scan.sh` plant.
 
+The real images also carry session data the oracle must **not** find: inside
+the hidden session the e2e test (`nix/e2e-tests/tests/forensic/13-oracle-images.nix`)
+writes an address and a URL under `session.oracle.example` into a file, syncs
+it to disk and deletes it, then checks the bytes are still on the hidden
+volume's block device. If a regression put the session's writes on the decoy
+disk, bulk_extractor would carve them from `after`'s free space, and the run
+would fail on them as unexplained residue.
+
 ## Running it
 
 ```

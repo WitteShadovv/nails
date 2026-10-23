@@ -11,31 +11,27 @@
 # raws and renders the nails-oracle verdict; this spec never runs the scan (it
 # needs root + docker and is run in a coordinated job later).
 #
-# Coverage canary and baseline carriers (planted BEFORE the baseline snapshot,
-# so they are present identically on before/control/after and the oracle's
-# after - before - control set difference subtracts them away):
-#
-#   * a coverage canary at /var/lib/nails-oracle/canary carrying the reserved
-#     address canary@oracle.example. bulk_extractor carves the address from the
-#     raw image bytes, so the oracle emits it at (bulk_extractor, email,
-#     canary@oracle.example) -- the key ci/oracle/controls-real.json pins.
-#     Finding it in `after` proves the scan actually read the image.
-#   * three address-FREE baseline carrier files (a wtmpdb login/boot carrier at
-#     /var/log/wtmp.db, a lastlog2 carrier at /var/lib/lastlog/lastlog2.db and a
-#     pacman history at /var/log/pacman.log), byte-for-byte the baselines that
-#     ci/oracle/make-sample-images.sh plants on every synthetic image. They
-#     carry NO @oracle.example sentinel address here, so the retained snapshots
-#     stay a pure decoy baseline.
+# Coverage canary (planted BEFORE the baseline snapshot, so it is present
+# identically on before/control/after and the oracle's after - before - control
+# set difference subtracts it away): a file at /var/lib/nails-oracle/canary
+# carrying the reserved address canary@oracle.example. bulk_extractor carves the
+# address from the raw image bytes, so the oracle emits it at (bulk_extractor,
+# email, canary@oracle.example) -- the key ci/oracle/controls-real.json pins.
+# Finding it in `after` proves the scan actually read the image.
 #
 # The positive-control SENTINEL addresses are NOT planted here. run-scan.sh
-# appends them, in place, to these carriers on a throwaway working copy of
+# writes them into zero-filled free blocks of a throwaway working copy of
 # after.raw only -- before.raw, control.raw and the retained after.raw are
-# never modified. The carriers must already exist on before/control (that is
-# why they are planted here and not only on the working copy): the oracle's
-# restore channel keys every recovered file by its path, so a carrier that
-# existed only on the injected `after` would surface as unexplained restore-path
-# residue. Planting the carriers on all three images means only the new @oracle
-# address (and any genuine hidden-session leak) survives the set difference.
+# never modified.
+#
+# Session data a free-space carve recognises: inside the hidden session the
+# workflow writes a reserved address and URL (session.oracle.example) into a
+# file, syncs it to disk and deletes it, then checks the bytes are still on the
+# hidden volume's block device, so the check is not vacuous: those bytes reach
+# a disk and outlive the file. They must never reach the decoy disk. If a
+# regression put the session's writes there, bulk_extractor would carve the
+# address and URL from after.raw's free space, and the oracle would fail the
+# run on them as unexplained residue.
 
 { self, pkgs, ... }:
 let
@@ -89,60 +85,53 @@ in
     # default in ci/oracle/controls-real.json (and run-scan.sh's canary_default).
     CANARY = "canary@oracle.example"
 
-    def plant_oracle_baseline():
-        # Planted on the decoy root BEFORE the baseline snapshot, so present on
-        # before/control/after. Mirrors ci/oracle/make-sample-images.sh's
-        # populate_base so the real pipeline's restore/plaso behaviour matches the
-        # proven synthetic path: the carrier contents are identical across the
-        # three images (they subtract away), only the address run-scan.sh later
-        # appends to `after` is new. No @oracle sentinel address is planted here.
-        machine.succeed("mkdir -p /var/lib/nails-oracle /var/log /var/lib/lastlog")
+    # Session data the oracle's bulk_extractor channel recognises (an e-mail
+    # address, a domain and a URL), written in the hidden session only.
+    SESSION_ADDRESS = "hidden-session@session.oracle.example"
+    SESSION_URL = "https://session.oracle.example/hidden-session"
 
-        # Coverage canary (carries the reserved address; the only @oracle address
-        # on the pure baseline, and present on every image, so it subtracts from
-        # the residue yet is still detected in `after` by the canary check).
+    def plant_oracle_canary():
+        # Planted on the decoy root BEFORE the baseline snapshot, so present on
+        # before/control/after: the only @oracle address on the pure baseline,
+        # so it subtracts from the residue yet is still detected in `after` by
+        # the canary check.
+        machine.succeed("mkdir -p /var/lib/nails-oracle")
         machine.succeed(
             "printf '# NAILS forensic-oracle coverage canary (synthetic)\\n"
             "canary address: " + CANARY + "\\n' > /var/lib/nails-oracle/canary"
         )
-
-        # wtmpdb login/boot carrier (address-free baseline).
-        machine.succeed(
-            "printf '# synthetic wtmpdb login/boot carrier\\n"
-            "boot\\t~\\tlocalhost\\t2026-01-01T00:00:00+00:00\\n"
-            "login\\troot\\tlocalhost\\t2026-01-01T00:01:00+00:00\\n"
-            "login\\tuser\\tlocalhost\\t2026-01-01T00:02:00+00:00\\n' "
-            "> /var/log/wtmp.db"
-        )
-
-        # lastlog2 last-login carrier (address-free baseline).
-        machine.succeed(
-            "printf '# synthetic lastlog2 last-login carrier\\n"
-            "root\\tpts/0\\tlocalhost\\t2026-01-01T00:01:00+00:00\\n"
-            "user\\ttty1\\tlocalhost\\t2026-01-01T00:02:00+00:00\\n' "
-            "> /var/lib/lastlog/lastlog2.db"
-        )
-
-        # pacman history carrier (address-free baseline).
-        machine.succeed(
-            "printf '[2026-01-01T00:00:00+0000] [PACMAN] Running pacman -Syu\\n"
-            "[2026-01-01T00:00:01+0000] [ALPM] installed base (3.0-1)\\n"
-            "[2026-01-01T00:00:02+0000] [ALPM] installed coreutils (9.5-1)\\n' "
-            "> /var/log/pacman.log"
-        )
         machine.succeed("sync")
+
+    def write_and_delete_session_token():
+        # Inside the hidden session: write the token to a file in the upper,
+        # sync it to disk and delete the file. Its bytes stay in the hidden
+        # volume's free space, where a carve of that disk finds them, which is
+        # what makes their absence from after.raw mean something.
+        note = "/home/testuser/work/note.txt"
+        machine.succeed(
+            "su - testuser -c 'printf \"%s\\n%s\\n\" "
+            + SESSION_ADDRESS
+            + " "
+            + SESSION_URL
+            + " > ~/work/note.txt' && sync"
+        )
+        machine.succeed(f"grep -qxF {SESSION_ADDRESS} {UPPER}{note}")
+        machine.succeed("su - testuser -c 'rm ~/work/note.txt' && sync")
+        machine.fail(f"test -e {UPPER}{note}")
+        machine.succeed("echo 3 > /proc/sys/vm/drop_caches")
+        machine.succeed(f"grep -qaF {SESSION_ADDRESS} /dev/mapper/data")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
     headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
-    with subtest("plant the canary and baseline carriers, then image the decoy baseline"):
+    with subtest("plant the canary, then image the decoy baseline"):
         # The hidden-volume mount point is a legitimate, permanent part of the
         # decoy; create it before the baseline so it is on every image, exactly
         # as forensic/06 does.
         machine.succeed("mkdir -p /mnt/data")
-        plant_oracle_baseline()
+        plant_oracle_canary()
         # dhcpcd.wait = "background" (vm-config.nix) lets multi-user.target come
         # up before dhcpcd has leased eth0, so /var/lib/dhcpcd/eth0.lease -- and
         # the 10.0.2.x lease addresses bulk_extractor carves from it -- would
@@ -184,7 +173,6 @@ in
         machine.succeed(
             "su - testuser -c 'for i in $(seq 1 50); do echo content > ~/work/project/file_$i.txt; done'"
         )
-        machine.succeed("su - testuser -c 'cd ~/work/project && git init 2>/dev/null || true'")
         machine.succeed(
             "su - testuser -c 'printf \"#!/bin/bash\\necho test\\n\" > ~/work/script.sh && chmod +x ~/work/script.sh'"
         )
@@ -192,6 +180,7 @@ in
         # The work is in the hidden root's upper on the hidden volume.
         machine.succeed(f"test -f {UPPER}/home/testuser/work/project/file_50.txt")
         machine.succeed(f"test -x {UPPER}/home/testuser/work/script.sh")
+        write_and_delete_session_token()
         canonical_deactivate(headless_config, "deactivate")
         status = read_status_json(config_path=headless_config)
         assert status["place"] == "decoy", f"expected the plain decoy, got {status}"
