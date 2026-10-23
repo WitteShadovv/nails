@@ -36,6 +36,6 @@ nails-forensics = { path = "../nails-forensics" }
 
 [dev-dependencies]
 # Property-test backstop over the verdict engine's reconciliation invariants
-# (src/verdict_proptest.rs). Dev-only, so it never reaches the shipped binary;
+# (src/verdict_prop_tests.rs). Dev-only, so it never reaches the shipped binary;
 # `std`-only, matching the workspace proptest.
 proptest = { workspace = true }
