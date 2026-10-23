@@ -3,20 +3,29 @@
 
 //! Syslog and audit daemons that record the hidden session on the decoy disk.
 //!
-//! A classic syslog daemon (rsyslog, syslog-ng, metalog) or the audit daemon
-//! writes every logged line to `/var/log` on the decoy disk, outside journald
-//! and before the overlays are mounted, so an active one fails activation
-//! closed. A daemon is caught by three routes, so none of the ways systemd or
-//! the daemon present themselves slips through:
+//! A classic syslog daemon (rsyslog, syslog-ng, a syslogd from sysklogd,
+//! inetutils or busybox, metalog, socklog) or the audit daemon writes every
+//! logged line to `/var/log` on the decoy disk, outside journald and before the
+//! overlays are mounted, so an active one fails activation closed. A daemon is
+//! caught by any of the ways systemd or the daemon present themselves:
 //!
-//! - a plain service unit (`rsyslog.service`, `auditd.service`, ...);
-//! - a template instance (`syslog-ng@default.service`), matched by its unit
-//!   stem so the instance name need not be known in advance;
-//! - the running process itself (`rsyslogd`, `syslog-ng`, `metalog`, `auditd`),
+//! - its service unit (`rsyslog.service`, `inetutils-syslogd.service`,
+//!   `auditd.service`, ...);
+//! - a template instance of it (`syslog-ng@default.service`), matched by its
+//!   unit stem so the instance name need not be known in advance;
+//! - `syslog.service`, the name systemd gives whichever syslog daemon is
+//!   enabled. On NixOS that is the unit's own name. Elsewhere it is an alias: a
+//!   link in a unit directory to the daemon's own unit, and systemd records the
+//!   running unit (its invocation marker and its cgroup) only under that unit's
+//!   own name. So the link is followed to the unit it names, which is then
+//!   probed, and a daemon this module does not know is caught that way too;
+//! - the running process itself (`rsyslogd`, `syslog-ng`, `syslogd`, ...),
 //!   read from `<root>/proc`, which catches a daemon started outside systemd and
 //!   a recent systemd that no longer writes an invocation marker for every unit.
 //!
-//! Every probe reads; nothing here writes.
+//! `klogd` is not one of them: it only hands the kernel's messages on to the
+//! syslog daemon, which is caught itself. Every probe reads; nothing here
+//! writes.
 
 use crate::Filesystem;
 use std::collections::BTreeSet;
@@ -27,91 +36,138 @@ use std::path::Path;
 /// running unit from an installed-but-stopped one.
 pub(super) const INVOCATION_DIR: &str = "run/systemd/units";
 
-/// A syslog/audit unit watched for on the decoy, with the finding shown when it
-/// is active and the key that keeps the same daemon from being reported twice
-/// when more than one route detects it. The order is the order findings appear.
-const LOGGER_UNITS: &[(&str, &str, &str)] = &[
-    (
-        "rsyslog.service",
-        "syslog",
-        "rsyslog is active and writes logs to the decoy disk",
-    ),
-    // NixOS runs rsyslogd as syslog.service; elsewhere syslog.service is the
-    // conventional alias of whichever syslog daemon is installed. Shares the
-    // `syslog` key with rsyslog.service, so only the first of the two is named.
-    (
-        "syslog.service",
-        "syslog",
-        "a syslog daemon (syslog.service) is active and writes logs to the decoy disk",
-    ),
-    (
-        "syslog-ng.service",
-        "syslog-ng",
-        "syslog-ng is active and writes logs to the decoy disk",
-    ),
-    (
-        "metalog.service",
-        "metalog",
-        "metalog is active and writes logs to the decoy disk",
-    ),
-    (
-        "auditd.service",
-        "auditd",
-        "auditd is active and writes audit records to the decoy disk",
-    ),
+/// The name systemd gives the enabled syslog daemon.
+const SYSLOG_ALIAS: &str = "syslog.service";
+
+/// The unit directories an alias link is looked for in, relative to the root,
+/// in the order systemd reads them: the administrator's, the runtime ones, the
+/// packages'.
+const UNIT_DIRS: &[&str] = &[
+    "etc/systemd/system",
+    "run/systemd/system",
+    "usr/lib/systemd/system",
+    "lib/systemd/system",
 ];
 
-/// A logger/audit daemon watched for among running processes, by its `comm`
-/// (and its `argv[0]` basename), with the dedup key and finding it shares with
-/// the matching unit. `comm` is capped at 15 bytes by the kernel; each fits.
-const LOGGER_PROCESSES: &[(&str, &str, &str)] = &[
-    (
-        "rsyslogd",
-        "syslog",
-        "rsyslog is active and writes logs to the decoy disk",
-    ),
-    (
-        "syslog-ng",
-        "syslog-ng",
-        "syslog-ng is active and writes logs to the decoy disk",
-    ),
-    (
-        "metalog",
-        "metalog",
-        "metalog is active and writes logs to the decoy disk",
-    ),
-    (
-        "auditd",
-        "auditd",
-        "auditd is active and writes audit records to the decoy disk",
-    ),
+/// A syslog or audit daemon watched for on the decoy: the finding shown when it
+/// is active, the service units it runs as and the process names it runs
+/// under (`comm`, capped at 15 bytes by the kernel, or `argv[0]`'s basename).
+/// One finding per daemon, however many of its routes fire; the order is the
+/// order findings appear.
+struct Logger {
+    /// The finding.
+    message: &'static str,
+    /// Its service units.
+    units: &'static [&'static str],
+    /// Its process names.
+    processes: &'static [&'static str],
+}
+
+/// The syslog daemons, which [`SYSLOG_ALIAS`] may name.
+const SYSLOG_DAEMONS: &[Logger] = &[
+    Logger {
+        message: "rsyslog is active and writes logs to the decoy disk",
+        units: &["rsyslog.service"],
+        processes: &["rsyslogd"],
+    },
+    Logger {
+        message: "syslog-ng is active and writes logs to the decoy disk",
+        units: &["syslog-ng.service"],
+        processes: &["syslog-ng"],
+    },
+    Logger {
+        message: "a syslogd (sysklogd, inetutils or busybox) is active and writes logs to the \
+                  decoy disk",
+        units: &[
+            "syslogd.service",
+            "sysklogd.service",
+            "inetutils-syslogd.service",
+            "busybox-syslogd.service",
+        ],
+        processes: &["syslogd"],
+    },
+    Logger {
+        message: "metalog is active and writes logs to the decoy disk",
+        units: &["metalog.service"],
+        processes: &["metalog"],
+    },
+    Logger {
+        message: "socklog is active and writes logs to the decoy disk",
+        units: &[],
+        processes: &["socklog"],
+    },
 ];
+
+/// The audit daemon.
+const AUDITD: Logger = Logger {
+    message: "auditd is active and writes audit records to the decoy disk",
+    units: &["auditd.service"],
+    processes: &["auditd"],
+};
 
 /// The fail-closed findings for active syslog/audit daemons on the decoy under
 /// `root`, one per daemon however it was detected.
 ///
-/// A daemon detected by more than one route (a unit and its process, say) is
-/// reported once: the first finding for each dedup key wins, so the unit wording
-/// is kept over the process wording.
+/// The enabled syslog daemon is found under `syslog.service` as well; when no
+/// daemon of [`SYSLOG_DAEMONS`] is found by its own names, an active
+/// `syslog.service` is reported by the unit it resolves to.
 pub(super) fn active_logger_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
     let running = running_process_names(fs, root);
-    let mut seen: Vec<&'static str> = Vec::new();
-    let mut out: Vec<String> = Vec::new();
+    let active = |logger: &Logger| {
+        logger.units.iter().any(|unit| unit_active(fs, root, unit))
+            || logger.processes.iter().any(|name| running.contains(*name))
+    };
 
-    for &(unit, key, message) in LOGGER_UNITS {
-        if unit_active(fs, root, unit) && !seen.contains(&key) {
-            seen.push(key);
-            out.push(message.to_string());
-        }
+    let mut out: Vec<String> = SYSLOG_DAEMONS
+        .iter()
+        .filter(|&logger| active(logger))
+        .map(|logger| logger.message.to_string())
+        .collect();
+    if out.is_empty()
+        && let Some(finding) = enabled_syslog_finding(fs, root)
+    {
+        out.push(finding);
     }
-    for &(comm, key, message) in LOGGER_PROCESSES {
-        if running.contains(comm) && !seen.contains(&key) {
-            seen.push(key);
-            out.push(message.to_string());
-        }
+    if active(&AUDITD) {
+        out.push(AUDITD.message.to_string());
     }
-
     out
+}
+
+/// The finding for an active `syslog.service` whose daemon is not found by its
+/// own names: the unit it is, when it runs under that name (as on NixOS), or
+/// the unit its alias link names.
+fn enabled_syslog_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
+    let unit = resolve_alias(fs, root, SYSLOG_ALIAS).unwrap_or_else(|| SYSLOG_ALIAS.to_string());
+    if !unit_active(fs, root, &unit) {
+        return None;
+    }
+    Some(if unit == SYSLOG_ALIAS {
+        "a syslog daemon (syslog.service) is active and writes logs to the decoy disk".to_string()
+    } else {
+        format!(
+            "a syslog daemon ({unit}, enabled as syslog.service) is active and writes logs to \
+             the decoy disk"
+        )
+    })
+}
+
+/// The unit an alias names: the file name of the unit file a link called
+/// `alias` in a unit directory resolves to. `None` when no unit directory
+/// holds such a link.
+///
+/// Only a path that is a link is resolved, so a decoy without the alias (the
+/// amnesic one NAILS asks for) has nothing read beyond its metadata.
+fn resolve_alias<F: Filesystem>(fs: &F, root: &Path, alias: &str) -> Option<String> {
+    UNIT_DIRS.iter().find_map(|dir| {
+        let link = root.join(dir).join(alias);
+        if !fs.is_symlink(&link).unwrap_or(false) {
+            return None;
+        }
+        let target = fs.canonicalize(&link).ok()?;
+        let unit = target.file_name()?.to_str()?;
+        (unit != alias && unit.ends_with(".service")).then(|| unit.to_string())
+    })
 }
 
 /// Whether a systemd unit is active, inferred without writing anything.
@@ -154,8 +210,7 @@ pub(super) fn unit_active<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> boo
 /// The `comm` and `argv[0]` basenames of every process under `<root>/proc`.
 ///
 /// Reads `comm` and `cmdline` only, both world-readable, so an unprivileged
-/// `nails check` sees daemons that run as root. Shared with the Fedora posture
-/// probe, which watches for its own process names.
+/// `nails check` sees daemons that run as root.
 pub(super) fn running_process_names<F: Filesystem>(fs: &F, root: &Path) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let Ok(entries) = fs.list_directory(&root.join("proc")) else {

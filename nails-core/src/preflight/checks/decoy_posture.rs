@@ -14,10 +14,10 @@
 //! `--allow-persistent-decoy`):
 //! - systemd-journald `Storage=` persisting the journal to `/var/log/journal`
 //!   on the decoy disk (see [`super::journald_storage`]),
-//! - an active syslog or audit daemon (`rsyslog`, `syslog-ng`, `metalog`,
-//!   `auditd`), each of which writes to the decoy disk before the overlays are
-//!   mounted, detected as a unit, a template instance or a process (see
-//!   [`loggers`]).
+//! - an active syslog or audit daemon (`rsyslog`, `syslog-ng`, a `syslogd`,
+//!   `metalog`, `socklog`, `auditd`), each of which writes to the decoy disk
+//!   before the overlays are mounted, detected as a unit, a template instance,
+//!   the unit `syslog.service` names, or a process (see [`loggers`]).
 //!
 //! Warn (surface the hazard, never block):
 //! - an atime policy that records read access on the decoy (`strictatime` /
@@ -26,7 +26,11 @@
 //!   `kernel.core_pattern`, a systemd-coredump (reached by its pipe or its
 //!   kernel coredump socket) that is not set to `Storage=none` with
 //!   `ProcessSizeMax=0` (see [`coredump`]), registered pstore records, or an
-//!   armed kdump (Ubuntu arms kdump-tools by default from 24.10),
+//!   armed kdump (Ubuntu arms kdump-tools by default from 24.10). A kernel
+//!   crash during the hidden session boots kdump's crash kernel, which mounts
+//!   the decoy root by its device, outside the session's overlay, and writes a
+//!   dump of kernel memory and the session's kernel log to `/var/crash` on the
+//!   decoy disk; it stays a warning, like the other crash channels,
 //! - the NixOS `nixos-upgrade.timer` (which can rebuild and touch EFI NVRAM
 //!   from the decoy profile while the hidden session runs),
 //! - sudo logging in sudoers (`logfile=`, I/O logging with `log_input`,
@@ -114,7 +118,7 @@ impl DecoyPersistenceCheck {
 
     /// Read-only probe: whether the decoy keeps a persistent log or audit store
     /// that a hidden session's metadata would land on (a persistent journald
-    /// journal, or an active `rsyslog`/`syslog-ng`/`auditd`). Shared with
+    /// journal, or an active syslog or audit daemon). Shared with
     /// `status` so the reported posture tracks the same detection as this
     /// pre-flight check without duplicating the journald parsing.
     ///
@@ -217,7 +221,9 @@ impl DecoyPersistenceCheck {
         // kdump: a loaded crash kernel dumps memory to the decoy disk on panic.
         // Ubuntu arms kdump-tools by default from 24.10 (so 26.04); Fedora and
         // others ship it as kdump.service. Catch the loaded crash kernel and the
-        // enabled service alike.
+        // enabled service alike. The crash kernel boots from the decoy's root
+        // device, never through the session's overlay, so what it writes lands
+        // on the decoy disk past every barrier the session keeps.
         let kdump_loaded = fs
             .read_file_content(Path::new(KEXEC_CRASH_LOADED))
             .map(|v| v.trim() == "1")
@@ -227,9 +233,12 @@ impl DecoyPersistenceCheck {
             || loggers::unit_active(fs, root, "kdump.service")
         {
             out.push(
-                "kdump is armed; a kernel crash dumps memory (hidden-session contents included) \
-                 to the configured target on the decoy disk. Disable kdump on the decoy \
-                 (Ubuntu: kdump-tools; Fedora: kdump)"
+                "kdump is armed: if the kernel crashes during the hidden session, its crash \
+                 kernel mounts the decoy root by its device, outside the session's overlay, and \
+                 writes a dump of kernel memory (which can hold the hidden volume's encryption \
+                 key and the names of the files the session used) and the session's kernel log \
+                 to /var/crash on the decoy disk. Disable kdump on the decoy (Ubuntu: \
+                 kdump-tools; Fedora: kdump)"
                     .to_string(),
             );
         }

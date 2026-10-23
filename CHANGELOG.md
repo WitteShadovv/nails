@@ -245,6 +245,16 @@ of this changelog for that version becomes the release notes word for word, and
   reads the systemd 262 kernel coredump socket pattern correctly instead of mis-reporting it as a raw
   core-dump path, warns on Ubuntu's default-enabled kdump, and no longer warns about `sudo` logfile
   or I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
+  symlink.
+- Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, the
+  `syslogd` of sysklogd, inetutils or busybox, metalog, socklog, auditd) whether it runs as a service
+  unit, a systemd template instance (such as `syslog-ng@default`), the unit `syslog.service` names on
+  Debian and Ubuntu, or a bare process, so a logging daemon on the decoy can no longer slip past
+  activation. It also reads the systemd 262 kernel coredump socket pattern correctly instead of
+  mis-reporting it as a raw core-dump path, warns on Ubuntu's default-enabled kdump, whose crash
+  kernel writes a dump of kernel memory and the hidden session's kernel log to `/var/crash` on the
+  decoy disk if the kernel crashes during a session, and no longer warns about `sudo` logfile or
+  I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
 - The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
   when the kernel command line is silent, from the running kernel's own `/proc/config.gz` (NixOS and
   Arch) or the copy in `/boot` or `/usr/lib/modules`, warns when the decoy kernel does not zero freed
