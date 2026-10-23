@@ -386,6 +386,15 @@ fn lines_of(stream: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The committed `activate` schema.
+fn activate_schema() -> jsonschema::Validator {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/schemas/activate.schema.json");
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    jsonschema::validator_for(&schema).expect("compile the activate schema")
+}
+
 /// The one envelope the shipped `--json` printer prints for `case`, checked
 /// against the committed `activate` schema.
 fn printed_envelope(case: &str) -> serde_json::Value {
@@ -395,17 +404,45 @@ fn printed_envelope(case: &str) -> serde_json::Value {
     assert_eq!(lines.len(), 1, "{case}: one envelope line: {output:?}");
     let value: serde_json::Value = serde_json::from_str(&lines[0])
         .unwrap_or_else(|e| panic!("{case}: not JSON ({e}): {output:?}"));
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../docs/schemas/activate.schema.json");
-    let schema: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let validator = jsonschema::validator_for(&schema).expect("compile the activate schema");
-    let errors: Vec<String> = validator
+    let errors: Vec<String> = activate_schema()
         .iter_errors(&value)
         .map(|e| e.to_string())
         .collect();
     assert!(errors.is_empty(), "{case}: {errors:?}: {value}");
     value
+}
+
+/// The schema ties `ok` to the outcome, so a reader that validates a document
+/// learns what one that reads `ok` learns: a failed activation is never `ok`,
+/// and a document that is not `ok` names its error.
+#[test]
+fn the_schema_refuses_an_ok_that_contradicts_the_outcome() {
+    let schema = activate_schema();
+    let failed = serde_json::json!({
+        "schema_version": 2, "command": "activate", "ok": false,
+        "error": {"code": "activation_failed", "message": "Activation failed: x", "next": null},
+        "data": {
+            "status": "failed", "duration": 0.1, "filesystems": [], "masked_units": [],
+            "message": "Activation failed: x"
+        }
+    });
+    assert!(schema.is_valid(&failed), "{failed}");
+
+    let mut failed_but_ok = failed.clone();
+    failed_but_ok["ok"] = true.into();
+    assert!(!schema.is_valid(&failed_but_ok), "{failed_but_ok}");
+    failed_but_ok.as_object_mut().unwrap().remove("error");
+    assert!(!schema.is_valid(&failed_but_ok), "{failed_but_ok}");
+
+    let mut not_ok_without_error = failed;
+    not_ok_without_error
+        .as_object_mut()
+        .unwrap()
+        .remove("error");
+    assert!(
+        !schema.is_valid(&not_ok_without_error),
+        "{not_ok_without_error}"
+    );
 }
 
 /// A cancel under `--json` is the one cancel shape: `ok` false, the code
