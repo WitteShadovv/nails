@@ -273,9 +273,9 @@ An activation moves through these layers; each names its modules and crates:
   keeps its reason for `status` (`whole_root::switch_refusal`). It runs after
   `umount.target`, when the volume's own mount is gone: a refused entry's
   reason goes onto the hidden volume through the volume's bind in the next
-  root, and only while that bind is on the volume's recorded device; a refused
-  way back's goes into the runtime directory in RAM, which every way back
-  removes.
+  root, only while that bind is on the volume's recorded device and never onto
+  a hidden root accepted on the decoy's storage; a refused way back's goes into
+  the runtime directory in RAM, which every way back removes.
 - **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, make the decoy's other mounts again below it

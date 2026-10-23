@@ -135,6 +135,21 @@ fn another_device_at_the_hidden_root_records_nothing() {
 }
 
 #[test]
+fn a_hidden_root_accepted_on_the_decoy_s_storage_records_nothing() {
+    // `--allow-decoy-storage`: the bind is on the recorded device, but that
+    // device is the decoy's own disk.
+    let next = NextRoot::new();
+    let mounts = transition_table(&next, &next.volume(), "8:2");
+    let mut plan = armed_plan(Direction::Enter, "8:2");
+    plan.accepted_decoy_storage =
+        Some("/mnt/data is not a volume of its own: it is a bind mount of a folder of /".into());
+
+    record_on_volume(&mounts, &plan, &next.root, "failed init check", 1);
+
+    assert!(!refusal_path(&next.volume()).exists());
+}
+
+#[test]
 fn a_plan_without_a_recorded_device_records_nothing() {
     let next = NextRoot::new();
     let mounts = transition_table(&next, &next.volume(), "254:0");

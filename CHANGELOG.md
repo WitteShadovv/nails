@@ -37,7 +37,8 @@ of this changelog for that version becomes the release notes word for word, and
 - `status` reports why and when the last session switch was refused, instead of a refused switch
   going unexplained. When the soft-reboot into the hidden session cannot switch root, the reason is
   kept on the hidden volume, written through the volume's mount in the prepared root and never on
-  the decoy disk, and shown once you open the volume again. When the way back is refused, the reason
+  the decoy disk (so a hidden root accepted on the decoy's storage with `--allow-decoy-storage`
+  keeps none), and shown once you open the volume again. When the way back is refused, the reason
   is kept in RAM with the session's runtime files and shown in the hidden session. `status --json`
   reports it as the `switch_refused` attention, with the refusal's own reason as `reason` and a
   `switch_refusal` object (`reason` and `at`). The next `activate` or `deactivate` clears it when it

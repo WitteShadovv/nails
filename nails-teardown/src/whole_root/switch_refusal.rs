@@ -18,7 +18,10 @@
 //!   written through that bind, before the next root is detached, and only
 //!   while the mount there is on the device the entry recorded, the identity
 //!   the attach gate checks: anything else at that path (the root overlay
-//!   itself, were the bind missing) receives nothing.
+//!   itself, were the bind missing) receives nothing. A hidden root the
+//!   operator accepted on the decoy's own storage (`--allow-decoy-storage`)
+//!   gets no record either: there the volume is the decoy's disk, and the
+//!   transition writes nothing to it.
 //! - **A refused way back** keeps it in the runtime directory, in RAM. The
 //!   hidden session's shutdown has unmounted the volume too, and no path
 //!   reaches it any more. PID 1 stays in the hidden root and keeps `/run`, so
@@ -75,8 +78,9 @@ pub fn volume_in_next_root(mounts: &[MountEntry], plan: &Plan, nextroot: &Path) 
 /// Record on the hidden volume that the entry the `plan` armed was refused,
 /// with `reason`, through the volume's bind in the next root `nextroot` (see
 /// the module docs). A no-op unless the plan armed a switch and that bind is
-/// the volume's. Best-effort: a write failure is swallowed, because the
-/// transition must finish whatever happens to this record.
+/// the volume's, and for a hidden root accepted on the decoy's storage.
+/// Best-effort: a write failure is swallowed, because the transition must
+/// finish whatever happens to this record.
 pub fn record_on_volume(
     mounts: &[MountEntry],
     plan: &Plan,
@@ -84,7 +88,7 @@ pub fn record_on_volume(
     reason: &str,
     now: u64,
 ) {
-    if plan.armed.is_none() {
+    if plan.armed.is_none() || plan.accepted_decoy_storage.is_some() {
         return;
     }
     if let Some(volume) = volume_in_next_root(mounts, plan, nextroot) {
