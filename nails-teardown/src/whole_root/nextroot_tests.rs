@@ -190,6 +190,30 @@ fn canonical_in_root_resolves_symlinked_mount_points() {
 }
 
 #[test]
+fn canonical_in_root_follows_a_link_whose_target_is_not_there_yet() {
+    // systemd's fstab generator follows a link to a mount point that does not
+    // exist yet and mounts at the target, so the unit to mask is the target's.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("var")).unwrap();
+    symlink("var/data", root.path().join("data")).unwrap();
+    // An absolute link resolves inside the root, also when it leads nowhere.
+    symlink("/srv/backup", root.path().join("backup")).unwrap();
+    // A link to a link that leads nowhere is followed through both.
+    symlink("data", root.path().join("data2")).unwrap();
+    // A loop of links resolves to nothing: the path comes back as it is.
+    symlink("loop-b", root.path().join("loop-a")).unwrap();
+    symlink("loop-a", root.path().join("loop-b")).unwrap();
+
+    let canon = |p: &str| canonical_in_root(root.path(), Path::new(p));
+    assert_eq!(canon("/data"), Path::new("/var/data"));
+    assert_eq!(canon("/data/sub"), Path::new("/var/data/sub"));
+    assert_eq!(canon("/backup"), Path::new("/srv/backup"));
+    assert_eq!(canon("/data2"), Path::new("/var/data"));
+    assert_eq!(canon("/loop-a"), Path::new("/loop-a"));
+    assert_eq!(canon("/loop-a/x"), Path::new("/loop-a/x"));
+}
+
+#[test]
 fn nothing_is_created_through_a_dangling_link_or_a_dot_dot() {
     let root = tempfile::tempdir().unwrap();
     symlink("/gone", root.path().join("away")).unwrap();
