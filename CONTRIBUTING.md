@@ -176,6 +176,10 @@ New source files carry the two SPDX header lines
 and the whole tree is kept REUSE-compliant; `reuse lint` runs in the
 development shell, as a pre-commit hook and in CI.
 
+The graphical interface in `gui/` is licensed GPL-3.0-only, so new files there
+carry `GPL-3.0-only` in the licence line instead. It may use the
+GPL-3.0-or-later crates, but no crate of the main workspace may depend on it.
+
 ## Licensing
 
 By contributing, you agree that your contributions will be licensed under the repository's existing license terms.

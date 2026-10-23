@@ -735,6 +735,10 @@ Copyright (C) 2025-2026 WitteShadovv.
 This project is licensed under the **GNU General Public License v3.0 or later**.
 See [LICENSE](LICENSE).
 
+The graphical interface in `gui/` is licensed under **GPL-3.0-only** instead: it
+may use the GPL-3.0-or-later crates, but no crate of the main workspace may
+depend on it.
+
 > [!CAUTION]
 > This software is provided for educational and security research purposes. It
 > comes with no warranty, and it should not be treated as a guarantee of

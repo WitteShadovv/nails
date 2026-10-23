@@ -12,16 +12,17 @@ SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
 # The graphical-interface crate is licensed GPL-3.0-only rather than the tree's
-# GPL-3.0-or-later. A longer path is "closer", so this and the crate's own file
-# headers win over the catch-all for everything under gui/, its lockfile too.
+# GPL-3.0-or-later. When more than one table matches a file, the last matching
+# table wins, not the one with the longer path, so this table must stay below
+# the catch-all to cover everything under gui/, its lockfile too.
 [[annotations]]
 path = "gui/**"
 SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
 SPDX-License-Identifier = "GPL-3.0-only"
 
 # The EFF "large" diceware word list is third-party data under its own licence,
-# not the project's. When several annotations match a path the last one wins,
-# so this comes after the catch-all.
+# not the project's. The last matching table wins, so this one must stay below
+# the catch-all.
 [[annotations]]
 path = "setup/nails-setup/data/eff_large_wordlist.txt"
 SPDX-FileCopyrightText = "2016 Electronic Frontier Foundation"
