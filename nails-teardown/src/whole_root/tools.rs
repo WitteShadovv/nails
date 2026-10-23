@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The child processes the transitions run, each bounded by a deadline:
-//! `systemctl` to enqueue the soft-reboot or a power action, and `dmsetup` to
-//! mark the hidden backend for deferred removal.
+//! `systemctl` to enqueue the soft-reboot or a power action, `dmsetup` to
+//! mark the hidden backend for deferred removal, and `ip`, for the way back's
+//! [`network`](super::network) restore, to delete the links a session made and
+//! reset each device's hardware address to the one recorded at entry.
 //!
 //! Every tool runs by absolute path (recorded at activation, or one of a fixed
 //! list of system locations), with a cleared environment and no output, so a
@@ -13,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long one tool call may take. Both calls only enqueue work.
+/// How long one `systemctl` or `dmsetup` call may take, [`daemon_reload`]
+/// aside: none of them waits for a queued job or for udev.
 pub const TOOL_BUDGET: Duration = Duration::from_secs(3);
 
 /// System locations searched for a tool the plan does not name.
