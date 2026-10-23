@@ -41,7 +41,8 @@ struct RequiredTool {
 }
 
 /// The package that provides a tool on each family, where the names differ:
-/// Fedora ships `ip` in `iproute` and `dmsetup` in `device-mapper`.
+/// Fedora ships `ip` in `iproute`, Fedora and Arch ship `dmsetup` in
+/// `device-mapper`, and nixpkgs ships it in `lvm2`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Package {
     /// The Debian and Ubuntu package, also named on a host of unknown family.
