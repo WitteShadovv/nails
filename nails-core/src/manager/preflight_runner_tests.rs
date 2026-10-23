@@ -42,6 +42,7 @@ fn build_registry_includes_the_shared_checks() {
 
     for expected in [
         "hidden-volume",
+        "backend-detect",
         "storage-readiness",
         "suspicious-nails-reference",
         "nixos-config",
@@ -597,83 +598,186 @@ fn backend_entries_runs_right_after_the_hidden_volume_check() {
     assert_eq!(&names[..2], &["hidden-volume", "backend-entries"]);
 }
 
-/// The buried `--allow-discards` override threads from `PreflightOptions` into
-/// the backend-detect check: on a hidden root whose dm-crypt mapping forwards
-/// TRIM, the registry fails closed by default and only warns once the flag is
-/// set. The check's own fail/warn behaviour is covered in
-/// `backend_detect/tests.rs`; this proves the option reaches it through
-/// `build_registry`.
-#[test]
-fn allow_discards_option_reaches_the_backend_detect_check() {
-    let hidden_root = "/mnt/hidden";
-    let config = Config {
-        hidden_volume_root: std::path::PathBuf::from(hidden_root),
-        ..explicit_config()
-    };
-    // A plain dm-crypt mapping (253:3) under the hidden root with a non-zero
-    // discard_max_bytes: discards reach the physical device below it.
-    let fixture = || {
-        let fs = MockFilesystem::new();
-        fs.mock_set_file_content(
-            "/proc/self/mountinfo",
-            &format!(
-                "23 1 254:0 / / rw - ext4 /dev/mapper/cryptroot rw\n\
-                 40 23 253:3 / {hidden_root} rw - ext4 /dev/mapper/hidden rw\n"
-            ),
-        );
-        fs.mock_set_file_content("/sys/dev/block/253:3/dev", "0:0\n");
-        fs.mock_set_file_content(
-            "/sys/dev/block/253:3/uevent",
-            "MAJOR=0\nMINOR=0\nDEVNAME=dm-3\nDEVTYPE=disk\n",
-        );
-        fs.mock_set_file_content("/sys/dev/block/253:3/dm/uuid", "CRYPT-PLAIN-hidden\n");
-        fs.mock_set_file_content("/sys/dev/block/253:3/queue/discard_max_bytes", "4096\n");
-        fs
-    };
-    let verdict = |allow_discards: bool| {
-        let fs = fixture();
-        let inputs = RegistryInputs {
-            options: PreflightOptions {
-                allow_discards,
-                ..PreflightOptions::default()
-            },
-            current_state: SystemState::Inactive,
-            flake_target_already_validated: false,
-            selected_flake_dir: None,
-            discovered_target: crate::platform::HostTarget::None,
-            operator: None,
-            caller_path: None,
-            host_profile: None,
-        };
-        build_registry(&fs, &config, &inputs, None)
-            .expect("registry builds")
-            .run_all_detailed(&fs)
-            .0
+/// Register one block device under `dir` in the mock sysfs, as the
+/// backend-detect fixtures do: a `dev`/`uevent` pair, an optional dm uuid and
+/// loop backing file, and the runtime discard policy.
+fn add_block_device(
+    fs: &MockFilesystem,
+    dir: &str,
+    devname: &str,
+    dm_uuid: Option<&str>,
+    backing_file: Option<&str>,
+    discard_max_bytes: &str,
+) {
+    fs.mock_set_file_content(&format!("{dir}/dev"), "0:0\n");
+    fs.mock_set_file_content(
+        &format!("{dir}/uevent"),
+        &format!("MAJOR=0\nMINOR=0\nDEVNAME={devname}\nDEVTYPE=disk\n"),
+    );
+    if let Some(uuid) = dm_uuid {
+        fs.mock_set_file_content(&format!("{dir}/dm/uuid"), &format!("{uuid}\n"));
+    }
+    if let Some(file) = backing_file {
+        fs.mock_set_file_content(&format!("{dir}/loop/backing_file"), &format!("{file}\n"));
+    }
+    fs.mock_set_file_content(
+        &format!("{dir}/queue/discard_max_bytes"),
+        &format!("{discard_max_bytes}\n"),
+    );
+}
+
+/// A tcrypt mapping (`253:3` -> dm-3) over a loop-backed container under the
+/// `/mnt/hidden` root [`manager_with`] configures, with the given runtime
+/// discard policy on the crypt layer. A tcrypt mapping reads no LUKS2 header,
+/// so the fixture never touches the host's `/dev`.
+fn tcrypt_discard_fixture(discard_max_bytes: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    // BackendDetectCheck reads the raw /proc/self/mountinfo (not fs.mount_table),
+    // so set the file directly, as the backend-detect fixtures do.
+    fs.mock_set_file_content(
+        "/proc/self/mountinfo",
+        "23 1 254:0 / / rw,relatime shared:1 - ext4 /dev/mapper/cryptroot rw\n\
+         40 23 253:3 / /mnt/hidden rw,relatime shared:9 - ext4 /dev/mapper/veracrypt-hidden rw\n",
+    );
+    add_block_device(
+        &fs,
+        "/sys/dev/block/253:3",
+        "dm-3",
+        Some("CRYPT-TCRYPT-veracrypt-hidden"),
+        None,
+        discard_max_bytes,
+    );
+    fs.mock_set_directory_contents(
+        std::path::Path::new("/sys/dev/block/253:3/slaves"),
+        vec![std::path::PathBuf::from(
+            "/sys/dev/block/253:3/slaves/loop0",
+        )],
+    );
+    add_block_device(
+        &fs,
+        "/sys/dev/block/253:3/slaves/loop0",
+        "loop0",
+        None,
+        Some("/home/alice/family_photos"),
+        "4096",
+    );
+    fs
+}
+
+/// The pre-flight options an activation runs with, `--allow-discards` given
+/// or not: what `enter_session` passes to `run_preflight_checks`.
+fn activation_preflight(allow_discards: bool) -> PreflightOptions {
+    crate::manager::EnterOptions {
+        allow_discards,
+        ..crate::manager::EnterOptions::default()
+    }
+    .preflight()
+}
+
+/// The `backend-detect` failure, as message and remediation, that an
+/// activation's pre-flight over `fs` refuses with; `None` when it does not
+/// refuse on that check. The mock host fails checks of its own, so this looks
+/// for the one row among the failures.
+fn backend_detect_refusal(
+    fs: MockFilesystem,
+    allow_discards: bool,
+) -> Option<(String, Option<String>)> {
+    let manager = manager_with(fs);
+    match manager.run_preflight_checks(&activation_preflight(allow_discards)) {
+        Ok(()) => None,
+        Err(NailsError::PreFlightCheckFailed(failures)) => failures
             .into_iter()
-            .find(|(name, _)| name == "backend-detect")
-            .map(|(_, result)| result)
-            .expect("the backend-detect check runs")
-    };
+            .find(|(name, _, _)| name == "backend-detect")
+            .map(|(_, message, remediation)| (message, remediation)),
+        Err(other) => panic!("expected a pre-flight result, got {other:?}"),
+    }
+}
 
-    // Fail-closed by default: the flag never reached the check.
-    let refused = verdict(false);
-    assert!(refused.is_fail(), "default must fail closed: {refused:?}");
-    assert!(
-        refused
-            .message()
-            .contains("Discards are enabled over the hidden volume"),
-        "{refused:?}"
-    );
+/// The `backend-detect` row of the registry an activation's pre-flight runs
+/// over `fs`.
+fn backend_detect_row(fs: MockFilesystem, allow_discards: bool) -> CheckResult {
+    let manager = manager_with(fs);
+    manager
+        .preflight_registry(&activation_preflight(allow_discards))
+        .expect("registry builds")
+        .run_all_detailed(manager.filesystem())
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "backend-detect")
+        .map(|(_, result)| result)
+        .expect("every activation runs backend-detect")
+}
 
-    // With the per-run override the same stack only warns.
-    let accepted = verdict(true);
+/// Every activation refuses discards over the hidden volume: a cryptsetup
+/// mapping that forwards TRIM to the physical device makes the used/free map
+/// readable where a deniable volume must look like random data, so the
+/// activation's own pre-flight fails `backend-detect` with no flag given. The
+/// check's detection is covered in `backend_detect/tests.rs`; this pins the
+/// fail-closed default the activation registry builds it with.
+#[test]
+fn activation_refuses_discards_over_the_hidden_volume() {
+    let refusal = backend_detect_refusal(tcrypt_discard_fixture("2147450880"), false);
+    let (message, remediation) = refusal.expect("activation refuses on backend-detect");
     assert!(
-        accepted.is_warn(),
-        "--allow-discards must downgrade the refusal to a warning: {accepted:?}"
+        message.contains("Discards are enabled over the hidden volume"),
+        "{message}"
     );
+    let remediation = remediation.expect("the refusal says how to fix it");
     assert!(
-        accepted.message().contains("accepted for this run"),
-        "{accepted:?}"
+        remediation.starts_with("Re-open the hidden volume with discards off"),
+        "{remediation}"
+    );
+    // The refusal names no device-mapper node.
+    assert!(!message.contains("dm-"), "{message}");
+    assert!(!remediation.contains("dm-"), "{remediation}");
+}
+
+/// The same backend with discards off is not refused: the loop-backed file
+/// container only warns (its ctime cannot be restored), and a warning does not
+/// refuse.
+#[test]
+fn activation_does_not_refuse_the_backend_without_discards() {
+    assert_eq!(
+        backend_detect_refusal(tcrypt_discard_fixture("0"), false),
+        None
+    );
+    let row = backend_detect_row(tcrypt_discard_fixture("0"), false);
+    assert!(row.is_warn(), "{row:?}");
+    assert!(row.message().contains("file container"), "{row:?}");
+    assert!(!row.message().contains("Discards"), "{row:?}");
+}
+
+/// `--allow-discards` accepts the discards for this run only: the activation's
+/// pre-flight no longer refuses on `backend-detect`, and the check warns with
+/// the accepted-for-this-run message, which the operator sees as a console
+/// warning like a row of `nails check`.
+#[test]
+#[tracing_test::traced_test]
+fn allow_discards_turns_the_activation_refusal_into_a_warning() {
+    assert_eq!(
+        backend_detect_refusal(tcrypt_discard_fixture("2147450880"), true),
+        None
+    );
+    logs_assert(|lines: &[&str]| {
+        let warned = lines.iter().any(|line| {
+            line.contains("WARN")
+                && line.contains("backend-detect: Hidden root backend")
+                && line.contains("accepted for this run")
+        });
+        if warned {
+            Ok(())
+        } else {
+            Err("no backend-detect warning at activation".to_string())
+        }
+    });
+
+    let row = backend_detect_row(tcrypt_discard_fixture("2147450880"), true);
+    assert!(row.is_warn(), "{row:?}");
+    assert!(
+        row.message()
+            .contains("Discards are enabled over the hidden volume, accepted for this run"),
+        "{row:?}"
     );
 }
 

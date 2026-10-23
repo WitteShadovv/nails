@@ -332,6 +332,41 @@ fn a_dry_run_checks_with_the_options_activation_uses() {
     }
 }
 
+/// `nails check` and `nails activate` given the same flags on the command line
+/// derive the same pre-flight options, so `check --allow-discards` reports
+/// what `activate --allow-discards` would do, for every combination of the
+/// shared flags.
+#[test]
+fn check_and_activate_take_the_same_options_from_the_same_flags() {
+    use crate::cli::args::{Cli, Commands};
+    let parse = |command: &str, flags: &[&str]| {
+        let argv = ["nails", command].into_iter().chain(flags.iter().copied());
+        Cli::try_parse_checked_from(argv)
+            .unwrap_or_else(|error| panic!("{command} {flags:?}: {error}"))
+            .command
+    };
+    for bits in 0..16u8 {
+        let flags: Vec<&str> = [
+            (bits & 1 != 0, "--overlay-only"),
+            (bits & 2 != 0, "--allow-persistent-decoy"),
+            (bits & 4 != 0, "--allow-decoy-storage"),
+            (bits & 8 != 0, "--allow-discards"),
+        ]
+        .into_iter()
+        .filter_map(|(given, flag)| given.then_some(flag))
+        .collect();
+        let (Commands::Check(check), Commands::Activate(activate)) =
+            (parse("check", &flags), parse("activate", &flags))
+        else {
+            panic!("{flags:?}: expected check and activate");
+        };
+        let options = crate::cli::commands::check::preflight_options(&check);
+        let activation = super::activate_options(&activate).enter_options();
+        assert_eq!(options, activation.preflight(), "{flags:?}");
+        assert_eq!(options.allow_discards, bits & 8 != 0, "{flags:?}");
+    }
+}
+
 /// The prompt's answer, from a pipe standing in for the terminal.
 fn answer_to(input: &[u8], cancelled: bool) -> super::Answer {
     use std::io::Write;
