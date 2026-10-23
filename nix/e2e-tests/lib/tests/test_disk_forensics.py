@@ -9,6 +9,7 @@ turn every leak into a false pass.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import random
@@ -23,6 +24,8 @@ import disk_forensics as df
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "forensics"
 _INDICATORS = Path(__file__).resolve().parents[2] / "fixtures" / "indicators.json"
+# The allowlist of the NixOS decoys the VM tests boot.
+NIXOS = df.image_volatile("nixos")
 
 
 def _read(name: str) -> str:
@@ -350,7 +353,7 @@ class MacDiffTest(unittest.TestCase):
             },
             **{"etc/a": "1", "home/u/x": "2"},
         )
-        result = df.mac_diff(baseline, control, post)
+        result = df.mac_diff(baseline, control, post, NIXOS)
         self.assertEqual(result.left, {"home/u/x": ["content", "mtime"]})
         self.assertEqual(result.atime_left, {"home/u/x": ["atime"]})
         self.assertIn("home/u/x: content, mtime 100 -> 300", result.report)
@@ -358,7 +361,7 @@ class MacDiffTest(unittest.TestCase):
     def test_volatile_paths_are_never_left(self) -> None:
         baseline = self._state({"var/log/x": _entry("var/log/x")})
         post = self._state({"var/log/x": _entry("var/log/x", mtime=999)})
-        result = df.mac_diff(baseline, baseline, post)
+        result = df.mac_diff(baseline, baseline, post, NIXOS)
         self.assertEqual(result.left, {})
 
     def test_a_clean_session_passes_and_keeps_the_report(self) -> None:
@@ -366,7 +369,7 @@ class MacDiffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             machine = mock.Mock(out_dir=out)
             result = df.assert_mac_unchanged(
-                machine, state, state, state, artifact="t.txt"
+                machine, state, state, state, NIXOS, artifact="t.txt"
             )
             self.assertEqual(result.left, {})
             text = (Path(out) / "forensics" / "t.txt").read_text(encoding="utf-8")
@@ -378,25 +381,48 @@ class MacDiffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             machine = mock.Mock(out_dir=out)
             with self.assertRaises(AssertionError) as raised:
-                df.assert_mac_unchanged(machine, baseline, baseline, post)
+                df.assert_mac_unchanged(machine, baseline, baseline, post, NIXOS)
             self.assertIn("etc/a: content", str(raised.exception))
 
 
 class ImageVolatileTest(unittest.TestCase):
     # Entries only a NixOS decoy churns at every boot (store bookkeeping and the
     # activation-replaced links); on an FHS distro each is a real finding.
-    NIXOS_ONLY = ("nix/store/.links", "bin/sh", "usr/bin/env")
+    NIXOS_ONLY = (
+        "nix/store/.links",
+        "nix/var/nix/db/db.sqlite",
+        "bin/sh",
+        "usr/bin/env",
+    )
     # Boot noise every distribution shares.
     GENERIC = ("var/log/x", "run/y", "tmp/z", "etc/machine-id")
+    # A var/, run/ or tmp/ below the image root, and the boot-noise names
+    # anywhere but where the system keeps them, are decoy files like any other.
+    NESTED = (
+        "home/alice/tmp/notes.txt",
+        "root/projects/var/x",
+        "root/.cache/run/x",
+        "srv/data/etc/machine-id",
+        "home/alice/bin/sh",
+        "opt/tool/usr/bin/env",
+    )
     FHS_IDS = ("debian", "ubuntu", "fedora", "arch")
 
-    def test_default_is_the_nixos_allowlist(self) -> None:
+    def test_the_nixos_constant_is_the_nixos_allowlist(self) -> None:
         self.assertEqual(
             df.image_volatile("nixos").pattern, df.DEFAULT_IMAGE_VOLATILE.pattern
         )
-        self.assertEqual(
-            df.image_volatile().pattern, df.DEFAULT_IMAGE_VOLATILE.pattern
-        )
+
+    def test_no_caller_gets_the_nixos_list_by_default(self) -> None:
+        # The NixOS list is the widest, so a caller that forgot the os-id or
+        # the allowlist must fail rather than get it.
+        for function, parameter in (
+            (df.image_volatile, "os_id"),
+            (df.mac_diff, "volatile"),
+            (df.assert_mac_unchanged, "volatile"),
+        ):
+            default = inspect.signature(function).parameters[parameter].default
+            self.assertIs(default, inspect.Parameter.empty, function.__name__)
 
     def test_nixos_allowlists_the_activation_entries(self) -> None:
         nixos = df.image_volatile("nixos")
@@ -414,6 +440,20 @@ class ImageVolatileTest(unittest.TestCase):
             volatile = df.image_volatile(os_id)
             for path in self.GENERIC:
                 self.assertTrue(volatile.search(path), f"{os_id}: {path}")
+
+    def test_a_nested_runtime_name_is_a_finding_everywhere(self) -> None:
+        for os_id in ("nixos", *self.FHS_IDS):
+            volatile = df.image_volatile(os_id)
+            for path in self.NESTED:
+                self.assertIsNone(volatile.search(path), f"{os_id}: {path}")
+
+    def test_the_nix_database_is_noise_only_on_nixos(self) -> None:
+        # Through the generic var/ alternative it used to match everywhere: a
+        # Nix database that appeared on an FHS decoy is a finding.
+        path = "nix/var/nix/db/db.sqlite"
+        self.assertTrue(df.image_volatile("nixos").search(path))
+        for os_id in self.FHS_IDS:
+            self.assertIsNone(df.image_volatile(os_id).search(path), os_id)
 
     def test_a_general_store_path_is_a_finding_even_on_nixos(self) -> None:
         # Only the store's .links bookkeeping is boot noise; an actual store

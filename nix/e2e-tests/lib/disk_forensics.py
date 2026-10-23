@@ -879,7 +879,10 @@ def run_content_hashes(
 # Paths on an image (fls-relative, no leading slash) that change on their own
 # across a reboot: runtime state under /var, /run and /tmp, the per-boot machine
 # id, resolver config and SSH host keys, and NixOS's /etc activation stamps.
-# Every distribution gets these; a test may pass a wider pattern.
+# Every distribution gets these; a test may pass a wider pattern. Each is
+# anchored at the image root: a var/, run/ or tmp/ further down (a home's own
+# tmp/, a project's var/) is a decoy file like any other, and the Nix store's
+# nix/var/ is reached only through the NixOS entries below.
 _GENERIC_IMAGE_VOLATILE = (
     r"var/|run/|tmp/|etc/machine-id|etc/resolv\.conf|etc/ssh/ssh_host_|"
     r"etc/\.(updated|clean)"
@@ -891,29 +894,28 @@ _GENERIC_IMAGE_VOLATILE = (
 # userspace starts -- at a boot and at the soft-reboot back from a hidden
 # session alike, since the way back starts the decoy once more, the same as a
 # reboot would. On an FHS distribution none of these is activation noise: a
-# changed ``/bin/sh`` or a store path that appeared there is a real finding, so
-# they are allowlisted only when the decoy's os-id is NixOS.
+# changed ``/bin/sh`` or a Nix database that appeared there is a real finding,
+# so they are allowlisted only when the decoy's os-id is NixOS.
 _NIXOS_IMAGE_VOLATILE = r"nix/var/|nix/store/\.links|bin/sh$|usr/bin/env$"
 
 
-def image_volatile(os_id: str = "nixos") -> re.Pattern[str]:
+def image_volatile(os_id: str) -> re.Pattern[str]:
     """The image-volatile allowlist for a decoy of the given os-id.
 
     Every distribution gets the generic boot-noise paths; a NixOS decoy also
     gets the activation-churn entries, which on any other distribution would
     mask a real change. ``os_id`` is the ``/etc/os-release`` ID (``"nixos"``,
-    ``"debian"``, ``"ubuntu"``, …); the default keeps the historical NixOS
-    behaviour for callers that pass nothing.
+    ``"debian"``, ``"ubuntu"``, …). It has no default: the NixOS list is the
+    widest, and a caller that forgot the argument would get it.
     """
     alternatives = _GENERIC_IMAGE_VOLATILE
     if os_id == "nixos":
         alternatives = f"{alternatives}|{_NIXOS_IMAGE_VOLATILE}"
-    return re.compile(rf"(^|/)({alternatives})")
+    return re.compile(rf"^({alternatives})")
 
 
 #: The NixOS decoy's allowlist, kept as a module constant for the NixOS forensic
-#: tests that reference it directly. Equal to ``image_volatile("nixos")`` and
-#: byte-identical to the pattern these tests have always used.
+#: tests that reference it directly. Equal to ``image_volatile("nixos")``.
 DEFAULT_IMAGE_VOLATILE = image_volatile("nixos")
 
 
@@ -961,14 +963,14 @@ def mac_diff(
     baseline: ImageState,
     control: ImageState,
     post: ImageState,
-    volatile: re.Pattern[str] = DEFAULT_IMAGE_VOLATILE,
+    volatile: re.Pattern[str],
 ) -> MacDiff:
     """Compare ``control -> post`` (the hidden session's span) with
     ``baseline -> control`` (the same number of plain boots, no session).
 
     A ``(path, field)`` that the control span also changed is boot noise; a
-    path matching ``volatile`` is allowlisted. Whatever is left changed only
-    because of the hidden session.
+    path matching ``volatile`` (the decoy's :func:`image_volatile`) is
+    allowlisted. Whatever is left changed only because of the hidden session.
     """
     control_changes = image_changes(baseline, control)
     control_atime = image_changes(baseline, control, MAC_FIELDS_OBSERVED)
@@ -1007,7 +1009,7 @@ def assert_mac_unchanged(
     baseline: ImageState,
     control: ImageState,
     post: ImageState,
-    volatile: re.Pattern[str] = DEFAULT_IMAGE_VOLATILE,
+    volatile: re.Pattern[str],
     *,
     artifact: str = "mac-diff.txt",
 ) -> MacDiff:

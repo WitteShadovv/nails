@@ -212,7 +212,11 @@ in
     with subtest("existing decoy inodes keep their MAC times and contents"):
         post_state = disk_forensics.image_state(post, "post", machine)
         disk_forensics.assert_mac_unchanged(
-            machine, baseline_state, control_state, post_state
+            machine,
+            baseline_state,
+            control_state,
+            post_state,
+            disk_forensics.image_volatile("nixos"),
         )
   '';
 }
