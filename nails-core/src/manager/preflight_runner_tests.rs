@@ -669,6 +669,107 @@ fn the_entries_check_alone_only_logs_its_warning() {
         .expect("a warning does not refuse");
 }
 
+/// Register one block device under `dir` in the mock sysfs, as the
+/// backend-detect fixtures do: a `dev`/`uevent` pair, an optional dm uuid and
+/// loop backing file, and the runtime discard policy.
+fn add_block_device(
+    fs: &MockFilesystem,
+    dir: &str,
+    devname: &str,
+    dm_uuid: Option<&str>,
+    backing_file: Option<&str>,
+    discard_max_bytes: &str,
+) {
+    fs.mock_set_file_content(&format!("{dir}/dev"), "0:0\n");
+    fs.mock_set_file_content(
+        &format!("{dir}/uevent"),
+        &format!("MAJOR=0\nMINOR=0\nDEVNAME={devname}\nDEVTYPE=disk\n"),
+    );
+    if let Some(uuid) = dm_uuid {
+        fs.mock_set_file_content(&format!("{dir}/dm/uuid"), &format!("{uuid}\n"));
+    }
+    if let Some(file) = backing_file {
+        fs.mock_set_file_content(&format!("{dir}/loop/backing_file"), &format!("{file}\n"));
+    }
+    fs.mock_set_file_content(
+        &format!("{dir}/queue/discard_max_bytes"),
+        &format!("{discard_max_bytes}\n"),
+    );
+}
+
+/// A tcrypt mapping (`253:3` -> dm-3) over a loop-backed container under the
+/// `/mnt/hidden` root [`manager_with`] configures, with the given runtime
+/// discard policy on the crypt layer. A tcrypt mapping reads no LUKS2 header,
+/// so the fixture never touches the host's `/dev`.
+fn tcrypt_discard_fixture(discard_max_bytes: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    // BackendDetectCheck reads the raw /proc/self/mountinfo (not fs.mount_table),
+    // so set the file directly, as the backend-detect fixtures do.
+    fs.mock_set_file_content(
+        "/proc/self/mountinfo",
+        "23 1 254:0 / / rw,relatime shared:1 - ext4 /dev/mapper/cryptroot rw\n\
+         40 23 253:3 / /mnt/hidden rw,relatime shared:9 - ext4 /dev/mapper/veracrypt-hidden rw\n",
+    );
+    add_block_device(
+        &fs,
+        "/sys/dev/block/253:3",
+        "dm-3",
+        Some("CRYPT-TCRYPT-veracrypt-hidden"),
+        None,
+        discard_max_bytes,
+    );
+    fs.mock_set_directory_contents(
+        std::path::Path::new("/sys/dev/block/253:3/slaves"),
+        vec![std::path::PathBuf::from(
+            "/sys/dev/block/253:3/slaves/loop0",
+        )],
+    );
+    add_block_device(
+        &fs,
+        "/sys/dev/block/253:3/slaves/loop0",
+        "loop0",
+        None,
+        Some("/home/alice/family_photos"),
+        "4096",
+    );
+    fs
+}
+
+#[test]
+fn the_backend_detect_check_alone_refuses_discards_over_the_hidden_volume() {
+    // What activation runs under --no-preflight: a cryptsetup mapping over the
+    // hidden volume forwards TRIM to the physical device, so the used/free map
+    // becomes readable where a deniable volume must look like random data.
+    let manager = manager_with(tcrypt_discard_fixture("2147450880"));
+    match manager.run_backend_detect_check() {
+        Err(NailsError::PreFlightCheckFailed(failures)) => {
+            assert_eq!(failures.len(), 1, "{failures:?}");
+            assert_eq!(failures[0].0, "backend-detect");
+            assert!(
+                failures[0]
+                    .1
+                    .contains("Discards are enabled over the hidden volume"),
+                "{failures:?}"
+            );
+            // The refusal names no device-mapper node.
+            assert!(!failures[0].1.contains("dm-"), "{failures:?}");
+        }
+        other => panic!("expected the discard refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_backend_detect_check_alone_does_not_refuse_without_discards() {
+    // The same backend with discards off: a loop-backed file container only
+    // warns (its ctime cannot be restored), and a warning does not refuse,
+    // exactly as a full pre-flight run reports it.
+    let manager = manager_with(tcrypt_discard_fixture("0"));
+    manager
+        .run_backend_detect_check()
+        .expect("a backend hazard that only warns does not refuse");
+}
+
 /// A manager over a mock host whose os-release is `os_release`, with the host
 /// detected as `check` and activation detect it.
 fn manager_on_host(os_release: &str) -> NailsManager<MockFilesystem> {

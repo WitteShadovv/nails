@@ -233,12 +233,14 @@ impl<F: Filesystem> NailsManager<F> {
         // What the operator accepted holds for every write of this activation.
         self.allow = options.allow();
         let nixos = self.require_supported_host(machine)?;
-        // A decoy entry that opens the hidden volume, and the decoy's own
-        // flake as the hidden system, are refused in every case;
-        // --no-preflight skips the other checks only.
+        // A decoy entry that opens the hidden volume, the decoy's own flake as
+        // the hidden system, and discards forwarded to the physical device
+        // over the hidden volume are refused in every case; --no-preflight
+        // skips the other checks only.
         if options.skip_preflight {
             cancellable(|| self.run_backend_entries_check())?;
             self.refuse_decoy_flake(options.overlay_only)?;
+            cancellable(|| self.run_backend_detect_check())?;
         } else {
             cancellable(|| self.stage_hidden_config(options.overlay_only))?;
             cancellable(|| self.run_preflight_checks(&options.preflight()))?;
