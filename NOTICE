@@ -15,5 +15,7 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <https://www.gnu.org/licenses/>.
 
 The full license text is in LICENSE (and in LICENSES/GPL-3.0-or-later.txt).
+The graphical interface in gui/ is licensed under version 3 of the License
+only (LICENSES/GPL-3.0-only.txt).
 Per-file copyright and licensing is recorded with SPDX headers and REUSE.toml,
 following the REUSE specification (https://reuse.software).
