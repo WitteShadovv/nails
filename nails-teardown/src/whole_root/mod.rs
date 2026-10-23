@@ -24,7 +24,8 @@
 //!   decoy's order with their options;
 //! - [`runtime_units`]: runtime units and masks in `/run`;
 //! - [`switch_refusal`]: why the last switch was refused, kept on the hidden
-//!   volume so `status` can say so;
+//!   volume (a refused entry) or in the runtime directory (a refused way
+//!   back) so `status` can say so;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
 //! - [`emergency`]: the emergency hot path;

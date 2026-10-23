@@ -230,6 +230,104 @@ fn an_unarmed_nextroot_in_the_hidden_session_keeps_the_plan() {
     world.write_plan(&plan);
     assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
     assert!(world.runtime().join(PLAN_NAME).exists());
+    assert_eq!(switch_refusal::read(&world.runtime()), None);
+}
+
+/// The mount table as the transition finds it: the decoy root, the next root
+/// (`env`'s, made canonical) and in it the hidden volume's bind at
+/// `/mnt/data`, on device 254:0. The shutdown has already unmounted the volume
+/// at its own path. Returns the bind's directory.
+fn with_the_volume_s_bind(world: &World, env: &mut Env) -> PathBuf {
+    let next = fs::canonicalize(world.nextroot()).unwrap();
+    let volume = next.join("mnt/data");
+    fs::create_dir_all(&volume).unwrap();
+    env.mounts = parse_mountinfo(&format!(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         40 1 0:40 / {} rw - overlay overlay rw\n\
+         63 40 254:0 / {} rw - ext4 /dev/mapper/data rw\n",
+        next.display(),
+        volume.display()
+    ));
+    env.nextroot = next;
+    volume
+}
+
+/// A plan armed for `direction` on the hidden volume of device 254:0.
+fn armed_on_the_volume(direction: Direction) -> Plan {
+    let mut plan = armed(direction);
+    plan.hidden_dev = Some("254:0".to_string());
+    plan
+}
+
+#[test]
+fn a_refused_entry_keeps_its_reason_on_the_hidden_volume_through_the_next_root() {
+    let world = World::new();
+    world.write_plan(&armed_on_the_volume(Direction::Enter));
+    let mut env = world.env(true, 1_000);
+    let volume = with_the_volume_s_bind(&world, &mut env);
+
+    // The hidden init is not in the next root: the check refuses the switch.
+    let outcome = run(&env);
+
+    let Outcome::Disarmed(why) = outcome else {
+        panic!("expected a refused switch, got {outcome:?}");
+    };
+    assert!(why.contains("does not resolve"), "{why}");
+    assert_eq!(
+        switch_refusal::read(&volume),
+        Some(switch_refusal::SwitchRefusal {
+            reason: why,
+            at: 1_000
+        }),
+        "the reason is on the hidden volume"
+    );
+    assert!(!world.runtime().exists(), "nothing of the entry is left");
+}
+
+#[test]
+fn a_reboot_that_meets_an_unarmed_tree_records_nothing_on_the_volume() {
+    let world = World::new();
+    let mut plan = armed_on_the_volume(Direction::Enter);
+    plan.armed = None;
+    world.write_plan(&plan);
+    let mut env = world.env(true, 1_000);
+    let volume = with_the_volume_s_bind(&world, &mut env);
+
+    assert!(matches!(run(&env), Outcome::Disarmed(_)));
+
+    assert!(!switch_refusal::refusal_path(&volume).exists());
+}
+
+#[test]
+fn a_refused_way_back_keeps_its_reason_in_the_runtime_directory() {
+    // In the hidden session the next root is the decoy's: whatever is mounted
+    // there, the reason never goes into it. PID 1 stays in the hidden root,
+    // and `/run` with it.
+    let world = World::new();
+    repoint_current_system(&world.run(), Path::new("/nix/store/bbb-nixos-system")).unwrap();
+    let mut plan = armed_on_the_volume(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.write_plan(&plan);
+    let mut env = world.env(true, 1_000);
+    let in_next_root = with_the_volume_s_bind(&world, &mut env);
+
+    // The decoy's init is not in the next root: the check refuses the way back.
+    let outcome = run(&env);
+
+    let Outcome::Disarmed(why) = outcome else {
+        panic!("expected a refused switch, got {outcome:?}");
+    };
+    assert!(why.contains("does not resolve"), "{why}");
+    let kept = switch_refusal::read(&world.runtime()).expect("the reason is kept in /run");
+    assert_eq!((kept.reason.as_str(), kept.at), (why.as_str(), 1_000));
+    assert!(!switch_refusal::refusal_path(&in_next_root).exists());
+    // The session goes on, on its own system, with its plan for a later way
+    // back.
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/bbb-nixos-system")
+    );
+    assert!(world.runtime().join(PLAN_NAME).exists());
 }
 
 #[test]
