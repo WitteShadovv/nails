@@ -202,6 +202,38 @@ pub const ARTIFACTS: &[Artifact] = &[
         description: "Runtime udev rule that keeps unused disks read-only in the hidden session ([session_mounts] read_only); removed on the way back, so a leftover on the decoy is a teardown failure.",
     },
     Artifact {
+        id: "boot-records-copy",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Runtime,
+        severity: ArtifactSeverity::Warn,
+        value: nails_teardown::whole_root::boot_records::FIXUP_DIR_PATH,
+        description: "RAM copy of the binary that the way back leaves on an FHS decoy for its first start, which runs it to make the login and boot records read as a power cycle and then removes it; a leftover means that step never ran, and /run may still be executable.",
+    },
+    Artifact {
+        id: "boot-records-unit",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Runtime,
+        severity: ArtifactSeverity::Warn,
+        value: nails_teardown::whole_root::boot_records::FIXUP_UNIT_PATH,
+        description: "Runtime one-shot unit the way back leaves on an FHS decoy to reconcile its login and boot records on the first start; it removes itself, so a leftover means it never ran.",
+    },
+    Artifact {
+        id: "boot-records-unit-link",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Runtime,
+        severity: ArtifactSeverity::Warn,
+        value: nails_teardown::whole_root::boot_records::FIXUP_LINK_PATH,
+        description: "Runtime link that pulls the login- and boot-record one-shot into the decoy's first start after the way back; removed with the unit.",
+    },
+    Artifact {
+        id: "boot-writer-dropin",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Runtime,
+        severity: ArtifactSeverity::Warn,
+        value: nails_teardown::whole_root::boot_writer::DROPIN_PATH,
+        description: "Runtime drop-in the way back leaves for a wtmpdb decoy's boot writer, so that it records the way back as a power cycle; removed when the writer starts, so a leftover means it never started.",
+    },
+    Artifact {
         id: "pivot-staging-run-legacy",
         kind: ArtifactKind::AbsolutePath,
         scope: ArtifactScope::Runtime,
@@ -460,6 +492,29 @@ mod tests {
             artifact("read-only-disks-rule").unwrap().value,
             format!("/run/{RULE_DIR}/{RULE_NAME}")
         );
+    }
+
+    #[test]
+    fn the_boot_record_artifacts_name_the_pieces_the_way_back_leaves() {
+        use nails_teardown::whole_root::boot_records::{FIXUP_DIR, FIXUP_UNIT, FIXUP_WANTED_BY};
+        use nails_teardown::whole_root::boot_writer::{DROPIN_DIR, DROPIN_NAME};
+        for (id, path) in [
+            ("boot-records-copy", format!("/run/{FIXUP_DIR}")),
+            (
+                "boot-records-unit",
+                format!("/run/systemd/system/{FIXUP_UNIT}"),
+            ),
+            (
+                "boot-records-unit-link",
+                format!("/run/systemd/system/{FIXUP_WANTED_BY}.wants/{FIXUP_UNIT}"),
+            ),
+            (
+                "boot-writer-dropin",
+                format!("/run/{DROPIN_DIR}/{DROPIN_NAME}"),
+            ),
+        ] {
+            assert_eq!(artifact(id).unwrap().value, path, "{id}");
+        }
     }
 
     #[test]
