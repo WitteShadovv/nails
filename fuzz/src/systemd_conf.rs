@@ -11,6 +11,9 @@
 //! refuses. Two refusals differ between systemd releases (an empty name, and
 //! the glob characters `*?[` in a name, refused since 2025); a text holding
 //! such a header is [`Verdict::Undecided`] and compared with nothing.
+//!
+//! The texts are `&str`, so the only lines `utf8_is_valid()` refuses in them
+//! are those holding a character `unichar_is_valid()` refuses.
 
 /// The assignments of a section, in the order systemd applies them, and
 /// whether reading went to the end.
@@ -18,7 +21,7 @@
 pub struct Read {
     /// `(key, value)`, both stripped.
     pub assignments: Vec<(String, String)>,
-    /// A section header systemd refuses stopped the reading.
+    /// A line systemd refuses stopped the reading.
     pub stopped: bool,
 }
 
@@ -74,7 +77,7 @@ enum Line {
     Skip,
     /// A header: whether it opens `section`.
     Header(bool),
-    /// A header every release refuses: reading stops.
+    /// A line every release refuses: reading stops.
     Refused,
     /// A header only some releases refuse.
     Undecided,
@@ -82,10 +85,25 @@ enum Line {
     Assignment(String, String),
 }
 
+/// `unichar_is_valid()` (src/basic/utf8.c) for a code point a `char` can be:
+/// the code points past U+10FFFF and the UTF-16 surrogates it refuses are
+/// none.
+fn unichar_is_valid(c: char) -> bool {
+    let ch = u32::from(c);
+    if (0xFDD0..=0xFDEF).contains(&ch) {
+        return false;
+    }
+    ch & 0xFFFE != 0xFFFE
+}
+
 fn parse_line(line: &str, section: &str) -> Line {
     let line = line.trim_matches(is_whitespace);
     if line.is_empty() {
         return Line::Skip;
+    }
+    // utf8_is_valid(), before anything else looks at the line.
+    if !line.chars().all(unichar_is_valid) {
+        return Line::Refused;
     }
     if let Some(header) = line.strip_prefix('[') {
         let Some(name) = header.strip_suffix(']') else {
@@ -169,7 +187,7 @@ fn parse_file(text: &str, section: &str, read: &mut Read) -> Option<bool> {
 }
 
 /// What the daemon reads from `[section]` of the files, given in the order
-/// it reads them: a malformed header stops this file and every later one.
+/// it reads them: a line it refuses stops this file and every later one.
 pub fn read_files(files: &[&str], section: &str) -> Verdict {
     let mut read = Read::default();
     for text in files {

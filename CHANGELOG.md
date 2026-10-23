@@ -149,13 +149,20 @@ of this changelog for that version becomes the release notes word for word, and
 - The `decoy-persistence` check judges journald's journal by the running systemd's built-in default
   when no configuration sets `Storage=`: below systemd 259 the default is still `auto`, but from 259
   (Ubuntu 26.04) it is `persistent`, so a decoy that keeps no explicit setting now counts as
-  persistent and is refused, where it was read as volatile before. The `journal.storage` credential
-  (systemd 257 and later) is read when no configuration file sets `Storage=`, and a systemd whose
-  version cannot be read is treated as persistent.
+  persistent and is refused, where it was read as volatile before. When no configuration file sets
+  `Storage=`, the `journal.storage` credential counts as journald reads it: from systemd 256 only,
+  as journald received it in `/run/credentials/systemd-journald.service/` (which only root can
+  read), and only when its bytes are exactly the value, so `volatile` followed by a newline, as
+  `echo` writes it, does not count. A systemd whose version cannot be read is treated as persistent.
+- An empty `Storage=` in the journald configuration keeps the value set before it, as journald keeps
+  it, where NAILS reset it to the default.
 - The journald, logind and systemd-coredump configuration is read line by line for UTF-8, as systemd
-  reads it: a comment or other line that is not valid UTF-8 (a Latin-1 comment, say) no longer makes
-  the whole file unreadable, so a `Storage=persistent` below such a line is still seen instead of the
-  decoy reading as amnesic.
+  reads it. A comment that is not valid UTF-8 (a Latin-1 comment, say) is skipped and no longer
+  makes the whole file unreadable, so a `Storage=persistent` beside it is still seen instead of the
+  decoy reading as amnesic. Any other line that is not valid UTF-8 stops the reading of that file and
+  of every file after it, as a malformed section header does, so a `Storage=volatile` below such a
+  line or in a later drop-in, which journald never reads, no longer lets a persistent journal pass.
+  Like systemd, NAILS counts the Unicode noncharacters (U+FFFF and the like) as not valid UTF-8.
 - A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
   equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
   activation, naming the folder, instead of passing the pre-flight check and then failing the
