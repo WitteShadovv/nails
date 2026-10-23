@@ -1,26 +1,29 @@
 name: Oracle real-image nightly
 
-# Nightly forensic oracle over the REAL decoy disk images, the companion to the
-# synthetic oracle-nightly.yml. The synthetic run proves the verdict engine over
-# built-here btrfs images; this run proves it over the actual decoy roots the
-# oracle-images E2E produces, so a regression in the real restore/bulk_extractor/
-# plaso path (ext4 carving, the volatile-decoy posture, the lease settle) is
-# caught. Anything but a clean verdict fails the run.
+# Nightly forensic oracle over the REAL decoy disk images: the oracle-images
+# E2E test images the decoy root before a hidden session, after a plain
+# control reboot and after the session, so a regression in the real
+# restore/bulk_extractor/plaso path (ext4 carving, the volatile-decoy posture,
+# the lease settle) is caught. Anything but a clean verdict fails the run.
+# This is the only oracle run in CI: ci/oracle/oracle-nightly.yml, the run over
+# synthetic btrfs images, is a template that is not installed under
+# .github/workflows, so nothing runs it.
 #
 # Two runners, because the two halves need different hosts:
 #   * produce: ubuntu-26.04 exposes /dev/kvm (install-nix-action opens it), so
-#     the oracle-images VM test boots and retains before/control/after.raw. The
-#     nails VM is built by Nix in its own sandbox, so the host toolchain does
-#     not matter here.
+#     the oracle-images test boots and retains before/control/after.raw. Its
+#     driver runs every night, so the session runs and is imaged afresh each
+#     time instead of coming back from the binary cache. Nix builds the driver
+#     and the VMs, so the host toolchain does not matter here.
 #   * scan: ubuntu-24.04, because run-scan.sh builds the pinned bulk_extractor
-#     2.2.0 with the HOST compiler and 2.2.0 fails 26.04's GCC -Werror (see
-#     oracle-nightly.yml). It needs no KVM.
+#     2.2.0 with the HOST compiler and 2.2.0 fails 26.04's GCC -Werror. It
+#     needs no KVM.
 # The raws move between them as a sparse-preserving tar artifact (each raw is a
 # 20 GiB image that is a few tens of MiB of real data).
 
 on:
   schedule:
-    # Nightly at 05:30 UTC, after the synthetic oracle run (04:30).
+    # Nightly at 05:30 UTC, after the E2E (02:17) and distro (03:41) runs.
     - cron: "30 5 * * *"
   workflow_dispatch:
 
@@ -55,27 +58,49 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
-      # Build the oracle-images E2E test. It boots the decoy, runs the
+      # Run the oracle-images E2E test. It boots the decoy, runs the
       # activate/populate/deactivate workflow on a volatile decoy and retains
-      # before/control/after.raw under the result's forensics/ directory.
-      - name: Build the oracle-images test and retain the raws
+      # before/control/after.raw under forensics/ in its output directory.
+      #
+      # The test's driver runs directly, as in the execute mode of the nightly
+      # E2E run. Building the test would substitute the pass of an earlier run
+      # of the same derivation from the binary cache, together with that run's
+      # images, so the session would run once per change of its inputs rather
+      # than every night. The cache still serves the driver, nails and the VMs.
+      #
+      # Outside the Nix sandbox the driver keeps the VM disks and the Nix store
+      # image in XDG_RUNTIME_DIR, falling back to TMPDIR, and XDG_RUNTIME_DIR
+      # is a small tmpfs in RAM on a hosted runner, so both name a directory
+      # on the root disk. virtiofsd inherits the shell's hard open-file limit,
+      # which is raised first, as nix-daemon raises it for a build.
+      - name: Run the oracle-images test and retain the raws
         run: |
-          nix build --print-build-logs \
-            '.#legacyPackages.x86_64-linux.e2e."oracle-images"'
-          test -f result/forensics/before.raw
-          test -f result/forensics/control.raw
-          test -f result/forensics/after.raw
+          set -euo pipefail
+          if ! sudo -n prlimit --pid $$ --nofile=1048576:1048576; then
+            echo "::warning title=Open-file limit::Could not raise the hard open-file limit ($(ulimit -Hn)); virtiofsd may run out of descriptors."
+          fi
+          driver="$RUNNER_TEMP/oracle-images-driver"
+          out="$RUNNER_TEMP/oracle-images"
+          scratch="$RUNNER_TEMP/vm"
+          nix build --print-build-logs --out-link "$driver" \
+            '.#legacyPackages.x86_64-linux.e2e."oracle-images".driver'
+          mkdir -p "$out" "$scratch"
+          (
+            cd "$scratch"
+            TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" \
+              "$driver/bin/nixos-test-driver" -o "$out" </dev/null
+          )
+          test -f "$out/forensics/before.raw"
+          test -f "$out/forensics/control.raw"
+          test -f "$out/forensics/after.raw"
 
       # Pack the three raws sparsely: each is a 20 GiB image of a few tens of
-      # MiB, so -S keeps the artifact small. --dereference because result/ is a
-      # store symlink.
+      # MiB, so -S keeps the artifact small. The test already wrote them
+      # sparse.
       - name: Pack the raws
         run: |
-          mkdir -p images
-          cp --sparse=always result/forensics/before.raw images/
-          cp --sparse=always result/forensics/control.raw images/
-          cp --sparse=always result/forensics/after.raw images/
-          tar -Sczf raws.tar.gz -C images before.raw control.raw after.raw
+          tar -Sczf raws.tar.gz -C "$RUNNER_TEMP/oracle-images/forensics" \
+            before.raw control.raw after.raw
           ls -la raws.tar.gz
 
       - name: Upload the raws
@@ -122,8 +147,8 @@ jobs:
           tar -Sxzf raws.tar.gz -C "$RUNNER_TEMP/images"
           ls -la "$RUNNER_TEMP/images"
 
-      # Same analysis tools as oracle-nightly.yml. sleuthkit (mmls) and
-      # e2fsprogs (debugfs) carve the ext4 restore channel from the real decoy
+      # The tools of the ci/oracle/oracle-nightly.yml template. sleuthkit (mmls)
+      # and e2fsprogs (debugfs) carve the ext4 restore channel from the real decoy
       # roots; the rest is the pinned bulk_extractor build chain. Docker is
       # preinstalled for the pinned plaso container.
       - name: Install analysis tools
@@ -152,36 +177,47 @@ jobs:
           cat "$RUNNER_TEMP/oracle/verdict.json" 2>/dev/null \
             || echo "(no verdict.json: the scan did not reach the verdict)"
 
-      # The scan runs as root, and the carved restore trees keep the decoy's
-      # root-only modes (etc/credstore is 0700), which the upload cannot read.
-      # Hand the verdict and the analysis outputs to the runner user. The
-      # bulk_extractor build and the image working copy stay out of the
-      # artifact.
-      - name: Make the outputs readable for the upload
+      # The artifact holds the scan's outputs and no file of this runner. The
+      # carved restore trees keep the decoy's symlinks, absolute ones included
+      # (etc/mtab points at /proc/mounts), and the upload follows a symlink to
+      # whatever its target names here, so the outputs go up as one tar, which
+      # stores a symlink as a symlink. tar runs as root because the trees keep
+      # the decoy's root-only modes (etc/credstore is 0700), and the archive is
+      # then handed to the runner user. The bulk_extractor build and the image
+      # working copy stay out of the artifact.
+      - name: Pack the verdict and analysis outputs
         if: ${{ !cancelled() }}
         run: |
-          for p in "$RUNNER_TEMP/oracle/verdict.json" "$RUNNER_TEMP/oracle/outputs"; do
-            if [ -e "$p" ]; then
-              sudo chown -R "$(id -u):$(id -g)" "$p"
-              chmod -R u+rwX "$p"
-            fi
-          done
+          set -euo pipefail
+          src="$RUNNER_TEMP/oracle"
+          dest="$RUNNER_TEMP/oracle-artifact"
+          mkdir -p "$dest"
+          if [ -f "$src/verdict.json" ]; then
+            cp "$src/verdict.json" "$dest/verdict.json"
+          fi
+          if [ -d "$src/outputs" ]; then
+            sudo tar -czf "$dest/outputs.tar.gz" -C "$src" outputs
+            sudo chown "$(id -u):$(id -g)" "$dest/outputs.tar.gz"
+          fi
+          ls -la "$dest"
 
       - name: Upload the verdict and analysis outputs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-real-verdict
-          path: |
-            ${{ runner.temp }}/oracle/verdict.json
-            ${{ runner.temp }}/oracle/outputs/
+          path: ${{ runner.temp }}/oracle-artifact/
 
-  # A run nobody watches: a red verdict opens or comments on the tracking issue,
-  # a later green run closes it.
+  # Runs of main are unattended: a failed produce or scan job opens or comments
+  # on the 'CI red: Oracle real-image nightly' issue, and the next green run
+  # closes it. Both jobs are listed because a failed produce job skips the
+  # scan, and a skipped job alone leaves the issue as it is. A dispatch on
+  # another branch reports nothing, so it can neither close nor comment on
+  # the issue of main's nightly.
   report-status:
     name: Report status
-    needs: scan
-    if: ${{ !cancelled() }}
+    needs: [produce, scan]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

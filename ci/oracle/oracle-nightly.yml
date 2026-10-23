@@ -1,5 +1,12 @@
 name: Oracle nightly
 
+# A TEMPLATE, not a workflow: it is not installed under .github/workflows, so
+# GitHub never runs it and no CI run scans the synthetic images. The oracle
+# run in CI is .github/workflows/oracle-real-nightly.yml, over the decoy
+# images of the oracle-images E2E test. As it stands this template could not
+# pass either: plaso cannot open btrfs, so the synthetic images fail the plaso
+# channel and with it the run (see ci/oracle/README.md).
+#
 # Nightly forensic oracle. On GitHub-hosted runners (no KVM): the scan script
 # builds the before, control and after images one at a time (streaming, so peak
 # disk is one image's worth), runs the pinned analysis tools over each, and
@@ -85,34 +92,44 @@ jobs:
           cat "$RUNNER_TEMP/oracle/verdict.json" 2>/dev/null \
             || echo "(no verdict.json: the scan did not reach the verdict)"
 
-      # The scan runs as root, and a restore tree can carry root-only modes the
-      # upload cannot read. Hand the verdict and the analysis outputs to the
-      # runner user; the bulk_extractor build stays out of the artifact.
-      - name: Make the outputs readable for the upload
+      # The artifact holds the scan's outputs and no file of this runner. A
+      # restore tree keeps the image's symlinks, absolute ones included, and
+      # the upload follows a symlink to whatever its target names here, so the
+      # outputs go up as one tar, which stores a symlink as a symlink. tar runs
+      # as root because a restore tree can carry root-only modes, and the
+      # archive is then handed to the runner user. The bulk_extractor build
+      # stays out of the artifact.
+      - name: Pack the verdict and analysis outputs
         if: ${{ !cancelled() }}
         run: |
-          for p in "$RUNNER_TEMP/oracle/verdict.json" "$RUNNER_TEMP/oracle/outputs"; do
-            if [ -e "$p" ]; then
-              sudo chown -R "$(id -u):$(id -g)" "$p"
-              chmod -R u+rwX "$p"
-            fi
-          done
+          set -euo pipefail
+          src="$RUNNER_TEMP/oracle"
+          dest="$RUNNER_TEMP/oracle-artifact"
+          mkdir -p "$dest"
+          if [ -f "$src/verdict.json" ]; then
+            cp "$src/verdict.json" "$dest/verdict.json"
+          fi
+          if [ -d "$src/outputs" ]; then
+            sudo tar -czf "$dest/outputs.tar.gz" -C "$src" outputs
+            sudo chown "$(id -u):$(id -g)" "$dest/outputs.tar.gz"
+          fi
+          ls -la "$dest"
 
       - name: Upload the verdict and analysis outputs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-verdict
-          path: |
-            ${{ runner.temp }}/oracle/verdict.json
-            ${{ runner.temp }}/oracle/outputs/
+          path: ${{ runner.temp }}/oracle-artifact/
 
-  # A run nobody watches: a red verdict opens or comments on the 'CI red: Oracle
-  # nightly' issue, and a later green run closes it.
+  # Runs of main are unattended: a red verdict opens or comments on the 'CI
+  # red: Oracle nightly' issue, and the next green run closes it. A dispatch
+  # on another branch reports nothing, so it can neither close nor comment on
+  # the issue of main's nightly.
   report-status:
     name: Report status
     needs: oracle
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
