@@ -239,13 +239,22 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
     let data = if mount.root == Path::new("/") {
         None
     } else if mount.fstype == "btrfs"
-        && mount_subvol(mount) == Some(mount.root.to_string_lossy().as_ref())
+        && mount_subvol(mount).is_some_and(|subvol| Path::new(&subvol) == mount.root)
     {
         // A btrfs mount whose root is exactly its `subvol=` is a subvolume: the
         // way back mounts it again with that `subvol=`. A mount root that is a
         // deeper path (a bind of a plain folder inside the subvolume) has no
         // `subvol=` of its own and cannot be mounted again that way, so it is
         // refused like any other bind below.
+        if mount.root.to_string_lossy().contains(',') {
+            // mount(2) splits its options at every comma, so the way back
+            // could not name this subvolume.
+            return refuse(format!(
+                "the decoy root's btrfs subvolume {} has a comma in its path, which the way \
+                 back cannot pass to mount(2) to mount it again",
+                mount.root.display()
+            ));
+        }
         Some(format!("subvol={}", mount.root.display()))
     } else {
         return refuse(format!(
@@ -261,14 +270,18 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
     })
 }
 
-/// The `subvol=` a btrfs mount's options name, if any. btrfs records it in both
-/// the per-superblock and the per-mount option fields of the mount table.
-fn mount_subvol(mount: &MountEntry) -> Option<&str> {
+/// The `subvol=` a btrfs mount's options name, if any, decoded. btrfs records
+/// it in both the per-superblock and the per-mount option fields of the mount
+/// table, where the kernel writes a space, tab, newline, comma or backslash in
+/// it as an octal escape (`\040`); the mount root it is compared with is
+/// decoded already.
+fn mount_subvol(mount: &MountEntry) -> Option<String> {
     mount
         .super_opts
         .split(',')
         .chain(mount.mount_opts.split(','))
         .find_map(|opt| opt.strip_prefix("subvol="))
+        .map(nails_teardown::mountinfo::unescape_octal)
 }
 
 fn io(path: &Path, e: std::io::Error) -> NailsError {

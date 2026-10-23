@@ -135,6 +135,46 @@ fn a_btrfs_bind_of_a_plain_folder_is_refused_by_path() {
     );
 }
 
+#[test]
+fn a_btrfs_subvolume_whose_path_the_kernel_escapes_is_a_subvolume() {
+    // The kernel writes a space, a tab or a backslash of the subvolume's path
+    // as an octal escape both in the mount root and in its subvol= option;
+    // decoded, the two are the same path.
+    for (escaped, path) in [
+        ("/@ubuntu\\04026.04", "/@ubuntu 26.04"),
+        ("/@root\\011tab", "/@root\ttab"),
+        ("/@back\\134slash", "/@back\\slash"),
+    ] {
+        let table = format!(
+            "1 0 0:30 {escaped} / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol={escaped}\n"
+        );
+        let root = decoy_root_of(&parse_mountinfo(&table), Path::new("/"))
+            .unwrap_or_else(|e| panic!("{table}: {e}"));
+        assert_eq!(
+            root.data.as_deref(),
+            Some(format!("subvol={path}").as_str()),
+            "{table}"
+        );
+    }
+
+    // A bind of a folder with such a path is still refused.
+    let table = "1 0 0:30 /@ubuntu\\04026.04/srv / rw - btrfs /dev/nvme0n1p2 \
+                 rw,subvol=/@ubuntu\\04026.04\n";
+    assert!(decoy_root_of(&parse_mountinfo(table), Path::new("/")).is_err());
+}
+
+#[test]
+fn a_btrfs_subvolume_with_a_comma_in_its_path_is_refused() {
+    // The mount root keeps the comma, the option escapes it. The two match,
+    // but the way back passes `subvol=` to mount(2), which splits at commas,
+    // so it could not mount the decoy root again.
+    let table = "1 0 0:30 /@a,b / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@a\\054b\n";
+    let error = decoy_root_of(&parse_mountinfo(table), Path::new("/")).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("comma"), "{text}");
+    assert!(text.contains("/@a,b"), "{text}");
+}
+
 /// A minimal `EntryInputs` for the helpers that do not build a system:
 /// no builder, no operator, the persona at its default.
 fn minimal_inputs<'a>(

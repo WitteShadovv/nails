@@ -189,7 +189,9 @@ of this changelog for that version becomes the release notes word for word, and
 - A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
   equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
   activation, naming the folder, instead of passing the pre-flight check and then failing the
-  way-back mount.
+  way-back mount. A subvolume whose path holds a space, a tab or a backslash, which the mount table
+  writes escaped, is a subvolume all the same; one whose path holds a comma is refused, because the
+  way back could not name it to mount it again.
 - A decoy mount point that is a symlink (for example `/home` linking to `var/home`, as on
   ostree-based systems) is resolved to its real path inside the decoy root. NAILS now decides, mounts
   and masks the filesystem where the decoy really keeps it (`var-home.mount`, not `home.mount`), and
