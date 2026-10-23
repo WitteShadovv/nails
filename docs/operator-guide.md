@@ -1400,12 +1400,17 @@ power-off, followed by a few minutes without power, lets the contents decay:
 - Power off completely (not suspend) in threat situations — `nails emergency
   --poweroff` — and end a normal session with `nails deactivate --poweroff`
   before handing the machine over.
-- Harden the decoy kernel so freed memory is wiped: add `init_on_free=1
-  page_poison=1` to the decoy kernel command line. The hidden session runs on the
-  same kernel, so this covers it too. The `memory-wipe` pre-flight check reads
-  the booted command line and, when it is silent, the kernel config
-  (`CONFIG_INIT_ON_FREE_DEFAULT_ON`), and warns when the decoy kernel does not
-  zero freed memory.
+- Harden the decoy kernel so freed memory is wiped: add `init_on_free=1` to the
+  decoy kernel command line. The hidden session runs on the same kernel, so this
+  covers it too. Do not add `page_poison=1`: on a kernel built with page
+  poisoning (the NixOS kernel is) it takes precedence over `init_on_free` and
+  turns it off, so the kernel overwrites freed pages with a pattern but leaves
+  its freed small allocations (slab objects, such as the names of files the
+  session opened) as they were. The `memory-wipe` pre-flight check reads the
+  booted command line and, when it is silent, the kernel config
+  (`CONFIG_INIT_ON_FREE_DEFAULT_ON`, from the running kernel's own
+  `/proc/config.gz` or the copy in `/boot` or `/usr/lib/modules`), and warns
+  when the decoy kernel does not zero freed memory, `page_poison=1` included.
 - There is no complete software defense against a memory dump of a running
   system; the protection is preventing access while it runs.
 
