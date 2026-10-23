@@ -38,6 +38,12 @@ pub struct PreflightOptions {
     /// instead of failing. It never covers a folder, a covered root, storage
     /// that cannot be judged, or `backend-entries`.
     pub allow_decoy_storage: bool,
+    /// Accept discards over the hidden volume for this run (the buried
+    /// `--allow-discards` expert flag): the backend-detect check then warns
+    /// instead of failing closed. Per run only; there is no stored equivalent.
+    /// Distinct from cryptsetup's open-time `--allow-discards`, which is what
+    /// turns discards on in the first place.
+    pub allow_discards: bool,
 }
 
 impl Default for PreflightOptions {
@@ -48,6 +54,7 @@ impl Default for PreflightOptions {
             read_only: true,
             allow_persistent_decoy: false,
             allow_decoy_storage: false,
+            allow_discards: false,
         }
     }
 }
@@ -197,8 +204,13 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(UpperFsCapabilityCheck::new(hidden_root.clone())));
 
     // Refuses discards reaching the hidden volume (fail-closed); the other
-    // deniability hazards of the detected backend only warn.
-    registry.add_check(Box::new(BackendDetectCheck::new(hidden_root.clone())));
+    // deniability hazards of the detected backend only warn. The operator can
+    // accept the discard risk for this run with the buried `--allow-discards`
+    // flag, which turns that one refusal into a warning.
+    registry.add_check(Box::new(
+        BackendDetectCheck::new(hidden_root.clone())
+            .allowing_discards(inputs.options.allow_discards),
+    ));
 
     // Check-time advice, keyed on the installed cryptsetup version: it cannot
     // open a VeraCrypt volume made with Argon2id, so one must use PBKDF2.

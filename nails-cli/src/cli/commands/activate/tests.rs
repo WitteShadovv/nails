@@ -315,11 +315,12 @@ fn a_missing_config_file_is_announced_and_a_present_one_is_not() {
 /// the pre-flight checks with, for every combination of the shared flags.
 #[test]
 fn a_dry_run_checks_with_the_options_activation_uses() {
-    for bits in 0..8u8 {
+    for bits in 0..16u8 {
         let args = ActivateArgs {
             overlay_only: bits & 1 != 0,
             allow_persistent_decoy: bits & 2 != 0,
             allow_decoy_storage: bits & 4 != 0,
+            allow_discards: bits & 8 != 0,
             dry_run: true,
             ..ActivateArgs::default()
         };

@@ -27,17 +27,39 @@ const RETIRED_KEYS: &[&str] = &[
     "emergency",
 ];
 
+/// Retired keys that carry their own note, because they were not dropped with
+/// the live-overlay mode but replaced by a specific successor. The persistent-
+/// decoy risk override is now the per-run `--allow-persistent-decoy` flag, so
+/// `accept_persistent_decoy` is no longer read from the configuration file; an
+/// old config that still sets it gets this note rather than a bare unknown-key
+/// error.
+const RETIRED_KEYS_WITH_NOTE: &[(&str, &str)] = &[(
+    "accept_persistent_decoy",
+    "it is now the per-run flag `--allow-persistent-decoy` and is no longer stored",
+)];
+
+/// The removal note for `name`, if it is a retired key.
+fn retired_key_note(name: &str) -> Option<String> {
+    if RETIRED_KEYS.contains(&name) {
+        return Some(format!(
+            "key `{name}` was removed: the hidden session overlays the whole root, so delete it"
+        ));
+    }
+    RETIRED_KEYS_WITH_NOTE
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, note)| format!("key `{name}` was removed: {note}, so delete it"))
+}
+
 /// Rewrite a serde/toml error message into a one-line, actionable form.
 pub(super) fn describe(message: &str) -> String {
     let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
 
     if let Some(rest) = message.strip_prefix("unknown field `")
         && let Some((name, _)) = rest.split_once('`')
-        && RETIRED_KEYS.contains(&name)
+        && let Some(note) = retired_key_note(name)
     {
-        return format!(
-            "key `{name}` was removed: the hidden session overlays the whole root, so delete it"
-        );
+        return note;
     }
 
     for (prefix, noun) in [
@@ -112,6 +134,19 @@ mod tests {
         assert_eq!(
             describe(message),
             "key `overlays` was removed: the hidden session overlays the whole root, so delete it"
+        );
+    }
+
+    #[test]
+    fn describe_names_the_retired_persistent_decoy_key() {
+        // The storable persistent-decoy key became the per-run flag, so an old
+        // config carrying it gets the successor note, not a near-miss guess.
+        let message = "unknown field `accept_persistent_decoy`, expected one of \
+             `hidden_volume_root`, `log_path`";
+        assert_eq!(
+            describe(message),
+            "key `accept_persistent_decoy` was removed: it is now the per-run flag \
+             `--allow-persistent-decoy` and is no longer stored, so delete it"
         );
     }
 

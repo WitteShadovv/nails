@@ -74,7 +74,7 @@ device-mapper and loop layers in `/sys` and reports:
 
 | Finding | Detected from | What to do |
 |---|---|---|
-| **Refuses:** discards are enabled over the hidden volume | a cryptsetup mapping (`dm/uuid` starts with `CRYPT-`) has a non-zero `queue/discard_max_bytes`, or its LUKS2 header `config.flags` holds `allow-discards`; a RAM-only `zram` device is excepted | Re-open the hidden volume without discards. For a stored LUKS2 flag, run `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. See [Discards](#discards-trim). |
+| **Refuses:** discards are enabled over the hidden volume | a cryptsetup mapping (`dm/uuid` starts with `CRYPT-`) has a non-zero `queue/discard_max_bytes`, or its LUKS2 header `config.flags` holds `allow-discards`; a RAM-only `zram` device is excepted | Re-open the hidden volume without discards. For a stored LUKS2 flag, run `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. To accept the risk for one run instead, the buried `nails activate --allow-discards` (a NAILS flag, distinct from cryptsetup's). See [Discards](#discards-trim). |
 | The hidden root lives in a file container | A loop device in the stack has a `loop/backing_file` | Accept the [timestamp exposure](#timestamps) or move to a whole-device hidden volume. |
 | The container sits on a copy-on-write filesystem | The container file's filesystem is btrfs, zfs or bcachefs | Prefer a whole-device hidden volume; at least disable automatic snapshots of that filesystem. |
 | The loop device is backed by a file on a FUSE mount | The backing file's filesystem is `fuse.*` (for example the VeraCrypt application without kernel crypto) | The attach gate already refuses such a root (`storage_unjudged`) before the check runs. Open the volume with cryptsetup so the kernel manages the mapping. |
@@ -303,6 +303,17 @@ its warning that discards make filesystem-level operations visible on the
 physical device, and `--tcrypt-hidden` for opening the hidden volume. To check
 a mapping, `cryptsetup status data` lists `discards` under `flags` when they
 are enabled, and `lsblk --discard` shows a non-zero `DISC-MAX`.
+
+NAILS fails activation closed when it detects discards reaching the hidden
+volume (the `backend-detect` check above). An operator who understands the
+exposure can override that one refusal for a single run with NAILS's own
+`nails activate --allow-discards` (mirrored by `nails check --allow-discards`),
+a buried expert flag that turns the refusal into a warning. It is not the same
+as cryptsetup's open-time `--allow-discards` above: the cryptsetup option
+enables discards at the mapping and remains the thing to avoid, while the NAILS
+flag never touches the mapping and only accepts an already-enabled discard for
+that one activation. It is a per-run flag, never stored in `nails.toml`; the
+safe fix is still to re-open the volume with discards off.
 
 ### Timestamps
 

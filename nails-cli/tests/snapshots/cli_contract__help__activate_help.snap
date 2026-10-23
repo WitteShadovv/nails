@@ -65,6 +65,11 @@ Options:
       --json
           Print machine-readable JSON on stdout
 
+      --allow-discards
+          Accept discards over the hidden volume for this run (expert override)
+
+          By default activation refuses when discards (TRIM) reach the hidden volume: forwarding TRIM to the physical device leaves a readable map of used and free blocks where a deniable volume should look like random data, and writing an outer volume with discards on can destroy a hidden volume inside it. This expert override turns that refusal into a warning for this activation only and cannot be stored. It is distinct from cryptsetup's open-time `--allow-discards`, which is what enables discards; prefer re-opening the volume with discards off instead.
+
       --no-log-file
           Do not write the log file on the hidden volume (diagnostics still go to stderr)
 

@@ -49,6 +49,11 @@ Options:
 
           [default: auto]
 
+      --allow-discards
+          Report discards over the hidden volume as a warning instead of a failure (expert override)
+
+          Mirrors `activate --allow-discards` so `check`/`--dry-run` reflects what activation would do. A per-run expert override that is never stored and is distinct from cryptsetup's open-time `--allow-discards`.
+
       --ascii
           Use ASCII markers instead of Unicode symbols and box drawing
 

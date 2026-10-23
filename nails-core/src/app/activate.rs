@@ -35,6 +35,10 @@ pub struct ActivateOptions {
     pub allow_persistent_decoy: bool,
     /// Proceed on storage the decoy uses, accepting the risk.
     pub allow_decoy_storage: bool,
+    /// Accept discards over the hidden volume for this run (the buried
+    /// `--allow-discards` expert flag): the backend-detect check then warns
+    /// instead of refusing.
+    pub allow_discards: bool,
 }
 
 impl ActivateOptions {
@@ -46,6 +50,7 @@ impl ActivateOptions {
             allow_persistent_decoy: self.allow_persistent_decoy,
             binary: std::env::current_exe().unwrap_or_default(),
             allow_decoy_storage: self.allow_decoy_storage,
+            allow_discards: self.allow_discards,
         }
     }
 }
@@ -288,11 +293,12 @@ mod tests {
     #[test]
     fn enter_options_carries_every_activate_flag_through() {
         // Each CLI flag must map to its entry option; the stubbed
-        // `Default::default()` would drop all three to false.
+        // `Default::default()` would drop all four to false.
         let options = ActivateOptions {
             overlay_only: true,
             allow_persistent_decoy: true,
             allow_decoy_storage: true,
+            allow_discards: true,
         };
         let entry = options.enter_options();
         assert!(entry.overlay_only, "overlay_only -> overlay_only");
@@ -304,6 +310,7 @@ mod tests {
             entry.allow_decoy_storage,
             "allow_decoy_storage -> allow_decoy_storage"
         );
+        assert!(entry.allow_discards, "allow_discards -> allow_discards");
     }
 
     #[test]
@@ -315,6 +322,7 @@ mod tests {
         assert!(!entry.overlay_only);
         assert!(!entry.allow_persistent_decoy);
         assert!(!entry.allow_decoy_storage);
+        assert!(!entry.allow_discards);
     }
 
     #[test]
