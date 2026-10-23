@@ -14,9 +14,11 @@
 # per-tool outputs for finished labels stay; nothing bulky accumulates.
 #
 # A scan that could not look never passes: a carve that recovers nothing or
-# reports an error stops the run, and nails-oracle fails a run in which any
-# channel reported nothing for an image (channel_missing), so a dropped plaso
-# channel fails it too.
+# reports an error stops the run, a plaso timeline with no event for the
+# canary's file drops the plaso channel (plaso still dates an image whose file
+# system it cannot open, as one opaque file), and nails-oracle fails a run in
+# which any channel reported nothing for an image (channel_missing), so a
+# dropped plaso channel fails it too.
 #
 # plaso reads every image through one fixed in-container path (/data/disk.img),
 # so the source path in its timeline is identical across the three images and
@@ -29,8 +31,11 @@
 # the restore channel is carved per detected filesystem (btrfs restore for the
 # synthetic btrfs images, debugfs rdump for the ext4 decoy roots). A raw is a
 # bare filesystem image, or a whole-disk image with exactly one btrfs or
-# ext{2,3,4} partition. The bulk_extractor and plaso channels read the image
-# bytes directly and are identical either way.
+# ext{2,3,4} partition. The bulk_extractor and plaso channels take the image
+# itself and run the same either way, but plaso has to open its file system:
+# it cannot open btrfs, and log2timeline, run unattended without --partitions,
+# stops on a whole-disk image with more than one partition of any kind. Either
+# fails the plaso channel (see ci/oracle/README.md).
 #
 #   sudo run-scan.sh <workdir>
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
@@ -123,7 +128,8 @@ PKG_SENTINEL=${ORACLE_PKG_SENTINEL:-pkg-history@oracle.example}
 
 allowlist="$repo_root/ci/oracle/allowlist.json"
 # The on-image file that carries the canary. Every image has it, so a restore
-# carve without it did not read the tree (see the carve check below).
+# carve without it did not read the tree, and a plaso timeline with no event for
+# it did not read the file system (see the checks below).
 if [ -n "$images_src" ]; then
   # The canary is fixed at e2e time and the retained raws cannot be re-planted,
   # so it is never rotated here and controls-real.json is used verbatim.
@@ -208,25 +214,33 @@ plaso_label() {
 # file, a directory or a symlink). btrfs and ext4 land the same shape there;
 # only the carving tool differs.
 
-# fs_partitions <image>: one "<fstype> <byte-offset> <byte-size>" line per
-# partition of a whole-disk image that holds a filesystem blkid recognises, and
-# nothing for an image with no partition table. mmls lists the partitions in
-# the units it names; its descriptions are only the GPT partition names or the
-# MBR type, so blkid probes each partition's own superblock for the type (it
-# honours -O and -S only in its low-level mode, -p). mawk-safe: %.0f, not %d,
-# for byte counts past 2^31.
-fs_partitions() {
-  local img=$1 table start size t
-  table=$(mmls "$img" 2>/dev/null) || return 0
-  while read -r start size; do
-    t=$(blkid -p -o value -s TYPE -O "$start" -S "$size" "$img" 2>/dev/null || true)
-    if [ -n "$t" ]; then printf '%s %s %s\n' "$t" "$start" "$size"; fi
-  done < <(awk '
+# partition_slots <image>: one "<byte-offset> <byte-size>" line per partition
+# of any kind in the partition table of a whole-disk image, and nothing for an
+# image with no partition table. mmls lists the partitions in the units it
+# names, each in a numbered slot, which its meta entries and unallocated gaps
+# lack. mawk-safe: %.0f, not %d, for byte counts past 2^31.
+partition_slots() {
+  local table
+  table=$(mmls "$1" 2>/dev/null) || return 0
+  awk '
     BEGIN { unit = 512 }
     /^Units are in [0-9]+-byte sectors/ { unit = $4 + 0 }
     $1 ~ /^[0-9]+:$/ && $2 ~ /^[0-9]+(:[0-9]+)?$/ {
       printf "%.0f %.0f\n", ($3 + 0) * unit, ($5 + 0) * unit
-    }' <<<"$table")
+    }' <<<"$table"
+}
+
+# fs_partitions <image>: one "<fstype> <byte-offset> <byte-size>" line per
+# partition of a whole-disk image that holds a filesystem blkid recognises, and
+# nothing for an image with no partition table. mmls's descriptions are only
+# the GPT partition names or the MBR type, so blkid probes each partition's own
+# superblock for the type (it honours -O and -S only in its low-level mode, -p).
+fs_partitions() {
+  local img=$1 start size t
+  while read -r start size; do
+    t=$(blkid -p -o value -s TYPE -O "$start" -S "$size" "$img" 2>/dev/null || true)
+    if [ -n "$t" ]; then printf '%s %s %s\n' "$t" "$start" "$size"; fi
+  done < <(partition_slots "$img")
 }
 
 # detect_fs <image>: print "<fstype> <byte-offset> <byte-size>" for the
@@ -368,6 +382,9 @@ for label in "${LABELS[@]}"; do
     # detect_fs prints why when it fails.
     fs=$(detect_fs "$img") || exit 1
     read -r fstype off size <<<"$fs"
+    # The partitions of any kind on a whole-disk image (0 for a bare
+    # filesystem): plaso stops on more than one, and its failure says so below.
+    nparts=$(partition_slots "$img" | wc -l)
     if [ "$label" = after ]; then
       # Inject the positive controls into a sparse working copy; the retained
       # source raw is left untouched and is never scanned directly for 'after'.
@@ -384,6 +401,7 @@ for label in "${LABELS[@]}"; do
     fstype=btrfs
     off=0
     size=0
+    nparts=0
   fi
 
   # File-level restore into an empty tree, so a carve that recovers nothing
@@ -405,8 +423,20 @@ for label in "${LABELS[@]}"; do
   # bulk_extractor creates outputs/bulk_extractor/<label> itself.
   "$be_bin" -j "$(nproc)" -o "$outputs/bulk_extractor/$label" "$img" >/dev/null
 
+  # A timeline counts only when plaso read the image's file system: plaso dates
+  # an image it cannot open as one opaque file, at the same path on every image,
+  # so the timeline must have an event for the canary's file.
   if [ "$plaso_ok" -eq 1 ]; then
-    plaso_label "$img" "$label" || { echo "run-scan: plaso failed on $label" >&2; plaso_failed=1; }
+    if ! plaso_label "$img" "$label"; then
+      echo "run-scan: plaso failed on $label" >&2
+      if [ "$nparts" -gt 1 ]; then
+        echo "run-scan: the $label image is a whole-disk image with $nparts partitions, and plaso, run unattended, stops rather than choose among them, so such an image fails the plaso channel. Scan the root filesystem's own image instead (see ci/oracle/README.md)." >&2
+      fi
+      plaso_failed=1
+    elif ! "$here/timeline-has-file.sh" "$outputs/plaso/$label.jsonl" "$canary_file"; then
+      echo "run-scan: plaso's timeline of $label has no event for $canary_file, which every image carries, so plaso did not read the image's $fstype file system (see ci/oracle/README.md)" >&2
+      plaso_failed=1
+    fi
   fi
 
   # Delete this label's synthetic image before building the next (bounded peak
@@ -417,12 +447,13 @@ done
 
 # plaso is all-or-nothing: a partial timeline would make one image's events look
 # new in another and raise phantom residue, so drop the channel whole if any
-# label's timeline failed. A dropped channel never reads as clean: the restore
-# channel leaves the rotating journal files to plaso, and nails-oracle fails a
-# run in which any channel reported nothing for an image (channel_missing). The
-# verdict is still rendered, so the other channels' findings can be read.
+# label's timeline failed or did not read its image. A dropped channel never
+# reads as clean: the restore channel leaves the rotating journal files to
+# plaso, and nails-oracle fails a run in which any channel reported nothing for
+# an image (channel_missing). The verdict is still rendered, so the other
+# channels' findings can be read.
 if [ "$plaso_ok" -ne 1 ] || [ "$plaso_failed" -ne 0 ]; then
-  echo "run-scan: dropping the plaso channel (incomplete across labels); the verdict will fail on it" >&2
+  echo "run-scan: dropping the plaso channel (a timeline is missing or did not read its image); the verdict will fail on it" >&2
   rm -f "$outputs/plaso"/*.jsonl "$outputs/plaso"/*.plaso 2>/dev/null || true
 fi
 

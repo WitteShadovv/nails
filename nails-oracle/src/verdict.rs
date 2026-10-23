@@ -647,8 +647,12 @@ fn missing_channels(scans: &Scans) -> Vec<Failure> {
 /// blind, for every analysis channel that reported nothing for an image. Every
 /// channel finds something on a real image (the restore channel the tree, plaso
 /// a file's timestamps, bulk_extractor the canary), so a silent one did not
-/// run, failed, or read nothing, and the scan could not look. This is the
-/// decision the CLI renders.
+/// run, failed, or read nothing, and the scan could not look. A channel that
+/// reports did not necessarily read the image, though: plaso still dates an
+/// image whose file system it cannot open, as one opaque file at the same path
+/// on every image. So `ci/oracle/run-scan.sh` keeps a plaso timeline only when
+/// it has an event for the canary's file, and drops the channel otherwise,
+/// which this rule then fails. This is the decision the CLI renders.
 pub fn scan_verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdict {
     let mut decided = verdict(scans, policy, catalog);
     let missing = missing_channels(scans);
