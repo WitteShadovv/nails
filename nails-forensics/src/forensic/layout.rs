@@ -6,8 +6,10 @@
 //!
 //! Parses an MBR or a GPT read-only from a [`RawSource`], lists the gaps
 //! between and after partitions, and identifies the common on-disk signatures
-//! (LUKS, the usual filesystems, LVM, swap, BitLocker). Nothing here mounts or
-//! writes; every read is a bounded positioned read.
+//! (LUKS, the usual filesystems, LVM, swap, BitLocker). The layout is fitted
+//! to the source; [`recorded_table`] keeps the table as the disk records it,
+//! for a source that ends before the disk did. Nothing here mounts or writes;
+//! every read is a bounded positioned read.
 
 use super::raw::RawSource;
 use serde::Serialize;
@@ -57,6 +59,72 @@ pub struct Layout {
     pub partitions: Vec<Partition>,
     /// Ranges no partition covers, after the table's own metadata, in order.
     pub gaps: Vec<(u64, u64)>,
+}
+
+/// A partition table as the disk records it, before [`read_table`] fits it
+/// to the source. An image whose copy stopped early still holds the whole
+/// table but not all of the disk it describes, so a partition here can start
+/// or end past the end of the source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedTable {
+    /// The table found.
+    pub table: TableKind,
+    /// Every partition the table lists, in start order, as far as the table
+    /// says it runs.
+    pub partitions: Vec<Partition>,
+    /// For a GPT, one past the last byte of the disk it was written for: the
+    /// end of its last usable block or of its backup header, whichever lies
+    /// further. `None` for an MBR, which records no disk size.
+    pub disk_end: Option<u64>,
+    /// Whether a GPT keeps its own rules: every entry runs forwards within the
+    /// usable blocks, and when the header's own checksum holds, the entries
+    /// match the checksum it keeps of them. The header of an older GPT in
+    /// front of a filesystem made on the whole disk since breaks them, its
+    /// entries written over. An MBR has no such rules and always keeps them.
+    pub consistent: bool,
+    /// The bytes the partitions may use: from the first usable block to one
+    /// past the last.
+    usable: (u64, u64),
+}
+
+impl RecordedTable {
+    /// No table.
+    fn none() -> Self {
+        Self {
+            table: TableKind::None,
+            partitions: Vec::new(),
+            disk_end: None,
+            consistent: true,
+            usable: (0, 0),
+        }
+    }
+
+    /// The layout on a source of `size` bytes: a partition that starts past
+    /// its end is left out, one that runs past it is cut there, and so are
+    /// the gaps.
+    fn fitted(&self, size: u64) -> Layout {
+        let partitions: Vec<Partition> = self
+            .partitions
+            .iter()
+            .filter(|partition| partition.start < size)
+            .map(|partition| Partition {
+                size: partition.end().min(size) - partition.start,
+                ..partition.clone()
+            })
+            .collect();
+        // An MBR none of whose partitions starts on the source reads as no
+        // table, as one that lists none does.
+        if self.table == TableKind::None || (self.table == TableKind::Mbr && partitions.is_empty())
+        {
+            return no_table();
+        }
+        finish(
+            self.table,
+            partitions,
+            self.usable.0,
+            self.usable.1.min(size),
+        )
+    }
 }
 
 /// What a region starts with.
@@ -182,15 +250,26 @@ pub fn compressing_format_at(source: &RawSource, start: u64) -> io::Result<Optio
     Ok(first_match(&head, COMPRESSING_FORMATS))
 }
 
+/// What a filesystem's superblock says about the bytes the filesystem spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordedSize {
+    /// It spans this many bytes.
+    Bytes(u64),
+    /// The format keeps no size [`recorded_size`] reads.
+    Unrecorded,
+    /// The superblock records a block size the format never uses: its magic
+    /// matched other bytes by chance, and no such filesystem is there.
+    Implausible,
+}
+
 /// How many bytes the filesystem of `format` at `start` says it spans: an
 /// ext2/3/4 superblock's block count times its block size, an xfs
-/// superblock's data blocks times its block size. `None` for any other
-/// format, and for a block size neither filesystem uses.
+/// superblock's data blocks times its block size.
 ///
 /// # Errors
 ///
 /// Propagates a read error.
-pub fn recorded_size(source: &RawSource, start: u64, format: &str) -> io::Result<Option<u64>> {
+pub fn recorded_size(source: &RawSource, start: u64, format: &str) -> io::Result<RecordedSize> {
     match format {
         "ext2/3/4" => {
             // The superblock at 1 KiB, through s_blocks_count_hi; past the
@@ -204,7 +283,11 @@ pub fn recorded_size(source: &RawSource, start: u64, format: &str) -> io::Result
                 blocks += le_u32(&sb, 0x150) << 32;
             }
             // ext2/3/4 blocks are 1 KiB to 64 KiB.
-            Ok((log_block <= 6).then(|| blocks.saturating_mul(1024 << log_block)))
+            Ok(if log_block <= 6 {
+                RecordedSize::Bytes(blocks.saturating_mul(1024 << log_block))
+            } else {
+                RecordedSize::Implausible
+            })
         }
         "xfs" => {
             let mut sb = [0u8; 16];
@@ -213,11 +296,14 @@ pub fn recorded_size(source: &RawSource, start: u64, format: &str) -> io::Result
             let blocks = u64::from_be_bytes(sb[8..16].try_into().unwrap_or_default());
             // xfs blocks are a power of two from 512 bytes to 64 KiB.
             Ok(
-                (block.is_power_of_two() && (512..=1 << 16).contains(&block))
-                    .then(|| blocks.saturating_mul(block)),
+                if block.is_power_of_two() && (512..=1 << 16).contains(&block) {
+                    RecordedSize::Bytes(blocks.saturating_mul(block))
+                } else {
+                    RecordedSize::Implausible
+                },
             )
         }
-        _ => Ok(None),
+        _ => Ok(RecordedSize::Unrecorded),
     }
 }
 
@@ -254,18 +340,43 @@ fn guid(bytes: &[u8]) -> String {
     )
 }
 
+/// The CRC-32 a GPT keeps of its header and of its entries (the IEEE
+/// polynomial, as zlib computes it).
+fn crc32(bytes: &[u8]) -> u32 {
+    !bytes.iter().fold(u32::MAX, |crc, &byte| {
+        (0..8).fold(crc ^ u32::from(byte), |crc, _| {
+            (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg())
+        })
+    })
+}
+
+/// Whether a GPT header matches the checksum it keeps of itself: over its own
+/// length, with the checksum field read as zero.
+fn header_checksum_holds(header: &[u8]) -> bool {
+    let length = le_u32(header, 12);
+    if !(92..=header.len() as u64).contains(&length) {
+        return false;
+    }
+    let mut own = header[..length as usize].to_vec();
+    own[16..20].fill(0);
+    u64::from(crc32(&own)) == le_u32(header, 16)
+}
+
 /// Parse the GPT whose header is at `header_at`, if there is one.
-fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Option<Layout>> {
-    let mut header = [0u8; 92];
-    if source.read_at(&mut header, header_at)? < header.len() || &header[..8] != b"EFI PART" {
+fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Option<RecordedTable>> {
+    let mut header = vec![0u8; block as usize];
+    let read = source.read_at(&mut header, header_at)?;
+    if read < 92 || &header[..8] != b"EFI PART" {
         return Ok(None);
     }
+    header.truncate(read);
     // A block number is whatever the disk says. One whose byte offset does
     // not fit 64 bits lies past the end of any disk, so the offset saturates
     // there rather than wrapping round to a small one.
     let offset = |lba: u64| lba.saturating_mul(block);
     let first_usable = offset(le_u64(&header, 40));
     let last_usable = offset(le_u64(&header, 48).saturating_add(1));
+    let backup_end = offset(le_u64(&header, 32).saturating_add(1));
     let entries_at = offset(le_u64(&header, 72));
     let count = le_u32(&header, 80).min(256);
     let entry_size = le_u32(&header, 84).clamp(128, 1024);
@@ -277,6 +388,12 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
     } else {
         0
     };
+    // The entries' checksum vouches for them only when the header's own
+    // holds and every entry it lists was read.
+    let checked = read == table.len()
+        && (le_u32(&header, 80), le_u32(&header, 84)) == (count, entry_size)
+        && header_checksum_holds(&header);
+    let mut consistent = !checked || u64::from(crc32(&table)) == le_u32(&header, 88);
     table.truncate(read);
 
     let mut partitions = Vec::new();
@@ -291,22 +408,29 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
         }
         let first = offset(le_u64(entry, 32));
         let last = offset(le_u64(entry, 40).saturating_add(1));
-        if last <= first || first >= source.size() {
+        consistent &= first_usable <= first && first < last && last <= last_usable;
+        if last <= first {
             continue;
         }
         partitions.push(Partition {
             number: index as u32 + 1,
             start: first,
-            size: last.min(source.size()) - first,
+            size: last - first,
             type_id: guid(&entry[..16]),
         });
     }
-    let end = last_usable.min(source.size());
-    Ok(Some(finish(TableKind::Gpt, partitions, first_usable, end)))
+    partitions.sort_by_key(|partition| partition.start);
+    Ok(Some(RecordedTable {
+        table: TableKind::Gpt,
+        partitions,
+        disk_end: Some(last_usable.max(backup_end)),
+        consistent,
+        usable: (first_usable, last_usable),
+    }))
 }
 
 /// Parse a DOS/MBR table from the first sector, if there is one.
-fn parse_mbr(source: &RawSource, sector0: &[u8]) -> Option<Layout> {
+fn parse_mbr(sector0: &[u8]) -> Option<RecordedTable> {
     if sector0.len() < 512 || sector0[510..512] != [0x55, 0xAA] {
         return None;
     }
@@ -317,13 +441,13 @@ fn parse_mbr(source: &RawSource, sector0: &[u8]) -> Option<Layout> {
         let type_byte = entry[4];
         let start = le_u32(entry, 8) * SECTOR;
         let size = le_u32(entry, 12) * SECTOR;
-        if type_byte == 0 || size == 0 || start >= source.size() {
+        if type_byte == 0 || size == 0 {
             continue;
         }
         partitions.push(Partition {
             number: index + 1,
             start,
-            size: size.min(source.size() - start),
+            size,
             type_id: format!("0x{type_byte:02x}"),
         });
     }
@@ -332,7 +456,14 @@ fn parse_mbr(source: &RawSource, sector0: &[u8]) -> Option<Layout> {
         // sector (FAT, NTFS), not a partition table.
         return None;
     }
-    Some(finish(TableKind::Mbr, partitions, SECTOR, source.size()))
+    partitions.sort_by_key(|partition| partition.start);
+    Some(RecordedTable {
+        table: TableKind::Mbr,
+        partitions,
+        disk_end: None,
+        consistent: true,
+        usable: (SECTOR, u64::MAX),
+    })
 }
 
 /// Sort the partitions and compute the gaps between `from` and `to`.
@@ -393,24 +524,36 @@ pub fn read_layout(source: &RawSource) -> io::Result<Layout> {
 ///
 /// Propagates a read error.
 pub fn read_table(source: &RawSource) -> io::Result<Layout> {
+    Ok(recorded_table(source)?.fitted(source.size()))
+}
+
+/// The partition table of `source` as [`read_table`] finds it, before it is
+/// fitted to the source: a partition that runs past the end of the source,
+/// as on an image whose copy stopped early, is listed as the table records
+/// it, and a GPT says how large a disk it was written for.
+///
+/// # Errors
+///
+/// Propagates a read error.
+pub fn recorded_table(source: &RawSource) -> io::Result<RecordedTable> {
     let mut sector0 = [0u8; 512];
     let read = source.read_at(&mut sector0, 0)?;
     let sector0 = &sector0[..read];
     let protective = read == 512 && sector0[510..512] == [0x55, 0xAA] && sector0[450] == 0xEE;
     for block in [SECTOR, 4096] {
-        if let Some(layout) = parse_gpt(source, block, block)? {
-            return Ok(layout);
+        if let Some(table) = parse_gpt(source, block, block)? {
+            return Ok(table);
         }
     }
     // Only the formats whose magic lies in the first sector can match here.
     let boot_sector = sector0.starts_with(LUKS_MAGIC) || first_match(sector0, FORMATS).is_some();
     if !protective
         && !boot_sector
-        && let Some(layout) = parse_mbr(source, sector0)
+        && let Some(table) = parse_mbr(sector0)
     {
-        return Ok(layout);
+        return Ok(table);
     }
-    Ok(no_table())
+    Ok(RecordedTable::none())
 }
 
 #[cfg(test)]

@@ -50,8 +50,9 @@ pub struct DeviceScan {
     /// Why a clean scan of this device is not a clean result: its filesystem
     /// compresses contents or is copy-on-write, it is an encrypted container
     /// or holds no filesystem the scan identifies, or it ends before its
-    /// filesystem does, so a leaked canary can hide from a raw plaintext scan.
-    /// `None` when a clean scan of it is conclusive.
+    /// filesystem, a partition its table lists or the disk its GPT was written
+    /// for does, so a leaked canary can hide from a raw plaintext scan. `None`
+    /// when a clean scan of it is conclusive.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blind_spot: Option<String>,
 }

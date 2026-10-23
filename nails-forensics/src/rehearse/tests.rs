@@ -532,10 +532,10 @@ fn verdict(path: PathBuf) -> Option<String> {
     report.devices[0].blind_spot.clone()
 }
 
-/// A sparse 64 MiB disk image with a protective MBR and a GPT listing `parts`
-/// as `(first, last)` 512-byte blocks.
+/// A sparse 64 MiB disk image with a protective MBR and a GPT, its checksums
+/// in place, listing `parts` as `(first, last)` 512-byte blocks.
 fn gpt_image(dir: &tempfile::TempDir, parts: &[(u64, u64)]) -> (PathBuf, std::fs::File) {
-    use crate::forensic::layout::tests::put;
+    use crate::forensic::layout::tests::{gpt_entry, gpt_header, put};
     let path = dir.path().join("gpt.img");
     let mut file = std::fs::File::create(&path).unwrap();
     file.set_len(64 << 20).unwrap();
@@ -544,21 +544,13 @@ fn gpt_image(dir: &tempfile::TempDir, parts: &[(u64, u64)]) -> (PathBuf, std::fs
     mbr[510] = 0x55;
     mbr[511] = 0xAA;
     put(&mut file, 0, &mbr);
-    let mut header = [0u8; 92];
-    header[..8].copy_from_slice(b"EFI PART");
-    header[40..48].copy_from_slice(&34u64.to_le_bytes()); // first usable block
-    header[48..56].copy_from_slice(&131_038u64.to_le_bytes()); // last usable block
-    header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries block
-    header[80..84].copy_from_slice(&128u32.to_le_bytes());
-    header[84..88].copy_from_slice(&128u32.to_le_bytes());
-    put(&mut file, 512, &header);
-    for (index, (first, last)) in (0u64..).zip(parts) {
-        let mut entry = [0u8; 128];
-        entry[..16].copy_from_slice(&[0xAF; 16]);
-        entry[32..40].copy_from_slice(&first.to_le_bytes());
-        entry[40..48].copy_from_slice(&last.to_le_bytes());
-        put(&mut file, 1024 + 128 * index, &entry);
+    let mut entries = vec![0u8; 128 * 128];
+    for (slot, &(first, last)) in entries.chunks_mut(128).zip(parts) {
+        slot.copy_from_slice(&gpt_entry(first, last));
     }
+    // Usable from block 34 to 131038; the backup header is the last block.
+    put(&mut file, 512, &gpt_header(34, 131_038, 131_071, &entries));
+    put(&mut file, 1024, &entries);
     (path, file)
 }
 
@@ -766,6 +758,137 @@ fn a_partition_its_filesystem_outgrows_is_named() {
         "{reason}"
     );
     assert!(reason.contains("only 16777216 of them"), "{reason}");
+}
+
+#[test]
+fn a_whole_disk_image_cut_short_is_not_checked() {
+    use crate::forensic::layout::tests::{mbr_image, put};
+    let dir = tempfile::tempdir().unwrap();
+    // A GPT disk as an encrypted install lays it out: an ESP from 1 MiB to
+    // 17 MiB, then a LUKS container to the end of the 64 MiB disk. A copy
+    // that stopped inside the ESP, or right where the container starts, holds
+    // none of the container.
+    for cut in [10u64 << 20, 17 << 20] {
+        let (path, mut file) = gpt_image(&dir, &[(2048, 34815), (34816, 131_038)]);
+        put(&mut file, (1 << 20) + 0x52, b"FAT32   ");
+        put(&mut file, 17 << 20, b"LUKS\xba\xbe\x00\x02");
+        file.set_len(cut).unwrap();
+        file.sync_all().unwrap();
+
+        let reason = verdict(path).unwrap_or_else(|| panic!("a copy cut at {cut} is not clean"));
+        assert!(
+            reason.starts_with(&format!(
+                "the partition table was written for a disk of 67108864 bytes, but the source \
+                 holds only {cut} of them"
+            )),
+            "{reason}"
+        );
+        assert!(
+            reason.contains(&format!(
+                "; partition 2: it runs from byte 17825792 to byte 67091968, but the source \
+                 holds only {cut} bytes, so none of it was read"
+            )),
+            "{reason}"
+        );
+        // The ESP is named only where the copy cut through it.
+        assert_eq!(
+            reason.contains(
+                "; partition 1: it runs from byte 1048576 to byte 17825792, but the source holds \
+                 only 10485760 bytes, so the rest of it was never read"
+            ),
+            cut < 17 << 20,
+            "{reason}"
+        );
+    }
+
+    // An MBR disk, which records no disk size: swap from 1 MiB to 17 MiB, a
+    // btrfs from there to 49 MiB, and a copy cut inside the swap.
+    let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x82, 2048, 32768), (0x83, 34816, 65536)]);
+    put(&mut file, (1 << 20) + 0xff6, b"SWAPSPACE2");
+    put(&mut file, (17 << 20) + 0x1_0040, b"_BHRfS_M");
+    file.set_len(12 << 20).unwrap();
+    file.sync_all().unwrap();
+
+    let reason = verdict(path).expect("a copy cut inside the swap is not clean");
+    assert_eq!(
+        reason,
+        "partition 1: it runs from byte 1048576 to byte 17825792, but the source holds only \
+         12582912 bytes, so the rest of it was never read; partition 2: it runs from byte \
+         17825792 to byte 51380224, but the source holds only 12582912 bytes, so none of it was \
+         read"
+    );
+}
+
+#[test]
+fn a_stale_gpt_header_in_front_of_an_ext4_is_not_its_table() {
+    use crate::forensic::layout::tests::{gpt_entry, gpt_header};
+    // An ext4 on a whole disk that still carries the header of an older GPT
+    // at block 1: its superblock wrote over the entries from block 2. The
+    // entries now break the table's rules, so the ext4 is classified on its
+    // own and, spanning the whole image, is a clean result.
+    let dir = tempfile::tempdir().unwrap();
+    let mut entries = vec![0u8; 128 * 128];
+    entries[..128].copy_from_slice(&gpt_entry(2048, 131_038));
+    let header = gpt_header(34, 131_038, 131_071, &entries);
+    let sb = ext4_superblock(16384);
+    let kept = image(
+        &dir,
+        "kept.img",
+        &[(512, &header), (1024, &entries), (0x400, &sb)],
+    );
+    assert_eq!(verdict(kept), None);
+
+    // A header that keeps no checksums: the superblock's first bytes read as
+    // an entry from block 0, inside the table's own blocks.
+    let mut unchecked = header;
+    unchecked[16..20].fill(0);
+    unchecked[88..92].fill(0);
+    let bare = image(&dir, "bare.img", &[(512, &unchecked), (0x400, &sb)]);
+    assert_eq!(verdict(bare), None);
+}
+
+#[test]
+fn a_gpt_that_breaks_its_rules_is_still_walked_where_no_filesystem_shows() {
+    use crate::forensic::layout::tests::put;
+    // Behind a protective MBR, a GPT whose entries no longer match their
+    // checksum is still the only table there is: its btrfs partition is
+    // found.
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut file) = gpt_image(&dir, &[(2048, 34815)]);
+    put(&mut file, 1024 + 56, b"o\0v\0e\0r\0");
+    put(&mut file, (1 << 20) + 0x1_0040, b"_BHRfS_M");
+    file.sync_all().unwrap();
+
+    let reason = verdict(path).expect("the btrfs partition is a blind spot");
+    assert!(reason.starts_with("partition 1: "), "{reason}");
+    assert!(reason.contains("copy-on-write"), "{reason}");
+}
+
+#[test]
+fn an_ext4_magic_in_random_bytes_is_no_filesystem() {
+    // The ciphertext of a volume without a header (plain dm-crypt, LUKS with
+    // a detached header) reads as random bytes, and one time in 65536 they
+    // carry the ext4 magic at 0x438. The superblock around it then records a
+    // block size no ext4 uses: no filesystem is identified, and a clean scan
+    // is no clean result.
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut noise: Vec<u8> = (0..4 << 20)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect();
+    noise[0x438..0x43A].copy_from_slice(&[0x53, 0xEF]);
+    // s_log_block_size: ext4 blocks are 1 KiB shifted by at most 6.
+    assert!(u32::from_le_bytes(noise[0x418..0x41C].try_into().unwrap()) > 6);
+    let path = dir.path().join("noise.img");
+    std::fs::write(&path, &noise).unwrap();
+
+    let reason = verdict(path).expect("random bytes are not a filesystem");
+    assert!(reason.contains("identifies no filesystem"), "{reason}");
 }
 
 #[test]

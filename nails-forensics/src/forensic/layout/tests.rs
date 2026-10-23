@@ -36,6 +36,50 @@ pub(crate) fn mbr_image(
     (path, file)
 }
 
+/// A GPT entry for a partition from block `first` to block `last`.
+pub(crate) fn gpt_entry(first: u64, last: u64) -> [u8; 128] {
+    let mut entry = [0u8; 128];
+    entry[..16].copy_from_slice(&[0xAF; 16]);
+    entry[32..40].copy_from_slice(&first.to_le_bytes());
+    entry[40..48].copy_from_slice(&last.to_le_bytes());
+    entry
+}
+
+/// A GPT header for block 1 of a 512-byte-block disk, keeping both
+/// checksums: its entry array is `entries` from block 2, its usable blocks
+/// run from `first_usable` to `last_usable`, and its backup header lies at
+/// block `backup`.
+pub(crate) fn gpt_header(
+    first_usable: u64,
+    last_usable: u64,
+    backup: u64,
+    entries: &[u8],
+) -> [u8; 92] {
+    let count = u32::try_from(entries.len() / 128).unwrap();
+    let mut header = [0u8; 92];
+    header[..8].copy_from_slice(b"EFI PART");
+    header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes()); // revision 1.0
+    header[12..16].copy_from_slice(&92u32.to_le_bytes()); // header size
+    header[24..32].copy_from_slice(&1u64.to_le_bytes()); // this header's block
+    header[32..40].copy_from_slice(&backup.to_le_bytes());
+    header[40..48].copy_from_slice(&first_usable.to_le_bytes());
+    header[48..56].copy_from_slice(&last_usable.to_le_bytes());
+    header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries block
+    header[80..84].copy_from_slice(&count.to_le_bytes());
+    header[84..88].copy_from_slice(&128u32.to_le_bytes());
+    header[88..92].copy_from_slice(&crc32(entries).to_le_bytes());
+    let own = crc32(&header);
+    header[16..20].copy_from_slice(&own.to_le_bytes());
+    header
+}
+
+#[test]
+fn the_gpt_checksum_is_the_one_zlib_computes() {
+    // The check value of the CRC-32 over the IEEE polynomial.
+    assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    assert_eq!(crc32(b""), 0);
+}
+
 #[test]
 fn an_mbr_layout_lists_partitions_and_gaps() {
     let dir = tempfile::tempdir().unwrap();
@@ -216,6 +260,7 @@ fn a_compressing_filesystem_is_found_beside_a_stale_signature() {
 
 #[test]
 fn the_recorded_size_of_ext4_and_xfs_comes_from_the_superblock() {
+    use RecordedSize::{Bytes, Implausible, Unrecorded};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sizes.img");
     let mut file = std::fs::File::create(&path).unwrap();
@@ -252,17 +297,20 @@ fn the_recorded_size_of_ext4_and_xfs_comes_from_the_superblock() {
     let source = RawSource::open(&path).unwrap();
     let size = |start, format| recorded_size(&source, start, format).unwrap();
 
-    assert_eq!(size(0, "ext2/3/4"), Some(16384 * 4096));
-    assert_eq!(size(64 << 10, "ext2/3/4"), Some(((1 << 32) + 16384) * 4096));
-    assert_eq!(size(128 << 10, "ext2/3/4"), Some(10 << 16));
-    assert_eq!(size(192 << 10, "ext2/3/4"), None);
-    assert_eq!(size(256 << 10, "xfs"), Some(409_600));
-    assert_eq!(size(320 << 10, "xfs"), Some(1536));
-    assert_eq!(size(384 << 10, "xfs"), Some(2 << 16));
+    assert_eq!(size(0, "ext2/3/4"), Bytes(16384 * 4096));
+    assert_eq!(
+        size(64 << 10, "ext2/3/4"),
+        Bytes(((1 << 32) + 16384) * 4096)
+    );
+    assert_eq!(size(128 << 10, "ext2/3/4"), Bytes(10 << 16));
+    assert_eq!(size(192 << 10, "ext2/3/4"), Implausible);
+    assert_eq!(size(256 << 10, "xfs"), Bytes(409_600));
+    assert_eq!(size(320 << 10, "xfs"), Bytes(1536));
+    assert_eq!(size(384 << 10, "xfs"), Bytes(2 << 16));
     for start in [448 << 10, 512 << 10, 576 << 10] {
-        assert_eq!(size(start, "xfs"), None, "{start}");
+        assert_eq!(size(start, "xfs"), Implausible, "{start}");
     }
-    assert_eq!(size(0, "vfat"), None);
+    assert_eq!(size(0, "vfat"), Unrecorded);
 }
 
 #[test]
@@ -279,6 +327,105 @@ fn a_table_behind_a_stale_superblock_is_found_by_read_table() {
     assert_eq!(table.table, TableKind::Mbr);
     assert_eq!(table.partitions.len(), 1);
     assert_eq!(table.partitions[0].start, 1 << 20);
+}
+
+#[test]
+fn a_recorded_table_keeps_what_runs_past_the_end_of_the_source() {
+    // A 64 MiB disk with p1 from 1 MiB for 16 MiB and p2 from 17 MiB for
+    // 32 MiB, copied only up to 24 MiB.
+    let dir = tempfile::tempdir().unwrap();
+    let (path, file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768), (0x83, 34816, 65536)]);
+    file.set_len(24 << 20).unwrap();
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+
+    let recorded = recorded_table(&source).unwrap();
+    assert_eq!(recorded.table, TableKind::Mbr);
+    assert_eq!(recorded.disk_end, None);
+    assert!(recorded.consistent);
+    let ends: Vec<u64> = recorded.partitions.iter().map(Partition::end).collect();
+    assert_eq!(ends, vec![17 << 20, 49 << 20]);
+    // The layout an examiner reads stops where the source does.
+    let layout = read_table(&source).unwrap();
+    assert_eq!(layout.partitions.len(), 2);
+    assert_eq!(layout.partitions[1].end(), 24 << 20);
+    assert_eq!(layout.gaps, vec![(512, 1 << 20)]);
+
+    // Cut before the first partition, the table still lists both, while the
+    // layout shows no table, as it always has.
+    file.set_len(512 << 10).unwrap();
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+    assert_eq!(recorded_table(&source).unwrap().partitions.len(), 2);
+    assert_eq!(read_table(&source).unwrap(), no_table());
+}
+
+#[test]
+fn a_gpt_records_the_disk_it_was_written_for() {
+    // A 64 MiB disk whose one partition runs from 1 MiB to its last usable
+    // block, copied only up to 10 MiB.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gpt.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(64 << 20).unwrap();
+    let mut entries = vec![0u8; 128 * 128];
+    entries[..128].copy_from_slice(&gpt_entry(2048, 131_038));
+    put(&mut file, 512, &gpt_header(34, 131_038, 131_071, &entries));
+    put(&mut file, 1024, &entries);
+    file.set_len(10 << 20).unwrap();
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+
+    let recorded = recorded_table(&source).unwrap();
+    assert_eq!(recorded.table, TableKind::Gpt);
+    assert!(recorded.consistent);
+    // The backup header is the disk's last block.
+    assert_eq!(recorded.disk_end, Some(64 << 20));
+    assert_eq!(recorded.partitions[0].end(), 131_039 * 512);
+    let layout = read_table(&source).unwrap();
+    assert_eq!(layout.partitions[0].end(), 10 << 20);
+    assert_eq!(layout.gaps, vec![(34 * 512, 1 << 20)]);
+}
+
+#[test]
+fn a_gpt_is_consistent_only_while_its_entries_keep_its_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gpt.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(16 << 20).unwrap();
+    let mut entries = vec![0u8; 128 * 128];
+    entries[..128].copy_from_slice(&gpt_entry(2048, 10_239));
+    let header = gpt_header(34, 32_734, 32_767, &entries);
+    put(&mut file, 512, &header);
+    put(&mut file, 1024, &entries);
+    file.sync_all().unwrap();
+    let consistent = || {
+        recorded_table(&RawSource::open(&path).unwrap())
+            .unwrap()
+            .consistent
+    };
+    assert!(consistent());
+
+    // Entries written over since no longer match the checksum the header
+    // keeps of them.
+    put(&mut file, 1024 + 56, b"o\0v\0e\0r\0");
+    file.sync_all().unwrap();
+    assert!(!consistent());
+
+    // A header whose own checksum fails vouches for no entry checksum...
+    let mut broken = header;
+    broken[16] ^= 0xFF;
+    put(&mut file, 512, &broken);
+    file.sync_all().unwrap();
+    assert!(consistent());
+
+    // ...but an entry outside the usable blocks, or one that runs backwards,
+    // breaks the rules all the same.
+    for (first, last) in [(0, 0), (2048, 40_000), (20_000, 19_999)] {
+        put(&mut file, 1024 + 128, &gpt_entry(first, last));
+        file.sync_all().unwrap();
+        assert!(!consistent(), "{first}..{last}");
+    }
 }
 
 #[test]
