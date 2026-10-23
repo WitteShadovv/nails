@@ -16,16 +16,22 @@
 //!   or per subvolume (a subvolume property or `chattr +c`), invisibly to the
 //!   mount options, so a decoy on one of them may compress the canary even with
 //!   no compression shown at mount time.
-//! - **f2fs.** f2fs compresses a file whenever its on-disk compression feature is
-//!   set (`mkfs.f2fs -O compression`, a superblock flag and never a mount option)
-//!   and the file or its parent directory carries `chattr +c` — both invisible to
-//!   the mount options. So any f2fs decoy may hold the canary compressed, whatever
-//!   its mount shows.
+//! - **f2fs made with compression.** f2fs compresses only on a filesystem made
+//!   with its compression feature (`mkfs.f2fs -O compression`), and then only the
+//!   files flagged for it (`chattr +c`, or an extension the mount's
+//!   `compress_extension` names). A mounted f2fs with the feature always shows it
+//!   among its mount options: the kernel prints `compress_algorithm=` and
+//!   `compress_log_size=` for it whatever the mount asked for, so a mounted f2fs
+//!   is judged by its options like the others. Without the feature the kernel
+//!   refuses the flag and stores every file verbatim. An image or an unmounted
+//!   device has no mount options, so there the superblock's feature flags
+//!   decide.
 //!
 //! On such a decoy the rehearsal reports the device "not checked" rather than
 //! clean. This module turns a filesystem's type and its per-superblock mount
-//! options into that verdict; the scan carries the reason on every device and
-//! the report never reads as clean when one is present.
+//! options, or an f2fs superblock's feature, into that verdict; the scan carries
+//! the reason on every device and the report never reads as clean when one is
+//! present.
 
 /// Why a raw plaintext scan of a filesystem cannot rule the canary out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,9 +42,8 @@ pub enum ScanBlindSpot {
     /// A copy-on-write filesystem that can compress file contents per file or
     /// subvolume, invisibly to the mount options.
     CopyOnWrite,
-    /// An f2fs filesystem, which can compress file contents through its on-disk
-    /// compression feature and a `chattr +c` flag, invisibly to the mount
-    /// options.
+    /// An f2fs read offline whose superblock carries the compression feature,
+    /// so it compresses the files flagged for it.
     CompressionCapable,
 }
 
@@ -57,9 +62,9 @@ impl ScanBlindSpot {
                  cannot prove the canary absent"
             }
             ScanBlindSpot::CompressionCapable => {
-                "the decoy is an f2fs, whose on-disk compression feature and a chattr +c flag \
-                 can compress file contents invisibly to the mount options, so this raw plaintext \
-                 scan cannot prove the canary absent"
+                "the decoy is an f2fs made with the compression feature, which compresses the \
+                 contents of the files flagged for it, so this raw plaintext scan cannot prove \
+                 the canary absent"
             }
         }
     }
@@ -88,13 +93,13 @@ fn compression_is_on(super_opts: &str) -> bool {
 /// of it is conclusive.
 ///
 /// A copy-on-write, compression-capable filesystem (btrfs, bcachefs, zfs) is
-/// never conclusive: it can compress a file invisibly to the mount options. An
-/// f2fs is never conclusive either: its on-disk compression feature and a
-/// `chattr +c` flag compress a file with nothing in the mount options, so an
-/// explicit `compress` option reads as compressed and a plain f2fs as
-/// compression-capable. Every other filesystem (ext4, xfs, vfat, …) stores file
-/// contents verbatim, so a clean scan of it is a clean result — an `ext4`
-/// `chattr +c` flag, for one, is recorded but never acted on.
+/// never conclusive: it can compress a file invisibly to the mount options. A
+/// mounted f2fs is a blind spot when its options show compression, which they
+/// always do when the filesystem has the compression feature, and conclusive
+/// otherwise; an f2fs read offline is judged by [`f2fs_image_blind_spot`].
+/// Every other filesystem (ext4, xfs, vfat, …) stores file contents verbatim,
+/// so a clean scan of it is a clean result — an `ext4` `chattr +c` flag, for
+/// one, is recorded but never acted on.
 pub fn scan_blind_spot(fstype: &str, super_opts: &str) -> Option<ScanBlindSpot> {
     let compressed = compression_is_on(super_opts);
     if COW_COMPRESSING_FORMATS.contains(&fstype) {
@@ -104,14 +109,14 @@ pub fn scan_blind_spot(fstype: &str, super_opts: &str) -> Option<ScanBlindSpot> 
             ScanBlindSpot::CopyOnWrite
         });
     }
-    if fstype == "f2fs" {
-        return Some(if compressed {
-            ScanBlindSpot::Compressed
-        } else {
-            ScanBlindSpot::CompressionCapable
-        });
-    }
-    None
+    (fstype == "f2fs" && compressed).then_some(ScanBlindSpot::Compressed)
+}
+
+/// The blind spot a raw plaintext scan has on an f2fs read offline, an image or
+/// an unmounted device, from whether its superblock carries the compression
+/// feature; `None` when it does not, and the f2fs stores every file verbatim.
+pub fn f2fs_image_blind_spot(compression_feature: bool) -> Option<ScanBlindSpot> {
+    compression_feature.then_some(ScanBlindSpot::CompressionCapable)
 }
 
 #[cfg(test)]
@@ -154,22 +159,46 @@ mod tests {
     }
 
     #[test]
-    fn f2fs_is_a_blind_spot_whatever_its_mount_options() {
-        // A plain f2fs is a blind spot all the same: its on-disk compression
-        // feature plus a `chattr +c` flag compress a file with nothing in the
-        // mount options, so a raw plaintext scan cannot prove the canary absent.
+    fn a_mounted_f2fs_is_judged_by_its_mount_options() {
+        // The options a kernel prints for an f2fs made with the compression
+        // feature, whatever the mount asked for: a blind spot.
         assert_eq!(
-            scan_blind_spot("f2fs", "rw,relatime,background_gc=on"),
+            scan_blind_spot(
+                "f2fs",
+                "rw,lazytime,background_gc=on,discard,compress_algorithm=lz4,\
+                 compress_log_size=2,compress_mode=fs,alloc_mode=default"
+            ),
+            Some(ScanBlindSpot::Compressed)
+        );
+        assert_eq!(
+            scan_blind_spot("f2fs", "rw,compress_algorithm=zstd:6,compress_extension=*"),
+            Some(ScanBlindSpot::Compressed)
+        );
+        // Without the feature the kernel prints none of them and refuses the
+        // chattr +c flag, so every file is stored verbatim.
+        assert_eq!(
+            scan_blind_spot(
+                "f2fs",
+                "rw,lazytime,background_gc=on,discard,no_heap,user_xattr,inline_xattr,acl,\
+                 inline_data,inline_dentry,flush_merge,barrier,extent_cache,mode=adaptive,\
+                 active_logs=6,alloc_mode=default,checkpoint_merge,fsync_mode=posix,\
+                 memory=normal,errors=continue"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_f2fs_read_offline_is_judged_by_its_compression_feature() {
+        assert_eq!(
+            f2fs_image_blind_spot(true),
             Some(ScanBlindSpot::CompressionCapable)
         );
-        // An explicit compress option still reads as compressed, as on btrfs.
-        assert_eq!(
-            scan_blind_spot("f2fs", "rw,compress_algorithm=lz4,compress_extension=*"),
-            Some(ScanBlindSpot::Compressed)
-        );
-        assert_eq!(
-            scan_blind_spot("f2fs", "rw,compress_mode=fs"),
-            Some(ScanBlindSpot::Compressed)
+        assert_eq!(f2fs_image_blind_spot(false), None);
+        assert!(
+            ScanBlindSpot::CompressionCapable
+                .reason()
+                .contains("compression feature")
         );
     }
 
