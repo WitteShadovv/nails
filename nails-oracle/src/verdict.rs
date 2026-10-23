@@ -5,19 +5,21 @@
 //!
 //! Given the three normalized scans and the policy, it:
 //!
-//! 1. validates the allowlist — every entry cites exactly one real catalog row
-//!    or threat-model anchor and names a specific location, never a wholesale
-//!    `/var`, `/nix` or `/home` tree; only a path-channel citation may exempt a
-//!    whole subtree, a mechanism or anchor citation only its exact leaf; a
+//! 1. validates the allowlist — every entry cites exactly one residual catalog
+//!    row, or a threat-model anchor a residual row points at, and names one
+//!    exact location, never a wholesale `/var`, `/nix` or `/home` tree; an
+//!    entry vouches for that exact leaf alone, never what lies beneath it; a
 //!    broken allowlist never yields a clean verdict;
-//! 2. computes the noise-subtracted residue `after − before − control`: a
-//!    difference that also shows up in the clean control cycle is scan noise,
-//!    not a trace of the hidden session;
+//! 2. computes the noise-subtracted residue (see [`crate::residue`]): what is
+//!    new in `after`, changed in it or gone from it, unless the clean control
+//!    cycle shows the same change, which makes it scan noise rather than a
+//!    trace of the hidden session;
 //! 3. partitions that residue into the planted self-checks, the cited-and-
 //!    explained, and the unexplained (each unexplained finding is a leak);
 //! 4. checks the scan is not blind — every positive control names a concrete
 //!    planted artifact (an exact path and value, never a directory) and is
-//!    detected in `after`, and there is at least one to check;
+//!    detected in `after` while `before` and the control cycle lack it, and
+//!    there is at least one to check;
 //! 5. checks the coverage canary, validated the same way, is detected; and
 //! 6. for a real scan, checks every analysis channel reported at least one
 //!    finding on every image: a tool that did not run, failed or read nothing
@@ -31,8 +33,10 @@
 
 use crate::catalog::Catalog;
 use crate::model::{
-    AllowEntry, Canary, Controls, Finding, ImageLabel, OraclePolicy, PositiveControl, Scans, Tool,
+    AllowEntry, Canary, Change, Controls, Finding, ImageLabel, OraclePolicy, PositiveControl,
+    Scans, Tool,
 };
+use crate::residue::compute_residue;
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -54,11 +58,13 @@ pub enum Failure {
     /// A genuine `after`-vs-`before` difference, absent from the control cycle
     /// and covered by no cited allowlist entry — a leak.
     UnexplainedResidue {
+        /// Whether the finding is new in `after`, changed in it or gone from it.
+        change: Change,
         /// The tool that surfaced the leak.
         tool: Tool,
         /// Where it was seen.
         path: String,
-        /// What was seen there.
+        /// What was seen there: for a removal, what `after` lost.
         field: String,
     },
     /// A planted positive control was not detected in `after`: the scan is
@@ -66,6 +72,15 @@ pub enum Failure {
     PositiveControlMissing {
         /// The control's name.
         name: String,
+    },
+    /// A positive control's value is already on `before` or the control
+    /// cycle, so seeing it in `after` proves nothing about the planted record:
+    /// the scan has not shown it sees one, and the run is blind.
+    PositiveControlInBaseline {
+        /// The control's name.
+        name: String,
+        /// The first baseline image that carries it: `before` or `control`.
+        image: String,
     },
     /// No positive control was configured, so the run cannot prove it is able
     /// to see residue at all.
@@ -122,6 +137,8 @@ pub enum Failure {
 /// row's own words for why it is expected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Explained {
+    /// Whether the finding is new in `after`, changed in it or gone from it.
+    pub change: Change,
     /// The tool that surfaced it.
     pub tool: Tool,
     /// Where it was seen.
@@ -141,18 +158,21 @@ pub struct Explained {
 pub struct ControlResult {
     /// The control's name.
     pub name: String,
-    /// Whether `after` carried it.
+    /// Whether `after` carried it while `before` and the control cycle did not.
     pub detected: bool,
 }
 
-/// The reconciling counts. `residue == self_checks + explained + unexplained`.
+/// The reconciling counts. `candidate == noise_subtracted + residue` and
+/// `residue == self_checks + explained + unexplained`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Counts {
-    /// Findings new in `after` versus `before`.
+    /// Changes from `before` to `after`: a finding new in `after` or gone from
+    /// it, or a restore path whose entry `after` holds differently.
     pub candidate: usize,
-    /// Of those, the ones also present in the control cycle (scan noise).
+    /// Of those, the ones the control cycle shows too (scan noise): the same
+    /// finding gained or lost, or a restore path it changed as well.
     pub noise_subtracted: usize,
-    /// The noise-subtracted residue: `after − before − control`.
+    /// The noise-subtracted residue.
     pub residue: usize,
     /// Residue findings that are planted self-checks (controls or the canary).
     pub self_checks: usize,
@@ -167,9 +187,10 @@ pub struct Counts {
 pub struct Verdict {
     /// Clean or fail.
     pub status: Status,
-    /// Whether the scan was blind: a positive control was missing or, in
-    /// [`scan_verdict`], an analysis channel reported nothing for an image. Set
-    /// independently of `status` so a blind run reads unmistakably.
+    /// Whether the scan was blind: a positive control was missing or already
+    /// in the baseline or, in [`scan_verdict`], an analysis channel reported
+    /// nothing for an image. Set independently of `status` so a blind run
+    /// reads unmistakably.
     pub blind: bool,
     /// A one-line human summary.
     pub summary: String,
@@ -207,9 +228,10 @@ impl Verdict {
 const SYSTEM_ROOTS: &str =
     "var nix run usr etc lib lib64 opt srv boot sys proc dev tmp home root mnt media";
 
-/// Whether allowlist/locator path `pat` covers finding path `p`: equal, or
-/// `pat` is an ancestor directory of `p`. Component-aware, so `/var/lib/nix`
-/// never spuriously covers `/var/lib/nixos`. Crate-visible for its own tests.
+/// Whether path `pat` covers path `p`: equal, or `pat` is an ancestor
+/// directory of `p`. Component-aware, so `/var/lib/nix` never spuriously
+/// covers `/var/lib/nixos`. It places an allowlist entry inside the channel of
+/// the row it cites. Crate-visible for its own tests.
 pub(crate) fn path_covers(pat: &str, p: &str) -> bool {
     if pat == p {
         return true;
@@ -221,28 +243,15 @@ pub(crate) fn path_covers(pat: &str, p: &str) -> bool {
     p.len() > pat.len() && p.as_bytes()[pat.len()] == b'/' && p.starts_with(pat)
 }
 
-/// Whether a finding matches a `(tool, path, field)` locator. `subtree` chooses
-/// how `path` matches: `true` covers the locus and everything beneath it (a
-/// path-channel allowlist entry), `false` demands the exact path (a concrete
-/// leaf: a mechanism/anchor allowlist entry, or a positive control or canary).
-fn locator_matches(
-    tool: Option<Tool>,
-    path: &str,
-    field: Option<&str>,
-    f: &Finding,
-    subtree: bool,
-) -> bool {
+/// Whether a finding is the one a `(tool, path, field)` locator names: the
+/// tool when one is pinned, the exact path and the value when one is named.
+fn locator_matches(tool: Option<Tool>, path: &str, field: Option<&str>, f: &Finding) -> bool {
     if let Some(t) = tool
         && t != f.tool
     {
         return false;
     }
-    let path_ok = if subtree {
-        path_covers(path, &f.path)
-    } else {
-        path == f.path
-    };
-    if !path_ok {
+    if path != f.path {
         return false;
     }
     match field {
@@ -263,8 +272,9 @@ pub(crate) fn breadth_reason(path: &str) -> Option<String> {
     {
         return Some("glob wildcards are not allowed; name a concrete path".to_string());
     }
-    // A bare word is a bulk_extractor feature type; its breadth is enforced by
-    // requiring a specific `field` in `entry_reject_reason`, not here.
+    // A bare word is a bulk_extractor feature type or another locus that is
+    // not a path; its breadth is enforced by requiring a specific `field` in
+    // `entry_reject_reason`, not here.
     if !path.starts_with('/') {
         return None;
     }
@@ -281,83 +291,75 @@ pub(crate) fn breadth_reason(path: &str) -> Option<String> {
     None
 }
 
-/// How a validated allowlist entry matches findings: whether its citation lets
-/// it vouch for a whole subtree or only for the exact leaf it names.
-#[derive(Clone, Copy)]
-enum Coverage {
-    /// Backed by a path-channel row whose channel covers the locus: the entry
-    /// covers that locus and everything beneath it.
-    Subtree,
-    /// Backed by a mechanism row, a doc anchor, or a feature type: the entry
-    /// vouches only for the exact concrete leaf it names, never a subtree, so a
-    /// path-less citation can never wholesale-exempt a directory.
-    Leaf,
-}
-
-/// Validate one allowlist entry against the catalog, returning how it is allowed
-/// to match on success, or the reason it is rejected.
-fn entry_reject_reason(entry: &AllowEntry, catalog: &Catalog) -> Result<Coverage, String> {
+/// Validate one allowlist entry against the catalog, returning the reason it
+/// is rejected, or `None` when it may explain the exact finding it names.
+///
+/// Only a residual row explains a difference: every other row describes a
+/// trace the overlay must prevent, so that trace in `after` is a leak, and
+/// citing the row would print the leak's own description as its excuse. A doc
+/// anchor is held to the same rule through the rows that point at it.
+fn entry_reject_reason(entry: &AllowEntry, catalog: &Catalog) -> Option<String> {
     let cite = entry.cite.trim();
     if cite.is_empty() {
-        return Err("empty citation".to_string());
+        return Some("empty citation".to_string());
     }
-    let is_feature = !entry.path.starts_with('/');
-    if is_feature && entry.field.as_deref().unwrap_or("").is_empty() {
-        return Err("a feature allowlist must name a specific value in `field`".to_string());
+    let is_locus_word = !entry.path.starts_with('/');
+    if is_locus_word && entry.field.as_deref().unwrap_or("").is_empty() {
+        return Some(
+            "a feature or record allowlist must name a specific value in `field`".to_string(),
+        );
     }
     if let Some(reason) = breadth_reason(&entry.path) {
-        return Err(reason);
+        return Some(reason);
     }
     if cite.contains('#') {
-        if !catalog.anchor_exists(cite) {
-            return Err(format!("`{cite}` is not a known residue doc section"));
-        }
-        // A doc anchor names no channel, so it vouches only for the exact locus.
-        return Ok(Coverage::Leaf);
+        return match catalog.anchor(cite) {
+            None => Some(format!("`{cite}` is not a known residue doc section")),
+            Some(false) => Some(format!(
+                "`{cite}` explains only rows the overlay must prevent, never a residual trace"
+            )),
+            Some(true) => None,
+        };
     }
     let Some(row) = catalog.row(cite) else {
-        return Err(format!("`{cite}` is not a residue-catalog id"));
+        return Some(format!("`{cite}` is not a residue-catalog id"));
     };
-    // A feature type is matched exactly by type and value, and a mechanism row
-    // (no channel paths) is not pinned to any path: neither may vouch for more
-    // than the exact concrete leaf cited, closing the wholesale-subtree hole.
-    if is_feature || row.channel_paths.is_empty() {
-        return Ok(Coverage::Leaf);
+    if !row.residual {
+        return Some(format!(
+            "`{cite}` is not a residual row: it names a trace the overlay must prevent, which is a leak when it shows"
+        ));
     }
     // A path-channel row vouches only within its own channel; citing it for a
-    // path outside that channel is rejected. Inside the channel it may cover the
-    // cited locus and everything beneath it.
+    // path outside that channel is rejected. A feature or record locus and a
+    // mechanism row are not pinned to a path, so there is nothing to compare.
+    if is_locus_word || row.channel_paths.is_empty() {
+        return None;
+    }
     let within = row
         .channel_paths
         .iter()
         .any(|c| path_covers(c, &entry.path));
-    if !within {
-        return Err(format!(
-            "path is outside the channel of `{cite}` ({})",
-            row.channel_paths.join(", ")
-        ));
+    if within {
+        return None;
     }
-    Ok(Coverage::Subtree)
+    Some(format!(
+        "path is outside the channel of `{cite}` ({})",
+        row.channel_paths.join(", ")
+    ))
 }
 
-/// A validated allowlist entry together with how it is allowed to match.
-struct ValidEntry<'a> {
-    entry: &'a AllowEntry,
-    coverage: Coverage,
-}
-
-/// Split the allowlist into the entries that pass validation (each with its
-/// coverage) and a failure per entry that does not.
+/// Split the allowlist into the entries that pass validation and a failure per
+/// entry that does not.
 fn validate_allowlist<'a>(
     entries: &'a [AllowEntry],
     catalog: &Catalog,
-) -> (Vec<ValidEntry<'a>>, Vec<Failure>) {
+) -> (Vec<&'a AllowEntry>, Vec<Failure>) {
     let mut valid = Vec::new();
     let mut failures = Vec::new();
     for entry in entries {
         match entry_reject_reason(entry, catalog) {
-            Ok(coverage) => valid.push(ValidEntry { entry, coverage }),
-            Err(reason) => failures.push(Failure::InvalidAllowlistEntry {
+            None => valid.push(entry),
+            Some(reason) => failures.push(Failure::InvalidAllowlistEntry {
                 path: entry.path.clone(),
                 cite: entry.cite.clone(),
                 reason,
@@ -367,30 +369,11 @@ fn validate_allowlist<'a>(
     (valid, failures)
 }
 
-/// The noise-subtracted residue (`after − before − control`), with the
-/// candidate (`after − before`) and the noise counts.
-fn compute_residue(scans: &Scans) -> (Vec<&Finding>, usize, usize) {
-    let mut residue = Vec::new();
-    let mut candidate = 0;
-    for f in &scans.after {
-        if scans.before.contains(f) {
-            continue;
-        }
-        candidate += 1;
-        if !scans.control.contains(f) {
-            residue.push(f);
-        }
-    }
-    let noise_subtracted = candidate - residue.len();
-    (residue, candidate, noise_subtracted)
-}
-
 /// Whether any finding in `set` matches the `(tool, path, field)` locator. Used
 /// to detect positive controls and the canary, which are concrete leaves, so
 /// the path must match exactly.
 fn any_match(set: &BTreeSet<Finding>, tool: Option<Tool>, path: &str, field: Option<&str>) -> bool {
-    set.iter()
-        .any(|f| locator_matches(tool, path, field, f, false))
+    set.iter().any(|f| locator_matches(tool, path, field, f))
 }
 
 /// The self-checks whose loci passed validation: the positive controls and the
@@ -456,43 +439,50 @@ fn validate_self_checks(controls: &Controls) -> (ValidSelfChecks<'_>, Vec<Failur
 /// leaks. Self-checks are concrete leaves, so the path must match exactly.
 fn is_self_check(f: &Finding, checks: &ValidSelfChecks) -> bool {
     if let Some(canary) = checks.canary
-        && locator_matches(canary.tool, &canary.path, canary.field.as_deref(), f, false)
+        && locator_matches(canary.tool, &canary.path, canary.field.as_deref(), f)
     {
         return true;
     }
-    for c in &checks.positive_controls {
-        if locator_matches(c.tool, &c.path, c.field.as_deref(), f, false) {
-            return true;
-        }
+    checks
+        .positive_controls
+        .iter()
+        .any(|c| locator_matches(c.tool, &c.path, c.field.as_deref(), f))
+}
+
+/// Whether a validated allowlist entry covers a residue finding: the exact path
+/// and, when named, the exact value; with no value named, only the restore
+/// channel's entry at that path. An entry covers a removal only when it says
+/// so, and a removal entry nothing else.
+fn entry_covers(e: &AllowEntry, f: &Finding, change: Change) -> bool {
+    if e.removed != (change == Change::Removed) || e.path != f.path {
+        return false;
     }
-    false
+    match &e.field {
+        Some(field) => *field == f.field,
+        None => f.tool.one_entry_per_path(),
+    }
 }
 
-/// Whether a validated allowlist entry covers a finding, matching a subtree or
-/// an exact leaf according to its coverage.
-fn entry_covers(e: &ValidEntry, f: &Finding) -> bool {
-    let subtree = matches!(e.coverage, Coverage::Subtree);
-    locator_matches(None, &e.entry.path, e.entry.field.as_deref(), f, subtree)
-}
-
-/// Partition the residue into self-checks, explained and unexplained.
+/// Partition the residue into self-checks, explained and unexplained. A
+/// removal is never a self-check: every check is planted on `after`.
 fn partition_residue(
-    residue: &[&Finding],
-    valid: &[ValidEntry],
+    residue: &[(&Finding, Change)],
+    valid: &[&AllowEntry],
     checks: &ValidSelfChecks,
     catalog: &Catalog,
 ) -> (Vec<Explained>, Vec<Failure>, usize) {
     let mut explained = Vec::new();
     let mut unexplained = Vec::new();
     let mut self_checks = 0;
-    for &f in residue {
-        if is_self_check(f, checks) {
+    for &(f, change) in residue {
+        if change != Change::Removed && is_self_check(f, checks) {
             self_checks += 1;
             continue;
         }
-        match valid.iter().find(|e| entry_covers(e, f)) {
-            Some(e) => explained.push(explain(f, &e.entry.cite, catalog)),
+        match valid.iter().find(|e| entry_covers(e, f, change)) {
+            Some(e) => explained.push(explain(f, change, &e.cite, catalog)),
             None => unexplained.push(Failure::UnexplainedResidue {
+                change,
                 tool: f.tool,
                 path: f.path.clone(),
                 field: f.field.clone(),
@@ -503,12 +493,13 @@ fn partition_residue(
 }
 
 /// Build the explanation for a finding a cited entry covers.
-fn explain(f: &Finding, cite: &str, catalog: &Catalog) -> Explained {
+fn explain(f: &Finding, change: Change, cite: &str, catalog: &Catalog) -> Explained {
     let (risk, mitigation) = match catalog.row(cite) {
         Some(row) => (row.risk.clone(), row.mitigation.clone()),
         None => (String::new(), String::new()),
     };
     Explained {
+        change,
         tool: f.tool,
         path: f.path.clone(),
         field: f.field.clone(),
@@ -518,30 +509,42 @@ fn explain(f: &Finding, cite: &str, catalog: &Catalog) -> Explained {
     }
 }
 
-/// Check every validated positive control is detected in `after`. Returns the
-/// per-control results, a failure per missing control, and whether the scan is
-/// blind. The "at least one control" rule is enforced in [`verdict`] over the
-/// configured list, so a rejected control is not miscounted as none configured.
+/// Check every validated positive control is detected: present in `after` and
+/// absent from `before` and the control cycle, so that it is the planted record
+/// the scan saw and not one the baseline already carried. Returns the
+/// per-control results, a failure per control not detected, and whether the
+/// scan is blind. The "at least one control" rule is enforced in [`verdict`]
+/// over the configured list, so a rejected control is not miscounted as none
+/// configured.
 fn check_controls(
-    after: &BTreeSet<Finding>,
+    scans: &Scans,
     controls: &[&PositiveControl],
 ) -> (Vec<ControlResult>, Vec<Failure>, bool) {
     let mut results = Vec::new();
     let mut failures = Vec::new();
-    let mut blind = false;
     for c in controls {
-        let detected = any_match(after, c.tool, &c.path, c.field.as_deref());
-        if !detected {
-            failures.push(Failure::PositiveControlMissing {
+        let seen =
+            |label: ImageLabel| any_match(scans.image(label), c.tool, &c.path, c.field.as_deref());
+        let baseline = [ImageLabel::Before, ImageLabel::Control]
+            .into_iter()
+            .find(|&label| seen(label));
+        let failure = match baseline {
+            Some(label) => Some(Failure::PositiveControlInBaseline {
                 name: c.name.clone(),
-            });
-            blind = true;
-        }
+                image: label.dir_name().to_string(),
+            }),
+            None if !seen(ImageLabel::After) => Some(Failure::PositiveControlMissing {
+                name: c.name.clone(),
+            }),
+            None => None,
+        };
         results.push(ControlResult {
             name: c.name.clone(),
-            detected,
+            detected: failure.is_none(),
         });
+        failures.extend(failure);
     }
+    let blind = !failures.is_empty();
     (results, failures, blind)
 }
 
@@ -581,11 +584,11 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
     let (checks, self_check_failures) = validate_self_checks(&policy.controls);
     failures.extend(self_check_failures);
 
-    let (residue, candidate, noise_subtracted) = compute_residue(scans);
+    let residue = compute_residue(scans);
     let (explained, unexplained, self_checks) =
-        partition_residue(&residue, &valid, &checks, catalog);
+        partition_residue(&residue.items, &valid, &checks, catalog);
     let (control_results, control_failures, blind) =
-        check_controls(&scans.after, &checks.positive_controls);
+        check_controls(scans, &checks.positive_controls);
     let (canary_detected, canary_failure) = match checks.canary {
         Some(canary) => check_canary(&scans.after, canary),
         None => (false, None),
@@ -605,9 +608,9 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
         Status::Fail
     };
     let counts = Counts {
-        candidate,
-        noise_subtracted,
-        residue: residue.len(),
+        candidate: residue.candidate,
+        noise_subtracted: residue.noise_subtracted,
+        residue: residue.items.len(),
         self_checks,
         explained: explained.len(),
         unexplained: unexplained_count,

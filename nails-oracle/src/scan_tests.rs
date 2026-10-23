@@ -20,119 +20,12 @@ fn bulk_extractor_skips_comments_and_keeps_the_feature_column() {
 }
 
 #[test]
-fn carved_object_recorders_are_skipped_but_value_recorders_kept() {
-    // The `*_carved` recorders are offset-keyed binary carvings, redundant
-    // with the restore and value channels; the value recorders are kept.
-    for carved in [
-        "utmp_carved",
-        "sqlite_carved",
-        "ntfsmft_carved",
-        "winpe_carved",
-    ] {
-        assert!(
-            is_carved_object_recorder(carved),
-            "{carved} must be skipped"
-        );
-    }
-    for value in ["email", "domain", "url", "json", "ip"] {
-        assert!(
-            !is_carved_object_recorder(value),
-            "{value} is a value recorder and must be kept"
-        );
-    }
-}
-
-#[test]
 fn bulk_extractor_tolerates_a_single_column_line() {
     let findings = bulk_extractor_findings("note", "lonevalue\n");
     assert_eq!(
         findings,
         [Finding::new(Tool::BulkExtractor, "note", "lonevalue")]
     );
-}
-
-#[test]
-fn plaso_pulls_the_source_path_and_descriptor() {
-    let line = r#"{"path":"/var/log/wtmp.db","data_type":"linux:wtmp:event","message":"boot"}"#;
-    let finding = plaso_finding(line).expect("a path is present");
-    assert_eq!(
-        finding,
-        Finding::new(Tool::Plaso, "/var/log/wtmp.db", "linux:wtmp:event")
-    );
-}
-
-#[test]
-fn plaso_without_a_path_is_skipped_and_bad_json_too() {
-    assert!(plaso_finding(r#"{"message":"no path here"}"#).is_none());
-    assert!(plaso_finding("not json at all").is_none());
-}
-
-#[test]
-fn journal_events_key_on_content_not_the_rotating_file() {
-    // Two different journal files (rotation) carrying the same line collapse
-    // to one content-keyed finding, so a benign line subtracts across images
-    // instead of resurfacing under every new per-boot filename.
-    let a = r#"{"data_type":"systemd:journal","display_name":"EXT:/var/log/journal/m/system@aaaa-0001-1111.journal","reporter":"systemd","message_body":"Stopped target System Shutdown."}"#;
-    let b = r#"{"data_type":"systemd:journal","display_name":"EXT:/var/log/journal/m/system@bbbb-0002-2222.journal","reporter":"systemd","message_body":"Stopped target System Shutdown."}"#;
-    let fa = plaso_finding(a).expect("a journal finding");
-    let fb = plaso_finding(b).expect("a journal finding");
-    assert_eq!(fa, fb, "same content must give the same finding");
-    assert_eq!(
-        fa,
-        Finding::new(
-            Tool::Plaso,
-            "journal",
-            "systemd: Stopped target System Shutdown."
-        )
-    );
-}
-
-#[test]
-fn journal_file_stat_events_are_dropped() {
-    // plaso's fs:stat for the rotating journal file itself is volatile by
-    // path and is dropped; the journal's content is compared separately.
-    let line = r#"{"data_type":"fs:stat","display_name":"/var/log/journal/m/system@cccc-0003-3333.journal"}"#;
-    assert!(plaso_finding(line).is_none());
-    // A non-journal file's stat is still a finding.
-    let other = r#"{"data_type":"fs:stat","display_name":"/home/user/secret.txt"}"#;
-    assert_eq!(
-        plaso_finding(other),
-        Some(Finding::new(
-            Tool::Plaso,
-            "/home/user/secret.txt",
-            "fs:stat"
-        ))
-    );
-}
-
-#[test]
-fn normalize_journal_body_masks_volatile_tokens_but_keeps_identifiers() {
-    // Decimal runs -> N, long hex ids -> X; a leaked username/path survives.
-    assert_eq!(
-        normalize_journal_body("Sending SIGKILL to PID 1234"),
-        "Sending SIGKILL to PID N"
-    );
-    // A 32-char boot/machine id (digits + hex letters, >= 8) is masked.
-    assert_eq!(
-        normalize_journal_body("boot 3333f264b48240fc8d4c8635a75023a5 done"),
-        "boot X done"
-    );
-    // A hex-ish word (only letters) is kept, and so is a real identifier.
-    assert_eq!(
-        normalize_journal_body("session opened for user testuser"),
-        "session opened for user testuser"
-    );
-    assert_eq!(normalize_journal_body("cafe deed"), "cafe deed");
-}
-
-#[test]
-fn is_journal_file_matches_only_journal_files() {
-    assert!(is_journal_file("/var/log/journal/m/system@x-1-2.journal"));
-    assert!(is_journal_file(
-        "EXT:/var/log/journal/m/user-1000@x.journal"
-    ));
-    assert!(!is_journal_file("/var/log/journal/m/secret.txt"));
-    assert!(!is_journal_file("/var/log/wtmp.db"));
 }
 
 #[test]
@@ -147,34 +40,45 @@ fn restore_paths_become_absolute_on_image_paths() {
     assert_eq!(restore_abs_path(&root, &root), None);
 }
 
-// --- normalization boundaries (pure, no filesystem) ---------------------
+// --- the digest manifest (pure) ----------------------------------------------
+
+const DIGEST_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const DIGEST_B: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 
 #[test]
-fn normalize_masks_a_pure_decimal_run_to_n() {
-    // Exercises the `run_len == 0` discriminator (scan.rs:251) with an
-    // all-hex input so the masker terminates: a pure decimal run is a
-    // volatile token and must collapse to `N`. If the `== 0` test were
-    // flipped to `!= 0`, each hex char would be copied verbatim and "1234"
-    // would survive as "1234" instead of masking to "N".
-    assert_eq!(normalize_journal_body("1234"), "N");
+fn a_manifest_maps_each_file_to_its_digest() {
+    // sha256sum --zero: text and binary mode, a name with a newline and a
+    // backslash unescaped, NUL-terminated records.
+    let manifest = format!("{DIGEST_A}  ./etc/hostname\0{DIGEST_B} *./var/log/odd\nname\\x\0");
+    let digests = parse_digest_manifest(manifest.as_bytes()).expect("a valid manifest");
+    assert_eq!(
+        digests,
+        BTreeMap::from([
+            ("/etc/hostname".to_string(), DIGEST_A.to_string()),
+            (
+                "/var/log/odd\nname\\x".to_string(),
+                DIGEST_B.to_ascii_lowercase()
+            ),
+        ])
+    );
+    assert_eq!(parse_digest_manifest(b""), Ok(BTreeMap::new()));
 }
 
 #[test]
-fn normalize_keeps_a_long_all_letter_hex_word() {
-    // The hex-id rule is `run_len >= 8 && has_digit && has_hex_letter`
-    // (scan.rs:261). A run of eight hex *letters* with no digit is a
-    // hex-ish word, not an identifier, so it is kept verbatim. If the first
-    // `&&` were an `||`, the >= 8 length alone would mask it to "X".
-    assert_eq!(normalize_journal_body("deadbeef"), "deadbeef");
-}
-
-#[test]
-fn normalize_keeps_a_short_mixed_hex_run() {
-    // The decimal rule is `has_digit && !has_hex_letter` (scan.rs:263). A
-    // short run that has both a digit and a hex letter ("a1") is neither a
-    // long hex id nor a pure decimal, so it is kept verbatim. If that `&&`
-    // were an `||`, the digit alone would mask it to "N".
-    assert_eq!(normalize_journal_body("a1"), "a1");
+fn a_manifest_that_is_not_one_is_rejected() {
+    for broken in [
+        "short  ./x".to_string(),
+        format!("{}  ./x", "g".repeat(64)),
+        format!("{DIGEST_A}  /etc/hostname"),
+        format!("{DIGEST_A}  ./"),
+        format!("{DIGEST_A} ./x"),
+        format!("{DIGEST_A}  ./x\0{DIGEST_B}  ./x"),
+    ] {
+        assert!(
+            parse_digest_manifest(broken.as_bytes()).is_err(),
+            "{broken:?}"
+        );
+    }
 }
 
 // --- filesystem-facing scanners (real tmp tree, no root needed) ---------
@@ -215,12 +119,46 @@ impl Drop for TmpDir {
     }
 }
 
+/// A stand-in for a file's SHA-256 in a test manifest: the scan never hashes
+/// anything itself, it only carries the digest `run-scan.sh` recorded, so any
+/// 64 hex digits that differ with the content do.
+fn digest_of(content: &[u8]) -> String {
+    let mut hex: String = content.iter().map(|b| format!("{b:02x}")).collect();
+    hex.truncate(64);
+    format!("{hex:0>64}")
+}
+
+/// Write the digest manifest of the restored tree at `root` next to it, as
+/// `run-scan.sh` does, and return its path.
+fn write_manifest(root: &Path) -> PathBuf {
+    let mut records = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            let kind = fs::symlink_metadata(&path).expect("metadata").file_type();
+            if kind.is_dir() {
+                stack.push(path);
+            } else if kind.is_file() {
+                let rel = path.strip_prefix(root).expect("under root");
+                let digest = digest_of(&fs::read(&path).expect("read file"));
+                records.extend(format!("{digest}  ./{}\0", rel.display()).into_bytes());
+            }
+        }
+    }
+    let manifest = root.with_extension("sha256");
+    fs::write(&manifest, records).expect("write manifest");
+    manifest
+}
+
 /// Write a populated `outputs/` tree for the `before` image: one restored
-/// file, one bulk_extractor feature file, one plaso event line.
+/// file and its manifest, one bulk_extractor feature file, one plaso event
+/// line.
 fn build_before_outputs(outputs: &Path) {
-    let restore = outputs.join("restore").join("before").join("etc");
-    fs::create_dir_all(&restore).expect("restore dir");
-    fs::write(restore.join("hostname"), b"host").expect("restore file");
+    let root = outputs.join("restore").join("before");
+    fs::create_dir_all(root.join("etc")).expect("restore dir");
+    fs::write(root.join("etc").join("hostname"), b"host").expect("restore file");
+    write_manifest(&root);
 
     let be = outputs.join("bulk_extractor").join("before");
     fs::create_dir_all(&be).expect("bulk_extractor dir");
@@ -235,12 +173,21 @@ fn build_before_outputs(outputs: &Path) {
     .expect("plaso file");
 }
 
+/// The restore finding for a file holding `content`.
+fn restored_file(path: &str, content: &[u8]) -> Finding {
+    Finding::new(
+        Tool::BtrfsRestore,
+        path,
+        format!("sha256:{}", digest_of(content)),
+    )
+}
+
 #[test]
 fn scan_all_errors_when_the_outputs_directory_is_missing() {
     // scan_all must surface a NotFound error when `outputs` is absent (the
-    // `!outputs.is_dir()` guard, scan.rs:31). Dropping the `!`, or stubbing
-    // the body to `Ok(Default::default())`, would return an empty success
-    // instead of the error.
+    // `!outputs.is_dir()` guard). Dropping the `!`, or stubbing the body to
+    // `Ok(Default::default())`, would return an empty success instead of the
+    // error.
     let dir = TmpDir::new();
     let missing = dir.path().join("does-not-exist");
     let err = scan_all(&missing).expect_err("a missing outputs dir is an error");
@@ -258,29 +205,13 @@ fn scan_all_reads_findings_from_every_tool_subtree() {
     build_before_outputs(&outputs);
 
     let scans = scan_all(&outputs).expect("a populated outputs dir scans cleanly");
-    assert!(
-        scans
-            .before
-            .contains(&Finding::new(Tool::BtrfsRestore, "/etc/hostname", "")),
-        "restore finding missing: {:?}",
-        scans.before
-    );
-    assert!(
-        scans
-            .before
-            .contains(&Finding::new(Tool::BulkExtractor, "email", "a@b.example")),
-        "bulk_extractor finding missing: {:?}",
-        scans.before
-    );
-    assert!(
-        scans.before.contains(&Finding::new(
-            Tool::Plaso,
-            "/var/log/wtmp.db",
-            "linux:wtmp:event"
-        )),
-        "plaso finding missing: {:?}",
-        scans.before
-    );
+    for want in [
+        restored_file("/etc/hostname", b"host"),
+        Finding::new(Tool::BulkExtractor, "email", "a@b.example"),
+        Finding::new(Tool::Plaso, "/var/log/wtmp.db", "linux:wtmp:event"),
+    ] {
+        assert!(scans.before.contains(&want), "{want:?}: {:?}", scans.before);
+    }
 }
 
 #[test]
@@ -291,9 +222,9 @@ fn scan_image_collects_the_restore_findings() {
     let outputs = dir.path().join("outputs");
     build_before_outputs(&outputs);
 
-    let out = scan_image(&outputs, ImageLabel::Before);
+    let out = scan_image(&outputs, ImageLabel::Before).expect("scans");
     assert!(
-        out.contains(&Finding::new(Tool::BtrfsRestore, "/etc/hostname", "")),
+        out.contains(&restored_file("/etc/hostname", b"host")),
         "{out:?}"
     );
     assert!(
@@ -302,12 +233,19 @@ fn scan_image_collects_the_restore_findings() {
     );
 }
 
+/// Scan the restored tree at `root` against its manifest.
+fn restore_findings(root: &Path) -> io::Result<BTreeSet<Finding>> {
+    let mut out = BTreeSet::new();
+    scan_restore(root, &root.with_extension("sha256"), &mut out)?;
+    Ok(out)
+}
+
 #[test]
-fn scan_restore_reports_every_entry_by_its_kind_but_not_journals() {
+fn scan_restore_reports_every_entry_by_its_kind_and_content_but_not_journals() {
     // A restore tree with a nested file, a top-level file, an empty
     // directory, a journal file and (on unix) a symlink to a directory. The
-    // walk must report every entry by its kind -- a file with an empty
-    // field, a directory as `dir`, a symlink as `symlink` -- except the
+    // walk must report every entry by its kind and content -- a file by its
+    // digest, a directory as `dir`, a symlink with its target -- except the
     // rotating journal file, which plaso compares by content, and it must
     // not walk through the symlink. The exact set pins the recursion, each
     // kind, the journal exclusion and the no-follow rule at once: a stubbed
@@ -327,14 +265,10 @@ fn scan_restore_reports_every_entry_by_its_kind_but_not_journals() {
 
     #[cfg(unix)]
     std::os::unix::fs::symlink("etc", root.join("link")).expect("symlink");
-
-    let mut out = BTreeSet::new();
-    scan_restore(&root, &mut out);
+    write_manifest(&root);
 
     let mut want: BTreeSet<Finding> = [
         ("/etc", "dir"),
-        ("/etc/hostname", ""),
-        ("/topfile.txt", ""),
         ("/var", "dir"),
         ("/var/lib", "dir"),
         ("/var/lib/staging", "dir"),
@@ -345,18 +279,107 @@ fn scan_restore_reports_every_entry_by_its_kind_but_not_journals() {
     .into_iter()
     .map(|(path, kind)| Finding::new(Tool::BtrfsRestore, path, kind))
     .collect();
+    want.insert(restored_file("/etc/hostname", b"host"));
+    want.insert(restored_file("/topfile.txt", b"top"));
     #[cfg(unix)]
-    want.insert(Finding::new(Tool::BtrfsRestore, "/link", "symlink"));
-    assert_eq!(out, want);
+    want.insert(Finding::new(Tool::BtrfsRestore, "/link", "symlink:etc"));
+    assert_eq!(restore_findings(&root).expect("scans"), want);
+}
+
+#[test]
+fn a_missing_restore_tree_yields_nothing_and_its_manifest_is_not_needed() {
+    // A carve that did not run is a silent channel, which the verdict fails;
+    // it is not an I/O error.
+    let dir = TmpDir::new();
+    let root = dir.path().join("never-carved");
+    assert_eq!(restore_findings(&root).expect("scans"), BTreeSet::new());
+}
+
+#[test]
+fn a_restore_tree_without_its_manifest_stops_the_scan() {
+    let dir = TmpDir::new();
+    let root = dir.path().join("restore_root");
+    fs::create_dir_all(root.join("etc")).expect("dir");
+    fs::write(root.join("etc").join("shadow"), b"x").expect("file");
+    let err = restore_findings(&root).expect_err("no manifest");
+    assert_eq!(err.kind(), io::ErrorKind::NotFound);
+}
+
+#[test]
+fn a_file_and_its_digest_must_match_one_for_one() {
+    // A file the manifest has no digest for, and a digest for a file the tree
+    // lacks, each mean the tree is not the one that was hashed: never a
+    // finding without content, never a silently dropped one.
+    let dir = TmpDir::new();
+    let root = dir.path().join("restore_root");
+    fs::create_dir_all(&root).expect("dir");
+    fs::write(root.join("kept"), b"x").expect("file");
+    let manifest = write_manifest(&root);
+
+    fs::write(root.join("unhashed"), b"y").expect("file");
+    let err = restore_findings(&root).expect_err("a file without a digest");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("/unhashed"), "{err}");
+
+    fs::remove_file(root.join("unhashed")).expect("remove");
+    fs::remove_file(root.join("kept")).expect("remove");
+    let err = restore_findings(&root).expect_err("a digest without a file");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("/kept"), "{err}");
+    assert!(manifest.exists());
+}
+
+/// Make `path` unreadable and say whether that denies this process: as root,
+/// nothing is denied and a test of the denial has nothing to check.
+#[cfg(unix)]
+fn deny(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o000)).expect("chmod");
+    let denied = if path.is_dir() {
+        fs::read_dir(path).is_err()
+    } else {
+        fs::read(path).is_err()
+    };
+    if !denied {
+        allow(path);
+    }
+    denied
+}
+
+/// Undo [`deny`], so the temp directory can be removed.
+#[cfg(unix)]
+fn allow(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("chmod");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_directory_in_the_restore_tree_stops_the_scan() {
+    // Re-rendering a verdict as a normal user over a tree carved as root
+    // meets the decoy's root-only directories. Skipping one would drop a
+    // leaked /root/.bash_history from every image alike and read clean.
+    let dir = TmpDir::new();
+    let root = dir.path().join("restore_root");
+    let private = root.join("root");
+    fs::create_dir_all(&private).expect("dir");
+    fs::write(private.join(".bash_history"), b"leak").expect("file");
+    write_manifest(&root);
+    if !deny(&private) {
+        return;
+    }
+    let result = restore_findings(&root);
+    allow(&private);
+    let err = result.expect_err("an unreadable directory is an error");
+    assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
 }
 
 /// The restore findings `after - before - control` over three restored
-/// trees: the difference the verdict weighs.
+/// trees: the additions the verdict weighs.
 fn restore_residue(before: &Path, control: &Path, after: &Path) -> BTreeSet<Finding> {
     let walk = |root: &Path| {
-        let mut out = BTreeSet::new();
-        scan_restore(root, &mut out);
-        out
+        write_manifest(root);
+        restore_findings(root).expect("scans")
     };
     let (before, control) = (walk(before), walk(control));
     walk(after)
@@ -414,8 +437,21 @@ fn a_symlink_new_in_after_alone_is_restore_residue() {
         BTreeSet::from([Finding::new(
             Tool::BtrfsRestore,
             format!("/{link}"),
-            "symlink"
+            "symlink:/etc/systemd/system/hidden.service"
         )])
+    );
+}
+
+#[test]
+fn a_file_rewritten_in_place_reads_differently_in_after() {
+    // The same path with other content is another finding: what the verdict
+    // weighs as a change of that entry.
+    let dir = TmpDir::new();
+    let [before, control, after] = three_trees(dir.path());
+    fs::write(after.join("etc/hostname"), b"hidden-host").expect("rewrite");
+    assert_eq!(
+        restore_residue(&before, &control, &after),
+        BTreeSet::from([restored_file("/etc/hostname", b"hidden-host")])
     );
 }
 
@@ -435,7 +471,7 @@ fn scan_bulk_extractor_reads_features_and_skips_histograms() {
     .expect("histogram file");
 
     let mut out = BTreeSet::new();
-    scan_bulk_extractor(dir.path(), &mut out);
+    scan_bulk_extractor(dir.path(), &mut out).expect("scans");
 
     assert!(
         out.contains(&Finding::new(Tool::BulkExtractor, "email", "a@b.example")),
@@ -447,25 +483,149 @@ fn scan_bulk_extractor_reads_features_and_skips_histograms() {
     );
 }
 
-#[test]
-fn scan_plaso_reads_event_lines_from_the_timeline_file() {
-    // scan_plaso parses each JSON line into a finding; a stub does nothing.
-    let dir = TmpDir::new();
-    let file = dir.path().join("after.jsonl");
-    fs::write(
-        &file,
-        "{\"path\":\"/var/log/wtmp.db\",\"data_type\":\"linux:wtmp:event\"}\n",
+/// A 384-byte login record of `kind` for process `pid` on tty1.
+fn login_record(kind: i16, pid: i32) -> Vec<u8> {
+    let mut record = vec![0_u8; crate::carved::UTMP_RECORD_SIZE];
+    record[0..2].copy_from_slice(&kind.to_le_bytes());
+    record[4..8].copy_from_slice(&pid.to_le_bytes());
+    record[8..12].copy_from_slice(b"tty1");
+    record
+}
+
+/// A carved-object line of bulk_extractor: offset, saved file, context.
+fn carved_line(offset: u64, file: &str, sha1: &str) -> String {
+    format!(
+        "{offset}\t{file}\t<fileobject><filename>{file}</filename>\
+         <hashdigest type='sha1'>{sha1}</hashdigest></fileobject>\n"
     )
-    .expect("plaso file");
+}
+
+#[test]
+fn carved_login_records_are_read_and_keyed_by_content() {
+    // The utmp carver names each record by its offset; the scan reads the
+    // saved record and keys it by what it records, so the same getty record at
+    // two offsets is one finding. Other carvers are keyed by content hash,
+    // and the sqlite carver and the duplicate-block list are left out.
+    let dir = TmpDir::new();
+    let be = dir.path();
+    let saved = be.join("utmp_carved").join("000");
+    fs::create_dir_all(&saved).expect("carved dir");
+    fs::write(saved.join("100utmp"), login_record(6, 618)).expect("record");
+    fs::write(saved.join("900utmp"), login_record(6, 627)).expect("record");
+    fs::write(saved.join("500utmp"), login_record(6, 1625)).expect("record");
+    let lines: String = [100, 900, 500]
+        .map(|offset| carved_line(offset, &format!("utmp_carved/000/{offset}utmp"), "aa"))
+        .concat();
+    fs::write(be.join("utmp_carved.txt"), format!("# banner\n{lines}")).expect("feature file");
+    fs::write(
+        be.join("zip_carved.txt"),
+        carved_line(7, "zip_carved/000/7.zip", "AB12"),
+    )
+    .expect("feature file");
+    fs::write(
+        be.join("sqlite_carved.txt"),
+        carved_line(8, "sqlite_carved/000/8.sqlite3", "cd"),
+    )
+    .expect("feature file");
+    fs::write(be.join("duplicates.txt"), "16777216\t50331648\tabcd\n").expect("feature file");
 
     let mut out = BTreeSet::new();
-    scan_plaso(&file, &mut out);
+    scan_bulk_extractor(be, &mut out).expect("scans");
+    let getty = |range: &str| {
+        Finding::new(
+            Tool::BulkExtractor,
+            "utmp_carved",
+            format!(
+                "type=LOGIN_PROCESS pid={range} line=tty1 id= user= host= exit=0/0 addr=0.0.0.0"
+            ),
+        )
+    };
+    assert_eq!(
+        out,
+        BTreeSet::from([
+            getty("512-1023"),
+            getty("1024-2047"),
+            Finding::new(Tool::BulkExtractor, "zip_carved", "sha1:ab12"),
+        ])
+    );
+}
+
+#[test]
+fn a_carved_record_that_cannot_be_read_as_one_stops_the_scan() {
+    // A record outside the output directory, a missing record file, a file
+    // of the wrong size and a carved line with no hash are each output the
+    // scan did not get from the carver: never skipped.
+    let dir = TmpDir::new();
+    let be = dir.path();
+    fs::create_dir_all(be.join("utmp_carved")).expect("dir");
+    fs::write(be.join("utmp_carved").join("short"), [0_u8; 10]).expect("file");
+    for (file, line) in [
+        ("utmp_carved.txt", carved_line(1, "../escape", "aa")),
+        (
+            "utmp_carved.txt",
+            carved_line(1, "utmp_carved/missing", "aa"),
+        ),
+        ("utmp_carved.txt", carved_line(1, "utmp_carved/short", "aa")),
+        (
+            "zip_carved.txt",
+            "7\tzip_carved/000/7.zip\t<fileobject/>\n".to_string(),
+        ),
+    ] {
+        fs::write(be.join(file), line).expect("feature file");
+        let mut out = BTreeSet::new();
+        assert!(scan_bulk_extractor(be, &mut out).is_err(), "{file}");
+        fs::remove_file(be.join(file)).expect("remove");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_feature_file_stops_the_scan() {
+    let dir = TmpDir::new();
+    let feature = dir.path().join("email.txt");
+    fs::write(&feature, "4096\tleak@hidden.example\tctx\n").expect("feature file");
+    if !deny(&feature) {
+        return;
+    }
+    let mut out = BTreeSet::new();
+    let result = scan_bulk_extractor(dir.path(), &mut out);
+    allow(&feature);
+    let err = result.expect_err("an unreadable feature file is an error");
+    assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+}
+
+#[test]
+fn a_missing_bulk_extractor_dir_or_timeline_yields_nothing() {
+    let dir = TmpDir::new();
+    let mut out = BTreeSet::new();
+    scan_bulk_extractor(&dir.path().join("none"), &mut out).expect("scans");
+    scan_plaso(&dir.path().join("none.jsonl"), &mut out).expect("scans");
+    assert!(out.is_empty());
+}
+
+#[test]
+fn scan_plaso_reads_event_lines_from_the_timeline_file() {
+    // scan_plaso parses each JSON line into a finding; a stub does nothing. A
+    // byte that is not UTF-8 costs its own line, never the timeline.
+    let dir = TmpDir::new();
+    let file = dir.path().join("after.jsonl");
+    let mut timeline =
+        b"{\"path\":\"/var/log/wtmp.db\",\"data_type\":\"linux:wtmp:event\"}\n".to_vec();
+    timeline.extend(b"{\"path\":\"/x\",\"data_type\":\"t\",\"v\":\"\xff\"}\n");
+    fs::write(&file, timeline).expect("plaso file");
+
+    let mut out = BTreeSet::new();
+    scan_plaso(&file, &mut out).expect("scans");
     assert!(
         out.contains(&Finding::new(
             Tool::Plaso,
             "/var/log/wtmp.db",
             "linux:wtmp:event"
         )),
+        "{out:?}"
+    );
+    assert!(
+        out.contains(&Finding::new(Tool::Plaso, "/x", "t v=\u{fffd}")),
         "{out:?}"
     );
 }
@@ -482,9 +642,10 @@ fn the_cli_fails_a_scan_whose_plaso_channel_was_dropped() {
     let outputs = dir.path().join("outputs");
     for label in ImageLabel::ALL {
         let name = label.dir_name();
-        let etc = outputs.join("restore").join(name).join("etc");
-        fs::create_dir_all(&etc).expect("restore dir");
-        fs::write(etc.join("hostname"), b"").expect("restore file");
+        let root = outputs.join("restore").join(name);
+        fs::create_dir_all(root.join("etc")).expect("restore dir");
+        fs::write(root.join("etc").join("hostname"), b"").expect("restore file");
+        write_manifest(&root);
         let be = outputs.join("bulk_extractor").join(name);
         fs::create_dir_all(&be).expect("bulk_extractor dir");
         let mut emails = String::from("4096\tcanary@oracle.example\tctx\n");
@@ -534,6 +695,12 @@ fn the_cli_fails_a_scan_whose_plaso_channel_was_dropped() {
         Ok(0),
         "every channel reported: clean"
     );
+
+    // An outputs tree the scan cannot read in full is an I/O error (exit 2),
+    // never a verdict.
+    fs::remove_file(outputs.join("restore").join("after.sha256")).expect("remove");
+    let err = crate::run_inner(&args).expect_err("an unreadable outputs tree");
+    assert!(err.contains("after.sha256"), "{err}");
 }
 
 #[test]
@@ -546,14 +713,20 @@ fn load_allowlist_parses_a_file_and_errors_on_a_missing_one() {
     let file = dir.path().join("allow.json");
     fs::write(
         &file,
-        r#"{"entries":[{"path":"/var/lib/nixos","cite":"var-lib-nixos"}]}"#,
+        r#"{"entries":[{"path":"/var/lib/systemd/timesync/clock","cite":"timesync-clock"},
+                       {"path":"/var/lib/old","cite":"timesync-clock","removed":true}]}"#,
     )
     .expect("allowlist file");
 
     let allowlist = load_allowlist(&file).expect("a valid allowlist parses");
-    assert_eq!(allowlist.entries.len(), 1);
-    assert_eq!(allowlist.entries[0].path, "/var/lib/nixos");
-    assert_eq!(allowlist.entries[0].cite, "var-lib-nixos");
+    assert_eq!(allowlist.entries.len(), 2);
+    assert_eq!(allowlist.entries[0].path, "/var/lib/systemd/timesync/clock");
+    assert_eq!(allowlist.entries[0].cite, "timesync-clock");
+    assert!(
+        !allowlist.entries[0].removed,
+        "an entry covers arrivals by default"
+    );
+    assert!(allowlist.entries[1].removed);
 
     let missing = dir.path().join("nope.json");
     assert!(

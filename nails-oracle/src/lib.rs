@@ -9,18 +9,22 @@
 //! It compares three images of one host — `before` the session, a clean
 //! `control` boot cycle, and `after` the session — by what the restore carve
 //! (`btrfs restore` or `debugfs rdump`), `bulk_extractor` and `plaso` recover
-//! from each. A difference in `after` is a leak unless it also appears in the
-//! clean control cycle (scan noise) or a cited allowlist entry explains it.
-//! Three self-checks keep a clean verdict honest: planted positive controls
-//! must be detected (or the scan is blind), a coverage canary must be detected
-//! (or the scan did not read the image), and every analysis channel must
-//! report on every image (or the scan could not look through it).
+//! from each: the files with what they hold, the records in them and the
+//! features carved from anywhere on the disk. A difference in `after`, a trace
+//! new in it, changed in it or gone from it, is a leak unless the clean control
+//! cycle shows the same change (scan noise) or a cited allowlist entry
+//! explains it. Three self-checks keep a clean verdict honest: planted
+//! positive controls must be detected (or the scan is blind), a coverage
+//! canary must be detected (or the scan did not read the image), and every
+//! analysis channel must report on every image (or the scan could not look
+//! through it).
 //!
 //! The decision lives in [`verdict::scan_verdict`], a pure function unit-tested
-//! over synthetic findings. The [`scan`] parsers that feed it are lenient, but
-//! a channel they get nothing from fails the run; the [`catalog`] a citation
-//! resolves against is the live residue catalog, linked out of
-//! `nails-forensics` so it cannot drift.
+//! over synthetic findings. The [`scan`] parsers that feed it are lenient with
+//! output they cannot parse, but a channel they get nothing from fails the run
+//! and an entry they cannot read stops it; the [`catalog`] a citation resolves
+//! against is the live residue catalog, linked out of `nails-forensics` so it
+//! cannot drift.
 //!
 //! The actual CLI logic is in this library to allow for proper unit test
 //! coverage; `main.rs` only forwards the process arguments to [`run`].
@@ -29,8 +33,11 @@
 // may use it freely; production code opts in per site with a scoped allow.
 #![cfg_attr(test, allow(unsafe_code))]
 
+pub mod carved;
 pub mod catalog;
 pub mod model;
+pub mod plaso;
+mod residue;
 pub mod scan;
 pub mod verdict;
 
@@ -42,8 +49,8 @@ mod verdict_prop_tests;
 
 pub use catalog::{Catalog, CatalogRow};
 pub use model::{
-    AllowEntry, Allowlist, Canary, Controls, Finding, ImageLabel, OraclePolicy, PositiveControl,
-    Scans, Tool,
+    AllowEntry, Allowlist, Canary, Change, Controls, Finding, ImageLabel, OraclePolicy,
+    PositiveControl, Scans, Tool,
 };
 pub use verdict::{
     ControlResult, Counts, Explained, Failure, Status, Verdict, scan_verdict, verdict as decide,
@@ -68,7 +75,7 @@ Render a pass/fail forensic verdict over one scan's outputs/ tree.
 
 Prints the verdict as JSON to stdout and a one-line summary to stderr.
 Exit codes: 0 clean, 1 fail (residue / blind or missing channel / canary / bad allowlist),
-2 usage or I/O error.";
+2 usage or I/O error (an entry of the outputs tree it cannot read included).";
 
 /// Parsed command line.
 struct Options {

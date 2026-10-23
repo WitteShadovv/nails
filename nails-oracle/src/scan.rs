@@ -8,27 +8,42 @@
 //!
 //! ```text
 //! outputs/restore/<label>/...            restored file tree (btrfs restore, debugfs rdump)
+//! outputs/restore/<label>.sha256         a SHA-256 of every restored file
 //! outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
+//! outputs/bulk_extractor/<label>/*_carved/...  the objects its carvers saved
 //! outputs/plaso/<label>.jsonl            plaso timeline, one JSON event a line
 //! ```
 //!
-//! These parsers are deliberately lenient — a missing subtree or an
-//! unparseable line is skipped here, not fatal — because the exact tool output
-//! varies. Leniency never reads as clean: a channel that yields no finding for
-//! an image fails the run in [`crate::verdict::scan_verdict`]. Rigor lives in
-//! [`crate::verdict`], which is tested over synthetic findings, not over these
-//! files. The pure per-format helpers here ([`bulk_extractor_findings`],
-//! [`plaso_finding`], `restore_abs_path`) are unit-tested without touching
-//! the filesystem.
+//! `run-scan.sh` hashes each restored file before it empties it to save disk,
+//! into `<label>.sha256` (`sha256sum --zero`: `<hex>  ./<path>`, each record
+//! ending in a NUL), so the restore channel compares what a file holds, not
+//! only that it exists.
+//!
+//! These parsers are lenient with output they cannot parse (an unparseable
+//! line is skipped) and with a tool that did not run (a missing subtree yields
+//! no findings), because the exact tool output varies. Neither reads as clean:
+//! a channel that yields no finding for an image fails the run in
+//! [`crate::verdict::scan_verdict`]. What they never pass over is output they
+//! cannot read, a directory or an entry they lack the rights to, a restored
+//! file without its digest or a carved record that is not one: any of those is
+//! an I/O error and stops the run, since skipping it would hide whatever it
+//! held. Rigor lives in [`crate::verdict`], which is tested over synthetic
+//! findings, not over these files. The pure per-format helpers
+//! ([`bulk_extractor_findings`], [`parse_digest_manifest`],
+//! [`crate::plaso::plaso_finding`], [`crate::carved::utmp_record_key`]) are
+//! unit-tested without touching the filesystem.
 
+use crate::carved::{self, Recorder};
 use crate::model::{Finding, ImageLabel, Scans, Tool};
-use std::collections::BTreeSet;
+use crate::plaso::{is_journal_file, plaso_finding};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
 
-/// Normalize a whole `outputs/` tree. Errors only when `outputs` itself cannot
-/// be read; a missing per-tool subtree yields no findings for that tool.
+/// Normalize a whole `outputs/` tree. Errors when `outputs` itself cannot be
+/// read, or when an entry of it cannot (see the module docs); a missing
+/// per-tool subtree yields no findings for that tool.
 pub fn scan_all(outputs: &Path) -> io::Result<Scans> {
     if !outputs.is_dir() {
         return Err(io::Error::new(
@@ -37,63 +52,147 @@ pub fn scan_all(outputs: &Path) -> io::Result<Scans> {
         ));
     }
     Ok(Scans {
-        before: scan_image(outputs, ImageLabel::Before),
-        control: scan_image(outputs, ImageLabel::Control),
-        after: scan_image(outputs, ImageLabel::After),
+        before: scan_image(outputs, ImageLabel::Before)?,
+        control: scan_image(outputs, ImageLabel::Control)?,
+        after: scan_image(outputs, ImageLabel::After)?,
     })
 }
 
 /// Normalize one image's findings across all three tools.
-fn scan_image(outputs: &Path, label: ImageLabel) -> BTreeSet<Finding> {
+fn scan_image(outputs: &Path, label: ImageLabel) -> io::Result<BTreeSet<Finding>> {
     let mut findings = BTreeSet::new();
     let name = label.dir_name();
-    scan_restore(&outputs.join("restore").join(name), &mut findings);
-    scan_bulk_extractor(&outputs.join("bulk_extractor").join(name), &mut findings);
+    let restore = outputs.join("restore");
+    scan_restore(
+        &restore.join(name),
+        &restore.join(format!("{name}.sha256")),
+        &mut findings,
+    )?;
+    scan_bulk_extractor(&outputs.join("bulk_extractor").join(name), &mut findings)?;
     scan_plaso(
         &outputs.join("plaso").join(format!("{name}.jsonl")),
         &mut findings,
-    );
-    findings
+    )?;
+    Ok(findings)
+}
+
+/// `err` with the path it is about in its message, keeping its kind.
+fn at(path: &Path, err: io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{}: {err}", path.display()))
+}
+
+/// An error for output that is there but is not what the scan wrote.
+fn invalid(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// Whether `path` exists (as anything, a dangling link included). A path that
+/// is missing is a tool that did not run; one that cannot be looked up is an
+/// error.
+fn present(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(at(path, e)),
+    }
+}
+
+/// Read a tool's text output, keeping a byte that is not UTF-8 as a
+/// replacement character rather than failing on it.
+fn read_text(path: &Path) -> io::Result<String> {
+    let bytes = fs::read(path).map_err(|e| at(path, e))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Walk a restored file tree, emitting one finding per recovered entry: its
-/// absolute on-image path, with the entry's kind as the field (empty for a
-/// file). A directory (`dir`) and a symbolic link (`symlink`) are traces in
+/// absolute on-image path, with the entry's kind and content as the field:
+/// `sha256:<digest>` for a file (its digest from `manifest`), `dir` for a
+/// directory, `symlink:<target>` for a symbolic link and `other` for any other
+/// entry a carver recovers. A directory and a symbolic link are traces in
 /// their own right, an empty staging directory or a unit's enablement link, so
-/// each is reported as a finding like a file, with its kind as the field, and
-/// never only walked through or skipped. Any other entry a carver recovers is
-/// reported as a file, with an empty field.
-fn scan_restore(root: &Path, out: &mut BTreeSet<Finding>) {
+/// each is reported as a finding like a file, and never only walked through or
+/// skipped. A missing tree is a carve that did not run, which yields nothing;
+/// a tree without its manifest, a file the manifest has no digest for, a
+/// digest for a file the tree lacks, or a directory or entry that cannot be
+/// read, is an error.
+fn scan_restore(root: &Path, manifest: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()> {
+    if !present(root)? {
+        return Ok(());
+    }
+    let mut digests = parse_digest_manifest(&fs::read(manifest).map_err(|e| at(manifest, e))?)
+        .map_err(|message| invalid(format!("{}: {message}", manifest.display())))?;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        for entry in fs::read_dir(&dir).map_err(|e| at(&dir, e))? {
+            let entry = entry.map_err(|e| at(&dir, e))?;
             let path = entry.path();
             // `file_type` does not follow a symlink, so a link to a directory
             // is reported as a link and never walked: it may point anywhere,
             // out of the restored tree included.
-            let kind = match entry.file_type() {
-                Ok(ft) if ft.is_dir() => {
-                    stack.push(path.clone());
-                    "dir"
-                }
-                Ok(ft) if ft.is_symlink() => "symlink",
-                _ => "",
-            };
+            let kind = entry.file_type().map_err(|e| at(&path, e))?;
             let Some(abs) = restore_abs_path(root, &path) else {
                 continue;
             };
-            // A rotating journal file is compared by its parsed message content
-            // (see plaso_finding), not by its per-boot unique filename, so it is
-            // not a restore-path finding -- otherwise every new rotation would
-            // be false residue. The directories that hold it are still reported.
+            let field = if kind.is_dir() {
+                stack.push(path);
+                "dir".to_string()
+            } else if kind.is_symlink() {
+                let target = fs::read_link(&path).map_err(|e| at(&path, e))?;
+                format!("symlink:{}", target.to_string_lossy())
+            } else if kind.is_file() {
+                let digest = digests.remove(&abs).ok_or_else(|| {
+                    invalid(format!("{}: no digest for {abs}", manifest.display()))
+                })?;
+                format!("sha256:{digest}")
+            } else {
+                "other".to_string()
+            };
+            // A rotating journal file is compared by its parsed message
+            // content (see crate::plaso), not by its per-boot unique filename
+            // and content, so it is not a restore finding -- otherwise every
+            // new rotation would be false residue. The directories that hold
+            // it are still reported.
             if !is_journal_file(&abs) {
-                out.insert(Finding::new(Tool::BtrfsRestore, abs, kind));
+                out.insert(Finding::new(Tool::BtrfsRestore, abs, field));
             }
         }
     }
+    match digests.keys().next() {
+        Some(extra) => Err(invalid(format!(
+            "{}: a digest for {extra}, which the restored tree does not hold",
+            manifest.display()
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Parse a digest manifest, `sha256sum --zero` run over the files of a
+/// restored tree from inside it: each record is `<64 hex>  ./<path>` (or
+/// `<hex> *./<path>`) ending in a NUL, with the name unescaped. Returns each
+/// file's lowercase digest by its absolute on-image path, or why the manifest
+/// is not one. Pure, so it is unit-tested directly.
+pub fn parse_digest_manifest(contents: &[u8]) -> Result<BTreeMap<String, String>, String> {
+    let mut digests = BTreeMap::new();
+    for record in contents.split(|&b| b == 0).filter(|r| !r.is_empty()) {
+        let line = String::from_utf8_lossy(record);
+        let Some((hex, name)) = line.split_at_checked(64) else {
+            return Err(format!("a record too short for a digest: {line:?}"));
+        };
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("a record with no SHA-256 digest: {line:?}"));
+        }
+        let Some(relative) = name
+            .strip_prefix("  ./")
+            .or_else(|| name.strip_prefix(" *./"))
+        else {
+            return Err(format!("a record for a path outside the tree: {line:?}"));
+        };
+        let path = format!("/{relative}");
+        if relative.is_empty() || digests.insert(path, hex.to_ascii_lowercase()).is_some() {
+            return Err(format!("an empty or repeated path: {line:?}"));
+        }
+    }
+    Ok(digests)
 }
 
 /// Map a file under the restore root to the absolute on-image path it stands
@@ -111,13 +210,16 @@ fn restore_abs_path(root: &Path, file: &Path) -> Option<String> {
 }
 
 /// Read every bulk_extractor feature file in `dir` (each `*.txt` that is not a
-/// `*_histogram.txt`), using the file stem as the feature type.
-fn scan_bulk_extractor(dir: &Path, out: &mut BTreeSet<Finding>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+/// `*_histogram.txt`), using the file stem as the feature type, the way
+/// [`carved::recorder`] says to read it. A missing directory is a
+/// bulk_extractor that did not run, which yields nothing; one that cannot be
+/// read is an error.
+fn scan_bulk_extractor(dir: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()> {
+    if !present(dir)? {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).map_err(|e| at(dir, e))? {
+        let path = entry.map_err(|e| at(dir, e))?.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -125,172 +227,88 @@ fn scan_bulk_extractor(dir: &Path, out: &mut BTreeSet<Finding>) {
             continue;
         }
         let feature_type = name.trim_end_matches(".txt");
-        if is_carved_object_recorder(feature_type) {
+        let recorder = carved::recorder(feature_type);
+        if recorder == Recorder::Skipped {
             continue;
         }
-        if let Ok(contents) = fs::read_to_string(&path) {
+        let contents = read_text(&path)?;
+        if recorder == Recorder::Values {
             out.extend(bulk_extractor_findings(feature_type, &contents));
-        }
-    }
-}
-
-/// bulk_extractor's carving scanners -- the `*_carved` recorders (`utmp_carved`,
-/// `sqlite_carved`, `evtx_carved`, the `ntfsindx`/`ntfslogfile`/`ntfsmft`/
-/// `ntfsusn_carved` set, `winpe_carved`, `unrar_carved`, `kml_carved`) -- do not
-/// record stable feature *values*. Each line's "value" is the path of a binary
-/// object bulk_extractor reconstructed and named by its byte *offset* in the
-/// image (`utmp_carved/000/2288002688utmp`). That offset shifts with every
-/// image -- even byte-identical content lands at a different offset across
-/// before/control/after -- so a carved-object finding can never survive the
-/// after - before - control set difference, and the channel contributes only
-/// unsubtractable noise (confirmed on the real decoy images: reboot/login utmp
-/// records and Nix-store sqlite pages from ordinary boot activity).
-///
-/// Dropping it loses no detection, because its content is already covered twice:
-/// the restore channel recovers every real file by its on-image *path* (a
-/// genuinely new file is caught there), and the value recorders (email, domain,
-/// url, ...) scan the same raw bytes -- unallocated space included -- so any
-/// leaked *string* is caught whatever object it sat in. Only the value recorders
-/// feed the verdict. The match is on bulk_extractor's own `_carved` suffix, so a
-/// carving scanner added upstream is skipped on the same principle.
-fn is_carved_object_recorder(feature_type: &str) -> bool {
-    feature_type.ends_with("_carved")
-}
-
-/// Parse one bulk_extractor feature file's contents into findings. A feature
-/// line is `offset \t feature \t context`; comment lines (`#...`) and blanks
-/// are skipped. Pure, so it is unit-tested directly.
-pub fn bulk_extractor_findings(feature_type: &str, contents: &str) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    for line in contents.lines() {
-        if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let value = line.split('\t').nth(1).unwrap_or(line);
-        if !value.is_empty() {
-            findings.push(Finding::new(Tool::BulkExtractor, feature_type, value));
+        for (feature, context) in feature_lines(&contents) {
+            let field = if recorder == Recorder::LoginRecords {
+                login_record_field(dir, feature)?
+            } else {
+                carved::carved_hash(context).ok_or_else(|| {
+                    invalid(format!("{}: no content hash for {feature}", path.display()))
+                })?
+            };
+            out.insert(Finding::new(Tool::BulkExtractor, feature_type, field));
         }
     }
-    findings
+    Ok(())
+}
+
+/// The key of the carved login record a `utmp_carved` line names: read from
+/// the file the carver saved it to under `dir` (see
+/// [`carved::utmp_record_key`]). A name that leaves `dir`, a file that cannot
+/// be read and a file that is not one record are errors.
+fn login_record_field(dir: &Path, feature: &str) -> io::Result<String> {
+    let file = carved::carved_object_path(dir, feature).ok_or_else(|| {
+        invalid(format!(
+            "{}: a carved record outside it: {feature}",
+            dir.display()
+        ))
+    })?;
+    let record = fs::read(&file).map_err(|e| at(&file, e))?;
+    carved::utmp_record_key(&record).ok_or_else(|| {
+        invalid(format!(
+            "{}: {} bytes, not one {}-byte login record",
+            file.display(),
+            record.len(),
+            carved::UTMP_RECORD_SIZE
+        ))
+    })
+}
+
+/// The `(feature, context)` columns of each feature line of a bulk_extractor
+/// feature file (`offset \t feature \t context`), skipping comments (`#...`)
+/// and blanks. A line with a single column is its own feature.
+fn feature_lines(contents: &str) -> impl Iterator<Item = (&str, &str)> {
+    contents
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let mut columns = line.split('\t');
+            let first = columns.next().unwrap_or(line);
+            match columns.next() {
+                Some(feature) => (feature, columns.next().unwrap_or("")),
+                None => (first, ""),
+            }
+        })
+}
+
+/// Parse one bulk_extractor value recorder's feature file into findings. A
+/// feature line is `offset \t feature \t context`; comment lines (`#...`) and
+/// blanks are skipped. Pure, so it is unit-tested directly.
+pub fn bulk_extractor_findings(feature_type: &str, contents: &str) -> Vec<Finding> {
+    feature_lines(contents)
+        .filter(|(value, _)| !value.is_empty())
+        .map(|(value, _)| Finding::new(Tool::BulkExtractor, feature_type, value))
+        .collect()
 }
 
 /// Read a plaso timeline exported as JSON lines (`psort -o json_line`), one
-/// event an object a line.
-fn scan_plaso(file: &Path, out: &mut BTreeSet<Finding>) {
-    let Ok(contents) = fs::read_to_string(file) else {
-        return;
-    };
-    for line in contents.lines() {
-        if let Some(finding) = plaso_finding(line) {
-            out.insert(finding);
-        }
+/// event an object a line. A missing timeline is a plaso that did not run (or
+/// a channel `run-scan.sh` dropped), which yields nothing; one that cannot be
+/// read is an error.
+fn scan_plaso(file: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()> {
+    if !present(file)? {
+        return Ok(());
     }
-}
-
-/// Parse one plaso JSON-line event into a finding: its source path and an event
-/// descriptor. Returns `None` when no source path can be found. Pure, so it is
-/// unit-tested directly.
-pub fn plaso_finding(line: &str) -> Option<Finding> {
-    let value: serde_json::Value = serde_json::from_str(line).ok()?;
-    let data_type = first_string(&value, &["data_type"]).unwrap_or_default();
-
-    // A systemd-journal event is keyed on its content, not on the journal file:
-    // journald rotates files named by a per-boot sequence and realtime stamp
-    // (`system@<seq>-<first>-<time>.journal`), so the path is unique on every
-    // image and could never subtract across before/control/after. The leak
-    // signal in a journal is the log line, so a benign boot/shutdown line
-    // (logged on every boot) subtracts and a genuinely new line surfaces.
-    if data_type == "systemd:journal" {
-        return journal_finding(&value);
-    }
-
-    let path = first_string(&value, &["path", "filename", "display_name", "pathspec"])?;
-    // A non-journal event that still points at a rotating journal file (plaso's
-    // own `fs:stat` for the file, say) is dropped for the same reason: the
-    // file's identity is volatile; its content is compared above.
-    if is_journal_file(&path) {
-        return None;
-    }
-    let descriptor = first_string(
-        &value,
-        &["data_type", "timestamp_desc", "message", "parser"],
-    )
-    .unwrap_or_default();
-    Some(Finding::new(Tool::Plaso, path, descriptor))
-}
-
-/// A systemd-journal file, `/var/log/journal/<machine-id>/<...>.journal`. plaso
-/// prefixes the location with a type indicator (`EXT:`), which `contains`
-/// tolerates. These rotate under per-boot unique names, so they are compared by
-/// message content, never by path.
-fn is_journal_file(path: &str) -> bool {
-    path.contains("/var/log/journal/") && path.ends_with(".journal")
-}
-
-/// Key a systemd-journal event on its content: the reporting unit and the
-/// normalized message body. The event's timestamp, PID, hostname and source
-/// file are deliberately excluded -- they vary every boot and would stop any
-/// line from ever subtracting. The locus is the fixed pseudo-path `journal`, so
-/// a residual line is allowlistable by its exact content like any feature.
-fn journal_finding(value: &serde_json::Value) -> Option<Finding> {
-    let reporter = first_string(value, &["reporter", "_COMM", "parser"]).unwrap_or_default();
-    let body = first_string(value, &["message_body", "message"])?;
-    let normalized = normalize_journal_body(&body);
-    let field = if reporter.is_empty() {
-        normalized
-    } else {
-        format!("{reporter}: {normalized}")
-    };
-    Some(Finding::new(Tool::Plaso, "journal", field))
-}
-
-/// Mask the volatile tokens in a journal message body so the same line
-/// subtracts across boots while a line carrying a new identifier still stands
-/// out. Only two clearly-volatile token classes are masked, conservatively, to
-/// avoid collapsing a real leak onto a benign line: a long hex id (>= 8 chars,
-/// with both a digit and a hex letter -- boot/machine ids, UUIDs, hashes) ->
-/// `X`, and a pure decimal run (PIDs, sizes, durations, session numbers) ->
-/// `N`. Letters, words, paths, usernames and punctuation are left verbatim, so
-/// a leaked string survives normalization and shows up as residue.
-fn normalize_journal_body(body: &str) -> String {
-    let mut out = String::with_capacity(body.len());
-    let mut rest = body;
-    while !rest.is_empty() {
-        // Take a maximal run of ASCII hex digits.
-        let run_len = rest
-            .char_indices()
-            .find(|(_, c)| !c.is_ascii_hexdigit())
-            .map_or(rest.len(), |(i, _)| i);
-        if run_len == 0 {
-            // Not a hex digit: copy one whole character.
-            let ch = rest.chars().next().expect("rest is non-empty");
-            out.push(ch);
-            rest = &rest[ch.len_utf8()..];
-            continue;
-        }
-        let run = &rest[..run_len];
-        let has_digit = run.bytes().any(|b| b.is_ascii_digit());
-        let has_hex_letter = run.bytes().any(|b| matches!(b, b'a'..=b'f' | b'A'..=b'F'));
-        if run_len >= 8 && has_digit && has_hex_letter {
-            out.push('X'); // a hex id (boot/machine id, UUID, hash)
-        } else if has_digit && !has_hex_letter {
-            out.push('N'); // a pure decimal run
-        } else {
-            out.push_str(run); // a hex-ish word like "cafe" or "sha": keep it
-        }
-        rest = &rest[run_len..];
-    }
-    out
-}
-
-/// The first of `keys` that `value` (a JSON object) carries as a string.
-fn first_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        if let Some(found) = value.get(*key).and_then(serde_json::Value::as_str) {
-            return Some(found.to_string());
-        }
-    }
-    None
+    out.extend(read_text(file)?.lines().filter_map(plaso_finding));
+    Ok(())
 }
 
 /// Load an [`Allowlist`](crate::model::Allowlist) from a JSON file.

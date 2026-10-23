@@ -7,11 +7,12 @@
 # reads, then render the verdict.
 #
 # Streaming, so peak disk is one image's worth and not the sum of all three: for
-# each label in turn it builds that one image, runs btrfs restore (then
-# truncates the recovered file contents to zero, keeping only the recovered
-# paths the verdict keys on), bulk_extractor and plaso over it, and deletes the
-# image and the bulky plaso store before moving to the next label. The small
-# per-tool outputs for finished labels stay; nothing bulky accumulates.
+# each label in turn it builds that one image, runs the restore carve (then
+# records a SHA-256 of every recovered file and empties it, so the verdict
+# compares what each file held without the contents taking up disk),
+# bulk_extractor and plaso over it, and deletes the image and the bulky plaso
+# store before moving to the next label. The small per-tool outputs for
+# finished labels stay; nothing bulky accumulates.
 #
 # A scan that could not look never passes: a carve that recovers nothing or
 # reports an error stops the run, a plaso timeline with no event for the
@@ -40,12 +41,12 @@
 #   sudo run-scan.sh <workdir>
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
 #
-# Needs root (loop mounts), btrfs-progs, git + the bulk_extractor build chain,
-# and docker (for the pinned plaso container; without it the verdict fails on
-# the missing plaso channel); pre-built-image mode also needs sleuthkit (mmls)
-# and e2fsprogs (debugfs) plus util-linux (blkid, losetup). The verdict binary
-# is found at $ORACLE_BIN, or target/release/nails-oracle under the repository
-# root. No KVM.
+# Needs root (loop mounts, and reading the decoy's root-only files), btrfs-progs,
+# git + the bulk_extractor build chain, and docker (for the pinned plaso
+# container; without it the verdict fails on the missing plaso channel);
+# pre-built-image mode also needs sleuthkit (mmls) and e2fsprogs (debugfs) plus
+# util-linux (blkid, losetup). The verdict binary is found at $ORACLE_BIN, or
+# target/release/nails-oracle under the repository root. No KVM.
 set -euo pipefail
 
 # --- Pins (verbatim from the image-analysis feasibility probe). -------------
@@ -75,7 +76,7 @@ build="$work/build"
 mkdir -p "$images" "$outputs/restore" "$outputs/bulk_extractor" "$outputs/plaso" "$build"
 
 [ "$(id -u)" -eq 0 ] || { echo "run-scan: must run as root (loop mounts)" >&2; exit 1; }
-for t in git make btrfs mkfs.btrfs truncate find; do
+for t in git make btrfs mkfs.btrfs truncate find sort xargs sha256sum; do
   command -v "$t" >/dev/null || { echo "run-scan: missing required tool: $t" >&2; exit 1; }
 done
 have_docker=1
@@ -94,7 +95,7 @@ if [ -n "$images_src" ]; then
     [ -f "$images_src/$label.raw" ] \
       || { echo "run-scan: ORACLE_IMAGES_DIR set but $label.raw is missing in $images_src" >&2; exit 2; }
   done
-  for t in blkid debugfs mmls losetup; do
+  for t in blkid debugfs mmls losetup dd cmp; do
     command -v "$t" >/dev/null \
       || { echo "run-scan: missing required tool for pre-built images: $t" >&2; exit 1; }
   done
@@ -122,9 +123,7 @@ fi
 
 # Positive-control sentinels (real-image mode only), the same reserved addresses
 # the synthetic controls use so the controls-real.json pins are reusable.
-WTMP_SENTINEL=${ORACLE_WTMP_SENTINEL:-wtmpdb-boot@oracle.example}
-LASTLOG_SENTINEL=${ORACLE_LASTLOG_SENTINEL:-lastlog2@oracle.example}
-PKG_SENTINEL=${ORACLE_PKG_SENTINEL:-pkg-history@oracle.example}
+SENTINELS=(unallocated-1@oracle.example unallocated-2@oracle.example unallocated-3@oracle.example)
 
 allowlist="$repo_root/ci/oracle/allowlist.json"
 # The on-image file that carries the canary. Every image has it, so a restore
@@ -313,14 +312,14 @@ carve_restore() {
       fi
       ;;
     *)
-      # Fail closed. The restore channel recovers every on-image path -- a
-      # new leftover file whose bytes are not distinctively carvable, an empty
-      # directory, a symlink -- and nails-oracle leans on it (it drops
-      # bulk_extractor's carved recorders on the premise that restore recovers
-      # every real file by its path). A filesystem it cannot carve is
-      # therefore a hard error with its reason, not a skipped channel; the
-      # verdict would fail an empty channel too. Add a carver for it (see
-      # README.md) or scan a btrfs or ext{2,3,4} image.
+      # Fail closed. The restore channel recovers every on-image path and
+      # what each file holds -- a new leftover file whose bytes are not
+      # distinctively carvable, a file rewritten in place, an empty
+      # directory, a symlink -- and no other channel compares those. A
+      # filesystem it cannot carve is therefore a hard error with its reason,
+      # not a skipped channel; the verdict would fail an empty channel too.
+      # Add a carver for it (see README.md) or scan a btrfs or ext{2,3,4}
+      # image.
       echo "run-scan: no restore carver for filesystem '$fstype' on $img; failing closed, since the scan cannot look at its files. Add a carver for '$fstype' (see ci/oracle/README.md) or scan a btrfs or ext{2,3,4} image." >&2
       exit 1
       ;;
@@ -329,45 +328,45 @@ carve_restore() {
 
 # --- Positive-control injection (real-image mode only). ---------------------
 # Before scanning the 'after' image, copy after.raw to a sparse WORKING COPY and
-# append the positive-control sentinels in place to the baseline carrier files
-# the decoy already carries, so only the new @oracle address differs and no new
-# on-image path appears (the carriers already exist on before/control, so the
-# restore channel's after - before - control set difference keeps subtracting
-# their paths; only the carved address is new). before.raw, control.raw and the
-# retained after.raw are never touched. The working copy is loop-mounted
-# read-write at the filesystem's byte offset (from detect_fs) and is unmounted
-# under a cleanup trap, which also detaches a carve's loop device; no global
+# write each positive-control sentinel into its own zero-filled free block of
+# the copy's filesystem, byte by byte and with no mount
+# (plant-in-free-space.sh). The copy then differs from the captured image in
+# those blocks alone, the way a leaked-then-deleted string sits in free space:
+# no file, path or record changes, and nothing after.raw holds is overwritten.
+# A read-write kernel mount would replay or restart the ext4 journal and
+# rewrite the superblock, so the scanned 'after' would no longer be the
+# captured image, nor read the way before and control are, which are never
+# mounted. Only bulk_extractor reads free space, so only it sees the
+# sentinels; the restore carve and plaso read the copy as they would read
+# after.raw. before.raw, control.raw and the retained after.raw are never
+# touched. The EXIT trap detaches a carve's loop device; no global
 # `losetup -D` is ever run.
-inject_mnt=""
 # shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below
 cleanup() {
-  if [ -n "$inject_mnt" ] && mountpoint -q "$inject_mnt" 2>/dev/null; then
-    umount "$inject_mnt" 2>/dev/null || umount -l "$inject_mnt" 2>/dev/null || true
-  fi
   if [ -n "$carve_loop" ]; then losetup -d "$carve_loop" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 
-# inject_after_sentinels <working-image> <byte-offset> <byte-size>: mount the
-# working copy read-write and append the three sentinels in place,
-# byte-for-byte as make-sample-images.sh's apply_after_changes does, so plaso
-# and the restore channel behave exactly as on the proven synthetic path.
+# inject_after_sentinels <working-image> <fstype> <byte-offset>: plant the
+# sentinels into the working copy's ext{2,3,4} filesystem. Any other
+# filesystem stops the run: planting into it would need the mount this avoids
+# (and plaso cannot read btrfs, so such an image fails its channel anyway).
 inject_after_sentinels() {
-  local img=$1 off=$2 size=$3 opts
-  opts="loop,rw,offset=$off"
-  if [ "$size" -gt 0 ]; then opts="$opts,sizelimit=$size"; fi
-  inject_mnt="$work/inject.mnt"
-  mkdir -p "$inject_mnt"
-  mount -o "$opts" "$img" "$inject_mnt"
-  printf 'login\tnails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
-    "$WTMP_SENTINEL" >>"$inject_mnt/var/log/wtmp.db"
-  printf 'nails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
-    "$LASTLOG_SENTINEL" >>"$inject_mnt/var/lib/lastlog/lastlog2.db"
-  printf '[2026-01-01T00:05:00+0000] [ALPM] installed nails-oracle-marker (%s)\n' \
-    "$PKG_SENTINEL" >>"$inject_mnt/var/log/pacman.log"
-  sync
-  umount "$inject_mnt"
-  inject_mnt=""
+  local img=$1 fstype=$2 off=$3 sentinel lines=()
+  case "$fstype" in
+    ext2 | ext3 | ext4) ;;
+    *)
+      echo "run-scan: cannot plant the positive controls in a $fstype image without mounting it read-write, which would change the image under test; failing closed. Scan an ext{2,3,4} image (see ci/oracle/README.md)." >&2
+      exit 1
+      ;;
+  esac
+  for sentinel in "${SENTINELS[@]}"; do
+    lines+=("nails-oracle positive control: $sentinel")
+  done
+  if ! "$here/plant-in-free-space.sh" "$img" "$off" "${lines[@]}"; then
+    echo "run-scan: could not plant the positive controls in $img without overwriting anything; failing closed" >&2
+    exit 1
+  fi
 }
 
 # --- Stream the three labels. -----------------------------------------------
@@ -392,7 +391,7 @@ for label in "${LABELS[@]}"; do
       injected="$work/after.injected.raw"
       rm -f "$injected"
       cp --sparse=always "$img" "$injected"
-      inject_after_sentinels "$injected" "$off" "$size"
+      inject_after_sentinels "$injected" "$fstype" "$off"
       img="$injected"
     fi
   else
@@ -405,17 +404,25 @@ for label in "${LABELS[@]}"; do
   fi
 
   # File-level restore into an empty tree, so a carve that recovers nothing
-  # cannot pass on an earlier run's files. Then keep only the recovered paths:
-  # the verdict keys a restore finding on the path alone, so the contents are
-  # dropped to free the bulk of the disk before the next tool.
+  # cannot pass on an earlier run's files.
   dest="$outputs/restore/$label"
-  rm -rf "$dest"
+  rm -rf "$dest" "$dest.sha256"
   mkdir -p "$dest"
   carve_restore "$img" "$dest" "$fstype" "$off" "$size"
   # A carver's exit status does not prove it read the tree, so check the carve
   # itself: every image carries the canary's file.
   if [ ! -f "$dest$canary_file" ]; then
     echo "run-scan: the restore carve of $img recovered no $canary_file, which every image carries; failing closed. The carver read nothing, or not the root filesystem." >&2
+    exit 1
+  fi
+  # The verdict keys a recovered file on its path and its content, so record a
+  # SHA-256 of every file before dropping the contents to free the disk for the
+  # next tool. sha256sum --zero ends each record with a NUL and leaves the name
+  # unescaped, so any file name survives. A file it cannot read fails the run
+  # here, and nails-oracle stops on a file the manifest has no digest for.
+  if ! (cd "$dest" && find . -type f -print0 | LC_ALL=C sort -z |
+    xargs -0 -r sha256sum --zero --) >"$dest.sha256"; then
+    echo "run-scan: could not hash the files the restore carve of $img recovered; failing closed" >&2
     exit 1
   fi
   find "$dest" -type f -exec truncate -s 0 {} +

@@ -164,7 +164,9 @@ in
   # the E2E metadata sources the shard planner's tests scan (default.nix, the
   # tests tree and the checked-in weights) and the helper library and batched
   # scenarios the E2E synchronisation lint scans. git is a tool because
-  # changes.py shells out to it and its tests build throwaway repositories.
+  # changes.py shells out to it and its tests build throwaway repositories, and
+  # e2fsprogs because the oracle's free-space planting is tested on ext4
+  # images it makes and checks.
   ci-python = lint "ci-python" {
     files = fs.unions [
       ../ci
@@ -185,6 +187,7 @@ in
       pkgs.ruff
       pkgs.mypy
       pkgs.git
+      pkgs.e2fsprogs
     ];
     script = ''
       # ruff and mypy write their caches under HOME; the copied source is the
