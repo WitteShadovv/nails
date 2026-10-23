@@ -137,15 +137,48 @@ proptest! {
         parse_logind_sleep(&text, &mut LogindSleepSettings::default());
     }
 
-    /// The UTF-8 decode NAILS applies to a configuration file's raw bytes is
-    /// total, emits no line terminator but the newline the parser splits on,
-    /// and preserves every non-empty line across a re-decode (runs of blank
-    /// lines coalesce, which the parser ignores).
+    /// The UTF-8 decode NAILS applies to a configuration file's raw bytes
+    /// passes valid UTF-8 through, marks anything else with U+FFFF, which
+    /// systemd refuses too, and keeps every ASCII byte in place, so its lines,
+    /// comments and continuations are the ones systemd reads.
     #[test]
-    fn fuzz_decode_config_bytes_preserves_content_lines(bytes in prop::collection::vec(any::<u8>(), 0..300)) {
+    fn fuzz_decode_config_bytes_marks_what_is_not_utf8(bytes in prop::collection::vec(any::<u8>(), 0..300)) {
         let text = decode_config_bytes(&bytes);
-        prop_assert!(!text.contains(['\r', '\0']));
-        let nonempty = |s: &str| s.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect::<Vec<_>>();
-        prop_assert_eq!(nonempty(&decode_config_bytes(text.as_bytes())), nonempty(&text));
+        match std::str::from_utf8(&bytes) {
+            Ok(valid) => prop_assert_eq!(&text, valid),
+            Err(_) => prop_assert!(text.contains('\u{ffff}'), "unmarked: {:?}", text),
+        }
+        prop_assert!(text.bytes().filter(u8::is_ascii).eq(bytes.iter().copied().filter(u8::is_ascii)));
+    }
+
+    /// systemd stops reading at a line that is not valid UTF-8, so only the
+    /// assignments before it count, but skips a comment whatever its bytes.
+    #[test]
+    fn fuzz_journald_storage_stops_at_a_line_that_is_not_utf8(
+        lines in prop::collection::vec(line(&["Storage", "Compress"], STORAGE_VALUES), 0..12),
+        at in any::<prop::sample::Index>(),
+        comment in any::<bool>(),
+    ) {
+        // A Latin-1 'ü', in a comment or in a value.
+        let bad: &[u8] = if comment { b"# Gr\xFCn" } else { b"SystemMaxUse=1G # Gr\xFCn" };
+        let at = at.index(lines.len() + 1);
+        let mut bytes = Vec::new();
+        for (i, rendered) in lines.iter().map(Line::render).enumerate() {
+            if i == at {
+                bytes.extend_from_slice(bad);
+                bytes.push(b'\n');
+            }
+            bytes.extend_from_slice(rendered.as_bytes());
+            bytes.push(b'\n');
+        }
+        if at == lines.len() {
+            bytes.extend_from_slice(bad);
+        }
+        let read = if comment { &lines[..] } else { &lines[..at] };
+        let expected = in_section(read, "Journal").into_iter().rev().find_map(|l| match l {
+            Line::Assign { key: "Storage", value, .. } => storage(value),
+            _ => None,
+        });
+        prop_assert_eq!(parse_journald_storage(&decode_config_bytes(&bytes)), expected);
     }
 }

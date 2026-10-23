@@ -4,8 +4,9 @@
 //! journald persistent-storage detection
 //!
 //! Resolves the effective systemd-journald `Storage=` setting from
-//! `journald.conf` and all of its drop-ins (see [`super::systemd_conf`]) and
-//! decides whether the journal persists onto the decoy disk. The verdict is folded into
+//! `journald.conf` and all of its drop-ins (see [`super::systemd_conf`]), the
+//! `journal.storage` credential and the built-in default, and decides whether
+//! the journal persists onto the decoy disk. The verdict is folded into
 //! [`DecoyPersistenceCheck`](super::decoy_posture::DecoyPersistenceCheck), which
 //! fails activation closed on a persistent decoy journal unless the operator
 //! opts in.
@@ -44,11 +45,17 @@ const VENDOR_CONF_DIR: &str = "usr/lib/systemd";
 /// The first systemd release whose built-in `Storage=` default is `persistent`
 /// rather than `auto` (systemd v259 NEWS).
 const PERSISTENT_DEFAULT_SINCE: u32 = 259;
-/// The system credential store directories, highest priority first, relative to
-/// the root. journald imports `journal.storage` from here (systemd >= 257).
-const CREDSTORE_DIRS: &[&str] = &["etc/credstore", "run/credstore", "usr/lib/credstore"];
-/// The credential journald reads to set `Storage=`.
-const STORAGE_CREDENTIAL: &str = "journal.storage";
+/// The first systemd release whose journald reads the `journal.storage`
+/// credential (systemd v256).
+const STORAGE_CREDENTIAL_SINCE: u32 = 256;
+/// The `journal.storage` credential journald was handed, relative to the root:
+/// its service's `$CREDENTIALS_DIRECTORY`, where journald reads it. The service
+/// manager copies there what `ImportCredential=journal.*` finds, in a
+/// credential store, encrypted or not, or among the credentials passed at boot,
+/// so this is what journald got rather than what a store holds. Only root can
+/// read it.
+const RECEIVED_STORAGE_CREDENTIAL: &str =
+    "run/credentials/systemd-journald.service/journal.storage";
 
 /// Effective `Storage=` setting of systemd-journald.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,25 +84,18 @@ fn storage_value(value: &str) -> Option<JournaldStorage> {
 
 /// Fold `Storage=` assignments, in application order, into the effective value.
 ///
-/// journald matches values exactly (case-sensitive, no unquoting), so an
-/// unrecognised value is ignored and leaves the previous setting in place
-/// rather than silently downgrading to the default. An empty `Storage=` is
-/// taken as a reset to the built-in default, the conservative reading. Returns
-/// `None` when no valid `Storage=` is in effect, which leaves journald's
-/// built-in default to the caller.
+/// journald matches values exactly (case-sensitive, no unquoting) and ignores
+/// a value it does not recognise, an empty one included, so that leaves the
+/// previous setting in place: an empty `Storage=` resets nothing, and does not
+/// hand the choice to the credential. Returns `None` when no valid `Storage=`
+/// is in effect, which leaves the credential and journald's built-in default
+/// to the caller.
 fn storage_from(assignments: &[Assignment]) -> Option<JournaldStorage> {
-    let mut storage = None;
-    for assignment in assignments.iter().filter(|a| a.key == "Storage") {
-        match assignment.value.as_str() {
-            "" => storage = None,
-            value => {
-                if let Some(parsed) = storage_value(value) {
-                    storage = Some(parsed);
-                }
-            }
-        }
-    }
-    storage
+    assignments
+        .iter()
+        .rev()
+        .filter(|a| a.key == "Storage")
+        .find_map(|a| storage_value(&a.value))
 }
 
 /// journald's built-in `Storage=` default when no configuration and no
@@ -119,7 +119,8 @@ pub fn built_in_default(
 
 /// The effective `Storage=` from the three sources, in journald's precedence:
 /// an explicit assignment in any configuration file wins; failing that the
-/// `journal.storage` credential; failing that the version's built-in default.
+/// `journal.storage` credential, if journald applied it ([`storage_credential`]);
+/// failing that the version's built-in default.
 fn resolve_storage(
     explicit: Option<JournaldStorage>,
     credential: Option<JournaldStorage>,
@@ -163,17 +164,28 @@ fn vendor_storage_hint<F: Filesystem>(fs: &F, root: &Path) -> Option<JournaldSto
     hint
 }
 
-/// The `journal.storage` system credential's value, if a plaintext credstore
-/// holds it (systemd >= 257). Encrypted credstores and credentials passed at
-/// boot (kernel command line, SMBIOS, firmware) are not visible to a filesystem
-/// read, so this is best-effort; a credential only counts when no configuration
-/// file set `Storage=`.
-fn storage_credential<F: Filesystem>(fs: &F, root: &Path) -> Option<JournaldStorage> {
-    CREDSTORE_DIRS
-        .iter()
-        .map(|dir| root.join(dir).join(STORAGE_CREDENTIAL))
-        .find_map(|path| fs.read_file_content(&path).ok())
-        .and_then(|text| storage_value(text.trim()))
+/// The `Storage=` the `journal.storage` credential gives journald, read as
+/// journald reads it: only from systemd 256 (an unknown version counts as
+/// older), only the credential journald was handed, and only when its bytes up
+/// to the first NUL are a value exactly. journald strips nothing, so
+/// `volatile` with a trailing newline, as `echo` writes it, is a value it
+/// ignores. A credential that cannot be read (only root can) counts for
+/// nothing. That misses a volatile one, which fails closed; a persistent one
+/// has had journald create the on-disk `/var/log/journal`, which `auto`
+/// persists to.
+fn storage_credential<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    systemd_major: Option<u32>,
+) -> Option<JournaldStorage> {
+    if systemd_major? < STORAGE_CREDENTIAL_SINCE {
+        return None;
+    }
+    let data = fs
+        .read_file_content(&root.join(RECEIVED_STORAGE_CREDENTIAL))
+        .ok()?;
+    // journald compares the credential as a C string, which ends at a NUL.
+    storage_value(data.split('\0').next().unwrap_or_default())
 }
 
 /// The running service manager's major version, or `None` when it cannot be
@@ -208,12 +220,22 @@ pub fn effective_journald_storage<F: Filesystem>(fs: &F) -> JournaldStorage {
 /// decides, and failing that journald's version-dependent built-in default
 /// ([`built_in_default`]).
 pub fn effective_journald_storage_at<F: Filesystem>(fs: &F, root: &Path) -> JournaldStorage {
+    storage_under_version(fs, root, host_systemd_major())
+}
+
+/// [`effective_journald_storage_at`] under a service manager of major version
+/// `systemd_major`, `None` when it is not known.
+fn storage_under_version<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    systemd_major: Option<u32>,
+) -> JournaldStorage {
     let assignments = systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION);
     resolve_storage(
         storage_from(&assignments),
-        storage_credential(fs, root),
+        storage_credential(fs, root, systemd_major),
         vendor_storage_hint(fs, root),
-        host_systemd_major(),
+        systemd_major,
     )
 }
 
@@ -264,11 +286,17 @@ mod tests {
 
     const MAIN: &str = "/etc/systemd/journald.conf";
     const DIR: &str = "/var/log/journal";
+    const CREDENTIAL: &str = "/run/credentials/systemd-journald.service/journal.storage";
 
-    fn write(root: &Path, rel: &str, content: &str) {
+    fn write(root: &Path, rel: &str, content: impl AsRef<[u8]>) {
         let path = root.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
+    }
+
+    /// The effective storage of the mock system under systemd `version`.
+    fn storage(fs: &MockFilesystem, version: Option<u32>) -> JournaldStorage {
+        storage_under_version(fs, Path::new("/"), version)
     }
 
     #[test]
@@ -323,16 +351,18 @@ mod tests {
     }
 
     #[test]
-    fn unknown_value_keeps_the_previous_setting_and_empty_resets() {
+    fn an_unknown_or_empty_value_keeps_the_previous_setting() {
         assert_eq!(
             parse_journald_storage("[Journal]\nStorage=volatile\nStorage=bogus\n"),
             Some(JournaldStorage::Volatile)
         );
         assert_eq!(parse_journald_storage("[Journal]\nStorage=bogus\n"), None);
+        // journald ignores an empty value as it ignores any it does not know.
         assert_eq!(
             parse_journald_storage("[Journal]\nStorage=volatile\nStorage=\n"),
-            None
+            Some(JournaldStorage::Volatile)
         );
+        assert_eq!(parse_journald_storage("[Journal]\nStorage=\n"), None);
     }
 
     #[test]
@@ -410,15 +440,107 @@ mod tests {
 
     #[test]
     fn the_storage_credential_decides_when_no_conf_sets_storage() {
-        // A credstore holding journal.storage=volatile keeps the journal in RAM
-        // even though the unknown version would otherwise fail closed.
+        // From systemd 256 journald reads the credential it was handed, which
+        // keeps the journal in RAM over a persistent built-in default.
         let fs = MockFilesystem::new();
-        fs.mock_add_file("/run/credstore/journal.storage", "volatile\n");
-        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Volatile);
-        assert!(!journald_persists_to_decoy(&fs));
+        fs.mock_add_file(CREDENTIAL, "volatile");
+        assert_eq!(storage(&fs, Some(256)), JournaldStorage::Volatile);
+        assert_eq!(storage(&fs, Some(259)), JournaldStorage::Volatile);
         // An explicit Storage= in a conf file still wins over the credential.
         fs.mock_add_file(MAIN, "[Journal]\nStorage=persistent\n");
-        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Persistent);
+        assert_eq!(storage(&fs, Some(259)), JournaldStorage::Persistent);
+    }
+
+    /// journald below 256 has no `journal.storage` credential, and a version
+    /// that cannot be read counts as one of those, so the credential decides
+    /// nothing there. NAILS used to take it on any version, which judged an
+    /// Ubuntu 24.04 decoy (systemd 255) with a persistent journal volatile.
+    #[test]
+    fn the_storage_credential_counts_only_from_systemd_256() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(CREDENTIAL, "volatile");
+        assert_eq!(storage(&fs, Some(255)), JournaldStorage::Auto);
+        assert_eq!(storage(&fs, None), JournaldStorage::Persistent);
+        // The live check runs with an unknown version under test.
+        assert!(journald_persists_to_decoy(&fs));
+    }
+
+    /// journald matches the credential's bytes exactly, as a C string that
+    /// ends at a NUL, and reads only the one it was handed: a value it would
+    /// have to trim, or a file in a credential store it was not given, counts
+    /// for nothing and the persistent default decides.
+    #[test]
+    fn the_storage_credential_is_matched_as_journald_matches_it() {
+        for (data, expected) in [
+            ("volatile\n", JournaldStorage::Persistent),
+            (" volatile", JournaldStorage::Persistent),
+            ("Volatile", JournaldStorage::Persistent),
+            ("", JournaldStorage::Persistent),
+            ("none", JournaldStorage::None),
+            ("volatile\0\n", JournaldStorage::Volatile),
+        ] {
+            let fs = MockFilesystem::new();
+            fs.mock_add_file(CREDENTIAL, data);
+            assert_eq!(storage(&fs, Some(259)), expected, "{data:?}");
+        }
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/credstore/journal.storage", "volatile");
+        fs.mock_add_file("/run/credentials/@system/journal.storage", "volatile");
+        assert_eq!(storage(&fs, Some(259)), JournaldStorage::Persistent);
+    }
+
+    /// An empty `Storage=` keeps the earlier file's setting, so the credential,
+    /// which ranks below every file, does not get to decide.
+    #[test]
+    fn an_empty_storage_keeps_a_files_setting_over_the_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "etc/systemd/journald.conf",
+            "[Journal]\nStorage=persistent\n",
+        );
+        write(
+            root,
+            "etc/systemd/journald.conf.d/50-reset.conf",
+            "[Journal]\nStorage=\n",
+        );
+        write(root, &CREDENTIAL[1..], "volatile");
+        assert_eq!(
+            storage_under_version(&RealFilesystem, root, Some(259)),
+            JournaldStorage::Persistent
+        );
+    }
+
+    /// journald stops reading at a line that is not valid UTF-8, unless it is
+    /// a comment, and skips every drop-in after it. A Latin-1 value in the
+    /// main file thus hides the drop-in's `Storage=volatile` from journald, and
+    /// the built-in default decides; NAILS used to read the drop-in and pass
+    /// the decoy.
+    #[test]
+    fn a_volatile_drop_in_behind_a_line_that_is_not_utf8_does_not_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // 'ö' and 'ß' in Latin-1, in a value: systemd has no trailing comments.
+        write(
+            root,
+            "etc/systemd/journald.conf",
+            b"[Journal]\nSystemMaxUse=200M # Gr\xF6\xDFe\nStorage=volatile\n",
+        );
+        write(
+            root,
+            "etc/systemd/journald.conf.d/50-volatile.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        assert_eq!(
+            storage_under_version(&RealFilesystem, root, Some(259)),
+            JournaldStorage::Persistent
+        );
+        assert_eq!(
+            storage_under_version(&RealFilesystem, root, Some(255)),
+            JournaldStorage::Auto
+        );
+        assert!(journald_persists_to_decoy_at(&RealFilesystem, root));
     }
 
     #[test]

@@ -44,7 +44,12 @@
 //! - a malformed section header (a `[` line not ending in `]`, or a section
 //!   name with a control character, a quote or a backslash) makes systemd
 //!   stop reading that file and skip all the remaining ones; the assignments
-//!   already read stay in effect.
+//!   already read stay in effect;
+//! - so does a line, continuation lines included, that is not valid UTF-8 by
+//!   systemd's measure, which also refuses the Unicode noncharacters (U+FFFF
+//!   among them). A comment is told before that test, so it is skipped
+//!   whatever its bytes: a Latin-1 comment hides nothing, a Latin-1 value
+//!   ends the reading.
 //!
 //! Files are read through [`Filesystem`], whose real implementation opens them
 //! with `O_NOATIME`, so the probe does not update the access time of a file it
@@ -75,9 +80,16 @@ pub struct Assignment {
     pub value: String,
 }
 
-/// A `[` line without a closing `]`: systemd stops reading at this point.
+/// A line systemd refuses: it stops reading there, skips every file after
+/// this one, and keeps the assignments it read before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MalformedSectionHeader;
+pub enum RefusedLine {
+    /// A `[` line without its closing `]`, or a section name with a control
+    /// character, a quote or a backslash.
+    MalformedSectionHeader,
+    /// A line, not a comment, that is not valid UTF-8 by systemd's measure.
+    NotUtf8,
+}
 
 /// The files systemd reads for configuration `name` (e.g. `journald.conf`) under
 /// `root`, in application order: the main file first, then the drop-ins.
@@ -127,8 +139,8 @@ fn is_dir<F: Filesystem>(fs: &F, path: &Path) -> bool {
 /// The effective assignments in `[section]` of configuration `name` under
 /// `root`, in the order systemd applies them (so a later entry overrides an
 /// earlier one for the same key). A file that cannot be read contributes
-/// nothing; a malformed section header ends the resolution as it does in
-/// systemd.
+/// nothing; a line systemd refuses ([`RefusedLine`]) ends the resolution as it
+/// does in systemd.
 pub fn section_assignments<F: Filesystem>(
     fs: &F,
     root: &Path,
@@ -147,14 +159,17 @@ pub fn section_assignments<F: Filesystem>(
     out
 }
 
-/// The text of configuration file `path`, read the way systemd reads it.
+/// The text of configuration file `path`, for [`parse_section`] to read the way
+/// systemd reads the file.
 ///
-/// systemd reads a configuration file line by line, so a line that is not valid
-/// UTF-8 — a Latin-1 comment, say — is dropped, not the whole file.
-/// [`Filesystem::read_file_content`] instead rejects a file with any invalid
-/// byte outright, which would make a `Storage=persistent` below such a comment
+/// systemd reads a configuration file line by line: it skips a comment whatever
+/// its bytes, and stops at the first other line that is not valid UTF-8,
+/// keeping what it read before. [`Filesystem::read_file_content`] instead
+/// rejects a file with any invalid byte outright, which would lose every
+/// assignment in it: a `Storage=persistent` beside a Latin-1 comment would
 /// vanish and a persistent decoy journal read as volatile. So on invalid UTF-8
-/// the bytes are read and decoded line by line ([`decode_config_bytes`]).
+/// the bytes are read and decoded with [`decode_config_bytes`], which leaves
+/// the lines that systemd refuses for [`parse_section`] to refuse.
 ///
 /// The byte fallback runs only for the real filesystem — the in-memory test
 /// double holds valid UTF-8 and never reports invalid data — and reads with
@@ -190,18 +205,27 @@ fn read_config_bytes_noatime(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Decode a configuration file's bytes the way systemd reads it: line by line
-/// ([`config_lines`]), keeping every line that is valid UTF-8 and dropping the
-/// rest, then rejoining the kept lines with `\n` for [`parse_section`]. A line
-/// that is not valid UTF-8 cannot be a `Key=value` systemd would apply, so
-/// dropping it changes no assignment; it only stops one bad line (a Latin-1
-/// comment) from hiding the rest of the file.
+/// What [`decode_config_bytes`] puts in place of a byte sequence that is not
+/// UTF-8: U+FFFF, a noncharacter, which systemd's UTF-8 test refuses as it
+/// refuses those bytes.
+const NOT_UTF8: char = '\u{ffff}';
+
+/// Decode a configuration file's bytes for [`parse_section`]: each byte
+/// sequence that is not valid UTF-8 becomes one [`NOT_UTF8`], and nothing else
+/// changes. Every ASCII byte stays where it was, so the lines, comments,
+/// continuations and section headers are the ones systemd reads, and
+/// [`parse_section`] refuses exactly the lines systemd refuses: a comment is
+/// skipped whatever its bytes, and the first other line that held such a
+/// sequence stops the reading.
 pub fn decode_config_bytes(bytes: &[u8]) -> String {
-    config_lines(bytes)
-        .into_iter()
-        .filter_map(|line| std::str::from_utf8(line).ok())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut text = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(chunk.valid());
+        if !chunk.invalid().is_empty() {
+            text.push(NOT_UTF8);
+        }
+    }
+    text
 }
 
 /// Whether any file of configuration `name` exists under `root`.
@@ -211,13 +235,13 @@ pub fn config_present<F: Filesystem>(fs: &F, root: &Path, name: &str) -> bool {
 
 /// Append the assignments of `[section]` in one configuration text to `out`.
 ///
-/// Returns [`MalformedSectionHeader`] when systemd would stop reading at a bad
-/// section header; the assignments before it are kept.
+/// Returns the [`RefusedLine`] at which systemd would stop reading; the
+/// assignments before it are kept.
 pub fn parse_section(
     text: &str,
     section: &str,
     out: &mut Vec<Assignment>,
-) -> Result<(), MalformedSectionHeader> {
+) -> Result<(), RefusedLine> {
     let mut in_section = false;
     let mut continuation: Option<String> = None;
     let mut bom_seen = false;
@@ -312,26 +336,42 @@ fn ends_with_unescaped_backslash(line: &str) -> bool {
     escaped
 }
 
+/// Whether systemd's `unichar_is_valid()` refuses `c`, a character Rust's UTF-8
+/// allows: one of the noncharacters U+FDD0 to U+FDEF, or the last two code
+/// points of a plane (U+FFFE, U+FFFF, U+1FFFE and so on). The surrogates and
+/// the code points above U+10FFFF it also refuses cannot be in a `&str`.
+fn systemd_refuses(c: char) -> bool {
+    let c = u32::from(c);
+    (0xFDD0..=0xFDEF).contains(&c) || c & 0xFFFE == 0xFFFE
+}
+
 fn parse_line(
     line: &str,
     section: &str,
     in_section: &mut bool,
     out: &mut Vec<Assignment>,
-) -> Result<(), MalformedSectionHeader> {
+) -> Result<(), RefusedLine> {
     // Comments went before the line was joined; a `#` here followed a byte
     // order mark and starts a key, as in systemd.
     let line = line.trim_matches(is_ws);
     if line.is_empty() {
         return Ok(());
     }
+    // systemd tests every other line for UTF-8 before it looks at it, in any
+    // section or none, and stops reading at one that fails.
+    if line.chars().any(systemd_refuses) {
+        return Err(RefusedLine::NotUtf8);
+    }
     if let Some(header) = line.strip_prefix('[') {
-        let name = header.strip_suffix(']').ok_or(MalformedSectionHeader)?;
+        let name = header
+            .strip_suffix(']')
+            .ok_or(RefusedLine::MalformedSectionHeader)?;
         // systemd's string_is_safe() refuses these in a section name.
         if name
             .chars()
             .any(|c| c.is_ascii_control() || matches!(c, '"' | '\'' | '\\'))
         {
-            return Err(MalformedSectionHeader);
+            return Err(RefusedLine::MalformedSectionHeader);
         }
         *in_section = name == section;
         return Ok(());
@@ -666,8 +706,8 @@ mod tests {
         assert_eq!(values(root, "Storage"), vec!["volatile"]);
     }
 
-    /// systemd reads a configuration file line by line, so a comment that is
-    /// not valid UTF-8 (a Latin-1 byte) does not hide the rest of the file. A
+    /// systemd skips a comment whatever its bytes, so a comment that is not
+    /// valid UTF-8 (a Latin-1 byte) does not hide the rest of the file. A
     /// whole-file UTF-8 read rejects the file outright and would miss the
     /// `Storage=persistent` below such a comment, reading a persistent decoy
     /// journal as volatile.
@@ -702,20 +742,118 @@ mod tests {
         );
     }
 
+    /// The decode puts one U+FFFF, which systemd refuses as it refuses the
+    /// bytes, in place of each sequence that is not UTF-8, and changes
+    /// nothing else: the line ends, comments and continuations stay as
+    /// systemd reads them.
     #[test]
-    fn decode_config_bytes_keeps_valid_lines_and_drops_the_rest() {
-        let mut bytes = b"[Journal]\nStorage=persistent\n".to_vec();
-        bytes.push(0xFF); // a lone invalid byte, on its own line
-        bytes.extend_from_slice(b"\nCompress=no\n");
-        let text = decode_config_bytes(&bytes);
-        assert!(text.contains("Storage=persistent"), "{text}");
-        assert!(text.contains("Compress=no"), "{text}");
-        assert!(!text.as_bytes().contains(&0xFF), "{text:?}");
-        // Pure ASCII round-trips unchanged.
+    fn decode_config_bytes_marks_each_sequence_that_is_not_utf8() {
         assert_eq!(
-            decode_config_bytes(b"[Journal]\nStorage=auto\n"),
-            "[Journal]\nStorage=auto"
+            decode_config_bytes(b"[Journal]\r\nKey=a\xFF\xFEb\\\0# \xC3\n\xE2\x82x\xE2\x82\xAC"),
+            "[Journal]\r\nKey=a\u{ffff}\u{ffff}b\\\0# \u{ffff}\n\u{ffff}x\u{20ac}"
         );
+        // Valid UTF-8 comes through unchanged.
+        let text = "\u{feff}[Journal]\nStorage=auto # Grün\r\n\n";
+        assert_eq!(decode_config_bytes(text.as_bytes()), text);
+    }
+
+    /// systemd stops reading at a line that is not valid UTF-8, unless it is a
+    /// comment, as at a malformed section header: the assignments before it
+    /// count, the line and the rest of the file do not. NAILS used to drop
+    /// the line and read on, so a `Storage=volatile` journald never reads
+    /// counted.
+    #[test]
+    fn a_line_that_is_not_utf8_stops_the_reading() {
+        let read = |bytes: &[u8]| {
+            let mut out = Vec::new();
+            let result = parse_section(&decode_config_bytes(bytes), "Journal", &mut out);
+            let pairs: Vec<_> = out.into_iter().map(|a| (a.key, a.value)).collect();
+            (pairs, result)
+        };
+        let stopped = Err(RefusedLine::NotUtf8);
+        // A Latin-1 'ö' and 'ß' in a value: systemd has no trailing comments.
+        assert_eq!(
+            read(b"[Journal]\nStorage=persistent\nSystemMaxUse=200M # Gr\xF6\xDFe\nStorage=volatile\n"),
+            (vec![pair("Storage", "persistent")], stopped)
+        );
+        // A lone invalid byte on a line of its own.
+        assert_eq!(
+            read(b"[Journal]\nStorage=persistent\n\xFF\nCompress=no\n"),
+            (vec![pair("Storage", "persistent")], stopped)
+        );
+        // In another section too: systemd tests every line.
+        assert_eq!(
+            read(b"[Journal]\nStorage=persistent\n[Other]\nKey=\xFC\n[Journal]\nStorage=none\n"),
+            (vec![pair("Storage", "persistent")], stopped)
+        );
+        // A continued line is not applied when a later part of it is bad,
+        // nor when that part ends the file.
+        assert_eq!(
+            read(b"[Journal]\nStorage=persistent\nStorage=vol\\\natile\xFF\nStorage=none\n"),
+            (vec![pair("Storage", "persistent")], stopped)
+        );
+        assert_eq!(
+            read(b"[Journal]\nStorage=persistent\nStorage=none\xFF\\"),
+            (vec![pair("Storage", "persistent")], stopped)
+        );
+        // A comment is skipped whatever its bytes, inside a continuation too.
+        assert_eq!(
+            read(b"[Journal]\n  # Gr\xFCn\n;\xFF\nStorage=vola\\\n# \xFC\ntile\n"),
+            (vec![pair("Storage", "vola tile")], Ok(()))
+        );
+    }
+
+    /// systemd's UTF-8 test refuses the noncharacters as well, which Rust's
+    /// UTF-8 allows, so a line holding one stops the reading even in a file
+    /// that is valid UTF-8; a comment holding one is still skipped.
+    #[test]
+    fn a_noncharacter_stops_the_reading() {
+        for c in [
+            '\u{fdd0}',
+            '\u{fdef}',
+            '\u{fffe}',
+            '\u{ffff}',
+            '\u{1fffe}',
+            '\u{10ffff}',
+        ] {
+            let text = format!("[Journal]\nStorage=persistent\n#{c}\nKey=x{c}\nStorage=none\n");
+            assert_eq!(
+                parse(&text),
+                (vec![pair("Storage", "persistent")], false),
+                "{c:?}"
+            );
+        }
+        // Their neighbours are plain characters.
+        for c in ['\u{fdcf}', '\u{fdf0}', '\u{fffd}', '\u{1fffd}'] {
+            let text = format!("[Journal]\nKey=x{c}\n");
+            assert_eq!(
+                parse(&text),
+                (vec![pair("Key", &format!("x{c}"))], true),
+                "{c:?}"
+            );
+        }
+    }
+
+    /// A line that is not UTF-8 skips every later file, as a malformed header
+    /// does: journald never reads a drop-in's `Storage=volatile` behind a
+    /// Latin-1 value in the main file.
+    #[test]
+    fn a_line_that_is_not_utf8_skips_the_remaining_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let main = root.join("etc/systemd/journald.conf");
+        fs::create_dir_all(main.parent().unwrap()).unwrap();
+        fs::write(
+            &main,
+            b"[Journal]\nStorage=persistent\nSystemMaxUse=200M # Gr\xF6\xDFe\nStorage=auto\n",
+        )
+        .unwrap();
+        write(
+            root,
+            "etc/systemd/journald.conf.d/50-volatile.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        assert_eq!(values(root, "Storage"), vec!["persistent"]);
     }
 
     /// The UTF-8 byte fallback opens the decoy with `O_NOATIME`, exactly as the

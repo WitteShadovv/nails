@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The UTF-8 decode NAILS applies to a systemd configuration file whose bytes
-//! are not all valid UTF-8 (a decoy's Latin-1 comment, say). systemd reads such
-//! a file line by line and keeps the lines that are valid UTF-8, so one bad
-//! line never hides the rest — in particular a `Storage=persistent` below a
-//! Latin-1 comment. The input is the raw file bytes.
+//! are not all valid UTF-8 (a decoy's Latin-1 comment or value, say). systemd
+//! reads such a file line by line: it skips a comment whatever its bytes, and
+//! stops at the first other line that is not valid UTF-8, keeping what it read
+//! before. The decode puts U+FFFF, a character systemd refuses too, in place
+//! of each byte sequence that is not UTF-8 and changes nothing else, so the
+//! parser refuses the lines systemd refuses. The input is the raw file bytes.
 
 #![no_main]
 
@@ -14,22 +16,19 @@ use nails_core::preflight::checks::systemd_conf::{decode_config_bytes, parse_sec
 
 fuzz_target!(|data: &[u8]| {
     let text = decode_config_bytes(data);
-    // The decode yields only valid UTF-8 (a String), and the only line
-    // terminator it emits is the newline the parser splits on: a kept line
-    // never carries a carriage return or a NUL.
-    assert!(!text.contains(['\r', '\0']));
-    // Every non-empty line survives a re-decode unchanged. (Runs of blank lines
-    // coalesce, which the parser ignores, so the whole text need not be a fixed
-    // point.) No content line is invented, dropped or mangled.
-    let nonempty = |s: &str| {
-        s.lines()
-            .filter(|l| !l.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        nonempty(&decode_config_bytes(text.as_bytes())),
-        nonempty(&text)
+    // Valid UTF-8 comes through unchanged. Anything else is marked: no byte
+    // that is not UTF-8 is dropped, or repaired into a character systemd
+    // would accept.
+    match std::str::from_utf8(data) {
+        Ok(valid) => assert_eq!(text, valid),
+        Err(_) => assert!(text.contains('\u{ffff}')),
+    }
+    // Every ASCII byte stays, in order: the line ends, comment marks,
+    // backslashes, brackets and `=` systemd reads are where they were.
+    assert!(
+        text.bytes()
+            .filter(u8::is_ascii)
+            .eq(data.iter().copied().filter(u8::is_ascii))
     );
     // Parsing the decoded text, the real use of it, must never panic.
     let mut out = Vec::new();
