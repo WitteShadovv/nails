@@ -47,8 +47,8 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 | [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
 <!-- residue-catalog:end fail-closed -->
 
-Override these with `--accept-persistent-decoy` on `activate`/`check`, or
-`accept_persistent_decoy = true` in `nails.toml`, only if you understand and
+Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
+only if you understand and
 accept that what the decoy logs around each soft-reboot may survive on the
 decoy disk.
 
@@ -294,7 +294,7 @@ activation, the hidden build's progress and the decoy's own shutdown before the
 switch, and its start after the way back, all under one boot ID. Where those
 records end up depends on the journal:
 
-- **Persistent** (accepted with `--accept-persistent-decoy`): they are on the
+- **Persistent** (allowed with `--allow-persistent-decoy`): they are on the
   decoy disk and stay there, with a gap where the hidden session ran.
 - **Volatile** (the amnesic setup): they are in RAM, in the runtime journal
   below `/run/log/journal`, which the hidden session's journald writes to as
@@ -427,7 +427,7 @@ on another partition) warns. Remove such a line long before the next use, since
 the decoy's configuration history can keep it. If the check cannot read
 `/etc/crypttab` (some distributions make it readable by root only), it fails and
 asks you to run the command with sudo. `--allow-decoy-storage` does not cover
-it, and `activate --no-preflight` runs it on its own.
+it.
 
 ### Encryption headers, high-entropy space and containers
 

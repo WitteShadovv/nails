@@ -108,7 +108,7 @@ in
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         canonical_activate(
             headless_config,
-            "--overlay-only --accept-persistent-decoy",
+            "--overlay-only --allow-persistent-decoy",
             "activate",
             sudo=True,
         )

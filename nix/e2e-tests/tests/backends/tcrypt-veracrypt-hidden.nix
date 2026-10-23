@@ -155,7 +155,7 @@ in
 
     with subtest("activate and plant hidden canaries"):
         canonical_activate(
-            headless_config, "--overlay-only --accept-persistent-decoy", "activate-tcrypt"
+            headless_config, "--overlay-only --allow-persistent-decoy", "activate-tcrypt"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
 

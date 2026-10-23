@@ -62,7 +62,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::Rehearse(_) => "rehearse",
         Commands::Check(_) => "check",
         Commands::Init(_) => "init",
-        Commands::ResetUpper(_) => "reset-upper",
+        Commands::Discard(_) => "discard",
         Commands::Config(_) => "config",
         Commands::Completions(_) => "completions",
         Commands::Watch => "watch",
@@ -205,23 +205,21 @@ const SUBCOMMAND_NAMES: &[&str] = &[
     "verify",
     "rehearse",
     "check",
-    "doctor",
     "init",
-    "reset-upper",
+    "discard",
     "config",
     "completions",
 ];
 
 /// The subcommand a raw argument list names, for the usage-error envelope's
-/// `command` field. `doctor` is reported as its real name `check`. When no
-/// subcommand is present (a bad global option on its own), the envelope names
-/// the tool itself.
+/// `command` field. When no subcommand is present (a bad global option on its
+/// own), the envelope names the tool itself.
 fn command_from_argv(argv: &[std::ffi::OsString]) -> &'static str {
     for arg in argv {
         if let Some(word) = arg.to_str()
             && let Some(name) = SUBCOMMAND_NAMES.iter().find(|n| **n == word)
         {
-            return if *name == "doctor" { "check" } else { name };
+            return name;
         }
     }
     "nails"

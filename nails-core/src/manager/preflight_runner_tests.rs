@@ -138,9 +138,9 @@ fn activation_and_check_build_identical_check_lists() {
         .expect("check registry");
 
     let staging_names = check_names(&staging.run_all_detailed(&MockFilesystem::new()).0);
-    let doctor_names = check_names(&check.run_all_detailed(&MockFilesystem::new()).0);
+    let read_only_names = check_names(&check.run_all_detailed(&MockFilesystem::new()).0);
 
-    assert_eq!(staging_names, doctor_names);
+    assert_eq!(staging_names, read_only_names);
 }
 
 /// `nails check` builds its options from its flags and activation takes them
@@ -156,17 +156,17 @@ fn check_and_activation_build_the_same_checks_from_the_same_flags() {
             .names()
     };
     for bits in 0..8u8 {
-        let (overlay_only, accept_persistent_decoy, allow_decoy_storage) =
+        let (overlay_only, allow_persistent_decoy, allow_decoy_storage) =
             (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
         let check = PreflightOptions {
             overlay_only,
-            accept_persistent_decoy,
+            allow_persistent_decoy,
             allow_decoy_storage,
             ..PreflightOptions::default()
         };
         let activation = crate::manager::EnterOptions {
             overlay_only,
-            accept_persistent_decoy,
+            allow_persistent_decoy,
             allow_decoy_storage,
             ..crate::manager::EnterOptions::default()
         }
@@ -412,9 +412,9 @@ fn a_decoy_flake_is_refused_across_discovery_and_preflight() {
 }
 
 /// Naming the decoy's own flake is no way around the refusal: in each
-/// spelling of /etc/nixos it fails the build-target check, and activation
-/// refuses it under `--no-preflight` too. With a hidden flake beside it, the
-/// refusal says the decoy's flake was named and how to take the hidden one.
+/// spelling of /etc/nixos it fails the build-target check. With a hidden flake
+/// beside it, the refusal says the decoy's flake was named and how to take the
+/// hidden one.
 #[test]
 fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
     for (spelling, hidden_flake) in [
@@ -462,13 +462,6 @@ fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
                 "{spelling}: {result:?}"
             );
         }
-        // Without the pre-flight, activation refuses it the same way.
-        let Err(NailsError::PreFlightCheckFailed(failed)) = manager.refuse_decoy_flake(false)
-        else {
-            panic!("{spelling}: not refused without the pre-flight");
-        };
-        assert_eq!(failed[0].0, "nixos-build-target");
-        assert_eq!(failed[0].1, result.message(), "{spelling}");
     }
 }
 
@@ -600,174 +593,6 @@ fn backend_entries_runs_right_after_the_hidden_volume_check() {
         .expect("registry builds")
         .names();
     assert_eq!(&names[..2], &["hidden-volume", "backend-entries"]);
-}
-
-#[test]
-fn the_entries_check_alone_refuses_a_decoy_entry_for_the_volume() {
-    // What activation runs under --no-preflight: the hidden volume is the
-    // whole of sdb, and the decoy's crypttab opens it.
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_mount_table(
-        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
-         5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
-    );
-    let manager = manager_with(fs);
-    manager.run_backend_entries_check().unwrap();
-
-    manager
-        .filesystem()
-        .mock_add_file("/etc/crypttab", "data /dev/sdb none luks,noauto\n");
-    match manager.run_backend_entries_check() {
-        Err(NailsError::PreFlightCheckFailed(failures)) => {
-            assert_eq!(failures.len(), 1, "{failures:?}");
-            assert_eq!(failures[0].0, "backend-entries");
-            assert!(failures[0].1.contains("data /dev/sdb"), "{failures:?}");
-        }
-        other => panic!("expected the check to refuse, got {other:?}"),
-    }
-}
-
-#[test]
-fn the_entries_check_alone_only_logs_its_warning() {
-    // The volume is the whole of sdb, and the decoy opens a container on sdb1
-    // of the same drive: a warning, reported as the pre-flight run reports
-    // one, which does not refuse activation.
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/mnt/hidden", true);
-    fs.mock_set_mount_table(
-        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
-         5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
-    );
-    let mut class = Vec::new();
-    for (dir, name, dev) in [
-        ("/sys/devices/usb/sdb", "sdb", "8:16"),
-        ("/sys/devices/usb/sdb/sdb1", "sdb1", "8:17"),
-    ] {
-        fs.mock_set_file_content(&format!("{dir}/dev"), &format!("{dev}\n"));
-        fs.mock_set_file_content(&format!("{dir}/uevent"), &format!("DEVNAME={name}\n"));
-        let link = format!("/sys/class/block/{name}");
-        fs.create_symlink(std::path::Path::new(dir), std::path::Path::new(&link))
-            .unwrap();
-        class.push(std::path::PathBuf::from(link));
-    }
-    fs.mock_set_file_content("/sys/devices/usb/sdb/sdb1/partition", "1\n");
-    fs.mock_set_directory_contents(std::path::Path::new("/sys/class/block"), class);
-    fs.mock_add_file("/etc/crypttab", "outer /dev/sdb1 none tcrypt,noauto\n");
-    let manager = manager_with(fs);
-    let check =
-        crate::preflight::checks::BackendEntriesCheck::new(std::path::PathBuf::from("/mnt/hidden"));
-    match crate::preflight::PreFlightCheck::run(&check, manager.filesystem()).unwrap() {
-        CheckResult::Warn(message) => assert!(
-            message.contains("the decoy is configured to open storage on this drive"),
-            "{message}"
-        ),
-        other => panic!("expected a warning, got {other:?}"),
-    }
-    manager
-        .run_backend_entries_check()
-        .expect("a warning does not refuse");
-}
-
-/// Register one block device under `dir` in the mock sysfs, as the
-/// backend-detect fixtures do: a `dev`/`uevent` pair, an optional dm uuid and
-/// loop backing file, and the runtime discard policy.
-fn add_block_device(
-    fs: &MockFilesystem,
-    dir: &str,
-    devname: &str,
-    dm_uuid: Option<&str>,
-    backing_file: Option<&str>,
-    discard_max_bytes: &str,
-) {
-    fs.mock_set_file_content(&format!("{dir}/dev"), "0:0\n");
-    fs.mock_set_file_content(
-        &format!("{dir}/uevent"),
-        &format!("MAJOR=0\nMINOR=0\nDEVNAME={devname}\nDEVTYPE=disk\n"),
-    );
-    if let Some(uuid) = dm_uuid {
-        fs.mock_set_file_content(&format!("{dir}/dm/uuid"), &format!("{uuid}\n"));
-    }
-    if let Some(file) = backing_file {
-        fs.mock_set_file_content(&format!("{dir}/loop/backing_file"), &format!("{file}\n"));
-    }
-    fs.mock_set_file_content(
-        &format!("{dir}/queue/discard_max_bytes"),
-        &format!("{discard_max_bytes}\n"),
-    );
-}
-
-/// A tcrypt mapping (`253:3` -> dm-3) over a loop-backed container under the
-/// `/mnt/hidden` root [`manager_with`] configures, with the given runtime
-/// discard policy on the crypt layer. A tcrypt mapping reads no LUKS2 header,
-/// so the fixture never touches the host's `/dev`.
-fn tcrypt_discard_fixture(discard_max_bytes: &str) -> MockFilesystem {
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/mnt/hidden", true);
-    // BackendDetectCheck reads the raw /proc/self/mountinfo (not fs.mount_table),
-    // so set the file directly, as the backend-detect fixtures do.
-    fs.mock_set_file_content(
-        "/proc/self/mountinfo",
-        "23 1 254:0 / / rw,relatime shared:1 - ext4 /dev/mapper/cryptroot rw\n\
-         40 23 253:3 / /mnt/hidden rw,relatime shared:9 - ext4 /dev/mapper/veracrypt-hidden rw\n",
-    );
-    add_block_device(
-        &fs,
-        "/sys/dev/block/253:3",
-        "dm-3",
-        Some("CRYPT-TCRYPT-veracrypt-hidden"),
-        None,
-        discard_max_bytes,
-    );
-    fs.mock_set_directory_contents(
-        std::path::Path::new("/sys/dev/block/253:3/slaves"),
-        vec![std::path::PathBuf::from(
-            "/sys/dev/block/253:3/slaves/loop0",
-        )],
-    );
-    add_block_device(
-        &fs,
-        "/sys/dev/block/253:3/slaves/loop0",
-        "loop0",
-        None,
-        Some("/home/alice/family_photos"),
-        "4096",
-    );
-    fs
-}
-
-#[test]
-fn the_backend_detect_check_alone_refuses_discards_over_the_hidden_volume() {
-    // What activation runs under --no-preflight: a cryptsetup mapping over the
-    // hidden volume forwards TRIM to the physical device, so the used/free map
-    // becomes readable where a deniable volume must look like random data.
-    let manager = manager_with(tcrypt_discard_fixture("2147450880"));
-    match manager.run_backend_detect_check() {
-        Err(NailsError::PreFlightCheckFailed(failures)) => {
-            assert_eq!(failures.len(), 1, "{failures:?}");
-            assert_eq!(failures[0].0, "backend-detect");
-            assert!(
-                failures[0]
-                    .1
-                    .contains("Discards are enabled over the hidden volume"),
-                "{failures:?}"
-            );
-            // The refusal names no device-mapper node.
-            assert!(!failures[0].1.contains("dm-"), "{failures:?}");
-        }
-        other => panic!("expected the discard refusal, got {other:?}"),
-    }
-}
-
-#[test]
-fn the_backend_detect_check_alone_does_not_refuse_without_discards() {
-    // The same backend with discards off: a loop-backed file container only
-    // warns (its ctime cannot be restored), and a warning does not refuse,
-    // exactly as a full pre-flight run reports it.
-    let manager = manager_with(tcrypt_discard_fixture("0"));
-    manager
-        .run_backend_detect_check()
-        .expect("a backend hazard that only warns does not refuse");
 }
 
 /// A manager over a mock host whose os-release is `os_release`, with the host

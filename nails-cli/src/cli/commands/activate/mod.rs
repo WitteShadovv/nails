@@ -47,15 +47,11 @@ fn write_baseline(settings: &OutputSettings, ready: &ReadyActivation, json: bool
 }
 
 /// The progress line before the entry, naming only the steps it runs, in
-/// their order: the pre-flight checks (not under `--no-preflight`), the next
-/// root, and the hidden NixOS system built into it (NixOS with a build target
-/// only, never with `--overlay-only` or on Debian and Ubuntu).
-fn preparing_line(preflight: bool, builds_system: bool) -> String {
-    let mut steps = Vec::new();
-    if preflight {
-        steps.push("pre-flight");
-    }
-    steps.push("next root");
+/// their order: the pre-flight checks, the next root, and the hidden NixOS
+/// system built into it (NixOS with a build target only, never with
+/// `--overlay-only` or on Debian and Ubuntu).
+fn preparing_line(builds_system: bool) -> String {
+    let mut steps = vec!["pre-flight", "next root"];
     if builds_system {
         steps.push("hidden NixOS system");
     }
@@ -113,7 +109,7 @@ fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
     crate::cli::args::CheckArgs {
         overlay_only: args.overlay_only,
         nixos_flake: args.nixos_flake.clone(),
-        accept_persistent_decoy: args.accept_persistent_decoy,
+        allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
     }
 }
@@ -121,9 +117,8 @@ fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
 /// What the activation asks of the facade.
 fn activate_options(args: &ActivateArgs) -> ActivateOptions {
     ActivateOptions {
-        no_preflight: args.no_preflight,
         overlay_only: args.overlay_only,
-        accept_persistent_decoy: args.accept_persistent_decoy,
+        allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
     }
 }
@@ -254,7 +249,6 @@ pub fn execute(
     // no progress line on stdout; a window watches progress on its own channel.
     if !json && settings.verbosity >= Verbosity::Normal {
         crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(
-            !options.no_preflight,
             ready.builds_hidden_system(),
         ));
     }

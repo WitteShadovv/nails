@@ -163,11 +163,10 @@ impl NixOSBuildTargetCheck {
 }
 
 /// The refusal of the decoy's own flake in `dir`, with what to put in its
-/// place on the hidden volume at `hidden_volume_root`. Activation refuses the
-/// same target under `--no-preflight` too. `hidden` tells a hidden flake that
-/// is there but not chosen (the decoy's flake was named with `--nixos-flake`
-/// or `nixos_flake`) from one that is missing, and from a hidden flake
-/// directory that is a link to the decoy's.
+/// place on the hidden volume at `hidden_volume_root`. `hidden` tells a hidden
+/// flake that is there but not chosen (the decoy's flake was named with
+/// `--nixos-flake` or `nixos_flake`) from one that is missing, and from a
+/// hidden flake directory that is a link to the decoy's.
 pub(crate) fn decoy_flake_refusal(
     dir: &Path,
     hidden_volume_root: &Path,

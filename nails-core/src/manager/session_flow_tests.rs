@@ -529,13 +529,12 @@ fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
     let machine = machine(dir.path(), "1 0 0:30 / / rw - tmpfs tmpfs rw\n");
     let mut m = manager(&dir.path().join("hidden"));
     m.set_host_profile(FakePlatform::fhs().host_profile());
-    let options = EnterOptions {
-        skip_preflight: true,
-        ..EnterOptions::default()
-    };
+    let options = EnterOptions::default();
     let host = FakeEntryHost::default();
 
-    let error = m.enter_session_on(&machine, &options, &host).unwrap_err();
+    let error = m
+        .enter_session_no_preflight_on(&machine, &options, &host)
+        .unwrap_err();
 
     assert!(
         error.to_string().contains("is not on a block device"),
@@ -543,54 +542,6 @@ fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
     );
     assert!(!machine.paths.runtime().exists());
     assert_eq!(host.reloads.get(), 0);
-}
-
-/// The decoy's own `/etc/nixos` flake is refused under `--no-preflight` too,
-/// before anything is prepared: the entry would otherwise run the decoy's own
-/// system, without the hidden module, and say nothing.
-#[test]
-fn the_decoy_flake_is_refused_without_the_preflight_too() {
-    let dir = tempfile::tempdir().unwrap();
-    let hidden = dir.path().join("hidden");
-    std::fs::create_dir_all(&hidden).unwrap();
-    let machine = machine(dir.path(), DECOY_TABLE);
-    let mut m = manager(&hidden);
-    m.set_fake_platform(FakePlatform::nixos().with_build_target(
-        crate::platform::HostTarget::DecoyFlake {
-            dir: PathBuf::from("/etc/nixos"),
-            hidden_volume_root: hidden.clone(),
-        },
-    ));
-    let options = EnterOptions {
-        skip_preflight: true,
-        ..EnterOptions::default()
-    };
-    let host = FakeEntryHost::default();
-
-    let error = m.enter_session_on(&machine, &options, &host).unwrap_err();
-
-    let NailsError::PreFlightCheckFailed(failed) = &error else {
-        panic!("not a pre-flight refusal: {error}");
-    };
-    assert_eq!(failed.len(), 1, "{failed:?}");
-    assert_eq!(failed[0].0, "nixos-build-target");
-    assert!(
-        failed[0]
-            .1
-            .contains("/etc/nixos holds the decoy's own flake"),
-        "{failed:?}"
-    );
-    assert!(
-        failed[0]
-            .2
-            .as_deref()
-            .is_some_and(|fix| fix.contains("never on the decoy")),
-        "{failed:?}"
-    );
-    assert!(!machine.paths.runtime().exists());
-    assert_eq!(host.reloads.get(), 0);
-    // --overlay-only builds nothing, so it has no build target to refuse.
-    assert!(m.refuse_decoy_flake(true).is_ok());
 }
 
 #[test]
@@ -601,14 +552,11 @@ fn a_cancel_before_the_entry_changes_nothing() {
     let machine = machine(dir.path(), DECOY_TABLE);
     let mut m = manager(&hidden);
     m.set_host_profile(FakePlatform::fhs().host_profile());
-    let options = EnterOptions {
-        skip_preflight: true,
-        ..EnterOptions::default()
-    };
+    let options = EnterOptions::default();
     let host = FakeEntryHost::default();
 
     crate::cancel::testing::request();
-    let result = m.enter_session_on(&machine, &options, &host);
+    let result = m.enter_session_no_preflight_on(&machine, &options, &host);
     crate::cancel::testing::reset();
 
     assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
@@ -625,10 +573,7 @@ fn a_caller_s_cancel_token_before_the_entry_changes_nothing() {
     let machine = machine(dir.path(), DECOY_TABLE);
     let mut m = manager(&hidden);
     m.set_host_profile(FakePlatform::fhs().host_profile());
-    let options = EnterOptions {
-        skip_preflight: true,
-        ..EnterOptions::default()
-    };
+    let options = EnterOptions::default();
     let host = FakeEntryHost::default();
 
     // A caller — a window whose control pipe closed before the point of no
@@ -638,7 +583,7 @@ fn a_caller_s_cancel_token_before_the_entry_changes_nothing() {
     let token = crate::cancel::CancelToken::new();
     let scope = token.install();
     token.cancel();
-    let result = m.enter_session_on(&machine, &options, &host);
+    let result = m.enter_session_no_preflight_on(&machine, &options, &host);
     drop(scope);
 
     assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
@@ -717,15 +662,12 @@ fn a_refused_entry_raises_exactly_one_failed_finish() {
     let machine = machine(dir.path(), "1 0 0:30 / / rw - tmpfs tmpfs rw\n");
     let mut m = manager(&dir.path().join("hidden"));
     m.set_host_profile(FakePlatform::fhs().host_profile());
-    let options = EnterOptions {
-        skip_preflight: true,
-        ..EnterOptions::default()
-    };
+    let options = EnterOptions::default();
     let host = FakeEntryHost::default();
 
     let mut result = None;
     let finishes = activation_finishes(|| {
-        result = Some(m.enter_session_on(&machine, &options, &host));
+        result = Some(m.enter_session_no_preflight_on(&machine, &options, &host));
     });
 
     assert!(
@@ -870,13 +812,14 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         let mut m = manager(hidden.path());
         m.set_host_profile(FakePlatform::fhs().host_profile());
         let options = EnterOptions {
-            skip_preflight: true,
             binary: PathBuf::from("/proc/self/exe"),
             ..EnterOptions::default()
         };
         let host = FakeEntryHost::default();
 
-        let outcome = m.enter_session_on(&machine, &options, &host).unwrap();
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
 
         let EnterOutcome::Prepared { entry, elapsed } = outcome else {
             panic!("expected a prepared entry, got {outcome:?}");
@@ -951,7 +894,6 @@ fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
         let mut m = manager(hidden.path());
         m.set_host_profile(FakePlatform::fhs().host_profile());
         let options = EnterOptions {
-            skip_preflight: true,
             binary: PathBuf::from("/proc/self/exe"),
             ..EnterOptions::default()
         };
@@ -961,7 +903,7 @@ fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
             ..FakeEntryHost::default()
         };
 
-        let result = m.enter_session_on(&machine, &options, &host);
+        let result = m.enter_session_no_preflight_on(&machine, &options, &host);
         crate::cancel::testing::reset();
 
         assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");

@@ -18,7 +18,6 @@ This document contains the help content for the `nails` command-line program.
 * [`nails rehearse reset`↴](#nails-rehearse-reset)
 * [`nails check`↴](#nails-check)
 * [`nails init`↴](#nails-init)
-* [`nails reset-upper`↴](#nails-reset-upper)
 * [`nails config`↴](#nails-config)
 * [`nails config path`↴](#nails-config-path)
 * [`nails config show`↴](#nails-config-show)
@@ -81,9 +80,8 @@ EXIT STATUS:
 * `status` — Show the session, security posture and hidden volume
 * `verify` — Check for known NAILS traces (evidence, not proof)
 * `rehearse` — Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
-* `check` — Check readiness to activate without making any changes (alias: doctor)
+* `check` — Check readiness to activate without making any changes
 * `init` — Initialize NAILS directory structure on a hidden volume
-* `reset-upper` — Delete a path's hidden copy from the hidden root's upper
 * `config` — Inspect and check the configuration file (nails.toml)
 * `completions` — Print a shell completion script on stdout (for `source <(...)`)
 
@@ -133,7 +131,6 @@ EXAMPLES:
 
 ###### **Options:**
 
-* `--no-preflight` — Skip pre-flight checks (DANGEROUS - expert use only)
 * `-y`, `--yes` — Proceed without the confirmation prompt
 
    Without this flag activation prompts on a terminal and refuses to run without one, because it logs you out.
@@ -142,9 +139,9 @@ EXAMPLES:
    The hidden system is built from it into the hidden root's store before the soft-reboot. Supports attribute selection after the `#`.
 * `--dry-run` — Preview activation steps without making changes
 * `--overlay-only` — NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden /etc and home still apply)
-* `--accept-persistent-decoy` — Accept a persistent decoy posture instead of refusing activation
+* `--allow-persistent-decoy` — Allow a persistent decoy posture instead of refusing activation
 
-   By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
+   By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag allows that risk for this activation only and cannot be stored.
 * `--allow-decoy-storage` — Use a hidden root that this computer's own storage seems to hold
 
    By default activation refuses a root that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it): everything the session writes there lands on this computer's disk. Use this flag only for storage you know this computer does not use, such as a disk its fstab lists but never mounts. It turns those refusals into a warning, adds a line to the logout confirmation and records the choice for `status`. A folder that is no mount point, a root with a second filesystem mounted over it, storage that cannot be judged, and a decoy entry that opens the volume are still refused.
@@ -350,22 +347,21 @@ Remove the rehearsal state and its planted files from the hidden volume
 
 ## `nails check`
 
-Check readiness to activate without making any changes (alias: doctor)
+Check readiness to activate without making any changes
 
 **Usage:** `nails check [OPTIONS]`
 
 EXAMPLES:
   nails check                         Report readiness to activate
-  nails doctor                        Same, via the alias
   nails check --overlay-only          Skip the hidden NixOS build checks
 
 ###### **Options:**
 
 * `--overlay-only` — Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
 * `--nixos-flake <FLAKE_REF>` — NixOS layer: check a specific flake reference as <path>#<host> (e.g. /mnt/data/nixos#my-host)
-* `--accept-persistent-decoy` — Report a persistent decoy posture as a warning instead of a failure
+* `--allow-persistent-decoy` — Report a persistent decoy posture as a warning instead of a failure
 
-   Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
+   Mirrors `activate --allow-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
 * `--allow-decoy-storage` — Report a hidden root on this computer's own storage as a warning
 
    Mirrors `activate --allow-decoy-storage`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
@@ -395,28 +391,6 @@ EXAMPLES:
 
    Overrides the default `/etc/nixos/hardware-configuration.nix`. On a non-NixOS host the layout is skipped unless this is given.
 * `--no-hardware-config` — Do not create the hidden NixOS layout at all
-
-
-
-## `nails reset-upper`
-
-Delete a path's hidden copy from the hidden root's upper
-
-**Usage:** `nails reset-upper [OPTIONS] <TARGET>`
-
-EXAMPLES:
-  nails reset-upper /home             Delete the hidden copy of /home
-  nails reset-upper /nix -y           Delete the hidden /nix without prompting
-
-###### **Arguments:**
-
-* `<TARGET>` — Path whose hidden copy to delete (e.g. /home, /etc, /nix); the decoy's own files show through again
-
-###### **Options:**
-
-* `-y`, `--yes` — Proceed without the confirmation prompt
-
-   Without this flag reset-upper lists what it would delete and confirms on a terminal, refusing to run without one.
 
 
 

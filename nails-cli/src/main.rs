@@ -21,7 +21,7 @@ use nails::cli::{Cli, Commands, OutputSettings, execute_command};
 fn command_writes_logs(command: &Commands) -> bool {
     match command {
         Commands::Activate(args) => !args.dry_run,
-        Commands::Deactivate(_) | Commands::Emergency(_) | Commands::ResetUpper(_) => true,
+        Commands::Deactivate(_) | Commands::Emergency(_) | Commands::Discard(_) => true,
         // The rehearsal steps act on the attached hidden volume; the status view
         // only reads.
         Commands::Rehearse(args) => !matches!(
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn writing_commands_enable_the_log_file() {
-        use nails::cli::args::ResetUpperArgs;
+        use nails::cli::args::DiscardArgs;
         use std::path::PathBuf;
 
         assert!(command_writes_logs(&Commands::Activate(
@@ -98,7 +98,7 @@ mod tests {
         assert!(command_writes_logs(&Commands::Deactivate(
             Default::default()
         )));
-        assert!(command_writes_logs(&Commands::ResetUpper(ResetUpperArgs {
+        assert!(command_writes_logs(&Commands::Discard(DiscardArgs {
             target: PathBuf::from("/home"),
             yes: true,
         })));

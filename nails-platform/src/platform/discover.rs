@@ -3,7 +3,7 @@
 
 //! One build-target discovery, shared by every path that needs it.
 //!
-//! Historically the cascade was copied into `activate`, into the `check`/`doctor`
+//! Historically the cascade was copied into `activate`, into the `check`
 //! manager builder, and into the `nixos-build-target` pre-flight check, and the
 //! copies drifted. Auto-discovery is now a question put to the host's
 //! [`Platform`] backend ([`Platform::discover_build_target`]): the NixOS backend

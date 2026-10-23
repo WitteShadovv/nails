@@ -32,7 +32,7 @@ what you did.
 >
 > - On the decoy you unlock and mount the hidden volume and run `nails check`
 >   and `nails activate` (once, before the first session, `nails init`; when
->   needed, `nails recover` or `nails reset-upper`). Do nothing else with the
+>   needed, `nails recover` or `nails discard`). Do nothing else with the
 >   tool there, and do not edit its configuration there either: do not read
 >   `state.json`, and do not name the hidden volume, its mapper, its mount point
 >   or the tool in any other command.
@@ -85,7 +85,7 @@ a file container (only root can read the loop device's record of where the file
 lives), run the command with sudo; a filesystem that shows no disk it stores its data on (an overlay,
 FUSE, a network filesystem) is never accepted. A decoy `/etc/crypttab` or
 `/etc/fstab` line that opens or mounts the hidden volume fails the
-`backend-entries` check, which `--no-preflight` does not skip: remove it long
+`backend-entries` check: remove it long
 before the next use and open the volume by hand each time. If the boot mounts
 the volume through such a line, the gate refuses it as the decoy's own
 filesystem and says to remove the line.
@@ -255,7 +255,7 @@ import it, or the hidden system lacks its settings (`system.autoUpgrade` forced
 off, no shell history file) and whatever you added there, such as the [panic
 switch](#panic-switch); the build runs with `--impure`, so a flake can import
 it by its absolute path. A decoy whose `/etc/nixos` holds its own flake is
-refused unless one of the first two applies, `--no-preflight` included: a build
+refused unless one of the first two applies: a build
 of the decoy's flake reads only the decoy's files, so neither the hidden module
 nor the hidden hardware configuration (the decoy's without its swap) would be
 part of the hidden system. Give such a decoy a self-contained hidden flake:
@@ -909,9 +909,9 @@ seconds or minutes.
   do not break the hidden NixOS system: its closure is kept on the hidden volume
   (see "The hidden NixOS system").
 - To drop a path's hidden copy so the decoy's own files show through again, run
-  `reset-upper` **on the decoy**, with the hidden volume mounted:
-  `sudo /mnt/data/nails reset-upper /etc/nixos` (it lists what it deletes and
-  confirms first; resetting `/nix` drops the hidden Nix store and warns first).
+  `discard` **on the decoy**, with the hidden volume mounted:
+  `sudo /mnt/data/nails discard /etc/nixos` (it lists what it deletes and
+  confirms first; discarding `/nix` drops the hidden Nix store and warns first).
   For a separately overlaid filesystem it also removes that filesystem's upper.
   It is refused in the hidden session, where the upper is the live root.
 
@@ -1067,7 +1067,7 @@ Power off if that does not respond.
 
 **Volume full (ENOSPC).** Copy-up or a session write fails. Free space from
 inside the session (`nix-collect-garbage -d`, clear caches) or deactivate
-normally and `reset-upper` a bloated path from the decoy. Do not delete files
+normally and `discard` a bloated path from the decoy. Do not delete files
 directly out of an upper or work directory by hand.
 
 **OOM.** If the kernel killed the NAILS process during activation, treat it as

@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! State file access for NailsManager, and `reset-upper`.
+//! State file access for NailsManager, and `discard`.
 //!
 //! The state file on the hidden volume is a record next to the live facts
 //! (see [`crate::session::probe`]): it is loaded lazily, cached, and written
-//! whole. `reset-upper` deletes a path's hidden copy from the root upper.
+//! whole. `discard` deletes a path's hidden copy from the root upper.
 
 use super::NailsManager;
 use crate::session::{Layout, SessionView, fstab::escape_path};
@@ -13,7 +13,7 @@ use crate::{Filesystem, NailsError, Result, StateFile, SystemState};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
 
-/// What a `reset-upper` would delete for one path.
+/// What a `discard` would delete for one path.
 ///
 /// The root upper on the hidden volume keeps every hidden change; deleting
 /// `<upper>/<path>` makes the decoy's own files show through again at the next
@@ -96,12 +96,12 @@ impl<F: Filesystem> NailsManager<F> {
         state_file.save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)
     }
 
-    /// Plan a `reset-upper` for `target`. Refused in the hidden session (the
+    /// Plan a `discard` for `target`. Refused in the hidden session (the
     /// upper is the live root there) and for a relative path or `/` itself.
     pub fn plan_reset_upper(&self, target: &Path) -> Result<ResetUpperPlan> {
         if self.session_view().is_hidden() {
             return Err(NailsError::InvalidState(
-                "reset-upper cannot run in the hidden session: the upper is the live root; \
+                "discard cannot run in the hidden session: the upper is the live root; \
                  deactivate first"
                     .to_string(),
             ));
@@ -113,7 +113,7 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn plan_reset_upper_on(&self, target: &Path, view: &SessionView) -> Result<ResetUpperPlan> {
         if view.is_hidden() {
             return Err(NailsError::InvalidState(
-                "reset-upper cannot run in the hidden session".to_string(),
+                "discard cannot run in the hidden session".to_string(),
             ));
         }
         if !target.is_absolute()
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_upper_removes_the_hidden_copy_and_a_separate_filesystems_layers() {
+    fn discard_removes_the_hidden_copy_and_a_separate_filesystems_layers() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("root/upper/home/alice")).unwrap();
         std::fs::create_dir_all(root.path().join("root/mounts/home/upper")).unwrap();
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_upper_refuses_the_hidden_session_the_root_and_relative_paths() {
+    fn discard_refuses_the_hidden_session_the_root_and_relative_paths() {
         let root = tempfile::tempdir().unwrap();
         let m = manager(root.path());
         let hidden = SessionView::HiddenWithoutPlan("test".into());

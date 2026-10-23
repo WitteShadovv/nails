@@ -3,7 +3,7 @@
 
 //! Cooperative cancellation and signal survival for mutating operations.
 //!
-//! A mutating command (activate, reset-upper) undoes a failed step on a normal
+//! A mutating command (activate, discard) undoes a failed step on a normal
 //! return or an unwind, such as the entry's rollback of a half-built next root.
 //! A signal's *default* action terminates the process outright and skips that,
 //! which can leave a populated `/run/nextroot` behind.

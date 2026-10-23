@@ -76,7 +76,7 @@ in
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         # The configuration lives on the hidden volume, off the scanned decoy.
         write_headless_config(config)
-        canonical_activate(config, "--overlay-only --accept-persistent-decoy", "activate")
+        canonical_activate(config, "--overlay-only --allow-persistent-decoy", "activate")
         rc, out, err = rehearse("plant --user testuser")
         assert rc == 0, (rc, out, err)
         token = json.loads(machine.succeed(f"cat {state_path}"))["token"]

@@ -48,17 +48,6 @@ fn test_help_flag() {
         ));
 }
 
-/// Test that activate command accepts --no-preflight flag
-#[test]
-fn test_activate_command_force_flag() {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["activate", "--help"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("--no-preflight"))
-        .stdout(predicates::str::contains("Skip pre-flight checks"));
-}
-
 /// Test that deactivate command accepts new flags
 #[test]
 fn test_deactivate_command_flags_help() {
@@ -862,50 +851,15 @@ fn test_activate_dry_run_is_a_thin_alias_for_check() {
 }
 
 #[test]
-fn test_doctor_alias_runs_the_check_command() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-
-    let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
-        .args([
-            "--config",
-            config_file.path().to_str().unwrap(),
-            "doctor",
-            "--overlay-only",
-            "--ascii",
-        ])
-        .assert()
-        .failure()
-        .code(4)
-        .stdout(predicates::str::contains("NAILS Readiness Check"));
-}
-
-#[test]
 fn test_activate_fails_closed_on_invalid_config() {
     let config_file = create_invalid_config_file();
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args([
-        "--config",
-        config_file.path().to_str().unwrap(),
-        "activate",
-        "--no-preflight",
-    ])
-    .assert()
-    .failure()
-    .code(3)
-    .stderr(predicates::str::contains("invalid config"));
+    cmd.args(["--config", config_file.path().to_str().unwrap(), "activate"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicates::str::contains("invalid config"));
 }
 
 /// `activate --help` explains the soft-reboot and the logout.

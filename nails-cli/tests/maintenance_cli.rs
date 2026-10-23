@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `nails recover` and `nails reset-upper` through the real binary, on the
+//! `nails recover` and `nails discard` through the real binary, on the
 //! decoy (the test host) with a temporary hidden root.
 //!
 //! Neither path needs root: on a host with no interrupted activation `recover`
-//! only resets a stale record, and `reset-upper` only deletes directories below
+//! only resets a stale record, and `discard` only deletes directories below
 //! the temporary hidden root. The attach gate accepts only a volume of its own,
 //! so each test runs in an unprivileged user + mount namespace with a tmpfs as
 //! the hidden root, and the binary it spawns inherits that namespace. Where user
@@ -157,24 +157,24 @@ fn recover_resets_a_stale_active_record_on_the_decoy() {
 }
 
 // ---------------------------------------------------------------------------
-// reset-upper
+// discard
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reset_upper_removes_the_root_upper_copy_and_the_mount_layers() {
+fn discard_removes_the_root_upper_copy_and_the_mount_layers() {
     in_namespace(
-        test_path!(reset_upper_removes_the_root_upper_copy_and_the_mount_layers),
+        test_path!(discard_removes_the_root_upper_copy_and_the_mount_layers),
         || {
             let harness = Harness::new();
             harness.write_state(SystemState::Inactive);
             let upper = harness.populate("root/upper/srv/data");
             let layers = harness.populate("root/mounts/srv-data");
 
-            let output = harness.run(&["reset-upper", "/srv/data", "-y", "--json"]);
+            let output = harness.run(&["discard", "/srv/data", "-y", "--json"]);
 
             assert_eq!(output.status.code(), Some(0), "{output:?}");
             let value = json(&output);
-            assert_eq!(value["command"], "reset-upper");
+            assert_eq!(value["command"], "discard");
             assert_eq!(value["data"]["target"], "/srv/data");
             assert_eq!(
                 value["data"]["removed"],
@@ -189,22 +189,22 @@ fn reset_upper_removes_the_root_upper_copy_and_the_mount_layers() {
 }
 
 #[test]
-fn reset_upper_in_human_form_lists_the_removals_and_the_fallback() {
+fn discard_in_human_form_lists_the_removals_and_the_fallback() {
     in_namespace(
-        test_path!(reset_upper_in_human_form_lists_the_removals_and_the_fallback),
+        test_path!(discard_in_human_form_lists_the_removals_and_the_fallback),
         || {
             let harness = Harness::new();
             harness.write_state(SystemState::Inactive);
             let upper = harness.populate("root/upper/srv/data");
 
-            let output = harness.run(&["--ascii", "reset-upper", "/srv/data", "--yes"]);
+            let output = harness.run(&["--ascii", "discard", "/srv/data", "--yes"]);
 
             assert_eq!(output.status.code(), Some(0), "{output:?}");
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert_eq!(
                 stdout.lines().collect::<Vec<_>>(),
                 vec![
-                    "[PASS] Reset the hidden upper for /srv/data".to_string(),
+                    "[PASS] Discarded the hidden upper for /srv/data".to_string(),
                     format!("  removed {}", upper.display()),
                     "  /srv/data falls back to its decoy on the next activation".to_string(),
                 ]
@@ -214,38 +214,35 @@ fn reset_upper_in_human_form_lists_the_removals_and_the_fallback() {
 }
 
 #[test]
-fn reset_upper_with_nothing_to_remove_says_so() {
-    in_namespace(
-        test_path!(reset_upper_with_nothing_to_remove_says_so),
-        || {
-            let harness = Harness::new();
-            harness.write_state(SystemState::Inactive);
+fn discard_with_nothing_to_remove_says_so() {
+    in_namespace(test_path!(discard_with_nothing_to_remove_says_so), || {
+        let harness = Harness::new();
+        harness.write_state(SystemState::Inactive);
 
-            let human = harness.run(&["--ascii", "reset-upper", "/srv/empty"]);
-            assert_eq!(human.status.code(), Some(0), "{human:?}");
-            assert_eq!(
-                String::from_utf8_lossy(&human.stdout).trim_end(),
-                "[INFO] Nothing to reset for /srv/empty"
-            );
+        let human = harness.run(&["--ascii", "discard", "/srv/empty"]);
+        assert_eq!(human.status.code(), Some(0), "{human:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&human.stdout).trim_end(),
+            "[INFO] Nothing to discard for /srv/empty"
+        );
 
-            let machine = harness.run(&["reset-upper", "/srv/empty", "--json"]);
-            assert_eq!(machine.status.code(), Some(0), "{machine:?}");
-            assert_eq!(json(&machine)["data"]["removed"], serde_json::json!([]));
-        },
-    );
+        let machine = harness.run(&["discard", "/srv/empty", "--json"]);
+        assert_eq!(machine.status.code(), Some(0), "{machine:?}");
+        assert_eq!(json(&machine)["data"]["removed"], serde_json::json!([]));
+    });
 }
 
 #[test]
-fn reset_upper_off_a_terminal_without_yes_needs_confirmation_and_keeps_the_upper() {
+fn discard_off_a_terminal_without_yes_needs_confirmation_and_keeps_the_upper() {
     in_namespace(
-        test_path!(reset_upper_off_a_terminal_without_yes_needs_confirmation_and_keeps_the_upper),
+        test_path!(discard_off_a_terminal_without_yes_needs_confirmation_and_keeps_the_upper),
         || {
             let harness = Harness::new();
             harness.write_state(SystemState::Inactive);
             let upper = harness.populate("root/upper/srv/data");
 
             // `Command::output` gives the child a null stdin, never a terminal.
-            let output = harness.run(&["reset-upper", "/srv/data", "--json"]);
+            let output = harness.run(&["discard", "/srv/data", "--json"]);
 
             assert_eq!(output.status.code(), Some(2), "{output:?}");
             let value = json(&output);
@@ -256,18 +253,18 @@ fn reset_upper_off_a_terminal_without_yes_needs_confirmation_and_keeps_the_upper
 }
 
 #[test]
-fn reset_upper_refuses_a_path_that_is_not_below_root() {
+fn discard_refuses_a_path_that_is_not_below_root() {
     in_namespace(
-        test_path!(reset_upper_refuses_a_path_that_is_not_below_root),
+        test_path!(discard_refuses_a_path_that_is_not_below_root),
         || {
             let harness = Harness::new();
             harness.write_state(SystemState::Inactive);
 
             for target in ["relative/path", "/", "/srv/../etc"] {
-                let output = harness.run(&["reset-upper", target, "-y", "--json"]);
+                let output = harness.run(&["discard", target, "-y", "--json"]);
                 assert_eq!(output.status.code(), Some(1), "{target}: {output:?}");
                 let value = json(&output);
-                assert_eq!(value["error"]["code"], "reset_upper");
+                assert_eq!(value["error"]["code"], "discard");
                 assert!(
                     value["error"]["message"]
                         .as_str()
@@ -281,14 +278,14 @@ fn reset_upper_refuses_a_path_that_is_not_below_root() {
 }
 
 #[test]
-fn reset_upper_with_an_unreadable_config_is_a_config_error() {
+fn discard_with_an_unreadable_config_is_a_config_error() {
     in_namespace(
-        test_path!(reset_upper_with_an_unreadable_config_is_a_config_error),
+        test_path!(discard_with_an_unreadable_config_is_a_config_error),
         || {
             let harness = Harness::new();
             std::fs::write(&harness.config, "hidden_volume_root = [unterminated").unwrap();
 
-            let output = harness.run(&["reset-upper", "/srv/data", "-y", "--json"]);
+            let output = harness.run(&["discard", "/srv/data", "-y", "--json"]);
 
             assert_eq!(output.status.code(), Some(3), "{output:?}");
             assert_eq!(json(&output)["ok"], false);

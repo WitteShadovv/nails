@@ -209,9 +209,9 @@ pub struct Config {
 
     /// Base free-space floor for activation, in MB.
     ///
-    /// The space pre-flight check fails below this value with no warn band;
-    /// `activate --no-preflight` skips the check. This floor covers an
-    /// overlay-only activation that writes no NixOS store delta.
+    /// The space pre-flight check fails below this value with no warn band.
+    /// This floor covers an overlay-only activation that writes no NixOS store
+    /// delta.
     #[serde(default = "super::defaults::default_minimum_space_mb")]
     pub minimum_space_mb: u64,
 
@@ -283,8 +283,8 @@ pub struct Config {
     /// When set, the hidden system is built from this flake (`nix build` into
     /// the hidden root's store) instead of the one auto-discovery picks: a
     /// flake in `<hidden_volume_root>/nixos`, else the legacy hidden
-    /// configuration (the decoy's own `/etc/nixos` flake is refused, also
-    /// under `--no-preflight`). Supports full flake references with attribute
+    /// configuration (the decoy's own `/etc/nixos` flake is refused). Supports
+    /// full flake references with attribute
     /// selection (e.g., `/mnt/data/nixos#my-host`). The flake must import the
     /// hidden module, and is written and locked inside a hidden session.
     ///
@@ -296,24 +296,6 @@ pub struct Config {
     /// ```
     #[serde(default)]
     pub nixos_flake: Option<String>,
-
-    /// Accept a persistent decoy posture instead of refusing activation.
-    ///
-    /// By default activation fails closed when the decoy keeps forensic traces:
-    /// a persistent systemd-journald journal on the decoy disk, or an active
-    /// rsyslog/syslog-ng/auditd. Records those sinks write before the overlays
-    /// are mounted survive on the decoy disk across deactivation and reboot. Set
-    /// this to `true` (or pass `--accept-persistent-decoy`) to accept that risk;
-    /// the decoy-persistence check then warns instead of failing. Lower-severity
-    /// findings (atime policy, crash-dump channels, sudo logging, maintenance
-    /// timers) are always warnings regardless of this setting.
-    ///
-    /// **Example**:
-    /// ```toml
-    /// accept_persistent_decoy = true
-    /// ```
-    #[serde(default = "super::defaults::default_accept_persistent_decoy")]
-    pub accept_persistent_decoy: bool,
 }
 
 /// Every top-level key `nails.toml` accepts, in the order they are documented
@@ -328,7 +310,6 @@ pub const CONFIG_KEYS: &[&str] = &[
     "rebuild_space_mb",
     "show_opsec_reminders",
     "nixos_flake",
-    "accept_persistent_decoy",
     "persona",
     "backend_watch",
     "session_mounts",

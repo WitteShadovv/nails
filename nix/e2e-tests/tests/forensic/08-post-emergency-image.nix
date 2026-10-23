@@ -85,7 +85,7 @@ in
     with subtest("activate and plant hidden canaries"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         canonical_activate(
-            headless_config, "--overlay-only --accept-persistent-decoy", "activate"
+            headless_config, "--overlay-only --allow-persistent-decoy", "activate"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
         machine.succeed(

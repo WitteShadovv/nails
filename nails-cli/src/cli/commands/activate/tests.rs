@@ -48,14 +48,10 @@ fn subprocess_activate_entrypoint() {
         ..OutputSettings::default()
     };
     let keep_session = ActivateArgs::default();
-    let guarded = ActivateArgs {
-        no_preflight: true,
-        ..keep_session.clone()
-    };
     let dry_run = ActivateArgs {
         dry_run: true,
         overlay_only: true,
-        ..guarded.clone()
+        ..ActivateArgs::default()
     };
 
     let status = match case.as_str() {
@@ -239,25 +235,17 @@ fn execute_colour_settings_paint_dry_run_marks() {
 }
 
 /// The progress line names the hidden NixOS build only when there is one (not
-/// on Debian or Ubuntu, not with `--overlay-only`) and the pre-flight checks
-/// only when they run.
+/// on Debian or Ubuntu, not with `--overlay-only`); the pre-flight checks
+/// always run.
 #[test]
 fn the_progress_line_names_only_the_steps_the_entry_runs() {
     assert_eq!(
-        super::preparing_line(true, true),
+        super::preparing_line(true),
         "Preparing the hidden session (pre-flight, next root, hidden NixOS system)..."
     );
     assert_eq!(
-        super::preparing_line(true, false),
+        super::preparing_line(false),
         "Preparing the hidden session (pre-flight, next root)..."
-    );
-    assert_eq!(
-        super::preparing_line(false, false),
-        "Preparing the hidden session (next root)..."
-    );
-    assert_eq!(
-        super::preparing_line(false, true),
-        "Preparing the hidden session (next root, hidden NixOS system)..."
     );
 }
 
@@ -330,7 +318,7 @@ fn a_dry_run_checks_with_the_options_activation_uses() {
     for bits in 0..8u8 {
         let args = ActivateArgs {
             overlay_only: bits & 1 != 0,
-            accept_persistent_decoy: bits & 2 != 0,
+            allow_persistent_decoy: bits & 2 != 0,
             allow_decoy_storage: bits & 4 != 0,
             dry_run: true,
             ..ActivateArgs::default()

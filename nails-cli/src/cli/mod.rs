@@ -30,7 +30,7 @@ fn command_is_mutating(command: &Commands) -> bool {
             | Commands::Deactivate(_)
             | Commands::Emergency(_)
             | Commands::Recover(_)
-            | Commands::ResetUpper(_)
+            | Commands::Discard(_)
     )
 }
 
@@ -92,7 +92,7 @@ pub fn execute_command(
         Commands::Rehearse(args) => commands::rehearse::execute(settings, env, &args, config),
         Commands::Check(args) => commands::check::execute(settings, env, &args, config),
         Commands::Init(args) => commands::init::execute(settings, &args, config),
-        Commands::ResetUpper(args) => commands::reset_upper::execute(settings, env, &args, config),
+        Commands::Discard(args) => commands::discard::execute(settings, env, &args, config),
         Commands::Config(command) => commands::config::execute(settings, config, &command),
         Commands::Completions(args) => commands::completions::execute(&args),
         Commands::Watch => commands::watch::execute(settings, env, config),

@@ -1,7 +1,7 @@
-# Test 74: reset-upper deletes a path's hidden copy from the root upper
+# Test 74: discard deletes a path's hidden copy from the root upper
 #
 # A hidden session copies a decoy file up and creates a hidden-only file in the
-# operator's home. `reset-upper /home` is refused inside the hidden session; on
+# operator's home. `discard /home` is refused inside the hidden session; on
 # the decoy it deletes /home's subtree from the root upper, and the next
 # session sees the decoy's own file again.
 _:
@@ -10,7 +10,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
 in
 {
-  name = "overlay-reset-upper";
+  name = "overlay-discard";
   meta.tags = [ "session" ];
   globalTimeout = 1200;
 
@@ -29,16 +29,16 @@ in
 
     with subtest("a hidden session copies up and adds files in the upper"):
         canonical_activate(config_path, "--overlay-only", "activate-1")
-        machine.fail(f"nails --config {config_path} reset-upper /home -y")
+        machine.fail(f"nails --config {config_path} discard /home -y")
         machine.succeed("su - testuser -c 'printf %s hidden-data > ~/reset-target.txt'")
         machine.succeed("su - testuser -c 'printf %s secret > ~/hidden-only.txt'")
         machine.succeed("test -f /mnt/data/root/upper/home/testuser/hidden-only.txt")
         canonical_deactivate(config_path, "deactivate-1")
 
-    with subtest("on the decoy reset-upper deletes /home from the upper"):
+    with subtest("on the decoy discard deletes /home from the upper"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         machine.succeed("test -f /mnt/data/root/upper/home/testuser/hidden-only.txt")
-        machine.succeed(f"nails --config {config_path} reset-upper /home -y")
+        machine.succeed(f"nails --config {config_path} discard /home -y")
         machine.fail("test -e /mnt/data/root/upper/home")
 
     with subtest("the decoy file shows through in the next session"):

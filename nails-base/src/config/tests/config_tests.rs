@@ -374,17 +374,12 @@ nixos_flake = "/mnt/test-volume/nixos#host"
 }
 
 #[test]
-fn accept_persistent_decoy_defaults_to_false() {
-    let unset: Config = toml::from_str("").unwrap();
-    assert!(!unset.accept_persistent_decoy);
-
-    let set: Config = toml::from_str("accept_persistent_decoy = true").unwrap();
-    assert!(set.accept_persistent_decoy);
-}
-
-#[test]
-fn strict_loader_rejects_misspelled_accept_persistent_decoy() {
-    // deny_unknown_fields: a typo'd key must be refused, not silently ignored.
+fn the_removed_accept_persistent_decoy_key_is_refused() {
+    // The override is per-run only (`--allow-persistent-decoy`); there is no
+    // storable key. deny_unknown_fields refuses the dropped key, as it already
+    // refuses a misspelling, so an old config file that still carries it fails
+    // loudly rather than being silently ignored.
+    assert!(toml::from_str::<Config>("accept_persistent_decoy = true").is_err());
     assert!(toml::from_str::<Config>("accept_persistent_decoyy = true").is_err());
     assert!(toml::from_str::<Config>("accept_persistant_decoy = true").is_err());
 }

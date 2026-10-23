@@ -29,12 +29,10 @@ use crate::{
 /// What `activate` should do.
 #[derive(Debug, Default, Clone)]
 pub struct ActivateOptions {
-    /// Skip the pre-flight checks (the attach gate still runs).
-    pub no_preflight: bool,
     /// Build no hidden NixOS system; run the decoy's own system under the overlay.
     pub overlay_only: bool,
     /// Proceed although the decoy keeps a persistent posture.
-    pub accept_persistent_decoy: bool,
+    pub allow_persistent_decoy: bool,
     /// Proceed on storage the decoy uses, accepting the risk.
     pub allow_decoy_storage: bool,
 }
@@ -44,9 +42,8 @@ impl ActivateOptions {
     /// copied into `/run` and run by the transition and the runtime units).
     pub fn enter_options(&self) -> EnterOptions {
         EnterOptions {
-            skip_preflight: self.no_preflight,
             overlay_only: self.overlay_only,
-            accept_persistent_decoy: self.accept_persistent_decoy,
+            allow_persistent_decoy: self.allow_persistent_decoy,
             binary: std::env::current_exe().unwrap_or_default(),
             allow_decoy_storage: self.allow_decoy_storage,
         }
@@ -214,8 +211,8 @@ pub fn prepare(
     // The platform gate: a host NAILS refuses is declined here, before the state
     // lock, the residue baseline or any staged configuration touches the hidden
     // volume, so a refused host leaves nothing behind and the command exits 8.
-    // --no-preflight does not skip it, and `check` (activate --dry-run) reports
-    // the same verdict through the platform row, so the two never disagree.
+    // `check` (activate --dry-run) reports the same verdict through the platform
+    // row, so the two never disagree.
     if let Some(profile) = manager.host_profile()
         && let Err(error) = profile.require_supported()
     {
@@ -224,7 +221,6 @@ pub fn prepare(
 
     // The attach gate decides before anything is written: the state lock, the
     // residue baseline and the staged configuration all land on the root.
-    // --no-preflight does not skip it.
     let enter_options = options.enter_options();
     let (accepted, warning) = match crate::HiddenRoot::assess_allowing(
         manager.filesystem(),
@@ -292,19 +288,17 @@ mod tests {
     #[test]
     fn enter_options_carries_every_activate_flag_through() {
         // Each CLI flag must map to its entry option; the stubbed
-        // `Default::default()` would drop all four to false.
+        // `Default::default()` would drop all three to false.
         let options = ActivateOptions {
-            no_preflight: true,
             overlay_only: true,
-            accept_persistent_decoy: true,
+            allow_persistent_decoy: true,
             allow_decoy_storage: true,
         };
         let entry = options.enter_options();
-        assert!(entry.skip_preflight, "no_preflight -> skip_preflight");
         assert!(entry.overlay_only, "overlay_only -> overlay_only");
         assert!(
-            entry.accept_persistent_decoy,
-            "accept_persistent_decoy -> accept_persistent_decoy"
+            entry.allow_persistent_decoy,
+            "allow_persistent_decoy -> allow_persistent_decoy"
         );
         assert!(
             entry.allow_decoy_storage,
@@ -318,9 +312,8 @@ mod tests {
         // false, so a `Default::default()` stub cannot masquerade as the real
         // mapping by matching only the all-false case.
         let entry = ActivateOptions::default().enter_options();
-        assert!(!entry.skip_preflight);
         assert!(!entry.overlay_only);
-        assert!(!entry.accept_persistent_decoy);
+        assert!(!entry.allow_persistent_decoy);
         assert!(!entry.allow_decoy_storage);
     }
 
