@@ -35,7 +35,7 @@ pub mod verdict;
 mod tests;
 
 #[cfg(test)]
-mod verdict_proptest;
+mod verdict_prop_tests;
 
 pub use catalog::{Catalog, CatalogRow};
 pub use model::{
