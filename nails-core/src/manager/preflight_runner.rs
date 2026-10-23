@@ -196,7 +196,8 @@ pub fn build_registry<F: Filesystem>(
     // The hidden filesystem must host the root overlay's upper.
     registry.add_check(Box::new(UpperFsCapabilityCheck::new(hidden_root.clone())));
 
-    // Warns, never fails: deniability hazards of the detected backend.
+    // Refuses discards reaching the hidden volume (fail-closed); the other
+    // deniability hazards of the detected backend only warn.
     registry.add_check(Box::new(BackendDetectCheck::new(hidden_root.clone())));
 
     // Check-time advice, keyed on the installed cryptsetup version: it cannot
@@ -490,6 +491,40 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn run_backend_entries_check(&self) -> Result<()> {
         use crate::preflight::{CheckResult, PreFlightCheck};
         let check = crate::preflight::checks::BackendEntriesCheck::new(
+            self.config.hidden_volume_root.clone(),
+        );
+        let name = PreFlightCheck::<F>::name(&check).to_string();
+        match check.run(&self.filesystem)? {
+            CheckResult::Fail {
+                message,
+                remediation,
+            } => {
+                tracing::debug!(check = %name, result = "fail", msg = %message, "Preflight check failed");
+                Err(NailsError::PreFlightCheckFailed(vec![(
+                    name,
+                    message,
+                    remediation,
+                )]))
+            }
+            CheckResult::Warn(message) => {
+                tracing::warn!("{name}: {message}");
+                Ok(())
+            }
+            CheckResult::Pass(_) | CheckResult::Skipped(_) => Ok(()),
+        }
+    }
+
+    /// Run `backend-detect`'s discard refusal alone, as activation does under
+    /// `--no-preflight`: discards forwarded to the physical device over the
+    /// hidden volume refuse activation closed, whatever the flags say, because
+    /// TRIM leaves a readable map of used and free blocks where a deniable
+    /// volume must look like uniform random data. The backend's other,
+    /// advisory hazards only warn, exactly as a full pre-flight run reports
+    /// them. Built with discards failing closed, as `build_registry` builds
+    /// it; there is no per-run override to thread, as nails exposes none.
+    pub fn run_backend_detect_check(&self) -> Result<()> {
+        use crate::preflight::{CheckResult, PreFlightCheck};
+        let check = crate::preflight::checks::BackendDetectCheck::new(
             self.config.hidden_volume_root.clone(),
         );
         let name = PreFlightCheck::<F>::name(&check).to_string();
