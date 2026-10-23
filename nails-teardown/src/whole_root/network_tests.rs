@@ -283,8 +283,8 @@ fn restore_without_a_record_changes_nothing() {
     let (_host_dir, host) = hostname_file("live-host");
     let sys = sys_with(&[("wg0", 9, "de:ad:be:ef:00:01", false)]);
     // No record at all, and an unparsable one: both leave the world untouched.
-    restore(run.path(), sys.path(), &host, None);
-    restore(run.path(), sys.path(), &host, Some(b"not a record"));
+    assert!(restore(run.path(), sys.path(), &host, None).is_empty());
+    assert!(restore(run.path(), sys.path(), &host, Some(b"not a record")).is_empty());
     assert_eq!(snapshot_run(run.path()), before);
     assert_eq!(read_hostname(&host), b"live-host");
     assert!(observe_links(sys.path()).iter().any(|l| l.name == "wg0"));
@@ -306,8 +306,9 @@ fn restore_puts_the_hostname_and_runtime_state_back_without_touching_links() {
     // The session changed the hostname and a device file.
     fs::write(r.join("NetworkManager/devices/2"), "hidden\n").unwrap();
 
-    restore(r, sys.path(), &host, Some(&record.encode()));
+    let kept = restore(r, sys.path(), &host, Some(&record.encode()));
 
+    assert!(kept.is_empty(), "no address to set back: {kept:?}");
     assert_eq!(read_hostname(&host), b"decoy-host", "the hostname is back");
     assert_eq!(
         fs::read_to_string(r.join("NetworkManager/devices/2")).unwrap(),
@@ -440,5 +441,202 @@ fn a_restored_file_gets_its_parent_directory_created() {
         fs::read(r.join("NetworkManager/devices/2")).unwrap(),
         b"[device]\n",
         "the file is written, its parent having been created first"
+    );
+}
+
+/// The decoy device's address, as entry recorded it.
+const DECOY_MAC: &str = "aa:bb:cc:dd:ee:ff";
+/// The random address the hidden session gave it.
+const SESSION_MAC: &str = "de:ad:be:ef:ca:fe";
+
+/// Set a fake link up (`IFF_UP` and the broadcast and multicast flags of an
+/// Ethernet device, as the kernel prints them) or down.
+fn set_up(sys: &Path, name: &str, up: bool) {
+    let flags = if up { "0x1003\n" } else { "0x1002\n" };
+    fs::write(sys.join(name).join("flags"), flags).unwrap();
+}
+
+fn flags(sys: &Path, name: &str) -> String {
+    read_trimmed(&sys.join(name).join("flags")).unwrap()
+}
+
+fn address(sys: &Path, name: &str) -> String {
+    read_trimmed(&sys.join(name).join("address")).unwrap()
+}
+
+/// A plan that sets each `(name, mac)` back.
+fn set_back(macs: &[(&str, &str)]) -> RestorePlan {
+    RestorePlan {
+        delete: Vec::new(),
+        set_mac: macs
+            .iter()
+            .map(|(name, mac)| (name.to_string(), mac.to_string()))
+            .collect(),
+        hostname: None,
+    }
+}
+
+/// A fake `ip` in `dir` that changes the fake `/sys/class/net` tree `sys` as
+/// the kernel would (`link set dev NAME up`, `down` or `address MAC`) and logs
+/// each call. A link in `busy_while_up` refuses an address change while it is
+/// up, as a driver without live address change does (`EBUSY`); a link in
+/// `refusing` refuses it always. A link that is not there fails every call.
+fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let tool = dir.join("ip");
+    fs::write(
+        &tool,
+        format!(
+            "#!/bin/sh\n\
+             echo \"$*\" >> '{calls}'\n\
+             [ \"$1 $2 $3\" = 'link set dev' ] || exit 1\n\
+             link='{sys}'/\"$4\"\n\
+             read -r flags < \"$link/flags\" || exit 1\n\
+             case \"$5\" in\n\
+             up) echo 0x1003 > \"$link/flags\" ;;\n\
+             down) echo 0x1002 > \"$link/flags\" ;;\n\
+             address)\n\
+             case ' {refusing} ' in *\" $4 \"*) exit 2 ;; esac\n\
+             case ' {busy} ' in *\" $4 \"*) [ \"$flags\" = 0x1003 ] && exit 2 ;; esac\n\
+             echo \"$6\" > \"$link/address\" ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            calls = dir.join("calls").display(),
+            sys = sys.display(),
+            refusing = refusing.join(" "),
+            busy = busy_while_up.join(" "),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    tool
+}
+
+/// The calls the fake `ip` in `dir` logged, in order.
+fn ip_calls(dir: &Path) -> Vec<String> {
+    fs::read_to_string(dir.join("calls"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn an_address_the_driver_changes_live_is_set_without_taking_the_link_down() {
+    let sys = sys_with(&[("eth0", 2, SESSION_MAC, true)]);
+    set_up(sys.path(), "eth0", true);
+    let dir = tempfile::tempdir().unwrap();
+    let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
+
+    let kept = apply_links_with(Some(&ip), &set_back(&[("eth0", DECOY_MAC)]), sys.path());
+
+    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
+    assert_eq!(
+        ip_calls(dir.path()),
+        [format!("link set dev eth0 address {DECOY_MAC}")],
+        "one live change, no down and up"
+    );
+    assert_eq!(flags(sys.path(), "eth0"), "0x1003");
+}
+
+#[test]
+fn a_driver_that_refuses_a_live_change_gets_the_address_with_the_link_down_and_up_again() {
+    let sys = sys_with(&[("eth0", 2, SESSION_MAC, true)]);
+    set_up(sys.path(), "eth0", true);
+    let dir = tempfile::tempdir().unwrap();
+    // A USB Ethernet adapter whose driver refuses to change a running device.
+    let ip = fake_ip(dir.path(), sys.path(), &["eth0"], &[]);
+
+    let kept = apply_links_with(Some(&ip), &set_back(&[("eth0", DECOY_MAC)]), sys.path());
+
+    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
+    let set = format!("link set dev eth0 address {DECOY_MAC}");
+    assert_eq!(
+        ip_calls(dir.path()),
+        [
+            set.as_str(),
+            "link set dev eth0 down",
+            set.as_str(),
+            "link set dev eth0 up"
+        ]
+    );
+    assert_eq!(flags(sys.path(), "eth0"), "0x1003", "up again, as it was");
+}
+
+#[test]
+fn a_link_that_was_down_stays_down() {
+    let sys = sys_with(&[
+        ("eth0", 2, SESSION_MAC, true),
+        ("wlan0", 3, "de:ad:be:ef:ca:fd", true),
+    ]);
+    set_up(sys.path(), "eth0", false);
+    set_up(sys.path(), "wlan0", false);
+    let dir = tempfile::tempdir().unwrap();
+    // eth0's driver refuses a change only while the link runs, so on the down
+    // link it takes at once; wlan0's refuses it always.
+    let ip = fake_ip(dir.path(), sys.path(), &["eth0"], &["wlan0"]);
+    let plan = set_back(&[("eth0", DECOY_MAC), ("wlan0", "11:22:33:44:55:66")]);
+
+    let kept = apply_links_with(Some(&ip), &plan, sys.path());
+
+    assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
+    assert_eq!(kept, ["wlan0"]);
+    assert_eq!(
+        ip_calls(dir.path()),
+        [
+            format!("link set dev eth0 address {DECOY_MAC}"),
+            "link set dev wlan0 address 11:22:33:44:55:66".to_string(),
+        ],
+        "one change each, and neither link is brought up"
+    );
+    assert_eq!(flags(sys.path(), "eth0"), "0x1002");
+    assert_eq!(flags(sys.path(), "wlan0"), "0x1002");
+}
+
+#[test]
+fn an_address_that_still_does_not_take_is_reported() {
+    let sys = sys_with(&[("eth0", 2, SESSION_MAC, true)]);
+    set_up(sys.path(), "eth0", true);
+    let dir = tempfile::tempdir().unwrap();
+    // A driver that refuses the change even with the link down.
+    let ip = fake_ip(dir.path(), sys.path(), &[], &["eth0"]);
+    let plan = set_back(&[("eth0", DECOY_MAC)]);
+
+    let kept = apply_links_with(Some(&ip), &plan, sys.path());
+
+    assert_eq!(kept, ["eth0"], "the session's address stayed");
+    assert_eq!(address(sys.path(), "eth0"), SESSION_MAC);
+    let set = format!("link set dev eth0 address {DECOY_MAC}");
+    assert_eq!(
+        ip_calls(dir.path()),
+        [
+            set.as_str(),
+            "link set dev eth0 down",
+            set.as_str(),
+            "link set dev eth0 up"
+        ]
+    );
+    assert_eq!(flags(sys.path(), "eth0"), "0x1003", "up again, as it was");
+
+    // Without `ip` nothing changes, and the device is reported all the same.
+    assert_eq!(apply_links_with(None, &plan, sys.path()), ["eth0"]);
+}
+
+#[test]
+fn a_device_that_is_gone_has_no_address_left_to_report() {
+    // An adapter pulled after the links were read: its address went with it.
+    let sys = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
+
+    let kept = apply_links_with(Some(&ip), &set_back(&[("eth1", DECOY_MAC)]), sys.path());
+
+    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(
+        ip_calls(dir.path()),
+        [format!("link set dev eth1 address {DECOY_MAC}")],
+        "no down and up for a link that is not there"
     );
 }
