@@ -103,8 +103,8 @@ pub fn execute_command(
         // Likewise the read-only guard, which udev runs as root.
         Commands::GuardDevice { .. } => ExitStatus::Ok,
         // Likewise the boot-record reconcile step, which its one-shot unit runs
-        // as root on the decoy's first start.
-        Commands::ReconcileRecords => ExitStatus::Ok,
+        // as root on the decoy's first start, and the wtmpdb writer's start.
+        Commands::ReconcileRecords { .. } | Commands::BootWriter { .. } => ExitStatus::Ok,
     }
 }
 

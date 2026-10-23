@@ -207,7 +207,28 @@ pub enum Commands {
     },
     /// Reconcile the decoy's login and boot records after the way back (run by systemd, not by hand)
     #[command(name = "reconcile-records", hide = true)]
-    ReconcileRecords,
+    ReconcileRecords {
+        /// What the one-shot unit passes.
+        #[arg(
+            num_args = 0..,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(OsString)
+        )]
+        args: Vec<OsString>,
+    },
+    /// Start the decoy's wtmpdb boot writer after the way back (run by systemd, not by hand)
+    #[command(name = "boot-writer", hide = true)]
+    BootWriter {
+        /// What the writer's drop-in passes.
+        #[arg(
+            num_args = 0..,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(OsString)
+        )]
+        args: Vec<OsString>,
+    },
 }
 
 /// `nails activate` arguments
@@ -741,6 +762,7 @@ mod tests {
             "transition",
             "guard-device",
             "reconcile-records",
+            "boot-writer",
         ] {
             let sub = command
                 .get_subcommands()

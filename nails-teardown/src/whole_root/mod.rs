@@ -16,6 +16,8 @@
 //!   the service manager's per-link runtime state), put back on the way back;
 //! - [`boot_records`]: making the decoy's login and boot records read as one
 //!   clean power cycle after the way back;
+//! - [`boot_writer`]: starting the decoy's wtmpdb boot writer so it records
+//!   the way back as a power cycle would;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
@@ -32,6 +34,7 @@
 //! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls.
 
 pub mod boot_records;
+pub mod boot_writer;
 pub mod carry;
 pub mod decoy_mounts;
 pub mod disk_guard;
