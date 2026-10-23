@@ -1,0 +1,23 @@
+{
+  "version": "0.3.0-rc.3",
+  "state": {
+    "Active": {
+      "activated_at": "2026-10-23T18:37:29.758778462Z"
+    }
+  },
+  "platform": {
+    "platform": "nix_os",
+    "generation": "/nix/store/00000000000000000000000000000000-nixos-system-hidden-26.05"
+  },
+  "config_fingerprint": null,
+  "decoy_system": "/nix/store/11111111111111111111111111111111-nixos-system-decoy-26.05",
+  "last_activation": {
+    "duration_ms": 41873,
+    "finished_at": "2026-10-23T18:37:29.758778462Z"
+  },
+  "last_modified": "2026-10-23T18:37:29.758778713Z",
+  "boot_id": "51f13232-2ba1-496d-a8da-46cdb3a1ba78",
+  "owner_pid": 30546,
+  "owner_start_time": 129027,
+  "integrity_sha256": "7fcc7b5b7032fab9954cc5e8e9b925058b11b79d38209ab771fd712557cb56db"
+}
