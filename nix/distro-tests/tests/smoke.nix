@@ -560,23 +560,24 @@ distroVm.buildVmTest {
         # NAILS pins index=off,metacopy=off,redirect_dir=nofollow on every
         # overlay it mounts, so an overlay can never diverge from a plain
         # copy-up. The kernel echoes a feature option only when it differs from
-        # its own compiled default, so the portable, distribution-independent
-        # check is that none of the dangerous "on" states appears on any
-        # overlay, read back from the live mount table with findmnt. The
-        # kernel-tier twin is live_overlay_pins_the_feature_options_off.
-        overlays = distro_checks.parse_findmnt_pairs(
-            vm.succeed("findmnt -rn -t overlay -o TARGET,OPTIONS")
+        # its own compiled default, and no kernel of the image table defaults
+        # redirect_dir to nofollow (Debian's and Ubuntu's default to follow,
+        # Arch's to on): every overlay NAILS mounted, told apart by its upper
+        # on the hidden volume, must show redirect_dir=nofollow, and none may
+        # show a dangerous state (distro_checks.overlay_option_violations).
+        # The kernel-tier twin is live_overlay_pins_the_feature_options_off.
+        overlays = distro_checks.nails_overlays(
+            distro_checks.parse_findmnt_pairs(
+                vm.succeed("findmnt -rn -t overlay -o TARGET,OPTIONS")
+            ),
+            "/mnt/data",
         )
-        assert overlays, "no overlay is mounted in the hidden root"
+        # The root overlay was found and its options read back (not an empty
+        # field), so the check below tests real option strings.
+        assert "/" in dict(overlays), f"the root overlay is not NAILS's: {overlays}"
         violations = distro_checks.overlay_targets_with_violations(overlays)
         assert not violations, (
-            f"overlays with unpinned feature options: {violations}"
-        )
-        # The root overlay's options were actually read back (not an empty
-        # field), so the check above tested a real option string.
-        root_options = dict(overlays).get("/")
-        assert root_options and "upperdir" in root_options, (
-            f"the root overlay's options were not read back: {root_options}"
+            f"overlays without the feature-option pins: {violations}"
         )
         print(f"overlay feature options pinned on: {[t for t, _ in overlays]}")
 

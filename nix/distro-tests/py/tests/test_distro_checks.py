@@ -142,18 +142,40 @@ class OverlayOptionsTest(unittest.TestCase):
         opts = "rw,lowerdir=/x,upperdir=/u,index=off,metacopy=off,redirect_dir=nofollow"
         self.assertEqual(dc.overlay_option_violations(opts), [])
 
-    def test_kernel_that_echoes_nothing_is_clean(self) -> None:
-        # A kernel whose compiled defaults already match the pins echoes none of
-        # the feature options; the absence of the "on" states is what matters.
+    def test_the_pin_alone_is_clean_where_index_and_metacopy_default_off(
+        self,
+    ) -> None:
+        # Debian's and Ubuntu's kernels default index and metacopy to off, so
+        # only the redirect pin is echoed.
+        opts = "rw,lowerdir=/x,upperdir=/u,redirect_dir=nofollow"
+        self.assertEqual(dc.overlay_option_violations(opts), [])
+
+    def test_an_overlay_mounted_without_the_pins_is_caught(self) -> None:
+        # Without the pins a kernel echoes no feature option at all: its own
+        # defaults (follow on Debian and Ubuntu, on for Arch) are in force, and
+        # only the missing redirect pin shows it.
         self.assertEqual(
-            dc.overlay_option_violations("rw,lowerdir=/x,upperdir=/u"), []
+            dc.overlay_option_violations("rw,lowerdir=/x,upperdir=/u,uuid=on"),
+            ["missing redirect_dir=nofollow"],
         )
 
     def test_each_forbidden_on_state_is_reported(self) -> None:
         opts = "rw,index=on,metacopy=on,redirect_dir=follow"
         self.assertEqual(
             dc.overlay_option_violations(opts),
-            ["index=on", "metacopy=on", "redirect_dir=follow"],
+            [
+                "index=on",
+                "metacopy=on",
+                "redirect_dir=follow",
+                "missing redirect_dir=nofollow",
+            ],
+        )
+
+    def test_redirect_dir_on_is_forbidden(self) -> None:
+        # Echoed on Debian and Ubuntu, whose default is follow.
+        self.assertEqual(
+            dc.overlay_option_violations("rw,upperdir=/u,redirect_dir=on"),
+            ["redirect_dir=on", "missing redirect_dir=nofollow"],
         )
 
     def test_substring_of_an_option_does_not_false_match(self) -> None:
@@ -165,11 +187,49 @@ class OverlayOptionsTest(unittest.TestCase):
     def test_targets_with_violations_maps_only_the_bad_overlays(self) -> None:
         pairs = [
             ("/", "rw,upperdir=/u,redirect_dir=nofollow"),
-            ("/home", "rw,upperdir=/h,index=on"),
+            ("/home", "rw,upperdir=/h,index=on,redirect_dir=nofollow"),
         ]
         self.assertEqual(
             dc.overlay_targets_with_violations(pairs), {"/home": ["index=on"]}
         )
+
+
+class NailsOverlaysTest(unittest.TestCase):
+    ROOT = (
+        "rw,lowerdir=/run/x,upperdir=/mnt/data/root/upper,"
+        "workdir=/mnt/data/root/work"
+    )
+    HOME = (
+        "rw,lowerdir=/run/h,upperdir=/mnt/data/root/mounts/home/upper,"
+        "workdir=/mnt/data/root/mounts/home/work"
+    )
+
+    def test_the_root_and_per_mount_overlays_are_nails(self) -> None:
+        pairs = [
+            ("/", self.ROOT),
+            ("/home", self.HOME),
+            # An overlay of the image's own, such as a store mounted by the
+            # test harness: not NAILS's to pin.
+            ("/nix/store", "ro,lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/s"),
+            ("/srv/ro", "ro,lowerdir=/a:/b"),
+        ]
+        self.assertEqual(
+            dc.nails_overlays(pairs, "/mnt/data/"),
+            [("/", self.ROOT), ("/home", self.HOME)],
+        )
+
+    def test_an_upper_beside_the_layer_directories_is_not_nails(self) -> None:
+        # Only the layer directories count, not anything that shares a prefix.
+        pairs = [
+            ("/a", "rw,upperdir=/mnt/data/root/upper2"),
+            ("/b", "rw,upperdir=/mnt/data/root/mountsx/u"),
+            ("/c", "rw,upperdir=/mnt/database/root/upper"),
+        ]
+        self.assertEqual(dc.nails_overlays(pairs, "/mnt/data"), [])
+
+    def test_upperdir_reads_the_option(self) -> None:
+        self.assertEqual(dc.upperdir(self.ROOT), "/mnt/data/root/upper")
+        self.assertIsNone(dc.upperdir("ro,lowerdir=/a:/b"))
 
 
 if __name__ == "__main__":

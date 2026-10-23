@@ -38,16 +38,30 @@ BOOT_FILESYSTEMS = ("/boot", "/boot/efi", "/efi")
 
 # Overlay feature options whose "on" form would let the overlay diverge from a
 # plain copy-up (an index that survives into the upper, a metadata-only copy
-# that leaves data in the lower, a redirect followed back into the lower after a
-# rename). NAILS pins all three off on every overlay it mounts
-# (``nails_teardown::whole_root::nextroot::OVERLAY_FEATURE_OPTIONS``). The kernel
-# only echoes a feature option when it differs from its own compiled default, so
-# which of the pinned "off" states show up in the mount table depends on the
-# kernel (Arch's turns them on, so there the "off" states are echoed). The one
-# distribution-independent assertion is therefore the negative one: none of the
-# dangerous "on" states may ever appear. This mirrors the kernel-tier twin in
-# ``nails-core/tests/kernel_semantics.rs``.
-FORBIDDEN_OVERLAY_OPTIONS = ("index=on", "metacopy=on", "redirect_dir=follow")
+# that leaves data in the lower, a redirect created on a rename or followed back
+# into the lower). NAILS pins all three off on every overlay it mounts
+# (``nails_teardown::whole_root::nextroot::OVERLAY_FEATURE_OPTIONS``:
+# ``index=off,metacopy=off,redirect_dir=nofollow``). None of the dangerous
+# states may ever appear in the mount table.
+FORBIDDEN_OVERLAY_OPTIONS = (
+    "index=on",
+    "metacopy=on",
+    "redirect_dir=on",
+    "redirect_dir=follow",
+)
+
+# The kernel echoes a feature option only when it differs from its own
+# compiled default, so the absence of the "on" states proves nothing on a
+# kernel whose defaults are those states: an overlay mounted without the pins
+# echoes nothing there. ``redirect_dir`` defaults to ``nofollow`` only on a
+# kernel built without ``CONFIG_OVERLAY_FS_REDIRECT_ALWAYS_FOLLOW``, which the
+# upstream default and the kernels of the image table keep: Debian's and
+# Ubuntu's default to ``follow``, Arch's to ``on``. So every overlay NAILS
+# mounts must echo the pin, and one that does not was mounted without the pins.
+# ``index`` and ``metacopy`` default to their pinned "off" on Debian and
+# Ubuntu, where nothing is echoed either way. This mirrors the kernel-tier twin
+# in ``nails-core/tests/kernel_semantics.rs``, which asserts the same pin.
+REQUIRED_OVERLAY_OPTIONS = ("redirect_dir=nofollow",)
 
 
 def escape_path(path: str) -> str:
@@ -181,15 +195,51 @@ def boot_mounts(mounts: Iterable[str]) -> list[str]:
 
 
 def overlay_option_violations(options: str) -> list[str]:
-    """Which forbidden overlay feature "on" states appear in an options string.
+    """How an overlay's options break the feature-option pins.
 
     ``options`` is a comma-separated mount-option list as ``findmnt`` prints it.
-    The result is the members of :data:`FORBIDDEN_OVERLAY_OPTIONS` present,
-    in declaration order; an empty result means the overlay pins the feature
-    options as NAILS requires, on whatever kernel the distribution ships.
+    The result lists the members of :data:`FORBIDDEN_OVERLAY_OPTIONS` present,
+    in declaration order, then ``missing <pin>`` for each member of
+    :data:`REQUIRED_OVERLAY_OPTIONS` absent; an empty result means the overlay
+    pins the feature options as NAILS requires.
     """
     tokens = {token.strip() for token in options.split(",") if token.strip()}
-    return [forbidden for forbidden in FORBIDDEN_OVERLAY_OPTIONS if forbidden in tokens]
+    found = [option for option in FORBIDDEN_OVERLAY_OPTIONS if option in tokens]
+    for option in REQUIRED_OVERLAY_OPTIONS:
+        if option not in tokens:
+            found.append(f"missing {option}")
+    return found
+
+
+def upperdir(options: str) -> str | None:
+    """The ``upperdir=`` of an overlay's options, or None for a read-only one."""
+    for token in options.split(","):
+        key, _, value = token.strip().partition("=")
+        if key == "upperdir":
+            return value
+    return None
+
+
+def nails_overlays(
+    pairs: Sequence[tuple[str, str]], hidden_root: str
+) -> list[tuple[str, str]]:
+    """The overlays NAILS mounted, from parsed ``findmnt`` ``(target, options)``.
+
+    They are the ones whose upper is a layer directory on the hidden volume
+    (``hidden_root``): its :data:`ROOT_LAYER` for the root overlay, a directory
+    below its :data:`MOUNT_LAYERS` for a decoy filesystem overlaid on its own.
+    Any other overlay (one the image itself mounts) is not NAILS's to pin and
+    is left out.
+    """
+    hidden_root = hidden_root.rstrip("/")
+    root_upper = f"{hidden_root}/{ROOT_LAYER}"
+    mount_layers = f"{hidden_root}/{MOUNT_LAYERS}/"
+    picked: list[tuple[str, str]] = []
+    for target, options in pairs:
+        upper = upperdir(options) or ""
+        if upper == root_upper or upper.startswith(mount_layers):
+            picked.append((target, options))
+    return picked
 
 
 def overlay_targets_with_violations(
@@ -197,9 +247,10 @@ def overlay_targets_with_violations(
 ) -> dict[str, list[str]]:
     """Map each overlay mount that violates the option pins to its violations.
 
-    ``pairs`` is the parsed ``findmnt -rn -t overlay -o TARGET,OPTIONS`` output.
-    An overlay with no violation is omitted, so an empty mapping means every
-    overlay in the hidden root pins the feature options correctly.
+    ``pairs`` is parsed ``findmnt -rn -t overlay -o TARGET,OPTIONS`` output,
+    narrowed to NAILS's overlays (:func:`nails_overlays`). An overlay with no
+    violation is omitted, so an empty mapping means every one of them pins the
+    feature options correctly.
     """
     violations: dict[str, list[str]] = {}
     for target, options in pairs:
