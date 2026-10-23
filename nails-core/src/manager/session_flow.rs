@@ -308,8 +308,10 @@ impl<F: Filesystem> NailsManager<F> {
         let elapsed = started.elapsed();
         // The last boundary: once recorded, the caller only enqueues the
         // soft-reboot.
-        let recorded =
-            crate::cancel::checkpoint().and_then(|()| self.record_entry(&prepared, elapsed));
+        let recorded = crate::cancel::checkpoint().and_then(|()| {
+            self.forget_refused_switch(&machine.paths);
+            self.record_entry(&prepared, elapsed)
+        });
         if let Err(e) = recorded {
             entry::rollback(&machine.paths);
             let _ = host.daemon_reload();
@@ -321,14 +323,20 @@ impl<F: Filesystem> NailsManager<F> {
         })
     }
 
+    /// Forget why the last switch was refused, wherever it was kept (the hidden
+    /// volume, the runtime directory under `paths`): the switch being armed
+    /// supersedes it, so a stale reason never outlives the switch it described.
+    fn forget_refused_switch(&self, paths: &Paths) {
+        use nails_teardown::whole_root::switch_refusal;
+        switch_refusal::clear(&self.config.hidden_volume_root);
+        switch_refusal::clear(&paths.runtime());
+    }
+
     fn record_entry(
         &mut self,
         prepared: &entry::Entry,
         elapsed: std::time::Duration,
     ) -> Result<()> {
-        // A new activation supersedes the last switch's refusal, if any, so a
-        // stale reason never outlives the switch it described.
-        nails_teardown::whole_root::switch_refusal::clear(&self.config.hidden_volume_root);
         let now = Utc::now();
         // The FHS family of the detected host; the state file keeps only Fedora
         // and Arch (see `StateFile::mark_fhs_family`), so a Debian-family host
@@ -424,7 +432,7 @@ impl<F: Filesystem> NailsManager<F> {
             }
         };
         // Leaving is a new switch: supersede the last one's refusal, if any.
-        nails_teardown::whole_root::switch_refusal::clear(&self.config.hidden_volume_root);
+        self.forget_refused_switch(&machine.paths);
         self.force_state(SystemState::Inactive)?;
         rustix::fs::sync();
         crate::session::leave(&machine.paths, &mut plan, to, host)

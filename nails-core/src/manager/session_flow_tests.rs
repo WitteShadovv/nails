@@ -368,6 +368,44 @@ fn powering_off_from_the_hidden_root_records_inactive_first() {
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
 
+/// Keep a refused switch's record in `dir`, as the transition does.
+fn refused_in(dir: &Path) {
+    use nails_teardown::whole_root::switch_refusal::refusal_path;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        refusal_path(dir),
+        r#"{"reason":"failed init check","at":1}"#,
+    )
+    .unwrap();
+}
+
+/// Whether a refused switch's record is left in `dir`.
+fn refusal_left(dir: &Path) -> bool {
+    nails_teardown::whole_root::switch_refusal::refusal_path(dir).exists()
+}
+
+#[test]
+fn leaving_forgets_the_last_refused_switch() {
+    // A way back refused before kept its reason in the runtime directory; the
+    // new one supersedes it, wherever a reason was kept.
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    refused_in(&machine.paths.runtime());
+    refused_in(&hidden);
+    let mut m = manager(&hidden);
+
+    m.leave_session_on(&machine, LeaveTo::Poweroff, &FakeTarget::default())
+        .unwrap();
+
+    assert!(!refusal_left(&machine.paths.runtime()));
+    assert!(!refusal_left(&hidden));
+}
+
 // ---------------------------------------------------------------------------
 // trigger
 // ---------------------------------------------------------------------------
@@ -838,6 +876,10 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
             ..EnterOptions::default()
         };
         let host = FakeEntryHost::default();
+        // The last switch was refused, its reason kept on the hidden volume and
+        // (a way back) in the runtime directory.
+        refused_in(hidden.path());
+        refused_in(&machine.paths.runtime());
 
         let mut outcome = None;
         let finishes = activation_finishes(|| {
@@ -852,6 +894,9 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         };
         // Prepared is not the end: the soft-reboot is still to be enqueued.
         assert!(finishes.is_empty(), "{finishes:?}");
+        // The new switch supersedes the refused one.
+        assert!(!refusal_left(hidden.path()));
+        assert!(!refusal_left(&machine.paths.runtime()));
         // The plan is armed for the entry, read from the given mount table,
         // and written where the soft-reboot will find it.
         assert_eq!(entry.plan.decoy_root.source, Path::new("/dev/vda2"));

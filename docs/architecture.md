@@ -269,6 +269,13 @@ An activation moves through these layers; each names its modules and crates:
   restores is not given back. The transition writes `utab` as libmount does,
   through a new file renamed over the old one, under libmount's lock where its
   lock file exists. An unarmed populated `/run/nextroot` is detached instead.
+  A switch it refuses (the init check fails, or the masks cannot be written)
+  keeps its reason for `status` (`whole_root::switch_refusal`). It runs after
+  `umount.target`, when the volume's own mount is gone: a refused entry's
+  reason goes onto the hidden volume through the volume's bind in the next
+  root, and only while that bind is on the volume's recorded device; a refused
+  way back's goes into the runtime directory in RAM, which every way back
+  removes.
 - **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, make the decoy's other mounts again below it

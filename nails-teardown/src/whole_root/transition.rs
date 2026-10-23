@@ -39,10 +39,11 @@
 //!
 //! It never writes to the decoy disk and never logs: its output goes nowhere,
 //! and a name sent to `/dev/kmsg` would reach the decoy's ring buffer. The one
-//! thing it does keep is the reason a switch was refused
-//! ([`disarm`]), written to the encrypted hidden volume beside the state file —
-//! never to the decoy — and only while that volume is still mounted on its
-//! recorded device (see [`switch_refusal`]).
+//! thing it does keep is the reason a switch was refused ([`disarm`]), never on
+//! the decoy (see [`switch_refusal`]): a refused entry's on the encrypted hidden
+//! volume beside the state file, written through the volume's bind in the next
+//! root while that bind is on the volume's recorded device; a refused way
+//! back's in the runtime directory in RAM, which every way back removes.
 
 use crate::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo};
 use crate::whole_root::disk_guard;
@@ -322,11 +323,18 @@ pub fn run(env: &Env) -> Outcome {
 /// deferred removal, so nothing of the failed activation is left, its key
 /// included; in the hidden session the plan stays for a later deactivation.
 fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
-    // Keep why the switch was refused on the hidden volume, before detaching
-    // anything, so `status` can say so. A no-op unless a switch was armed and
-    // the hidden volume is still mounted on its recorded device, so a plain
-    // reboot that meets a leftover tree writes nothing to the decoy disk.
-    switch_refusal::record(&env.mounts, plan, why, env.now);
+    // Keep why the switch was refused, before detaching anything, so `status`
+    // can say so. The shutdown has unmounted the hidden volume at its own
+    // path: in the hidden session, which PID 1 does not leave, the reason goes
+    // to the runtime directory; on the decoy side to the hidden volume through
+    // its bind in the next root, only while that bind is on the recorded
+    // device. Both are no-ops unless a switch was armed, so a plain reboot that
+    // meets a leftover tree records nothing.
+    if plan.entered_at.is_some() {
+        switch_refusal::record_in_runtime(plan, &env.runtime_dir, why, env.now);
+    } else {
+        switch_refusal::record_on_volume(&env.mounts, plan, &env.nextroot, why, env.now);
+    }
     nextroot::detach_tree(&env.nextroot);
     if plan.entered_at.is_none() {
         // A reboot that met the leftover tree: the volume was unmounted by
