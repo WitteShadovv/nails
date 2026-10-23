@@ -1088,6 +1088,24 @@ rolls the entry back by itself.
 **Deactivation refuses or fails** in the hidden session. Use `nails emergency`.
 If the way back cannot be prepared, emergency powers off instead.
 
+**The switch is refused** (the soft-reboot comes back to the root it left).
+Right before PID 1 switches, NAILS checks the other root's init the way PID 1
+will (and, entering, masks the decoy units the hidden system must not start).
+When that fails it takes the prepared root down again, so PID 1 restarts the
+root it is on instead of freezing, and it keeps the reason, never on the decoy
+disk. The next `activate` or `deactivate` clears it.
+
+- Entering: you are back on the plain decoy, with the hidden volume unmounted
+  and its mapping closed. Open the volume again: `nails status` shows
+  `Last switch: refused at <time>` with the reason, which was kept on the
+  hidden volume (`switch_refused` in `status --json`). The record still says
+  active, so run `nails recover` once, fix the cause and activate again.
+- Leaving: the hidden session starts again, but its shutdown has unmounted the
+  hidden volume from its path, and the binary on it with it. The reason was
+  kept in RAM: `sudo /run/overlay-runtime/control status` shows it, and `sudo
+  /run/overlay-runtime/control emergency` takes the way back again or powers
+  off.
+
 **The hidden session hangs.** Switch to a text console (Ctrl+Alt+F2), log in and
 run `nails emergency`; if nothing responds, power off. A stuck user service can
 delay an orderly `deactivate` by up to `DefaultTimeoutStopSec` (90 s by

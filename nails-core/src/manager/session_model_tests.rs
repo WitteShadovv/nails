@@ -445,6 +445,7 @@ impl World {
         let manager = self.manager();
         let entries = self.machine.mounts().expect("the fixed mount table");
         StatusCommand::new(RealFilesystem, manager.config().clone(), self.state_path())
+            .with_paths(self.machine.paths.clone())
             .report(&self.view(), &entries, Utc::now())
             .expect("status builds a report")
     }

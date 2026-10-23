@@ -49,6 +49,14 @@ fn plan(root: &Path) -> Plan {
     }
 }
 
+/// The scratch `/` and `/run` a status command under `root` reads.
+fn paths(root: &Path) -> Paths {
+    Paths {
+        root: root.join("decoy"),
+        run: root.join("run"),
+    }
+}
+
 fn command(root: &Path) -> StatusCommand<RealFilesystem> {
     let config = Config {
         hidden_volume_root: root.to_path_buf(),
@@ -56,7 +64,17 @@ fn command(root: &Path) -> StatusCommand<RealFilesystem> {
         log_path: root.join("logs"),
         ..Config::test_default()
     };
-    StatusCommand::new(RealFilesystem, config, root.join("state.json"))
+    StatusCommand::new(RealFilesystem, config, root.join("state.json")).with_paths(paths(root))
+}
+
+/// Keep a refused switch's record in `dir`, as the transition does.
+fn refused_in(dir: &Path, reason: &str, at: u64) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        switch_refusal::refusal_path(dir),
+        serde_json::json!({ "reason": reason, "at": at }).to_string(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -235,6 +253,8 @@ fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
         "{remediation}"
     );
 
+    assert_eq!(report.switch_refusal, None);
+
     // An inactive record on the decoy needs no word.
     StateFile::default()
         .save_with_custom_root(&dir.path().join("state.json"), dir.path())
@@ -243,6 +263,85 @@ fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
         .report(&SessionView::Decoy, &[], Utc::now())
         .unwrap();
     assert_eq!((report.reason, report.remediation), (None, None));
+}
+
+#[test]
+fn an_entry_the_soft_reboot_refused_is_named_with_its_reason_and_time() {
+    // The entry recorded Active before the soft-reboot, the transition refused
+    // the switch and kept why on the hidden volume: the record is explained by
+    // the refusal, not by a power loss.
+    let dir = tempfile::tempdir().unwrap();
+    StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+        },
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&dir.path().join("state.json"), dir.path())
+    .unwrap();
+    refused_in(dir.path(), "the next root has no os-release", 1_700_000_000);
+
+    let report = command(dir.path())
+        .report(&SessionView::Decoy, &[], Utc::now())
+        .unwrap();
+
+    assert_eq!(report.posture, Posture::Decoy);
+    assert_eq!(
+        report.switch_refusal,
+        Some(RefusedSwitch {
+            reason: "the next root has no os-release".to_string(),
+            at: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+        })
+    );
+    let reason = report.reason.expect("the record is explained");
+    assert!(
+        reason.ends_with("the switch into it was refused"),
+        "{reason}"
+    );
+    assert!(!reason.contains("power loss"), "{reason}");
+    assert!(
+        report
+            .remediation
+            .is_some_and(|r| r.ends_with("recover` to reset the record")),
+        "the record still needs resetting"
+    );
+
+    // Once the record is reset the refusal is still reported, until a new
+    // switch clears it.
+    StateFile::default()
+        .save_with_custom_root(&dir.path().join("state.json"), dir.path())
+        .unwrap();
+    let report = command(dir.path())
+        .report(&SessionView::Decoy, &[], Utc::now())
+        .unwrap();
+    assert_eq!((report.reason, report.remediation), (None, None));
+    assert!(report.switch_refusal.is_some());
+}
+
+#[test]
+fn a_way_back_the_soft_reboot_refused_is_read_from_the_runtime_directory() {
+    // In the hidden session the volume is no longer mounted at its path: the
+    // transition kept the reason in the runtime directory instead.
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = command(dir.path());
+    refused_in(
+        &paths(dir.path()).runtime(),
+        "the decoy's init does not resolve",
+        1_700_000_060,
+    );
+    let view = SessionView::Hidden(Box::new(plan(dir.path())));
+
+    let report = cmd.report(&view, &[], Utc::now()).unwrap();
+
+    assert_eq!(report.posture, Posture::Active);
+    let refused = report.switch_refusal.expect("the refused way back");
+    assert_eq!(refused.reason, "the decoy's init does not resolve");
+    assert_eq!(refused.at.timestamp(), 1_700_000_060);
+    // Without the scratch tree, the system's runtime directory is read.
+    assert_eq!(
+        StatusCommand::new(RealFilesystem, Config::test_default(), dir.path().join("x")).paths,
+        Paths::system()
+    );
 }
 
 #[test]

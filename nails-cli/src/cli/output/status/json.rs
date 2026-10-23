@@ -25,7 +25,8 @@ pub struct StatusData<'a> {
     /// `interrupted`, `ended_abnormally`, `switch_refused`, `record_unreadable`,
     /// `no_way_back`, `volume_lost`, `volume_covered` or `almost_full`.
     attention: Option<&'static str>,
-    /// Why the place needs attention, when a reason is known.
+    /// Why the place needs attention, when a reason is known; for
+    /// `switch_refused`, the reason the switch gave.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
     /// What to do about it.
@@ -70,8 +71,21 @@ pub struct StatusData<'a> {
     /// How long the last successful activation took, and when it finished.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_activation: Option<&'a nails_core::LastActivation>,
+    /// Why and when the last session switch was refused, while a record of it
+    /// is kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    switch_refusal: Option<RefusalJson<'a>>,
     /// Uptime-based reminders.
     opsec_reminders: Vec<ReminderJson<'a>>,
+}
+
+/// A refused session switch.
+#[derive(Debug, Serialize)]
+struct RefusalJson<'a> {
+    /// The reason the soft-reboot gave for staying on the root it was on.
+    reason: &'a str,
+    /// When (ISO 8601).
+    at: String,
 }
 
 /// One OpSec reminder.
@@ -123,10 +137,19 @@ fn attention_of(report: &StatusReport) -> Option<&'static str> {
 }
 
 fn data(report: &StatusReport) -> StatusData<'_> {
+    let attention = attention_of(report);
+    let refused = report.switch_refusal.as_ref();
+    // A refused switch is reported with its own reason, not the posture's (an
+    // entry recorded before its refused switch reads as a session that ended
+    // without updating the record).
+    let reason = match refused {
+        Some(refused) if attention == Some("switch_refused") => Some(refused.reason.as_str()),
+        _ => report.reason.as_deref(),
+    };
     StatusData {
         place: place_of(report),
-        attention: attention_of(report),
-        reason: report.reason.as_deref(),
+        attention,
+        reason,
         remediation: report.remediation.as_deref(),
         entered_at: report.entered_at.map(|t| t.to_rfc3339()),
         uptime_seconds: report.uptime.map(|u| u.num_seconds()),
@@ -146,6 +169,10 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         decoy_persistent: report.decoy_persistent,
         persona_mode: report.persona_mode.as_str(),
         last_activation: report.last_activation.as_ref(),
+        switch_refusal: refused.map(|refused| RefusalJson {
+            reason: &refused.reason,
+            at: refused.at.to_rfc3339(),
+        }),
         opsec_reminders: report
             .opsec_reminders
             .iter()

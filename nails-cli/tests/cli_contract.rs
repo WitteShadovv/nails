@@ -515,6 +515,46 @@ fn status_json_active_matches_schema_and_snapshot() {
 }
 
 #[test]
+fn status_json_switch_refused_matches_schema_and_snapshot() {
+    // An entry the soft-reboot refused: recorded active before the switch, and
+    // the switch's reason kept on the hidden volume.
+    let why = "the next root has neither /etc/os-release nor /usr/lib/os-release";
+    let harness = write_active_harness();
+    std::fs::write(
+        harness.hidden_root.join("last-switch.json"),
+        serde_json::json!({ "reason": why, "at": 1_700_000_000 }).to_string(),
+    )
+    .unwrap();
+
+    let (code, value) = run_json(&harness.config, &["status"]);
+
+    assert_eq!(code, 0);
+    assert_matches_schema(&load_schema("status"), &value);
+    assert_eq!(value["data"]["place"], "decoy");
+    assert_eq!(value["data"]["attention"], "switch_refused");
+    assert_eq!(value["data"]["reason"], why);
+    assert_eq!(value["data"]["switch_refusal"]["reason"], why);
+    assert_eq!(
+        value["data"]["switch_refusal"]["at"],
+        "2023-11-14T22:13:20+00:00"
+    );
+    insta::assert_json_snapshot!("status_json_switch_refused", redact_status(value));
+
+    // The human report names it, with its time in the local zone.
+    let stdout =
+        String::from_utf8(run(&harness.config, &[("TZ", "UTC0")], &["status"]).stdout).unwrap();
+    assert!(
+        stdout.contains("Last switch:        refused at 2023-11-14 22:13:20 +00:00"),
+        "{stdout}"
+    );
+    assert!(stdout.contains(why), "{stdout}");
+    assert!(
+        stdout.contains("the switch into it was refused"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn status_json_tampered_state_is_unknown_and_matches_schema() {
     let harness = Harness::new();
     harness.write_tampered_state();

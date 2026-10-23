@@ -57,6 +57,13 @@ where
     if let Some(remediation) = &report.remediation {
         out.push(format!("  {}", style.marked(Mark::Arrow, remediation)));
     }
+    if let Some(refused) = &report.switch_refusal {
+        out.push(format!(
+            "Last switch:        refused at {}",
+            stamp(refused.at, zone)
+        ));
+        out.push(format!("  {}", style.marked(Mark::Warn, &refused.reason)));
+    }
     out.push(format!(
         "State:              {} (recorded)",
         system_state_label(&report.state)

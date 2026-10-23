@@ -15,7 +15,7 @@ use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::plan::{Plan, PolicyMountKind};
-use nails_teardown::whole_root::switch_refusal::{self, SwitchRefusal};
+use nails_teardown::whole_root::switch_refusal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -128,6 +128,33 @@ pub struct PolicyMountView {
     pub kind: &'static str,
 }
 
+/// The last session switch, when the soft-reboot refused it and stayed on the
+/// root it was on (see `nails_teardown::whole_root::switch_refusal`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedSwitch {
+    /// The reason the switch gave: a failed init check, failed unit masks, or
+    /// an arming that did not run in time.
+    pub reason: String,
+    /// When it was refused.
+    pub at: DateTime<Utc>,
+}
+
+impl RefusedSwitch {
+    /// The record kept in the runtime directory `runtime_dir` (a refused way
+    /// back, read in the hidden session), else the one on the hidden volume at
+    /// `hidden_root` (a refused entry, read once the volume is open again).
+    /// Both are never left at once: arming a switch clears them, and every
+    /// path back to the decoy removes the runtime directory.
+    fn read(runtime_dir: &Path, hidden_root: &Path) -> Option<Self> {
+        let record =
+            switch_refusal::read(runtime_dir).or_else(|| switch_refusal::read(hidden_root))?;
+        Some(Self {
+            at: DateTime::<Utc>::from_timestamp(i64::try_from(record.at).ok()?, 0)?,
+            reason: record.reason,
+        })
+    }
+}
+
 /// A filesystem mounted over the hidden volume, at the hidden root or on one
 /// of its parents.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,10 +214,11 @@ pub struct StatusReport {
     pub decoy_persistent: bool,
     /// The persona mode.
     pub persona_mode: PersonaMode,
-    /// Why the last switch was refused, kept on the hidden volume, when there
-    /// is one and the volume is readable. `None` once a later switch supersedes
-    /// it or when the volume is not mounted.
-    pub switch_refusal: Option<SwitchRefusal>,
+    /// Why and when the last switch was refused, when it was and the record is
+    /// readable: on the hidden volume (an entry), or in `/run` (a way back,
+    /// in the hidden session). `None` once a new switch is armed, or while the
+    /// volume holding the record is not mounted.
+    pub switch_refusal: Option<RefusedSwitch>,
     /// Uptime-based OpSec reminders.
     pub opsec_reminders: Vec<OpSecReminder>,
 }
@@ -283,6 +311,7 @@ pub struct StatusCommand<F: Filesystem> {
     filesystem: F,
     config: Config,
     state_file_path: PathBuf,
+    paths: Paths,
 }
 
 impl<F: Filesystem> StatusCommand<F> {
@@ -292,14 +321,23 @@ impl<F: Filesystem> StatusCommand<F> {
             filesystem,
             config,
             state_file_path,
+            paths: Paths::system(),
         }
+    }
+
+    /// Read the session's runtime files (the plan, a refused way back) under
+    /// `paths` instead of the system's `/run`: tests give a scratch tree.
+    #[must_use]
+    pub fn with_paths(mut self, paths: Paths) -> Self {
+        self.paths = paths;
+        self
     }
 
     /// Build the report from the live system.
     pub fn run(&self) -> Result<StatusReport> {
         let entries = read_mountinfo().unwrap_or_default();
         let view = crate::session::probe::probe_with(
-            &Paths::system(),
+            &self.paths,
             &self.config.hidden_volume_root,
             &entries,
         );
@@ -316,15 +354,22 @@ impl<F: Filesystem> StatusCommand<F> {
         let loaded = StateFile::load_with_outcome(&self.state_file_path)?;
         let state_file = loaded.state_file;
         let (posture, mut reason, mut remediation) = posture_of(view, loaded.outcome.is_unknown());
+        let hidden_root = &self.config.hidden_volume_root;
+        let switch_refusal = RefusedSwitch::read(&self.paths.runtime(), hidden_root);
         // A power loss or a reset in the session leaves the record at Active
-        // while the machine boots the plain decoy: say so, rather than show an
-        // active state next to a decoy posture without a word.
+        // while the machine boots the plain decoy, and so does an entry the
+        // soft-reboot refused, recorded before the switch: say which, rather
+        // than show an active state next to a decoy posture without a word.
         if posture == Posture::Decoy && matches!(state_file.state, SystemState::Active { .. }) {
-            reason = Some(
+            reason = Some(if switch_refusal.is_some() {
+                "the record still holds an active session, but none is running: the switch \
+                 into it was refused"
+                    .to_string()
+            } else {
                 "the record still holds an active session, but none is running: it ended \
                  without updating the record (a power loss, a reset or a failed hidden volume)"
-                    .to_string(),
-            );
+                    .to_string()
+            });
             remediation = Some(format!(
                 "Run `{}` to reset the record",
                 crate::next_step::sudo_line(crate::next_step::NextStep::Recover)
@@ -339,7 +384,6 @@ impl<F: Filesystem> StatusCommand<F> {
                 _ => None,
             });
         let uptime = entered_at.filter(|_| view.is_hidden()).map(|t| now - t);
-        let hidden_root = &self.config.hidden_volume_root;
         // The mount table names the root with its symlinks resolved.
         let resolved = self
             .filesystem
@@ -398,9 +442,7 @@ impl<F: Filesystem> StatusCommand<F> {
             decoy_persistent: !view.is_hidden()
                 && crate::preflight::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem),
             persona_mode: self.config.persona.mode,
-            // Read from the hidden volume: present only when the last switch was
-            // refused and no later switch has superseded it.
-            switch_refusal: switch_refusal::read(hidden_root),
+            switch_refusal,
             opsec_reminders,
             state: state_file.state,
         })
