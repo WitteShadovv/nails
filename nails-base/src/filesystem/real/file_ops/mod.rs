@@ -151,6 +151,20 @@ pub(super) fn read_file_content(path: &Path) -> Result<String> {
     })
 }
 
+/// Read a file's raw bytes without updating its access time, as
+/// [`read_file_content`] reads text.
+pub(super) fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
+    super::noatime::read_to_end_noatime(path).map_err(|e| {
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to read file {}: {}", path.display(), e),
+            ),
+        )
+    })
+}
+
 pub(super) fn write_file_content(path: &Path, content: &str) -> Result<()> {
     use std::io::Write;
 
