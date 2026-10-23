@@ -208,6 +208,10 @@ fn render_human(settings: &OutputSettings, report: &HotReport) {
 }
 
 #[cfg(test)]
+#[path = "emergency_print_tests.rs"]
+mod print_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use nails_teardown::whole_root::plan::Plan;

@@ -320,3 +320,171 @@ fn an_overlay_only_entry_names_no_hidden_system() {
     let value = envelope_value(&ActivateResult::Entering(&entry), 3.0);
     assert!(value["data"].get("hidden_system").is_none(), "{value}");
 }
+
+/// The test that stands in for the binary when the test binary runs again in a
+/// child process for one case: it calls the shipped printer, which writes to
+/// the child's real stdout and stderr. Reading them from the parent needs no
+/// redirection of this process's descriptors, which the threaded test run
+/// shares.
+const PRINTER_SUBPROCESS_TEST_NAME: &str =
+    "cli::output::activate::tests::subprocess_printer_entrypoint";
+
+/// What the real printer prints for `case`, run in a child process.
+fn printed(case: &str) -> std::process::Output {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            PRINTER_SUBPROCESS_TEST_NAME,
+            "--nocapture",
+            "--quiet",
+        ])
+        .env("NAILS_ACTIVATE_PRINTER_CASE", case)
+        .output()
+        .expect("failed to run the activate printer subprocess")
+}
+
+#[test]
+fn subprocess_printer_entrypoint() {
+    let Ok(case) = std::env::var("NAILS_ACTIVATE_PRINTER_CASE") else {
+        return;
+    };
+    let refused = NailsError::PreFlightCheckFailed(vec![(
+        "systemd-version".to_string(),
+        "systemd 252 is too old".to_string(),
+        Some("Use Debian 13".to_string()),
+    )]);
+    let failed = NailsError::InvalidState("the root is not a mount point".to_string());
+    let entering = entry(vec!["hidden kernel differs".to_string()]);
+    let quiet = OutputSettings {
+        verbosity: nails_core::Verbosity::Quiet,
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    match case.as_str() {
+        "json-cancelled" => {
+            print_activate_json_result(&ActivateResult::Failed(&NailsError::Cancelled), 0.0);
+        }
+        "json-refused" => print_activate_json_result(&ActivateResult::Failed(&refused), 0.5),
+        "json-failed" => print_activate_json_result(&ActivateResult::Failed(&failed), 0.1),
+        "json-entering" => print_activate_json_result(&ActivateResult::Entering(&entering), 1.0),
+        "json-already-active" => print_activate_json_result(&ActivateResult::AlreadyActive, 0.0),
+        "quiet-entering" => print_activate_human(&ActivateResult::Entering(&entering), 3.0, &quiet),
+        "quiet-failed" => print_activate_human(&ActivateResult::Failed(&failed), 0.1, &quiet),
+        other => panic!("unknown activate printer case: {other}"),
+    }
+    crate::cli::output::flush_stdio();
+    crate::cli::chokepoint::exit_process(0);
+}
+
+/// The lines a printer child wrote on `stream`, without the blank lines and
+/// the test harness's own `running 1 test` header.
+fn lines_of(stream: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stream)
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with("running "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The one envelope the shipped `--json` printer prints for `case`, checked
+/// against the committed `activate` schema.
+fn printed_envelope(case: &str) -> serde_json::Value {
+    let output = printed(case);
+    assert!(output.status.success(), "{case}: {output:?}");
+    let lines = lines_of(&output.stdout);
+    assert_eq!(lines.len(), 1, "{case}: one envelope line: {output:?}");
+    let value: serde_json::Value = serde_json::from_str(&lines[0])
+        .unwrap_or_else(|e| panic!("{case}: not JSON ({e}): {output:?}"));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/schemas/activate.schema.json");
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("compile the activate schema");
+    let errors: Vec<String> = validator
+        .iter_errors(&value)
+        .map(|e| e.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{case}: {errors:?}: {value}");
+    value
+}
+
+/// A cancel under `--json` is the one cancel shape: `ok` false, the code
+/// `cancelled` and no data, never a failed or successful activation.
+#[test]
+fn the_json_printer_reports_a_cancel_as_the_cancel_shape() {
+    let value = printed_envelope("json-cancelled");
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "cancelled", "{value}");
+    assert_eq!(value["error"]["message"], CANCELLED, "{value}");
+    assert!(value.get("data").is_none(), "{value}");
+}
+
+/// A refused or failed activation is `ok` false with its own code and its
+/// data: a reader that keys on `ok` must never read it as an entry under way.
+#[test]
+fn the_json_printer_reports_a_failed_activation_as_not_ok() {
+    let refused = printed_envelope("json-refused");
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["error"]["code"], "not_ready", "{refused}");
+    assert_eq!(refused["data"]["status"], "failed", "{refused}");
+    assert_eq!(
+        refused["data"]["failed_checks"][0]["name"], "systemd-version",
+        "{refused}"
+    );
+
+    let failed = printed_envelope("json-failed");
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert_eq!(failed["error"]["code"], "activation_failed", "{failed}");
+    assert_eq!(failed["data"]["status"], "failed", "{failed}");
+}
+
+/// An entry under way and an activation with nothing to do are `ok`, with no
+/// error body.
+#[test]
+fn the_json_printer_reports_an_entry_and_already_active_as_ok() {
+    let entering = printed_envelope("json-entering");
+    assert_eq!(entering["ok"], true, "{entering}");
+    assert_eq!(
+        entering["data"]["status"], "entering_with_warnings",
+        "{entering}"
+    );
+    assert!(entering.get("error").is_none(), "{entering}");
+
+    let already = printed_envelope("json-already-active");
+    assert_eq!(already["ok"], true, "{already}");
+    assert_eq!(already["data"]["status"], "already_active", "{already}");
+    assert!(already.get("error").is_none(), "{already}");
+}
+
+/// The shipped human printer under `--quiet`: the result and its warnings on
+/// stdout, without the details; a failure on stderr only.
+#[test]
+fn the_quiet_human_printer_keeps_the_result_and_the_warnings() {
+    let output = printed("quiet-entering");
+    assert!(output.status.success(), "{output:?}");
+    let out = lines_of(&output.stdout);
+    assert_eq!(out[0], "[PASS] Hidden session prepared in 3.0s", "{out:?}");
+    assert_eq!(out[1], "[WARN] hidden kernel differs", "{out:?}");
+    assert!(
+        out.last()
+            .is_some_and(|line| line.starts_with("Soft-rebooting")),
+        "{out:?}"
+    );
+    assert!(
+        !out.iter()
+            .any(|line| line.contains("Hidden system") || line.contains("/boot")),
+        "{out:?}"
+    );
+    assert!(lines_of(&output.stderr).is_empty(), "{output:?}");
+
+    let output = printed("quiet-failed");
+    assert!(output.status.success(), "{output:?}");
+    assert!(lines_of(&output.stdout).is_empty(), "{output:?}");
+    assert_eq!(
+        lines_of(&output.stderr),
+        vec![
+            "[FAIL] Activation failed: Invalid state: the root is not a mount point".to_string(),
+            "  Nothing was changed: no next root is left behind.".to_string(),
+        ]
+    );
+}
