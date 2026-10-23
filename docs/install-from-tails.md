@@ -48,11 +48,20 @@ its UUID when it has none. The commands below use `/media/amnesia/data`; put in 
 
 ## 3. Download the release
 
+This page and the rest of the NAILS documentation describe NAILS 0.3.0. Until 0.3.0 is released, it
+exists only as release candidates, named `v0.3.0-rc.N` and marked *Pre-release* on the
+[Releases page](https://github.com/WitteShadovv/nails/releases); the newest one can lack changes
+the documentation already describes, which [CHANGELOG.md](../CHANGELOG.md) lists under
+*Unreleased*. Until then the release marked *Latest* is 0.2.0, the current stable release (see
+[SECURITY.md](../SECURITY.md#supported-versions)). It is the earlier per-directory live-overlay
+design for NixOS, which this documentation does not describe. Its own documentation, including how
+to check its provenance, is at the [v0.2.0 tag](https://github.com/WitteShadovv/nails/tree/v0.2.0);
+the provenance check in step 4 does not apply to it.
+
 Open Tor Browser and download `nails` and `checksums.txt` for the release you are installing from the
-[Releases page](https://github.com/WitteShadovv/nails/releases) into a folder in your Home folder. The
-release marked *Latest* there is the current stable one; release candidates are marked *Pre-release*.
-In Tails that folder is in memory and is gone at shutdown. Do not save the files in the Persistent
-Storage, if you have one: it would keep them on the Tails stick.
+Releases page into a folder in your Home folder. In Tails that folder is in memory and is gone at
+shutdown. Do not save the files in the Persistent Storage, if you have one: it would keep them on
+the Tails stick.
 
 ## 4. Check the download
 

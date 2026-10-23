@@ -25,7 +25,7 @@ NAILS is currently released as **alpha** software. The current supported stable 
 | `0.3.0` release candidates | In testing, published as pre-releases | Testing only; not yet the supported line |
 | `0.1.x` and earlier alpha builds | Superseded | Not supported |
 
-Run the latest release and verify its artifacts before use; how releases are produced and numbered is described in [RELEASING.md](RELEASING.md).
+Run the latest release and verify its artifacts before use; how releases are produced and numbered is described in [RELEASING.md](RELEASING.md). The README and the documents under `docs/`, [Verify a release](docs/verify-release.md) included, describe `0.3.0`. `0.2.x` is the earlier per-directory live-overlay design for NixOS: its documentation, including how to verify its artifacts, is at the [`v0.2.0` tag](https://github.com/WitteShadovv/nails/tree/v0.2.0).
 
 ## Reporting a Vulnerability
 
@@ -218,4 +218,4 @@ For non-sensitive questions about hardening, threat model, or secure use:
 
 This policy is maintained with the repository. Material updates will be reflected in this file.
 
-**Last updated:** 2026-10-20
+**Last updated:** 2026-10-23
