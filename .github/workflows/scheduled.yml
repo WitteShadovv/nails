@@ -391,10 +391,12 @@ jobs:
           fallback: none
 
       # `just mutants` scopes the run to the state machine and the decision
-      # cores and splits it into four shards. It fails when cargo-mutants itself
-      # does, for example when the tests already fail without a mutation; a
-      # single shard may catch no mutant, so the "proves nothing" guard applies
-      # only to a whole, unsharded sweep. The tree copy cargo-mutants builds in
+      # cores and splits it into four shards. A shard fails when cargo-mutants
+      # itself does, for example when the tests already fail without a
+      # mutation, and when it proves nothing or less than its counts say: when
+      # a directory of the sweep holds no mutant, when the shard caught none,
+      # and when a mutant's build failed for want of disk, memory or I/O, which
+      # cargo-mutants counts as unviable. The tree copy cargo-mutants builds in
       # goes to the runner's disk: /tmp on ubuntu-26.04 is too small for it
       # ("Disk quota exceeded").
       - name: Mutate the decision cores

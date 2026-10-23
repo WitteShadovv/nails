@@ -346,89 +346,104 @@ stress iterations="10":
 
 # --- Mutation testing ---
 
-# The files the sweep mutates: the state machine and the teardown and session
+# The code the sweep mutates: the state machine and the teardown and session
 # decision cores, where a wrong branch is silent (a mutant the suite still
 # passes is a test gap no coverage percentage reveals). Kept here, not in the
-# workflow, so a local run and the weekly lane mutate the same code.
-mutants_files := "-f 'nails-base/src/state/**/*.rs' " + \
-    "-f 'nails-teardown/src/whole_root/plan.rs' " + \
-    "-f 'nails-teardown/src/whole_root/emergency.rs' " + \
-    "-f 'nails-teardown/src/whole_root/utab.rs' " + \
-    "-f 'nails-session/src/session/entry.rs' " + \
-    "-f 'nails-session/src/session/policy.rs' " + \
-    "-f 'nails-session/src/session/fstab.rs' " + \
-    "-f 'nails-session/src/session/probe.rs' " + \
-    "-f 'nails-session/src/session/way_back.rs'"
+# workflow, so a local run and the weekly lane mutate the same code. The sweep
+# takes these directories whole, less the files in them that hold no decision
+# core, which it leaves out by name. Code that a split moves out of a core file
+# into a new file beside it therefore stays in the sweep, and a new file is
+# swept until it is listed in mutants_skipped.
+mutants_dirs := "nails-base/src/state " + \
+    "nails-teardown/src/whole_root " + \
+    "nails-session/src/session"
+mutants_skipped := "nails-teardown/src/whole_root/boot_records.rs " + \
+    "nails-teardown/src/whole_root/carry.rs " + \
+    "nails-teardown/src/whole_root/decoy_mounts.rs " + \
+    "nails-teardown/src/whole_root/disk_guard.rs " + \
+    "nails-teardown/src/whole_root/kernel_helpers.rs " + \
+    "nails-teardown/src/whole_root/kill.rs " + \
+    "nails-teardown/src/whole_root/network.rs " + \
+    "nails-teardown/src/whole_root/nextroot.rs " + \
+    "nails-teardown/src/whole_root/ret.rs " + \
+    "nails-teardown/src/whole_root/run_records.rs " + \
+    "nails-teardown/src/whole_root/run_scrub.rs " + \
+    "nails-teardown/src/whole_root/runtime_units.rs " + \
+    "nails-teardown/src/whole_root/switch_refusal.rs " + \
+    "nails-teardown/src/whole_root/tools.rs " + \
+    "nails-teardown/src/whole_root/transition.rs " + \
+    "nails-session/src/session/checks.rs " + \
+    "nails-session/src/session/layout.rs " + \
+    "nails-session/src/session/leave.rs " + \
+    "nails-session/src/session/network_state.rs " + \
+    "nails-session/src/session/nixos.rs " + \
+    "nails-session/src/session/persona.rs " + \
+    "nails-session/src/session/store.rs " + \
+    "nails-session/src/session/systemd.rs " + \
+    "nails-session/src/session/units.rs"
 
 # Mutate the state machine and the teardown/session decision cores and check
 # the tests catch each mutation. Heavy, so it runs weekly in scheduled.yml
 # rather than on the gate. The report goes to target/mutants/mutants.out, and in
 # CI the counts and every mutant that survived or timed out also go to the job
 # summary. Such mutants (exit codes 2 and 3) are findings to triage, not a
-# failed run, so the recipe succeeds. Any other failure of cargo-mutants, such
-# as tests that already fail without a mutation, still fails it, and so does a
-# full run that caught no mutant at all. `shard`/`shards` split the sweep across
-# a matrix (`just mutants 0 4`); the default is the whole sweep.
+# failed run. The recipe fails when cargo-mutants does, as on tests that fail
+# without a mutation, and when the run proves less than its counts say: a
+# directory of the sweep holds no mutant, the run caught no mutant, or a
+# mutant's build failed for want of disk, memory or I/O, which cargo-mutants
+# counts as unviable (ci/mutants_report.py). `shard`/`shards` split the sweep
+# across a matrix (`just mutants 0 4`); the default is the whole sweep.
 mutants shard="" shards="":
     #!/usr/bin/env bash
     set -euo pipefail
     # cargo-mutants creates the --output directory but not its parents, and a
     # fresh checkout has no target/ yet.
     mkdir -p target/mutants
+    scope=(--package nails-base --package nails-teardown --package nails-session)
+    for dir in {{ mutants_dirs }}; do
+        scope+=(-f "$dir/**/*.rs")
+    done
+    for file in {{ mutants_skipped }}; do
+        scope+=(-e "$file")
+    done
+    # A directory that was renamed or moved would leave the sweep without a
+    # trace, so each one must still hold a mutant. Listing builds nothing.
+    listed=$(cargo mutants --list "${scope[@]}")
+    for dir in {{ mutants_dirs }}; do
+        if ! grep -q "^$dir/" <<< "$listed"; then
+            echo "No mutant under $dir: update mutants_dirs in the justfile" >&2
+            exit 1
+        fi
+    done
     shard_args=()
     if [ -n '{{ shard }}' ]; then
         shard_args=(--shard '{{ shard }}/{{ shards }}')
     fi
     status=0
-    cargo mutants \
-        --package nails-base --package nails-teardown --package nails-session \
+    cargo mutants "${scope[@]}" \
         --all-features --cargo-arg=--locked \
-        {{ mutants_files }} \
         "${shard_args[@]}" \
         --output target/mutants || status=$?
     case "$status" in
         0 | 2 | 3) ;;
         *) exit "$status" ;;
     esac
-    out=target/mutants/mutants.out
-    caught=$(wc -l < "$out/caught.txt")
-    missed=$(wc -l < "$out/missed.txt")
-    timed_out=$(wc -l < "$out/timeout.txt")
-    unviable=$(wc -l < "$out/unviable.txt")
-    result="$caught caught, $missed missed, $timed_out timed out, $unviable unviable"
-    echo "Mutants: $result (report in $out)"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        # cargo-mutants flags missed mutants as warning annotations, but GitHub
-        # shows only a limited number per step, so the summary lists them all.
-        section() {
-            if [ -s "$out/$2.txt" ]; then
-                printf '\n### %s\n\n```text\n' "$1"
-                cat "$out/$2.txt"
-                printf '```\n'
-            fi
-        }
-        {
-            printf '## Mutation testing\n\n%s.\n' "$result"
-            section "Missed" missed
-            section "Timed out" timeout
-        } >> "$GITHUB_STEP_SUMMARY"
-    fi
-    # cargo-mutants also exits 0 when the package or file filter matches no
-    # code and when no mutant builds. A full run that caught no mutant, for
-    # those reasons or because the tests never fail on one, proves nothing; a
-    # single shard may legitimately catch none, so this guards the full run.
-    if [ -z '{{ shard }}' ] && [ "$caught" -eq 0 ]; then
-        echo "No mutant was caught, so this run proves nothing; see $out" >&2
-        exit 1
-    fi
+    # cargo-mutants also exits 0 when no mutant builds or the tests never fail
+    # on one. The sweep holds several hundred mutants, and a quarter of them
+    # is still over a hundred, so a shard that caught none proves nothing,
+    # whole sweep or not.
+    python3 -m ci.mutants_report --title "Mutation testing" --require-caught \
+        target/mutants/mutants.out
 
 # Mutation testing restricted to the lines a diff changed (cargo-mutants
 # --in-diff), for a non-blocking pull-request lane: it reports surviving mutants
-# without failing, and a diff that changes no mutable code is a clean pass.
-# `diff` is a unified `git diff` of the change; `shard`/`shards` split the work
-# across a matrix, and --timeout keeps one slow mutant from running away inside
-# the lane's own time box. The report goes to target/mutants/mutants.out, with
-# the survivors in the job summary for the integration log.
+# without failing, and a diff that changes no mutable code is a clean pass. A
+# mutant whose build failed for want of disk, memory or I/O was never tested,
+# so it fails the lane although cargo-mutants counts it as unviable
+# (ci/mutants_report.py). `diff` is a unified `git diff` of the change;
+# `shard`/`shards` split the work across a matrix, and --timeout keeps one slow
+# mutant from running away inside the lane's own time box. The report goes to
+# target/mutants/mutants.out, with the survivors in the job summary.
 mutants-in-diff diff shard="0" shards="1":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -445,28 +460,7 @@ mutants-in-diff diff shard="0" shards="1":
         0 | 2 | 3) ;;
         *) exit "$status" ;;
     esac
-    out=target/mutants/mutants.out
-    if [ ! -f "$out/caught.txt" ]; then
-        echo "No mutable code in this diff shard."
-        exit 0
-    fi
-    caught=$(wc -l < "$out/caught.txt")
-    missed=$(wc -l < "$out/missed.txt")
-    timed_out=$(wc -l < "$out/timeout.txt")
-    unviable=$(wc -l < "$out/unviable.txt")
-    result="$caught caught, $missed missed, $timed_out timed out, $unviable unviable"
-    echo "Mutants (in diff): $result (report in $out)"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        section() {
-            if [ -s "$out/$2.txt" ]; then
-                printf '\n### %s\n\n```text\n' "$1"
-                cat "$out/$2.txt"
-                printf '```\n'
-            fi
-        }
-        {
-            printf '## Mutation testing on the diff\n\n%s.\n' "$result"
-            section "Missed" missed
-            section "Timed out" timeout
-        } >> "$GITHUB_STEP_SUMMARY"
-    fi
+    # A shard of a small diff may hold a single mutant that does not compile,
+    # so catching none is no failure here.
+    python3 -m ci.mutants_report --title "Mutation testing on the diff" \
+        target/mutants/mutants.out

@@ -4,9 +4,11 @@ name: Mutants (in diff)
 # request changed (cargo-mutants --in-diff), apart from the weekly full sweep in
 # scheduled.yml. It never gates the merge: surviving mutants are a triage
 # artifact for the integration log, and a change that touches no mutable code is
-# a clean pass. The work is sharded and each shard is time-boxed, so the lane
-# stays short on the small diff of a feature pull request, which is what it is
-# for: it catches a coverage gap in a change as that change lands on `next`.
+# a clean pass. A shard goes red when a mutant's build failed for want of disk,
+# memory or I/O: cargo-mutants counts that mutant as unviable, but it was never
+# tested. The work is sharded and each shard is time-boxed, so the lane stays
+# short on the small diff of a feature pull request, which is what it is for:
+# it catches a coverage gap in a change as that change lands on `next`.
 #
 # It runs on pull requests into `next`, not into `main`. A `next` -> `main`
 # release pull request carries the whole accumulated round, whose diff has
