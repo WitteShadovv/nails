@@ -47,6 +47,13 @@ of this changelog for that version becomes the release notes word for word, and
   is never stored in `nails.toml`. It is distinct from cryptsetup's open-time `--allow-discards`
   (the option that turns discards on in the first place); the safe fix is still to re-open the
   volume with discards off. See docs/backends.md.
+- docs/backends.md weighs VeraCrypt's rule that on Linux a hidden volume be mounted only from a
+  live system writing to a RAM disk: a NAILS setup does not meet it, since you unlock and mount the
+  hidden volume with cryptsetup on the running decoy before every session. It also passes on
+  VeraCrypt's warning for hidden volumes made in file containers with VeraCrypt 1.26.6 through
+  1.26.28, which upgrading VeraCrypt does not repair: if you rely on deniability, recreate the
+  container and its hidden volume with 1.26.29 or later, away from the decoy, then securely erase
+  the old container.
 
 ### Changed
 
