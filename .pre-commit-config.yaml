@@ -144,9 +144,10 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      # Every fuzz target is wired into fuzz/Cargo.toml and has a seed corpus;
-      # the same check `just check` runs, offline and well under a second, only
-      # when a fuzz target, a seed corpus or the manifest changes.
+      # Every fuzz target is wired into fuzz/Cargo.toml, is more than the
+      # scaffold's stub and has a seed that is not empty; the same check that
+      # `just check` runs, offline and well under a second, only when a fuzz
+      # target, a seed corpus or the manifest changes.
       - id: check-fuzz-targets
         name: Fuzz targets wired and seeded
         entry: scripts/check-fuzz-targets.sh

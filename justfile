@@ -82,16 +82,18 @@ fuzz-lock:
     cp Cargo.lock fuzz/Cargo.lock
     cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
-# Check every fuzz target is wired into fuzz/Cargo.toml and has a seed corpus:
-# the mechanical half of the rule that every parser of bytes NAILS does not
-# control gets a fuzz target (docs/testing-strategy.md). Part of `just check`.
+# The mechanical half of the rule that every parser of bytes NAILS does not
+# control gets a fuzz target (docs/testing-strategy.md), part of `just check`
+# and of CI's lint job: every fuzz target is wired into fuzz/Cargo.toml, is
+# more than the stub `new-fuzz-target` writes and has a non-empty seed.
 fuzz-targets:
     ./scripts/check-fuzz-targets.sh
 
-# Scaffold a new fuzz target: a stub under fuzz/fuzz_targets/, a starter seed
-# and the [[bin]] entry in fuzz/Cargo.toml, so adding one for a new parser is
-# mechanical. Fill in the target, replace the starter seed with inputs from the
-# parser's fixtures and tests, and run `just fuzz-lock`.
+# Scaffold a new fuzz target: a stub under fuzz/fuzz_targets/, an empty starter
+# seed and the [[bin]] entry in fuzz/Cargo.toml, so adding one for a new parser
+# is mechanical. Fill in the target, replace the starter seed with inputs from
+# the parser's fixtures and tests, and run `just fuzz-lock`; `fuzz-targets`
+# fails until the stub and the starter seed are replaced.
 new-fuzz-target name:
     #!/usr/bin/env bash
     set -euo pipefail

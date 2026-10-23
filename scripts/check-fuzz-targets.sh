@@ -6,16 +6,23 @@
 #
 #   - every fuzz/fuzz_targets/<name>.rs has a [[bin]] entry in fuzz/Cargo.toml,
 #     and every [[bin]] entry names a file that exists;
-#   - every target has a non-empty seed corpus in fuzz/seeds/<name>/, which
-#     .clusterfuzzlite/build.sh zips for CI (a missing one breaks that build);
+#   - no target is still the stub `just new-fuzz-target` writes, which drives
+#     nothing: its TODO markers or its body that only discards the input;
+#   - every target has a seed corpus in fuzz/seeds/<name>/, which
+#     .clusterfuzzlite/build.sh zips for CI (a missing one breaks that build),
+#     and at least one of its seeds is not empty, so the scaffold's empty
+#     starter seed alone is no corpus;
 #   - no seed corpus is left behind for a target that no longer exists.
 #
 # The review keeps the other half: that a new parser of decoy-controlled bytes
-# comes with its target in the first place.
+# comes with its target in the first place, and that the target checks it.
+#
+# It checks the repository it lives in, or the directory given as the only
+# argument. The pre-commit hook, `just check` and CI's lint job run it.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 TARGETS_DIR="$REPO_ROOT/fuzz/fuzz_targets"
 SEEDS_DIR="$REPO_ROOT/fuzz/seeds"
 MANIFEST="$REPO_ROOT/fuzz/Cargo.toml"
@@ -54,14 +61,21 @@ while IFS= read -r line; do
   esac
 done < "$MANIFEST"
 
-# Every target file is wired into the manifest and has a non-empty seed corpus.
+# Every target file is wired into the manifest, drives something and has a
+# seed corpus with at least one input that is not empty.
 for target in "${targets[@]}"; do
   if [ -z "${bin_path[$target]:-}" ]; then
     note "fuzz/fuzz_targets/$target.rs has no [[bin]] entry in fuzz/Cargo.toml."
   fi
+  if grep -q -E 'TODO: (the parser this drives|drive the parser with)|^[[:space:]]*let _ = data;' \
+    "$TARGETS_DIR/$target.rs"; then
+    note "fuzz/fuzz_targets/$target.rs is still the scaffold's stub (drive the parser with the input and check its invariants)."
+  fi
   seeds="$SEEDS_DIR/$target"
   if [ ! -d "$seeds" ] || [ -z "$(find "$seeds" -type f -print -quit 2>/dev/null)" ]; then
     note "fuzz target '$target' has no seed corpus (add at least one input under fuzz/seeds/$target/)."
+  elif [ -z "$(find "$seeds" -type f ! -empty -print -quit 2>/dev/null)" ]; then
+    note "fuzz target '$target' has only empty seeds (add inputs taken from the parser's fixtures and tests under fuzz/seeds/$target/)."
   fi
 done
 
@@ -95,5 +109,5 @@ if [ -n "$errors" ]; then
   exit 1
 fi
 
-echo "All ${#targets[@]} fuzz targets are wired and seeded."
+echo "All ${#targets[@]} fuzz targets are wired, implemented and seeded."
 exit 0
