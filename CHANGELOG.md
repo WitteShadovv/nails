@@ -24,10 +24,13 @@ of this changelog for that version becomes the release notes word for word, and
 ### Added
 
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
-  derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the version
-  `cryptsetup --version` reports. No released cryptsetup opens such a volume, and nothing outside
-  the encrypted header reveals the algorithm, so it advises making both the outer and the hidden
-  VeraCrypt volume with PBKDF2.
+  derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the installed
+  cryptsetup version. No released cryptsetup opens such a volume, and nothing outside the encrypted
+  header reveals the algorithm, so it advises making both the outer and the hidden VeraCrypt volume
+  with PBKDF2. The version is read from the package database (dpkg or pacman) or the NixOS store
+  path, never by running cryptsetup, which would stamp the decoy binary's access time at every
+  check and activation; a `check` that is not running as root, or a host whose cryptsetup none of
+  these name (Fedora's rpm database among them), skips the note.
 - `check` and activation warn when a DMA-capable device could read RAM over the bus: the kernel does
   not remap DMA through an IOMMU, some devices' IOMMU groups are identity-mapped, or a Thunderbolt or
   USB4 controller reports no DMA protection. Each group counts on its own, so a kernel that leaves
