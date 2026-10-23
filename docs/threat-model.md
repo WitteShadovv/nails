@@ -123,13 +123,17 @@ What it does not offer:
 - **Deniability of the hidden volume itself.** Whether a hidden volume can be
   told apart from random data or an outer volume's free space depends on the
   backend, not on NAILS. A LUKS volume next to the decoy is visibly an
-  encrypted volume. VeraCrypt's own claim is conditional: a hidden volume
-  should be impossible to prove exists *provided its requirements are
-  followed*, and its
-  [documentation](https://veracrypt.jp/en/Hidden%20Volume.html) notes that
-  multiple snapshots of the disk over time, wear-levelling or TRIM can still
-  reveal one; the outer volume is in any case visible. NAILS adds nothing to
-  the backend's own claim.
+  encrypted volume. VeraCrypt's own claim is conditional: a
+  [hidden volume](https://veracrypt.jp/en/Hidden%20Volume.html) should be
+  impossible to prove exists *provided its requirements are followed*. Its
+  [Security Requirements for Hidden Volumes](https://veracrypt.jp/en/Security%20Requirements%20for%20Hidden%20Volumes.html)
+  note that an adversary who sees the volume at several points over time may
+  still find signs of one, and so may one who reads the old copies a
+  wear-levelling device keeps; its page on the
+  [trim operation](https://veracrypt.jp/en/Trim%20Operation.html) says that
+  TRIM shows which sectors are free and can weaken deniability. The outer
+  volume is in any case visible. NAILS adds nothing to the backend's own
+  claim.
 - **Compelled disclosure of the hidden volume.** Whoever obtains the hidden
   volume's credentials sees everything: the hidden data, NAILS itself and its
   configuration. Out of scope.
