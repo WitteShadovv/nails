@@ -384,18 +384,18 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records)",
         ),
         platforms: Platforms::ALL,
-        risk: "A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian with wtmpdb the boot row would be named soft-reboot; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Both are entries ordinary use never writes. On every family the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low.",
+        risk: "A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian 13 with wtmpdb the boot row would be named soft-reboot, or, with the writer kept from the system bus before the kernel has been up for five minutes, dated to the decoy's cold boot, which wtmpdb last lists as a crash; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Ordinary use writes none of these. Where the decoy keeps classic wtmp, the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low; they stay in the file on the decoy disk, next to the low numbers of every earlier boot.",
         preflight: Probe::None(
             "the records are written by the decoy's own units after the switch, not before it",
         ),
         preflight_blocks: false,
         verify: Probe::None(
-            "the records are the decoy's own; the remaining process-number difference needs a cold-boot baseline to judge",
+            "the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran",
         ),
-        mitigation: "On Debian and Ubuntu the way back keeps the wtmpdb boot writer from recording soft-reboot and corrects a backdated classic-wtmp boot record to the time the decoy came back, without masking either writer, so no row goes missing and the login and boot records read as one clean power cycle. The process numbers of the records written after the way back still continue from the decoy's boot on every family, a weaker tell a later release addresses; power off after the session to leave none of it.",
+        mitigation: "The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. The Debian 13 path has not yet been verified in a VM: until a release says it has, end Debian 13 sessions with deactivate --poweroff. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. The process numbers of the records written after the way back still continue from the decoy's boot; only ending the session with --poweroff, which has no way back, leaves none of them.",
         doc_anchor: "threat-model.md#residual-channels",
         e2e: E2e::None(
-            "asserted against a power-cycle control by the cross-distro login- and boot-record test under nix/distro-tests, outside the NixOS e2e suite",
+            "asserted against a power cycle past five minutes of uptime by the cross-distro login- and boot-record test under nix/distro-tests (Debian 13 and Ubuntu 24.04), run on a KVM host outside the NixOS e2e suite",
         ),
         residual: true,
         conclusion: None,

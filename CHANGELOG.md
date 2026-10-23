@@ -280,6 +280,32 @@ of this changelog for that version becomes the release notes word for word, and
   `/home/alice` that the session linked to `/data/alice`) and names the link to discard instead.
   Followed on the decoy, the link led the deletion out of the hidden copy, onto the decoy's own
   files at the path it names.
+- The pieces the way back leaves in `/run` for a Debian or Ubuntu decoy's first start (a copy of the
+  binary, a one-shot unit and the wtmpdb writer's drop-in) are removed again when writing them fails
+  part-way, and `nails verify` reports them when their step never ran. They stayed in RAM until
+  power-off, with `/run` left executable. The threat model now also lists what they show until the
+  next power-off: the one-shot's start in the decoy's journal and both units in `systemctl status`.
+
+### Security
+
+- On Debian 13 the way back now has the decoy's wtmpdb boot writer record the decoy's start as an
+  ordinary `reboot`, stamped with the time of the switch. The 0.3.0-rc.3 notes said the way back
+  already kept the writer from recording `soft-reboot`; that was wrong. Kept from the system bus,
+  wtmpdb 0.73.0 still named the boot row `soft-reboot` once the decoy had been up for five minutes,
+  and before that it dated a `reboot` row to the decoy's cold boot, which `wtmpdb last` lists as a
+  crash. The way back now starts the writer in a time namespace whose boot clock starts at the
+  switch, so it writes the row a power cycle writes and `soft-reboot` never reaches the disk. This
+  has not yet been verified in a VM: until a release says it has, keep ending Debian 13 sessions
+  with `nails deactivate --poweroff` (or `nails emergency --poweroff`).
+- A backdated classic-`wtmp` boot record (systemd 255 and earlier, as on Ubuntu 24.04) is now
+  corrected to the time of the switch, before anyone can log in, instead of the moment the
+  correcting step ran, which dated the boot after the first records of its own start. The step no
+  longer updates the file's access time on every way back.
+- The 0.3.0-rc.3 notes and the threat model called the process numbers of the getty and login
+  records written after the way back a weaker tell that needs a cold-boot baseline and is gone at
+  the next power-off. Where the decoy keeps classic `wtmp` (Ubuntu 24.04, NixOS), those records stay
+  on the decoy disk, next to the low numbers of every earlier boot in the same file. Only a session
+  ended with `--poweroff`, which has no way back, leaves none of them.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
