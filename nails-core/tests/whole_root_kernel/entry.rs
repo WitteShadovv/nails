@@ -488,6 +488,84 @@ fn the_automount_of_a_filesystem_the_entry_binds_read_only_is_masked() {
 }
 
 #[test]
+fn the_automount_of_a_symlinked_mount_point_is_masked_at_its_real_path() {
+    // The decoy keeps /data at var/data and mounts the filesystem there; its
+    // fstab names /data behind an automount. The session overlays /var/data,
+    // so the automount the hidden systemd generates for that path, the one
+    // that would fail on the taken mount point, must be the one masked.
+    let _ = Rerun::new(test_path!(
+        the_automount_of_a_symlinked_mount_point_is_masked_at_its_real_path
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let decoy = world.decoy.path();
+        let data = ScratchTmpfs::new("");
+        bind(data.path(), &world.decoy.mkdir("var/data"));
+        std::os::unix::fs::symlink("var/data", decoy.join("data")).unwrap();
+        let fstab = decoy.join("etc/fstab");
+        let text = std::fs::read_to_string(&fstab).unwrap();
+        std::fs::write(
+            &fstab,
+            text + "/dev/vdd1 /data ext4 defaults,x-systemd.automount 0 2\n",
+        )
+        .unwrap();
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        assert!(
+            entry
+                .plan
+                .policy_mounts
+                .iter()
+                .any(|m| m.target == Path::new("/var/data") && m.kind == PolicyMountKind::Overlay),
+            "{:?}",
+            entry.plan.policy_mounts
+        );
+        let masks = &entry.plan.masks;
+        assert!(
+            masks.contains(&"var-data.automount".to_string()),
+            "{masks:?}"
+        );
+        assert!(!masks.contains(&"data.automount".to_string()), "{masks:?}");
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn an_entry_the_next_root_resolves_elsewhere_is_masked_there_too() {
+    // The decoy links /opt to var/opt, where its fstab entry is not mounted
+    // now: masked as var-opt.mount. An earlier session replaced the link with
+    // a directory of its own, so the hidden systemd reads the same entry as
+    // /opt; left free, opt.mount would mount the decoy's disk read-write.
+    let _ = Rerun::new(test_path!(
+        an_entry_the_next_root_resolves_elsewhere_is_masked_there_too
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let decoy = world.decoy.path();
+        world.decoy.mkdir("var/opt");
+        std::os::unix::fs::symlink("var/opt", decoy.join("opt")).unwrap();
+        let fstab = decoy.join("etc/fstab");
+        let text = std::fs::read_to_string(&fstab).unwrap();
+        std::fs::write(&fstab, text + "/dev/vde1 /opt ext4 defaults 0 2\n").unwrap();
+        world.hidden.mkdir("root/upper/opt");
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        let masks = &entry.plan.masks;
+        assert!(masks.contains(&"var-opt.mount".to_string()), "{masks:?}");
+        assert!(masks.contains(&"opt.mount".to_string()), "{masks:?}");
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
 fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
     let _ = Rerun::new(test_path!(
         the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan
