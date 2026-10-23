@@ -1,0 +1,22 @@
+{
+  "version": "0.3.0-rc.3",
+  "state": {
+    "Active": {
+      "activated_at": "2026-10-23T18:37:29.627792576Z"
+    }
+  },
+  "platform": {
+    "platform": "debian_family"
+  },
+  "config_fingerprint": null,
+  "decoy_system": null,
+  "last_activation": {
+    "duration_ms": 41873,
+    "finished_at": "2026-10-23T18:37:29.627792576Z"
+  },
+  "last_modified": "2026-10-23T18:37:29.627793057Z",
+  "boot_id": "51f13232-2ba1-496d-a8da-46cdb3a1ba78",
+  "owner_pid": 30536,
+  "owner_start_time": 129014,
+  "integrity_sha256": "83aafc10fd5315c492a737a3fcc65f09720abe4d4125079a408e6759f535724f"
+}

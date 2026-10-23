@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "state": {
+    "Active": {
+      "activated_at": "2026-10-23T18:36:54.578963021Z",
+      "overlays": [
+        "/home",
+        "/etc",
+        "/var"
+      ]
+    }
+  },
+  "nixos_generation": "/nix/store/00000000000000000000000000000000-nixos-system-hidden-25.11",
+  "config_fingerprint": "3f9a1c0be47d5a26",
+  "overlay_status": {
+    "/var": {
+      "mount_path": "/var",
+      "lower_dir": "/var",
+      "upper_dir": "/mnt/data/var",
+      "work_dir": "/mnt/data/.work/var",
+      "mounted_at": "2026-10-23T18:36:54.578960566Z"
+    },
+    "/etc": {
+      "mount_path": "/etc",
+      "lower_dir": "/etc",
+      "upper_dir": "/mnt/data/etc",
+      "work_dir": "/mnt/data/.work/etc",
+      "mounted_at": "2026-10-23T18:36:54.578958101Z"
+    },
+    "/home": {
+      "mount_path": "/home",
+      "lower_dir": "/home",
+      "upper_dir": "/mnt/data/home",
+      "work_dir": "/mnt/data/.work/home",
+      "mounted_at": "2026-10-23T18:36:54.578936241Z"
+    }
+  },
+  "failed_overlays": [],
+  "last_modified": "2026-10-23T18:36:54.578963361Z",
+  "checksum": "2b06327be0e70a971d52b8d532c6f9be1eef936e034d8bffb10176efebc369fe"
+}
