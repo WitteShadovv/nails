@@ -24,7 +24,7 @@ Tier 3 is everything a contributor must pass to merge. The informational `fuzz` 
 | `.github/workflows/e2e.yml` | PRs to `main` and `next`, push to either, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-26.04` | `just e2e` |
 | `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` label on PRs to `main` and `next`, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-26.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
 | `.github/workflows/next-nightly.yml` | Nightly, dispatch: starts the nightly `e2e.yml` and `distro-e2e.yml` runs of `next` | — | 4 | `ubuntu-26.04` | — |
-| `.github/workflows/oracle-real-nightly.yml` | Nightly, dispatch | — (informational) | 4 | produce on `ubuntu-26.04` (KVM), scan on `ubuntu-24.04` | `nix build .#legacyPackages.x86_64-linux.e2e.oracle-images` then `sudo ci/oracle/run-scan.sh` |
+| `.github/workflows/oracle-real-nightly.yml` | Nightly, dispatch | — (informational) | 4 | produce on `ubuntu-26.04` (KVM), scan on `ubuntu-24.04` | `nix build .#legacyPackages.x86_64-linux.e2e.oracle-images.driver`, its `bin/nixos-test-driver -o <dir>`, then `sudo env ORACLE_IMAGES_DIR=<dir>/forensics ci/oracle/run-scan.sh <workdir>` ([details](#the-forensic-oracle-nightly)) |
 | `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-26.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
 | `.github/workflows/fuzz.yml` | PRs to `main` and `next` that change fuzzed code, daily schedule, dispatch | — (informational) | 3 (pull requests, outside its budget) and 4 (schedules) | `ubuntu-26.04` | `just fuzz-run <target>` |
 | `.github/workflows/mutants-in-diff.yml` | PRs to `next` | — (informational, never blocks) | 3 (pull requests, outside its budget) | `ubuntu-26.04` | `just mutants-in-diff <diff> <shard> <shards>` |
@@ -36,7 +36,7 @@ Tier 3 is everything a contributor must pass to merge. The informational `fuzz` 
 | `.github/workflows/codeql.yml` | PRs to `main` and `next`, push to `main` and `next`, weekly, dispatch | — (the `main` ruleset requires its results) | 3 (pull requests, outside its budget) and 4 (weekly) | `ubuntu-26.04` | — |
 | `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-26.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
 
-The composite actions `.github/actions/setup-nix` and `.github/actions/report-status` are shared by these workflows and are not workflows themselves.
+The composite actions `.github/actions/setup-nix` and `.github/actions/report-status` are shared by these workflows and are not workflows themselves. Nor is `ci/oracle/oracle-nightly.yml`: it is a template for a synthetic-image oracle run that is not installed, so nothing runs it (see [The forensic oracle nightly](#the-forensic-oracle-nightly)).
 
 `just docs-check` (`ci/docs_check.py`) fails when a workflow file is not in this table, or the table names a workflow that no longer exists; the `ci/tests` suite runs the same check, so the drift also fails CI.
 
@@ -94,7 +94,7 @@ The policy is compiled in, so `cargo build`, clippy and every editor enforce it 
 
 ### Tracking issues for unattended runs
 
-Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml` and `codeql.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
+Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml`, `codeql.yml` and `oracle-real-nightly.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
 
 - A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open. The runs of `next` keep issues of their own, and so does `next-nightly.yml`, which starts them (see [The integration branch `next`](#the-integration-branch-next)).
 - A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
@@ -150,6 +150,15 @@ There used to be a second, per-PR container lane (`distro-smoke` in `ci.yml`). I
 - **Coverage.** One smoke scenario per distribution (`nix/distro-tests/tests/smoke.nix`): platform detection, the decoy-persistence preflight, activation soft-rebooting the stock cloud image into an overlay of its own root (every hidden write, `/usr` included, lands on the hidden root; the ESP stays read-only), deactivation and emergency soft-rebooting back, and the host-side decoy disk-image leak check with null and positive controls.
 - **Adding a distribution** is one entry in `nix/distro-tests/images.nix`; see `nix/e2e-tests/README.md`. The image hashes and the `nix-vm-test` lock are pinned on a networked KVM host, not in the sandbox.
 - **Concurrency.** Every label added to a pull request to `main` or `next` starts a run, but only a run for the `distro-e2e` label tests anything. Any other pull request run skips `plan` and the VM jobs and gets a concurrency group of its own, so it can neither cancel the suite nor be cancelled. Adding `distro-e2e` again cancels the pull request's run in progress, and the cancelled run reports nothing: `distro-result` runs only in a run that was not cancelled. A scheduled or dispatched run never cancels a run in progress: it waits for an earlier run of the same event and ref, and since GitHub keeps only one waiting run per group, a newer run replaces one that has not started. A call counts as its caller's event, so call the workflow from a scheduled, dispatched or push-triggered workflow, not from a pull request one.
+
+### The forensic oracle nightly
+
+`oracle-real-nightly.yml` runs the forensic oracle ([ci/oracle/README.md](../ci/oracle/README.md)) every night over real decoy disk images. It is informational and gates no merge.
+
+- **Produce.** The `produce` job runs on `ubuntu-26.04` for KVM. It builds the driver of the `oracle-images` E2E test and runs it directly, as an `execute` shard does (see **Execute mode** in [`e2e.yml` behavior](#e2eyml-behavior)), with the hard open-file limit raised and `XDG_RUNTIME_DIR` and `TMPDIR` on the root disk. Every run therefore boots the decoy, runs a hidden session and images the decoy root before the session, after a plain control reboot and after the session. Building the test itself would substitute the pass of an earlier run from the binary cache, together with that run's images, so the session would run only when its inputs changed. The binary cache still serves the driver, `nails` and the VM closures. The three raws go to the `scan` job as the `oracle-real-raws` artifact, kept 3 days.
+- **Scan.** The `scan` job runs on `ubuntu-24.04`, where the pinned bulk_extractor builds. It runs `ci/oracle/run-scan.sh` over the raws and fails on anything but a clean verdict. It keeps `verdict.json` and `outputs.tar.gz`, a tar of the analysis outputs, as the `oracle-real-verdict` artifact. The carved file trees hold the decoy's symlinks, absolute ones included (the decoy's `/etc/mtab` points at `/proc/mounts`), and an upload of the trees would follow each to whatever its target names on the runner; the tar stores a symlink as a symlink, so no file of the runner goes up with them.
+- **Reporting.** `report-status` reads both jobs, so a failed `produce` job, which skips the scan, reports red like a failed scan does. It runs only for `main`, the branch the schedule runs on: a dispatch on another branch does not open, comment on or close the `CI red: Oracle real-image nightly` issue.
+- **No synthetic run.** `ci/oracle/oracle-nightly.yml`, a run of the same scan over synthetic btrfs images built on the runner, is a template, not a workflow. It is not installed under `.github/workflows/`, so no schedule runs it, and the synthetic images and the btrfs carve of `run-scan.sh` run only by hand. As it stands it could not pass either: plaso cannot open btrfs, so the synthetic images fail the plaso channel.
 
 ### Post-merge contract and the red-main rule
 
@@ -243,7 +252,7 @@ The action also connects the project's public Cachix cache, [`nails`](https://na
   - `vm-test-run-*`: passed VM tests, which later runs fetch instead of booting the test again.
 
   `nails-release-*` is never pushed. Each path goes up with its closure, except what cache.nixos.org already serves. To push more, add a prefix to `PUSH_ALLOW` in `cache_plan.py`.
-- **Who gets the token.** Only `e2e.yml` (not when `release.yml` calls it), the `plan` and `distro` jobs of `distro-e2e.yml` and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and from the runs Dependabot starts itself, so those stay read-only too. A run that a person starts on a Dependabot pull request, by adding a label or pushing to it, does get the token and may push, because the branch is in this repository; review the bumped versions before doing either.
+- **Who gets the token.** Only `e2e.yml` (not when `release.yml` calls it), the `plan` and `distro` jobs of `distro-e2e.yml`, the `produce` job of `oracle-real-nightly.yml` and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and from the runs Dependabot starts itself, so those stay read-only too. A run that a person starts on a Dependabot pull request, by adding a label or pushing to it, does get the token and may push, because the branch is in this repository; review the bumped versions before doing either.
 - **Release builds.** The `build` job of `release.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release. The release's E2E run calls `e2e.yml` with `cache: false` too: it gates the release, so no pass may come from an earlier run, and every test boots on the tagged commit.
 - **Trust boundary.** Anyone who can push a branch to this repository can push to the cache: once a run has configured the token, the code under test can read it. Write access already implies that trust, and release artifacts never come from the cache.
 
@@ -336,7 +345,7 @@ GitHub settings that the workflows assume but cannot set themselves:
 
 ## Secrets and permissions
 
-- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml`, the `plan` and `distro` jobs of `distro-e2e.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
+- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml`, the `plan` and `distro` jobs of `distro-e2e.yml`, the `produce` job of `oracle-real-nightly.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
 - `DEPENDENCY_UPDATE_TOKEN` is optional and used only by the Cargo.lock refresh in `scheduled.yml`, so the pull request it opens starts CI. Without it the job prints the diff to the run summary.
 - No E2E lane needs any other secret. The retired `hetzner-pr` approval environment and the `hetzner` environment with its secrets (`HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID`, `RUNNER_REGISTRATION`) are no longer used and can be deleted.
 - `next-nightly.yml` needs no secret: its `dispatch` job starts the runs of `next` with the job's own token, which gets `actions: write` for that.
