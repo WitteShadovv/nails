@@ -394,10 +394,13 @@ jobs:
       # cores and splits it into four shards. It fails when cargo-mutants itself
       # does, for example when the tests already fail without a mutation; a
       # single shard may catch no mutant, so the "proves nothing" guard applies
-      # only to a whole, unsharded sweep.
+      # only to a whole, unsharded sweep. The tree copy cargo-mutants builds in
+      # goes to the runner's disk: /tmp on ubuntu-26.04 is too small for it
+      # ("Disk quota exceeded").
       - name: Mutate the decision cores
         env:
           SHARD: ${{ matrix.shard }}
+          TMPDIR: ${{ runner.temp }}
         run: just mutants "$SHARD" 4
 
       - name: Upload the mutants report
