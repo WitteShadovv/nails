@@ -17,27 +17,31 @@ shipped_targets := "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu"
 
 # --- Rust quality gate ---
 
-# Check formatting without rewriting files: the workspace, then the fuzz and
-# setup crates, each a workspace of its own.
+# Check formatting without rewriting files: the workspace, then the fuzz, setup
+# and gui crates, each a workspace of its own.
 fmt-check:
     cargo fmt --all -- --check
     cargo fmt --manifest-path fuzz/Cargo.toml -- --check
     cargo fmt --manifest-path setup/Cargo.toml -- --check
+    cargo fmt --manifest-path gui/Cargo.toml -- --check
 
-# Clippy over every target and feature, with warnings denied; the setup crate,
-# a workspace of its own, too.
+# Clippy over every target and feature, with warnings denied; the setup and gui
+# crates, workspaces of their own, too.
 lint:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo clippy --manifest-path setup/Cargo.toml --all-targets --all-features --locked -- -D warnings
+    cargo clippy --manifest-path gui/Cargo.toml --all-targets --all-features --locked -- -D warnings
 
 # Rust file size limits; the pre-commit hook and CI run the same script.
 line-count:
     ./scripts/check-line-count.sh
 
-# Run the unit and integration suite through nextest; the setup crate too.
+# Run the unit and integration suite through nextest; the setup and gui crates
+# too.
 test:
     cargo nextest run --workspace --all-features --locked --no-fail-fast
     cargo nextest run --manifest-path setup/Cargo.toml --all-features --locked --no-fail-fast
+    cargo nextest run --manifest-path gui/Cargo.toml --all-features --locked --no-fail-fast --no-tests=pass
 
 # Long property-based run of the parser tests (the `fuzz_` proptests): the
 # same properties `test` runs with the default case count, here with `cases`
