@@ -632,6 +632,9 @@ onto the decoy:
    on the hidden volume as `<hidden-root>/nails.new`; after the session, with
    the hidden volume mounted on the decoy and before you activate, move it over
    `<hidden-root>/nails`. Do not stage the new binary on the decoy at any point.
+   Still in the session, run `<hidden-root>/nails.new config validate`: a new
+   version can refuse a key the old one accepted, and the session is where the
+   hidden configuration can be changed, not the decoy.
 4. Re-read this guide after a version change; operational requirements can change
    between releases.
 
