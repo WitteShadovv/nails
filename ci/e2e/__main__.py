@@ -171,6 +171,15 @@ def _reporter(
 
 
 def _command_run(args: argparse.Namespace) -> int:
+    # The clock starts before anything else, the metadata's evaluation too.
+    limit = None
+    if args.job_timeout is not None:
+        limit = run.job_time_limit(args.job_timeout, args.retries)
+        print(
+            f"time limit: {args.job_timeout - run.JOB_RESERVE_MINUTES} minutes for "
+            f"the run, {limit.test_seconds}s for one attempt of a test",
+            file=sys.stderr,
+        )
     metadata = _metadata()
     tests = _resolve(metadata, args.targets, args.affected, args.exclude)
     if args.shard is not None:
@@ -190,6 +199,7 @@ def _command_run(args: argparse.Namespace) -> int:
             report=_reporter(args),
             eval_batch=args.eval_batch,
             eval_workers=args.eval_jobs,
+            limit=limit,
         )
     return run.run_build(
         tests,
@@ -201,6 +211,8 @@ def _command_run(args: argparse.Namespace) -> int:
         log_dir=args.log_dir,
         report=_reporter(args),
         require_boot=args.require_boot,
+        timeouts=metadata.timeouts,
+        limit=limit,
     )
 
 
@@ -415,6 +427,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="fail a test that the store or a binary cache served instead of a "
         "build in this run (--execute boots every test anyway)",
+    )
+    run_cmd.add_argument(
+        "--job-timeout",
+        type=_positive_int,
+        metavar="MINUTES",
+        help="the timeout of the CI job this run is in: the run ends "
+        f"{run.JOB_RESERVE_MINUTES} minutes before it, stopping what still runs, "
+        "and one attempt of a test may take an equal share of the rest per "
+        "attempt (half of it with --retries 1); a test stopped for its time "
+        "fails as timed out, one never started as not run",
     )
     run_cmd.add_argument(
         "--log-dir", type=Path, help="write the log of every failed test here"

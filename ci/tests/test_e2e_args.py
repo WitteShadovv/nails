@@ -237,6 +237,36 @@ class RunOptionsTest(unittest.TestCase):
         self.assertIsNone(captured["eval_batch"])
         self.assertEqual(captured["eval_workers"], 7)
 
+    def test_a_job_timeout_reaches_both_ways_of_running_as_a_time_limit(
+        self,
+    ) -> None:
+        for extra, runner in (([], "run_build"), (["--execute"], "run_drivers")):
+            with self.subTest(runner=runner):
+                with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    captured = self.run_cli(
+                        runner, "--job-timeout", "30", "--retries", "1", *extra
+                    )
+                limit = captured["limit"]
+                assert isinstance(limit, cli.run.TimeLimit)
+                # 25 of the 30 minutes, half of them for one attempt.
+                self.assertEqual(limit.test_seconds, 750)
+                self.assertIn("time limit: 25 minutes for the run", stderr.getvalue())
+
+    def test_without_a_job_timeout_nothing_is_limited(self) -> None:
+        captured = self.run_cli("run_build")
+        self.assertIsNone(captured["limit"])
+        # The tests' own timeouts tell a test that ran out of time.
+        self.assertEqual(captured["timeouts"], METADATA.timeouts)
+
+    def test_a_job_too_short_for_the_reserve_is_refused(self) -> None:
+        with (
+            mock.patch.object(cli, "load_metadata", side_effect=_fail_metadata),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            code = cli.main(["run", "a", "--job-timeout", "5"])
+        self.assertEqual(code, cli.EXIT_BAD_INPUT)
+        self.assertIn("leaves no time to run a test", stderr.getvalue())
+
     def test_negative_retries_are_rejected(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as caught:
