@@ -58,6 +58,14 @@ pub(super) fn read_to_string_noatime(path: &Path) -> io::Result<String> {
     Ok(content)
 }
 
+/// Read a whole file's bytes without updating its access time.
+pub(super) fn read_to_end_noatime(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = std::fs::File::from(open_noatime(path, OpenKind::File)?);
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)?;
+    Ok(content)
+}
+
 /// One directory entry from [`read_dir_noatime`].
 #[derive(Debug, Clone)]
 pub struct NoatimeEntry {
@@ -208,6 +216,7 @@ mod tests {
 
         let fs = RealFilesystem;
         assert_eq!(fs.read_file_content(&file).unwrap(), "ID=decoy\n");
+        assert_eq!(fs.read_file_bytes(&file).unwrap(), b"ID=decoy\n");
         assert_eq!(fs.list_directory(&tree).unwrap(), vec![file.clone()]);
         assert_eq!(
             fs.scan_files_with_pattern(&tree, "release")
@@ -218,6 +227,26 @@ mod tests {
 
         assert_eq!(atime(&file), file_before, "file atime must not change");
         assert_eq!(atime(&tree), tree_before, "directory atime must not change");
+    }
+
+    #[test]
+    fn bytes_that_are_not_text_are_read_as_bytes() {
+        use crate::{Filesystem, RealFilesystem};
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.gz");
+        let gzip_magic: [u8; 6] = [0x1F, 0x8B, 0x08, 0x00, 0xFF, 0xFE];
+        std::fs::write(&file, gzip_magic).unwrap();
+
+        assert_eq!(read_to_end_noatime(&file).unwrap(), gzip_magic);
+        assert_eq!(RealFilesystem.read_file_bytes(&file).unwrap(), gzip_magic);
+        // The text read refuses them, which is why the byte read exists.
+        assert!(RealFilesystem.read_file_content(&file).is_err());
+        assert!(
+            RealFilesystem
+                .read_file_bytes(&dir.path().join("missing"))
+                .is_err()
+        );
     }
 
     #[test]
