@@ -18,7 +18,8 @@ false pass. A forensic VM test extracts the record files from a decoy disk image
 Record formats read:
 
 * **wtmpdb** (Debian 13 ``/var/log/wtmp.db``) -- SQLite. The boot writer names
-  the boot row ``soft-reboot`` when systemd reports a soft-reboot (wtmpdb
+  the boot row ``soft-reboot`` when systemd reports a soft-reboot, or when it
+  cannot ask and the kernel has been up for more than five minutes (wtmpdb
   ``src/wtmpdb.c`` ``main_boot``), which ordinary use never writes.
 * **lastlog2** (``/var/lib/lastlog/lastlog2.db``) -- SQLite, one row per user's
   last login.
@@ -343,6 +344,7 @@ def last_boot_is_backdated(records: Sequence[Mapping[str, object]]) -> bool:
     shutdown that precedes it: that is the trace this reports. ``False`` when
     there is no boot record or nothing precedes the last one.
     """
+
     def tv_sec(row: Mapping[str, object]) -> int:
         value = row.get("tv_sec", 0)
         return value if isinstance(value, int) else 0
@@ -443,7 +445,7 @@ def diff_captures(control: RecordCapture, session: RecordCapture) -> dict[str, o
     The result is plain data meant to be printed into the evidence log and
     asserted on: the extra wtmpdb/lastlog2 rows, the extra wtmp/btmp records, the
     UIDs whose lastlog time moved, whether the seed digest differs, and a flag
-    for the predicted ``soft-reboot`` wtmpdb row.
+    for a ``soft-reboot`` wtmpdb row among the rows ``session`` added.
     """
     seed_changed = (control.seed or {}).get("sha256") != (session.seed or {}).get(
         "sha256"
@@ -453,8 +455,9 @@ def diff_captures(control: RecordCapture, session: RecordCapture) -> dict[str, o
         for uid, rec in session.lastlog.items()
         if control.lastlog.get(uid, {}).get("time") != rec.get("time")
     }
+    wtmpdb_added = sql_rows_added(control.wtmpdb, session.wtmpdb)
     return {
-        "wtmpdb_added": sql_rows_added(control.wtmpdb, session.wtmpdb),
+        "wtmpdb_added": wtmpdb_added,
         "lastlog2_added": sql_rows_added(control.lastlog2, session.lastlog2),
         "wtmp_added": utmp_added(control.wtmp, session.wtmp),
         "btmp_added": utmp_added(control.btmp, session.btmp),
@@ -462,8 +465,169 @@ def diff_captures(control: RecordCapture, session: RecordCapture) -> dict[str, o
         "seed_changed": seed_changed,
         "seed_control": control.seed,
         "seed_session": session.seed,
-        "session_adds_soft_reboot_row": (
-            has_soft_reboot_boot_row(session.wtmpdb)
-            and not has_soft_reboot_boot_row(control.wtmpdb)
-        ),
+        # Judged on the rows the session added, so a control that itself
+        # soft-reboots (and so already holds such a row) cannot hide one.
+        "session_adds_soft_reboot_row": has_soft_reboot_boot_row(wtmpdb_added),
     }
+
+
+# --- does a way back read as a power cycle? ---------------------------------
+
+# wtmpdb's row type for a boot (``BOOT_TIME`` in its header, as in utmpx).
+WTMPDB_BOOT_TIME = 2
+
+# How far (seconds) a stamped time may lie outside the window the test measured
+# around the way back: the guest's clock reads are whole commands apart.
+WINDOW_SLACK = 2.0
+
+
+def _as_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _row_times(row: Mapping[str, object]) -> list[int]:
+    """The login and logout times (microseconds) a wtmpdb row carries."""
+    return [
+        t
+        for t in (_as_int(row.get("Login")), _as_int(row.get("Logout")))
+        if t is not None
+    ]
+
+
+def wtmpdb_boot_logins(rows: Sequence[Mapping[str, object]]) -> list[int]:
+    """The login time (microseconds) of each wtmpdb boot row, in ``ID`` order."""
+    boots = sorted(
+        (row for row in rows if _as_int(row.get("Type")) == WTMPDB_BOOT_TIME),
+        key=lambda row: _as_int(row.get("ID")) or 0,
+    )
+    return [t for row in boots if (t := _as_int(row.get("Login"))) is not None]
+
+
+def wtmpdb_way_back_problems(
+    reference: Sequence[Mapping[str, object]],
+    after: Sequence[Mapping[str, object]],
+    window: tuple[float, float],
+) -> list[str]:
+    """Why the rows a way back added to wtmpdb do not read as a power cycle's.
+
+    ``reference`` is the database as a power cycle left it before the session,
+    ``after`` the same database after the way back, and ``window`` the earliest
+    and latest wall-clock time (seconds) the way back can have happened at. A
+    power cycle adds one row: a boot named ``reboot``, stamped when the machine
+    came back, so no earlier than any time the database held before it -- the
+    shutdown of the boot before it included, which a crash would leave unset.
+    Rows are told apart by ``ID``, which wtmpdb never reuses. An empty list
+    means the way back reads as a power cycle.
+    """
+    known = {_as_int(row.get("ID")) for row in reference}
+    added = [row for row in after if _as_int(row.get("ID")) not in known]
+    if len(added) != 1:
+        return [
+            f"the way back added {len(added)} rows, a power cycle adds one: {added}"
+        ]
+    row = added[0]
+    problems: list[str] = []
+    if _as_int(row.get("Type")) != WTMPDB_BOOT_TIME:
+        problems.append(f"the row the way back added is no boot row: {row}")
+    if str(row.get("User", "")) != "reboot":
+        problems.append(
+            f"the boot row is named {row.get('User')!r}, not 'reboot': {row}"
+        )
+    login = _as_int(row.get("Login"))
+    row_id = _as_int(row.get("ID"))
+    if login is None or row_id is None:
+        return problems + [f"the boot row has no login time or ID: {row}"]
+    earlier = [r for r in after if (_as_int(r.get("ID")) or 0) < row_id]
+    latest = max((t for r in earlier for t in _row_times(r)), default=None)
+    if latest is not None and login < latest:
+        problems.append(
+            f"the boot row is stamped {login} us, before {latest} us that an "
+            f"earlier row carries (the shutdown before it): backdated"
+        )
+    boots = [r for r in earlier if _as_int(r.get("Type")) == WTMPDB_BOOT_TIME]
+    if boots and _as_int(boots[-1].get("Logout")) is None:
+        problems.append(
+            "the boot before it has no shutdown time, so it reads as a crash: "
+            f"{boots[-1]}"
+        )
+    low, high = window
+    if not low - WINDOW_SLACK <= login / 1e6 <= high + WINDOW_SLACK:
+        problems.append(
+            f"the boot row is stamped {login / 1e6:.6f}, outside the way back "
+            f"({low:.6f} to {high:.6f})"
+        )
+    return problems
+
+
+def _utmp_time(record: Mapping[str, object]) -> float:
+    sec = _as_int(record.get("tv_sec")) or 0
+    usec = _as_int(record.get("tv_usec")) or 0
+    return sec + usec / 1e6
+
+
+def _boot_segment(
+    records: Sequence[Mapping[str, object]],
+) -> tuple[int, list[Mapping[str, object]]] | None:
+    """The index of the last boot record and the records written after it."""
+    boots = [i for i, r in enumerate(records) if r.get("type") == "BOOT_TIME"]
+    if not boots:
+        return None
+    return boots[-1], list(records[boots[-1] + 1 :])
+
+
+def classic_way_back_problems(
+    reference: Sequence[Mapping[str, object]],
+    after: Sequence[Mapping[str, object]],
+    window: tuple[float, float],
+) -> list[str]:
+    """Why the boot a way back added to a classic wtmp does not read as a power
+    cycle's.
+
+    ``reference`` and ``after`` are parsed wtmp files (:func:`parse_utmp`), the
+    first as a power cycle left it before the session, and ``window`` the
+    earliest and latest wall-clock time (seconds) of the way back. A power cycle
+    appends one boot record, stamped when the machine came back with a live
+    microsecond reading, no earlier than any record before it; every record its
+    start writes, the run level among them, follows it in time as well as in
+    the file, as the reference's own last boot shows. An empty list means the
+    way back reads as a power cycle.
+    """
+    added = len(boot_record_times(after)) - len(boot_record_times(reference))
+    if added != 1:
+        return [f"the way back added {added} boot records, a power cycle adds one"]
+    segment = _boot_segment(after)
+    assert segment is not None
+    index, written_after = segment
+    boot = after[index]
+    problems: list[str] = []
+    if last_boot_is_backdated(after):
+        problems.append(f"the boot record is stamped before an earlier record: {boot}")
+    if _as_int(boot.get("tv_usec")) == 0:
+        problems.append(
+            f"the boot record carries a cleared microsecond field, which no "
+            f"genuine boot does: {boot}"
+        )
+    stamped = _utmp_time(boot)
+    low, high = window
+    if not low - WINDOW_SLACK <= stamped <= high + WINDOW_SLACK:
+        problems.append(
+            f"the boot record is stamped {stamped:.6f}, outside the way back "
+            f"({low:.6f} to {high:.6f})"
+        )
+    early = [r for r in written_after if _utmp_time(r) < stamped]
+    if early:
+        problems.append(
+            f"records of the way back's start are dated before its boot: {early}"
+        )
+    reference_segment = _boot_segment(reference)
+    reference_run_level = reference_segment is not None and any(
+        r.get("type") == "RUN_LVL" for r in reference_segment[1]
+    )
+    if reference_run_level and not any(
+        r.get("type") == "RUN_LVL" for r in written_after
+    ):
+        problems.append(
+            "the way back's start wrote no run-level record after its boot, where "
+            "the power cycle's start did"
+        )
+    return problems
