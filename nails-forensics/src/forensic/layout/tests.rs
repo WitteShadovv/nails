@@ -314,6 +314,46 @@ fn the_recorded_size_of_ext4_and_xfs_comes_from_the_superblock() {
 }
 
 #[test]
+fn the_size_and_compression_of_an_f2fs_come_from_its_superblock() {
+    use RecordedSize::{Bytes, Implausible};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f2fs.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(1 << 20).unwrap();
+    // The superblock at 1 KiB: log2 of the block size at 0x10, the block
+    // count at 0x24 and the feature flags at 0x884.
+    let f2fs = |log_block: u32, blocks: u64, features: u32| {
+        let mut sb = vec![0u8; 0x888];
+        sb[..4].copy_from_slice(&[0x10, 0x20, 0xF5, 0xF2]);
+        sb[0x10..0x14].copy_from_slice(&log_block.to_le_bytes());
+        sb[0x24..0x2C].copy_from_slice(&blocks.to_le_bytes());
+        sb[0x884..].copy_from_slice(&features.to_le_bytes());
+        sb
+    };
+    put(&mut file, 0x400, &f2fs(12, 16384, 0x0008));
+    put(&mut file, (64 << 10) + 0x400, &f2fs(12, 256, 0x2008));
+    put(&mut file, (128 << 10) + 0x400, &f2fs(16, 3, 0));
+    put(&mut file, (192 << 10) + 0x400, &f2fs(9, 100, 0x2000));
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+    let size = |start| recorded_size(&source, start, "f2fs").unwrap();
+
+    assert_eq!(size(0), Bytes(16384 * 4096));
+    assert_eq!(size(64 << 10), Bytes(256 * 4096));
+    // 64 KiB blocks are the largest a page-sized f2fs block gets; 512 bytes
+    // is none.
+    assert_eq!(size(128 << 10), Bytes(3 << 16));
+    assert_eq!(size(192 << 10), Implausible);
+
+    assert!(!f2fs_compression(&source, 0).unwrap());
+    assert!(f2fs_compression(&source, 64 << 10).unwrap());
+    assert!(!f2fs_compression(&source, 128 << 10).unwrap());
+    // A superblock the source ends inside, before its flags, counts as one
+    // with the feature.
+    assert!(f2fs_compression(&source, (1 << 20) - 0x800).unwrap());
+}
+
+#[test]
 fn a_table_behind_a_stale_superblock_is_found_by_read_table() {
     let dir = tempfile::tempdir().unwrap();
     // An MBR over what an ext4 that once spanned the disk left behind it.

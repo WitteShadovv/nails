@@ -89,7 +89,10 @@ of this changelog for that version becomes the release notes word for word, and
   raw plaintext scan can neither reach those old copies nor read a compressed extent, and a clean scan
   there cannot prove a trace is gone. A live decoy is classified from its mount table, and an offline
   image or an unmounted `--device` from its on-disk superblock and, for a whole disk, partition by
-  partition, so a decoy read that way is reported "not checked" too.
+  partition, so a decoy read that way is reported "not checked" too. An f2fs counts only when it can
+  compress: a mounted one whose options show compression, which the kernel always lists for an f2fs
+  made with the compression feature, and an image or unmounted device whose superblock carries that
+  feature. A plain f2fs stores every file verbatim and gets a clean result.
 - Discards (TRIM) reaching the hidden volume now refuse activation instead of only warning:
   forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
   deniable volume should look like uniform random data, and writing an outer volume with discards

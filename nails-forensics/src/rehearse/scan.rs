@@ -16,7 +16,7 @@ pub const NOT_VISIBLE: &[&str] = &[
     "flash cells an SSD has remapped or keeps in reserve (wear levelling, over-provisioning): no host read reaches them, only a chip-off read does",
     "blocks discarded with TRIM: they read back as zeros here even where the flash still holds them",
     "disks and partitions not mounted while the scan runs (a second disk, an unused swap partition) unless named with --device",
-    "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, f2fs): this raw plaintext scan cannot match it, so such storage is reported not checked. A mounted device is judged by its mount, an image or an unmounted --device by its superblock (a whole disk partition by partition), and an encrypted container, or storage on which the scan identifies no filesystem, is reported not checked too",
+    "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, an f2fs made with compression): this raw plaintext scan cannot match it, so such storage is reported not checked. A mounted device is judged by its mount, an image or an unmounted --device by its superblock (a whole disk partition by partition), and an encrypted container, or storage on which the scan identifies no filesystem, is reported not checked too",
     "anything outside the decrypted mapping: the encryption header area and other partitions of the same disk",
     "firmware storage (EFI variables, pstore) and RAM",
 ];
