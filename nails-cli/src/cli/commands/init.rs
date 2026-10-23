@@ -62,10 +62,13 @@ pub fn execute(
             ExitStatus::Config,
             ErrorBody::new(
                 "config",
-                "nails init takes the hidden volume path as its positional argument; \
+                "init takes the hidden volume path as its positional argument; \
                  the global --config flag is not used by init",
             )
-            .with_hint("run `nails init <hidden-volume-root>`"),
+            .with_hint(format!(
+                "run `{}`",
+                nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Init)
+            )),
         );
     }
 

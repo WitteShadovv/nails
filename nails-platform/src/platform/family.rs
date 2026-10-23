@@ -448,11 +448,12 @@ fn gate_version(row: &FamilyRow, version_id: Option<&str>) -> FamilySupport {
         return FamilySupport::Untested(format!(
             "{} {raw} is not a release NAILS has been tested on (tested: {} {}). NAILS runs \
              on it, but a change in this release can break the session or leave a trace \
-             NAILS does not know about. Use a tested release, or run `nails rehearse` on this \
-             computer before you rely on it.",
+             NAILS does not know about. Use a tested release, or run `{}` on this computer \
+             before you rely on it.",
             row.label,
             row.label,
             releases(validated),
+            rehearse_line(),
         ));
     }
 
@@ -473,10 +474,17 @@ fn derivative_warning(family: Family) -> String {
     format!(
         "this system is a derivative of the {} family, which NAILS has not tested. It runs, \
          but a change the derivative makes can break the session or leave a trace NAILS does \
-         not know about. Use a tested release, or run `nails rehearse` on this computer before \
-         you rely on it.",
+         not know about. Use a tested release, or run `{}` on this computer before you rely \
+         on it.",
         family.label(),
+        rehearse_line(),
     )
+}
+
+/// The `rehearse` line an untested host is pointed at, with the real binary
+/// path.
+fn rehearse_line() -> String {
+    nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Rehearse)
 }
 
 /// The refusal for a derivative whose base family NAILS has not admitted.

@@ -118,7 +118,7 @@ where
              (`sudo umount {}` takes it off)",
             style.mark(Mark::Warn),
             cover.source,
-            cover.mount_point.display()
+            nails_core::next_step::shell_word(cover.mount_point.as_os_str())
         ));
     }
     if report.decoy_persistent && report.posture != Posture::Active {

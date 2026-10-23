@@ -330,6 +330,12 @@ of this changelog for that version becomes the release notes word for word, and
   Debian 13 is among them although `last` there reads wtmpdb, which keeps no process numbers: its
   getty still writes `/var/log/wtmp`. Only a session ended with `--poweroff`, which has no way back,
   leaves none of them.
+- A hint that names a command to run names it by the binary's real path, quoted for the shell when
+  the path holds a space or another special character (a volume mounted by its label, say), so it
+  pastes as it is. The DMA-protection warning, the warning on an untested release or derivative,
+  `verify`'s guidance for a stale record and for RAM, the configuration-not-found error and `init`'s
+  errors named a bare `nails` command, which `sudo` cannot run because the binary is not on its
+  `PATH`.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

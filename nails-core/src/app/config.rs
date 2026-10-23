@@ -36,8 +36,9 @@ pub fn resolve_config(config_override: Option<&Path>) -> Result<LoadedConfig, Na
 pub fn config_error_line(error: &NailsError) -> String {
     match error {
         NailsError::ConfigNotFound { path } => format!(
-            "config file not found: {} (run `nails init <root>` or pass --config)",
-            path.display()
+            "config file not found: {} (run `{}` or pass --config)",
+            path.display(),
+            crate::next_step::sudo_line(crate::next_step::NextStep::Init)
         ),
         NailsError::ConfigError(message) => message.clone(),
         NailsError::IoError { path, source } => {

@@ -1027,7 +1027,7 @@ fn test_stage_hidden_config_symlink_errors_when_nails_directory_permission_updat
     let err = stage_hidden_config_symlink(&fs, &hidden_path).unwrap_err();
     assert!(
         err.to_string()
-            .contains("Failed to set permissions on hidden nails config directory")
+            .contains("Failed to set permissions on the hidden NAILS configuration directory")
     );
 }
 

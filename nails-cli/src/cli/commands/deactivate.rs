@@ -54,7 +54,7 @@ pub fn execute(
                     "not in a hidden session; nothing to deactivate",
                 )
                 .with_hint(format!(
-                    "an interrupted activation is cleaned up with '{}'",
+                    "an interrupted activation is cleaned up with `{}`",
                     nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Recover)
                 ))
                 .with_next(NextStep::new("recover")),

@@ -296,10 +296,13 @@ impl<F: Filesystem> Verifier<F> {
                 "memory",
                 "RAM keeps the session's data until power-off, and briefly after it",
             )
-            .with_fix_guidance(
-                "Power off (in the hidden session: nails deactivate --poweroff) and leave the \
-                 machine off for a few minutes before handing it over",
-            ),
+            .with_fix_guidance(format!(
+                "Power off (in the hidden session: `{}`) and leave the machine off for a few \
+                 minutes before handing it over",
+                nails_base::next_step::sudo_line(
+                    nails_base::next_step::NextStep::DeactivatePoweroff
+                )
+            )),
         );
 
         Ok(findings)
@@ -340,7 +343,7 @@ fn runtime_fix_guidance(id: &str, path: &Path) -> String {
     let path = path.display();
     match id {
         "runtime-copy-dir" => format!(
-            "Leftover of an interrupted activation, in RAM; run '{}' on the decoy, \
+            "Leftover of an interrupted activation, in RAM; run `{}` on the decoy, \
              or power off (then confirm {path} is gone)",
             nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Recover)
         ),

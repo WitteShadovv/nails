@@ -90,6 +90,7 @@ pub(crate) fn sudo_command(
     subcommand: &str,
     args: &[std::ffi::OsString],
 ) -> String {
+    use nails_core::next_step::shell_word;
     let binary = argv0
         .map(|path| shell_word(path.as_os_str()))
         .unwrap_or_else(|| "nails".to_string());
@@ -102,21 +103,6 @@ pub(crate) fn sudo_command(
             .join(" ")
     };
     format!("sudo {binary} {args}")
-}
-
-/// `text` as one word for a POSIX shell: as it is when no shell treats any of
-/// its characters specially, otherwise in single quotes (a `'` as `'\''`).
-fn shell_word(text: &std::ffi::OsStr) -> String {
-    let text = text.to_string_lossy();
-    let plain = !text.is_empty()
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-./:=@%+,".contains(&b));
-    if plain {
-        text.into_owned()
-    } else {
-        format!("'{}'", text.replace('\'', "'\\''"))
-    }
 }
 
 /// The arguments this process was started with, without the program name.

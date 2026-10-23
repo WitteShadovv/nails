@@ -22,6 +22,12 @@ fn write_config(contents: &str) -> tempfile::NamedTempFile {
     file
 }
 
+/// The `init` line the binary names: `sudo <its own path> init <root>`.
+fn init_line() -> String {
+    let binary = std::fs::canonicalize(assert_cmd::cargo::cargo_bin!("nails")).unwrap();
+    nails_core::next_step::sudo_line_with(&binary, nails_core::next_step::NextStep::Init)
+}
+
 fn stdout_json(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("stdout is JSON")
 }
@@ -206,8 +212,9 @@ fn missing_explicit_config_prints_one_line_and_exits_3() {
         assert_eq!(
             stderr.trim_end(),
             format!(
-                "error: config file not found: {} (run `nails init <root>` or pass --config)",
-                missing.display()
+                "error: config file not found: {} (run `{}` or pass --config)",
+                missing.display(),
+                init_line()
             ),
             "{command:?}"
         );

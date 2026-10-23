@@ -69,7 +69,7 @@ impl Diagnostic {
     pub fn from_error(err: &NailsError) -> Self {
         Self {
             message: err.to_string(),
-            hint: err.hint().map(str::to_string),
+            hint: err.hint(),
         }
     }
 }

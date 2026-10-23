@@ -157,7 +157,7 @@ fn an_untested_ubuntu_release_is_admitted_with_a_warning() {
                     )),
                     "{warning}"
                 );
-                assert!(warning.contains("nails rehearse"), "{warning}");
+                assert!(warning.contains(&rehearse_line()), "{warning}");
             }
             other => panic!("{release}: expected an untested release, got {other:?}"),
         }
@@ -331,7 +331,7 @@ fn a_debian_like_derivative_is_accepted_with_a_warning() {
                 warning.contains("derivative of the Debian family"),
                 "{warning}"
             );
-            assert!(warning.contains("nails rehearse"), "{warning}");
+            assert!(warning.contains(&rehearse_line()), "{warning}");
         }
         other => panic!("expected an untested derivative, got {other:?}"),
     }

@@ -213,11 +213,12 @@ fn mount_alert(mount: &MountEntry) -> Notification {
 fn cover_alert(cover: &MountEntry) -> Notification {
     let source = cover.source.display();
     let root = cover.mount_point.display();
+    let umount = nails_core::next_step::shell_word(cover.mount_point.as_os_str());
     Notification {
         title: "Disk mounted over a folder in use".to_string(),
         body: format!(
             "{source} is mounted over {root}, a folder in use. Files saved there now go to \
-             {source}. To undo it, run: sudo umount {root}"
+             {source}. To undo it, run: sudo umount {umount}"
         ),
         urgency: "critical".to_string(),
         icon: Some("drive-removable-media".to_string()),

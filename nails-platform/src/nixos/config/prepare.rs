@@ -420,7 +420,7 @@ pub fn stage_hidden_config_symlink<F: Filesystem>(fs: &F, hidden_path: &Path) ->
 
     fs.set_permissions(&nails_dir, 0o700).map_err(|e| {
         NailsError::NixOSError(format!(
-            "Failed to set permissions on hidden nails config directory {}: {}",
+            "Failed to set permissions on the hidden NAILS configuration directory {}: {}",
             nails_dir.display(),
             e
         ))

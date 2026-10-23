@@ -1170,10 +1170,14 @@ fn test_explicit_config_missing_fails() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    let binary = std::fs::canonicalize(assert_cmd::cargo::cargo_bin!("nails")).unwrap();
     assert_eq!(
         stderr.trim(),
-        "error: config file not found: /nonexistent/path/nails.toml \
-         (run `nails init <root>` or pass --config)",
+        format!(
+            "error: config file not found: /nonexistent/path/nails.toml (run `{}` or pass \
+             --config)",
+            nails_core::next_step::sudo_line_with(&binary, nails_core::next_step::NextStep::Init)
+        ),
         "exactly one error line"
     );
 }

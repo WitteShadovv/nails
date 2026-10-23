@@ -27,7 +27,7 @@ const RUN_CONTROL_DIR: &str = "/run/systemd/system.control";
 fn recover_fix() -> String {
     use nails_base::next_step::{NextStep, sudo_line};
     format!(
-        "Run '{}' to remove the leftovers of the interrupted entry",
+        "Run `{}` to remove the leftovers of the interrupted entry",
         sudo_line(NextStep::Recover)
     )
 }
@@ -37,7 +37,7 @@ fn recover_fix() -> String {
 pub(super) fn check_decoy_offline() -> String {
     use nails_base::next_step::{NextStep, sudo_line};
     format!(
-        "run '{}' against a read-only mount of the decoy root",
+        "run `{}` against a read-only mount of the decoy root",
         sudo_line(NextStep::VerifyOffline)
     )
 }
