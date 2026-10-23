@@ -6,7 +6,8 @@ name: Soak
 # at once. It is hours long and not a gate, so it runs in its own weekly lane and
 # can be dispatched before a release. The soak test is excluded from the runner's
 # target set (it is not a leaf), so it is built by name like a research spike
-# rather than through the e2e driver.
+# rather than through the e2e driver. Nobody watches a run, so a red one on main
+# opens or comments on the 'CI red: Soak' issue (report-status below).
 #
 # A scheduled or dispatched run only fires from the default branch, so until this
 # file reaches main this lane cannot run on `next`; see the integration notes for
@@ -70,3 +71,30 @@ jobs:
             echo "Soak result: $RESULT. See the step log for the per-cycle"
             echo "progress and, on a failure, the stall report."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # A run nobody watches: a failed soak, or one that hung until the job's
+  # timeout, opens or comments on the 'CI red: Soak' issue, and the next green
+  # run closes it. Only runs of main report, the branch the schedule runs on:
+  # a soak dispatched on another branch is watched by whoever started it, and
+  # must not close an issue about main.
+  report-status:
+    name: Report status
+    needs: reentry
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
