@@ -17,16 +17,21 @@
 //!    explained, and the unexplained (each unexplained finding is a leak);
 //! 4. checks the scan is not blind — every positive control names a concrete
 //!    planted artifact (an exact path and value, never a directory) and is
-//!    detected in `after`, and there is at least one to check; and
-//! 5. checks the coverage canary, validated the same way, is detected.
+//!    detected in `after`, and there is at least one to check;
+//! 5. checks the coverage canary, validated the same way, is detected; and
+//! 6. for a real scan, checks every analysis channel reported at least one
+//!    finding on every image: a tool that did not run, failed or read nothing
+//!    sees no residue, and no channel stands in for another.
 //!
-//! The run is [`Status::Clean`] only when all five hold. Everything here is a
-//! pure function of its inputs, so the whole engine is unit-tested in
-//! [`crate::tests`] over synthetic findings.
+//! The run is [`Status::Clean`] only when all six hold. [`verdict`] decides the
+//! first five over the findings alone, so a test world needs only the findings
+//! its rule weighs; [`scan_verdict`] adds the sixth and is the decision the CLI
+//! renders. Everything here is a pure function of its inputs, so the whole
+//! engine is unit-tested in `crate::tests` over synthetic findings.
 
 use crate::catalog::Catalog;
 use crate::model::{
-    AllowEntry, Canary, Controls, Finding, OraclePolicy, PositiveControl, Scans, Tool,
+    AllowEntry, Canary, Controls, Finding, ImageLabel, OraclePolicy, PositiveControl, Scans, Tool,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -100,6 +105,17 @@ pub enum Failure {
         /// Why it was rejected.
         reason: String,
     },
+    /// An analysis channel reported no finding at all for one image: the tool
+    /// did not run, failed, or read nothing. No other channel stands in for it
+    /// (the restore channel leaves the rotating journal files to plaso, and
+    /// every shipped self-check is a bulk_extractor finding), so a scan missing
+    /// a channel could not look and is never clean.
+    ChannelMissing {
+        /// The silent channel.
+        tool: Tool,
+        /// The image it reported nothing for: `before`, `control` or `after`.
+        image: String,
+    },
 }
 
 /// A residue finding that a cited allowlist entry explains, with the cited
@@ -151,8 +167,9 @@ pub struct Counts {
 pub struct Verdict {
     /// Clean or fail.
     pub status: Status,
-    /// Whether a positive control was missing (a blind scan). Set independently
-    /// of `status` so a blind run reads unmistakably.
+    /// Whether the scan was blind: a positive control was missing or, in
+    /// [`scan_verdict`], an analysis channel reported nothing for an image. Set
+    /// independently of `status` so a blind run reads unmistakably.
     pub blind: bool,
     /// A one-line human summary.
     pub summary: String,
@@ -555,8 +572,10 @@ fn summarize(status: Status, blind: bool, counts: &Counts, failures: usize) -> S
     )
 }
 
-/// Decide the verdict for one oracle run. Pure: the whole decision is a
-/// function of the scans, the policy and the catalog.
+/// Decide the verdict over the normalized findings: the first five rules of the
+/// module docs. It does not check that every channel ran, so a real run is
+/// decided with [`scan_verdict`]. Pure: the whole decision is a function of the
+/// scans, the policy and the catalog.
 pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdict {
     let (valid, mut failures) = validate_allowlist(&policy.allowlist.entries, catalog);
     let (checks, self_check_failures) = validate_self_checks(&policy.controls);
@@ -604,4 +623,45 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
         positive_controls: control_results,
         canary_detected,
     }
+}
+
+/// One failure per analysis channel that reported no finding for an image,
+/// image by image in [`ImageLabel::ALL`] order, then channel by channel.
+fn missing_channels(scans: &Scans) -> Vec<Failure> {
+    let mut failures = Vec::new();
+    for label in ImageLabel::ALL {
+        let findings = scans.image(label);
+        for tool in Tool::ALL {
+            if !findings.iter().any(|f| f.tool == tool) {
+                failures.push(Failure::ChannelMissing {
+                    tool,
+                    image: label.dir_name().to_string(),
+                });
+            }
+        }
+    }
+    failures
+}
+
+/// Decide the verdict for a real scan: [`verdict`], and the run also fails,
+/// blind, for every analysis channel that reported nothing for an image. Every
+/// channel finds something on a real image (the restore channel the tree, plaso
+/// a file's timestamps, bulk_extractor the canary), so a silent one did not
+/// run, failed, or read nothing, and the scan could not look. This is the
+/// decision the CLI renders.
+pub fn scan_verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdict {
+    let mut decided = verdict(scans, policy, catalog);
+    let missing = missing_channels(scans);
+    if !missing.is_empty() {
+        decided.blind = true;
+        decided.failures.extend(missing);
+        decided.status = Status::Fail;
+        decided.summary = summarize(
+            decided.status,
+            decided.blind,
+            &decided.counts,
+            decided.failures.len(),
+        );
+    }
+    decided
 }

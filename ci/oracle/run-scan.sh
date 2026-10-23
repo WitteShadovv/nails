@@ -13,6 +13,11 @@
 # image and the bulky plaso store before moving to the next label. The small
 # per-tool outputs for finished labels stay; nothing bulky accumulates.
 #
+# A scan that could not look never passes: a carve that recovers nothing or
+# reports an error stops the run, and nails-oracle fails a run in which any
+# channel reported nothing for an image (channel_missing), so a dropped plaso
+# channel fails it too.
+#
 # plaso reads every image through one fixed in-container path (/data/disk.img),
 # so the source path in its timeline is identical across the three images and
 # the before/control/after findings collapse as they must.
@@ -22,18 +27,20 @@
 # directory holding before.raw / control.raw / after.raw scans those real decoy
 # images instead -- e.g. the raws the e2e disk-forensics harness retains -- and
 # the restore channel is carved per detected filesystem (btrfs restore for the
-# synthetic btrfs images, debugfs rdump for the ext4 decoy roots). The
-# bulk_extractor and plaso channels read the image bytes directly and are
-# identical either way.
+# synthetic btrfs images, debugfs rdump for the ext4 decoy roots). A raw is a
+# bare filesystem image, or a whole-disk image with exactly one btrfs or
+# ext{2,3,4} partition. The bulk_extractor and plaso channels read the image
+# bytes directly and are identical either way.
 #
 #   sudo run-scan.sh <workdir>
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
 #
 # Needs root (loop mounts), btrfs-progs, git + the bulk_extractor build chain,
-# and docker (for the pinned plaso container); pre-built-image mode also needs
-# sleuthkit (mmls) and e2fsprogs (debugfs) plus util-linux (blkid). The verdict
-# binary is found at $ORACLE_BIN, or target/release/nails-oracle under the
-# repository root. No KVM.
+# and docker (for the pinned plaso container; without it the verdict fails on
+# the missing plaso channel); pre-built-image mode also needs sleuthkit (mmls)
+# and e2fsprogs (debugfs) plus util-linux (blkid, losetup). The verdict binary
+# is found at $ORACLE_BIN, or target/release/nails-oracle under the repository
+# root. No KVM.
 set -euo pipefail
 
 # --- Pins (verbatim from the image-analysis feasibility probe). -------------
@@ -67,7 +74,7 @@ for t in git make btrfs mkfs.btrfs truncate find; do
   command -v "$t" >/dev/null || { echo "run-scan: missing required tool: $t" >&2; exit 1; }
 done
 have_docker=1
-command -v docker >/dev/null || { echo "run-scan: docker absent; the plaso channel is skipped" >&2; have_docker=0; }
+command -v docker >/dev/null || { echo "run-scan: docker absent; the plaso channel cannot run, so the verdict will fail" >&2; have_docker=0; }
 
 # --- Image source. ----------------------------------------------------------
 # Empty means the default: build the synthetic btrfs images here, one per label.
@@ -82,7 +89,7 @@ if [ -n "$images_src" ]; then
     [ -f "$images_src/$label.raw" ] \
       || { echo "run-scan: ORACLE_IMAGES_DIR set but $label.raw is missing in $images_src" >&2; exit 2; }
   done
-  for t in blkid debugfs mmls; do
+  for t in blkid debugfs mmls losetup; do
     command -v "$t" >/dev/null \
       || { echo "run-scan: missing required tool for pre-built images: $t" >&2; exit 1; }
   done
@@ -115,6 +122,8 @@ LASTLOG_SENTINEL=${ORACLE_LASTLOG_SENTINEL:-lastlog2@oracle.example}
 PKG_SENTINEL=${ORACLE_PKG_SENTINEL:-pkg-history@oracle.example}
 
 allowlist="$repo_root/ci/oracle/allowlist.json"
+# The on-image file that carries the canary. Every image has it, so a restore
+# carve without it did not read the tree (see the carve check below).
 if [ -n "$images_src" ]; then
   # The canary is fixed at e2e time and the retained raws cannot be re-planted,
   # so it is never rotated here and controls-real.json is used verbatim.
@@ -122,8 +131,10 @@ if [ -n "$images_src" ]; then
     echo "run-scan: ORACLE_SEED/ORACLE_CANARY ignored in ORACLE_IMAGES_DIR mode (the canary is planted at e2e time)" >&2
   fi
   canary="$canary_default"
+  canary_file=/var/lib/nails-oracle/canary
   controls_used="$repo_root/ci/oracle/controls-real.json"
 else
+  canary_file=/var/lib/nails-oracle/canary.txt
   controls_src="$repo_root/ci/oracle/controls.json"
   if [ "$canary" = "$canary_default" ]; then
     controls_used="$controls_src"
@@ -163,7 +174,7 @@ if [ "$have_docker" -eq 1 ]; then
   if docker pull -q "$PLASO_IMAGE" >&2; then
     plaso_ok=1
   else
-    echo "run-scan: plaso pull failed; the plaso channel is skipped" >&2
+    echo "run-scan: plaso pull failed; the plaso channel cannot run, so the verdict will fail" >&2
   fi
 fi
 
@@ -192,62 +203,99 @@ plaso_label() {
 
 # --- Restore-channel carving (pluggable per filesystem). --------------------
 # The restore channel recovers the file tree into outputs/restore/<label>/ so
-# that each recovered regular file stands for its absolute on-image path (the
-# verdict keys a restore finding on that path alone, with an empty field). btrfs
-# and ext4 land the same shape there; only the carving tool differs.
+# that each recovered entry stands for its absolute on-image path (the verdict
+# keys a restore finding on that path, with the entry's kind as its field: a
+# file, a directory or a symlink). btrfs and ext4 land the same shape there;
+# only the carving tool differs.
 
-# partition_offset <image>: the 512-byte sector start of the Linux filesystem
-# partition on a whole-disk image, or 0 for a bare (unpartitioned) filesystem.
-# Mirrors disk_forensics.partition_offset: pick the Linux/ext partition with the
-# greatest start. mawk-safe (no gawk match() captures).
-partition_offset() {
-  local img=$1
-  command -v mmls >/dev/null 2>&1 || { echo 0; return; }
-  mmls "$img" 2>/dev/null | awk '
-    /^[0-9]+:/ {
-      start = $3; desc = "";
-      for (i = 6; i <= NF; i++) desc = desc " " $i;
-      dl = tolower(desc);
-      if (dl ~ /linux/ || dl ~ /ext/) { if (start + 0 > best + 0) best = start + 0 }
-    }
-    END { print best + 0 }'
+# fs_partitions <image>: one "<fstype> <byte-offset> <byte-size>" line per
+# partition of a whole-disk image that holds a filesystem blkid recognises, and
+# nothing for an image with no partition table. mmls lists the partitions in
+# the units it names; its descriptions are only the GPT partition names or the
+# MBR type, so blkid probes each partition's own superblock for the type (it
+# honours -O and -S only in its low-level mode, -p). mawk-safe: %.0f, not %d,
+# for byte counts past 2^31.
+fs_partitions() {
+  local img=$1 table start size t
+  table=$(mmls "$img" 2>/dev/null) || return 0
+  while read -r start size; do
+    t=$(blkid -p -o value -s TYPE -O "$start" -S "$size" "$img" 2>/dev/null || true)
+    if [ -n "$t" ]; then printf '%s %s %s\n' "$t" "$start" "$size"; fi
+  done < <(awk '
+    BEGIN { unit = 512 }
+    /^Units are in [0-9]+-byte sectors/ { unit = $4 + 0 }
+    $1 ~ /^[0-9]+:$/ && $2 ~ /^[0-9]+(:[0-9]+)?$/ {
+      printf "%.0f %.0f\n", ($3 + 0) * unit, ($5 + 0) * unit
+    }' <<<"$table")
 }
 
-# detect_fs <image>: print "<fstype> <sector-offset>". A bare filesystem probes
-# at offset 0; otherwise the Linux partition of a whole-disk image is probed at
-# its own offset. An unrecognised image prints an empty fstype.
+# detect_fs <image>: print "<fstype> <byte-offset> <byte-size>" for the
+# filesystem to carve, or fail with the reason. A bare filesystem image is
+# carved whole (offset 0, size 0 for the whole image). A whole-disk image must
+# hold exactly one btrfs or ext{2,3,4} partition: with none there is nothing
+# this scan can carve, and with several (a separate /boot or /home) the root
+# cannot be told apart safely, so the caller scans the root filesystem's own
+# image instead.
 detect_fs() {
-  local img=$1 t off=0
+  local img=$1 t parts carvable found
   t=$(blkid -o value -s TYPE "$img" 2>/dev/null || true)
   if [ -n "$t" ]; then
-    printf '%s 0\n' "$t"
-    return
+    printf '%s 0 0\n' "$t"
+    return 0
   fi
-  off=$(partition_offset "$img")
-  if [ "$off" -gt 0 ]; then
-    t=$(blkid -o value -s TYPE -O "$((off * 512))" "$img" 2>/dev/null || true)
+  parts=$(fs_partitions "$img")
+  carvable=$(awk '$1 ~ /^(btrfs|ext[234])$/' <<<"$parts")
+  found=$(awk 'NF { printf "%s%s at byte %s", (n++ ? ", " : ""), $1, $2 }' <<<"$parts")
+  if [ -z "$carvable" ]; then
+    echo "run-scan: $img holds no btrfs or ext{2,3,4} filesystem, bare or in a partition (${found:-no filesystem or partition table recognised}); failing closed. Add a carver for its filesystem (see ci/oracle/README.md) or scan a btrfs or ext{2,3,4} image." >&2
+    return 1
   fi
-  # A non-empty placeholder keeps the two fields aligned for `read`.
-  printf '%s %s\n' "${t:-unknown}" "$off"
+  if [ "$(wc -l <<<"$carvable")" -ne 1 ]; then
+    echo "run-scan: $img has more than one btrfs or ext{2,3,4} partition ($found), and a /boot or /home cannot be told apart from the root safely; failing closed. Scan the root filesystem's own image instead (for example cut out of the disk with dd)." >&2
+    return 1
+  fi
+  printf '%s\n' "$carvable"
 }
 
-# carve_restore <image> <dest> <fstype> <sector-offset>: recover the file tree
-# into <dest>. btrfs uses `btrfs restore` (the synthetic path, bare image,
-# offset 0); ext{2,3,4} uses `debugfs rdump /` at the partition's byte offset,
-# exactly as disk_forensics._rdump lifts a tree out of an ext4 image. Both leave
-# <dest>/var/log/x for an on-image /var/log/x. A filesystem with no carver here
-# fails the run closed rather than leaving the channel empty: see the `*)` arm.
+# The read-only loop device a btrfs partition is carved through, detached by
+# the EXIT trap if the carve stops the run.
+carve_loop=""
+
+# carve_restore <image> <dest> <fstype> <byte-offset> <byte-size>: recover the
+# file tree into the empty <dest>, so <dest>/var/log/x stands for an on-image
+# /var/log/x. btrfs uses `btrfs restore` with snapshots (-s) and symlinks (-S),
+# through a read-only loop device for a partition; ext{2,3,4} uses `debugfs
+# rdump /`, reading a partition through e2fsprogs' "<image>?offset=<bytes>"
+# device form (debugfs has no offset option). Neither may pass over what it
+# cannot read: btrfs restore runs without -i, so a file it cannot recover fails
+# it, and since debugfs exits 0 even when it cannot open the image or a dump
+# fails, any line on its stderr but its version banner fails the run. A
+# filesystem with no carver here fails the run closed rather than leaving the
+# channel empty: see the `*)` arm.
 carve_restore() {
-  local img=$1 dest=$2 fstype=$3 off=$4
+  local img=$1 dest=$2 fstype=$3 off=$4 size=$5 src=$1 log rc=0
   case "$fstype" in
     btrfs)
-      btrfs restore -i "$img" "$dest" >/dev/null
+      if [ "$off" -gt 0 ]; then
+        carve_loop=$(losetup -r -o "$off" --sizelimit "$size" --show -f "$img")
+        src=$carve_loop
+      fi
+      btrfs restore -s -S "$src" "$dest" </dev/null >/dev/null
+      if [ -n "$carve_loop" ]; then
+        losetup -d "$carve_loop"
+        carve_loop=""
+      fi
       ;;
     ext2 | ext3 | ext4)
-      if [ "$off" -gt 0 ]; then
-        debugfs -o "$((off * 512))" -R "rdump / $dest" "$img" >/dev/null 2>&1
-      else
-        debugfs -R "rdump / $dest" "$img" >/dev/null 2>&1
+      if [ "$off" -gt 0 ]; then src="$img?offset=$off"; fi
+      log="$work/debugfs.log"
+      # debugfs splits its request on blanks; a double-quoted argument keeps a
+      # destination with a space whole, with any quote in it doubled.
+      debugfs -R "rdump / \"${dest//\"/\"\"}\"" "$src" >/dev/null 2>"$log" || rc=$?
+      if [ "$rc" -ne 0 ] || grep -qvE '^r?debugfs [0-9]' "$log"; then
+        echo "run-scan: debugfs could not carve $img (exit $rc); failing closed:" >&2
+        cat "$log" >&2
+        exit 1
       fi
       ;;
     *)
@@ -274,28 +322,30 @@ carve_restore() {
 # restore channel's after - before - control set difference keeps subtracting
 # their paths; only the carved address is new). before.raw, control.raw and the
 # retained after.raw are never touched. The working copy is loop-mounted
-# read-write at the Linux partition's byte offset (reusing detect_fs /
-# partition_offset) and is unmounted under a cleanup trap; no global
+# read-write at the filesystem's byte offset (from detect_fs) and is unmounted
+# under a cleanup trap, which also detaches a carve's loop device; no global
 # `losetup -D` is ever run.
 inject_mnt=""
 # shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below
-inject_cleanup() {
+cleanup() {
   if [ -n "$inject_mnt" ] && mountpoint -q "$inject_mnt" 2>/dev/null; then
     umount "$inject_mnt" 2>/dev/null || umount -l "$inject_mnt" 2>/dev/null || true
   fi
+  if [ -n "$carve_loop" ]; then losetup -d "$carve_loop" 2>/dev/null || true; fi
 }
-trap inject_cleanup EXIT
+trap cleanup EXIT
 
-# inject_after_sentinels <working-image> <sector-offset>: mount the working copy
-# read-write and append the three sentinels in place, byte-for-byte as
-# make-sample-images.sh's apply_after_changes does, so plaso and the restore
-# channel behave exactly as on the proven synthetic path.
+# inject_after_sentinels <working-image> <byte-offset> <byte-size>: mount the
+# working copy read-write and append the three sentinels in place,
+# byte-for-byte as make-sample-images.sh's apply_after_changes does, so plaso
+# and the restore channel behave exactly as on the proven synthetic path.
 inject_after_sentinels() {
-  local img=$1 off=$2 byte=0
-  if [ "$off" -gt 0 ]; then byte=$((off * 512)); fi
+  local img=$1 off=$2 size=$3 opts
+  opts="loop,rw,offset=$off"
+  if [ "$size" -gt 0 ]; then opts="$opts,sizelimit=$size"; fi
   inject_mnt="$work/inject.mnt"
   mkdir -p "$inject_mnt"
-  mount -o loop,rw,offset="$byte" "$img" "$inject_mnt"
+  mount -o "$opts" "$img" "$inject_mnt"
   printf 'login\tnails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
     "$WTMP_SENTINEL" >>"$inject_mnt/var/log/wtmp.db"
   printf 'nails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
@@ -316,16 +366,17 @@ for label in "${LABELS[@]}"; do
   # the restore below is byte-for-byte the proven synthetic `btrfs restore`.
   if [ -n "$images_src" ]; then
     img="$images_src/$label.raw"
-    read -r fstype off < <(detect_fs "$img")
-    off=${off:-0}
+    # detect_fs prints why when it fails.
+    fs=$(detect_fs "$img") || exit 1
+    read -r fstype off size <<<"$fs"
     if [ "$label" = after ]; then
       # Inject the positive controls into a sparse working copy; the retained
       # source raw is left untouched and is never scanned directly for 'after'.
-      # The fstype/off detected from the source apply to the copy (same bytes).
+      # The filesystem detected on the source applies to the copy (same bytes).
       injected="$work/after.injected.raw"
       rm -f "$injected"
       cp --sparse=always "$img" "$injected"
-      inject_after_sentinels "$injected" "$off"
+      inject_after_sentinels "$injected" "$off" "$size"
       img="$injected"
     fi
   else
@@ -333,14 +384,24 @@ for label in "${LABELS[@]}"; do
     "$here/make-sample-images.sh" "$images" "$label"
     fstype=btrfs
     off=0
+    size=0
   fi
 
-  # File-level restore, then keep only the recovered paths: the verdict keys a
-  # restore finding on the path alone, so the contents are dropped to free the
-  # bulk of the disk before the next tool.
-  mkdir -p "$outputs/restore/$label"
-  carve_restore "$img" "$outputs/restore/$label" "$fstype" "$off"
-  find "$outputs/restore/$label" -type f -exec truncate -s 0 {} +
+  # File-level restore into an empty tree, so a carve that recovers nothing
+  # cannot pass on an earlier run's files. Then keep only the recovered paths:
+  # the verdict keys a restore finding on the path alone, so the contents are
+  # dropped to free the bulk of the disk before the next tool.
+  dest="$outputs/restore/$label"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  carve_restore "$img" "$dest" "$fstype" "$off" "$size"
+  # A carver's exit status does not prove it read the tree, so check the carve
+  # itself: every image carries the canary's file.
+  if [ ! -f "$dest$canary_file" ]; then
+    echo "run-scan: the restore carve of $img recovered no $canary_file, which every image carries; failing closed. The carver read nothing, or not the root filesystem." >&2
+    exit 1
+  fi
+  find "$dest" -type f -exec truncate -s 0 {} +
 
   # bulk_extractor creates outputs/bulk_extractor/<label> itself.
   "$be_bin" -j "$(nproc)" -o "$outputs/bulk_extractor/$label" "$img" >/dev/null
@@ -357,9 +418,12 @@ done
 
 # plaso is all-or-nothing: a partial timeline would make one image's events look
 # new in another and raise phantom residue, so drop the channel whole if any
-# label's timeline failed. A missing plaso subtree is non-fatal for the verdict.
+# label's timeline failed. A dropped channel never reads as clean: the restore
+# channel leaves the rotating journal files to plaso, and nails-oracle fails a
+# run in which any channel reported nothing for an image (channel_missing). The
+# verdict is still rendered, so the other channels' findings can be read.
 if [ "$plaso_ok" -ne 1 ] || [ "$plaso_failed" -ne 0 ]; then
-  echo "run-scan: dropping the plaso channel (incomplete across labels)" >&2
+  echo "run-scan: dropping the plaso channel (incomplete across labels); the verdict will fail on it" >&2
   rm -f "$outputs/plaso"/*.jsonl "$outputs/plaso"/*.plaso 2>/dev/null || true
 fi
 

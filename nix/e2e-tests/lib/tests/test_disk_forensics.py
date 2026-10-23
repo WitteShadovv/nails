@@ -465,6 +465,38 @@ class OracleImageNameTest(unittest.TestCase):
             self.assertIsNone(df.oracle_image_name(label))
 
 
+class RdumpTest(unittest.TestCase):
+    """debugfs has no offset option, so a partition is opened through the
+    ``<image>?offset=<bytes>`` device form, and the request quotes its paths
+    because debugfs splits it on blanks."""
+
+    def _argv(self, offset: int, dest: Path) -> list[str]:
+        with mock.patch.object(df, "_run") as run:
+            df._rdump("/img/root.raw", offset, "/var/log/journal", dest)
+        run.assert_called_once()
+        argv: list[str] = run.call_args.args[0]
+        return argv
+
+    def test_a_partition_is_opened_at_its_byte_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = self._argv(2048, Path(tmp) / "out")
+        self.assertEqual(argv[0], df.DEBUGFS)
+        self.assertNotIn("-o", argv)
+        self.assertEqual(argv[-1], "/img/root.raw?offset=1048576")
+
+    def test_a_bare_filesystem_is_opened_as_is(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = self._argv(0, Path(tmp) / "out")
+        self.assertEqual(argv[-1], "/img/root.raw")
+
+    def test_the_request_quotes_a_path_with_a_blank_or_a_quote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = self._argv(0, Path(tmp) / 'a b"c')
+        self.assertEqual(
+            argv[1:3], ["-R", f'rdump "/var/log/journal" "{tmp}/a b""c"']
+        )
+
+
 class CopySparseTest(unittest.TestCase):
     def test_round_trips_data_and_holes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

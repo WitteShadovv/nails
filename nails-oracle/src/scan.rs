@@ -7,17 +7,19 @@
 //! per tool:
 //!
 //! ```text
-//! outputs/restore/<label>/...            btrfs restore file tree
+//! outputs/restore/<label>/...            restored file tree (btrfs restore, debugfs rdump)
 //! outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 //! outputs/plaso/<label>.jsonl            plaso timeline, one JSON event a line
 //! ```
 //!
 //! These parsers are deliberately lenient — a missing subtree or an
-//! unparseable line is skipped, not fatal — because the synthetic slice firms
-//! up the exact tool output later. Rigor lives in [`crate::verdict`], which is
-//! tested over synthetic findings, not over these files. The pure per-format
-//! helpers here ([`bulk_extractor_findings`], [`plaso_finding`],
-//! [`restore_abs_path`]) are unit-tested without touching the filesystem.
+//! unparseable line is skipped here, not fatal — because the exact tool output
+//! varies. Leniency never reads as clean: a channel that yields no finding for
+//! an image fails the run in [`crate::verdict::scan_verdict`]. Rigor lives in
+//! [`crate::verdict`], which is tested over synthetic findings, not over these
+//! files. The pure per-format helpers here ([`bulk_extractor_findings`],
+//! [`plaso_finding`], `restore_abs_path`) are unit-tested without touching
+//! the filesystem.
 
 use crate::model::{Finding, ImageLabel, Scans, Tool};
 use std::collections::BTreeSet;
@@ -54,7 +56,12 @@ fn scan_image(outputs: &Path, label: ImageLabel) -> BTreeSet<Finding> {
     findings
 }
 
-/// Walk a btrfs-restore tree, emitting one finding per recovered regular file.
+/// Walk a restored file tree, emitting one finding per recovered entry: its
+/// absolute on-image path, with the entry's kind as the field. A directory
+/// (`dir`) and a symbolic link (`symlink`) are traces in their own right, an
+/// empty staging directory or a unit's enablement link, so they are reported
+/// like a file (an empty field), never only walked through or skipped. Any
+/// other entry a carver recovers is reported as a file too.
 fn scan_restore(root: &Path, out: &mut BTreeSet<Finding>) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -63,21 +70,26 @@ fn scan_restore(root: &Path, out: &mut BTreeSet<Finding>) {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            match entry.file_type() {
-                Ok(ft) if ft.is_dir() => stack.push(path),
-                Ok(ft) if ft.is_file() => {
-                    if let Some(abs) = restore_abs_path(root, &path) {
-                        // A rotating journal file is compared by its parsed
-                        // message content (see plaso_finding), not by its
-                        // per-boot unique filename, so it is not a restore-path
-                        // finding -- otherwise every new rotation would be false
-                        // residue.
-                        if !is_journal_file(&abs) {
-                            out.insert(Finding::new(Tool::BtrfsRestore, abs, ""));
-                        }
-                    }
+            // `file_type` does not follow a symlink, so a link to a directory
+            // is reported as a link and never walked: it may point anywhere,
+            // out of the restored tree included.
+            let kind = match entry.file_type() {
+                Ok(ft) if ft.is_dir() => {
+                    stack.push(path.clone());
+                    "dir"
                 }
-                _ => {}
+                Ok(ft) if ft.is_symlink() => "symlink",
+                _ => "",
+            };
+            let Some(abs) = restore_abs_path(root, &path) else {
+                continue;
+            };
+            // A rotating journal file is compared by its parsed message content
+            // (see plaso_finding), not by its per-boot unique filename, so it is
+            // not a restore-path finding -- otherwise every new rotation would
+            // be false residue. The directories that hold it are still reported.
+            if !is_journal_file(&abs) {
+                out.insert(Finding::new(Tool::BtrfsRestore, abs, kind));
             }
         }
     }
@@ -609,52 +621,119 @@ mod tests {
     }
 
     #[test]
-    fn scan_restore_walks_subdirs_files_and_excludes_journals() {
-        // Builds a restore tree with a nested regular file, a top-level regular
-        // file, a journal file, and (on unix) a symlink, then asserts exactly
-        // what walking it must yield. This pins the recursion and the file/dir
-        // match guards (scan.rs:67-68), the journal exclusion (`!is_journal_file`,
-        // scan.rs:75), and that the walker populates `out` at all (scan.rs:59):
-        //   - a stubbed body, or `is_dir`/`is_file` set false, drops the nested
-        //     file /etc/hostname;
-        //   - `is_dir` forced true treats every entry as a dir, dropping all
-        //     file findings;
-        //   - dropping the `!` on the journal guard would keep the journal file
-        //     and drop the ordinary files;
-        //   - `is_file` forced true would turn the symlink into a finding.
+    fn scan_restore_reports_every_entry_by_its_kind_but_not_journals() {
+        // A restore tree with a nested file, a top-level file, an empty
+        // directory, a journal file and (on unix) a symlink to a directory. The
+        // walk must report every entry by its kind -- a file with an empty
+        // field, a directory as `dir`, a symlink as `symlink` -- except the
+        // rotating journal file, which plaso compares by content, and it must
+        // not walk through the symlink. The exact set pins the recursion, each
+        // kind, the journal exclusion and the no-follow rule at once: a stubbed
+        // walk, a dropped kind, a kept journal file or a followed link (which
+        // would add /link/hostname) all change it.
         let dir = TmpDir::new();
         let root = dir.path().join("restore_root");
         let nested = root.join("etc");
         fs::create_dir_all(&nested).expect("nested dir");
         fs::write(nested.join("hostname"), b"host").expect("nested file");
         fs::write(root.join("topfile.txt"), b"top").expect("top file");
+        fs::create_dir_all(root.join("var").join("lib").join("staging")).expect("empty dir");
 
         let journal = root.join("var").join("log").join("journal").join("m");
         fs::create_dir_all(&journal).expect("journal dir");
         fs::write(journal.join("system@x-1-2.journal"), b"j").expect("journal file");
 
         #[cfg(unix)]
-        std::os::unix::fs::symlink("dangling-target", root.join("link")).expect("symlink");
+        std::os::unix::fs::symlink("etc", root.join("link")).expect("symlink");
 
         let mut out = BTreeSet::new();
         scan_restore(&root, &mut out);
 
-        assert!(
-            out.contains(&Finding::new(Tool::BtrfsRestore, "/etc/hostname", "")),
-            "nested file must be recovered: {out:?}"
-        );
-        assert!(
-            out.contains(&Finding::new(Tool::BtrfsRestore, "/topfile.txt", "")),
-            "top-level file must be recovered: {out:?}"
-        );
-        assert!(
-            !out.iter().any(|f| f.path.ends_with(".journal")),
-            "a journal file must be excluded by content-keying: {out:?}"
-        );
+        let mut want: BTreeSet<Finding> = [
+            ("/etc", "dir"),
+            ("/etc/hostname", ""),
+            ("/topfile.txt", ""),
+            ("/var", "dir"),
+            ("/var/lib", "dir"),
+            ("/var/lib/staging", "dir"),
+            ("/var/log", "dir"),
+            ("/var/log/journal", "dir"),
+            ("/var/log/journal/m", "dir"),
+        ]
+        .into_iter()
+        .map(|(path, kind)| Finding::new(Tool::BtrfsRestore, path, kind))
+        .collect();
         #[cfg(unix)]
-        assert!(
-            !out.iter().any(|f| f.path == "/link"),
-            "a symlink is neither a dir nor a regular file and is not a finding: {out:?}"
+        want.insert(Finding::new(Tool::BtrfsRestore, "/link", "symlink"));
+        assert_eq!(out, want);
+    }
+
+    /// The restore findings `after - before - control` over three restored
+    /// trees: the difference the verdict weighs.
+    fn restore_residue(before: &Path, control: &Path, after: &Path) -> BTreeSet<Finding> {
+        let walk = |root: &Path| {
+            let mut out = BTreeSet::new();
+            scan_restore(root, &mut out);
+            out
+        };
+        let (before, control) = (walk(before), walk(control));
+        walk(after)
+            .into_iter()
+            .filter(|f| !before.contains(f) && !control.contains(f))
+            .collect()
+    }
+
+    /// Three restored trees, `before`, `control` and `after`, sharing one
+    /// baseline: a file and the directories every boot keeps.
+    fn three_trees(dir: &Path) -> [PathBuf; 3] {
+        ["before", "control", "after"].map(|label| {
+            let root = dir.join(label);
+            let wants = root.join("etc/systemd/system/multi-user.target.wants");
+            fs::create_dir_all(&wants).expect("wants dir");
+            fs::create_dir_all(root.join("var/lib")).expect("var/lib dir");
+            fs::write(root.join("etc/hostname"), b"").expect("hostname");
+            root
+        })
+    }
+
+    #[test]
+    fn an_empty_directory_new_in_after_alone_is_restore_residue() {
+        // A teardown that leaves an empty staging directory on the decoy root
+        // leaves a trace with no file in it, so the difference must name the
+        // directory. A directory the clean control cycle creates too is boot
+        // noise and subtracts, as does every directory all three images share.
+        let dir = TmpDir::new();
+        let [before, control, after] = three_trees(dir.path());
+        for root in [&control, &after] {
+            fs::create_dir_all(root.join("var/tmp/cycle")).expect("cycle dir");
+        }
+        fs::create_dir_all(after.join("var/lib/staging")).expect("staging dir");
+
+        assert_eq!(
+            restore_residue(&before, &control, &after),
+            BTreeSet::from([Finding::new(Tool::BtrfsRestore, "/var/lib/staging", "dir")])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_new_in_after_alone_is_restore_residue() {
+        // A teardown that leaves a unit enabled on the decoy leaves only a
+        // symlink, in a directory every image has, so the difference must name
+        // the link. Its target need not exist in the restored tree.
+        let dir = TmpDir::new();
+        let [before, control, after] = three_trees(dir.path());
+        let link = "etc/systemd/system/multi-user.target.wants/hidden.service";
+        std::os::unix::fs::symlink("/etc/systemd/system/hidden.service", after.join(link))
+            .expect("symlink");
+
+        assert_eq!(
+            restore_residue(&before, &control, &after),
+            BTreeSet::from([Finding::new(
+                Tool::BtrfsRestore,
+                format!("/{link}"),
+                "symlink"
+            )])
         );
     }
 
@@ -706,6 +785,72 @@ mod tests {
                 "linux:wtmp:event"
             )),
             "{out:?}"
+        );
+    }
+
+    #[test]
+    fn the_cli_fails_a_scan_whose_plaso_channel_was_dropped() {
+        // run-scan.sh drops the plaso channel whole when docker is absent, the
+        // pinned image cannot be pulled or an image's timeline fails, and the
+        // restore channel leaves the rotating journal files to plaso. A run
+        // that is otherwise clean must then fail rather than read clean, so the
+        // CLI must decide with scan_verdict. With a timeline for every image the
+        // same run is clean.
+        let dir = TmpDir::new();
+        let outputs = dir.path().join("outputs");
+        for label in ImageLabel::ALL {
+            let name = label.dir_name();
+            let etc = outputs.join("restore").join(name).join("etc");
+            fs::create_dir_all(&etc).expect("restore dir");
+            fs::write(etc.join("hostname"), b"").expect("restore file");
+            let be = outputs.join("bulk_extractor").join(name);
+            fs::create_dir_all(&be).expect("bulk_extractor dir");
+            let mut emails = String::from("4096\tcanary@oracle.example\tctx\n");
+            if label == ImageLabel::After {
+                emails.push_str("8192\tplanted@oracle.example\tctx\n");
+            }
+            fs::write(be.join("email.txt"), emails).expect("feature file");
+        }
+        let allowlist = dir.path().join("allowlist.json");
+        fs::write(&allowlist, r#"{"entries":[]}"#).expect("allowlist file");
+        let controls = dir.path().join("controls.json");
+        fs::write(
+            &controls,
+            r#"{
+              "positive_controls": [{"name": "planted", "tool": "bulk_extractor",
+                                     "path": "email", "field": "planted@oracle.example"}],
+              "canary": {"tool": "bulk_extractor", "path": "email",
+                         "field": "canary@oracle.example"}
+            }"#,
+        )
+        .expect("controls file");
+        let args = vec![
+            outputs.display().to_string(),
+            "--allowlist".to_string(),
+            allowlist.display().to_string(),
+            "--controls".to_string(),
+            controls.display().to_string(),
+        ];
+
+        assert_eq!(
+            crate::run_inner(&args),
+            Ok(1),
+            "no plaso timeline: the run fails"
+        );
+
+        let plaso = outputs.join("plaso");
+        fs::create_dir_all(&plaso).expect("plaso dir");
+        for label in ImageLabel::ALL {
+            fs::write(
+                plaso.join(format!("{}.jsonl", label.dir_name())),
+                "{\"path\":\"/etc/hostname\",\"data_type\":\"fs:stat\"}\n",
+            )
+            .expect("plaso file");
+        }
+        assert_eq!(
+            crate::run_inner(&args),
+            Ok(0),
+            "every channel reported: clean"
         );
     }
 

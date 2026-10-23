@@ -10,14 +10,17 @@
 //! `control` boot cycle, and `after` the session — by what `btrfs restore`,
 //! `bulk_extractor` and `plaso` recover from each. A difference in `after` is a
 //! leak unless it also appears in the clean control cycle (scan noise) or a
-//! cited allowlist entry explains it. Two self-checks keep a clean verdict
+//! cited allowlist entry explains it. Three self-checks keep a clean verdict
 //! honest: planted positive controls must be detected (or the scan is blind),
-//! and a coverage canary must be detected (or the scan did not read the image).
+//! a coverage canary must be detected (or the scan did not read the image), and
+//! every analysis channel must report on every image (or the scan could not
+//! look through it).
 //!
-//! The decision lives in [`verdict::verdict`], a pure function unit-tested over
-//! synthetic findings. The [`scan`] parsers that feed it are best-effort for
-//! the synthetic slice; the [`catalog`] a citation resolves against is the live
-//! residue catalog, linked out of `nails-forensics` so it cannot drift.
+//! The decision lives in [`verdict::scan_verdict`], a pure function unit-tested
+//! over synthetic findings. The [`scan`] parsers that feed it are lenient, but
+//! a channel they get nothing from fails the run; the [`catalog`] a citation
+//! resolves against is the live residue catalog, linked out of
+//! `nails-forensics` so it cannot drift.
 //!
 //! The actual CLI logic is in this library to allow for proper unit test
 //! coverage; `main.rs` only forwards the process arguments to [`run`].
@@ -42,7 +45,9 @@ pub use model::{
     AllowEntry, Allowlist, Canary, Controls, Finding, ImageLabel, OraclePolicy, PositiveControl,
     Scans, Tool,
 };
-pub use verdict::{ControlResult, Counts, Explained, Failure, Status, Verdict, verdict as decide};
+pub use verdict::{
+    ControlResult, Counts, Explained, Failure, Status, Verdict, scan_verdict, verdict as decide,
+};
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -62,7 +67,8 @@ Render a pass/fail forensic verdict over one scan's outputs/ tree.
   --controls FILE   positive-control + canary JSON (default: ci/oracle/controls.json)
 
 Prints the verdict as JSON to stdout and a one-line summary to stderr.
-Exit codes: 0 clean, 1 fail (residue / blind / canary / bad allowlist), 2 usage or I/O error.";
+Exit codes: 0 clean, 1 fail (residue / blind or missing channel / canary / bad allowlist),
+2 usage or I/O error.";
 
 /// Parsed command line.
 struct Options {
@@ -141,7 +147,7 @@ fn run_inner(args: &[String]) -> Result<u8, String> {
         allowlist,
         controls,
     };
-    let verdict = verdict::verdict(&scans, &policy, &catalog);
+    let verdict = verdict::scan_verdict(&scans, &policy, &catalog);
     let json = serde_json::to_string_pretty(&verdict).map_err(|e| e.to_string())?;
     println!("{json}");
     eprintln!("{}", verdict.summary);
