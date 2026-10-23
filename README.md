@@ -263,7 +263,7 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
 
 1. **Mount the hidden volume** (see [Installation](#installation)).
    [docs/backends.md](docs/backends.md) has the commands for a whole-device
-   VeraCrypt volume and for LUKS2. Never add `--allow-discards`.
+   VeraCrypt volume and for LUKS2. Never add cryptsetup's `--allow-discards`.
 
 2. **Lay out the hidden volume** once:
 
