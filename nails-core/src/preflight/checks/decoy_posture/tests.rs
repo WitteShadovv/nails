@@ -420,7 +420,19 @@ fn kdump_armed_warns() {
     let check = DecoyPersistenceCheck::new(false, true);
     let result = check.run(&fs).unwrap();
     assert!(result.is_warn());
-    assert!(result.message().contains("kdump"));
+    let message = result.message();
+    assert!(message.contains("kdump is armed"), "{message}");
+    // The finding says where the crash kernel writes, and that the session's
+    // overlay does not catch it.
+    assert!(
+        message.contains("/var/crash on the decoy disk"),
+        "{message}"
+    );
+    assert!(
+        message.contains("outside the session's overlay"),
+        "{message}"
+    );
+    assert!(message.contains("encryption key"), "{message}");
 }
 
 #[test]
@@ -497,6 +509,155 @@ fn a_logger_matched_by_unit_and_process_is_reported_once() {
         1,
         "{result:?}"
     );
+}
+
+/// A clean decoy on a disk root: a volatile journal and nothing else.
+fn clean_decoy() -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs
+}
+
+/// Run one process named `comm` on `fs`.
+fn run_process(fs: &MockFilesystem, comm: &str) {
+    fs.mock_set_directory_contents(
+        Path::new("/proc"),
+        vec![std::path::PathBuf::from("/proc/731")],
+    );
+    fs.mock_add_file("/proc/731/comm", &format!("{comm}\n"));
+}
+
+#[test]
+fn a_classic_syslogd_fails_closed_by_its_unit_or_its_process() {
+    // inetutils-syslogd, busybox-syslogd and sysklogd run a `syslogd` under a
+    // unit of their own, which systemd also calls syslog.service.
+    for unit in [
+        "inetutils-syslogd.service",
+        "busybox-syslogd.service",
+        "sysklogd.service",
+        "syslogd.service",
+    ] {
+        let fs = clean_decoy();
+        set_unit_active(&fs, unit);
+        let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+        assert!(result.is_fail(), "{unit}: {result:?}");
+        assert!(result.message().contains("syslogd"), "{unit}: {result:?}");
+    }
+    for (comm, needle) in [("syslogd", "syslogd"), ("socklog", "socklog")] {
+        let fs = clean_decoy();
+        run_process(&fs, comm);
+        let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+        assert!(result.is_fail(), "{comm}: {result:?}");
+        assert!(result.message().contains(needle), "{comm}: {result:?}");
+    }
+}
+
+#[test]
+fn klogd_alone_is_not_a_logger() {
+    // klogd only hands kernel messages on to the syslog daemon.
+    let fs = clean_decoy();
+    run_process(&fs, "klogd");
+    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn the_syslog_alias_is_followed_to_the_unit_it_names() {
+    // A syslog daemon this check has no name for, enabled under the alias:
+    // systemd marks it active only as itself.
+    let fs = clean_decoy();
+    fs.create_symlink(
+        Path::new("/usr/lib/systemd/system/nanolog.service"),
+        Path::new("/etc/systemd/system/syslog.service"),
+    )
+    .unwrap();
+    let before = fs.mock_ops().len();
+    // Installed and enabled, but stopped: nothing to refuse.
+    let stopped = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+    assert!(stopped.is_pass(), "{stopped:?}");
+
+    set_unit_active(&fs, "nanolog.service");
+    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("a syslog daemon (nanolog.service, enabled as syslog.service) is active"),
+        "{result:?}"
+    );
+    assert_eq!(fs.mock_ops().len(), before, "the probe writes nothing");
+}
+
+#[test]
+fn a_known_daemon_behind_the_alias_is_reported_once() {
+    // Debian's inetutils-syslogd: its unit, the alias that names it and its
+    // `syslogd` process are one daemon and one finding.
+    let fs = clean_decoy();
+    fs.create_symlink(
+        Path::new("/lib/systemd/system/inetutils-syslogd.service"),
+        Path::new("/etc/systemd/system/syslog.service"),
+    )
+    .unwrap();
+    set_unit_active(&fs, "inetutils-syslogd.service");
+    run_process(&fs, "syslogd");
+    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    let message = result.message();
+    assert_eq!(
+        message.matches("writes logs to the decoy disk").count(),
+        1,
+        "{message}"
+    );
+    assert!(message.contains("syslogd"), "{message}");
+    assert!(!message.contains("enabled as syslog.service"), "{message}");
+}
+
+#[test]
+fn nixos_syslogd_under_its_own_syslog_service_is_reported_once() {
+    // NixOS's services.syslogd runs sysklogd's syslogd as syslog.service.
+    let fs = clean_decoy();
+    set_unit_active(&fs, "syslog.service");
+    run_process(&fs, "syslogd");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result
+            .message()
+            .matches("writes logs to the decoy disk")
+            .count(),
+        1,
+        "{result:?}"
+    );
+}
+
+#[test]
+fn the_syslog_alias_is_resolved_on_a_real_unit_directory() {
+    // The alias as `systemctl enable` leaves it: a link in /etc/systemd/system
+    // to the package's unit file. Relative here, so it resolves inside the
+    // scratch root.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "usr/lib/systemd/system/nanolog.service",
+        "[Service]\nExecStart=/usr/sbin/nanolog\n",
+    );
+    std::fs::create_dir_all(root.join("etc/systemd/system")).unwrap();
+    std::os::unix::fs::symlink(
+        "../../../usr/lib/systemd/system/nanolog.service",
+        root.join("etc/systemd/system/syslog.service"),
+    )
+    .unwrap();
+    assert!(loggers::active_logger_blockers(&RealFilesystem, root).is_empty());
+
+    write(root, "run/systemd/units/invocation:nanolog.service", "");
+    let found = loggers::active_logger_blockers(&RealFilesystem, root);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("nanolog.service"), "{found:?}");
 }
 
 #[test]

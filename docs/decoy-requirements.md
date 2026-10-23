@@ -93,7 +93,14 @@ volatile can count as persistent. Run them with sudo.
   processing, and with both set it only logs that a program crashed. Keep
   systemd-coredump running with those two settings rather than turning it off:
   without it the kernel writes a `core` file into the crashing program's
-  working directory.
+  working directory. kdump is the one that reaches past the session entirely:
+  if the kernel crashes during a hidden session, kdump's crash kernel mounts
+  the decoy root by its device, outside the session's overlay, and writes a
+  dump of kernel memory, which can hold the hidden volume's encryption key and
+  the names of the files the session used, and the session's kernel log to
+  `/var/crash` on the decoy disk. Ubuntu arms kdump-tools by default from
+  24.10, so 26.04 among them; disable it on the decoy (Ubuntu: `kdump-tools`,
+  Fedora: `kdump`).
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
   module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
@@ -181,7 +188,8 @@ logind.
   fine (the hidden session mounts a fresh tmpfs there, in RAM).
 - **Volatile journald**: `services.journald.storage = "volatile";`.
 - **No classic syslog / audit**: do not enable `services.rsyslogd`,
-  `services.syslog-ng` or `security.auditd` / the audit framework on the decoy.
+  `services.syslog-ng`, `services.syslogd` or `security.auditd` / the audit
+  framework on the decoy.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
 - **Core dumps kept off the disk**:
   `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
@@ -282,7 +290,8 @@ logind.
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
   file and every `journald.conf.d/*.conf` drop-in the way systemd does, so a
   drop-in that sets `Storage=persistent` is caught too.
-- Remove or disable `rsyslog` and `auditd` if installed.
+- Remove or disable `rsyslog`, any other syslog daemon and `auditd` if
+  installed.
 - If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
@@ -295,7 +304,8 @@ logind.
   not supported: the way back mounts the decoy root by device.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
-- Remove or disable `rsyslog`/`syslog-ng` and `auditd`.
+- Remove or disable the syslog daemon (`rsyslog`, `syslog-ng`,
+  `inetutils-syslogd`, `busybox-syslogd`, `sysklogd`) and `auditd`.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
