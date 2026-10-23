@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Argument parsing tests for emergency, status, and verify commands
+//! Argument parsing tests for emergency, status, and verify commands, and
+//! which commands count as mutating
 //!
 //! Only parsing is tested here; the CLI integration tests cover execution and
 //! the exit statuses the handlers return.
 
 use super::args::{EmergencyArgs, StatusArgs, VerifyArgs};
 use super::*;
+use clap::CommandFactory;
+use std::collections::BTreeSet;
 
 fn parse(argv: &[&str]) -> Cli {
     Cli::try_parse_checked_from(std::iter::once("nails").chain(argv.iter().copied())).unwrap()
@@ -131,4 +134,53 @@ fn test_verify_flags() {
 fn test_transition_is_a_bare_hidden_subcommand() {
     let cli = parse(&["transition"]);
     assert!(matches!(cli.command, Commands::Transition));
+}
+
+#[test]
+fn test_only_the_commands_that_change_the_system_count_as_mutating() {
+    // An interrupt must roll a mutating command back through its guards
+    // instead of killing it halfway through a switch, so it installs the
+    // cancellation handlers and sheds OOM priority. Every other command keeps
+    // the default signal behaviour, so an interrupt stops it at once.
+    let mutating: &[&[&str]] = &[
+        &["activate"],
+        &["deactivate"],
+        &["emergency"],
+        &["recover"],
+        &["discard", "/home"],
+    ];
+    let other: &[&[&str]] = &[
+        &["status"],
+        &["verify"],
+        &["rehearse"],
+        &["check"],
+        &["init", "/mnt/hidden"],
+        &["config", "path"],
+        &["completions", "bash"],
+        &["watch"],
+        &["sleep-guard"],
+        &["transition"],
+        &["guard-device", "/dev/sdb"],
+        &["reconcile-records"],
+    ];
+    for argv in mutating {
+        assert!(command_is_mutating(&parse(argv).command), "{argv:?}");
+    }
+    for argv in other {
+        assert!(!command_is_mutating(&parse(argv).command), "{argv:?}");
+    }
+
+    // Every subcommand is sorted into one of the two lists, so a new one has
+    // to be.
+    let sorted: BTreeSet<String> = mutating
+        .iter()
+        .chain(other)
+        .map(|argv| argv[0].to_string())
+        .collect();
+    let subcommands: BTreeSet<String> = Cli::command()
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .filter(|name| name != "help")
+        .collect();
+    assert_eq!(sorted, subcommands);
 }
