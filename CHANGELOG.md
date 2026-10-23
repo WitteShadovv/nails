@@ -13,6 +13,14 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- A `nails.toml` that still sets `accept_persistent_decoy` is refused by the new binary, and the
+  decoy is no place to edit it. Before you move `<hidden-root>/nails.new` over `<hidden-root>/nails`,
+  run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
+  `config/nails.toml` next to it), delete the key if it is reported, and pass
+  `--allow-persistent-decoy` on the activations that need the override.
+
 ### Added
 
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
