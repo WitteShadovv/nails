@@ -1,61 +1,82 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The decoy's network identity, recorded at entry and put back on the way
-//! back.
+//! The decoy's network state, recorded at entry and put back on the way back.
 //!
-//! The overlay shares the host's network identity between the decoy and the
-//! hidden session: the same links, hardware addresses, hostname and the
-//! per-link state the service manager keeps in `/run`. A session that changes
-//! any of these leaves a tell on the decoy when the way back does nothing about
-//! it:
+//! The overlay shares the host's network state between the decoy and the
+//! hidden session: the same links, hardware addresses and hostname, the same
+//! routing policy, firewall tables and network settings, and the per-link
+//! state the service manager keeps in `/run`. A soft-reboot carries all of it
+//! across the switch, so a session that changes any of it leaves a tell on the
+//! decoy when the way back does nothing about it:
 //!
 //! - a virtual link the session brought up (a WireGuard tunnel, a dummy or a
-//!   bridge) is still there when the decoy's NetworkManager starts, which adopts
-//!   it as connected externally and writes a profile for it, with a timestamp,
-//!   to the decoy disk;
+//!   bridge) is still there when the decoy's NetworkManager starts, which
+//!   adopts it as connected externally and writes a profile for it, with a
+//!   timestamp, to the decoy disk; so is a Wi-Fi interface the session added
+//!   on one of the decoy's radios (a monitor or access point interface);
 //! - a device whose hardware address the session randomised keeps that address
 //!   (a device holds its current address when the decoy's profile sets none);
-//! - on a decoy without `/etc/hostname` the hostname the session set stays,
-//!   because nothing on the decoy resets it after a soft-reboot;
-//! - the hidden service manager's per-link records below `/run/NetworkManager`
-//!   and `/run/systemd/resolve` lie deeper than the `/run` scrub reaches.
+//! - the hostname the session set stays: after a soft-reboot PID 1 sets the
+//!   hostname again only from a valid `/etc/hostname` (or the kernel command
+//!   line), and keeps the current one when the file is missing, empty, or holds
+//!   only comments or an invalid name;
+//! - the routing policy, firewall tables and settings of
+//!   [`network_policy`](crate::whole_root::network_policy);
+//! - the per-link records of [`network_run`](crate::whole_root::network_run),
+//!   which lie deeper than the `/run` scrub reaches.
 //!
 //! So [the record](NetworkRecord), taken in the decoy before the first switch,
-//! holds the decoy's links (index, name, whether the kernel made it, and the
-//! hardware address), whether the decoy has an `/etc/hostname`, the decoy's
-//! live hostname, and a copy of the two runtime-state directories. The way
-//! back, once every hidden unit has stopped and before it switches back,
-//! [restores](restore) it: delete the virtual links that were not there at
-//! entry, give each device its recorded address again, set the hostname back on
-//! a decoy that would not reset it itself, and make the two runtime directories
-//! what entry left them.
+//! holds the decoy's links (index, name, whether the kernel made it, the
+//! hardware address and, for a Wi-Fi interface, its radio), the decoy's live
+//! hostname, its routing policy, tables and settings, and a copy of the
+//! runtime-state directories. The way back, once every hidden unit has stopped
+//! and before it switches back, [restores](restore) it.
+//!
+//! A link is the decoy's only when a recorded link has both its name and its
+//! index. The kernel gives a link made again a new index, so a link the
+//! session made under the name of one the decoy had (which the decoy's own
+//! stop took down for the switch) is the session's too. The way back deletes
+//! every virtual link that is not the decoy's, and every Wi-Fi interface that
+//! is not the decoy's on a radio the decoy had (an adapter plugged in during
+//! the session is the decoy's, and left alone); gives each of the decoy's
+//! devices its recorded address again; sets the hostname back wherever it
+//! differs, which is harmless where PID 1 then sets it again from a valid
+//! `/etc/hostname`; puts the routing policy, tables and settings back; and
+//! makes the runtime directories what entry left them.
 //!
 //! Deleting a link and setting an address go through `ip` (iproute2), the one
 //! tool that speaks to the kernel for both and is present wherever networking
-//! is; the hostname and the runtime directories are plain files. Reading the
-//! current links and writing nothing but files makes all of it testable without
-//! a privileged network.
+//! is; a Wi-Fi interface goes through `iw`, since the kernel deletes one only
+//! through its wireless configuration interface. The hostname and the runtime
+//! directories are plain files. Reading the current links and writing nothing
+//! but files makes all of it testable without a privileged network.
 //!
 //! Many drivers cannot change the address of a device that is up (USB Ethernet
 //! adapters such as `ax88179_178a` and `asix`, Wi-Fi drivers without powered
 //! address change): the kernel refuses the change with `EBUSY` while the link
 //! runs. So an address that did not take is set again with the link down, as
 //! NetworkManager does, and the link is brought back up; a link that was down
-//! stays down. Every address is read back afterwards, and [`restore`] returns
-//! the devices that still have another one, which the transition puts in its
-//! outcome instead of dropping the failure.
+//! stays down. Every address is read back afterwards.
 //!
-//! The way back never touches any of this when no record was taken (an older
-//! session, or one whose recording failed): [`restore`] with no record is a
-//! no-op, never a blanket wipe, so it is safe on a path that runs for every
-//! switch.
+//! Entry records each part on its own, and a part it cannot read (the list of
+//! links, the copy of the runtime state, a tool's list of rules or tables) is
+//! recorded as unknown. The way back leaves an unknown part as the session
+//! leaves it: an empty list in its place would read as a decoy without links,
+//! rules or runtime state, and the way back would delete the decoy's. It never
+//! touches anything when no record was taken (an older session, or one whose
+//! recording failed): [`restore`] with no record is a no-op, never a blanket
+//! wipe, so it is safe on a path that runs for every switch. [`restore`]
+//! returns what it could not put back and the parts it left alone ([`Kept`]),
+//! which the transition puts in its outcome, since nothing on the way back may
+//! log.
 
+use crate::whole_root::network_policy::Policy;
+use crate::whole_root::{network_run, tools};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The record's file name inside the runtime directory (neutral, no product
@@ -69,24 +90,66 @@ pub const PROC_HOSTNAME: &str = "/proc/sys/kernel/hostname";
 /// The default location the kernel lists the host's links under.
 pub const SYS_CLASS_NET: &str = "/sys/class/net";
 
-/// The runtime-state directories, relative to a `/run` root, that the service
-/// manager keeps per-link state in and the way back makes what entry left them.
-pub const RUN_DIRS: &[&str] = &["NetworkManager/devices", "systemd/resolve/netif"];
+/// The default root of the kernel's settings, of which the record holds the
+/// network ones.
+pub const PROC_SYS: &str = "/proc/sys";
 
-/// How deep below a runtime-state directory the copy reaches.
-const RUN_MAX_DEPTH: usize = 4;
-
-/// The most runtime-state content the copy holds; a larger state is not copied.
-const RUN_MAX_BYTES: usize = 1 << 20;
-
-/// How long a single `ip` call may take.
+/// How long a single `ip` or `iw` call may take.
 const IP_BUDGET: Duration = Duration::from_secs(3);
 
 /// A link's administrative up flag in its sysfs `flags` (`IFF_UP` in
 /// `<linux/if.h>`), set by `ip link set up` and cleared by `ip link set down`.
 const IFF_UP: u32 = 0x1;
 
-/// One of the decoy's links as it was at entry.
+/// Where the network state is read and written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Places {
+    /// The `/run` root the per-link runtime state sits under.
+    pub run: PathBuf,
+    /// Where the kernel lists the links ([`SYS_CLASS_NET`]).
+    pub sys_class_net: PathBuf,
+    /// The kernel's live hostname ([`PROC_HOSTNAME`]).
+    pub proc_hostname: PathBuf,
+    /// The kernel's settings ([`PROC_SYS`]).
+    pub proc_sys: PathBuf,
+}
+
+impl Places {
+    /// The real system's places, with the runtime state below `run`.
+    pub fn system(run: &Path) -> Self {
+        Places {
+            run: run.to_path_buf(),
+            sys_class_net: PathBuf::from(SYS_CLASS_NET),
+            proc_hostname: PathBuf::from(PROC_HOSTNAME),
+            proc_sys: PathBuf::from(PROC_SYS),
+        }
+    }
+}
+
+/// The tools the record and the way back run, by absolute path. A tool that is
+/// not installed is `None`: the part that needs it is left alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetTools {
+    /// `ip` (iproute2): links, addresses and policy-routing rules.
+    pub ip: Option<PathBuf>,
+    /// `iw`: Wi-Fi interfaces.
+    pub iw: Option<PathBuf>,
+    /// `nft` (nftables): firewall tables.
+    pub nft: Option<PathBuf>,
+}
+
+impl NetTools {
+    /// The tools in the system directories ([`tools::find`]).
+    pub fn find() -> Self {
+        NetTools {
+            ip: tools::find(None, "ip"),
+            iw: tools::find(None, "iw"),
+            nft: tools::find(None, "nft"),
+        }
+    }
+}
+
+/// A link as the kernel lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     /// The kernel's interface index.
@@ -99,54 +162,35 @@ pub struct Link {
     /// The hardware address, lower-case and colon-separated as the kernel
     /// prints it, or `None` when the link has none.
     pub mac: Option<String>,
+    /// The Wi-Fi radio the link is an interface of (`phy0`), or `None` for a
+    /// link that is not a Wi-Fi interface.
+    pub phy: Option<String>,
 }
 
-/// One entry in a runtime-state directory copy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum RunKind {
-    Dir,
-    File(Vec<u8>),
-    Link(PathBuf),
-}
-
-/// A copied runtime-state entry by its path relative to the `/run` root; a
-/// parent sorts before its children.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct RunEntry {
-    path: PathBuf,
-    kind: RunKind,
-}
-
-/// The decoy's network identity, taken in the decoy before the first switch.
+/// The decoy's network state, taken in the decoy before the first switch. A
+/// part that could not be read is `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkRecord {
     /// The decoy's links.
-    links: Vec<Link>,
-    /// The decoy's live hostname, without a trailing newline.
+    links: Option<Vec<Link>>,
+    /// The decoy's live hostname, without a trailing newline; empty when it
+    /// could not be read.
     hostname: Vec<u8>,
-    /// Whether the decoy has an `/etc/hostname`. A decoy that has one resets
-    /// its hostname itself after the way back; a decoy without one does not,
-    /// so only then does the way back set it.
-    etc_hostname_present: bool,
+    /// The decoy's routing policy, firewall tables and network settings.
+    policy: Policy,
     /// A copy of the runtime-state directories.
-    run: Vec<RunEntry>,
+    run: Option<Vec<network_run::RunEntry>>,
 }
 
 impl NetworkRecord {
-    /// Take the record from `sys_class_net` (the links), `proc_hostname` (the
-    /// live hostname), `etc_hostname` (whether it exists) and `run` (the
-    /// runtime-state directories). Reading only; nothing is changed.
-    pub fn capture(
-        sys_class_net: &Path,
-        proc_hostname: &Path,
-        etc_hostname: &Path,
-        run: &Path,
-    ) -> Self {
+    /// Take the record at `places` with `tools`. Reading only; nothing is
+    /// changed.
+    pub fn capture(places: &Places, tools: &NetTools) -> Self {
         NetworkRecord {
-            links: observe_links(sys_class_net),
-            hostname: read_hostname(proc_hostname),
-            etc_hostname_present: std::fs::symlink_metadata(etc_hostname).is_ok(),
-            run: snapshot_run(run),
+            links: observe_links(&places.sys_class_net),
+            hostname: read_hostname(&places.proc_hostname),
+            policy: Policy::capture(tools.ip.as_deref(), tools.nft.as_deref(), &places.proc_sys),
+            run: network_run::snapshot(&places.run),
         }
     }
 
@@ -155,97 +199,141 @@ impl NetworkRecord {
         serde_json::to_vec(self).unwrap_or_default()
     }
 
-    /// Parse [`NetworkRecord::encode`] output; `None` for anything malformed or
-    /// for a runtime path that is not below a runtime-state directory.
+    /// Parse [`NetworkRecord::encode`] output; `None` for anything malformed,
+    /// for a runtime path that is not below a runtime-state directory and for
+    /// a policy the way back could not act on.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let record: NetworkRecord = serde_json::from_slice(bytes).ok()?;
-        record
-            .run
-            .iter()
-            .all(|entry| is_run_path(&entry.path))
-            .then_some(record)
+        let valid =
+            record.run.as_deref().is_none_or(network_run::is_valid) && record.policy.is_valid();
+        valid.then_some(record)
     }
 }
 
-/// What the way back does to the live network to put the decoy's identity back.
+/// What the way back does to the live links and hostname.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RestorePlan {
-    /// Virtual links to delete (there now, not there at entry).
+    /// Virtual links to delete with `ip`: there now, not the decoy's.
     pub delete: Vec<String>,
-    /// Devices whose hardware address the way back sets back, by name.
+    /// Wi-Fi interfaces to delete with `iw`: there now, not the decoy's, on a
+    /// radio the decoy had.
+    pub delete_wireless: Vec<String>,
+    /// The decoy's devices whose hardware address the way back sets back, by
+    /// name.
     pub set_mac: Vec<(String, String)>,
-    /// The hostname to set back, or `None` when the decoy resets it itself or
-    /// it never changed.
+    /// The hostname to set back, or `None` when it never changed.
     pub hostname: Option<Vec<u8>>,
 }
 
-/// The decoy's links the way back `current` observed differently.
-///
-/// A link that is there now, is virtual, and was not there at entry is deleted:
-/// a hardware device is left alone even if it appeared (a hot-plugged adapter is
-/// the decoy's, not the session's). A link that was there at entry and still is
-/// gets its recorded address back when the current one differs. The hostname is
-/// set back only on a decoy without `/etc/hostname`, which would not reset it
-/// itself, and only when it actually changed.
-pub fn plan(record: &NetworkRecord, current: &[Link], current_hostname: &[u8]) -> RestorePlan {
-    let at_entry = |name: &str| record.links.iter().any(|link| link.name == name);
-    let delete = current
-        .iter()
-        .filter(|link| link.virtual_link && !at_entry(&link.name))
-        .map(|link| link.name.clone())
-        .collect();
+/// What the way back left as the session left it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Kept {
+    /// The decoy's devices that still have another hardware address than the
+    /// one recorded at entry.
+    pub addresses: Vec<String>,
+    /// The session's links that are still there.
+    pub links: Vec<String>,
+    /// The session's policy-routing rules that are still there.
+    pub rules: Vec<String>,
+    /// The session's firewall tables that are still there.
+    pub tables: Vec<String>,
+    /// The network settings that still differ from the decoy's.
+    pub settings: Vec<String>,
+    /// The parts entry could not record or the way back could not read, which
+    /// it left alone.
+    pub unknown: Vec<&'static str>,
+}
 
-    let mut set_mac = Vec::new();
-    for link in &record.links {
-        let Some(mac) = &link.mac else { continue };
-        let still_here = current.iter().find(|now| now.name == link.name);
-        if let Some(now) = still_here
-            && now.mac.as_deref() != Some(mac.as_str())
-        {
-            set_mac.push((link.name.clone(), mac.clone()));
+/// What the way back does to the links `current` and the hostname
+/// `current_hostname`. See the module docs.
+///
+/// A link is the decoy's when a recorded link has its name and index: it gets
+/// its recorded address back when the current one differs. Another link is
+/// deleted when it is a Wi-Fi interface on a radio the decoy had, or virtual;
+/// a hardware device that appeared is the decoy's (a hot-plugged adapter) and
+/// left alone. Without the decoy's links no link is deleted or changed. The
+/// hostname is set back whenever it differs and was read at entry.
+pub fn plan(record: &NetworkRecord, current: &[Link], current_hostname: &[u8]) -> RestorePlan {
+    let mut plan = RestorePlan {
+        hostname: (!record.hostname.is_empty() && current_hostname != record.hostname.as_slice())
+            .then(|| record.hostname.clone()),
+        ..RestorePlan::default()
+    };
+    let Some(then) = record.links.as_deref() else {
+        return plan;
+    };
+    let decoys = |now: &Link| {
+        then.iter()
+            .find(|was| was.name == now.name && was.index == now.index)
+    };
+    let decoy_radio = |phy: &str| then.iter().any(|was| was.phy.as_deref() == Some(phy));
+    for link in current {
+        match decoys(link) {
+            Some(was) => {
+                if let Some(mac) = &was.mac
+                    && link.mac.as_deref() != Some(mac.as_str())
+                {
+                    plan.set_mac.push((link.name.clone(), mac.clone()));
+                }
+            }
+            None if link.phy.as_deref().is_some_and(decoy_radio) => {
+                plan.delete_wireless.push(link.name.clone());
+            }
+            None if link.virtual_link => plan.delete.push(link.name.clone()),
+            None => {}
         }
     }
+    plan
+}
 
-    let hostname = (!record.etc_hostname_present
-        && !record.hostname.is_empty()
-        && current_hostname != record.hostname.as_slice())
-    .then(|| record.hostname.clone());
-
-    RestorePlan {
-        delete,
-        set_mac,
-        hostname,
+/// Read the links the kernel lists under `sys_class_net`; `None` when the list
+/// or one of its links cannot be read.
+pub fn observe_links(sys_class_net: &Path) -> Option<Vec<Link>> {
+    let mut links = Vec::new();
+    for entry in std::fs::read_dir(sys_class_net).ok()? {
+        if let Some(link) = read_link(sys_class_net, &entry.ok()?.file_name()).ok()? {
+            links.push(link);
+        }
     }
-}
-
-/// Read the links the kernel lists under `sys_class_net`.
-pub fn observe_links(sys_class_net: &Path) -> Vec<Link> {
-    let Ok(entries) = std::fs::read_dir(sys_class_net) else {
-        return Vec::new();
-    };
-    let mut links: Vec<Link> = entries
-        .flatten()
-        .filter_map(|entry| read_link(sys_class_net, &entry.file_name()))
-        .collect();
     links.sort_by(|a, b| a.name.cmp(&b.name));
-    links
+    Some(links)
 }
 
-/// Read one link's facts, or `None` when the name has no interface index (so it
-/// is not a link).
-fn read_link(sys_class_net: &Path, name: &OsStr) -> Option<Link> {
+/// Read one link's facts: `None` when the name is not a link (a file such as
+/// `bonding_masters`, or a directory without an interface index) or the link
+/// went away while it was read.
+fn read_link(sys_class_net: &Path, name: &OsStr) -> std::io::Result<Option<Link>> {
+    let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
     let dir = sys_class_net.join(name);
-    let index: u32 = read_trimmed(&dir.join("ifindex"))?.parse().ok()?;
+    match std::fs::metadata(&dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(None),
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let index = match std::fs::read_to_string(dir.join("ifindex")) {
+        Ok(text) => text
+            .trim()
+            .parse()
+            .map_err(|_| std::io::Error::other("an interface index that is no number"))?,
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     // A hardware device has a `device` link to its backing bus device; a link
-    // the kernel made (lo, a tunnel, a bridge) has none.
+    // the kernel made (lo, a tunnel, a bridge) has none. A Wi-Fi interface
+    // has a `phy80211` link to its radio as well.
     let virtual_link = std::fs::symlink_metadata(dir.join("device")).is_err();
     let mac = read_trimmed(&dir.join("address")).filter(|mac| !mac.is_empty());
-    Some(Link {
+    let phy = std::fs::read_link(dir.join("phy80211"))
+        .ok()
+        .and_then(|radio| radio.file_name().map(|n| n.to_string_lossy().into_owned()));
+    Ok(Some(Link {
         index,
         name: name.to_string_lossy().into_owned(),
         virtual_link,
         mac,
-    })
+        phy,
+    }))
 }
 
 /// Read a one-line sysfs or proc file, trimmed of trailing whitespace.
@@ -264,70 +352,117 @@ pub fn read_hostname(proc_hostname: &Path) -> Vec<u8> {
     bytes
 }
 
-/// Put the decoy's network identity back, the way [the record](NetworkRecord)
-/// holds it. `record_bytes` is the recorded copy, read from the runtime
-/// directory before the scrub removed it; with none, or one that does not
-/// parse, nothing is done.
+/// Put the decoy's network state back at `places` with the tools installed,
+/// the way [the record](NetworkRecord) holds it. `record_bytes` is the
+/// recorded copy, read from the runtime directory before the scrub removed it;
+/// with none, or one that does not parse, nothing is done.
 ///
-/// Returns the devices that still have another hardware address than the one
-/// recorded at entry: the way back could not set it back, and the decoy will
-/// start with the session's address on them.
+/// Returns what is still as the session left it ([`Kept`]): the decoy's
+/// devices whose address could not be set back, the session's links, rules
+/// and tables that could not be deleted, the settings that could not be
+/// written back, and the parts left alone because they could not be read.
 ///
 /// Call it once every hidden unit has stopped: the hidden service manager must
 /// not be running, or it would adopt a link again or rewrite the runtime state.
 #[must_use]
-pub fn restore(
-    run: &Path,
-    sys_class_net: &Path,
-    proc_hostname: &Path,
-    record_bytes: Option<&[u8]>,
-) -> Vec<String> {
+pub fn restore(places: &Places, record_bytes: Option<&[u8]>) -> Kept {
+    restore_with(places, &NetTools::find(), record_bytes)
+}
+
+/// [`restore`] with `tools`.
+#[must_use]
+pub fn restore_with(places: &Places, tools: &NetTools, record_bytes: Option<&[u8]>) -> Kept {
     let Some(record) = record_bytes.and_then(NetworkRecord::decode) else {
-        return Vec::new();
+        return Kept::default();
     };
-    let current = observe_links(sys_class_net);
-    let current_hostname = read_hostname(proc_hostname);
-    let plan = plan(&record, &current, &current_hostname);
-    let kept = apply_links(&plan, sys_class_net);
-    if let Some(hostname) = &plan.hostname {
-        let _ = write_hostname(proc_hostname, hostname);
+    let current = observe_links(&places.sys_class_net);
+    let current_hostname = read_hostname(&places.proc_hostname);
+    let plan = plan(
+        &record,
+        current.as_deref().unwrap_or_default(),
+        &current_hostname,
+    );
+    let mut kept = apply_links_with(
+        tools.ip.as_deref(),
+        tools.iw.as_deref(),
+        &plan,
+        &places.sys_class_net,
+    );
+    if record.links.is_none() || current.is_none() {
+        kept.unknown.push("links");
     }
-    restore_run(run, &record);
+    if let Some(hostname) = &plan.hostname {
+        let _ = write_hostname(&places.proc_hostname, hostname);
+    }
+    record.policy.restore(
+        tools.ip.as_deref(),
+        tools.nft.as_deref(),
+        &places.proc_sys,
+        &mut kept,
+    );
+    match &record.run {
+        Some(entries) => network_run::restore(&places.run, entries),
+        None => kept.unknown.push("runtime state"),
+    }
     kept
 }
 
-/// Run the link part of a plan with `ip`: delete the links the session made
-/// and set each recorded address back, reading the links' state from
-/// `sys_class_net`. Finds `ip` only when there is work. A failed delete is
-/// silent, as the way back is best effort throughout; the devices whose address
-/// is still not the recorded one are returned. Separated so a real-kernel test
-/// can drive it against a network namespace.
+/// Run the link part of a plan: delete the Wi-Fi interfaces with `iw` and the
+/// virtual links with `ip`, and set each recorded address back with `ip`,
+/// reading the links' state from `sys_class_net`. Finds the tools only when
+/// there is work. A failed call is silent, as the way back is best effort
+/// throughout; the links still there and the devices whose address is still
+/// not the recorded one are returned. Separated so a real-kernel test can
+/// drive it against a network namespace.
 #[must_use]
-pub fn apply_links(plan: &RestorePlan, sys_class_net: &Path) -> Vec<String> {
-    if plan.delete.is_empty() && plan.set_mac.is_empty() {
-        return Vec::new();
+pub fn apply_links(plan: &RestorePlan, sys_class_net: &Path) -> Kept {
+    if plan.delete.is_empty() && plan.delete_wireless.is_empty() && plan.set_mac.is_empty() {
+        return Kept::default();
     }
-    let ip = crate::whole_root::tools::find(None, "ip");
-    apply_links_with(ip.as_deref(), plan, sys_class_net)
+    let ip = tools::find(None, "ip");
+    let iw = tools::find(None, "iw");
+    apply_links_with(ip.as_deref(), iw.as_deref(), plan, sys_class_net)
 }
 
-/// [`apply_links`] with the `ip` at `ip`, or none. Without one nothing is
-/// changed, and every device the plan sets an address on is returned.
-fn apply_links_with(ip: Option<&Path>, plan: &RestorePlan, sys_class_net: &Path) -> Vec<String> {
+/// [`apply_links`] with the `ip` and `iw` at those paths, or none. A tool
+/// that is missing changes nothing, and what it would have changed is
+/// returned.
+fn apply_links_with(
+    ip: Option<&Path>,
+    iw: Option<&Path>,
+    plan: &RestorePlan,
+    sys_class_net: &Path,
+) -> Kept {
+    if let Some(iw) = iw {
+        for name in &plan.delete_wireless {
+            let _ = tools::run(iw, &["dev", name.as_str(), "del"], IP_BUDGET);
+        }
+    }
     if let Some(ip) = ip {
         for name in &plan.delete {
             let args = ["link", "delete", "dev", name.as_str()];
-            let _ = crate::whole_root::tools::run(ip, &args, IP_BUDGET);
+            let _ = tools::run(ip, &args, IP_BUDGET);
         }
         for (name, mac) in &plan.set_mac {
             set_address(ip, sys_class_net, name, mac);
         }
     }
-    plan.set_mac
-        .iter()
-        .filter(|(name, mac)| keeps_other_address(sys_class_net, name, mac))
-        .map(|(name, _)| name.clone())
-        .collect()
+    Kept {
+        links: plan
+            .delete
+            .iter()
+            .chain(&plan.delete_wireless)
+            .filter(|name| std::fs::symlink_metadata(sys_class_net.join(name)).is_ok())
+            .cloned()
+            .collect(),
+        addresses: plan
+            .set_mac
+            .iter()
+            .filter(|(name, mac)| keeps_other_address(sys_class_net, name, mac))
+            .map(|(name, _)| name.clone())
+            .collect(),
+        ..Kept::default()
+    }
 }
 
 /// Give link `name` the address `mac`. The address is read back rather than
@@ -337,15 +472,15 @@ fn apply_links_with(ip: Option<&Path>, plan: &RestorePlan, sys_class_net: &Path)
 /// that is down is never brought up.
 fn set_address(ip: &Path, sys_class_net: &Path, name: &str, mac: &str) {
     let set = ["link", "set", "dev", name, "address", mac];
-    let _ = crate::whole_root::tools::run(ip, &set, IP_BUDGET);
+    let _ = tools::run(ip, &set, IP_BUDGET);
     if !keeps_other_address(sys_class_net, name, mac) || !is_up(sys_class_net, name) {
         return;
     }
     let down = ["link", "set", "dev", name, "down"];
-    let _ = crate::whole_root::tools::run(ip, &down, IP_BUDGET);
-    let _ = crate::whole_root::tools::run(ip, &set, IP_BUDGET);
+    let _ = tools::run(ip, &down, IP_BUDGET);
+    let _ = tools::run(ip, &set, IP_BUDGET);
     let up = ["link", "set", "dev", name, "up"];
-    let _ = crate::whole_root::tools::run(ip, &up, IP_BUDGET);
+    let _ = tools::run(ip, &up, IP_BUDGET);
 }
 
 /// Whether link `name` is there with another hardware address than `mac`. A
@@ -372,115 +507,6 @@ fn write_hostname(proc_hostname: &Path, hostname: &[u8]) -> std::io::Result<()> 
         .truncate(true)
         .open(proc_hostname)?
         .write_all(hostname)
-}
-
-/// Copy the runtime-state directories of `run` below [`RUN_DIRS`], bounded in
-/// depth and size. Sockets, FIFOs and devices are never copied.
-fn snapshot_run(run: &Path) -> Vec<RunEntry> {
-    let mut entries = Vec::new();
-    let mut bytes = 0;
-    for dir in RUN_DIRS {
-        if collect_run(run, Path::new(dir), 0, &mut entries, &mut bytes).is_err() {
-            return Vec::new();
-        }
-    }
-    entries
-}
-
-fn collect_run(
-    run: &Path,
-    rel: &Path,
-    depth: usize,
-    entries: &mut Vec<RunEntry>,
-    bytes: &mut usize,
-) -> std::io::Result<()> {
-    let path = run.join(rel);
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    let kind = meta.file_type();
-    if kind.is_dir() {
-        entries.push(RunEntry {
-            path: rel.to_path_buf(),
-            kind: RunKind::Dir,
-        });
-        if depth < RUN_MAX_DEPTH {
-            for child in std::fs::read_dir(&path)? {
-                collect_run(
-                    run,
-                    &rel.join(child?.file_name()),
-                    depth + 1,
-                    entries,
-                    bytes,
-                )?;
-            }
-        }
-    } else if kind.is_file() {
-        let content = std::fs::read(&path)?;
-        *bytes += content.len();
-        if *bytes > RUN_MAX_BYTES {
-            return Err(std::io::Error::other(
-                "the runtime state is too large to copy",
-            ));
-        }
-        entries.push(RunEntry {
-            path: rel.to_path_buf(),
-            kind: RunKind::File(content),
-        });
-    } else if kind.is_symlink() {
-        entries.push(RunEntry {
-            path: rel.to_path_buf(),
-            kind: RunKind::Link(std::fs::read_link(&path)?),
-        });
-    }
-    Ok(())
-}
-
-/// Make the runtime-state directories of `run` what the record holds: clear
-/// each one and recreate exactly what entry copied. A directory absent at entry
-/// (the decoy did not run that service) is left absent.
-fn restore_run(run: &Path, record: &NetworkRecord) {
-    for dir in RUN_DIRS {
-        let _ = std::fs::remove_dir_all(run.join(dir));
-    }
-    for entry in &record.run {
-        let path = run.join(&entry.path);
-        let _ = match &entry.kind {
-            RunKind::Dir => std::fs::create_dir_all(&path),
-            RunKind::File(content) => create_parent(&path).and_then(|()| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&path)
-                    .and_then(|mut file| file.write_all(content))
-            }),
-            RunKind::Link(target) => {
-                create_parent(&path).and_then(|()| std::os::unix::fs::symlink(target, &path))
-            }
-        };
-    }
-}
-
-fn create_parent(path: &Path) -> std::io::Result<()> {
-    match path.parent() {
-        Some(parent) => std::fs::create_dir_all(parent),
-        None => Ok(()),
-    }
-}
-
-/// Whether `path` is a plain relative path at or below one of [`RUN_DIRS`].
-fn is_run_path(path: &Path) -> bool {
-    if path
-        .components()
-        .any(|c| !matches!(c, Component::Normal(_)))
-    {
-        return false;
-    }
-    RUN_DIRS.iter().any(|dir| path.starts_with(dir))
 }
 
 #[cfg(test)]

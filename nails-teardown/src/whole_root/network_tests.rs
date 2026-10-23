@@ -3,22 +3,35 @@
 
 use super::*;
 use std::fs;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::PermissionsExt;
 
 /// A fake `/sys/class/net` tree. A link with a `device` entry reads as a
 /// hardware device; one without reads as virtual.
 fn sys_with(links: &[(&str, u32, &str, bool)]) -> tempfile::TempDir {
     let sys = tempfile::tempdir().unwrap();
     for (name, index, mac, is_hardware) in links {
-        let dir = sys.path().join(name);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
-        fs::write(dir.join("address"), format!("{mac}\n")).unwrap();
-        if *is_hardware {
-            fs::create_dir(dir.join("device")).unwrap();
-        }
+        add_link(sys.path(), name, *index, mac, *is_hardware);
     }
     sys
+}
+
+fn add_link(sys: &Path, name: &str, index: u32, mac: &str, is_hardware: bool) {
+    let dir = sys.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
+    fs::write(dir.join("address"), format!("{mac}\n")).unwrap();
+    if is_hardware {
+        fs::create_dir(dir.join("device")).unwrap();
+    }
+}
+
+/// Make link `name` of the fake tree a Wi-Fi interface of radio `phy`.
+fn on_radio(sys: &Path, name: &str, phy: &str) {
+    std::os::unix::fs::symlink(
+        format!("../../ieee80211/{phy}"),
+        sys.join(name).join("phy80211"),
+    )
+    .unwrap();
 }
 
 fn link(name: &str, index: u32, virtual_link: bool, mac: Option<&str>) -> Link {
@@ -27,17 +40,38 @@ fn link(name: &str, index: u32, virtual_link: bool, mac: Option<&str>) -> Link {
         name: name.to_string(),
         virtual_link,
         mac: mac.map(str::to_string),
+        phy: None,
+    }
+}
+
+/// A Wi-Fi interface of radio `phy`.
+fn wifi(name: &str, index: u32, phy: &str) -> Link {
+    Link {
+        phy: Some(phy.to_string()),
+        ..link(name, index, false, Some("02:00:00:00:00:aa"))
+    }
+}
+
+/// A record of `links` and `hostname`, with nothing else known.
+fn record_of(links: Vec<Link>, hostname: &[u8]) -> NetworkRecord {
+    NetworkRecord {
+        links: Some(links),
+        hostname: hostname.to_vec(),
+        policy: Policy::default(),
+        run: Some(Vec::new()),
     }
 }
 
 #[test]
-fn the_links_are_read_with_their_index_address_and_whether_the_kernel_made_them() {
+fn the_links_are_read_with_their_index_address_radio_and_whether_the_kernel_made_them() {
     let sys = sys_with(&[
         ("lo", 1, "00:00:00:00:00:00", false),
         ("eth0", 2, "aa:bb:cc:dd:ee:ff", true),
+        ("wlan0", 3, "02:00:00:00:00:aa", true),
         ("wg0", 7, "", false),
     ]);
-    let links = observe_links(sys.path());
+    on_radio(sys.path(), "wlan0", "phy0");
+    let links = observe_links(sys.path()).unwrap();
     assert_eq!(
         links,
         vec![
@@ -45,23 +79,26 @@ fn the_links_are_read_with_their_index_address_and_whether_the_kernel_made_them(
             link("lo", 1, true, Some("00:00:00:00:00:00")),
             // An empty address file is no address.
             link("wg0", 7, true, None),
+            wifi("wlan0", 3, "phy0"),
         ]
     );
-    // An entry without an interface index is not a link.
+    // Neither a directory without an interface index nor a file is a link.
     fs::create_dir(sys.path().join("bonding_masters")).unwrap();
-    assert_eq!(observe_links(sys.path()).len(), 3);
-    // A missing directory is no links, not an error.
-    assert!(observe_links(&sys.path().join("gone")).is_empty());
+    fs::write(sys.path().join("bonding_opts"), "").unwrap();
+    assert_eq!(observe_links(sys.path()).unwrap().len(), 4);
+    // A list that cannot be read is unknown, not empty.
+    assert_eq!(observe_links(&sys.path().join("gone")), None);
+    // So is a link whose index is not a number.
+    fs::write(sys.path().join("wg0/ifindex"), "seven\n").unwrap();
+    assert_eq!(observe_links(sys.path()), None);
 }
 
 #[test]
-fn a_virtual_link_that_was_not_there_at_entry_is_deleted_and_a_new_device_is_left() {
-    let record = NetworkRecord {
-        links: vec![link("lo", 1, true, None), link("eth0", 2, false, None)],
-        hostname: b"decoy".to_vec(),
-        etc_hostname_present: true,
-        run: Vec::new(),
-    };
+fn a_virtual_link_that_is_not_the_decoys_is_deleted_and_a_new_device_is_left() {
+    let record = record_of(
+        vec![link("lo", 1, true, None), link("eth0", 2, false, None)],
+        b"decoy",
+    );
     let current = vec![
         link("lo", 1, true, None),
         link("eth0", 2, false, None),
@@ -71,23 +108,61 @@ fn a_virtual_link_that_was_not_there_at_entry_is_deleted_and_a_new_device_is_lef
         link("eth1", 10, false, Some("aa:00:00:00:00:02")),
     ];
     let plan = plan(&record, &current, b"decoy");
-    assert_eq!(plan.delete, vec!["wg0".to_string()]);
+    assert_eq!(plan.delete, ["wg0"]);
+    assert!(plan.delete_wireless.is_empty());
     assert!(plan.set_mac.is_empty());
     assert!(plan.hostname.is_none());
 }
 
 #[test]
+fn a_link_the_session_made_again_under_a_decoy_links_name_is_deleted() {
+    // The decoy's wg0 was up at entry; its own stop took it down for the
+    // switch, and the session brought up a tunnel of its own as wg0.
+    let record = record_of(
+        vec![
+            link("lo", 1, true, None),
+            link("wg0", 5, true, None),
+            link("eth0", 2, false, Some("aa:bb:cc:dd:ee:ff")),
+        ],
+        b"decoy",
+    );
+    let current = vec![
+        link("lo", 1, true, None),
+        link("wg0", 12, true, None),
+        // A device the driver registered again under its name: not the
+        // decoy's link, but hardware, so left alone, and its address too.
+        link("eth0", 13, false, Some("de:ad:be:ef:ca:fe")),
+    ];
+    let plan = plan(&record, &current, b"decoy");
+    assert_eq!(plan.delete, ["wg0"]);
+    assert!(plan.set_mac.is_empty(), "{:?}", plan.set_mac);
+}
+
+#[test]
+fn a_wifi_interface_the_session_added_on_a_decoy_radio_is_deleted_and_a_new_adapter_is_left() {
+    let record = record_of(vec![wifi("wlan0", 3, "phy0")], b"decoy");
+    let current = vec![
+        wifi("wlan0", 3, "phy0"),
+        // A monitor interface on the decoy's radio, and one on a radio the
+        // decoy did not have (a Wi-Fi adapter plugged in during the session).
+        wifi("wlan0mon", 14, "phy0"),
+        wifi("wlan1", 15, "phy1"),
+    ];
+    let plan = plan(&record, &current, b"decoy");
+    assert_eq!(plan.delete_wireless, ["wlan0mon"]);
+    assert!(plan.delete.is_empty());
+}
+
+#[test]
 fn a_device_whose_address_the_session_changed_gets_its_own_back() {
-    let record = NetworkRecord {
-        links: vec![
+    let record = record_of(
+        vec![
             link("lo", 1, true, Some("00:00:00:00:00:00")),
             link("eth0", 2, false, Some("aa:bb:cc:dd:ee:ff")),
             link("wlan0", 3, false, Some("11:22:33:44:55:66")),
         ],
-        hostname: b"decoy".to_vec(),
-        etc_hostname_present: true,
-        run: Vec::new(),
-    };
+        b"decoy",
+    );
     let current = vec![
         link("lo", 1, true, Some("00:00:00:00:00:00")),
         // Randomised by the session.
@@ -105,65 +180,107 @@ fn a_device_whose_address_the_session_changed_gets_its_own_back() {
 
 #[test]
 fn a_recorded_link_that_is_gone_now_needs_no_address() {
-    let record = NetworkRecord {
-        links: vec![link("eth0", 2, false, Some("aa:bb:cc:dd:ee:ff"))],
-        hostname: Vec::new(),
-        etc_hostname_present: true,
-        run: Vec::new(),
-    };
+    let record = record_of(vec![link("eth0", 2, false, Some("aa:bb:cc:dd:ee:ff"))], b"");
     // The decoy's device is not in the current list: nothing to set it on.
     assert!(plan(&record, &[], b"").set_mac.is_empty());
 }
 
 #[test]
-fn the_hostname_is_set_back_only_on_a_decoy_without_etc_hostname_and_only_when_it_changed() {
-    let base = NetworkRecord {
-        links: Vec::new(),
-        hostname: b"decoy-host".to_vec(),
-        etc_hostname_present: false,
-        run: Vec::new(),
+fn without_the_decoys_links_no_link_is_deleted_or_changed() {
+    let record = NetworkRecord {
+        links: None,
+        ..record_of(Vec::new(), b"decoy")
     };
-    // No /etc/hostname and the name changed: set it back.
-    assert_eq!(
-        plan(&base, &[], b"hidden-host").hostname,
-        Some(b"decoy-host".to_vec())
-    );
-    // No /etc/hostname but the name is already the decoy's: nothing.
-    assert!(plan(&base, &[], b"decoy-host").hostname.is_none());
-    // The decoy has /etc/hostname: it resets the name itself.
-    let with_file = NetworkRecord {
-        etc_hostname_present: true,
-        ..base.clone()
-    };
-    assert!(plan(&with_file, &[], b"hidden-host").hostname.is_none());
-    // An empty recorded hostname is never written.
-    let empty = NetworkRecord {
-        hostname: Vec::new(),
-        ..base
-    };
-    assert!(plan(&empty, &[], b"hidden-host").hostname.is_none());
+    let current = vec![
+        link("br0", 4, true, None),
+        link("eth0", 2, false, Some("de:ad:be:ef:ca:fe")),
+        wifi("wlan0mon", 14, "phy0"),
+    ];
+    let plan = plan(&record, &current, b"decoy");
+    assert_eq!(plan, RestorePlan::default());
 }
 
 #[test]
-fn the_record_round_trips_and_rejects_a_runtime_path_that_escapes() {
-    let sys = sys_with(&[("eth0", 2, "aa:bb:cc:dd:ee:ff", true)]);
-    let run = run_with_state();
-    let (_host_dir, host) = hostname_file("decoy-host");
-    let record = NetworkRecord::capture(sys.path(), &host, Path::new("/etc/hostname"), run.path());
+fn the_hostname_is_set_back_wherever_it_differs() {
+    let record = record_of(Vec::new(), b"decoy-host");
+    // The session's name: set the decoy's back, whatever /etc/hostname holds
+    // (PID 1 then sets a valid one again itself, and keeps this one when the
+    // file is missing, empty or names no valid host).
+    assert_eq!(
+        plan(&record, &[], b"hidden-host").hostname,
+        Some(b"decoy-host".to_vec())
+    );
+    // Already the decoy's: nothing.
+    assert!(plan(&record, &[], b"decoy-host").hostname.is_none());
+    // A hostname entry could not read is never written.
+    let empty = record_of(Vec::new(), b"");
+    assert!(plan(&empty, &[], b"hidden-host").hostname.is_none());
+}
+
+/// The places of a test world: a fake `/sys/class/net`, hostname file,
+/// `/proc/sys` and `/run`, all below `root`.
+fn places(root: &Path) -> Places {
+    Places {
+        run: root.join("run"),
+        sys_class_net: root.join("sys"),
+        proc_hostname: root.join("hostname"),
+        proc_sys: root.join("proc-sys"),
+    }
+}
+
+/// A test world: lo and eth0, the hostname `decoy-host`, forwarding off and
+/// NetworkManager's per-link state for eth0.
+fn world() -> (tempfile::TempDir, Places) {
+    let dir = tempfile::tempdir().unwrap();
+    let places = places(dir.path());
+    fs::create_dir_all(&places.sys_class_net).unwrap();
+    add_link(&places.sys_class_net, "lo", 1, "00:00:00:00:00:00", false);
+    add_link(&places.sys_class_net, "eth0", 2, "aa:bb:cc:dd:ee:ff", true);
+    fs::write(&places.proc_hostname, "decoy-host\n").unwrap();
+    fs::create_dir_all(places.proc_sys.join("net/ipv4")).unwrap();
+    fs::write(places.proc_sys.join("net/ipv4/ip_forward"), "0\n").unwrap();
+    fs::create_dir_all(places.run.join("NetworkManager/devices")).unwrap();
+    fs::write(
+        places.run.join("NetworkManager/devices/2"),
+        "[device]\nmanaged=true\n",
+    )
+    .unwrap();
+    (dir, places)
+}
+
+#[test]
+fn the_record_round_trips_and_rejects_what_the_way_back_could_not_act_on() {
+    let (_dir, places) = world();
+    let record = NetworkRecord::capture(&places, &NetTools::default());
     assert_eq!(NetworkRecord::decode(&record.encode()), Some(record));
-    // Garbage, and a record whose runtime path leaves the managed directories.
     assert!(NetworkRecord::decode(b"not json").is_none());
-    let escaping = br#"{"links":[],"hostname":[],"etc_hostname_present":false,
-        "run":[{"path":"NetworkManager/../../etc","kind":"Dir"}]}"#;
-    assert!(NetworkRecord::decode(escaping).is_none());
-    let foreign = br#"{"links":[],"hostname":[],"etc_hostname_present":false,
-        "run":[{"path":"systemd/system","kind":"Dir"}]}"#;
-    assert!(NetworkRecord::decode(foreign).is_none());
+    let policy = r#"{"rules_v4":null,"rules_v6":null,"tables":null,"settings":[]}"#;
+    let with = |links: &str, policy: &str, run: &str| {
+        format!(r#"{{"links":{links},"hostname":[],"policy":{policy},"run":{run}}}"#).into_bytes()
+    };
+    assert!(NetworkRecord::decode(&with("null", policy, "null")).is_some());
+    // A runtime path that leaves the managed directories.
+    for path in ["NetworkManager/../../etc", "systemd/system"] {
+        let run = format!(r#"[{{"path":"{path}","kind":"Dir","uid":0,"gid":0,"mode":493}}]"#);
+        assert!(
+            NetworkRecord::decode(&with("[]", policy, &run)).is_none(),
+            "{path}"
+        );
+    }
+    // A setting outside the network settings, and a table in no known family.
+    let setting = r#"{"rules_v4":null,"rules_v6":null,"tables":null,
+        "settings":[{"key":"kernel/modprobe","value":"/tmp/x"}]}"#;
+    assert!(NetworkRecord::decode(&with("[]", setting, "[]")).is_none());
+    let table = r#"{"rules_v4":null,"rules_v6":null,"settings":[],
+        "tables":[{"family":"ip; flush ruleset","name":"x","handle":1}]}"#;
+    assert!(NetworkRecord::decode(&with("[]", table, "[]")).is_none());
 }
 
 #[test]
 fn the_hostname_file_is_read_trimmed_and_written_back() {
-    let (_dir, path) = hostname_file("decoy-host\n");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hostname");
+    fs::write(&path, "decoy-host\n").unwrap();
     assert_eq!(read_hostname(&path), b"decoy-host");
     write_hostname(&path, b"other").unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"other");
@@ -171,277 +288,123 @@ fn the_hostname_file_is_read_trimmed_and_written_back() {
     assert!(read_hostname(Path::new("/no/such/hostname")).is_empty());
 }
 
-/// A `/run` with the decoy's NetworkManager and resolved per-link state.
-fn run_with_state() -> tempfile::TempDir {
-    let run = tempfile::tempdir().unwrap();
-    let r = run.path();
-    fs::create_dir_all(r.join("NetworkManager/devices")).unwrap();
-    fs::write(
-        r.join("NetworkManager/devices/2"),
-        "[device]\nmanaged=true\n",
-    )
-    .unwrap();
-    fs::create_dir_all(r.join("systemd/resolve/netif")).unwrap();
-    fs::write(r.join("systemd/resolve/netif/2"), "DNS=10.0.2.3\n").unwrap();
-    run
-}
-
-fn hostname_file(content: &str) -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("hostname");
-    fs::write(&path, content).unwrap();
-    (dir, path)
-}
-
-#[test]
-fn the_runtime_directories_come_back_as_entry_left_them() {
-    let run = run_with_state();
-    let r = run.path();
-    let record = NetworkRecord {
-        links: Vec::new(),
-        hostname: Vec::new(),
-        etc_hostname_present: true,
-        run: snapshot_run(r),
-    };
-    // The hidden session: a new device file, a changed one, a whole new tree.
-    fs::write(
-        r.join("NetworkManager/devices/2"),
-        "[device]\nmanaged=true\nconnection=hidden\n",
-    )
-    .unwrap();
-    fs::write(r.join("NetworkManager/devices/9"), "[device]\n").unwrap();
-    fs::create_dir_all(r.join("systemd/resolve/netif")).unwrap();
-    fs::write(r.join("systemd/resolve/netif/9"), "DNS=10.213.77.53\n").unwrap();
-
-    restore_run(r, &record);
-
-    assert_eq!(
-        fs::read_to_string(r.join("NetworkManager/devices/2")).unwrap(),
-        "[device]\nmanaged=true\n"
-    );
-    assert!(!r.join("NetworkManager/devices/9").exists());
-    assert!(!r.join("systemd/resolve/netif/9").exists());
-    assert!(r.join("systemd/resolve/netif/2").is_file());
-    assert_eq!(
-        snapshot_run(r),
-        record.run,
-        "entry's state, entry for entry"
-    );
-}
-
-#[test]
-fn a_runtime_directory_the_decoy_did_not_have_is_removed() {
-    let run = tempfile::tempdir().unwrap();
-    let r = run.path();
-    // The decoy ran neither service: nothing to copy.
-    let record = NetworkRecord {
-        links: Vec::new(),
-        hostname: Vec::new(),
-        etc_hostname_present: true,
-        run: snapshot_run(r),
-    };
-    assert!(record.run.is_empty());
-    // The hidden session's NetworkManager wrote a device file.
-    fs::create_dir_all(r.join("NetworkManager/devices")).unwrap();
-    fs::write(r.join("NetworkManager/devices/3"), "[device]\n").unwrap();
-    restore_run(r, &record);
-    assert!(!r.join("NetworkManager/devices").exists());
-}
-
-#[test]
-fn a_socket_in_the_runtime_state_is_never_copied() {
-    let run = tempfile::tempdir().unwrap();
-    let r = run.path();
-    fs::create_dir_all(r.join("NetworkManager/devices")).unwrap();
-    rustix::fs::mknodat(
-        rustix::fs::CWD,
-        r.join("NetworkManager/devices/control.sock"),
-        rustix::fs::FileType::Socket,
-        rustix::fs::Mode::from_raw_mode(0o600),
-        0,
-    )
-    .unwrap();
-    let snapshot = snapshot_run(r);
-    assert!(
-        snapshot
-            .iter()
-            .all(|entry| entry.path != Path::new("NetworkManager/devices/control.sock")),
-        "{snapshot:?}"
-    );
-    assert!(
-        fs::symlink_metadata(r.join("NetworkManager/devices/control.sock"))
-            .unwrap()
-            .file_type()
-            .is_socket()
-    );
-}
-
 #[test]
 fn restore_without_a_record_changes_nothing() {
-    let run = run_with_state();
-    let before = snapshot_run(run.path());
-    let (_host_dir, host) = hostname_file("live-host");
-    let sys = sys_with(&[("wg0", 9, "de:ad:be:ef:00:01", false)]);
+    let (_dir, places) = world();
+    add_link(&places.sys_class_net, "wg0", 9, "", false);
+    fs::write(&places.proc_hostname, "live-host\n").unwrap();
+    let before = network_run::snapshot(&places.run);
     // No record at all, and an unparsable one: both leave the world untouched.
-    assert!(restore(run.path(), sys.path(), &host, None).is_empty());
-    assert!(restore(run.path(), sys.path(), &host, Some(b"not a record")).is_empty());
-    assert_eq!(snapshot_run(run.path()), before);
-    assert_eq!(read_hostname(&host), b"live-host");
-    assert!(observe_links(sys.path()).iter().any(|l| l.name == "wg0"));
-}
-
-#[test]
-fn restore_puts_the_hostname_and_runtime_state_back_without_touching_links() {
-    let run = run_with_state();
-    let r = run.path();
-    let (_host_dir, host) = hostname_file("hidden-host");
-    // The decoy has only lo, no /etc/hostname, and the recorded runtime state.
-    let sys = sys_with(&[("lo", 1, "00:00:00:00:00:00", false)]);
-    let record = NetworkRecord {
-        links: observe_links(sys.path()),
-        hostname: b"decoy-host".to_vec(),
-        etc_hostname_present: false,
-        run: snapshot_run(r),
-    };
-    // The session changed the hostname and a device file.
-    fs::write(r.join("NetworkManager/devices/2"), "hidden\n").unwrap();
-
-    let kept = restore(r, sys.path(), &host, Some(&record.encode()));
-
-    assert!(kept.is_empty(), "no address to set back: {kept:?}");
-    assert_eq!(read_hostname(&host), b"decoy-host", "the hostname is back");
+    let tools = NetTools::default();
+    assert_eq!(restore_with(&places, &tools, None), Kept::default());
     assert_eq!(
-        fs::read_to_string(r.join("NetworkManager/devices/2")).unwrap(),
-        "[device]\nmanaged=true\n",
-        "the runtime state is back"
+        restore_with(&places, &tools, Some(b"not a record")),
+        Kept::default()
     );
+    assert_eq!(network_run::snapshot(&places.run), before);
+    assert_eq!(read_hostname(&places.proc_hostname), b"live-host");
+    assert!(places.sys_class_net.join("wg0").exists());
 }
 
 #[test]
-fn the_record_name_carries_no_product_name() {
-    assert!(!RECORD_NAME.to_lowercase().contains("nails"));
-}
+fn restore_puts_the_hostname_settings_and_runtime_state_back() {
+    let (_dir, places) = world();
+    let record = NetworkRecord::capture(&places, &NetTools::default());
+    // The session: its hostname, forwarding on, a device file of its own.
+    fs::write(&places.proc_hostname, "hidden-host\n").unwrap();
+    fs::write(places.proc_sys.join("net/ipv4/ip_forward"), "1\n").unwrap();
+    let devices = places.run.join("NetworkManager/devices");
+    fs::write(devices.join("2"), "[device]\nconnection-uuid=hidden\n").unwrap();
+    fs::write(devices.join("9"), "[device]\n").unwrap();
 
-#[test]
-fn an_absent_runtime_directory_is_skipped_while_a_present_one_is_still_copied() {
-    // NetworkManager state is present; systemd/resolve/netif does not exist.
-    let run = tempfile::tempdir().unwrap();
-    let r = run.path();
-    fs::create_dir_all(r.join("NetworkManager/devices")).unwrap();
-    fs::write(r.join("NetworkManager/devices/2"), "[device]\n").unwrap();
+    let kept = restore_with(&places, &NetTools::default(), Some(&record.encode()));
 
-    // The absent directory reads as NotFound and is simply skipped, so the
-    // present directory's state still makes it into the copy. A guard that
-    // does not recognise NotFound would abandon the whole copy instead.
-    let snapshot = snapshot_run(r);
-    assert!(
-        snapshot
-            .iter()
-            .any(|entry| entry.path == Path::new("NetworkManager/devices/2")),
-        "the present directory's file is copied even though the other is absent: {snapshot:?}"
-    );
-}
-
-#[test]
-fn a_non_notfound_error_reading_runtime_state_abandons_the_whole_copy() {
-    // NetworkManager is a plain file, so reading NetworkManager/devices below
-    // it fails with a not-a-directory error, which is not NotFound. The
-    // systemd state is present and would be copied if that error were wrongly
-    // swallowed as a missing directory.
-    let run = tempfile::tempdir().unwrap();
-    let r = run.path();
-    fs::write(r.join("NetworkManager"), "not a directory").unwrap();
-    fs::create_dir_all(r.join("systemd/resolve/netif")).unwrap();
-    fs::write(r.join("systemd/resolve/netif/2"), "DNS=10.0.2.3\n").unwrap();
-
-    // A real error must propagate: the copy is abandoned, never partially kept.
-    assert!(
-        snapshot_run(r).is_empty(),
-        "a non-NotFound error abandons the copy rather than skipping the entry"
-    );
-}
-
-#[test]
-fn the_runtime_copy_stops_at_the_maximum_depth() {
-    let run = tempfile::tempdir().unwrap();
-    let r = run.path();
-    // NetworkManager/devices is depth 0; a/b/c/d descends to RUN_MAX_DEPTH, and
-    // `e` sits one level below that, past the limit.
-    let at_limit = r.join("NetworkManager/devices/a/b/c/d");
-    fs::create_dir_all(&at_limit).unwrap();
-    fs::write(at_limit.join("e"), "too deep\n").unwrap();
-
-    let snapshot = snapshot_run(r);
-    assert!(
-        snapshot
-            .iter()
-            .any(|entry| entry.path == Path::new("NetworkManager/devices/a/b/c/d")),
-        "the directory at the maximum depth is still copied: {snapshot:?}"
-    );
-    assert!(
-        snapshot
-            .iter()
-            .all(|entry| entry.path != Path::new("NetworkManager/devices/a/b/c/d/e")),
-        "nothing below the maximum depth is copied: {snapshot:?}"
-    );
-}
-
-#[test]
-fn runtime_state_at_the_size_limit_is_copied_but_past_it_abandons_the_copy() {
-    // A file of exactly RUN_MAX_BYTES is within budget and is copied.
-    let at = tempfile::tempdir().unwrap();
-    let a = at.path();
-    fs::create_dir_all(a.join("NetworkManager/devices")).unwrap();
-    fs::write(
-        a.join("NetworkManager/devices/at_limit"),
-        vec![b'x'; RUN_MAX_BYTES],
-    )
-    .unwrap();
-    let snapshot = snapshot_run(a);
-    assert!(
-        snapshot
-            .iter()
-            .any(|entry| entry.path == Path::new("NetworkManager/devices/at_limit")),
-        "a file at exactly the limit is kept: {snapshot:?}"
-    );
-
-    // One byte past the budget abandons the whole copy.
-    let over = tempfile::tempdir().unwrap();
-    let o = over.path();
-    fs::create_dir_all(o.join("NetworkManager/devices")).unwrap();
-    fs::write(
-        o.join("NetworkManager/devices/over"),
-        vec![b'x'; RUN_MAX_BYTES + 1],
-    )
-    .unwrap();
-    assert!(
-        snapshot_run(o).is_empty(),
-        "a file past the limit abandons the copy"
-    );
-}
-
-#[test]
-fn a_restored_file_gets_its_parent_directory_created() {
-    let run = tempfile::tempdir().unwrap();
-    let r = run.path();
-    // A record that lists a file without first listing its parent directory:
-    // restoring it must create the parent before writing the file, so the
-    // write does not fail and silently drop the state.
-    let record = NetworkRecord {
-        links: Vec::new(),
-        hostname: Vec::new(),
-        etc_hostname_present: true,
-        run: vec![RunEntry {
-            path: PathBuf::from("NetworkManager/devices/2"),
-            kind: RunKind::File(b"[device]\n".to_vec()),
-        }],
-    };
-    restore_run(r, &record);
+    assert_eq!(read_hostname(&places.proc_hostname), b"decoy-host");
     assert_eq!(
-        fs::read(r.join("NetworkManager/devices/2")).unwrap(),
-        b"[device]\n",
-        "the file is written, its parent having been created first"
+        fs::read_to_string(places.proc_sys.join("net/ipv4/ip_forward")).unwrap(),
+        "0"
     );
+    assert_eq!(
+        fs::read_to_string(devices.join("2")).unwrap(),
+        "[device]\nmanaged=true\n"
+    );
+    assert!(!devices.join("9").exists());
+    // Without `ip` or `nft` at entry the rules and tables are unknown, and
+    // the way back leaves them alone.
+    assert_eq!(
+        kept,
+        Kept {
+            unknown: vec!["IPv4 rules", "IPv6 rules", "firewall tables"],
+            ..Kept::default()
+        }
+    );
+}
+
+#[test]
+fn restore_leaves_the_links_and_runtime_state_alone_when_entry_could_not_read_them() {
+    let (_dir, places) = world();
+    // Entry could read neither the links nor the runtime state.
+    let record = NetworkRecord {
+        links: None,
+        run: None,
+        ..NetworkRecord::capture(&places, &NetTools::default())
+    };
+    // The decoy's own bridge, the session's change to the decoy's device file.
+    add_link(&places.sys_class_net, "br0", 4, "02:00:00:00:00:04", false);
+    let devices = places.run.join("NetworkManager/devices");
+    fs::write(devices.join("2"), "[device]\nconnection-uuid=hidden\n").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let tools = NetTools {
+        ip: Some(fake_ip(dir.path(), &places.sys_class_net, &[], &[])),
+        ..NetTools::default()
+    };
+
+    let kept = restore_with(&places, &tools, Some(&record.encode()));
+
+    assert!(places.sys_class_net.join("br0").exists());
+    assert!(
+        ip_calls(dir.path())
+            .iter()
+            .all(|call| !call.starts_with("link")),
+        "{:?}",
+        ip_calls(dir.path())
+    );
+    assert_eq!(
+        fs::read_to_string(devices.join("2")).unwrap(),
+        "[device]\nconnection-uuid=hidden\n",
+        "an unknown copy deletes and rewrites nothing"
+    );
+    assert!(kept.unknown.contains(&"links"), "{kept:?}");
+    assert!(kept.unknown.contains(&"runtime state"), "{kept:?}");
+}
+
+#[test]
+fn restore_deletes_the_sessions_links_and_names_what_it_could_not() {
+    let (_dir, places) = world();
+    on_radio(&places.sys_class_net, "eth0", "phy0");
+    let record = NetworkRecord::capture(&places, &NetTools::default());
+    // The session's tunnel, its tunnel made again under a name the decoy had
+    // not, and a monitor interface on the decoy's radio.
+    add_link(&places.sys_class_net, "wg0", 9, "", false);
+    add_link(&places.sys_class_net, "mon0", 10, "02:00:00:00:00:0a", true);
+    on_radio(&places.sys_class_net, "mon0", "phy0");
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = NetTools {
+        ip: Some(fake_ip(dir.path(), &places.sys_class_net, &[], &[])),
+        iw: None,
+        nft: None,
+    };
+
+    // Without `iw` the monitor interface stays, and is named.
+    let kept = restore_with(&places, &tools, Some(&record.encode()));
+    assert!(!places.sys_class_net.join("wg0").exists());
+    assert_eq!(kept.links, ["mon0"]);
+
+    tools.iw = Some(fake_iw(dir.path(), &places.sys_class_net));
+    let kept = restore_with(&places, &tools, Some(&record.encode()));
+    assert!(!places.sys_class_net.join("mon0").exists());
+    assert!(kept.links.is_empty(), "{kept:?}");
+    assert!(places.sys_class_net.join("eth0").exists());
 }
 
 /// The decoy device's address, as entry recorded it.
@@ -467,28 +430,30 @@ fn address(sys: &Path, name: &str) -> String {
 /// A plan that sets each `(name, mac)` back.
 fn set_back(macs: &[(&str, &str)]) -> RestorePlan {
     RestorePlan {
-        delete: Vec::new(),
         set_mac: macs
             .iter()
             .map(|(name, mac)| (name.to_string(), mac.to_string()))
             .collect(),
-        hostname: None,
+        ..RestorePlan::default()
     }
 }
 
 /// A fake `ip` in `dir` that changes the fake `/sys/class/net` tree `sys` as
-/// the kernel would (`link set dev NAME up`, `down` or `address MAC`) and logs
-/// each call. A link in `busy_while_up` refuses an address change while it is
-/// up, as a driver without live address change does (`EBUSY`); a link in
-/// `refusing` refuses it always. A link that is not there fails every call.
+/// the kernel would (`link delete dev NAME`, `link set dev NAME up`, `down` or
+/// `address MAC`) and logs each call. A link in `busy_while_up` refuses an
+/// address change while it is up, as a driver without live address change
+/// does (`EBUSY`); a link in `refusing` refuses it always. A link that is not
+/// there fails every call.
 fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let tool = dir.join("ip");
     fs::write(
         &tool,
         format!(
             "#!/bin/sh\n\
              echo \"$*\" >> '{calls}'\n\
+             if [ \"$1 $2 $3\" = 'link delete dev' ]; then\n\
+             [ -d '{sys}'/\"$4\" ] && rm -r '{sys}'/\"$4\"; exit $?\n\
+             fi\n\
              [ \"$1 $2 $3\" = 'link set dev' ] || exit 1\n\
              link='{sys}'/\"$4\"\n\
              read -r flags < \"$link/flags\" || exit 1\n\
@@ -512,7 +477,26 @@ fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) ->
     tool
 }
 
-/// The calls the fake `ip` in `dir` logged, in order.
+/// A fake `iw` in `dir` that deletes an interface of the fake tree `sys`
+/// (`dev NAME del`) and logs each call.
+fn fake_iw(dir: &Path, sys: &Path) -> PathBuf {
+    let tool = dir.join("iw");
+    fs::write(
+        &tool,
+        format!(
+            "#!/bin/sh\n\
+             echo \"iw $*\" >> '{calls}'\n\
+             [ \"$1 $3\" = 'dev del' ] && [ -d '{sys}'/\"$2\" ] && rm -r '{sys}'/\"$2\"\n",
+            calls = dir.join("calls").display(),
+            sys = sys.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    tool
+}
+
+/// The calls the fake tools in `dir` logged, in order.
 fn ip_calls(dir: &Path) -> Vec<String> {
     fs::read_to_string(dir.join("calls"))
         .unwrap_or_default()
@@ -522,15 +506,53 @@ fn ip_calls(dir: &Path) -> Vec<String> {
 }
 
 #[test]
+fn the_links_are_deleted_with_the_tool_each_one_needs() {
+    let sys = sys_with(&[
+        ("wg0", 9, "", false),
+        ("mon0", 10, "02:00:00:00:00:0a", true),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
+    let iw = fake_iw(dir.path(), sys.path());
+    let plan = RestorePlan {
+        delete: vec!["wg0".to_string()],
+        delete_wireless: vec!["mon0".to_string()],
+        ..RestorePlan::default()
+    };
+
+    let kept = apply_links_with(Some(&ip), Some(&iw), &plan, sys.path());
+
+    assert_eq!(kept, Kept::default());
+    assert_eq!(
+        ip_calls(dir.path()),
+        ["iw dev mon0 del", "link delete dev wg0"]
+    );
+    assert!(observe_links(sys.path()).unwrap().is_empty());
+
+    // Without the tools nothing goes, and both are named.
+    let sys = sys_with(&[
+        ("wg0", 9, "", false),
+        ("mon0", 10, "02:00:00:00:00:0a", true),
+    ]);
+    let kept = apply_links_with(None, None, &plan, sys.path());
+    assert_eq!(kept.links, ["wg0", "mon0"]);
+}
+
+#[test]
 fn an_address_the_driver_changes_live_is_set_without_taking_the_link_down() {
     let sys = sys_with(&[("eth0", 2, SESSION_MAC, true)]);
     set_up(sys.path(), "eth0", true);
     let dir = tempfile::tempdir().unwrap();
     let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
 
-    let kept = apply_links_with(Some(&ip), &set_back(&[("eth0", DECOY_MAC)]), sys.path());
+    let kept = apply_links_with(
+        Some(&ip),
+        None,
+        &set_back(&[("eth0", DECOY_MAC)]),
+        sys.path(),
+    );
 
-    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(kept, Kept::default());
     assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
     assert_eq!(
         ip_calls(dir.path()),
@@ -548,9 +570,14 @@ fn a_driver_that_refuses_a_live_change_gets_the_address_with_the_link_down_and_u
     // A USB Ethernet adapter whose driver refuses to change a running device.
     let ip = fake_ip(dir.path(), sys.path(), &["eth0"], &[]);
 
-    let kept = apply_links_with(Some(&ip), &set_back(&[("eth0", DECOY_MAC)]), sys.path());
+    let kept = apply_links_with(
+        Some(&ip),
+        None,
+        &set_back(&[("eth0", DECOY_MAC)]),
+        sys.path(),
+    );
 
-    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(kept, Kept::default());
     assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
     let set = format!("link set dev eth0 address {DECOY_MAC}");
     assert_eq!(
@@ -579,10 +606,10 @@ fn a_link_that_was_down_stays_down() {
     let ip = fake_ip(dir.path(), sys.path(), &["eth0"], &["wlan0"]);
     let plan = set_back(&[("eth0", DECOY_MAC), ("wlan0", "11:22:33:44:55:66")]);
 
-    let kept = apply_links_with(Some(&ip), &plan, sys.path());
+    let kept = apply_links_with(Some(&ip), None, &plan, sys.path());
 
     assert_eq!(address(sys.path(), "eth0"), DECOY_MAC);
-    assert_eq!(kept, ["wlan0"]);
+    assert_eq!(kept.addresses, ["wlan0"]);
     assert_eq!(
         ip_calls(dir.path()),
         [
@@ -604,9 +631,9 @@ fn an_address_that_still_does_not_take_is_reported() {
     let ip = fake_ip(dir.path(), sys.path(), &[], &["eth0"]);
     let plan = set_back(&[("eth0", DECOY_MAC)]);
 
-    let kept = apply_links_with(Some(&ip), &plan, sys.path());
+    let kept = apply_links_with(Some(&ip), None, &plan, sys.path());
 
-    assert_eq!(kept, ["eth0"], "the session's address stayed");
+    assert_eq!(kept.addresses, ["eth0"], "the session's address stayed");
     assert_eq!(address(sys.path(), "eth0"), SESSION_MAC);
     let set = format!("link set dev eth0 address {DECOY_MAC}");
     assert_eq!(
@@ -621,7 +648,10 @@ fn an_address_that_still_does_not_take_is_reported() {
     assert_eq!(flags(sys.path(), "eth0"), "0x1003", "up again, as it was");
 
     // Without `ip` nothing changes, and the device is reported all the same.
-    assert_eq!(apply_links_with(None, &plan, sys.path()), ["eth0"]);
+    assert_eq!(
+        apply_links_with(None, None, &plan, sys.path()).addresses,
+        ["eth0"]
+    );
 }
 
 #[test]
@@ -631,12 +661,22 @@ fn a_device_that_is_gone_has_no_address_left_to_report() {
     let dir = tempfile::tempdir().unwrap();
     let ip = fake_ip(dir.path(), sys.path(), &[], &[]);
 
-    let kept = apply_links_with(Some(&ip), &set_back(&[("eth1", DECOY_MAC)]), sys.path());
+    let kept = apply_links_with(
+        Some(&ip),
+        None,
+        &set_back(&[("eth1", DECOY_MAC)]),
+        sys.path(),
+    );
 
-    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(kept, Kept::default());
     assert_eq!(
         ip_calls(dir.path()),
         [format!("link set dev eth1 address {DECOY_MAC}")],
         "no down and up for a link that is not there"
     );
+}
+
+#[test]
+fn the_record_name_carries_no_product_name() {
+    assert!(!RECORD_NAME.to_lowercase().contains("nails"));
 }

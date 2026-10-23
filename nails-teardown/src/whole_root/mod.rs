@@ -12,8 +12,11 @@
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
 //! - [`run_records`]: the decoy's records in `/run` that its start writes to
 //!   disk, put back on the way back;
-//! - [`network`]: the decoy's network identity (links, addresses, hostname and
-//!   the service manager's per-link runtime state), put back on the way back;
+//! - [`network`]: the decoy's network state (links, addresses and hostname),
+//!   recorded at entry and put back on the way back, with
+//!   [`network_policy`] (policy-routing rules, firewall tables and network
+//!   settings) and [`network_run`] (the service manager's per-link runtime
+//!   state);
 //! - [`boot_records`]: making the decoy's login and boot records read as one
 //!   clean power cycle after the way back;
 //! - [`boot_writer`]: starting the decoy's wtmpdb boot writer so it records
@@ -42,6 +45,8 @@ pub mod emergency;
 pub mod kernel_helpers;
 pub mod kill;
 pub mod network;
+pub mod network_policy;
+pub mod network_run;
 pub mod nextroot;
 pub mod plan;
 pub mod ret;

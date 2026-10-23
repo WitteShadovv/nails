@@ -6,43 +6,38 @@ use nails_teardown::whole_root::network::NetworkRecord;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-/// A fake `/sys/class/net`, a hostname file, an `/etc/hostname` and a `/run`
-/// with per-link runtime state, under one temporary root.
-fn world() -> tempfile::TempDir {
+/// A fake `/sys/class/net`, a hostname file, a `/proc/sys` with a network
+/// setting and a `/run` with per-link runtime state, under one temporary root.
+fn world() -> (tempfile::TempDir, Places) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let eth0 = root.join("sys/eth0");
+    let places = Places {
+        run: root.join("run"),
+        sys_class_net: root.join("sys"),
+        proc_hostname: root.join("hostname"),
+        proc_sys: root.join("proc-sys"),
+    };
+    let eth0 = places.sys_class_net.join("eth0");
     fs::create_dir_all(eth0.join("device")).unwrap();
     fs::write(eth0.join("ifindex"), "2\n").unwrap();
     fs::write(eth0.join("address"), "aa:bb:cc:dd:ee:ff\n").unwrap();
-    fs::write(root.join("hostname"), "decoy-host\n").unwrap();
-    fs::write(root.join("etc-hostname"), "decoy-host\n").unwrap();
-    fs::create_dir_all(root.join("run/NetworkManager/devices")).unwrap();
-    fs::write(root.join("run/NetworkManager/devices/2"), "[device]\n").unwrap();
-    dir
+    fs::write(&places.proc_hostname, "decoy-host\n").unwrap();
+    fs::create_dir_all(places.proc_sys.join("net/ipv4")).unwrap();
+    fs::write(places.proc_sys.join("net/ipv4/ip_forward"), "0\n").unwrap();
+    fs::create_dir_all(places.run.join("NetworkManager/devices")).unwrap();
+    fs::write(places.run.join("NetworkManager/devices/2"), "[device]\n").unwrap();
+    (dir, places)
 }
 
 #[test]
 fn the_record_is_written_privately_and_matches_what_was_captured() {
-    let world = world();
-    let root = world.path();
-    let out = root.join("runtime/net-identity");
+    let (dir, places) = world();
+    let out = dir.path().join("runtime/net-identity");
     fs::create_dir_all(out.parent().unwrap()).unwrap();
 
-    record(
-        &root.join("sys"),
-        &root.join("hostname"),
-        &root.join("etc-hostname"),
-        &root.join("run"),
-        &out,
-    );
+    record_with(&places, &NetTools::default(), &out);
 
-    let expected = NetworkRecord::capture(
-        &root.join("sys"),
-        &root.join("hostname"),
-        &root.join("etc-hostname"),
-        &root.join("run"),
-    );
+    let expected = NetworkRecord::capture(&places, &NetTools::default());
     let written = NetworkRecord::decode(&fs::read(&out).unwrap()).unwrap();
     assert_eq!(written, expected);
     // Private: the record names the decoy's hardware address and hostname.
@@ -52,31 +47,23 @@ fn the_record_is_written_privately_and_matches_what_was_captured() {
 
 #[test]
 fn a_write_to_a_missing_directory_creates_no_file() {
-    let world = world();
-    let root = world.path();
+    let (dir, places) = world();
     // `out`'s parent does not exist, so the atomic write fails before it ever
     // creates `out`. This does NOT exercise the stale-record cleanup: `out`
     // never existed, so there is nothing to remove (see the next test).
-    let out = root.join("no-such-dir/net-identity");
-    record(
-        &root.join("sys"),
-        &root.join("hostname"),
-        &root.join("etc-hostname"),
-        &root.join("run"),
-        &out,
-    );
+    let out = dir.path().join("no-such-dir/net-identity");
+    record_with(&places, &NetTools::default(), &out);
     assert!(!out.exists());
 }
 
 #[test]
 fn a_failed_write_removes_a_stale_record_from_a_prior_capture() {
-    let world = world();
-    let root = world.path();
-    let out = root.join("runtime/net-identity");
+    let (dir, _places) = world();
+    let out = dir.path().join("runtime/net-identity");
     fs::create_dir_all(out.parent().unwrap()).unwrap();
     // A record a PRIOR successful capture left in the fixed, soft-reboot
-    // persisted runtime directory; it names a decoy identity that may no
-    // longer be current.
+    // persisted runtime directory; it names a decoy state that may no longer
+    // be current.
     fs::write(&out, b"stale-prior-identity").unwrap();
 
     // This capture's atomic write fails (ENOSPC, a read-only remount, a failed

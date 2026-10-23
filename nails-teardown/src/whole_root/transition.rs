@@ -24,6 +24,7 @@
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
 //!   put the decoy's records back and, once the hidden units have stopped,
+//!   put the decoy's network state back ([`crate::whole_root::network`]),
 //!   give the decoy's `utab` lines back to the decoy mounts the way back
 //!   restored and write the kmsg cursor last.
 //!
@@ -275,9 +276,9 @@ pub enum Outcome {
         removed: usize,
         /// Entries it could not remove.
         failed: usize,
-        /// Devices that kept the hidden session's hardware address: the way
-        /// back could not set the decoy's back ([`network::restore`]).
-        addresses_kept: Vec<String>,
+        /// The network state the way back could not put back, and the parts
+        /// it left alone ([`network::restore`]).
+        network: network::Kept,
     },
     /// `/run/nextroot` was populated but not armed for this transition, or
     /// failed the init check: it was detached, so PID 1 stays on this root.
@@ -496,17 +497,12 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
     // Now that the hidden network units have stopped, give the decoy its
-    // network identity back: delete the links the session made, each device's
-    // recorded address, the hostname on a decoy that would not reset it, and
-    // the service manager's per-link runtime state. A no-op without a record.
-    // A device whose address could not be set back goes into the outcome, as
-    // nothing here may log.
-    let addresses_kept = network::restore(
-        &env.run,
-        Path::new(network::SYS_CLASS_NET),
-        Path::new(network::PROC_HOSTNAME),
-        network.as_deref(),
-    );
+    // network state back: delete the links, rules and firewall tables the
+    // session made, set each device's recorded address, the hostname and the
+    // network settings back, and put the service manager's per-link runtime
+    // state back. A no-op without a record. What could not be put back goes
+    // into the outcome, as nothing here may log.
+    let network_kept = network::restore(&network::Places::system(&env.run), network.as_deref());
     // The decoy's copy, taken at entry, names mounts by their IDs at that time;
     // the decoy root and its other mounts come back as new mounts, whose IDs
     // the way back recorded, and the old IDs may name the session's mounts or
@@ -552,7 +548,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     Outcome::Returned {
         removed: report.removed.len(),
         failed: report.failed.len(),
-        addresses_kept,
+        network: network_kept,
     }
 }
 
