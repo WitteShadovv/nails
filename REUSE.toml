@@ -12,8 +12,40 @@ SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
 # The EFF "large" diceware word list is third-party data under its own licence,
-# not the project's. A longer path is "closer", so this wins over the catch-all.
+# not the project's. When several annotations match a path the last one wins,
+# so this comes after the catch-all.
 [[annotations]]
 path = "setup/nails-setup/data/eff_large_wordlist.txt"
 SPDX-FileCopyrightText = "2016 Electronic Frontier Foundation"
 SPDX-License-Identifier = "CC-BY-4.0"
+
+# supply-chain/imports.lock is third-party data as well: cargo-vet copies into
+# it the audit records, reviewer names and notes included, of the public audit
+# sets that supply-chain/config.toml imports. Each set stays under the licence
+# of the repository that publishes it:
+#
+#   bytecodealliance/wasmtime     Apache-2.0 WITH LLVM-exception
+#   EmbarkStudios/rust-ecosystem  Apache-2.0 OR MIT
+#   google/supply-chain           Apache-2.0
+#   divviup/libprio-rs            MPL-2.0
+#   mozilla/supply-chain          Apache-2.0 OR MIT
+#   zcash/rust-ecosystem          Apache-2.0 OR MIT
+#
+# The Google, Mozilla and Zcash sets are each gathered from other repositories
+# of the same publisher; the licence above is that of the gathered set, which
+# is what cargo-vet imports. The holders below are in the same order, each as
+# the repository's licence file names it; the wasmtime and Google licence files
+# name no holder, so wasmtime's name for its authors and Google LLC stand in. A
+# new import needs its licence and holder added here. Like the word list, this
+# comes after the catch-all, because the last matching annotation wins.
+[[annotations]]
+path = "supply-chain/imports.lock"
+SPDX-FileCopyrightText = [
+    "The Wasmtime Project Developers",
+    "2019 Embark Studios",
+    "Google LLC",
+    "2021 ISRG",
+    "2022 Bobby Holley",
+    "2022 The Zcash developers",
+]
+SPDX-License-Identifier = "Apache-2.0 WITH LLVM-exception AND (Apache-2.0 OR MIT) AND Apache-2.0 AND MPL-2.0"
