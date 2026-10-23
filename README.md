@@ -561,10 +561,11 @@ stdout, `activate` included: a stable envelope with `schema_version` (currently
 `9`, and a typed `data` object, an `error` object, or both (a failed `activate`
 still reports its data). An `error` has a snake_case `code`, a `message` that
 may run to several lines, and `next`: the command to run next, without the
-binary's path (`{"command": "recover"}`), or `null`. A declined prompt, like an
-activation cancelled with Ctrl+C, reports the error `cancelled` and exits `130`.
-Each command's schema is in [docs/schemas/](docs/schemas/). A new schema
-version signals an incompatible change.
+binary's path (`{"command": "recover"}`), or `null`. A cancel, whether a "no"
+at a prompt or an activation stopped with Ctrl+C, reports the error `cancelled`
+(with no `data`) and exits `130`. Each command's schema is in
+[docs/schemas/](docs/schemas/). A new schema version signals an incompatible
+change.
 
 </details>
 
@@ -643,9 +644,16 @@ your setup before running the new binary.
   Scripts written for version 1, which the 0.3.0 release candidates printed,
   must be updated: `status` reports `place` and `attention` instead of
   `posture`, `session`, `state` and `state_source`; an error carries a typed
-  `next` instead of `hint`; `ok` is `true` only for exit 0 or 9; `activate`
-  no longer prints a progress line before its result; and a "no" at a prompt
-  exits 130 instead of 1.
+  `next` instead of `hint`; `ok` is `true` only for exit 0 or 9; and a "no"
+  at a prompt exits 130 instead of 1. `activate` prints one envelope instead
+  of a progress line and a result line: the fields of that result line other
+  than `schema_version`, `command`, `ok` and `type` (`status`, `duration`,
+  `filesystems`, `masked_units`, `message` and the rest) are now under
+  `data`, and `type` is gone. A failure that version 1 gave the `status`
+  `error` now carries an `error`, whose `code` names the cause (`not_ready`
+  for a refused pre-flight check), and `data` with the `status` `failed`; a
+  cancel, which version 1 gave the `status` `cancelled`, is the error
+  `cancelled` with no `data`.
 - **State schema.** `state.json` carries a `version` field. The states are
   `Inactive`, `Active` and `Degraded`; `nails status` reads the live session from
   the mount table and the session plan in `/run`, because a soft-reboot keeps the
