@@ -24,6 +24,14 @@ The decoy also has to be one the session can enter and leave:
   a subvolume) or f2fs. The way back mounts it again by device, so a tmpfs root
   (impermanence), an overlay root (overlayroot, bilibop-lockfs) and ZFS are
   refused.
+- **The tools NAILS runs** (`host-tools`): `systemctl` and `loginctl`
+  (systemd), `ip` (iproute2), `dmsetup` when the hidden volume is on
+  device-mapper (dm-crypt, LUKS or a VeraCrypt mapping) or its backend cannot be
+  read, and on NixOS `nix`. The way back deletes the links a session made and
+  sets hardware addresses back with `ip`, and closes the hidden volume's mapping
+  with `dmsetup`. Without them it would leave both behind, so activation is
+  refused while one is missing; `nails check` names it and the package that
+  provides it.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The

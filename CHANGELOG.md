@@ -67,11 +67,11 @@ of this changelog for that version becomes the release notes word for word, and
 - The hidden session's state file can now record which Linux family the host belongs to, without
   changing its on-disk format. A state file written by a 0.3.0 pre-release loads unchanged after the
   upgrade with its integrity digest intact, so an existing install is never read as corrupt.
-- The host-tools pre-flight check requires only the tools NAILS actually spawns — `systemctl` and
-  `loginctl` on every host, and `nix` on NixOS — and names a missing one with an install hint for the
-  host's package manager (`apt`, `dnf` or `pacman`). It no longer requires `systemd-run`, `cp`,
-  `chown`, `sync`, `swapoff` or `kill`, which NAILS does through system calls or systemd units rather
-  than by spawning a binary.
+- The host-tools pre-flight check requires only the tools NAILS actually spawns — `systemctl`,
+  `loginctl` and `ip` on every host, `dmsetup` when the hidden volume is on device-mapper, and `nix`
+  on NixOS — and names a missing one with an install hint for the host's package manager (`apt`,
+  `dnf` or `pacman`). It no longer requires `systemd-run`, `cp`, `chown`, `sync`, `swapoff` or
+  `kill`, which NAILS does through system calls or systemd units rather than by spawning a binary.
 - `check` shows the "NixOS profile" section only on NixOS, or where an explicit NixOS build target is
   configured; a Debian, Ubuntu, Fedora or Arch decoy no longer prints a NixOS-profile line that does
   not apply to it.
@@ -156,6 +156,14 @@ of this changelog for that version becomes the release notes word for word, and
   NetworkManager and systemd-resolved keep under `/run` is put back as it was at entry. A link, address,
   or hostname a session changed no longer lingers on the decoy, where its NetworkManager could adopt the
   link and record a profile on disk, until the next power-off.
+- `nails activate` and `nails check` refuse a host without `ip`, or without `dmsetup` when the hidden
+  volume is on device-mapper (dm-crypt, LUKS or a VeraCrypt mapping) or its backend cannot be read.
+  The way back runs both and skipped their work without a word when one was missing: without
+  `dmsetup` the hidden mapping and its key stayed open on the decoy, listed in `/dev/mapper`, and
+  without `ip` the links and hardware addresses a session changed were not put back. The refusal
+  names the package to install: `iproute2` (`iproute` on Fedora) and `dmsetup` (`device-mapper` on
+  Fedora and Arch). On NixOS the refusal now says to add a missing tool to the decoy's
+  `environment.systemPackages`, where the check looks for it, rather than the hidden system's.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

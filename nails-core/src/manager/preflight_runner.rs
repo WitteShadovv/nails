@@ -188,8 +188,9 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(MountNamespaceCheck::new()));
 
     // Resolves every host tool nails spawns from the detected platform's search
-    // list before anything is built.
-    registry.add_check(Box::new(HostToolsCheck::new()));
+    // list before anything is built: the way back's `ip` among them, and its
+    // `dmsetup` when the hidden volume is (or may be) on device-mapper.
+    registry.add_check(Box::new(HostToolsCheck::new(hidden_root.clone())));
 
     registry.add_check(Box::new(SymlinkSupportCheck::new(hidden_root.clone())));
 
