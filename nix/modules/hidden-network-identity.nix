@@ -16,9 +16,8 @@
 # silently lose to the decoy's definition.
 #
 # This is a template: set `networking.hostName` to a plausible, decoy-unrelated
-# value. The file cannot be evaluated in the development sandbox (the Nix daemon
-# is unavailable); evaluate it with the rest of the hidden configuration on a Nix
-# host.
+# value. The `session-nixos-hidden-system` VM test builds a hidden system with it
+# as it stands.
 #
 # NetworkManager has no global switch for VPN autoconnect, so it is not set
 # here. Disable it per profile from the hidden session instead (see "Shared
@@ -34,16 +33,23 @@
 # must never reach the decoy, end a session that used this module with
 # `nails deactivate --poweroff` (or `nails emergency --poweroff`).
 
-{ lib, ... }:
+{ config, lib, ... }:
 {
-  # A distinct hostname for the hidden session. Choose something unremarkable and
-  # unrelated to the decoy; the value below is a placeholder.
-  networking.hostName = lib.mkForce "localhost";
+  networking = {
+    # A distinct hostname for the hidden session. Choose something unremarkable
+    # and unrelated to the decoy; the value below is a placeholder.
+    hostName = lib.mkForce "localhost";
 
-  # Randomise the Wi-Fi and Ethernet MAC addresses so the hidden session does
-  # not reuse the decoy's hardware addresses on the network.
-  networking.networkmanager = {
-    wifi.macAddress = lib.mkForce "random";
-    ethernet.macAddress = lib.mkForce "random";
+    # NixOS maps the hostname to 127.0.0.2 in /etc/hosts and refuses a system
+    # that maps `localhost` anywhere but 127.0.0.1 and ::1, where it resolves
+    # already: while the hostname is `localhost`, leave that mapping out.
+    hosts."127.0.0.2" = lib.mkIf (config.networking.hostName == "localhost") (lib.mkForce [ ]);
+
+    # Randomise the Wi-Fi and Ethernet MAC addresses so the hidden session does
+    # not reuse the decoy's hardware addresses on the network.
+    networkmanager = {
+      wifi.macAddress = lib.mkForce "random";
+      ethernet.macAddress = lib.mkForce "random";
+    };
   };
 }
