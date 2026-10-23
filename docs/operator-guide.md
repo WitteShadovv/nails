@@ -388,18 +388,31 @@ journal that starts late:
 - the same boot ID and continuous uptime across both transitions;
 - the network state the hidden session set up: the clean way back now restores
   it before the switch, so a normal `deactivate` leaves none of it on the
-  decoy. The way back deletes the virtual links the session brought up (a
-  tunnel, a dummy or a bridge), sets each device's MAC address back where the
-  session changed it, restores the hostname on a decoy without `/etc/hostname`,
-  and puts the per-link NetworkManager and systemd-resolved state below `/run`
-  back as it was at entry. The decoy's NetworkManager therefore does not adopt
-  a session link as connected externally or record a profile for it in
-  `/var/lib/NetworkManager/timestamps` on the decoy disk. A plain `emergency`
-  leaves none of it either: by default it returns through the same clean way
-  back and restores the network just as `deactivate` does, and the variants
-  that end otherwise (`--poweroff`, `--reboot`, or a degraded reboot) power off
-  or reboot instead, where the decoy's NetworkManager starts fresh and nothing
-  the session changed lingers.
+  decoy, with the one exception below. The way back deletes the virtual links
+  the session brought up (a tunnel, a dummy or a bridge), sets each device's
+  MAC address back where the session changed it, restores the hostname on a
+  decoy without `/etc/hostname`, and puts the per-link NetworkManager and
+  systemd-resolved state below `/run` back as it was at entry. Many drivers
+  refuse to change the MAC address of a device that is up (USB Ethernet
+  adapters such as the ASIX AX88179, and many Wi-Fi cards); for those the way
+  back takes the device down for the change and brings it up again, as
+  NetworkManager does, and then reads the address back. The decoy's
+  NetworkManager therefore does not adopt a session link as connected
+  externally or record a profile for it in `/var/lib/NetworkManager/timestamps`
+  on the decoy disk. A plain `emergency` leaves none of it either: by default
+  it returns through the same clean way back and restores the network just as
+  `deactivate` does, and the variants that end otherwise (`--poweroff`,
+  `--reboot`, or a degraded reboot) power off or reboot instead, where the
+  decoy's NetworkManager starts fresh and nothing the session changed lingers.
+  The exception is a device whose MAC address the way back still cannot set
+  back, because its driver refuses the change even with the device down, or
+  because `ip` (iproute2) is not installed: it keeps the session's address
+  until the machine powers off or reboots. The decoy's NetworkManager goes on
+  using that address unless the decoy's profile sets one, so it can reach the
+  decoy disk (in a DHCP lease, for one). The way back runs with no output after
+  the session has ended, so nothing tells you: end a session that changed a
+  MAC address with `deactivate --poweroff` (or `emergency --poweroff`) when the
+  address must never reach the decoy.
 - on a volatile decoy, a journal that starts at the return. The way back
   deletes the runtime journal the decoy shared with the hidden session, so the
   decoy's own records from before the session (the activation's sudo line, the
@@ -1234,12 +1247,18 @@ NixOS generation, or the upper's `/etc`); NAILS ships optional snippets
 `nix/modules/network-identity/00-hidden-identity.conf`). NetworkManager has no
 global VPN-autoconnect switch, so disable it per profile with `nmcli connection
 modify <vpn> connection.autoconnect no`. The clean way back now undoes what the
-snippet changed on the running system: it sets the random MAC address back on
-the decoy's device and restores the hostname on a decoy without
+snippet changed on the running system: it sets each device's MAC address back
+to the decoy's, taking the device down for the change when its driver refuses
+it while the device is up, and restores the hostname on a decoy without
 `/etc/hostname`, so a normal `deactivate` leaves neither on the decoy. A plain
 `emergency` restores them the same way, returning through the clean way back by
 default; `--poweroff` and `--reboot` power off or reboot instead, where the
-decoy starts fresh. Neither the MAC nor the hostname lingers on the decoy.
+decoy starts fresh. The one exception is a device whose MAC address the way
+back still cannot set back: it keeps the random address until the machine
+powers off or reboots, and nothing tells you so (see
+[How it works](#how-it-works)). When the random address must never reach the
+decoy, end a session that used the snippet with `nails deactivate --poweroff`
+(or `nails emergency --poweroff`).
 
 ### Network anonymity and Tor
 
@@ -1350,6 +1369,9 @@ real hardware:
   about 3 s to a shell, 9 to 15 s until the system has settled);
 - GPU, Wi-Fi, VPN and Bluetooth coming back after each transition, NVIDIA's
   proprietary driver, docks and external displays;
+- the way back setting a MAC address back on a USB Ethernet adapter or Wi-Fi
+  card whose driver refuses the change while the device is up: taking the
+  device down for it is tested against a simulated driver, not a real one;
 - decoy roots unlocked with a TPM-sealed key (the mapping survives the
   soft-reboot, but anything in the hidden session that measures into PCRs changes
   them for the rest of the uptime);

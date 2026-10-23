@@ -274,6 +274,9 @@ pub enum Outcome {
         removed: usize,
         /// Entries it could not remove.
         failed: usize,
+        /// Devices that kept the hidden session's hardware address: the way
+        /// back could not set the decoy's back ([`network::restore`]).
+        addresses_kept: Vec<String>,
     },
     /// `/run/nextroot` was populated but not armed for this transition, or
     /// failed the init check: it was detached, so PID 1 stays on this root.
@@ -500,7 +503,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // network identity back: delete the links the session made, each device's
     // recorded address, the hostname on a decoy that would not reset it, and
     // the service manager's per-link runtime state. A no-op without a record.
-    network::restore(
+    // A device whose address could not be set back goes into the outcome, as
+    // nothing here may log.
+    let addresses_kept = network::restore(
         &env.run,
         Path::new(network::SYS_CLASS_NET),
         Path::new(network::PROC_HOSTNAME),
@@ -534,6 +539,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     Outcome::Returned {
         removed: report.removed.len(),
         failed: report.failed.len(),
+        addresses_kept,
     }
 }
 

@@ -37,6 +37,15 @@
 //! current links and writing nothing but files makes all of it testable without
 //! a privileged network.
 //!
+//! Many drivers cannot change the address of a device that is up (USB Ethernet
+//! adapters such as `ax88179_178a` and `asix`, Wi-Fi drivers without powered
+//! address change): the kernel refuses the change with `EBUSY` while the link
+//! runs. So an address that did not take is set again with the link down, as
+//! NetworkManager does, and the link is brought back up; a link that was down
+//! stays down. Every address is read back afterwards, and [`restore`] returns
+//! the devices that still have another one, which the transition puts in its
+//! outcome instead of dropping the failure.
+//!
 //! The way back never touches any of this when no record was taken (an older
 //! session, or one whose recording failed): [`restore`] with no record is a
 //! no-op, never a blanket wipe, so it is safe on a path that runs for every
@@ -72,6 +81,10 @@ const RUN_MAX_BYTES: usize = 1 << 20;
 
 /// How long a single `ip` call may take.
 const IP_BUDGET: Duration = Duration::from_secs(3);
+
+/// A link's administrative up flag in its sysfs `flags` (`IFF_UP` in
+/// `<linux/if.h>`), set by `ip link set up` and cleared by `ip link set down`.
+const IFF_UP: u32 = 0x1;
 
 /// One of the decoy's links as it was at entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,46 +269,100 @@ pub fn read_hostname(proc_hostname: &Path) -> Vec<u8> {
 /// directory before the scrub removed it; with none, or one that does not
 /// parse, nothing is done.
 ///
+/// Returns the devices that still have another hardware address than the one
+/// recorded at entry: the way back could not set it back, and the decoy will
+/// start with the session's address on them.
+///
 /// Call it once every hidden unit has stopped: the hidden service manager must
 /// not be running, or it would adopt a link again or rewrite the runtime state.
+#[must_use]
 pub fn restore(
     run: &Path,
     sys_class_net: &Path,
     proc_hostname: &Path,
     record_bytes: Option<&[u8]>,
-) {
+) -> Vec<String> {
     let Some(record) = record_bytes.and_then(NetworkRecord::decode) else {
-        return;
+        return Vec::new();
     };
     let current = observe_links(sys_class_net);
     let current_hostname = read_hostname(proc_hostname);
     let plan = plan(&record, &current, &current_hostname);
-    apply_links(&plan);
+    let kept = apply_links(&plan, sys_class_net);
     if let Some(hostname) = &plan.hostname {
         let _ = write_hostname(proc_hostname, hostname);
     }
     restore_run(run, &record);
+    kept
 }
 
 /// Run the link part of a plan with `ip`: delete the links the session made
-/// and set each recorded address back. Finds `ip` only when there is work, and
-/// is silent on failure, as the way back is best effort throughout. Separated
-/// so a real-kernel test can drive it against a network namespace.
-pub fn apply_links(plan: &RestorePlan) {
+/// and set each recorded address back, reading the links' state from
+/// `sys_class_net`. Finds `ip` only when there is work. A failed delete is
+/// silent, as the way back is best effort throughout; the devices whose address
+/// is still not the recorded one are returned. Separated so a real-kernel test
+/// can drive it against a network namespace.
+#[must_use]
+pub fn apply_links(plan: &RestorePlan, sys_class_net: &Path) -> Vec<String> {
     if plan.delete.is_empty() && plan.set_mac.is_empty() {
+        return Vec::new();
+    }
+    let ip = crate::whole_root::tools::find(None, "ip");
+    apply_links_with(ip.as_deref(), plan, sys_class_net)
+}
+
+/// [`apply_links`] with the `ip` at `ip`, or none. Without one nothing is
+/// changed, and every device the plan sets an address on is returned.
+fn apply_links_with(ip: Option<&Path>, plan: &RestorePlan, sys_class_net: &Path) -> Vec<String> {
+    if let Some(ip) = ip {
+        for name in &plan.delete {
+            let args = ["link", "delete", "dev", name.as_str()];
+            let _ = crate::whole_root::tools::run(ip, &args, IP_BUDGET);
+        }
+        for (name, mac) in &plan.set_mac {
+            set_address(ip, sys_class_net, name, mac);
+        }
+    }
+    plan.set_mac
+        .iter()
+        .filter(|(name, mac)| keeps_other_address(sys_class_net, name, mac))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Give link `name` the address `mac`. The address is read back rather than
+/// the exit status trusted: when it did not take on a link that is up, the
+/// driver may refuse to change a running device (`EBUSY`), so the link is taken
+/// down for the change and brought up again, as NetworkManager does. A link
+/// that is down is never brought up.
+fn set_address(ip: &Path, sys_class_net: &Path, name: &str, mac: &str) {
+    let set = ["link", "set", "dev", name, "address", mac];
+    let _ = crate::whole_root::tools::run(ip, &set, IP_BUDGET);
+    if !keeps_other_address(sys_class_net, name, mac) || !is_up(sys_class_net, name) {
         return;
     }
-    let Some(ip) = crate::whole_root::tools::find(None, "ip") else {
-        return;
-    };
-    for name in &plan.delete {
-        let args = ["link", "delete", "dev", name.as_str()];
-        let _ = crate::whole_root::tools::run(&ip, &args, IP_BUDGET);
-    }
-    for (name, mac) in &plan.set_mac {
-        let args = ["link", "set", "dev", name.as_str(), "address", mac.as_str()];
-        let _ = crate::whole_root::tools::run(&ip, &args, IP_BUDGET);
-    }
+    let down = ["link", "set", "dev", name, "down"];
+    let _ = crate::whole_root::tools::run(ip, &down, IP_BUDGET);
+    let _ = crate::whole_root::tools::run(ip, &set, IP_BUDGET);
+    let up = ["link", "set", "dev", name, "up"];
+    let _ = crate::whole_root::tools::run(ip, &up, IP_BUDGET);
+}
+
+/// Whether link `name` is there with another hardware address than `mac`. A
+/// link that is gone has none left to keep.
+fn keeps_other_address(sys_class_net: &Path, name: &str, mac: &str) -> bool {
+    read_trimmed(&sys_class_net.join(name).join("address")).is_some_and(|now| now != mac)
+}
+
+/// Whether link `name` is up: [`IFF_UP`] in its `flags`, which the kernel
+/// prints in hex (`0x1003`).
+fn is_up(sys_class_net: &Path, name: &str) -> bool {
+    read_trimmed(&sys_class_net.join(name).join("flags"))
+        .and_then(|flags| {
+            let hex = flags.strip_prefix("0x").unwrap_or(&flags);
+            u32::from_str_radix(hex, 16).ok()
+        })
+        .is_some_and(|flags| flags & IFF_UP != 0)
 }
 
 /// Write `hostname` to the live-hostname file, which sets it.

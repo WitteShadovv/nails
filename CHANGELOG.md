@@ -192,6 +192,15 @@ of this changelog for that version becomes the release notes word for word, and
   names the package to install: `iproute2` (`iproute` on Fedora) and `dmsetup` (`device-mapper` on
   Fedora and Arch). On NixOS the refusal now says to add a missing tool to the decoy's
   `environment.systemPackages`, where the check looks for it, rather than the hidden system's.
+- The way back now sets a device's MAC address back also when its driver refuses to change the address
+  of a device that is up, as USB Ethernet adapters such as the ASIX AX88179 and many Wi-Fi drivers do.
+  The change used to fail silently there: the decoy came back with the hidden session's random address,
+  which its NetworkManager keeps when the decoy's profile sets none, and which can reach the decoy disk
+  in a DHCP lease. The way back now takes such a device down for the change and brings it up again, as
+  NetworkManager does, leaves a device that was down as it was, and reads every address back. A device
+  whose address it still cannot set back keeps the session's address until power-off, and nothing tells
+  you so: end a session that changed a MAC address with `--poweroff` when that address must never reach
+  the decoy.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
