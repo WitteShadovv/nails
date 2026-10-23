@@ -94,21 +94,27 @@ impl<F: Filesystem> PreFlightCheck<F> for MyCheck {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::filesystem::MockFilesystem;
+#[path = "my_check_tests.rs"]
+mod tests;
+```
 
-    #[test]
-    fn test_my_check_passes() {
-        let fs = MockFilesystem::new();
-        let check = MyCheck::new("test".to_string());
-        // Setup mock filesystem state
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_pass());
-    }
+The tests go in the sibling `checks/my_check_tests.rs`, never inline in the
+check's own file:
 
-    // Add more tests for failure cases, edge cases, etc.
+```rust
+use super::*;
+use crate::filesystem::MockFilesystem;
+
+#[test]
+fn test_my_check_passes() {
+    let fs = MockFilesystem::new();
+    let check = MyCheck::new("test".to_string());
+    // Setup mock filesystem state
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_pass());
 }
+
+// Add more tests for failure cases, edge cases, etc.
 ```
 
 ### 2. Register the check module
@@ -130,10 +136,12 @@ Every check should have tests covering:
 - Edge cases (boundary conditions, error handling)
 - Integration with `PreFlightRegistry`
 
-Cover every branch a check can take. CI enforces a single production-code
-line-coverage floor (defined in `.config/coverage.toml`), not a per-check 100%
-target; test infrastructure such as `MockFilesystem` is excluded from the
-figure.
+Cover every branch a check can take. CI enforces a single line-coverage floor
+(defined in `.config/coverage.toml`), not a per-check 100% target; test
+infrastructure such as `MockFilesystem` and every test file are excluded from
+the figure. The exclusion goes by file name, which is why the tests live in
+`my_check_tests.rs`: a test module written inline in `my_check.rs` would count
+as covered production code.
 
 ### 4. Register with the CLI
 

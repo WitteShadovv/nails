@@ -162,10 +162,11 @@ cargo nextest run --no-fail-fast --status-level all
 cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml
 ```
 
-CI enforces a single line-coverage floor over production code, defined once in
+CI enforces a single line-coverage floor, defined once in
 `.config/coverage.toml` and read by `just coverage`. The in-memory filesystem
-mock, the shared test fixtures and every test file are excluded, so the figure
-measures only code that ships.
+mock, the shared test fixtures and every test file are left out of the figure.
+A test module written inline in a production file is not, so the older files
+that still keep one count it as covered code.
 
 ## Public release behavior
 

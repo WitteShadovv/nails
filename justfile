@@ -150,7 +150,7 @@ shuffle seeds="20":
             -- -Z unstable-options --shuffle-seed "$seed"
     done
 
-# Line coverage over nextest, measuring production code only; fails below the
+# Line coverage over nextest, with the test files left out; fails below the
 # floor in .config/coverage.toml.
 coverage:
     #!/usr/bin/env bash
@@ -164,9 +164,10 @@ coverage:
     fi
     # Test infrastructure never ships, so it must not count toward the figure:
     # the in-memory filesystem mock, the shared test fixtures and the platform
-    # test doubles, plus every test file (inline `tests.rs`, `*_tests.rs`, the
-    # `tests/` integration trees and the benches). Keeping them out of the
-    # report is what makes this number production-only.
+    # test doubles, plus every test file (a module's `tests.rs`, `*_tests.rs`,
+    # the `tests/` integration trees and the benches). The filter sees file
+    # names only: a test module written inline in a production file still
+    # counts, as covered lines, so tests go in a file of their own.
     ignore='(/tests/|/tests\.rs$|_tests\.rs$|/mock/|/test_support|/fake\.rs$|/contract\.rs$|/config/testing\.rs$|/benches/)'
     # Every report lands under target/coverage, so nothing is written outside
     # the build directory. In CI the percentage also goes to the job summary.
