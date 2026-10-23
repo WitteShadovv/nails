@@ -226,6 +226,10 @@ of this changelog for that version becomes the release notes word for word, and
   volume, so a refused host is left byte-identical, with no state lock and no log line, and the
   command exits with the unsupported-platform status (8). The refusal previously came after the state
   lock and the log file had already been written.
+- The optional NixOS module `nix/modules/hidden-network-identity.nix` now builds. NixOS refused its
+  placeholder hostname `localhost`, which it would have mapped to 127.0.0.2 in `/etc/hosts`, so a
+  hidden configuration that imported the module as shipped did not build. The module now leaves that
+  mapping out while the hostname is `localhost`, and a VM test builds a hidden system with it.
 - The way back now puts the decoy's network state back before returning to it, after a `deactivate`
   and after a plain `emergency`. It deletes the virtual links a session brought up (a tunnel, a dummy
   or a bridge) and, with `iw`, the Wi-Fi interfaces it added on one of the decoy's radios, and counts
