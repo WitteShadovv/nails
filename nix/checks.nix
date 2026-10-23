@@ -159,7 +159,8 @@ in
   #
   # The suite also reads the repository data its tooling validates, so the
   # fileset carries those inputs: deny.toml (the advisory-ignore config),
-  # docs/ci.md plus .github/workflows (the workflow-documentation check), and
+  # docs/ci.md plus .github/workflows (the workflow-documentation check), the
+  # root Cargo.toml (the workspace members the path filters must cover), and
   # the E2E metadata sources the shard planner's tests scan (default.nix, the
   # tests tree and the checked-in weights) and the helper library and batched
   # scenarios the E2E synchronisation lint scans. git is a tool because
@@ -169,6 +170,7 @@ in
       ../ci
       ../pyproject.toml
       ../deny.toml
+      ../Cargo.toml
       ../docs/ci.md
       ../.github/workflows
       ./distro-tests/images.json

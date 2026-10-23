@@ -27,10 +27,12 @@ When you add a crate:
   line and `nails_base::unit_test_mode!();` in its `lib.rs`, `test-hooks` and
   `test-support` features that forward to the crates below, and a self
   dev-dependency that turns both on, as the other library crates do;
+- name its directory `nails-<name>/`: the `rust` filter in `ci/changes.py`,
+  the orphan module check and the file size check cover every such directory;
 - add its directory wherever the crate directories are listed: `sourceFiles` in
-  `flake.nix`, the `nails-source` check in `nix/checks.nix`, the `rust` filter
-  in `ci/changes.py`, the `relevant` filter in `.github/workflows/e2e.yml` and
-  `scripts/check-orphan-modules.sh`.
+  `flake.nix`, the `nails-source` check in `nix/checks.nix` and the `relevant`
+  filter in `.github/workflows/e2e.yml`. A `ci/tests` case fails when a member
+  of the workspace is missing from either path filter.
 
 `unit_test_mode!` keeps a crate's unit tests off the host: the base crate's
 switches (the host-interaction skip, the state attach gate, immediate alerts)

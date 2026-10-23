@@ -45,6 +45,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       fuzz: ${{ steps.filter.outputs.fuzz }}
+      side: ${{ steps.filter.outputs.side }}
       deps: ${{ steps.filter.outputs.deps }}
       nix: ${{ steps.filter.outputs.nix }}
       workflows: ${{ steps.filter.outputs.workflows }}
@@ -64,10 +65,13 @@ jobs:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         run: python3 -m ci.changes ${BASE:+--base "$BASE"} >> "$GITHUB_OUTPUT"
 
+  # `just fmt-check` also checks the fuzz crate and the side workspaces, and
+  # `just lint` runs clippy over the side workspaces, so a change to the fuzz
+  # crate or to a side workspace runs this job too.
   lint:
     name: lint
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fuzz == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fuzz == 'true' || needs.changes.outputs.side == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
 
@@ -250,6 +254,40 @@ jobs:
 
       - name: Run the shuffled-seed sweep
         run: just shuffle
+
+  # The tests of the side workspaces (setup/, and gui/ once it exists), each a
+  # Cargo workspace of its own that the rust job does not reach; lint checks
+  # their formatting and clippy. The rust filter holds the toolchain pin, the
+  # cargo config and the justfile, which decide how these tests run too. No
+  # Rust cache: the shared one holds the root workspace's target/, and each
+  # side workspace builds into a target/ of its own.
+  side-tests:
+    name: side-tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.side == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install test tools
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        with:
+          tool: cargo-nextest@0.9.146,just@1.58.0
+          fallback: none
+
+      # nextest's default profile: the side workspaces have no
+      # .config/nextest.toml, so the ci profile of the rust job does not exist
+      # for them.
+      - name: Run the side workspaces' tests
+        run: just side-tests
 
   # Dependency policy over the shipped graph. Advisory results follow the
   # RustSec database rather than this repository, so they only gate a change
@@ -435,7 +473,7 @@ jobs:
   # The one required status. A job the path filter skipped counts as passed.
   gate:
     name: gate
-    needs: [changes, lint, rust, shuffle, deps, privileged-mounts, nix-build, lint-misc, docs-check, sbom]
+    needs: [changes, lint, rust, shuffle, side-tests, deps, privileged-mounts, nix-build, lint-misc, docs-check, sbom]
     if: always()
     runs-on: ubuntu-26.04
     timeout-minutes: 5
