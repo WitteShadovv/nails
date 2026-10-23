@@ -370,8 +370,9 @@ impl Rehearsal {
             }
         }
         // A hit is critical. Otherwise a device that could not be read (an
-        // error or a byte cap) or one whose storage hides data from a raw scan
-        // (compressed or copy-on-write) is a warning, never a clean pass.
+        // error, an empty source or a byte cap) or one whose storage hides data
+        // from a raw scan (compressed, copy-on-write, encrypted or not
+        // identified) is a warning, never a clean pass.
         let exit = if report.total_hits() > 0 {
             ExitStatus::VerifyCritical
         } else if report.incomplete() || report.inconclusive() {
@@ -449,10 +450,11 @@ impl Rehearsal {
 
     fn scan_targets(&self, options: &ScanOptions) -> Result<Vec<ScanTarget>, String> {
         // An image file and an unmounted --device carry no mount-table entry, so
-        // they start as plain storage here and the scan step classifies them
-        // from their on-disk superblock; a live device is classified from the
-        // mount table. Either way a compressed or copy-on-write decoy reports
-        // "not checked".
+        // the scan step identifies them from their on-disk superblock and
+        // partition table; a live device is classified from the mount table.
+        // Either way a compressed or copy-on-write decoy, an encrypted
+        // container, or storage the scan does not identify reports "not
+        // checked".
         if options.offline {
             return Ok(options
                 .images
@@ -703,16 +705,48 @@ mod tests {
         assert_eq!(outcome.exit, ExitStatus::VerifyCritical);
     }
 
+    /// Write an image the scan identifies as ext4 (its superblock magic at
+    /// 0x438), which keeps file contents verbatim, followed by `text`.
+    fn ext4_image(path: &std::path::Path, text: &str) {
+        let mut bytes = vec![0u8; 4096];
+        bytes[0x438..0x43A].copy_from_slice(&[0x53, 0xEF]);
+        bytes.extend_from_slice(text.as_bytes());
+        std::fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     fn a_clean_fully_read_scan_is_ok() {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("clean.img");
-        std::fs::write(&image, "nothing to see here").unwrap();
+        ext4_image(&image, "nothing to see here");
         let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
         assert_eq!(outcome.report.total_hits(), 0);
         assert!(!outcome.report.incomplete());
         assert!(!outcome.report.inconclusive());
         assert_eq!(outcome.exit, ExitStatus::Ok);
+    }
+
+    #[test]
+    fn a_clean_scan_of_storage_the_scan_does_not_identify_only_warns() {
+        // No filesystem the scan knows: zfs, an encrypted volume or raw data
+        // may hold the canary where a raw scan cannot see it.
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("raw.img");
+        std::fs::write(&image, "nothing to see here").unwrap();
+        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
+        assert_eq!(outcome.report.total_hits(), 0);
+        assert!(outcome.report.inconclusive());
+        assert_eq!(outcome.exit, ExitStatus::SuccessWithWarnings);
+    }
+
+    #[test]
+    fn a_scan_of_an_empty_image_only_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("empty.img");
+        std::fs::write(&image, "").unwrap();
+        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
+        assert!(outcome.report.incomplete(), "nothing was read");
+        assert_eq!(outcome.exit, ExitStatus::SuccessWithWarnings);
     }
 
     #[test]

@@ -55,6 +55,16 @@ pub(crate) fn print_scan(
             ),
             Tone::Yellow,
         )
+    } else if report.incomplete() {
+        // A device left unread (missing, empty, failing or cut at --max-bytes)
+        // may hold the canary, so this is no clean pass either.
+        style.paint_bold(
+            format_args!(
+                "{} Canary {fingerprint} not found, but a device was not scanned in full",
+                style.glyph(Mark::Warn),
+            ),
+            Tone::Yellow,
+        )
     } else {
         style.paint_bold(
             format_args!(
@@ -67,11 +77,19 @@ pub(crate) fn print_scan(
     println!("{headline}");
     for device in &report.devices {
         match &device.error {
-            Some(error) => println!(
-                "  {} {}: not scanned ({error})",
-                style.glyph(Mark::Warn),
-                device.device.display()
-            ),
+            Some(error) => {
+                println!(
+                    "  {} {}: not scanned ({error})",
+                    style.glyph(Mark::Warn),
+                    device.device.display()
+                );
+                if let Some(reason) = &device.blind_spot {
+                    println!(
+                        "      {}",
+                        style.paint(format_args!("not checked: {reason}"), Tone::Yellow)
+                    );
+                }
+            }
             None => {
                 let mark = if device.blind_spot.is_some() {
                     Mark::Warn

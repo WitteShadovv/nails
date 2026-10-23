@@ -59,13 +59,43 @@ impl Harness {
         }
     }
 
+    /// A 32 MiB image of an ext4, which keeps file contents verbatim, so a
+    /// clean scan of it is conclusive; the token at `token_at` when given.
     fn image(&self, name: &str, token_at: Option<u64>) -> PathBuf {
         let path = self.dir.path().join(name);
         let mut file = std::fs::File::create(&path).unwrap();
         file.set_len(32 << 20).unwrap();
+        file.seek(SeekFrom::Start(0x438)).unwrap();
+        file.write_all(&[0x53, 0xEF]).unwrap();
         if let Some(offset) = token_at {
             file.seek(SeekFrom::Start(offset)).unwrap();
             file.write_all(TOKEN.as_bytes()).unwrap();
+        }
+        file.sync_all().unwrap();
+        path
+    }
+
+    /// A 32 MiB whole-disk image whose MBR lists an ext4 at 1 MiB and a btrfs
+    /// at 17 MiB, 15 MiB each.
+    fn disk_with_btrfs(&self, name: &str) -> PathBuf {
+        let path = self.dir.path().join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.set_len(32 << 20).unwrap();
+        let mut mbr = [0u8; 512];
+        for (index, start) in [2048u32, 34816].into_iter().enumerate() {
+            let entry = 446 + 16 * index;
+            mbr[entry + 4] = 0x83;
+            mbr[entry + 8..entry + 12].copy_from_slice(&start.to_le_bytes());
+            mbr[entry + 12..entry + 16].copy_from_slice(&30720u32.to_le_bytes());
+        }
+        mbr[510..].copy_from_slice(&[0x55, 0xAA]);
+        for (offset, bytes) in [
+            (0, &mbr[..]),
+            ((1 << 20) + 0x438, &[0x53, 0xEF][..]),
+            ((17 << 20) + 0x1_0040, &b"_BHRfS_M"[..]),
+        ] {
+            file.seek(SeekFrom::Start(offset)).unwrap();
+            file.write_all(bytes).unwrap();
         }
         file.sync_all().unwrap();
         path
@@ -283,6 +313,87 @@ fn an_offline_scan_of_a_clean_image_exits_zero() {
     );
     // A token file names no channels: nothing to list as untested.
     assert!(!stdout.contains("Not tested"), "{stdout}");
+}
+
+#[test]
+fn an_offline_scan_of_a_whole_disk_names_the_partition_it_cannot_check() {
+    // A btrfs partition can hold the canary compressed: the clean scan of the
+    // disk is "not checked", and the partition is named.
+    let harness = Harness::new();
+    let disk = harness.disk_with_btrfs("disk.raw");
+    let token = harness.token_file();
+    let args = [
+        "rehearse",
+        "scan",
+        "--offline",
+        "--image",
+        path(&disk),
+        "--token-file",
+        path(&token),
+    ];
+
+    let human = harness.run(&[&["--ascii"][..], &args[..]].concat());
+
+    assert_eq!(human.status.code(), Some(9), "{human:?}");
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains("not checked: the decoy's storage can hide a leak"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("not checked: partition 2: the decoy is on a copy-on-write filesystem"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("not found on the scanned devices"),
+        "{stdout}"
+    );
+
+    let output = harness.run(&[&["--json"][..], &args[..]].concat());
+    assert_eq!(output.status.code(), Some(9), "{output:?}");
+    let device = &json(&output)["data"]["scan"]["devices"][0];
+    assert!(
+        device["blind_spot"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("partition 2: ")),
+        "{device:#}"
+    );
+}
+
+#[test]
+fn an_offline_scan_of_an_empty_image_is_no_clean_pass() {
+    // A copy that failed before its first byte leaves a 0-byte image: it is
+    // not scanned, and the result says so instead of a clean pass.
+    let harness = Harness::new();
+    let empty = harness.dir.path().join("empty.raw");
+    std::fs::write(&empty, b"").unwrap();
+    let token = harness.token_file();
+
+    let output = harness.run(&[
+        "--ascii",
+        "rehearse",
+        "scan",
+        "--offline",
+        "--image",
+        path(&empty),
+        "--token-file",
+        path(&token),
+    ]);
+
+    assert_eq!(output.status.code(), Some(9), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("not found, but a device was not scanned in full"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("empty.raw: not scanned (it is empty: 0 bytes to read"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("not found on the scanned devices"),
+        "{stdout}"
+    );
 }
 
 #[test]

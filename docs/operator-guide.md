@@ -819,16 +819,43 @@ check, but a scan in the planting session proves little). To rehearse the
 power-off exit instead, end the session with `nails deactivate --poweroff` and
 boot the decoy again before the scan. Exit `0` means the token was not found,
 `11` that it was (with the device and byte offset of each hit), `9` that a
-device could not be scanned completely. A channel the canary could not be
+device could not be scanned completely (it could not be read, it is empty, or
+`--max-bytes` stopped it) or that its storage can hide the token from a raw
+scan, which the result reports as not checked. A channel the canary could not be
 planted in (a notification with no desktop session to show it, say) is listed
 with the result as not tested. `nails rehearse` alone shows where you are and
 the next step.
 
+A raw scan finds the token only where the decoy stores file contents as they
+are. Where the storage can hide it, the result reports the device as not
+checked, never as clean:
+
+- a filesystem that can compress file contents: btrfs, bcachefs, zfs or f2fs.
+  A zfs dataset has no block device of its own to read, so it is listed as not
+  scanned and not checked;
+- an encrypted container (LUKS or BitLocker), of which a raw read is
+  ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
+- an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
+  instead;
+- storage on which the scan identifies no filesystem at all;
+- an image that ends before the filesystem it holds (ext4 or xfs), as a copy
+  that stopped early leaves it.
+
+A mounted device is judged by its mount. A device that is not mounted
+(`--device`) or an image (`--offline --image`) has no mount to judge it by, so
+the scan identifies it from its raw superblock. Give it the unlocked decoy
+filesystem: the unlocked mapping itself, or an image of it. An image of a whole
+disk is classified partition by partition, and the result names each partition
+it could not check; on an encrypted disk that is the encrypted partition, whose
+unlocked mapping is the one to scan. An empty image or device is reported as not
+scanned.
+
 A clean scan covers only what a host can read. It cannot see SSD cells the
 drive has remapped or keeps in reserve, blocks discarded with TRIM, disks that
 are not mounted (name them with `--device`), the encryption header area or
-firmware storage; the scan prints this list with every result. To scan a disk
-image instead, use `nails rehearse scan --offline --image <file>`.
+firmware storage; the scan prints this list with every result. To scan an image
+of the unlocked decoy instead, use
+`nails rehearse scan --offline --image <file>`.
 
 ### Shell history
 

@@ -433,10 +433,11 @@ EXAMPLES:
   nails rehearse plant --user alice   Plant the canary for alice's session
   nails rehearse scan                 Scan the mounted decoy devices
   nails rehearse scan --offline --image decoy.raw
-                                      Scan a disk image instead
+                                      Scan an image of the unlocked decoy
 
 The scan exits 0 when no canary is found, 11 when one is, and 9 when a device
-could not be scanned completely.")]
+could not be scanned completely or its storage can hide the canary from a raw
+scan (reported not checked).")]
 pub struct RehearseArgs {
     /// The step to run; without one, show the status and the next step
     #[command(subcommand)]
@@ -470,6 +471,13 @@ pub struct RehearsePlantArgs {
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct RehearseScanArgs {
     /// Scan this block device instead of the mounted decoy devices (repeatable)
+    ///
+    /// Name the unlocked decoy filesystem. A mounted device is classified by
+    /// its mount. One that is not mounted is identified from its raw
+    /// superblock, a whole disk partition by partition: an encrypted
+    /// container (scan its unlocked mapping instead), a compressing or
+    /// copy-on-write filesystem, or storage the scan does not identify is
+    /// reported not checked rather than clean.
     #[arg(long = "device", value_name = "DEVICE", value_hint = ValueHint::FilePath, conflicts_with = "offline")]
     pub devices: Vec<std::path::PathBuf>,
 
@@ -478,6 +486,13 @@ pub struct RehearseScanArgs {
     pub offline: bool,
 
     /// An image or device to scan in --offline mode (repeatable)
+    ///
+    /// An image of the unlocked decoy filesystem, or of a whole disk, whose
+    /// partitions are then classified one by one from their raw superblocks.
+    /// An encrypted container (scan its unlocked mapping instead), a
+    /// compressing or copy-on-write filesystem, storage the scan does not
+    /// identify, or an image that ends before its filesystem does is reported
+    /// not checked rather than clean, and an empty image is not scanned.
     #[arg(long = "image", value_name = "IMAGE", value_hint = ValueHint::FilePath, requires = "offline")]
     pub images: Vec<std::path::PathBuf>,
 

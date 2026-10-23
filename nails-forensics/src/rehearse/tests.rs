@@ -158,6 +158,57 @@ fn default_targets_are_the_writable_decoy_devices_and_swap() {
     // The decoy root and USB are ext4 and vfat, and swap carries no filesystem:
     // none is a storage blind spot.
     assert!(targets.iter().all(|t| t.blind_spot.is_none()));
+    // The mount table and the swap list name each one's storage, so the scan
+    // does not identify it again, and each is a device it reads.
+    assert!(
+        targets.iter().all(|t| !t.probe && t.unread.is_none()),
+        "{targets:?}"
+    );
+}
+
+#[test]
+fn a_zfs_dataset_is_listed_unread_and_not_checked() {
+    // A zfs dataset is named by its pool, not by a device, so a raw scan cannot
+    // read it. It is listed with its blind spot all the same (once, however
+    // often it is mounted), so a zfs decoy is never reported clean, while a
+    // tmpfs and the hidden volume stay out.
+    let mounts = parse_mountinfo(
+        "1 0 0:30 / / rw,relatime - zfs rpool/ROOT/decoy rw,xattr,noacl\n\
+         2 1 0:31 / /home rw,relatime - zfs rpool/home rw,xattr,noacl\n\
+         3 1 0:31 / /srv rw,relatime - zfs rpool/home rw,xattr,noacl\n\
+         4 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
+         5 1 0:32 / /tmp rw - tmpfs tmpfs rw\n",
+    );
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    assert_eq!(
+        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
+        vec![
+            PathBuf::from("rpool/ROOT/decoy"),
+            PathBuf::from("rpool/home")
+        ]
+    );
+    assert!(
+        targets.iter().all(|t| t.unread.is_some()
+            && t.blind_spot
+                .as_deref()
+                .is_some_and(|reason| reason.contains("copy-on-write"))),
+        "{targets:?}"
+    );
+
+    let report = scan(TOKEN, &targets, None).unwrap();
+
+    assert!(report.inconclusive(), "{report:?}");
+    assert!(report.incomplete(), "{report:?}");
+    for device in &report.devices {
+        assert_eq!(device.bytes_scanned, 0, "{device:?}");
+        assert!(
+            device
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("a zfs mount")),
+            "{device:?}"
+        );
+    }
 }
 
 #[test]
@@ -237,6 +288,14 @@ fn classified_reads_the_blind_spot_from_the_matching_mount_entry() {
     let plain = ScanTarget::classified(PathBuf::from("/dev/nails-test-ext4"), &mounts);
     assert_eq!(plain.device, PathBuf::from("/dev/nails-test-ext4"));
     assert!(plain.blind_spot.is_none(), "{plain:?}");
+    // Both are named by the mount table, so the scan does not identify them
+    // again; a device it does not show is identified from its raw bytes.
+    assert!(!cow.probe && !plain.probe);
+    let unmounted = ScanTarget::classified(PathBuf::from("/dev/nails-test-unmounted"), &mounts);
+    assert!(
+        unmounted.probe && unmounted.blind_spot.is_none(),
+        "{unmounted:?}"
+    );
 }
 
 #[test]
@@ -298,6 +357,7 @@ fn the_recent_files_document_gains_one_bookmark() {
     assert!(updated.find("file:///old").unwrap() < updated.find("file:///new").unwrap());
 }
 
+/// A sparse 64 MiB image with `writes` at their offsets.
 fn image(dir: &tempfile::TempDir, name: &str, writes: &[(u64, &[u8])]) -> PathBuf {
     let path = dir.path().join(name);
     let mut file = std::fs::File::create(&path).unwrap();
@@ -310,6 +370,9 @@ fn image(dir: &tempfile::TempDir, name: &str, writes: &[(u64, &[u8])]) -> PathBu
     path
 }
 
+/// The ext4 superblock magic at 0x438: storage a raw scan reads verbatim.
+const EXT4: (u64, &[u8]) = (0x438, &[0x53, 0xEF]);
+
 #[test]
 fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
     let dir = tempfile::tempdir().unwrap();
@@ -317,9 +380,13 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
     let leaky = image(
         &dir,
         "leaky.img",
-        &[(1 << 20, TOKEN.as_bytes()), (40 << 20, wide.as_slice())],
+        &[
+            EXT4,
+            (1 << 20, TOKEN.as_bytes()),
+            (40 << 20, wide.as_slice()),
+        ],
     );
-    let clean = image(&dir, "clean.img", &[(1 << 20, b"nothing to see")]);
+    let clean = image(&dir, "clean.img", &[EXT4, (1 << 20, b"nothing to see")]);
     let missing = dir.path().join("missing.img");
 
     let report = scan(
@@ -342,7 +409,8 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
     assert!(report.devices[1].hits.is_empty());
     assert!(report.devices[2].error.is_some());
     assert!(report.incomplete());
-    // Images carry no filesystem, so none is a storage blind spot.
+    // Both images are ext4, which keeps file contents verbatim, so neither is
+    // a storage blind spot.
     assert!(!report.inconclusive());
     assert!(report.devices.iter().all(|d| d.blind_spot.is_none()));
     assert!(report.not_visible.iter().any(|line| line.contains("SSD")));
@@ -363,9 +431,13 @@ fn a_clean_scan_of_compressed_or_copy_on_write_storage_is_not_checked() {
         .unwrap()
         .reason()
         .to_string();
+    // A blind spot already known is kept: identifying the image from its raw
+    // bytes, which hold no filesystem, would give another reason.
     let target = ScanTarget {
         device: clean.clone(),
         blind_spot: Some(reason.clone()),
+        probe: true,
+        unread: None,
     };
 
     let report = scan(TOKEN, &[target], None).unwrap();
@@ -448,6 +520,300 @@ fn an_offline_image_on_a_verbatim_filesystem_stays_conclusive() {
         "an ext4 image is read verbatim, so a clean scan of it is conclusive"
     );
     assert!(report.devices[0].blind_spot.is_none());
+}
+
+/// The blind spot a scan of the image at `path` finds on its own, from its raw
+/// superblock and partition table; `None` when a clean scan of it is
+/// conclusive.
+fn verdict(path: PathBuf) -> Option<String> {
+    let report = scan(TOKEN, &[ScanTarget::new(path)], None).unwrap();
+    assert!(!report.incomplete(), "{report:?}");
+    assert_eq!(report.total_hits(), 0, "{report:?}");
+    report.devices[0].blind_spot.clone()
+}
+
+/// A sparse 64 MiB disk image with a protective MBR and a GPT listing `parts`
+/// as `(first, last)` 512-byte blocks.
+fn gpt_image(dir: &tempfile::TempDir, parts: &[(u64, u64)]) -> (PathBuf, std::fs::File) {
+    use crate::forensic::layout::tests::put;
+    let path = dir.path().join("gpt.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(64 << 20).unwrap();
+    let mut mbr = [0u8; 512];
+    mbr[450] = 0xEE;
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
+    put(&mut file, 0, &mbr);
+    let mut header = [0u8; 92];
+    header[..8].copy_from_slice(b"EFI PART");
+    header[40..48].copy_from_slice(&34u64.to_le_bytes()); // first usable block
+    header[48..56].copy_from_slice(&131_038u64.to_le_bytes()); // last usable block
+    header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries block
+    header[80..84].copy_from_slice(&128u32.to_le_bytes());
+    header[84..88].copy_from_slice(&128u32.to_le_bytes());
+    put(&mut file, 512, &header);
+    for (index, (first, last)) in (0u64..).zip(parts) {
+        let mut entry = [0u8; 128];
+        entry[..16].copy_from_slice(&[0xAF; 16]);
+        entry[32..40].copy_from_slice(&first.to_le_bytes());
+        entry[40..48].copy_from_slice(&last.to_le_bytes());
+        put(&mut file, 1024 + 128 * index, &entry);
+    }
+    (path, file)
+}
+
+/// An ext4 superblock (from 1 KiB in) for `blocks` blocks of 4 KiB.
+fn ext4_superblock(blocks: u32) -> Vec<u8> {
+    let mut sb = vec![0u8; 0x154];
+    sb[0x04..0x08].copy_from_slice(&blocks.to_le_bytes());
+    sb[0x18..0x1C].copy_from_slice(&2u32.to_le_bytes());
+    sb[0x38..0x3A].copy_from_slice(&[0x53, 0xEF]);
+    sb
+}
+
+#[test]
+fn an_image_with_no_filesystem_the_scan_identifies_is_not_checked() {
+    // Bytes with no superblock the scan knows: a zfs pool, an encrypted volume
+    // without a header, or plain data. A clean read of them proves nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let raw = image(&dir, "raw.img", &[(1 << 20, b"nothing to see")]);
+    let reason = verdict(raw).expect("unidentified storage is a blind spot");
+    assert!(reason.contains("identifies no filesystem"), "{reason}");
+}
+
+#[test]
+fn an_encrypted_container_is_not_checked_and_names_the_unlocked_mapping() {
+    // A raw scan of a LUKS2 container, one whose primary header is gone and a
+    // BitLocker volume reads only ciphertext: the unlocked mapping is what to
+    // scan.
+    let dir = tempfile::tempdir().unwrap();
+    for (name, header, kind) in [
+        ("luks.img", (0, &b"LUKS\xba\xbe\x00\x02"[..]), "(LUKS)"),
+        (
+            "secondary.img",
+            (0x4000, &b"SKUL\xba\xbe\x00\x02"[..]),
+            "(LUKS)",
+        ),
+        ("bitlocker.img", (3, &b"-FVE-FS-"[..]), "(BitLocker)"),
+    ] {
+        let reason = verdict(image(&dir, name, &[header]))
+            .unwrap_or_else(|| panic!("{name} is a blind spot"));
+        assert!(
+            reason.contains(&format!("encrypted container {kind}")),
+            "{name}: {reason}"
+        );
+        assert!(reason.contains("/dev/mapper/<name>"), "{name}: {reason}");
+    }
+}
+
+#[test]
+fn an_lvm_physical_volume_is_not_checked() {
+    // Its logical volumes may hold any filesystem, btrfs among them.
+    let dir = tempfile::tempdir().unwrap();
+    let pv = image(&dir, "pv.img", &[(0x218, b"LVM2 001")]);
+    let reason = verdict(pv).expect("a physical volume is a blind spot");
+    assert!(reason.contains("LVM physical volume"), "{reason}");
+    assert!(reason.contains("/dev/mapper/<vg>-<lv>"), "{reason}");
+}
+
+#[test]
+fn a_bcachefs_image_is_classified_from_its_superblock() {
+    let dir = tempfile::tempdir().unwrap();
+    let magic = [
+        0xC6, 0x85, 0x73, 0xF6, 0x66, 0xCE, 0x90, 0xA9, 0xD9, 0x6A, 0x60, 0xCF, 0x80, 0x3D, 0xF7,
+        0xEF,
+    ];
+    let bcachefs = image(&dir, "bcachefs.img", &[(0x1018, &magic)]);
+    let reason = verdict(bcachefs).expect("bcachefs is a blind spot");
+    assert!(reason.contains("copy-on-write"), "{reason}");
+}
+
+#[test]
+fn an_f2fs_superblock_wins_over_a_stale_iso9660_descriptor() {
+    // mkfs.f2fs leaves an older ISO9660 descriptor at 32 KiB in place on a
+    // device without discard, and that descriptor comes first in the signature
+    // order. The f2fs is found all the same.
+    let dir = tempfile::tempdir().unwrap();
+    let f2fs = image(
+        &dir,
+        "f2fs.img",
+        &[(0x400, &[0x10, 0x20, 0xF5, 0xF2]), (0x8001, b"CD001")],
+    );
+    let reason = verdict(f2fs).expect("the f2fs is a blind spot");
+    assert!(reason.contains("f2fs"), "{reason}");
+}
+
+#[test]
+fn a_whole_disk_image_is_classified_partition_by_partition() {
+    use crate::forensic::layout::tests::{mbr_image, put};
+    // A 64 MiB disk: ext4 at 1 MiB, btrfs at 17 MiB and ext4 at 33 MiB, 16 MiB
+    // each. Only the btrfs partition is a blind spot, and it is named.
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut file) = mbr_image(
+        &dir,
+        64 << 20,
+        &[
+            (0x83, 2048, 32768),
+            (0x83, 34816, 32768),
+            (0x83, 67584, 32768),
+        ],
+    );
+    put(&mut file, (1 << 20) + 0x438, &[0x53, 0xEF]);
+    put(&mut file, (17 << 20) + 0x1_0040, b"_BHRfS_M");
+    put(&mut file, (33 << 20) + 0x438, &[0x53, 0xEF]);
+    file.sync_all().unwrap();
+
+    let reason = verdict(path).expect("a btrfs partition is a blind spot");
+    assert!(reason.starts_with("partition 2: "), "{reason}");
+    assert!(reason.contains("copy-on-write"), "{reason}");
+    assert!(
+        !reason.contains("partition 1") && !reason.contains("partition 3"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_whole_disk_image_of_verbatim_filesystems_stays_conclusive() {
+    use crate::forensic::layout::tests::{mbr_image, put};
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768), (0x0c, 34816, 32768)]);
+    put(&mut file, (1 << 20) + 0x438, &[0x53, 0xEF]);
+    put(&mut file, (17 << 20) + 0x52, b"FAT32   ");
+    file.sync_all().unwrap();
+
+    assert_eq!(verdict(path), None);
+}
+
+#[test]
+fn every_partition_that_can_hide_the_canary_is_named() {
+    use crate::forensic::layout::tests::put;
+    // A GPT disk as an encrypted install lays it out: an ESP, a LUKS container,
+    // and a partition holding no filesystem the scan identifies.
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut file) = gpt_image(&dir, &[(2048, 34815), (34816, 67583), (67584, 100_351)]);
+    put(&mut file, (1 << 20) + 0x52, b"FAT32   ");
+    put(&mut file, 17 << 20, b"LUKS\xba\xbe\x00\x02");
+    file.sync_all().unwrap();
+
+    let reason = verdict(path).expect("the LUKS and the unidentified partitions are blind spots");
+    assert!(!reason.contains("partition 1"), "{reason}");
+    assert!(
+        reason.contains("partition 2: this is an encrypted container (LUKS)"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("; partition 3: the scan identifies no filesystem"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_partition_table_behind_a_stale_superblock_is_still_walked() {
+    use crate::forensic::layout::tests::{mbr_image, put};
+    // The disk once held one ext4 across its whole length: partitioning wrote
+    // the MBR but left that superblock in the space before the first
+    // partition. The table is walked all the same, and its btrfs partition
+    // found.
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768), (0x83, 34816, 32768)]);
+    put(&mut file, 0x438, &[0x53, 0xEF]);
+    put(&mut file, (1 << 20) + 0x438, &[0x53, 0xEF]);
+    put(&mut file, (17 << 20) + 0x1_0040, b"_BHRfS_M");
+    file.sync_all().unwrap();
+
+    let reason = verdict(path).expect("the btrfs partition is a blind spot");
+    assert!(reason.starts_with("partition 2: "), "{reason}");
+}
+
+#[test]
+fn a_partition_table_that_lists_no_partition_is_not_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, file) = gpt_image(&dir, &[]);
+    file.sync_all().unwrap();
+    let reason = verdict(path).expect("an empty table holds no identified filesystem");
+    assert!(reason.contains("identifies no filesystem"), "{reason}");
+}
+
+#[test]
+fn an_image_that_ends_before_its_filesystem_is_not_checked() {
+    // An ext4 that spans the whole 64 MiB image is whole. One whose superblock
+    // records a block more was cut short, as a copy that stopped early leaves
+    // it, and the rest of it was never read.
+    let dir = tempfile::tempdir().unwrap();
+    let whole = image(&dir, "whole.img", &[(0x400, &ext4_superblock(16384))]);
+    assert_eq!(verdict(whole), None);
+    let cut = image(&dir, "cut.img", &[(0x400, &ext4_superblock(16385))]);
+    let reason = verdict(cut).expect("a cut-short filesystem is a blind spot");
+    assert!(
+        reason.contains("ext2/3/4 filesystem here spans 67112960 bytes"),
+        "{reason}"
+    );
+    assert!(reason.contains("only 67108864 of them"), "{reason}");
+}
+
+#[test]
+fn a_partition_its_filesystem_outgrows_is_named() {
+    use crate::forensic::layout::tests::{mbr_image, put};
+    // The partition is 16 MiB from 1 MiB in, but the ext4 in it records 32 MiB.
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768)]);
+    put(&mut file, (1 << 20) + 0x400, &ext4_superblock(8192));
+    file.sync_all().unwrap();
+
+    let reason = verdict(path).expect("a cut-short partition is a blind spot");
+    assert!(
+        reason.starts_with("partition 1: the ext2/3/4 filesystem here spans 33554432 bytes"),
+        "{reason}"
+    );
+    assert!(reason.contains("only 16777216 of them"), "{reason}");
+}
+
+#[test]
+fn an_empty_image_is_reported_not_scanned() {
+    // A 0-byte image (a copy that failed before its first byte) opens fine
+    // and holds nothing: it is not scanned, never a clean pass.
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("empty.img");
+    std::fs::write(&empty, b"").unwrap();
+
+    let report = scan(TOKEN, &[ScanTarget::new(empty)], None).unwrap();
+
+    assert!(report.incomplete(), "{report:?}");
+    let error = report.devices[0].error.as_deref().unwrap_or_default();
+    assert!(error.contains("it is empty: 0 bytes to read"), "{error}");
+}
+
+#[test]
+fn a_superblock_that_cannot_be_read_is_not_checked() {
+    // A read error while identifying the storage is no evidence it is plain.
+    let dir = tempfile::tempdir().unwrap();
+    let path = image(&dir, "unreadable.img", &[EXT4]);
+    let source = crate::forensic::RawSource::unreadable(&path).unwrap();
+    let reason =
+        super::identify::blind_spot(&source).expect("an unread superblock is a blind spot");
+    assert!(
+        reason.starts_with("its first blocks could not be read ("),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_device_the_mount_table_names_is_not_identified_again() {
+    // The mount table names a filesystem the raw superblock check does not
+    // identify but that stores contents verbatim (jfs, say): its verdict
+    // stands, and a clean scan of the device is conclusive.
+    let dir = tempfile::tempdir().unwrap();
+    let named = ScanTarget {
+        device: image(&dir, "jfs.img", &[(1 << 20, b"nothing to see")]),
+        blind_spot: None,
+        probe: false,
+        unread: None,
+    };
+
+    let report = scan(TOKEN, &[named], None).unwrap();
+
+    assert!(!report.inconclusive(), "{report:?}");
+    assert!(!report.incomplete(), "{report:?}");
 }
 
 #[test]
