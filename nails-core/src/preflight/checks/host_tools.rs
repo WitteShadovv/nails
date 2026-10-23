@@ -6,44 +6,89 @@
 //! NAILS shells out to a small, fixed set of host tools around a session:
 //! `systemctl` enqueues the soft-reboot and power actions and reads unit state,
 //! `loginctl` resolves the operator's session, and on NixOS `nix` builds the
-//! hidden system. Everything else NAILS once seemed to need is done without a
-//! child process: files are copied, owned and synced through syscalls, swap and
-//! mounts are masked as systemd units, and programs are killed through their
-//! cgroup, so `systemd-run`, `cp`, `chown`, `sync`, `swapoff` and `kill` are
-//! never spawned and are not required here.
+//! hidden system. The way back runs two more: `ip` deletes the links a session
+//! made and sets each device's recorded hardware address back, and, when the
+//! hidden volume is backed by device-mapper (dm-crypt, LUKS, a VeraCrypt
+//! mapping), `dmsetup` marks that stack for deferred removal, so the mapping and
+//! its key leave the kernel at the switch. Everything else NAILS once seemed to
+//! need is done without a child process: files are copied, owned and synced
+//! through syscalls, swap and mounts are masked as systemd units, and programs
+//! are killed through their cgroup, so `systemd-run`, `cp`, `chown`, `sync`,
+//! `swapoff` and `kill` are never spawned and are not required here.
 //!
 //! On a host missing one of the tools that *is* spawned, the first spawn fails
-//! late, after the user session may already be gone. This check resolves every
-//! required tool for the detected platform through the same [`HostCommands`]
-//! resolver the runner uses, and fails *before* any state is written, naming each
-//! missing tool and how to install it on the detected host's family.
+//! late, after the user session may already be gone, and the way back, best
+//! effort throughout, skips the work of a tool it cannot find without a word: the
+//! hidden mapping would stay open on the decoy, or a session's links and
+//! addresses would stay behind. This check resolves every required tool for the
+//! detected platform and hidden-volume backend through the same
+//! [`HostCommands`] resolver the runner uses, and fails *before* any state is
+//! written, naming each missing tool and how to install it on the detected
+//! host's family.
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::backend_lock::resolve_backend_chain;
 use crate::platform::{HostCommands, PlatformKind};
 use crate::{Filesystem, Result};
 use nails_base::Family;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A host tool NAILS requires, with the package that provides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RequiredTool {
     tool: &'static str,
-    package: &'static str,
+    package: Package,
+}
+
+/// The package that provides a tool on each family, where the names differ:
+/// Fedora ships `ip` in `iproute` and `dmsetup` in `device-mapper`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Package {
+    /// The Debian and Ubuntu package, also named on a host of unknown family.
+    debian: &'static str,
+    /// The Fedora package.
+    fedora: &'static str,
+    /// The Arch package.
+    arch: &'static str,
+    /// The nixpkgs package, for a NixOS host.
+    nixos: &'static str,
+}
+
+impl Package {
+    /// A package of the same name on every family.
+    const fn everywhere(name: &'static str) -> Self {
+        Self {
+            debian: name,
+            fedora: name,
+            arch: name,
+            nixos: name,
+        }
+    }
 }
 
 /// Tools every supported platform must provide.
 ///
 /// `systemctl` enqueues the soft-reboot and power actions and reads unit and
 /// version state; `loginctl` resolves the operator's login session. Both ship in
-/// the `systemd` package on every family.
+/// the `systemd` package on every family. Every way back runs `ip` (iproute2)
+/// to delete the links a session made and set hardware addresses back.
 const COMMON_TOOLS: &[RequiredTool] = &[
     RequiredTool {
         tool: "systemctl",
-        package: "systemd",
+        package: Package::everywhere("systemd"),
     },
     RequiredTool {
         tool: "loginctl",
-        package: "systemd",
+        package: Package::everywhere("systemd"),
+    },
+    RequiredTool {
+        tool: "ip",
+        package: Package {
+            debian: "iproute2",
+            fedora: "iproute",
+            arch: "iproute2",
+            nixos: "iproute2",
+        },
     },
 ];
 
@@ -53,56 +98,111 @@ const COMMON_TOOLS: &[RequiredTool] = &[
 /// spawns it directly; `nixos-rebuild` is never run.
 const NIXOS_TOOLS: &[RequiredTool] = &[RequiredTool {
     tool: "nix",
-    package: "nix",
+    package: Package::everywhere("nix"),
 }];
 
-/// The tools required for a given platform.
-fn required_tools(kind: PlatformKind) -> Vec<RequiredTool> {
+/// Tools a hidden volume backed by device-mapper needs on top of
+/// [`COMMON_TOOLS`].
+///
+/// The way back marks the hidden volume's device-mapper stack for deferred
+/// removal with `dmsetup`, and the decoy side closes what an interrupted entry
+/// left open with it.
+const DEVICE_MAPPER_TOOLS: &[RequiredTool] = &[RequiredTool {
+    tool: "dmsetup",
+    package: Package {
+        debian: "dmsetup",
+        fedora: "device-mapper",
+        arch: "device-mapper",
+        nixos: "lvm2",
+    },
+}];
+
+/// The tools required for a given platform and hidden-volume backend.
+fn required_tools(kind: PlatformKind, device_mapper: bool) -> Vec<RequiredTool> {
     let mut tools = COMMON_TOOLS.to_vec();
     if kind == PlatformKind::NixOs {
         tools.extend_from_slice(NIXOS_TOOLS);
     }
+    if device_mapper {
+        tools.extend_from_slice(DEVICE_MAPPER_TOOLS);
+    }
     tools
 }
 
-/// How to install `package` on the detected host, named for its family.
-fn install_hint(kind: PlatformKind, family: Option<Family>, package: &str) -> String {
-    if kind == PlatformKind::NixOs {
-        return format!("add {package} to the hidden system's environment.systemPackages");
-    }
-    match family {
-        Some(Family::Debian) => format!("apt install {package}"),
-        Some(Family::Fedora) => format!("dnf install {package}"),
-        Some(Family::Arch) => format!("pacman -S {package}"),
-        None => format!("install the {package} package"),
+/// Whether the way back may run `dmsetup` for the hidden volume at
+/// `hidden_root`.
+///
+/// Activation records the device-mapper stack [`resolve_backend_chain`] finds
+/// behind the hidden root, and the way back runs `dmsetup` on each name in it; a
+/// plain block device records none. When the stack cannot be resolved (the
+/// mount table is unreadable, or nothing is mounted at the hidden root yet) the
+/// backend is unknown and counts as device-mapper, so `dmsetup` is required.
+fn backend_may_be_device_mapper<F: Filesystem>(fs: &F, hidden_root: &Path) -> bool {
+    match resolve_backend_chain(fs, hidden_root) {
+        Ok(Some(chain)) => chain.is_device_mapper(),
+        Ok(None) | Err(_) => true,
     }
 }
 
-/// A test override for [`HostToolsCheck`]: the search directories, the tool set
-/// and the platform they stand in for. Resolution runs without the root-trust
-/// check, since the sandbox is unprivileged.
+/// How to install `package` on the detected host, named for its family. On
+/// NixOS the check resolves the decoy's system profile, and the way back runs
+/// the decoy's tools, so the package goes into the decoy's configuration.
+fn install_hint(kind: PlatformKind, family: Option<Family>, package: Package) -> String {
+    if kind == PlatformKind::NixOs {
+        return format!(
+            "add {} to the decoy's environment.systemPackages",
+            package.nixos
+        );
+    }
+    match family {
+        Some(Family::Debian) => format!("apt install {}", package.debian),
+        Some(Family::Fedora) => format!("dnf install {}", package.fedora),
+        Some(Family::Arch) => format!("pacman -S {}", package.arch),
+        None => format!("install the {} package", package.debian),
+    }
+}
+
+/// A test override for [`HostToolsCheck`]: the search directories and the
+/// platform they stand in for. Resolution runs without the root-trust check,
+/// since the sandbox is unprivileged.
 #[cfg(test)]
 #[derive(Debug)]
 struct ProbeOverride {
     dirs: Vec<PathBuf>,
-    tools: Vec<RequiredTool>,
     kind: PlatformKind,
     family: Option<Family>,
 }
 
 /// Pre-flight check that every required host tool resolves on this platform.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HostToolsCheck {
-    /// Test override of the platform and tool set. Production leaves this `None`
-    /// and detects the platform at run time.
+    /// The hidden volume root, whose backend decides whether `dmsetup` is
+    /// required.
+    hidden_volume_root: PathBuf,
+    /// Test override of the platform. Production leaves this `None` and detects
+    /// the platform at run time.
     #[cfg(test)]
     probe: Option<ProbeOverride>,
 }
 
 impl HostToolsCheck {
-    /// Create a check that detects the platform and resolves its required tools.
-    pub fn new() -> Self {
-        Self::default()
+    /// Create a check that detects the platform and the backend of the hidden
+    /// volume at `hidden_volume_root`, and resolves the tools they require.
+    pub fn new(hidden_volume_root: PathBuf) -> Self {
+        Self {
+            hidden_volume_root,
+            #[cfg(test)]
+            probe: None,
+        }
+    }
+
+    /// The tools this host requires: the platform's, and `dmsetup` when the
+    /// hidden volume is, or may be, backed by device-mapper.
+    fn required<F: Filesystem>(&self, fs: &F, kind: PlatformKind) -> Vec<RequiredTool> {
+        required_tools(
+            kind,
+            backend_may_be_device_mapper(fs, &self.hidden_volume_root),
+        )
     }
 
     /// Resolve each tool through `resolver`, collecting those that do not, and
@@ -153,7 +253,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HostToolsCheck {
             let resolver = HostCommands::new(probe.dirs.iter()).with_trust_enforcement(false);
             return Ok(Self::evaluate(
                 &resolver,
-                &probe.tools,
+                &self.required(fs, probe.kind),
                 probe.kind,
                 probe.family,
             ));
@@ -185,7 +285,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HostToolsCheck {
         let resolver = HostCommands::new(dirs.iter());
         Ok(Self::evaluate(
             &resolver,
-            &required_tools(profile.kind),
+            &self.required(fs, profile.kind),
             profile.kind,
             profile.family,
         ))
@@ -193,224 +293,5 @@ impl<F: Filesystem> PreFlightCheck<F> for HostToolsCheck {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::filesystem::MockFilesystem;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
-
-    impl HostToolsCheck {
-        fn with_probe(
-            dirs: Vec<PathBuf>,
-            tools: Vec<RequiredTool>,
-            kind: PlatformKind,
-            family: Option<Family>,
-        ) -> Self {
-            Self {
-                probe: Some(ProbeOverride {
-                    dirs,
-                    tools,
-                    kind,
-                    family,
-                }),
-            }
-        }
-    }
-
-    fn write_executable(path: &std::path::Path) {
-        fs::write(path, "#!/bin/sh\n").unwrap();
-        let mut permissions = fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
-    }
-
-    #[test]
-    fn passes_when_every_required_tool_resolves() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("bin");
-        fs::create_dir_all(&dir).unwrap();
-        write_executable(&dir.join("systemctl"));
-        write_executable(&dir.join("loginctl"));
-
-        let check = HostToolsCheck::with_probe(
-            vec![dir],
-            COMMON_TOOLS.to_vec(),
-            PlatformKind::Fhs,
-            Some(Family::Debian),
-        );
-        let result = check.run(&MockFilesystem::new()).unwrap();
-        assert!(result.is_pass(), "{result:?}");
-    }
-
-    #[test]
-    fn fails_with_a_per_family_install_hint_when_a_tool_is_missing() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("bin");
-        fs::create_dir_all(&dir).unwrap();
-        write_executable(&dir.join("systemctl"));
-        // `loginctl` is deliberately absent.
-
-        for (family, hint) in [
-            (Family::Debian, "apt install systemd"),
-            (Family::Fedora, "dnf install systemd"),
-            (Family::Arch, "pacman -S systemd"),
-        ] {
-            let check = HostToolsCheck::with_probe(
-                vec![dir.clone()],
-                COMMON_TOOLS.to_vec(),
-                PlatformKind::Fhs,
-                Some(family),
-            );
-            let result = check.run(&MockFilesystem::new()).unwrap();
-            assert!(result.is_fail(), "{family:?}: {result:?}");
-            let message = result.message();
-            assert!(message.contains("loginctl"), "{message}");
-            assert!(message.contains(hint), "{family:?}: {message}");
-            // A present tool is not named in the remediation list.
-            assert!(!message.contains("systemctl ("), "{message}");
-        }
-    }
-
-    #[test]
-    fn a_missing_tool_on_nixos_points_at_the_hidden_system() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("bin");
-        fs::create_dir_all(&dir).unwrap();
-        // Nothing is installed, so `nix` is reported missing.
-        let check =
-            HostToolsCheck::with_probe(vec![dir], NIXOS_TOOLS.to_vec(), PlatformKind::NixOs, None);
-        let result = check.run(&MockFilesystem::new()).unwrap();
-        assert!(result.is_fail(), "{result:?}");
-        assert!(
-            result.message().contains("environment.systemPackages"),
-            "{}",
-            result.message()
-        );
-    }
-
-    #[test]
-    fn skips_in_test_context_without_a_probe() {
-        // Without a probe override the check short-circuits to a skipped Pass in a
-        // test runtime, so it never touches the real host from the shared registry.
-        let check = HostToolsCheck::new();
-        let result = check.run(&MockFilesystem::new()).unwrap();
-        assert!(result.is_pass(), "{result:?}");
-    }
-
-    #[test]
-    fn tools_nails_never_spawns_are_not_required() {
-        // Audited away: `systemd-run` is never run; `cp`, `chown` and `sync` are
-        // syscalls, not binaries; `swapoff` is a masked systemd unit; `kill` goes
-        // through the cgroup; `nixos-rebuild` is replaced by `nix`. Opaque handling
-        // and directory walks are in-process, so `getfattr`/`du`/`find` are gone
-        // too. Requiring any of them would refuse pre-flight on a host without a
-        // package it does not need.
-        let fhs = required_tools(PlatformKind::Fhs);
-        let nixos = required_tools(PlatformKind::NixOs);
-        for absent in [
-            "systemd-run",
-            "cp",
-            "chown",
-            "sync",
-            "swapoff",
-            "kill",
-            "nixos-rebuild",
-            "getfattr",
-            "setfattr",
-            "du",
-            "find",
-        ] {
-            assert!(
-                !fhs.iter().chain(&nixos).any(|t| t.tool == absent),
-                "{absent} is no longer spawned and must not be required"
-            );
-        }
-    }
-
-    #[test]
-    fn description_names_the_host_tool_contract() {
-        // The description is surfaced in the pre-flight listing, so it must be a
-        // non-empty, meaningful sentence about this check's job: resolving the host
-        // tools NAILS spawns. An empty or placeholder string would still compile.
-        let check = HostToolsCheck::new();
-        let description = PreFlightCheck::<MockFilesystem>::description(&check);
-        assert!(!description.is_empty(), "the description must not be empty");
-        assert!(
-            description.contains("host tools"),
-            "the description must name the host-tools contract: {description}"
-        );
-    }
-
-    #[test]
-    fn nixos_requires_nix_on_top_of_the_common_set() {
-        let nixos = required_tools(PlatformKind::NixOs);
-        let fhs = required_tools(PlatformKind::Fhs);
-        assert!(nixos.iter().any(|t| t.tool == "nix"));
-        assert!(!fhs.iter().any(|t| t.tool == "nix"));
-        for common in ["systemctl", "loginctl"] {
-            assert!(fhs.iter().any(|t| t.tool == common), "{common}");
-            assert!(nixos.iter().any(|t| t.tool == common), "{common}");
-        }
-    }
-
-    /// Every tool the check requires must have a real spawn site in the product
-    /// source, so the audited-away tools cannot creep back into the required set.
-    #[test]
-    fn every_required_tool_has_a_spawn_site() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("the workspace root is above nails-core");
-        let mut sources = String::new();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let Ok(read) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in read.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    // The crate sources only: skip build output, VCS and hidden dirs.
-                    if name == "target" || name.starts_with('.') {
-                        continue;
-                    }
-                    stack.push(path);
-                    continue;
-                }
-                if !path.extension().is_some_and(|ext| ext == "rs") {
-                    continue;
-                }
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip test code (so a test-only spawn cannot validate a tool) and
-                // this module, which holds the required-tool table, not a spawn.
-                if name == "tests.rs"
-                    || name.ends_with("_tests.rs")
-                    || name == "host_tools.rs"
-                    || path
-                        .components()
-                        .any(|c| c.as_os_str().to_str() == Some("tests"))
-                {
-                    continue;
-                }
-                if let Ok(text) = fs::read_to_string(&path) {
-                    sources.push_str(&text);
-                }
-            }
-        }
-        // Guard against the scan reading nothing (a moved workspace root).
-        assert!(
-            sources.contains("tool(\"systemctl\")"),
-            "the source scan found no spawn sites at all"
-        );
-        for required in required_tools(PlatformKind::NixOs) {
-            let spawned = sources.contains(&format!("tool(\"{}\")", required.tool))
-                || sources.contains(&format!("caller_path(\"{}\")", required.tool));
-            assert!(
-                spawned,
-                "{} is required but NAILS has no spawn site for it",
-                required.tool
-            );
-        }
-    }
-}
+#[path = "host_tools_tests.rs"]
+mod tests;

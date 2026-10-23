@@ -267,16 +267,18 @@ Every backend leaves the same traces on the decoy side while you unlock it:
 
 `nails deactivate` and `nails emergency` close the hidden backend themselves:
 before the soft-reboot back they mark its device-mapper stack for deferred
-removal, and the switch releases the last reference (the overlay that held the
-hidden volume), so the kernel removes the mapping, and a loop device set up with
-autoclear, at that moment. You do not run the lock sequence after a session; you
-run it only when you unlocked the volume on the decoy without activating, or for
-a backend that is not device-mapper based. Closing the mapping does not clear
-the key from RAM: dm-crypt wipes the master key when a mapping is removed, but
-other copies (page cache, freed pages, process memory) survive a soft-reboot and
-a warm reboot, unless the firmware honours the TCG memory-overwrite request, and
-setting that request writes EFI NVRAM. Use `nails deactivate --poweroff` or
-`nails emergency --poweroff` to power off instead and let RAM decay.
+removal with `dmsetup`, which the `host-tools` pre-flight check requires for
+such a backend, and the switch releases the last reference (the overlay that
+held the hidden volume), so the kernel removes the mapping, and a loop device
+set up with autoclear, at that moment. You do not run the lock sequence after a
+session; you run it only when you unlocked the volume on the decoy without
+activating, or for a backend that is not device-mapper based. Closing the
+mapping does not clear the key from RAM: dm-crypt wipes the master key when a
+mapping is removed, but other copies (page cache, freed pages, process memory)
+survive a soft-reboot and a warm reboot, unless the firmware honours the TCG
+memory-overwrite request, and setting that request writes EFI NVRAM. Use
+`nails deactivate --poweroff` or `nails emergency --poweroff` to power off
+instead and let RAM decay.
 
 ## Deniability hazards
 
