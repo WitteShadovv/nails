@@ -34,6 +34,12 @@ pub(super) fn is_symlink(path: &Path) -> Result<bool> {
     Ok(path.is_symlink())
 }
 
+pub(super) fn is_overlay_whiteout(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    Ok(std::fs::symlink_metadata(path)
+        .is_ok_and(|meta| meta.file_type().is_char_device() && meta.rdev() == 0))
+}
+
 pub(super) fn canonicalize(path: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(path).at_path(path)
 }

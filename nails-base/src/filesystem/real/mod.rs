@@ -104,6 +104,10 @@ impl Filesystem for RealFilesystem {
         file_ops::is_symlink(path)
     }
 
+    fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
+        file_ops::is_overlay_whiteout(path)
+    }
+
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         file_ops::canonicalize(path)
     }

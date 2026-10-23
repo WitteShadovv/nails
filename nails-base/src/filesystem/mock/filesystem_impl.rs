@@ -48,6 +48,10 @@ impl Filesystem for MockFilesystem {
         self.is_symlink_impl(path)
     }
 
+    fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
+        self.is_overlay_whiteout_impl(path)
+    }
+
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         self.canonicalize_impl(path)
     }

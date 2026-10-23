@@ -172,6 +172,17 @@ impl MockFilesystem {
         entry.is_symlink = is_symlink;
     }
 
+    /// Make `path` an overlayfs whiteout: present, as the 0:0 character device
+    /// an overlay's upper holds where the merged view deleted a lower file.
+    pub fn mock_set_whiteout(&self, path: &str) {
+        let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        let entry = paths.entry(PathBuf::from(path)).or_default();
+        entry.exists = true;
+        entry.is_directory = false;
+        entry.is_symlink = false;
+        entry.is_whiteout = true;
+    }
+
     /// Set whether a directory's filesystem supports symbolic links
     pub fn mock_set_supports_symlinks(&self, path: &Path, supports: bool) {
         self.symlink_support

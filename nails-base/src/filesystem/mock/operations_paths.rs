@@ -61,6 +61,11 @@ impl MockFilesystem {
         Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))
     }
 
+    pub(super) fn is_overlay_whiteout_impl(&self, path: &Path) -> Result<bool> {
+        let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        Ok(paths.get(path).is_some_and(|info| info.is_whiteout))
+    }
+
     /// Resolve the symlinks recorded by `create_symlink`, component by
     /// component. Unlike the real call this never reports a missing path: the
     /// mock does not track existence for most paths, and resolving to the

@@ -183,6 +183,12 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
+    /// Whether `path` itself (never a symlink's target) is an overlayfs
+    /// whiteout: a character device with device number 0:0, which an overlay's
+    /// upper holds where the merged view deleted a file of a lower layer. A path
+    /// that is missing or cannot be inspected is not one.
+    fn is_overlay_whiteout(&self, path: &Path) -> Result<bool>;
+
     /// Resolve every symlink in `path` and return the absolute result, like
     /// `realpath(3)`.
     ///
