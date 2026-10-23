@@ -34,6 +34,16 @@ of this changelog for that version becomes the release notes word for word, and
 - `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
   the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
   unexplained; a later successful switch clears it.
+- `status` reports why and when the last session switch was refused, instead of a refused switch
+  going unexplained. When the soft-reboot into the hidden session cannot switch root, the reason is
+  kept on the hidden volume, written through the volume's mount in the prepared root and never on
+  the decoy disk, and shown once you open the volume again. When the way back is refused, the reason
+  is kept in RAM with the session's runtime files and shown in the hidden session. `status --json`
+  reports it as the `switch_refused` attention, with the refusal's own reason as `reason` and a
+  `switch_refusal` object (`reason` and `at`). The next `activate` or `deactivate` clears it when it
+  arms its own switch.
+- Ubuntu 26.10 is a validated target: `check` and activation name it as a tested release rather than
+  warning that it is untested.
 - `check` and `rehearse` document and probe more of the cross-distro residue surface a session can
   leave on a persistent decoy: chrony's drift and real-time-clock files, NetworkManager connection
   records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage

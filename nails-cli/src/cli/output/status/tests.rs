@@ -91,6 +91,96 @@ fn a_cover_is_shown_in_both_forms() {
     assert!(errors.is_empty(), "{errors:#?}\n{value:#}");
 }
 
+/// Fail unless `value` matches the committed status schema the contract tests
+/// share.
+fn assert_matches_the_schema(value: &serde_json::Value) {
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../docs/schemas/status.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("the schema compiles");
+    let errors: Vec<String> = validator
+        .iter_errors(value)
+        .map(|e| e.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}\n{value:#}");
+}
+
+#[test]
+fn a_refused_switch_is_shown_with_its_reason_and_time_in_both_forms() {
+    use chrono::{FixedOffset, TimeZone, Utc};
+    use nails_core::status::RefusedSwitch;
+
+    // The entry recorded Active, then the soft-reboot refused the switch.
+    let why = "the next root has neither /etc/os-release nor /usr/lib/os-release";
+    let mut refused = report(Posture::Decoy, "decoy");
+    refused.state = SystemState::Active {
+        activated_at: Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 50).unwrap(),
+    };
+    refused.reason = Some(
+        "the record still holds an active session, but none is running: the switch into it \
+         was refused"
+            .into(),
+    );
+    refused.remediation = Some("Run `sudo /mnt/data/nails recover` to reset the record".into());
+    refused.switch_refusal = Some(RefusedSwitch {
+        reason: why.into(),
+        at: Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 59).unwrap(),
+    });
+    let zone = FixedOffset::east_opt(2 * 3600).unwrap();
+
+    let lines = status_lines(&refused, false, plain(), &zone).join("\n");
+    assert!(
+        lines.contains("Last switch:        refused at 2026-10-14 21:41:59 +02:00"),
+        "{lines}"
+    );
+    assert!(lines.contains(&format!("  \u{26a0} {why}")), "{lines}");
+    assert!(lines.contains("the switch into it was refused"), "{lines}");
+
+    // The JSON names the refusal as the attention, with its own reason, and
+    // keeps UTC.
+    let value = serde_json::to_value(status_envelope(&refused)).unwrap();
+    assert_eq!(value["data"]["attention"], "switch_refused");
+    assert_eq!(value["data"]["reason"], why);
+    assert_eq!(
+        value["data"]["remediation"],
+        "Run `sudo /mnt/data/nails recover` to reset the record"
+    );
+    assert_eq!(value["data"]["switch_refusal"]["reason"], why);
+    assert_eq!(
+        value["data"]["switch_refusal"]["at"],
+        "2026-10-14T19:41:59+00:00"
+    );
+    assert_matches_the_schema(&value);
+
+    // An attention that outranks it keeps its own reason; the refusal is still
+    // there to read.
+    let mut interrupted = report(Posture::Degraded, "interrupted");
+    interrupted.reason = Some("an interrupted activation left its runtime files in /run".into());
+    interrupted.switch_refusal = refused.switch_refusal.clone();
+    let value = serde_json::to_value(status_envelope(&interrupted)).unwrap();
+    assert_eq!(value["data"]["attention"], "interrupted");
+    assert_eq!(
+        value["data"]["reason"],
+        "an interrupted activation left its runtime files in /run"
+    );
+    assert_eq!(value["data"]["switch_refusal"]["reason"], why);
+
+    // Without a refusal: no line, no field, and the record's own reason.
+    let mut ended = refused.clone();
+    ended.switch_refusal = None;
+    ended.reason = Some("it ended without updating the record".into());
+    let lines = status_lines(&ended, false, plain(), &zone).join("\n");
+    assert!(!lines.contains("Last switch"), "{lines}");
+    let value = serde_json::to_value(status_envelope(&ended)).unwrap();
+    assert_eq!(value["data"]["attention"], "ended_abnormally");
+    assert_eq!(
+        value["data"]["reason"],
+        "it ended without updating the record"
+    );
+    assert!(value["data"].get("switch_refusal").is_none());
+}
+
 #[test]
 fn an_accepted_override_is_shown_in_both_forms() {
     let mut active = report(Posture::Active, "hidden");

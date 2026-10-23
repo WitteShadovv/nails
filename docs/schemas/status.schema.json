@@ -35,7 +35,11 @@
             null
           ]
         },
-        "reason": { "type": "string", "minLength": 1 },
+        "reason": {
+          "description": "Why the place needs attention, when a reason is known. With the switch_refused attention, the reason the switch gave.",
+          "type": "string",
+          "minLength": 1
+        },
         "remediation": { "type": "string", "minLength": 1 },
         "entered_at": { "type": "string", "format": "date-time" },
         "uptime_seconds": { "type": "integer", "minimum": 0 },
@@ -78,6 +82,16 @@
           "type": "boolean"
         },
         "persona_mode": { "type": "string", "enum": ["shared-home", "fresh-home"] },
+        "switch_refusal": {
+          "description": "Why and when the last session switch was refused: the soft-reboot stayed on the root it was on. Kept on the hidden volume (a refused entry, shown once the volume is open again) or in /run (a refused way back, shown in the hidden session) until the next activate or deactivate arms its own switch.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reason", "at"],
+          "properties": {
+            "reason": { "type": "string", "minLength": 1 },
+            "at": { "type": "string", "format": "date-time" }
+          }
+        },
         "last_activation": {
           "type": "object",
           "additionalProperties": false,
