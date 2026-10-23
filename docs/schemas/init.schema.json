@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/init.schema.json",
   "title": "NAILS init --json",
-  "description": "Machine-readable init envelope (contract version 2): one document with schema_version, command, ok, and either data (the layout written on the hidden volume and the next steps) or error. The envelope frame and error body are strict; the data is this command's own payload. ok is true only when the exit code is 0 or 9.",
+  "description": "Machine-readable init envelope (contract version 2): one document with schema_version, command, ok, and either data (the layout written on the hidden volume and the next steps) or error. The envelope frame, the data and the error body are strict. ok is true only when the exit code is 0 or 9. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -10,7 +10,38 @@
     "schema_version": { "const": 2 },
     "command": { "const": "init" },
     "ok": { "type": "boolean" },
-    "data": { "type": "object" },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "items", "next_steps"],
+      "properties": {
+        "root": {
+          "description": "The hidden volume root the layout was written to, as it was given.",
+          "type": "string",
+          "minLength": 1
+        },
+        "items": {
+          "description": "Each layout item and whether it was created or already present.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "status"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["created", "already_present"] }
+            }
+          }
+        },
+        "warnings": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "notes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "next_steps": {
+          "description": "The steps to take after init, in order; a command among them names the binary by its path.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "error": {
       "type": "object",
       "additionalProperties": false,

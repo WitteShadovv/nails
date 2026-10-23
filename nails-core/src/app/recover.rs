@@ -16,9 +16,10 @@ use nails_api::ExitStatus;
 use nails_teardown::whole_root::ret::BackendClose;
 use serde::Serialize;
 
+pub use crate::manager::RecoverError;
 use crate::manager::SessionRecovery;
 use crate::session::RealEntryHost;
-use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv};
+use crate::{NailsManager, RealFilesystem, RuntimeEnv};
 
 /// The machine-readable payload of a recovery.
 #[derive(Debug, Serialize)]
@@ -53,12 +54,12 @@ pub struct RecoverOutcome {
 ///
 /// Loads the teardown configuration (never refusing, falling back off a failed
 /// hidden volume), takes the emergency state lock for the duration, and runs the
-/// recovery. An error (the hidden session, or an entry under way) is returned
-/// for the front end to report as an invalid state.
+/// recovery. A refusal says why ([`RecoverError`]: the hidden session, or an
+/// entry under way), so the front end names the next step that fits it.
 pub fn recover(
     env: &RuntimeEnv,
     config_override: Option<&Path>,
-) -> Result<RecoverOutcome, NailsError> {
+) -> Result<RecoverOutcome, RecoverError> {
     let (config, source) = super::config::load_config_for_teardown(config_override);
     tracing::info!("Recovery using the {}", source.describe());
     let state_path = config.state_file_path.clone();

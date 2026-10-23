@@ -159,12 +159,12 @@ fn failure_error(error: &NailsError) -> ErrorBody {
     }
 }
 
-/// Print the activation result as one JSON envelope. A cancel is the one cancel
+/// The activation result as one JSON envelope line. A cancel is the one cancel
 /// shape every command shares (an error body with the code `cancelled`, no
 /// data); every other failure keeps its data so a caller learns what was
 /// prepared, with `ok` false; a success and a success-with-warnings are `ok`.
-pub fn print_activate_json_result(result: &ActivateResult<'_>, duration: f64) {
-    let line = match result {
+pub fn activate_envelope_line(result: &ActivateResult<'_>, duration: f64) -> String {
+    match result {
         ActivateResult::Failed(NailsError::Cancelled) => {
             error_envelope("activate", ErrorBody::new("cancelled", CANCELLED)).to_line()
         }
@@ -175,8 +175,13 @@ pub fn print_activate_json_result(result: &ActivateResult<'_>, duration: f64) {
         )
         .to_line(),
         _ => Envelope::outcome("activate", true, activate_data(result, duration)).to_line(),
-    };
-    crate::cli::output::println_tolerating_broken_pipe(&line);
+    }
+}
+
+/// Print the activation result as its one JSON envelope
+/// ([`activate_envelope_line`]).
+pub fn print_activate_json_result(result: &ActivateResult<'_>, duration: f64) {
+    crate::cli::output::envelope::print_envelope_line(&activate_envelope_line(result, duration));
 }
 
 /// The human lines for a result: results on stdout, failures on stderr.

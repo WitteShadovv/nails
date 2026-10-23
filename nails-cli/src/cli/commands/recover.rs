@@ -13,16 +13,16 @@
 //! device-mapper devices where nothing uses them, so the key leaves RAM, and
 //! reports any it had to leave open because they are in use (the hidden volume
 //! mounted on the decoy). It never reboots. In the hidden session it
-//! refuses and points at `deactivate`.
+//! refuses and points at `deactivate`; while an activation is entering it
+//! refuses and says to wait for that activation's soft-reboot.
 
 use std::path::Path;
 
-use nails_core::app::recover::RecoverData;
+use nails_core::app::recover::{RecoverData, RecoverError};
 use nails_core::output::{Mark, Style};
 
 use crate::cli::args::RecoverArgs;
-use crate::cli::output::deactivate::deactivate_error_body;
-use crate::cli::output::envelope::{Envelope, EnvelopePrint, report_error};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint, ErrorBody, NextStep, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Execute the recover command.
@@ -32,6 +32,7 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// - [`ExitStatus::Ok`] once nothing of an interrupted entry is left
 /// - [`ExitStatus::DegradedReboot`] when a mount below `/run/nextroot` stayed
 /// - [`ExitStatus::InvalidState`] in the hidden session or during an entry
+/// - [`ExitStatus::Failed`] when the recovery itself failed
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
@@ -52,11 +53,40 @@ pub fn execute(
             }
             outcome.exit
         }
-        Err(e) => report_error(
-            json,
-            "recover",
+        Err(error) => {
+            let (status, body) = recover_error(&error);
+            report_error(json, "recover", status, body)
+        }
+    }
+}
+
+/// The exit status and error body of a recovery that did not run, each
+/// refusal with the next step that fits it.
+///
+/// In the hidden session the way out is `deactivate`, the typed next step (the
+/// message names `emergency` too, for when that fails). While an activation is
+/// entering, nothing is to be run but its own soft-reboot, so there is no next
+/// step, only the advice to wait for it. A failure of the recovery itself is a
+/// plain failure.
+fn recover_error(error: &RecoverError) -> (ExitStatus, ErrorBody) {
+    use nails_core::next_step::{NextStep as Step, sudo_line};
+    let body = ErrorBody::new("invalid_state", error.to_string());
+    match error {
+        RecoverError::HiddenSession => (
             ExitStatus::InvalidState,
-            deactivate_error_body(&e),
+            body.with_next(NextStep::new(Step::Deactivate.command())),
+        ),
+        RecoverError::Entering => (
+            ExitStatus::InvalidState,
+            body.with_hint(format!(
+                "Wait for its soft-reboot. If it hangs, stop that activation (Ctrl+C where it \
+                 runs), then run `{}` again.",
+                sudo_line(Step::Recover)
+            )),
+        ),
+        RecoverError::Failed(cause) => (
+            ExitStatus::Failed,
+            ErrorBody::new("recover_failed", cause.to_string()),
         ),
     }
 }
@@ -103,6 +133,55 @@ mod tests {
         color: false,
         ascii: true,
     };
+
+    /// In the hidden session recover points at `deactivate`, the way out,
+    /// never at `emergency`, which loses unsaved work.
+    #[test]
+    fn a_refusal_in_the_hidden_session_names_deactivate_next() {
+        let (status, body) = recover_error(&RecoverError::HiddenSession);
+        assert_eq!(status, ExitStatus::InvalidState);
+        assert_eq!(body.code, "invalid_state");
+        assert_eq!(
+            body.next.map(|next| next.command),
+            Some("deactivate".to_string())
+        );
+        assert!(body.message.contains(" deactivate`"), "{}", body.message);
+    }
+
+    /// While an activation is entering there is nothing to run but its
+    /// soft-reboot: no next step, and no word of killing a session.
+    #[test]
+    fn a_refusal_during_an_entry_says_to_wait_with_no_next_step() {
+        let (status, body) = recover_error(&RecoverError::Entering);
+        assert_eq!(status, ExitStatus::InvalidState);
+        assert_eq!(body.code, "invalid_state");
+        assert!(body.next.is_none(), "{:?}", body.next);
+        assert!(
+            body.message
+                .starts_with("an activation is entering the hidden root right now\n"),
+            "{}",
+            body.message
+        );
+        assert!(
+            body.message.contains("Wait for its soft-reboot"),
+            "{}",
+            body.message
+        );
+        assert!(!body.message.contains("emergency"), "{}", body.message);
+    }
+
+    /// A recovery that failed is a plain failure, with no next step.
+    #[test]
+    fn a_failed_recovery_is_a_plain_failure() {
+        let (status, body) = recover_error(&RecoverError::Failed(nails_core::NailsError::io(
+            "/mnt/data/state.json",
+            std::io::Error::other("full"),
+        )));
+        assert_eq!(status, ExitStatus::Failed);
+        assert_eq!(body.code, "recover_failed");
+        assert!(body.next.is_none());
+        assert!(body.message.contains("full"), "{}", body.message);
+    }
 
     #[test]
     fn a_clean_recovery_is_one_line() {

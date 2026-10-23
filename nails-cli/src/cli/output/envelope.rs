@@ -9,6 +9,14 @@
 //! themselves; this module re-exports them and adds the terminal-facing
 //! helpers: [`report_error`], [`report_cancelled`], and [`EnvelopePrint::print`]
 //! for printing an envelope on stdout tolerating a broken pipe.
+//!
+//! A process prints at most one envelope. Every envelope goes out through
+//! [`print_envelope_line`], which claims the one slot first, so the paths that
+//! can race the command's own result — the cancel a signal reports
+//! ([`crate::cli::interrupt`]) and the failure a panic reports
+//! ([`crate::cli::chokepoint`]) — never add a second document to it.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
@@ -16,9 +24,29 @@ pub use nails_api::envelope::{Envelope, ErrorBody, NextStep, SCHEMA_VERSION, err
 
 use super::exit::ExitStatus;
 
+/// Whether this process has claimed its one envelope.
+static ENVELOPE_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+/// Claim the one envelope this process prints. True for the first caller only:
+/// whoever gets it prints, everyone after it prints nothing.
+pub(crate) fn claim_envelope() -> bool {
+    !ENVELOPE_CLAIMED.swap(true, Ordering::SeqCst)
+}
+
+/// Print `line`, one serialized envelope, on stdout, unless this process has
+/// already printed (or is printing) its envelope. Returns whether it printed.
+pub(crate) fn print_envelope_line(line: &str) -> bool {
+    if !claim_envelope() {
+        return false;
+    }
+    super::println_tolerating_broken_pipe(line);
+    true
+}
+
 /// Print a machine-readable [`Envelope`] on stdout.
 pub trait EnvelopePrint {
-    /// Serialize to one compact line and print it on stdout.
+    /// Serialize to one compact line and print it on stdout, as the one
+    /// envelope of this process ([`print_envelope_line`]).
     ///
     /// Tolerant of a broken pipe: a reader that has already exited must not turn
     /// the final envelope into a fatal abort (see
@@ -28,7 +56,7 @@ pub trait EnvelopePrint {
 
 impl<T: Serialize> EnvelopePrint for Envelope<T> {
     fn print(&self) {
-        super::println_tolerating_broken_pipe(&self.to_line());
+        print_envelope_line(&self.to_line());
     }
 }
 
@@ -49,11 +77,12 @@ pub fn report_error(
     status
 }
 
-/// Report an answer of `n` at a confirmation prompt, which changed nothing:
-/// for a human the neutral notice `activate` gives, on `err` (stderr, whose
-/// `style` it takes), in JSON the error envelope with the code `cancelled` on
-/// stdout. The command exits 130, the cancelled code: a "no" at any prompt
-/// reads the same as Ctrl+C.
+/// Report a cancel before the command changed anything (an answer other than
+/// yes at a confirmation prompt, or Ctrl+C at one or during an emergency's
+/// countdown): for a human the neutral notice `activate` gives, on `err`
+/// (stderr, whose `style` it takes), in JSON the error envelope with the code
+/// `cancelled` on stdout. The command exits 130, the cancelled code: a "no" at
+/// any prompt reads the same as Ctrl+C.
 pub fn report_cancelled<W: std::io::Write>(
     err: &mut W,
     json: bool,

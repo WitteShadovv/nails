@@ -353,7 +353,35 @@ fn a_tampered_state_file_on_the_decoy_is_unknown() {
         .unwrap();
     assert_eq!(report.posture, Posture::Unknown);
     assert_eq!(report.state_source, "corrupt");
+    assert!(report.record_unreadable());
     assert_eq!(report.uptime, None);
+}
+
+/// In the hidden session the live view stays the verdict, but a corrupt
+/// record is still reported, with what to do about it before the next
+/// activation.
+#[test]
+fn a_tampered_state_file_in_the_hidden_session_is_reported_with_its_remedy() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("state.json"), "{ not json").unwrap();
+    let view = SessionView::Hidden(Box::new(plan(dir.path())));
+    let report = command(dir.path()).report(&view, &[], Utc::now()).unwrap();
+    assert_eq!(report.posture, Posture::Active);
+    assert!(report.record_unreadable(), "{}", report.state_source);
+    let remediation = report.remediation.as_deref().expect("a remedy");
+    assert!(
+        remediation.contains("sudo ")
+            && remediation.contains(" verify` and check the hidden volume"),
+        "{remediation}"
+    );
+
+    // A readable record leaves the hidden session without a remedy.
+    StateFile::default()
+        .save_with_custom_root(&dir.path().join("state.json"), dir.path())
+        .unwrap();
+    let report = command(dir.path()).report(&view, &[], Utc::now()).unwrap();
+    assert!(!report.record_unreadable());
+    assert_eq!(report.remediation, None);
 }
 
 #[test]

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/verify.schema.json",
   "title": "NAILS verify --json",
-  "description": "Machine-readable verify envelope (contract version 2): one document with schema_version, command, ok, and either data (a completed scan) or error (the scan could not run). `ok` is true only when the exit code is 0 or 9, so a warning (10) and a critical finding (11) both read as ok false.",
+  "description": "Machine-readable verify envelope (contract version 2): one document with schema_version, command, ok, and either data (a completed scan) or error (the scan could not run). `ok` is true only when the exit code is 0 or 9, so a warning (10) and a critical finding (11) both read as ok false. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],

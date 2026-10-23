@@ -118,17 +118,25 @@ of this changelog for that version becomes the release notes word for word, and
   configured; a Debian, Ubuntu, Fedora or Arch decoy no longer prints a NixOS-profile line that does
   not apply to it.
 - The machine-readable `--json` output moves to contract version 2 (`schema_version` is now `2`), a
-  breaking change for scripts. Every command prints exactly one envelope on stdout — the root
-  privilege gate, a usage error and `config` included — and `activate` no longer streams progress
-  lines before its result (`config show` likewise prints one document rather than a multi-line one).
-  The envelope's `ok` is `true` only when the exit code is `0` or `9`, so a `verify` warning, a
-  degraded `emergency` or `recover`, and a refused `check` now read as `ok: false`. `status` reports
-  where the machine is as `place` (`decoy`, `hidden` or `activating`) and the one thing that needs the
-  operator as `attention`, replacing the version-1 `posture`, `session`, `state` and `state_source`
-  fields. An error now carries a stable `code`, the human `message`, and a typed `next` step — the
-  command to run next, or `null` — in place of the free-form `hint`. A cancelled command, whether a
-  Ctrl+C or a "no" at a prompt, reports one shape everywhere: an error with the code `cancelled`, and
-  exit `130`.
+  breaking change for scripts. Every command but `completions` prints exactly one envelope on stdout
+  — the root privilege gate, a usage error (`config` without its subcommand among them), a Ctrl+C
+  and an internal error included — and `activate` no longer streams progress lines before its result
+  (`config show` likewise prints one document rather than a multi-line one). The envelope's `ok` is
+  `true` only when the exit code is `0` or `9`, so a `verify` warning, a degraded `emergency` or
+  `recover`, and a refused `check` now read as `ok: false`. A `rehearse scan` that could not check
+  every device exits `9` and still reads `ok: true`: its exit code, not `ok`, says it is not a clean
+  result. `status` reports where the machine is as `place` (`decoy`, `hidden` or `activating`, or
+  `unknown` when reading the record was refused, so no report could be built) and the one thing that
+  needs the operator as `attention` (`record_unreadable` wherever the machine is, when the record
+  cannot be read or trusted), replacing the version-1 `posture`, `session`, `state` and
+  `state_source` fields. An error now carries a stable `code`, the human `message`, and a typed
+  `next` step — the command to run next, or `null` — in place of the free-form `hint`. A cancel
+  reports one shape: an error with the code `cancelled`, no data, and exit `130`. That is a "no" at
+  any prompt; Ctrl+C at a prompt, during `emergency --countdown` or in an activation before its
+  point of no return; and, under `--json`, Ctrl+C or SIGTERM during `status`, `verify`, `check`,
+  `config`, `init` or `rehearse`. A teardown that has begun (`deactivate` past its prompt,
+  `emergency` once it acts, `recover`, `discard` once it deletes) runs to its end and reports its
+  result. An internal error is the error `internal_error`, with exit `1`.
 
   Exit codes that changed in this release:
 
@@ -330,12 +338,29 @@ of this changelog for that version becomes the release notes word for word, and
   Debian 13 is among them although `last` there reads wtmpdb, which keeps no process numbers: its
   getty still writes `/var/log/wtmp`. Only a session ended with `--poweroff`, which has no way back,
   leaves none of them.
+- Ctrl+C at the `deactivate` and `discard` prompts cancels at once, with the cancelled notice and
+  exit 130 (under `--json` the cancel envelope). The signal handlers these commands install restart
+  an interrupted read, so Ctrl+C only echoed `^C` there, and a "y" typed afterwards went on. The
+  prompts now wait for the answer as `activate`'s does.
+- Ctrl+C during `emergency --countdown` cancels the emergency before it acts, with the cancelled
+  notice and exit 130 (under `--json` the cancel envelope). Run as root it ended the process by the
+  signal with nothing reported; run without root it was ignored.
+- An internal error (a panic) exits 1, a code of the exit table, where it exited 101; under `--json`
+  it prints the error `internal_error`. `config path`, `config show` and `config validate` with
+  `--json` no longer crash on a configuration path that is not valid UTF-8.
 - A hint that names a command to run names it by the binary's real path, quoted for the shell when
   the path holds a space or another special character (a volume mounted by its label, say), so it
   pastes as it is. The DMA-protection warning, the warning on an untested release or derivative,
   `verify`'s guidance for a stale record and for RAM, the configuration-not-found error and `init`'s
   errors named a bare `nails` command, which `sudo` cannot run because the binary is not on its
   `PATH`.
+- `recover` gives each refusal the next step that fits it: in the hidden session `deactivate`, where
+  it pointed at `emergency`, which kills the session and loses unsaved work; while an activation is
+  entering, none, with the advice to wait for its soft-reboot. A recovery that itself fails (the
+  record cannot be written) exits 1 with the error `recover_failed` instead of 6.
+- `status` shows a state file it cannot read or trust as an unknown state, wherever the machine is,
+  with what to do about it. In the hidden session it showed the inactive default that stands in for
+  the record, with no word of the damage.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

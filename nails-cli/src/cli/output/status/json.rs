@@ -4,11 +4,12 @@
 //! JSON output for the status command.
 //!
 //! The version-2 envelope says two things a reader branches on: `place` is
-//! where the machine is (`decoy`, `hidden` or `activating`), and `attention`
-//! names the one thing, if any, that needs the operator. Together they replace
-//! the version-1 `posture`, `session`, `state` and `state_source` fields: the
-//! live view and the record are folded into one verdict, and the record's own
-//! read outcome shows only as the `record_unreadable` attention.
+//! where the machine is (`decoy`, `hidden` or `activating`, or `unknown` when
+//! the report could not be built), and `attention` names the one thing, if
+//! any, that needs the operator. Together they replace the version-1
+//! `posture`, `session`, `state` and `state_source` fields: the live view and
+//! the record are folded into one verdict, and the record's own read outcome
+//! shows only as the `record_unreadable` attention, wherever the machine is.
 
 use serde::Serialize;
 
@@ -109,13 +110,14 @@ fn place_of(report: &StatusReport) -> &'static str {
 }
 
 /// The one thing that needs the operator, or `None`. The record being
-/// unreadable outranks everything (nothing else can be trusted), then a hidden
-/// root without a way back, an interrupted activation, a refused switch, a
-/// session that ended without updating the record, and a disk mounted over the
-/// volume. `volume_lost` and `almost_full` are reported by the window and the
-/// alert, where the live figures are to hand.
+/// unreadable or untrusted outranks everything, in every place (nothing it
+/// says can be trusted), then a hidden root without a way back, an interrupted
+/// activation, a refused switch, a session that ended without updating the
+/// record, and a disk mounted over the volume. `volume_lost` and `almost_full`
+/// are reported by the window and the alert, where the live figures are to
+/// hand.
 fn attention_of(report: &StatusReport) -> Option<&'static str> {
-    if report.posture == Posture::Unknown {
+    if report.record_unreadable() {
         return Some("record_unreadable");
     }
     if report.session == "hidden_without_plan" {
@@ -199,19 +201,20 @@ pub fn print_status_json(report: &StatusReport) {
     status_envelope(report).print();
 }
 
-/// The failure data when the status could not be built at all: the record on
-/// the hidden volume could not be read, so the place falls back to the decoy
-/// and the attention names the unreadable record.
+/// The failure data when the status could not be built at all: reading the
+/// record on the hidden volume was refused, so nothing was established about
+/// where the machine is. The place is `unknown`, never a guess, and the
+/// attention names the unreadable record.
 #[derive(Debug, Serialize)]
 struct UnknownData {
     place: &'static str,
     attention: &'static str,
 }
 
-/// Print an unknown status (the report could not be built) as a failure
-/// envelope. `sudo` is the line that runs status as root, when the state file
-/// was unreadable for lack of permission.
-pub fn print_status_json_unknown(error: String, sudo: Option<String>) {
+/// The failure envelope of a status that could not be built. `sudo` is the
+/// line that runs status as root, when the state file was unreadable for lack
+/// of permission.
+pub fn status_unknown_envelope(error: String, sudo: Option<String>) -> Envelope<impl Serialize> {
     let mut body = crate::cli::output::envelope::ErrorBody::new("record_unreadable", error);
     if let Some(line) = sudo {
         body = body.with_hint(format!("run it as root: {line}"));
@@ -220,9 +223,14 @@ pub fn print_status_json_unknown(error: String, sudo: Option<String>) {
         "status",
         body,
         UnknownData {
-            place: "decoy",
+            place: "unknown",
             attention: "record_unreadable",
         },
     )
-    .print();
+}
+
+/// Print an unknown status (the report could not be built) as its failure
+/// envelope ([`status_unknown_envelope`]).
+pub fn print_status_json_unknown(error: String, sudo: Option<String>) {
+    status_unknown_envelope(error, sudo).print();
 }

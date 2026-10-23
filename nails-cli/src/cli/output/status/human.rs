@@ -64,10 +64,16 @@ where
         ));
         out.push(format!("  {}", style.marked(Mark::Warn, &refused.reason)));
     }
-    out.push(format!(
-        "State:              {} (recorded)",
-        system_state_label(&report.state)
-    ));
+    // A record that could not be read or trusted is shown as such, never as
+    // the inactive default that stands in for it.
+    out.push(if report.record_unreadable() {
+        "State:              Unknown (the state file could not be read or trusted)".to_string()
+    } else {
+        format!(
+            "State:              {} (recorded)",
+            system_state_label(&report.state)
+        )
+    });
     if let Some(entered) = report.entered_at {
         out.push(format!("Entered:            {}", stamp(entered, zone)));
     }

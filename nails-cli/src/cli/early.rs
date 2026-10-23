@@ -50,6 +50,10 @@ pub struct EarlyArgs {
     pub countdown: Option<u64>,
     /// How the emergency ends (`--poweroff`, `--reboot`, or the way back).
     pub finish: Finish,
+    /// `--json`: a countdown cancelled with Ctrl+C prints the cancel envelope.
+    pub json: bool,
+    /// `--ascii`: the cancel notice uses an ASCII marker.
+    pub ascii: bool,
 }
 
 impl Default for EarlyArgs {
@@ -57,6 +61,8 @@ impl Default for EarlyArgs {
         Self {
             countdown: None,
             finish: Finish::Return,
+            json: false,
+            ascii: false,
         }
     }
 }
@@ -98,6 +104,8 @@ pub fn recognise(argv: &[OsString]) -> Option<EarlyArgs> {
                 return None;
             }
             quiet |= name == "--quiet";
+            args.json |= name == "--json";
+            args.ascii |= name == "--ascii";
             continue;
         }
         if subcommand && let Some(flag) = EMERGENCY_FLAGS.iter().find(|f| **f == word) {
@@ -309,9 +317,9 @@ pub fn dispatch() -> bool {
     }
     // A cwd inside the hidden volume would pin it.
     let _ = std::env::set_current_dir("/");
-    if let Some(secs) = args.countdown {
-        crate::cli::commands::emergency::run_countdown(secs);
-    }
+    // Ctrl+C during the countdown cancels the emergency before it acts, and
+    // ends the process with the cancel reported.
+    crate::cli::commands::emergency::early_countdown(args.countdown, args.json, args.ascii);
     let plan = nails_teardown::whole_root::plan::Plan::load(
         &nails_teardown::whole_root::plan::default_plan_path(),
     )

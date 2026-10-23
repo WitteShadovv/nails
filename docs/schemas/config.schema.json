@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/config.schema.json",
   "title": "NAILS config --json",
-  "description": "Machine-readable config envelope (contract version 2): one document for `config path`, `config show` or `config validate`. The data shape differs by subcommand (path/exists, the effective configuration with its sources, or path/valid), so data is validated only as an object; the envelope frame and the error body are strict. `config show --example --json` is a usage error.",
+  "description": "Machine-readable config envelope (contract version 2): one document for `config path`, `config show` or `config validate`. The data shape differs by subcommand (path/exists, the effective configuration with its sources, or path/valid), so data is validated only as an object; the envelope frame and the error body are strict. `config show --example --json` is a usage error. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],

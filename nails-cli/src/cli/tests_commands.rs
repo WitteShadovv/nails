@@ -185,3 +185,36 @@ fn test_only_the_commands_that_change_the_system_count_as_mutating() {
         .collect();
     assert_eq!(sorted, subcommands);
 }
+
+/// The commands that take the system up or down catch the signals themselves;
+/// every other one keeps the default action, which `--json` turns into the
+/// cancel envelope of the command whose envelope it prints.
+#[test]
+fn only_the_commands_that_print_an_envelope_report_a_signal_as_their_cancel() {
+    for argv in [
+        &["activate"][..],
+        &["deactivate"],
+        &["emergency"],
+        &["recover"],
+        &["discard", "/home"],
+    ] {
+        let command = parse(argv).command;
+        assert!(command_is_mutating(&command), "{argv:?}");
+    }
+    for (argv, name) in [
+        (&["activate", "--dry-run"][..], Some("check")),
+        (&["status"], Some("status")),
+        (&["verify"], Some("verify")),
+        (&["rehearse", "scan"], Some("rehearse")),
+        (&["check"], Some("check")),
+        (&["init", "/mnt/data"], Some("init")),
+        (&["config", "path"], Some("config")),
+        (&["completions", "bash"], None),
+        (&["watch"], None),
+        (&["transition"], None),
+    ] {
+        let command = parse(argv).command;
+        assert!(!command_is_mutating(&command), "{argv:?}");
+        assert_eq!(envelope_command(&command), name, "{argv:?}");
+    }
+}

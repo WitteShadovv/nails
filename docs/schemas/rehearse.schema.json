@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/rehearse.schema.json",
   "title": "NAILS rehearse --json",
-  "description": "Machine-readable rehearse envelope (contract version 2): one document with schema_version, command, ok, and either data (the rehearsal step's state (planted, scanned or none), with the token redacted; a scan that finds the test words is exit 11) or error. The envelope frame and error body are strict; the data is this command's own payload. ok is true only when the exit code is 0 or 9.",
+  "description": "Machine-readable rehearse envelope (contract version 2): one document with schema_version, command, ok, and either data (the rehearsal step's state (planted, scanned or none), with the token redacted; a scan that finds the test words is exit 11) or error. The envelope frame and error body are strict; the data is this command's own payload. ok is true only when the exit code is 0 or 9. For `rehearse scan` that says the scan ran to its end, not that the decoy is clean: exit 0 is a conclusive scan that found nothing; exit 9, ok still true, is a scan that could not read a device in full or whose storage hides data from a raw scan (each device's `error`, `limit_reached` and `blind_spot` say which), so it is not a clean result; exit 11, ok false, found the test words. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],

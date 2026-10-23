@@ -16,6 +16,7 @@
 //! step, which ends the terminal; under `--json` the one envelope follows it,
 //! so it reports whether the soft-reboot was enqueued.
 
+use super::prompt::{Answer, read_answer_from_stdin};
 use crate::cli::args::ActivateArgs;
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::refusal::report_refusal;
@@ -360,62 +361,11 @@ fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration
     }
 }
 
-/// What the operator answered at the confirmation prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Answer {
-    /// `y` or `yes`.
-    Yes,
-    /// Anything else, or the end of the input.
-    No,
-    /// Ctrl+C (or a SIGTERM) while the prompt waited.
-    Cancelled,
-}
-
-/// How often the prompt looks at the cancel flag while it waits.
-const PROMPT_POLL: u16 = 100;
-
-/// Wait for a line on `input` (read through `reader`) and judge it, giving up
-/// as soon as `cancelled` says so. The signal handler restarts an interrupted
-/// read, so a plain read would go on until Enter and Ctrl+C would only echo
-/// `^C`; polling with a timeout looks at the cancel flag in between.
-fn read_answer(
-    input: std::os::fd::BorrowedFd<'_>,
-    reader: &mut impl std::io::BufRead,
-    cancelled: impl Fn() -> bool,
-) -> Answer {
-    use nix::poll::{PollFd, PollFlags, poll};
-    loop {
-        if cancelled() {
-            return Answer::Cancelled;
-        }
-        let mut fds = [PollFd::new(input, PollFlags::POLLIN)];
-        match poll(&mut fds, PROMPT_POLL) {
-            Ok(0) | Err(nix::errno::Errno::EINTR) => {}
-            Ok(_) => break,
-            Err(_) => return Answer::No,
-        }
-    }
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return if cancelled() {
-            Answer::Cancelled
-        } else {
-            Answer::No
-        };
-    }
-    if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        Answer::Yes
-    } else {
-        Answer::No
-    }
-}
-
 /// Ask on the terminal before logging the operator out. `accepted` is the
 /// refusal the operator overrode with `--allow-decoy-storage`, repeated here.
 fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> Answer {
     use nails_core::output::Mark;
     use std::io::Write;
-    use std::os::fd::AsFd;
     let style = settings.stderr_style();
     let mut stderr = std::io::stderr();
     let _ = writeln!(
@@ -435,12 +385,7 @@ fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> Answ
     }
     let _ = write!(stderr, "    Continue? [y/N]: ");
     let _ = stderr.flush();
-    let stdin = std::io::stdin();
-    let answer = read_answer(
-        stdin.as_fd(),
-        &mut stdin.lock(),
-        nails_core::cancel::is_cancelled,
-    );
+    let answer = read_answer_from_stdin();
     if answer == Answer::Cancelled {
         // End the prompt's line before the result.
         let _ = writeln!(stderr);

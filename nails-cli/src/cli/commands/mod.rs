@@ -29,6 +29,7 @@ pub mod deactivate;
 pub mod discard;
 pub mod emergency;
 pub mod init;
+mod prompt;
 pub mod recover;
 pub mod rehearse;
 pub mod sleep_guard;

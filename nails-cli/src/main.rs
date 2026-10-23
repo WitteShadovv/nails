@@ -36,6 +36,14 @@ fn main() -> std::process::ExitCode {
     // First, before parsing: no crash from here on may dump core onto the decoy.
     let core_dump_error = nails::cli::disable_core_dumps();
 
+    // A panic exits 1, a code of the exit table, with the one error envelope
+    // under --json, instead of the runtime's 101 with nothing on stdout.
+    nails::cli::exit_code_catching_panics(|| run(core_dump_error))
+}
+
+/// Everything after the core-dump guard: the early paths, parsing, the root
+/// gate, logging and the command itself.
+fn run(core_dump_error: Option<std::io::Error>) -> std::process::ExitCode {
     // The emergency hot path and the soft-reboot transition step run here,
     // before clap, the environment snapshot, the configuration and tracing exist,
     // so a failed hidden volume or an unreadable configuration cannot stop them.

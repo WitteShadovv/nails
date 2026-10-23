@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::human::status_lines;
-use super::json::status_envelope;
+use super::json::{status_envelope, status_unknown_envelope};
 use nails_core::SystemState;
 use nails_core::config::PersonaMode;
 use nails_core::output::Style;
@@ -271,6 +271,80 @@ fn an_interrupted_activation_is_on_the_decoy_and_needs_attention() {
     assert_eq!(value["data"]["attention"], "interrupted");
     // A degraded posture is not a safe one, so the envelope is not ok.
     assert_eq!(value["ok"], false);
+}
+
+/// A record that could not be read or trusted needs the operator wherever the
+/// machine is: the place stays what the live view says, and the attention
+/// names the record, also in the hidden session.
+#[test]
+fn an_unreadable_record_needs_attention_in_every_place() {
+    for (posture, session, place) in [
+        (Posture::Unknown, "decoy", "decoy"),
+        (Posture::Active, "hidden", "hidden"),
+        (Posture::Transitioning, "entering", "activating"),
+        (Posture::Degraded, "interrupted", "decoy"),
+        (Posture::Degraded, "hidden_without_plan", "hidden"),
+    ] {
+        for source in ["corrupt", "unreadable"] {
+            let mut unreadable = report(posture, session);
+            unreadable.state_source = source;
+            let value = serde_json::to_value(status_envelope(&unreadable)).unwrap();
+            assert_eq!(value["data"]["place"], place, "{session} {source}");
+            assert_eq!(
+                value["data"]["attention"], "record_unreadable",
+                "{session} {source}"
+            );
+        }
+    }
+    // A record read in full, or none at all, needs nothing of its own.
+    for source in ["loaded", "missing"] {
+        let mut readable = report(Posture::Active, "hidden");
+        readable.state_source = source;
+        let value = serde_json::to_value(status_envelope(&readable)).unwrap();
+        assert_eq!(
+            value["data"]["attention"],
+            serde_json::Value::Null,
+            "{source}"
+        );
+    }
+}
+
+/// The human report says the record is unknown rather than show the inactive
+/// default that stands in for it.
+#[test]
+fn an_unreadable_record_is_shown_as_unknown_not_as_inactive() {
+    let mut unreadable = report(Posture::Active, "hidden");
+    unreadable.state_source = "corrupt";
+    let lines = status_lines(&unreadable, false, plain(), &chrono::Utc).join("\n");
+    assert!(
+        lines.contains("State:              Unknown (the state file could not be read or trusted)"),
+        "{lines}"
+    );
+    assert!(!lines.contains("Inactive"), "{lines}");
+}
+
+/// A status that could not be built (reading the record was refused) claims no
+/// place it did not establish: the place is `unknown`, with the error and the
+/// line that runs it as root.
+#[test]
+fn a_status_that_could_not_be_built_claims_no_place() {
+    let line = status_unknown_envelope(
+        "Permission denied accessing state file /mnt/data/state.json".to_string(),
+        Some("sudo /mnt/data/nails status --json".to_string()),
+    )
+    .to_line();
+    let value = crate::cli::output::test_support::envelope("status", &line);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["data"]["place"], "unknown", "{value}");
+    assert_eq!(value["data"]["attention"], "record_unreadable", "{value}");
+    assert_eq!(value["error"]["code"], "record_unreadable", "{value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("\nrun it as root: sudo /mnt/data/nails status --json"),
+        "{value}"
+    );
 }
 
 /// The report shows its times in the given zone with the offset, as the

@@ -89,6 +89,11 @@ fn whatever_the_recogniser_accepts_clap_parses_as_the_same_emergency() {
                     Finish::Return
                 };
                 assert_eq!(finish, early.finish, "finish differs for {words:?}");
+                assert_eq!(cli.global.json, early.json, "--json differs for {words:?}");
+                assert_eq!(
+                    cli.global.ascii, early.ascii,
+                    "--ascii differs for {words:?}"
+                );
             }
             other => panic!("{words:?} parsed as {other:?}"),
         }
@@ -101,30 +106,40 @@ fn whatever_the_recogniser_accepts_clap_parses_as_the_same_emergency() {
 
 #[test]
 fn the_common_emergency_command_lines_are_recognised() {
-    for (words, countdown, finish) in [
-        (vec!["emergency"], None, Finish::Return),
+    let plain = EarlyArgs::default();
+    for (words, expected) in [
+        (vec!["emergency"], plain.clone()),
         (
             vec!["--config", "/c.toml", "emergency", "--json"],
-            None,
-            Finish::Return,
+            EarlyArgs {
+                json: true,
+                ..plain.clone()
+            },
         ),
         (
-            vec!["emergency", "--countdown", "3"],
-            Some(3),
-            Finish::Return,
+            vec!["emergency", "--countdown", "3", "--ascii"],
+            EarlyArgs {
+                countdown: Some(3),
+                ascii: true,
+                ..plain.clone()
+            },
         ),
         (
             vec!["emergency", "--poweroff", "-vv"],
-            None,
-            Finish::Poweroff,
+            EarlyArgs {
+                finish: Finish::Poweroff,
+                ..plain.clone()
+            },
         ),
-        (vec!["emergency", "--reboot"], None, Finish::Reboot),
+        (
+            vec!["emergency", "--reboot"],
+            EarlyArgs {
+                finish: Finish::Reboot,
+                ..plain.clone()
+            },
+        ),
     ] {
-        assert_eq!(
-            recognise(&argv(&words)),
-            Some(EarlyArgs { countdown, finish }),
-            "{words:?}"
-        );
+        assert_eq!(recognise(&argv(&words)), Some(expected), "{words:?}");
     }
 }
 

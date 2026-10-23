@@ -17,7 +17,7 @@ pub mod session_flow;
 pub mod state_management;
 
 pub use preflight_runner::{PreflightOptions, RegistryInputs, build_registry};
-pub use session_flow::{EnterOptions, EnterOutcome, SessionRecovery};
+pub use session_flow::{EnterOptions, EnterOutcome, RecoverError, SessionRecovery};
 pub use state_management::ResetUpperPlan;
 
 /// Central orchestrator for all NAILS operations.

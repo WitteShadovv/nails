@@ -228,6 +228,12 @@ impl StatusReport {
     pub fn posture(&self) -> Posture {
         self.posture
     }
+
+    /// Whether the state file could not be read or trusted, so the recorded
+    /// [`state`](Self::state) is the safe default rather than the record.
+    pub fn record_unreadable(&self) -> bool {
+        matches!(self.state_source, "unreadable" | "corrupt")
+    }
 }
 
 fn load_outcome_name(outcome: &LoadOutcome) -> &'static str {
@@ -276,16 +282,20 @@ pub fn posture_of(
             Some(format!("in the hidden root without a way back: {why}")),
             Some("Power off to end the session".to_string()),
         ),
-        SessionView::Decoy if state_unknown => (
-            Posture::Unknown,
-            None,
-            Some(format!(
-                "Run `{}` and check the hidden volume before activating again",
-                sudo_line(NextStep::Verify)
-            )),
-        ),
+        SessionView::Decoy if state_unknown => {
+            (Posture::Unknown, None, Some(unreadable_record_remedy()))
+        }
         SessionView::Decoy => (Posture::Decoy, None, None),
     }
+}
+
+/// What to do about a state file that could not be read or trusted.
+fn unreadable_record_remedy() -> String {
+    use crate::next_step::{NextStep, sudo_line};
+    format!(
+        "Run `{}` and check the hidden volume before activating again",
+        sudo_line(NextStep::Verify)
+    )
 }
 
 fn view_name(view: &SessionView) -> &'static str {
@@ -374,6 +384,12 @@ impl<F: Filesystem> StatusCommand<F> {
                 "Run `{}` to reset the record",
                 crate::next_step::sudo_line(crate::next_step::NextStep::Recover)
             ));
+        }
+        // Wherever the machine is, a record that cannot be read or trusted is
+        // no guide for the next activation: say what to do about it when the
+        // place needs nothing else.
+        if loaded.outcome.is_unknown() && remediation.is_none() {
+            remediation = Some(unreadable_record_remedy());
         }
         let plan = plan_of(view);
         let entered_at = plan

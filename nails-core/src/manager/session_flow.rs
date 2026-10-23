@@ -97,6 +97,45 @@ pub enum SessionRecovery {
     },
 }
 
+/// Why a recovery did not run, so a front end names the right next step.
+#[derive(Debug)]
+pub enum RecoverError {
+    /// In the hidden session, where the upper is the live root: the way out is
+    /// `deactivate` (or `emergency`), not a recovery.
+    HiddenSession,
+    /// An activation is entering the hidden root right now: its soft-reboot
+    /// comes next, and recovering would pull its next root from under it.
+    Entering,
+    /// The recovery itself failed (the record could not be written).
+    Failed(NailsError),
+}
+
+impl std::fmt::Display for RecoverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::next_step::{NextStep, sudo_line};
+        match self {
+            RecoverError::HiddenSession => write!(
+                f,
+                "in the hidden session: use `{}` (or `{}`)",
+                sudo_line(NextStep::Deactivate),
+                sudo_line(NextStep::Emergency)
+            ),
+            RecoverError::Entering => {
+                f.write_str("an activation is entering the hidden root right now")
+            }
+            RecoverError::Failed(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for RecoverError {}
+
+impl From<NailsError> for RecoverError {
+    fn from(error: NailsError) -> Self {
+        RecoverError::Failed(error)
+    }
+}
+
 /// What the session flow reads of the machine: the system paths and the live
 /// mount table in production; the tests give a scratch tree and a fixed table.
 struct Machine {
@@ -438,8 +477,13 @@ impl<F: Filesystem> NailsManager<F> {
         crate::session::leave(&machine.paths, &mut plan, to, host)
     }
 
-    /// Remove the leftovers of an interrupted entry on the decoy.
-    pub fn recover_session(&mut self, host: &dyn EntryHost) -> Result<SessionRecovery> {
+    /// Remove the leftovers of an interrupted entry on the decoy. Refused in
+    /// the hidden session and while an activation is entering, each with its
+    /// own [`RecoverError`].
+    pub fn recover_session(
+        &mut self,
+        host: &dyn EntryHost,
+    ) -> std::result::Result<SessionRecovery, RecoverError> {
         self.recover_session_on(&Machine::system(), host)
     }
 
@@ -447,7 +491,7 @@ impl<F: Filesystem> NailsManager<F> {
         &mut self,
         machine: &Machine,
         host: &dyn EntryHost,
-    ) -> Result<SessionRecovery> {
+    ) -> std::result::Result<SessionRecovery, RecoverError> {
         match self.session_view_on(machine) {
             SessionView::Decoy => {
                 if matches!(self.current_state(), Ok(SystemState::Active { .. })) {
@@ -474,16 +518,9 @@ impl<F: Filesystem> NailsManager<F> {
                     .unwrap_or_default();
                 Ok(SessionRecovery::RolledBack { remaining, backend })
             }
-            SessionView::Entering(_) => Err(NailsError::InvalidState(
-                "an activation is entering the hidden root right now".to_string(),
-            )),
+            SessionView::Entering(_) => Err(RecoverError::Entering),
             SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_) => {
-                use crate::next_step::{NextStep, sudo_line};
-                Err(NailsError::InvalidState(format!(
-                    "in the hidden session: use `{}` (or `{}`)",
-                    sudo_line(NextStep::Deactivate),
-                    sudo_line(NextStep::Emergency)
-                )))
+                Err(RecoverError::HiddenSession)
             }
         }
     }
