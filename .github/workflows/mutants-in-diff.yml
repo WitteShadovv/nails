@@ -70,9 +70,14 @@ jobs:
           git diff "$BASE" HEAD > "$RUNNER_TEMP/pr.diff"
           echo "Changed lines in the diff: $(wc -l < "$RUNNER_TEMP/pr.diff")"
 
+      # cargo-mutants copies the tree into a temporary directory and builds it
+      # there. /tmp on the ubuntu-26.04 runners is too small for a build of the
+      # workspace (the copy fails with "Disk quota exceeded"), so the copy goes
+      # to the runner's disk instead.
       - name: Mutate the changed lines
         env:
           SHARD: ${{ matrix.shard }}
+          TMPDIR: ${{ runner.temp }}
         run: just mutants-in-diff "$RUNNER_TEMP/pr.diff" "$SHARD" 4
 
       - name: Upload the mutants report
