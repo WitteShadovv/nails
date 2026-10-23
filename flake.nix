@@ -345,6 +345,7 @@
           ruff
           mypy
           cargo-deny
+          cargo-vet # `just vet`: supply-chain audit of the dependency graph
           cargo-nextest
           cargo-llvm-cov
           cargo-fuzz # `just fuzz-run`: the fuzz targets in fuzz/

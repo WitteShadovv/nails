@@ -227,6 +227,15 @@ deny *checks="advisories bans licenses sources":
 deny-full *checks="advisories bans licenses sources":
     cargo deny --locked check {{ checks }}
 
+# Audit the dependency graph against the recorded supply-chain reviews
+# (cargo-vet): every third-party crate must be covered by an imported public
+# audit or a recorded exemption under supply-chain/. --locked uses the
+# committed supply-chain/imports.lock, so the result does not drift with an
+# upstream audit update between runs. Advisory only: it runs in its own lane
+# (vet.yml) and never gates a merge.
+vet:
+    cargo vet --locked
+
 # --- Nix ---
 
 # Format-check and lint every tracked Nix file, the way the hooks and flake do.

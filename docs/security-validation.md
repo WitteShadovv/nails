@@ -105,6 +105,12 @@ ignore = [
 
 `ci/deny_ignores.py` fails when an ignore has no expiry, a malformed one, one that has passed, or one more than 180 days ahead. It runs in CI next to the advisory check, weekly in `scheduled.yml`, and as a pre-commit hook whenever `deny.toml` changes.
 
+### Audits
+
+cargo-vet records, under `supply-chain/`, why each third-party crate in the main workspace is trusted: an audit imported from a public audit set (the Bytecode Alliance, Mozilla, Google, Embark, ISRG and Zcash sets named in `supply-chain/config.toml`) or an exemption for a version that nobody has audited yet. `just vet` runs `cargo vet --locked`, which checks against the committed `supply-chain/imports.lock` and so never changes with an upstream audit update. The `vet.yml` lane runs it on pull requests that change the dependency graph; it reports and never blocks a merge.
+
+A new or updated dependency that no audit covers turns that lane red. Run `cargo vet` to see what is missing, then either review the crate and record it with `cargo vet certify`, or record an exemption with `cargo vet add-exemption`. The `setup/` and `gui/` workspaces are not vetted yet.
+
 ### Run locally
 
 The tools come from the flake dev shell:
@@ -112,6 +118,7 @@ The tools come from the flake dev shell:
 ```bash
 nix develop -c just deny        # the merge gate
 nix develop -c just deny-full   # the weekly full-graph scan
+nix develop -c just vet         # the cargo-vet audit check
 python3 ci/deny_ignores.py
 ```
 
