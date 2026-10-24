@@ -341,8 +341,9 @@ fn without_a_writer_no_drop_in_is_installed() {
 
 #[test]
 fn a_failed_install_removes_what_it_wrote_and_writes_no_binary_copy() {
-    // The binary copy's directory cannot be made: the drop-in, the unit and
-    // its link are already written, and must go again.
+    // The binary copy's directory cannot be made: the unit and its link are
+    // already written, and must go again; the drop-in, which comes after the
+    // copy, is never written.
     let dir = tempfile::tempdir().unwrap();
     let run_dir = dir.path();
     std::fs::write(run_dir.join(FIXUP_DIR), b"in the way").unwrap();
@@ -364,6 +365,35 @@ fn a_failed_install_removes_what_it_wrote_and_writes_no_binary_copy() {
     std::fs::write(run_dir.join("systemd"), b"not a directory").unwrap();
     assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
     assert!(!run_dir.join(FIXUP_DIR).exists(), "no binary copy");
+}
+
+#[test]
+fn a_drop_in_that_cannot_be_written_takes_the_copy_and_the_unit_with_it() {
+    // The drop-in goes last: when its directory cannot be made, the unit, its
+    // link and the binary copy are already written, and must go again.
+    let dir = tempfile::tempdir().unwrap();
+    let run_dir = dir.path();
+    std::fs::create_dir_all(run_dir.join(RUNTIME_UNIT_DIR)).unwrap();
+    std::fs::write(run_dir.join(boot_writer::DROPIN_DIR), b"in the way").unwrap();
+    assert!(install(run_dir, b"x", &writer_fix(), SWITCHED_AT, true).is_err());
+    let [bin, unit, link, _] = pieces(run_dir);
+    for p in [&bin, &unit, &link] {
+        assert!(!p.exists(), "{} should be gone", p.display());
+    }
+    assert!(!run_dir.join(FIXUP_DIR).exists(), "no binary copy");
+    assert_eq!(
+        std::fs::read(run_dir.join(boot_writer::DROPIN_DIR)).unwrap(),
+        b"in the way",
+        "what was there before stays"
+    );
+
+    // Without a writer to start there is no drop-in to fail on.
+    let fix = Fix {
+        writer: None,
+        classic_wtmp: true,
+    };
+    install(run_dir, b"x", &fix, SWITCHED_AT, true).unwrap();
+    assert!(bin.is_file() && unit.is_file());
 }
 
 #[test]

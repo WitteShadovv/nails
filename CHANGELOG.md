@@ -283,8 +283,10 @@ of this changelog for that version becomes the release notes word for word, and
 - The pieces the way back leaves in `/run` for a Debian or Ubuntu decoy's first start (a copy of the
   binary, a one-shot unit and the wtmpdb writer's drop-in) are removed again when writing them fails
   part-way, and `nails verify` reports them when their step never ran. They stayed in RAM until
-  power-off, with `/run` left executable. The threat model now also lists what they show until the
-  next power-off: the one-shot's start in the decoy's journal and both units in `systemctl status`.
+  power-off, with `/run` left executable. The drop-in is written last, after the copy it starts, so
+  a way back cut short leaves the writer as the decoy has it, never pointing at a missing file. The
+  threat model now also lists what they show until the next power-off: the one-shot's start in the
+  decoy's journal and both units in `systemctl status`.
 
 ### Security
 
