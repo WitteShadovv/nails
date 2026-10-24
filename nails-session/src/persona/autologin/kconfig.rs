@@ -11,12 +11,14 @@
 //! options in brackets: `[$i]` makes it immutable, `[$d]` deletes it, `[$e]`
 //! expands environment variables in its value when it is read; other
 //! brackets name the language a translation is for. Values, keys and group
-//! names take the escapes `\s`, `\t`, `\n`, `\r`, `\\` and `\xNN`.
+//! names take the escapes `\s`, `\t`, `\n`, `\r`, `\\` and `\xNN`. A key
+//! that decodes to nothing (a lone `\`) is no key: it sets whether its group
+//! is immutable, as the line's options say.
 //!
 //! A later file overrides an earlier one, but never an immutable key, nor
 //! add a key to a group an earlier file marked immutable (`[group][$i]`). A
-//! file that marks itself immutable (`[$i]` before any group) is the last one
-//! read. A file is read no further than its hundredth broken line.
+//! file with a header that is only `[$i]` marks itself immutable and is the
+//! last one read. A file is read no further than its hundredth broken line.
 
 use std::collections::BTreeMap;
 
@@ -72,14 +74,20 @@ struct Entry {
 #[derive(Debug, Default)]
 struct Map {
     entries: BTreeMap<(String, Vec<u8>), Entry>,
-    /// The groups that have entries, and whether each is immutable.
+    /// The markers of the groups that have one, and whether each group is
+    /// immutable.
     groups: BTreeMap<String, bool>,
 }
 
 impl Map {
     /// `KEntryMap::setEntry()`: nothing changes an immutable key, and an
-    /// immutable group takes no new key.
+    /// immutable group takes no new key. A key that is empty sets the
+    /// group's marker instead, and so whether the group is immutable.
     fn set(&mut self, group: &str, key: &[u8], value: Option<Vec<u8>>, immutable: bool) {
+        if key.is_empty() {
+            self.groups.insert(group.to_string(), immutable);
+            return;
+        }
         let id = (group.to_string(), key.to_vec());
         match self.entries.get(&id) {
             Some(entry) if entry.immutable => return,
