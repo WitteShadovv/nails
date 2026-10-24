@@ -219,7 +219,7 @@ fn sddm_turns_autologin_off_with_an_empty_user_in_a_later_file() {
 }
 
 #[test]
-fn sddm_sorts_the_files_of_a_directory_by_name() {
+fn sddm_sorts_names_that_differ_in_a_digit_as_every_collation_does() {
     let fs = MockFilesystem::new();
     drop_in(
         &fs,
@@ -234,6 +234,38 @@ fn sddm_sorts_the_files_of_a_directory_by_name() {
         "[Autologin]\nUser=first\n",
     );
     assert_eq!(accounts_of(&fs), names(&["later"]));
+    drop_in(&fs, SDDM_LOCAL, "30-off.conf", "[Autologin]\nUser=\n");
+    assert!(accounts_of(&fs).is_empty());
+}
+
+#[test]
+fn sddm_counts_each_order_the_collation_of_a_locale_may_give() {
+    // en_US with ICU reads kde_settings.conf first (`_` before `-`), the C
+    // locale reads kde-autologin.conf first: alice is logged in one way.
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        SDDM_LOCAL,
+        "kde-autologin.conf",
+        "[Autologin]\nUser=alice\n",
+    );
+    drop_in(&fs, SDDM_LOCAL, "kde_settings.conf", "[Autologin]\nUser=\n");
+    assert_eq!(accounts_of(&fs), names(&["alice"]));
+
+    // A collation sorts autologin.conf before KDE.conf, the C locale after.
+    let fs = MockFilesystem::new();
+    drop_in(&fs, SDDM_LOCAL, "KDE.conf", "[Autologin]\nUser=alice\n");
+    drop_in(&fs, SDDM_LOCAL, "autologin.conf", "[Autologin]\nUser=\n");
+    assert_eq!(accounts_of(&fs), names(&["alice"]));
+    drop_in(&fs, SDDM_LOCAL, "kiosk.conf", "[Autologin]\nUser=kiosk\n");
+    assert_eq!(accounts_of(&fs), names(&["alice", "kiosk"]));
+
+    // Whatever the drop-ins' order, the main file comes last.
+    assert_eq!(
+        one(&fs, "/etc/sddm.conf", "[Autologin]\nUser=main\n"),
+        names(&["main"])
+    );
+    assert!(one(&fs, "/etc/sddm.conf", "[Autologin]\nUser=\n").is_empty());
 }
 
 #[test]
@@ -252,7 +284,8 @@ fn sddm_reads_every_file_but_the_hidden_ones() {
         "[Autologin]\nUser=hidden\n",
     );
     assert_eq!(accounts_of(&fs), names(&["carol"]));
-    // A backup is read like any other file.
+    // A backup is read like any other file, after the file its name starts
+    // with.
     drop_in(
         &fs,
         SDDM_LOCAL,
@@ -369,6 +402,43 @@ fn plasma_login_reads_files_as_qt_lists_them() {
         "[Autologin]\nUser=hidden\n",
     );
     assert_eq!(accounts_of(&fs), names(&["later"]));
+}
+
+#[test]
+fn plasma_login_counts_each_order_the_collation_of_a_locale_may_give() {
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "kde-autologin.conf",
+        "[Autologin]\nUser=alice\n",
+    );
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "kde_settings.conf",
+        "[Autologin]\nUser=\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["alice"]));
+
+    // Through KConfig the order decides more than the last value: read
+    // first, as in the C locale, a group marked immutable keeps the other
+    // file's account out; read after it, as with ICU, it does not. Only
+    // KConfig decodes the escape.
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "Kiosk.conf",
+        "[Autologin][$i]\nSession=plasma\n",
+    );
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "autologin.conf",
+        "[Autologin]\nUser=b\\x6fb\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["b\\x6fb", "bob"]));
 }
 
 #[test]
@@ -715,6 +785,91 @@ fn kconfig_takes_whitespace_as_qt_trims_it() {
     );
 }
 
+#[test]
+fn kconfig_every_user_names_each_value_any_reading_could_end_with() {
+    let sources = [
+        kconfig::Source {
+            text: "[Autologin][$i]\nUser=kiosk\n[Other]\nUser=other\n",
+            main: false,
+        },
+        kconfig::Source {
+            text: "[Autologin]\nUser[de]=hans\nUser = gus\nUser[$d]\n[broken\nUser=\n",
+            main: true,
+        },
+    ];
+    let mut users = kconfig::every_user(&sources, &["Autologin"]);
+    users.sort();
+    assert_eq!(users, names(&["", "gus", "hans", "kiosk"]));
+}
+
+// --- The order of a Qt display manager's drop-ins ---
+
+#[test]
+fn collation_orders_keep_only_what_every_collation_agrees_on() {
+    let orders = |names: &[&str]| {
+        let names: Vec<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
+        collation::orders(&names, 100)
+    };
+    // A first difference in a digit, or a printable ASCII character past a
+    // name the other starts, is the same everywhere.
+    assert_eq!(orders(&["20-b.conf", "10-a.conf"]), Some(vec![vec![1, 0]]));
+    assert_eq!(orders(&["a.conf.bak", "a.conf"]), Some(vec![vec![1, 0]]));
+    assert_eq!(orders(&["1.conf", "1"]), Some(vec![vec![1, 0]]));
+    // Punctuation, case and letters are not, nor is what follows a name
+    // beyond ASCII.
+    for pair in [
+        ["kde_settings.conf", "kde-autologin.conf"],
+        ["KDE.conf", "autologin.conf"],
+        ["a.conf", "b.conf"],
+        ["1.conf", "10.conf"],
+        ["a", "a\u{ad}"],
+    ] {
+        assert_eq!(
+            orders(&pair),
+            Some(vec![vec![0, 1], vec![1, 0]]),
+            "{pair:?}"
+        );
+    }
+    assert_eq!(
+        orders(&["c", "b", "10", "2"]).map(|orders| orders.len()),
+        Some(12)
+    );
+    assert_eq!(orders(&[]), Some(vec![vec![]]));
+    assert_eq!(orders(&["a", "b", "c", "d", "e"]), None, "120 orders");
+    // Too many files have no orders worked out, even with one order.
+    let numbered: Vec<String> = (10..80).map(|i| format!("{i}.conf")).collect();
+    let numbered: Vec<&str> = numbered.iter().map(String::as_str).collect();
+    assert_eq!(orders(&numbered[..64]).map(|orders| orders.len()), Some(1));
+    assert_eq!(orders(&numbered), None);
+}
+
+#[test]
+fn collation_reads_the_directories_one_after_the_other() {
+    let names = |names: &[&'static str]| -> Vec<&'static [u8]> {
+        names.iter().map(|name| name.as_bytes()).collect()
+    };
+    let dirs = [names(&["b", "a"]), names(&["10", "2"]), names(&["y", "x"])];
+    let readings = collation::reading_orders(&dirs, 100).unwrap();
+    assert_eq!(readings.len(), 4);
+    assert!(readings.contains(&vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]));
+    assert!(readings.contains(&vec![(0, 1), (0, 0), (1, 0), (1, 1), (2, 1), (2, 0)]));
+    assert_eq!(collation::reading_orders(&dirs, 3), None);
+}
+
+#[test]
+fn too_many_orders_count_every_account_the_files_name() {
+    let fs = MockFilesystem::new();
+    for (i, name) in ["a", "b", "c", "d", "e", "f", "g"].iter().enumerate() {
+        let text = format!("[Autologin]\nUser=user{i}\n");
+        drop_in(&fs, SDDM_LOCAL, &format!("{name}.conf"), &text);
+        drop_in(&fs, PLASMA_LOCAL, &format!("{name}.conf"), &text);
+    }
+    fs.mock_set_file_content("/etc/sddm.conf", "[Autologin]\nUser=\n");
+    fs.mock_set_file_content(PLASMA_MAIN, "[Autologin]\nUser=\n");
+    let expected: Vec<String> = (0..7).map(|i| format!("user{i}")).collect();
+    assert_eq!(accounts_of(&fs), expected);
+}
+
 // --- LightDM ---
 
 const LIGHTDM_SHARE: &str = "/usr/share/lightdm/lightdm.conf.d";
@@ -751,6 +906,10 @@ fn lightdm_reads_conf_files_sorted_by_name_hidden_ones_too() {
     assert_eq!(accounts_of(&fs), names(&["b"]));
     drop_in(&fs, LIGHTDM_ETC, "60-c.conf.bak", &seat("backup"));
     assert_eq!(accounts_of(&fs), names(&["b"]));
+    // Byte order, whatever the locale: `K` before `a`.
+    drop_in(&fs, LIGHTDM_ETC, "a.conf", &seat(""));
+    drop_in(&fs, LIGHTDM_ETC, "KDE.conf", &seat("kde"));
+    assert!(accounts_of(&fs).is_empty());
 
     let fs = MockFilesystem::new();
     drop_in(&fs, LIGHTDM_ETC, ".hidden.conf", &seat("hidden"));
