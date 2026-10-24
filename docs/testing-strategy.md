@@ -149,8 +149,10 @@ owes one.
 
 - **Locally or in any sandbox:** `just kernel-tests` (fails rather than skips
   without user namespaces, and without `ip`, `nft` with nf_tables or the `dummy`
-  link type for the network way-back tests). Plain `just test` runs the same
-  tests and skips them where these are missing.
+  link type for the network way-back tests; `ip` and `nft` count only in the
+  system locations, as the [development guide](development-guide.md#test-tiers)
+  says). Plain `just test` runs the same tests and skips them where these are
+  missing.
 - **CI:** the `rust` job installs `nftables`, loads the `dummy` and `nf_tables`
   modules, clears `kernel.apparmor_restrict_unprivileged_userns` on the Ubuntu
   runner and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts` job runs the

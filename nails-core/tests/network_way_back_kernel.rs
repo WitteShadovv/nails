@@ -22,7 +22,9 @@
 //!
 //! It needs `ip` and the `dummy` link type (its module loaded, or installed
 //! for the kernel to load), and the firewall-table test needs `nft` and
-//! nf_tables. CI provides them, so each one missing is a skip that
+//! nf_tables. It takes `ip` and `nft` only from the system locations the way
+//! back searches, never from `PATH`, as `apply_links` finds `ip` there itself.
+//! CI provides them, so each one missing is a skip that
 //! `NAILS_REQUIRE_USERNS=1` turns into a failure, as it does a missing user
 //! namespace, a network namespace the run cannot create and a sysfs it cannot
 //! mount.
@@ -60,11 +62,11 @@ fn link_present(ip: &Path, name: &str) -> bool {
     ok(ip, &["link", "show", name])
 }
 
-/// `ip`, or a skip.
+/// `ip` where the way back finds it, or a skip.
 fn ip_or_skip() -> PathBuf {
     match tools::find(None, "ip") {
         Some(ip) => ip,
-        None => skip("iproute2 (ip) is not installed"),
+        None => skip("iproute2 (ip) is in none of the system locations the way back searches"),
     }
 }
 
@@ -369,7 +371,7 @@ fn the_way_back_deletes_the_firewall_tables_the_session_added() {
     .in_user_mount_ns()
     .run(|| {
         let Some(nft) = tools::find(None, "nft") else {
-            skip("nftables (nft) is not installed");
+            skip("nftables (nft) is in none of the system locations the way back searches");
         };
         fresh_network_namespace();
         // The decoy: a firewall table of its own, and its WireGuard tunnel's.
