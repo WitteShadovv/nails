@@ -70,12 +70,6 @@ const FRESERVED: u8 = 0xE0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Malformed(&'static str);
 
-impl std::fmt::Display for Malformed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "malformed gzip stream: {}", self.0)
-    }
-}
-
 /// A decoding step's result.
 type Decoded<T> = Result<T, Malformed>;
 
@@ -90,10 +84,10 @@ fn decompress_within(data: &[u8], limit: usize) -> Decoded<Vec<u8>> {
         bytes: Vec::new(),
         limit,
     };
-    let mut pos = 0;
+    let mut rest = data;
     loop {
-        pos = member(data, pos, &mut out)?;
-        if pos == data.len() {
+        rest = member(rest, &mut out)?;
+        if rest.is_empty() {
             return Ok(out.bytes);
         }
     }
@@ -115,12 +109,10 @@ impl Output {
     }
 }
 
-/// Decode the member that starts at `pos` of `data` onto `out`, and return
-/// where it ends.
-fn member(data: &[u8], pos: usize, out: &mut Output) -> Decoded<usize> {
-    let header = data
-        .get(pos..pos.saturating_add(10))
-        .ok_or(Malformed("truncated header"))?;
+/// Decode the member at the start of `data` onto `out`, and return the bytes
+/// that follow it.
+fn member<'a>(data: &'a [u8], out: &mut Output) -> Decoded<&'a [u8]> {
+    let header = data.get(..10).ok_or(Malformed("truncated header"))?;
     if !header.starts_with(&[0x1F, 0x8B]) {
         return Err(Malformed("not a gzip stream"));
     }
@@ -131,7 +123,7 @@ fn member(data: &[u8], pos: usize, out: &mut Output) -> Decoded<usize> {
     if flags & FRESERVED != 0 {
         return Err(Malformed("a reserved header flag is set"));
     }
-    let mut pos = pos + 10;
+    let mut pos = header.len();
     if flags & FEXTRA != 0 {
         let len = data
             .get(pos..pos.saturating_add(2))
@@ -152,11 +144,11 @@ fn member(data: &[u8], pos: usize, out: &mut Output) -> Decoded<usize> {
     }
 
     let start = out.bytes.len();
-    let mut input = Bits::new(data, pos);
+    let mut input = Bits::new(data.get(pos..).ok_or(Malformed("truncated header"))?);
     inflate(&mut input, out)?;
-    let end = input.pos;
-    let trailer = data
-        .get(end..end.saturating_add(8))
+    let (trailer, rest) = input
+        .rest
+        .split_first_chunk::<8>()
         .ok_or(Malformed("truncated trailer"))?;
     let crc = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
     let size = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
@@ -165,14 +157,14 @@ fn member(data: &[u8], pos: usize, out: &mut Output) -> Decoded<usize> {
     if crc != crc32(decoded) || size != decoded.len() as u32 {
         return Err(Malformed("the checksum or length does not match"));
     }
-    Ok(end + 8)
+    Ok(rest)
 }
 
 /// The input, read bit by bit, each byte from its least significant bit.
 struct Bits<'a> {
-    data: &'a [u8],
-    /// The next byte to load.
-    pos: usize,
+    /// The bytes not yet loaded. A load takes the first one off, so the
+    /// reader only moves forward and every read ends with the input.
+    rest: &'a [u8],
     /// Bits loaded and not yet used, the next one lowest.
     buffer: u32,
     /// How many bits `buffer` holds: fewer than 8 between reads.
@@ -180,10 +172,9 @@ struct Bits<'a> {
 }
 
 impl<'a> Bits<'a> {
-    fn new(data: &'a [u8], pos: usize) -> Self {
+    fn new(rest: &'a [u8]) -> Self {
         Self {
-            data,
-            pos,
+            rest,
             buffer: 0,
             count: 0,
         }
@@ -193,9 +184,9 @@ impl<'a> Bits<'a> {
     fn take(&mut self, need: u32) -> Decoded<u32> {
         let mut value = self.buffer;
         while self.count < need {
-            let byte = *self.data.get(self.pos).ok_or(Malformed("truncated data"))?;
+            let (&byte, rest) = self.rest.split_first().ok_or(Malformed("truncated data"))?;
+            self.rest = rest;
             value |= u32::from(byte) << self.count;
-            self.pos += 1;
             self.count += 8;
         }
         self.buffer = value >> need;
@@ -208,6 +199,16 @@ impl<'a> Bits<'a> {
     fn align(&mut self) {
         self.buffer = 0;
         self.count = 0;
+    }
+
+    /// The next `len` whole bytes, after the ones loaded so far.
+    fn bytes(&mut self, len: usize) -> Decoded<&'a [u8]> {
+        let (bytes, rest) = self
+            .rest
+            .split_at_checked(len)
+            .ok_or(Malformed("truncated data"))?;
+        self.rest = rest;
+        Ok(bytes)
     }
 }
 
@@ -309,24 +310,16 @@ fn inflate(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
 /// Copy a stored block (RFC 1951, 3.2.4).
 fn stored(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
     input.align();
-    let header = input
-        .data
-        .get(input.pos..input.pos.saturating_add(4))
-        .ok_or(Malformed("truncated data"))?;
+    let header = input.bytes(4)?;
     let len = u16::from_le_bytes([header[0], header[1]]);
     if len != !u16::from_le_bytes([header[2], header[3]]) {
         return Err(Malformed(
             "a stored block's length does not match its complement",
         ));
     }
-    let start = input.pos + 4;
-    let bytes = input
-        .data
-        .get(start..start + usize::from(len))
-        .ok_or(Malformed("truncated data"))?;
+    let bytes = input.bytes(usize::from(len))?;
     out.room(bytes.len())?;
     out.bytes.extend_from_slice(bytes);
-    input.pos = start + usize::from(len);
     Ok(())
 }
 
