@@ -15,6 +15,12 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Exposes the test helpers (`test_support`) to the test code of the crates
+# above; nails-base's `test-support` turns it on. Off by default, so none of it
+# reaches a shipped binary, and it adds no dependency.
+test-support = []
+
 # The dependency boundary of the emergency hot path. This crate must never
 # depend on another NAILS crate (their config, state, manager, process
 # runner) or on tracing: everything the panic path runs is in this crate and

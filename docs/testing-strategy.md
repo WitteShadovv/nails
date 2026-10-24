@@ -137,7 +137,13 @@ The doubles in use, and what backs them: `MockFilesystem`
 (`nails-platform/src/platform/fake.rs`, backed by the platform contract),
 `MockProcessRunner` (`nails-base/src/process/run/mock.rs`, backed by tests that
 run a real `sh`) and `FakeJournalReader` (`nails-forensics/src/verify/journal.rs`,
-not yet backed by a capture).
+not yet backed by a capture). A test that writes a program for itself or the
+code under test to run (a stub `ip`, `systemctl` or `dmsetup`, a fake init, a
+copied binary) writes it with `nails_base::test_support::write_executable`
+(`crate::test_support::write_executable` inside `nails-teardown`), which writes
+the file from a child process: a write descriptor held by the test process
+would pass to whatever another test thread forks until that process calls
+`exec`, and running the file in that window fails with `ETXTBSY`.
 
 Reviewers apply this policy to new code. A pull request that adds a parser, a
 `Filesystem` method or a test hook brings its real-tier test, or says which tier

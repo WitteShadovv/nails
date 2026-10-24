@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
+use crate::test_support::write_executable;
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
 
@@ -482,9 +483,8 @@ fn set_back(macs: &[(&str, &str)]) -> RestorePlan {
 /// up, as a driver without live address change does (`EBUSY`); a link in
 /// `refusing` refuses it always. A link that is not there fails every call.
 fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let tool = dir.join("ip");
-    fs::write(
+    write_executable(
         &tool,
         format!(
             "#!/bin/sh\n\
@@ -506,9 +506,8 @@ fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) ->
             refusing = refusing.join(" "),
             busy = busy_while_up.join(" "),
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     tool
 }
 

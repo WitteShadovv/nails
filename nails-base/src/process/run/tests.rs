@@ -4,41 +4,9 @@
 use super::*;
 use crate::RuntimeEnv;
 use crate::runtime_env::ScopedRuntimeEnv;
+use crate::test_support::write_executable;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Component;
-
-/// Writes `body` to `path` through a child process, so this process never holds
-/// a write descriptor for the file. A process another test thread forks would
-/// inherit such a descriptor until it execs, and running the file in that
-/// window fails with ETXTBSY.
-fn write_file(path: &Path, body: &str, mode: u32) {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let mut writer = Command::new("/bin/sh")
-        .arg("-c")
-        .arg("cat > \"$1\"")
-        .arg("sh")
-        .arg(path)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writer
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(body.as_bytes())
-        .unwrap();
-    assert!(
-        writer.wait().unwrap().success(),
-        "writing {}",
-        path.display()
-    );
-    let mut permissions = fs::metadata(path).unwrap().permissions();
-    permissions.set_mode(mode);
-    fs::set_permissions(path, permissions).unwrap();
-}
 
 /// Makes the runner see a caller `PATH` with `dir` in front, on this thread,
 /// until the guard is dropped. The test process's own entries follow so that a
@@ -95,7 +63,7 @@ fn tool_missing_from_the_system_tool_dirs_is_not_found() {
 #[test]
 fn tool_resolution_ignores_the_caller_path() {
     let temp_dir = tempfile::tempdir().unwrap();
-    write_file(
+    write_executable(
         &temp_dir.path().join("nails-stub-tool"),
         "#!/bin/sh\n",
         0o755,
@@ -117,10 +85,10 @@ fn find_executable_skips_directories_and_non_executable_files() {
     for dir in [&not_executable, &directory, &first, &second] {
         fs::create_dir_all(dir).unwrap();
     }
-    write_file(&not_executable.join("tool"), "", 0o644);
+    write_executable(&not_executable.join("tool"), "", 0o644);
     fs::create_dir_all(directory.join("tool")).unwrap();
-    write_file(&first.join("tool"), "", 0o755);
-    write_file(&second.join("tool"), "", 0o755);
+    write_executable(&first.join("tool"), "", 0o755);
+    write_executable(&second.join("tool"), "", 0o755);
 
     let found = find_executable(
         "tool",
@@ -140,7 +108,7 @@ fn find_executable_skips_directories_and_non_executable_files() {
 fn caller_path_resolves_through_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let stub = temp_dir.path().join("nails-stub-tool");
-    write_file(&stub, "#!/bin/sh\n", 0o755);
+    write_executable(&stub, "#!/bin/sh\n", 0o755);
     let _env = prepend_path(temp_dir.path());
 
     assert_eq!(
@@ -152,7 +120,7 @@ fn caller_path_resolves_through_path() {
 #[test]
 fn caller_path_skips_relative_path_entries() {
     let temp_dir = tempfile::tempdir().unwrap();
-    write_file(
+    write_executable(
         &temp_dir.path().join("nails-stub-tool"),
         "#!/bin/sh\n",
         0o755,
@@ -207,7 +175,7 @@ fn an_injected_search_path_has_no_system_fallback() {
 fn caller_path_resolves_through_an_injected_search_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let stub = temp_dir.path().join("nails-stub-tool");
-    write_file(&stub, "#!/bin/sh\n", 0o755);
+    write_executable(&stub, "#!/bin/sh\n", 0o755);
 
     let resolved = resolve(
         &Program::CallerPath("nails-stub-tool"),
@@ -220,7 +188,7 @@ fn caller_path_resolves_through_an_injected_search_path() {
 #[test]
 fn injected_search_path_replaces_the_caller_path() {
     let on_path = tempfile::tempdir().unwrap();
-    write_file(
+    write_executable(
         &on_path.path().join("nails-stub-tool"),
         "#!/bin/sh\n",
         0o755,
@@ -243,7 +211,7 @@ fn injected_search_path_replaces_the_caller_path() {
 #[test]
 fn tool_resolution_ignores_an_injected_search_path() {
     let temp_dir = tempfile::tempdir().unwrap();
-    write_file(
+    write_executable(
         &temp_dir.path().join("nails-stub-tool"),
         "#!/bin/sh\n",
         0o755,
@@ -263,7 +231,7 @@ fn tool_resolution_ignores_an_injected_search_path() {
 #[test]
 fn real_runner_starts_a_caller_path_program_from_the_search_path_with_the_fixed_path() {
     let temp_dir = tempfile::tempdir().unwrap();
-    write_file(
+    write_executable(
         &temp_dir.path().join("nails-stub-tool"),
         "#!/bin/sh\nprintf '%s' \"$PATH\"\n",
         0o755,
@@ -452,7 +420,7 @@ fn real_runner_reports_spawn_failures_with_the_executable_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let missing = temp_dir.path().join("missing");
     let not_executable = temp_dir.path().join("script");
-    write_file(&not_executable, "#!/bin/sh\n", 0o644);
+    write_executable(&not_executable, "#!/bin/sh\n", 0o644);
 
     let err = io_error(
         RealProcessRunner

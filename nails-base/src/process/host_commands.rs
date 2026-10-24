@@ -188,15 +188,8 @@ impl HostCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::write_executable;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-
-    fn write_executable(path: &Path) {
-        fs::write(path, "#!/bin/sh\n").unwrap();
-        let mut permissions = fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
-    }
 
     #[test]
     fn resolve_picks_the_first_executable_in_search_order() {
@@ -206,7 +199,7 @@ mod tests {
         fs::create_dir_all(&first).unwrap();
         fs::create_dir_all(&second).unwrap();
         // Only the second dir holds the tool, so resolution must fall through to it.
-        write_executable(&second.join("systemctl"));
+        write_executable(&second.join("systemctl"), "#!/bin/sh\n", 0o755);
 
         let resolver = HostCommands::new([&first, &second]).with_trust_enforcement(false);
         assert_eq!(
@@ -247,7 +240,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("bin");
         fs::create_dir_all(&dir).unwrap();
-        write_executable(&dir.join("systemctl"));
+        write_executable(&dir.join("systemctl"), "#!/bin/sh\n", 0o755);
 
         let enforced = HostCommands::new([&dir]).with_trust_enforcement(true);
         assert!(

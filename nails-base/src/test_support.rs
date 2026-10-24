@@ -31,10 +31,17 @@
 //! skip into a failure; CI sets it in the job that must exercise these tests. A
 //! test that also needs something no CI runner has (a delegated cgroup, a NixOS
 //! store) ends with [`skip_host`] instead, which that variable leaves a skip.
+//!
+//! [`write_executable`] writes a stub tool, a script or a copied program that a
+//! test then runs, without this process ever holding the file open for writing
+//! (see there). It lives in `nails_teardown::test_support`, so that the crate
+//! below this one can use it too, and is re-exported here.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+pub use nails_teardown::test_support::write_executable;
 
 /// Environment variable naming the test the re-executed child must run.
 pub const CHILD_ENV: &str = "NAILS_TEST_CHILD";

@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::filesystem::MockFilesystem;
+use crate::test_support::write_executable;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 const HIDDEN_ROOT: &str = "/mnt/data";
 
@@ -21,19 +21,12 @@ impl HostToolsCheck {
     }
 }
 
-fn write_executable(path: &Path) {
-    fs::write(path, "#!/bin/sh\n").unwrap();
-    let mut permissions = fs::metadata(path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).unwrap();
-}
-
 /// A bin directory below `temp` holding an executable for each of `tools`.
 fn bin_with(temp: &tempfile::TempDir, tools: &[&str]) -> PathBuf {
     let dir = temp.path().join("bin");
     fs::create_dir_all(&dir).unwrap();
     for tool in tools {
-        write_executable(&dir.join(tool));
+        write_executable(&dir.join(tool), "#!/bin/sh\n", 0o755);
     }
     dir
 }
@@ -129,7 +122,7 @@ fn a_device_mapper_backend_requires_dmsetup() {
         assert!(!message.contains("ip ("), "{message}");
     }
 
-    write_executable(&dir.join("dmsetup"));
+    write_executable(&dir.join("dmsetup"), "#!/bin/sh\n", 0o755);
     let check = HostToolsCheck::with_probe(vec![dir], PlatformKind::Fhs, Some(Family::Debian));
     let result = check.run(&hidden_root_on_device_mapper()).unwrap();
     assert!(result.is_pass(), "{result:?}");
