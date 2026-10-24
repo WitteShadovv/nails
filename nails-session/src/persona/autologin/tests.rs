@@ -411,14 +411,17 @@ fn plasma_login_takes_a_key_that_decodes_to_nothing_for_the_group_marker() {
 // --- KConfig, as Plasma Login Manager reads it since 6.7 ---
 
 /// What KConfig reads for `[Autologin]` and the first seat's group from
-/// drop-ins `extras` and then the main file `main`.
+/// drop-ins `extras` and then the main file `main`, sorted, each once.
 fn kconfig(extras: &[&str], main: Option<&str>) -> Vec<String> {
     let mut sources: Vec<kconfig::Source<'_>> = extras
         .iter()
         .map(|text| kconfig::Source { text, main: false })
         .collect();
     sources.extend(main.map(|text| kconfig::Source { text, main: true }));
-    kconfig::users(&sources, &["Autologin", "Autologin\u{1d}seat0"])
+    let mut users = kconfig::users(&sources, &["Autologin", "Autologin\u{1d}seat0"]);
+    users.sort();
+    users.dedup();
+    users
 }
 
 #[test]
@@ -614,10 +617,38 @@ fn kconfig_counts_every_translated_user() {
             &[],
             Some("[Autologin]\nUser[de]=hans\nUser[]=any\nUser=b\n")
         ),
-        names(&["hans", "any", "b"])
+        names(&["any", "b", "hans"])
     );
     // Two languages, or a bracket left open, break the line.
     assert!(kconfig(&[], Some("[Autologin]\nUser[de][fr]=a\nUser[de=b\n")).is_empty());
+    // en_US reads a `C` translation as its own.
+    assert_eq!(
+        kconfig(&[], Some("[Autologin]\nUser[Cx]=vic\n")),
+        names(&["vic"])
+    );
+}
+
+#[test]
+fn kconfig_reads_a_translation_in_its_language_only() {
+    // In German, `\[de][$i]` makes the group immutable and alice stays;
+    // in any other language the main file turns autologin off.
+    assert_eq!(
+        kconfig(
+            &["[Autologin]\nUser=alice\n\\[de][$i]=x\n"],
+            Some("[Autologin]\nUser=\n")
+        ),
+        names(&["", "alice"])
+    );
+    // A bad escape in a translation counts as a broken line only in its
+    // language, where it ends the file at its hundredth.
+    let broken = "no equals sign\n".repeat(99);
+    assert_eq!(
+        kconfig(
+            &["[Autologin]\nUser=alice\n"],
+            Some(&format!("[Autologin]\n{broken}Session[de_DE]=\\q\nUser=\n"))
+        ),
+        names(&["", "alice"])
+    );
 }
 
 #[test]
@@ -629,7 +660,7 @@ fn kconfig_reads_a_file_up_to_its_hundredth_broken_line() {
         kconfig(&[], Some(&format!("[Autologin]\n{broken}User=a\n"))),
         names(&["a"])
     );
-    // A key that is all brackets, or none at all, is no error.
+    // A line with no key before its `=` is no error.
     let empty = "=x\n".repeat(150);
     assert_eq!(
         kconfig(&[], Some(&format!("[Autologin]\n{empty}User=a\n"))),

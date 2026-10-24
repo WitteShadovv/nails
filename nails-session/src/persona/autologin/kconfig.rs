@@ -19,8 +19,13 @@
 //! add a key to a group an earlier file marked immutable (`[group][$i]`). A
 //! file with a header that is only `[$i]` marks itself immutable and is the
 //! last one read. A file is read no further than its hundredth broken line.
+//!
+//! A translation is read only in its language, and the language the display
+//! manager runs in is not in the files. So the files are read once in each
+//! language that matters: every one a translation names, `en_US` (which reads
+//! a `C` translation as its own), and one none names.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What KConfig names the group nested in another: the names joined with
 /// this byte.
@@ -39,28 +44,61 @@ pub(super) struct Source<'a> {
 }
 
 /// The values of `User` in the groups `groups` after reading `sources` in
-/// order. A translated `User` in one of them counts as well, whatever comes
-/// after it: which translation KConfig takes depends on the language the
-/// display manager runs in, which the files do not tell. A value KConfig
-/// would expand (`[$e]`) counts as written.
+/// order, in each language that reads them differently. A translated `User`
+/// in one of them counts as well, whatever comes after it: which value
+/// `readEntry()` then returns depends on more than the files tell. A value
+/// KConfig would expand (`[$e]`) counts as written.
 pub(super) fn users(sources: &[Source<'_>], groups: &[&str]) -> Vec<String> {
-    let mut reader = Reader {
-        map: Map::default(),
-        wanted: groups,
-        translated: Vec::new(),
-    };
-    for source in sources {
-        if reader.read(source.text, source.main) {
-            break;
+    let mut users = Vec::new();
+    for locale in locales(sources) {
+        let mut reader = Reader {
+            map: Map::default(),
+            wanted: groups,
+            locale: &locale,
+            translated: Vec::new(),
+        };
+        for source in sources {
+            if reader.read(source.text, source.main) {
+                break;
+            }
         }
+        users.append(&mut reader.translated);
+        users.extend(
+            groups
+                .iter()
+                .filter_map(|group| reader.map.value(group, b"User")),
+        );
     }
-    let mut users = std::mem::take(&mut reader.translated);
-    users.extend(
-        groups
-            .iter()
-            .filter_map(|group| reader.map.value(group, b"User")),
-    );
     users
+}
+
+/// The languages to read `sources` in: the language each translation names,
+/// `en_US` and one that names none. Without a translation every language
+/// reads them alike, and one is enough.
+fn locales(sources: &[Source<'_>]) -> Vec<Vec<u8>> {
+    let mut locales: BTreeSet<Vec<u8>> = sources
+        .iter()
+        .flat_map(|source| lines(source.text))
+        .filter(|line| !matches!(line.first(), None | Some(b'#' | b'[')))
+        .filter_map(|line| match parse_key(line) {
+            Key::Set {
+                locale: Some(tag), ..
+            } if !tag.is_empty() => Some(tag.to_vec()),
+            _ => None,
+        })
+        .collect();
+    if !locales.is_empty() {
+        locales.insert(b"en_US".to_vec());
+    }
+    // No tag is empty: the empty locale stands for a language none names.
+    locales.insert(Vec::new());
+    locales.into_iter().collect()
+}
+
+/// The lines of `text` as `parseConfig()` reads them: split at `\n` and
+/// trimmed.
+fn lines(text: &str) -> impl Iterator<Item = &[u8]> {
+    text.as_bytes().split(|&byte| byte == b'\n').map(trim)
 }
 
 #[derive(Debug, Default)]
@@ -133,6 +171,8 @@ struct Reader<'g> {
     map: Map,
     /// The groups whose `User` is wanted.
     wanted: &'g [&'g str],
+    /// The language KConfig runs in, `de_DE` say.
+    locale: &'g [u8],
     /// The values of translated `User` keys in those groups.
     translated: Vec<String>,
 }
@@ -149,11 +189,10 @@ impl Reader<'_> {
             immutable_groups: Vec::new(),
             errors: 0,
         };
-        for line in text.as_bytes().split(|&byte| byte == b'\n') {
+        for line in lines(text) {
             if state.errors >= MAX_ERRORS {
                 break;
             }
-            let line = trim(line);
             match line.first() {
                 None | Some(b'#') => {}
                 Some(b'[') => self.header(line, main, &mut state),
@@ -188,60 +227,120 @@ impl Reader<'_> {
     }
 
     fn entry(&mut self, line: &[u8], state: &mut FileState) {
-        let (mut key, value) = match line.iter().position(|&byte| byte == b'=') {
-            Some(eq) => (trim(&line[..eq]), Some(trim(&line[eq + 1..]))),
-            None => (line, None),
-        };
-        if key.is_empty() {
-            return;
-        }
-        let mut immutable = state.group_immutable;
-        let mut translated = false;
-        // The brackets at the end of the key, the last first.
-        while let Some(open) = key.iter().rposition(|&byte| byte == b'[') {
-            let Some(close) = key[open..].iter().position(|&byte| byte == b']') else {
-                state.errors += 1;
-                return;
-            };
-            let close = open + close;
-            if close > open + 1 && key[open + 1] == b'$' {
-                for &option in &key[open + 2..close] {
-                    match option {
-                        b'i' => immutable = true,
-                        b'd' => {
-                            let name = decode(&key[..open]).0;
-                            self.map.set(&state.group, &name, None, immutable);
-                            return;
-                        }
-                        // `$e` changes the value only when it is read.
-                        _ => {}
-                    }
+        match parse_key(line) {
+            Key::Empty => {}
+            Key::Broken => state.errors += 1,
+            Key::Delete { name, immutable } => {
+                let immutable = immutable || state.group_immutable;
+                self.map.set(&state.group, &decode(name).0, None, immutable);
+            }
+            Key::Set {
+                name,
+                locale,
+                immutable,
+                value,
+            } => {
+                let name = decode(name).0;
+                if locale.is_some_and(|tag| !self.reads(tag)) {
+                    // A translation for another language: skipped whole.
+                    return;
                 }
-            } else if translated {
-                // A second language.
-                state.errors += 1;
-                return;
-            } else {
-                translated = true;
+                let (value, decoded) = decode(value);
+                if !decoded {
+                    state.errors += 1;
+                }
+                if locale.is_some() && !name.is_empty() {
+                    if name == b"User" && self.wanted.contains(&state.group.as_str()) {
+                        self.translated.push(qt_string(&value));
+                    }
+                    return;
+                }
+                let immutable = immutable || state.group_immutable;
+                self.map.set(&state.group, &name, Some(value), immutable);
             }
-            key = &key[..open];
         }
-        let Some(value) = value else {
-            state.errors += 1;
-            return;
+    }
+
+    /// Whether KConfig reads a translation for `tag` in its language: one
+    /// without a tag, or for the language with or without its country, in
+    /// every language; in `en_US` also every tag that starts with `C`.
+    fn reads(&self, tag: &[u8]) -> bool {
+        let language = match self.locale.iter().position(|&byte| byte == b'_') {
+            Some(underscore) => &self.locale[..underscore],
+            None => self.locale,
         };
-        let key = decode(key).0;
-        let (value, decoded) = decode(value);
-        if translated {
-            if key == b"User" && self.wanted.contains(&state.group.as_str()) {
-                self.translated.push(qt_string(&value));
+        tag.is_empty()
+            || tag == self.locale
+            || tag == language
+            || (tag[0] == b'C' && self.locale == b"en_US")
+    }
+}
+
+/// A key line, as `parseConfig()` takes it apart: the name and the options
+/// still raw, as written.
+enum Key<'a> {
+    /// No key before the `=`: skipped, and not counted as broken.
+    Empty,
+    /// A line KConfig counts as broken.
+    Broken,
+    /// `name[$d]`: the key deleted.
+    Delete { name: &'a [u8], immutable: bool },
+    /// `name=value`, or `name[locale]=value` for a translation.
+    Set {
+        name: &'a [u8],
+        locale: Option<&'a [u8]>,
+        immutable: bool,
+        value: &'a [u8],
+    },
+}
+
+/// Take the trimmed line `line`, which opens no group, apart as
+/// `parseConfig()` does: the brackets at the end of its key, the last first.
+fn parse_key(line: &[u8]) -> Key<'_> {
+    let (mut key, value) = match line.iter().position(|&byte| byte == b'=') {
+        Some(eq) => (trim(&line[..eq]), Some(trim(&line[eq + 1..]))),
+        None => (line, None),
+    };
+    if key.is_empty() {
+        return Key::Empty;
+    }
+    let mut immutable = false;
+    let mut locale = None;
+    while let Some(open) = key.iter().rposition(|&byte| byte == b'[') {
+        let Some(close) = key[open..].iter().position(|&byte| byte == b']') else {
+            return Key::Broken;
+        };
+        let close = open + close;
+        if close > open + 1 && key[open + 1] == b'$' {
+            for &option in &key[open + 2..close] {
+                match option {
+                    b'i' => immutable = true,
+                    b'd' => {
+                        return Key::Delete {
+                            name: &key[..open],
+                            immutable,
+                        };
+                    }
+                    // `$e` changes the value only when it is read.
+                    _ => {}
+                }
             }
-            return;
+        } else if locale.is_some() {
+            // A second language.
+            return Key::Broken;
+        } else {
+            locale = Some(&key[open + 1..close]);
         }
-        if !decoded {
-            state.errors += 1;
-        }
-        self.map.set(&state.group, &key, Some(value), immutable);
+        key = &key[..open];
+    }
+    match value {
+        Some(value) => Key::Set {
+            name: key,
+            locale,
+            immutable,
+            value,
+        },
+        None => Key::Broken,
     }
 }
 
