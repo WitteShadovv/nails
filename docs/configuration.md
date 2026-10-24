@@ -226,6 +226,25 @@ the rest carries over in both modes. On NixOS with a hidden configuration, the
 system-wide entries come from that configuration, which normally imports the
 decoy's.
 
+Autologin is read from each display manager's own files, in the order the
+display manager reads them and with its own parser, so a later file that names
+another account or empties the setting counts as it does there:
+
+- GDM: `AutomaticLoginEnable` and `AutomaticLogin` in the `[daemon]` group of
+  `/etc/gdm/custom.conf`, `/etc/gdm3/custom.conf` (Ubuntu) or
+  `/etc/gdm3/daemon.conf` (Debian).
+- SDDM: `User=` under `[Autologin]` in the files of
+  `/usr/lib/sddm/sddm.conf.d`, then of `/etc/sddm.conf.d`, then
+  `/etc/sddm.conf`.
+- LightDM: `autologin-user=` in `[Seat:*]` (`[SeatDefaults]` in older files)
+  and in the `[Seat:…]` groups that match the first seat, in the `*.conf` files
+  of `lightdm/lightdm.conf.d` below `/usr/share`, `/usr/local/share`,
+  `/etc/xdg` and `/etc`, then in `/etc/lightdm/lightdm.conf`.
+
+GDM turned on without naming an account is listed as you, as GDM can take the
+account from a file it keeps in `/run`. So the list may name an autologin that
+does not happen, rather than leave out one that does.
+
 `nails check` lists the inherited entries that need review, and the
 `inherited-autostart` pre-flight check warns about them; activation shows the
 same warning. They are:

@@ -12,6 +12,7 @@
 //! ([`classify`], [`review`]), and provides the data the inherited-autostart
 //! pre-flight check, `nails check` and the activation-time masking all consume.
 
+mod autologin;
 mod autostart;
 pub mod classify;
 pub mod inventory;

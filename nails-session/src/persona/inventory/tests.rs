@@ -235,21 +235,26 @@ fn gdm_autologin_enabled_without_named_user_falls_back_to_operator() {
 #[test]
 fn reports_sddm_autologin_from_conf_d() {
     let fs = MockFilesystem::new();
-    // The main file has an empty autologin user, so the collector must fall
-    // through to the drop-in. A non-.conf file in the drop-in dir is ignored.
-    fs.mock_set_file_content("/etc/sddm.conf", "[Autologin]\nUser=\n");
+    // The main file, which SDDM reads last, does not set the user, so the
+    // drop-in's stands.
+    fs.mock_set_file_content("/etc/sddm.conf", "[General]\nNumlock=on\n");
     let dir = PathBuf::from("/etc/sddm.conf.d");
     let drop_in = dir.join("10-autologin.conf");
     let note = dir.join("notes.txt");
     fs.mock_set_directory_contents(&dir, vec![drop_in.clone(), note.clone()]);
     fs.mock_set_file_content(drop_in.to_str().unwrap(), "[Autologin]\nUser=carol\n");
-    fs.mock_set_file_content(note.to_str().unwrap(), "ignore me\n");
+    fs.mock_set_file_content(note.to_str().unwrap(), "no setting in here\n");
 
     let inventory = collect(&fs, false);
     assert_eq!(
         names_for(&inventory, InheritedSource::Autologin),
         vec!["carol".to_string()]
     );
+
+    // An empty user there turns autologin off.
+    fs.mock_set_file_content("/etc/sddm.conf", "[Autologin]\nUser=\n");
+    let inventory = collect(&fs, false);
+    assert!(names_for(&inventory, InheritedSource::Autologin).is_empty());
 }
 
 #[test]
@@ -277,9 +282,10 @@ fn reports_lightdm_autologin() {
 }
 
 #[test]
-fn reports_lightdm_autologin_from_conf_d_when_main_is_empty() {
+fn reports_lightdm_autologin_from_conf_d_unless_the_main_file_empties_it() {
     let fs = MockFilesystem::new();
-    fs.mock_set_file_content("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=\n");
+    // The main file, which LightDM reads last, does not set the user.
+    fs.mock_set_file_content("/etc/lightdm/lightdm.conf", "[Seat:*]\n#autologin-user=\n");
     let dir = PathBuf::from("/etc/lightdm/lightdm.conf.d");
     let drop_in = dir.join("50-autologin.conf");
     fs.mock_set_directory_contents(&dir, vec![drop_in.clone()]);
@@ -290,6 +296,10 @@ fn reports_lightdm_autologin_from_conf_d_when_main_is_empty() {
         names_for(&inventory, InheritedSource::Autologin),
         vec!["erin".to_string()]
     );
+
+    fs.mock_set_file_content("/etc/lightdm/lightdm.conf", "[Seat:*]\nautologin-user=\n");
+    let inventory = collect(&fs, false);
+    assert!(names_for(&inventory, InheritedSource::Autologin).is_empty());
 }
 
 #[test]
