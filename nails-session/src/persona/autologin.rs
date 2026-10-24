@@ -34,20 +34,22 @@
 //! The seat judged is the first one, `seat0`: GDM logs in there only, and
 //! every machine has it. Only regular files are read, once their links are
 //! followed: a FIFO, socket or device in these places could block the read,
-//! or never end it. The files of a directory are read in the byte order of
-//! their names, LightDM's order. SDDM and Plasma Login Manager sort them by
-//! the system's collation instead, which can put names that differ in case
-//! or punctuation in another order.
+//! or never end it. A file the source cannot give as text, such as one that
+//! is not valid UTF-8, counts as missing. LightDM reads a directory's files
+//! in the byte order of their names. SDDM and Plasma Login Manager sort them
+//! by the collation of the locale they run in, which the files do not tell,
+//! so they are read in each order a collation may give ([`collation`]).
 //!
 //! Where the files alone do not tell, an account counts whenever it could be
-//! the one logged in: both readings of a line that SDDM reads one way on
-//! Qt 5 and another on Qt 6, or that GLib takes or refuses by its own Unicode
-//! tables; a KConfig `User` translated for a language (the language the
-//! display manager runs in decides) or expanded from the environment
-//! (`[$e]`); and GDM turned on without naming an account, which counts as the
-//! operator (GDM also reads `/run/gdm/custom.conf` first, which can name
-//! one).
+//! the one logged in: the account any of those orders ends with; both
+//! readings of a line that SDDM reads one way on Qt 5 and another on Qt 6,
+//! or that GLib takes or refuses by its own Unicode tables; a KConfig `User`
+//! translated for a language (the language the display manager runs in
+//! decides) or expanded from the environment (`[$e]`); and GDM turned on
+//! without naming an account, which counts as the operator (GDM also reads
+//! `/run/gdm/custom.conf` first, which can name one).
 
+mod collation;
 mod kconfig;
 mod keyfile;
 mod sddm;
@@ -147,35 +149,126 @@ fn gdm_true(value: &str) -> bool {
 /// The accounts SDDM logs in, by a build on Qt 6 and, where a line holds a
 /// NUL, by one on Qt 5.
 fn sddm_accounts<F: PersonaSource>(fs: &F) -> Vec<String> {
-    let texts = texts(fs, &qt_files(fs, &SDDM_DIRS, SDDM_FILE));
+    let config = QtConfig::read(fs, &SDDM_DIRS, SDDM_FILE);
     let mut builds = vec![Qt::Six];
-    if texts.iter().any(|(text, _)| text.contains('\0')) {
+    if config.texts().any(|(text, _)| text.contains('\0')) {
         builds.push(Qt::Five);
     }
-    builds
-        .into_iter()
-        .filter_map(|qt| sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()), qt))
-        .collect()
+    let orders = config.orders();
+    let mut accounts = Vec::new();
+    for qt in builds {
+        match &orders {
+            Some(orders) => {
+                accounts.extend(orders.iter().filter_map(|order| {
+                    sddm::autologin_user(order.iter().map(|(text, _)| *text), qt)
+                }))
+            }
+            None => accounts.extend(sddm::every_user(config.texts().map(|(text, _)| text), qt)),
+        }
+    }
+    accounts
 }
 
 /// The accounts Plasma Login Manager logs in, by SDDM's parser on Qt 6 and
 /// by KConfig's.
 fn plasma_login<F: PersonaSource>(fs: &F) -> Vec<String> {
-    let texts = texts(fs, &qt_files(fs, &PLASMA_LOGIN_DIRS, PLASMA_LOGIN_FILE));
-    let mut accounts: Vec<String> =
-        sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()), Qt::Six)
-            .into_iter()
-            .collect();
-    let sources: Vec<kconfig::Source<'_>> = texts
-        .iter()
-        .map(|(text, path)| kconfig::Source {
-            text: text.as_str(),
-            main: path.as_path() == Path::new(PLASMA_LOGIN_FILE),
-        })
-        .collect();
+    let config = QtConfig::read(fs, &PLASMA_LOGIN_DIRS, PLASMA_LOGIN_FILE);
     let seat = format!("Autologin\u{1d}{SEAT}");
-    accounts.extend(kconfig::users(&sources, &["Autologin", &seat]));
+    let groups = ["Autologin", seat.as_str()];
+    let mut accounts = Vec::new();
+    match config.orders() {
+        Some(orders) => {
+            for order in &orders {
+                accounts.extend(sddm::autologin_user(
+                    order.iter().map(|(text, _)| *text),
+                    Qt::Six,
+                ));
+                accounts.extend(kconfig::users(&kconfig_sources(order), &groups));
+            }
+        }
+        None => {
+            let files: Vec<(&str, bool)> = config.texts().collect();
+            accounts.extend(sddm::every_user(
+                files.iter().map(|(text, _)| *text),
+                Qt::Six,
+            ));
+            accounts.extend(kconfig::every_user(&kconfig_sources(&files), &groups));
+        }
+    }
     accounts
+}
+
+/// `files` as KConfig reads them.
+fn kconfig_sources<'a>(files: &[(&'a str, bool)]) -> Vec<kconfig::Source<'a>> {
+    files
+        .iter()
+        .map(|&(text, main)| kconfig::Source { text, main })
+        .collect()
+}
+
+/// The files a Qt display manager reads: the drop-ins of each of its
+/// directories, then its main file.
+struct QtConfig {
+    /// Each directory's regular files that can be read but the hidden ones,
+    /// which `QDir` leaves out: their names and texts.
+    dirs: Vec<Vec<(Vec<u8>, String)>>,
+    main: Option<String>,
+}
+
+impl QtConfig {
+    fn read<F: PersonaSource>(fs: &F, dirs: &[&str], main: &str) -> Self {
+        let visible = |name: &[u8]| !name.starts_with(b".");
+        let dirs = dirs
+            .iter()
+            .map(|dir| {
+                files(fs, Path::new(dir), visible)
+                    .into_iter()
+                    .filter_map(|path| {
+                        let name = path.file_name()?.as_bytes().to_vec();
+                        Some((name, fs.text(&path)?))
+                    })
+                    .collect()
+            })
+            .collect();
+        Self {
+            dirs,
+            main: file_text(fs, Path::new(main)),
+        }
+    }
+
+    /// Every file's text, the main file last, each with whether it is the
+    /// main file.
+    fn texts(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.dirs
+            .iter()
+            .flatten()
+            .map(|(_, text)| (text.as_str(), false))
+            .chain(self.main.iter().map(|text| (text.as_str(), true)))
+    }
+
+    /// The texts in each order the display manager may read them in, as
+    /// [`texts`](Self::texts) gives them; `None` when there are too many
+    /// orders.
+    fn orders(&self) -> Option<Vec<Vec<(&str, bool)>>> {
+        let names: Vec<Vec<&[u8]>> = self
+            .dirs
+            .iter()
+            .map(|files| files.iter().map(|(name, _)| name.as_slice()).collect())
+            .collect();
+        let orders = collation::reading_orders(&names, collation::MAX_ORDERS)?;
+        Some(
+            orders
+                .into_iter()
+                .map(|order| {
+                    order
+                        .into_iter()
+                        .map(|(dir, file)| (self.dirs[dir][file].1.as_str(), false))
+                        .chain(self.main.iter().map(|text| (text.as_str(), true)))
+                        .collect()
+                })
+                .collect(),
+        )
+    }
 }
 
 /// The accounts LightDM logs in on the seat. A drop-in GLib may load or
@@ -310,19 +403,6 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     pattern[p..].iter().all(|&c| c == '*')
 }
 
-/// The files a Qt display manager reads, in order: those of each of `dirs`,
-/// sorted by name and without hidden ones (a leading `.`), as `QDir` lists
-/// them, then `main`.
-fn qt_files<F: PersonaSource>(fs: &F, dirs: &[&str], main: &str) -> Vec<PathBuf> {
-    let visible = |name: &[u8]| !name.starts_with(b".");
-    let mut files: Vec<PathBuf> = dirs
-        .iter()
-        .flat_map(|dir| files(fs, Path::new(dir), visible))
-        .collect();
-    files.push(PathBuf::from(main));
-    files
-}
-
 /// The regular files of `dir` whose names `keep` accepts, sorted by the
 /// bytes of their names.
 fn files<F: PersonaSource>(fs: &F, dir: &Path, keep: impl Fn(&[u8]) -> bool) -> Vec<PathBuf> {
@@ -343,14 +423,6 @@ fn file_text<F: PersonaSource>(fs: &F, path: &Path) -> Option<String> {
     } else {
         None
     }
-}
-
-/// The text of each of `files` that can be read, with its path.
-fn texts<F: PersonaSource>(fs: &F, files: &[PathBuf]) -> Vec<(String, PathBuf)> {
-    files
-        .iter()
-        .filter_map(|path| file_text(fs, path).map(|text| (text, path.clone())))
-        .collect()
 }
 
 #[cfg(test)]

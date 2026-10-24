@@ -54,3 +54,13 @@ pub(super) fn autologin_user<'a>(
     }
     (!user.is_empty()).then(|| user.to_string())
 }
+
+/// Every account `texts` assign to `User=` in `[Autologin]`, in any order.
+pub(super) fn every_user<'a>(texts: impl IntoIterator<Item = &'a str>, qt: Qt) -> Vec<String> {
+    texts
+        .into_iter()
+        .flat_map(|text| assignments(text, qt))
+        .filter(|user| !user.is_empty())
+        .map(str::to_string)
+        .collect()
+}

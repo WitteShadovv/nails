@@ -72,6 +72,34 @@ pub(super) fn users(sources: &[Source<'_>], groups: &[&str]) -> Vec<String> {
     users
 }
 
+/// Every value `sources` give `User` in the groups `groups`, translations
+/// too, whatever reads them or comes after them.
+pub(super) fn every_user(sources: &[Source<'_>], groups: &[&str]) -> Vec<String> {
+    let mut users = Vec::new();
+    for source in sources {
+        let mut group = "<default>".to_string();
+        for line in lines(source.text) {
+            match line.first() {
+                None | Some(b'#') => {}
+                Some(b'[') => {
+                    if let Some((name, _)) = group_header(line) {
+                        group = qt_string(&name);
+                    }
+                }
+                Some(_) => {
+                    if let Key::Set { name, value, .. } = parse_key(line)
+                        && decode(name).0 == b"User"
+                        && groups.contains(&group.as_str())
+                    {
+                        users.push(qt_string(&decode(value).0));
+                    }
+                }
+            }
+        }
+    }
+    users
+}
+
 /// The languages to read `sources` in: the language each translation names,
 /// `en_US` and one that names none. Without a translation every language
 /// reads them alike, and one is enough.

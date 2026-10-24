@@ -461,10 +461,14 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/lightdm/lightdm.conf` now turns off the autologin a drop-in sets, where it was skipped and the
   drop-in's account listed. SDDM's vendor drop-ins in `/usr/lib/sddm/sddm.conf.d` and LightDM's in
   `lightdm/lightdm.conf.d` below `/usr/share`, `/usr/local/share` and `/etc/xdg` are read too, which
-  were not. GDM's `AutomaticLoginEnable=1` turns autologin on, as for GDM, and each GDM file that turns
-  it on is listed, not only the first. A file a display manager refuses as malformed counts as it does
-  for that display manager: GDM keeps what it read before the bad line, LightDM skips such a drop-in
-  and does not start on such a `lightdm.conf`. A line that holds a NUL is read as GLib and SDDM read
+  were not; in SDDM's every file but the hidden ones is read, as SDDM reads them, not only the
+  `*.conf` ones. GDM's `AutomaticLoginEnable=1` turns autologin on, as for GDM, and each GDM file that
+  turns it on is listed, not only the first. A file a display manager refuses as malformed counts as
+  it does for that display manager: GDM keeps what it read before the bad line, LightDM skips such a
+  drop-in and does not start on such a `lightdm.conf`. SDDM and Plasma Login Manager sort a
+  directory's drop-ins by the collation of their locale, which the files do not tell, so where
+  collations disagree on the order of two (`kde_settings.conf` and `kde-autologin.conf`, say) the
+  account either order ends with is listed. A line that holds a NUL is read as GLib and SDDM read
   it, and one a display manager may read two ways counts both ways: SDDM reads a line up to a NUL on
   Qt 5 and whole on Qt 6, and GLib judges a language tag beyond ASCII by its own Unicode tables. Only
   regular files are read: a FIFO, socket or device in one of these places is skipped, where `check`,

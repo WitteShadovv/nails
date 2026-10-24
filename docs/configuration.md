@@ -251,6 +251,12 @@ is skipped, so reading it can neither block nor go on without end.
 
 Where the files leave the account in doubt, it is listed:
 
+- SDDM and Plasma Login Manager sort the files of a directory by the
+  collation of the locale they run in, which the files do not tell: with ICU
+  `kde_settings.conf` comes before `kde-autologin.conf`, in the C locale after
+  it. The files are read in each order a collation may give, and the account
+  any of them ends with is listed. Names that first differ in a digit, such as
+  `10-a.conf` and `20-b.conf`, sort the same everywhere.
 - A line the display manager may read two ways: SDDM on Qt 5 reads a line
   only up to a NUL, on Qt 6 to its end; and GLib judges a key's language tag
   beyond ASCII by Unicode tables of its own, so GDM and LightDM may read on
