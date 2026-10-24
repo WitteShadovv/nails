@@ -6,17 +6,25 @@ name: Mutants (in diff)
 # artifact for the integration log, and a change that touches no mutable code is
 # a clean pass. A shard goes red when a mutant's build failed for want of disk,
 # memory or I/O: cargo-mutants counts that mutant as unviable, but it was never
-# tested. The work is sharded and each shard is time-boxed, so the lane stays
-# short on the small diff of a feature pull request, which is what it is for:
-# it catches a coverage gap in a change as that change lands on `next`.
+# tested. The lane is for the diff of a feature pull request: it catches a
+# coverage gap in a change as that change lands on `next`.
+#
+# The lane sizes itself to the diff. The plan job lists the diff's mutants,
+# which builds nothing, and splits them over as many shards as keep each inside
+# its time box with a margin, at most twelve (`just mutants-in-diff-plan`;
+# ci/mutants_plan.py holds the numbers and where they come from). A diff too
+# large for twelve shards in the ordinary 15-minute box gets longer boxes, up to
+# 30 minutes. A diff too large even for those runs no shard: the plan's job
+# summary and a warning give its count, and the lane passes, since it gates
+# nothing and the weekly sweep still mutates the code it covers. A diff with no
+# mutant runs the plan job alone.
 #
 # It runs on pull requests into `next`, not into `main`. A `next` -> `main`
-# release pull request carries the whole accumulated round, whose diff has
-# hundreds of mutants: they cannot finish inside the time-boxed shards (the
-# shards are cancelled, or a worker fills the runner's disk, and the lane goes
-# red), and re-testing them proves nothing, because every line in that diff
-# already went through this lane on the feature pull request that added it. The
-# weekly full sweep in scheduled.yml is the release-level backstop.
+# release pull request carries the whole accumulated round, whose diff holds
+# more mutants than even the longest time boxes can test, and re-testing them
+# proves nothing, because every line in that diff already went through this
+# lane on the feature pull request that added it. The weekly full sweep in
+# scheduled.yml is the release-level backstop.
 
 on:
   pull_request:
@@ -35,18 +43,63 @@ defaults:
     shell: bash
 
 jobs:
-  in-diff:
-    name: In-diff mutants (shard ${{ matrix.shard }})
+  plan:
+    name: In-diff mutants (plan)
     runs-on: ubuntu-26.04
-    # The hard cap on the lane; cargo-mutants' own --timeout bounds a single
-    # mutant so one slow test cannot eat the whole box.
-    timeout-minutes: 15
+    # Listing builds nothing: the toolchain install takes the longest.
+    timeout-minutes: 10
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          # The diff is computed against the base, so both sides are needed.
+          fetch-depth: 0
+
+      # cargo-mutants finds the workspace's sources through cargo metadata.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      # The cargo-mutants the shards test with: another release may find
+      # other mutants or slice the shards otherwise.
+      - name: Install cargo-mutants and just
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        with:
+          tool: cargo-mutants@27.1.0,just@1.58.0
+          fallback: none
+
+      # HEAD is the merge commit GitHub builds for the pull request, and its
+      # first parent is the base it merged onto. The event's base.sha can be
+      # older than that base when the base branch moved after the event, and a
+      # diff from it would also carry every change merged in between.
+      - name: Diff the pull request against its base
+        run: |
+          git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
+          echo "Changed lines in the diff: $(wc -l < "$RUNNER_TEMP/pr.diff")"
+
+      - name: Plan the shards
+        id: plan
+        run: just mutants-in-diff-plan "$RUNNER_TEMP/pr.diff" >> "$GITHUB_OUTPUT"
+
+  in-diff:
+    name: In-diff mutants (shard ${{ matrix.shard }}/${{ matrix.shards }})
+    needs: plan
+    # No shard runs for a diff without mutants or with more than the lane can
+    # test; the plan job's summary says which.
+    if: needs.plan.outputs.shards != '0'
+    runs-on: ubuntu-26.04
+    # The shard's time box from the plan; cargo-mutants' own --timeout bounds
+    # a single mutant so one slow test cannot eat the whole box.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       # One slow or red shard must not cancel the others; each reports on its
       # own.
       fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Checkout code
@@ -65,10 +118,8 @@ jobs:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
-      # HEAD is the merge commit GitHub builds for the pull request, and its
-      # first parent is the base it merged onto. The event's base.sha can be
-      # older than that base when the base branch moved after the event, and a
-      # diff from it would also carry every change merged in between.
+      # The same diff as the plan job's: every job of the run checks out the
+      # same merge commit.
       - name: Diff the pull request against its base
         run: |
           git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
@@ -81,8 +132,9 @@ jobs:
       - name: Mutate the changed lines
         env:
           SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
           TMPDIR: ${{ runner.temp }}
-        run: just mutants-in-diff "$RUNNER_TEMP/pr.diff" "$SHARD" 4
+        run: just mutants-in-diff "$RUNNER_TEMP/pr.diff" "$SHARD" "$SHARDS"
 
       - name: Upload the mutants report
         if: ${{ !cancelled() }}
