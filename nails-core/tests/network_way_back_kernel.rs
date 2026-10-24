@@ -14,6 +14,10 @@
 //! namespace, so the host's own links are out of reach and a bungled change
 //! can harm nothing.
 //!
+//! What entry found is read in that namespace, never assumed: a new network
+//! namespace starts with a copy of the host's IPv4 settings, so on a host that
+//! forwards (one that runs Docker, say) forwarding is on at entry.
+//!
 //! It needs the `dummy` link type, which an unprivileged user namespace can use
 //! only when the module is already loaded, and `ip` itself; the firewall-table
 //! test needs `nft` and nf_tables. Each one missing is a host skip, which
@@ -115,6 +119,35 @@ fn setting(key: &str) -> String {
 
 fn set_setting(key: &str, value: &str) {
     std::fs::write(Path::new("/proc/sys/net").join(key), value).unwrap();
+}
+
+/// This namespace's network settings for all devices and for new ones, each
+/// with its value: forwarding and every key of the `all` and `default`
+/// directories below `/proc/sys/net/ipv4/conf` and `/proc/sys/net/ipv6/conf`
+/// that can be read.
+fn settings() -> Vec<(String, String)> {
+    let mut keys = vec!["ipv4/ip_forward".to_string()];
+    for dir in [
+        "ipv4/conf/all",
+        "ipv4/conf/default",
+        "ipv6/conf/all",
+        "ipv6/conf/default",
+    ] {
+        let Ok(entries) = std::fs::read_dir(Path::new("/proc/sys/net").join(dir)) else {
+            continue;
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| format!("{dir}/{}", entry.unwrap().file_name().to_string_lossy()))
+            .collect();
+        names.sort();
+        keys.extend(names);
+    }
+    keys.into_iter()
+        .filter_map(|key| {
+            let value = std::fs::read_to_string(Path::new("/proc/sys/net").join(&key)).ok()?;
+            Some((key, value.trim_end().to_string()))
+        })
+        .collect()
 }
 
 #[test]
@@ -235,12 +268,16 @@ fn the_way_back_puts_a_namespaces_links_rules_and_settings_back() {
         };
         let rules = |family| output(&ip, &["-N", family, "rule", "show"]);
         let rules_v4 = rules("-4");
+        let rules_v6 = ipv6.then(|| rules("-6"));
+        // As entry finds them here: the namespace started with the host's
+        // IPv4 settings.
+        let settings_then = settings();
         let record = NetworkRecord::capture(&places, &tools);
 
         // The session: a random address on the decoy's device, a link of its
         // own and one made again under the name of the decoy's, a WireGuard
-        // full tunnel's rules, a VPN app's settings and forwarding, and its
-        // hostname.
+        // full tunnel's rules, a VPN app's settings and forwarding, each to a
+        // value entry did not find, and its hostname.
         assert!(ok(
             &ip,
             &[
@@ -272,9 +309,13 @@ fn the_way_back_puts_a_namespaces_links_rules_and_settings_back() {
             ];
             assert!(ok(&ip, &main));
         }
-        set_setting("ipv4/ip_forward", "1");
-        set_setting("ipv4/conf/all/arp_ignore", "2");
-        set_setting("ipv4/conf/all/src_valid_mark", "1");
+        for (key, value, other) in [
+            ("ipv4/ip_forward", "1", "0"),
+            ("ipv4/conf/all/arp_ignore", "2", "0"),
+            ("ipv4/conf/all/src_valid_mark", "1", "0"),
+        ] {
+            set_setting(key, if setting(key) == value { other } else { value });
+        }
         std::fs::write(&places.proc_hostname, "hidden-host\n").unwrap();
 
         let kept = network::restore_with(&places, &tools, Some(&record.encode()));
@@ -299,12 +340,10 @@ fn the_way_back_puts_a_namespaces_links_rules_and_settings_back() {
         assert_eq!(attr(class_net, "decoy0", "address"), "02:00:00:00:00:01");
         assert!(is_up(class_net, "decoy0"));
         assert_eq!(rules("-4"), rules_v4);
-        if ipv6 {
-            assert!(!rules("-6").contains("51820"), "{}", rules("-6"));
-        }
-        assert_eq!(setting("ipv4/ip_forward"), "0");
-        assert_eq!(setting("ipv4/conf/all/arp_ignore"), "0");
-        assert_eq!(setting("ipv4/conf/all/src_valid_mark"), "0");
+        assert_eq!(ipv6.then(|| rules("-6")), rules_v6);
+        // Writing forwarding back changes `accept_redirects` and the
+        // forwarding for new devices too, so every setting is compared.
+        assert_eq!(settings(), settings_then);
         assert_eq!(
             std::fs::read_to_string(&places.proc_hostname).unwrap(),
             "decoy-host"
