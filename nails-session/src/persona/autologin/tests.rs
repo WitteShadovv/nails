@@ -266,6 +266,13 @@ fn sddm_counts_each_order_the_collation_of_a_locale_may_give() {
         names(&["main"])
     );
     assert!(one(&fs, "/etc/sddm.conf", "[Autologin]\nUser=\n").is_empty());
+
+    // Welsh takes `ng` for one letter before `n`, so 10-loging.conf comes
+    // before 10-login there and alice is logged in.
+    let fs = MockFilesystem::new();
+    drop_in(&fs, SDDM_LOCAL, "10-login", "[Autologin]\nUser=alice\n");
+    drop_in(&fs, SDDM_LOCAL, "10-loging.conf", "[Autologin]\nUser=\n");
+    assert_eq!(accounts_of(&fs), names(&["alice"]));
 }
 
 #[test]
@@ -860,19 +867,28 @@ fn collation_orders_keep_only_what_every_collation_agrees_on() {
         let names: Vec<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
         collation::orders(&names, 100)
     };
-    // A first difference in a digit, or a printable ASCII character past a
-    // name the other starts, is the same everywhere.
+    // A first difference in a digit is the same everywhere, and so is a name
+    // the other goes on past with a digit, or with punctuation and then a
+    // digit or letter.
     assert_eq!(orders(&["20-b.conf", "10-a.conf"]), Some(vec![vec![1, 0]]));
     assert_eq!(orders(&["a.conf.bak", "a.conf"]), Some(vec![vec![1, 0]]));
     assert_eq!(orders(&["1.conf", "1"]), Some(vec![vec![1, 0]]));
+    assert_eq!(orders(&["a1", "a"]), Some(vec![vec![1, 0]]));
     // Punctuation, case and letters are not, nor is what follows a name
-    // beyond ASCII.
+    // beyond ASCII. A letter past it may make one letter with its last:
+    // Welsh sorts `ng` before `n`, so `ang` before `an`, and Igbo sorts `ch`
+    // before `c`. Punctuation alone past it counts for nothing in Thai.
     for pair in [
         ["kde_settings.conf", "kde-autologin.conf"],
         ["KDE.conf", "autologin.conf"],
         ["a.conf", "b.conf"],
         ["1.conf", "10.conf"],
         ["a", "a\u{ad}"],
+        ["an", "ang"],
+        ["10-plasman", "10-plasmang.conf"],
+        ["xc", "xch"],
+        ["a", "a."],
+        ["a.conf", "a.conf-"],
     ] {
         assert_eq!(
             orders(&pair),
