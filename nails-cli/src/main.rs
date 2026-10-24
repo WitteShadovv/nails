@@ -101,6 +101,7 @@ mod tests {
         assert!(command_writes_logs(&Commands::Discard(DiscardArgs {
             target: PathBuf::from("/home"),
             yes: true,
+            allow_decoy_storage: false,
         })));
     }
 

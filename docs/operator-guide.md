@@ -93,10 +93,10 @@ filesystem and says to remove the line.
 An encrypted container file on a decoy filesystem only warns: the filesystem's
 journal and copy-on-write snapshots (btrfs, snapper) can keep old copies of the
 parts of the container that changed. `--allow-decoy-storage` (on `init`,
-`activate` and `check`) turns the refusal of the decoy's own storage into a
-warning; use it only for storage the gate takes for the decoy's that you know
-the decoy does not use (for example a disk its fstab lists but never mounts),
-since everything written there lands on it. It never covers a folder, a
+`activate`, `check` and `discard`) turns the refusal of the decoy's own storage
+into a warning; use it only for storage the gate takes for the decoy's that you
+know the decoy does not use (for example a disk its fstab lists but never
+mounts), since everything written there lands on it. It never covers a folder, a
 covered root, storage that cannot be judged or a decoy entry for the volume.
 See [the attach gate](threat-model.md#the-attach-gate).
 

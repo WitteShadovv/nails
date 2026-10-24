@@ -55,7 +55,7 @@ pub fn execute(
     // activation cannot mount the target out from under the discard.
     let _state_lock = match super::acquire_state_lock_or_report(
         ready.hidden_root(),
-        nails_core::hidden_root::Allow::Nothing,
+        allow(args),
         ready.state_path(),
         "discard",
         json,
@@ -154,6 +154,16 @@ pub fn execute(
 
 /// The notice of an answer other than yes at the prompt, from the catalogue.
 const CANCELLED: &str = nails_core::catalog::CANCEL_DISCARD.text;
+
+/// What the attach gate accepts for the discard: with `--allow-decoy-storage`,
+/// a root this computer's own storage holds, as `activate` accepts it.
+fn allow(args: &DiscardArgs) -> nails_core::hidden_root::Allow {
+    if args.allow_decoy_storage {
+        nails_core::hidden_root::Allow::DecoyStorage
+    } else {
+        nails_core::hidden_root::Allow::Nothing
+    }
+}
 
 /// Ask before deleting ([`confirm_discard`]), on stderr (`err`) so stdout stays
 /// clean for `--json`. On an answer other than yes, report the cancel, which

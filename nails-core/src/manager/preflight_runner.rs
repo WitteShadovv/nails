@@ -299,11 +299,13 @@ pub fn build_registry<F: Filesystem>(
 
     // Refuses a decoy with a pending offline (offline-update) system update
     // staged: once the overlays are mounted the decoy's updater would apply it
-    // inside the hidden session and reboot into it. Read-only.
-    registry.add_check(Box::new(OfflineUpdateCheck::new(
-        paths.root.clone(),
-        layout.upper(),
-    )));
+    // inside the hidden session and reboot into it. Read-only. The `discard`
+    // it names for a marker in the upper takes --allow-decoy-storage when the
+    // run does.
+    registry.add_check(Box::new(
+        OfflineUpdateCheck::new(paths.root.clone(), layout.upper())
+            .allowing_decoy_storage(inputs.options.allow_decoy_storage),
+    ));
 
     // Warns (never fails) about the residue channels the catalog probes by path
     // (LVM metadata archives, udisks2 state, session-time stamps): each finding

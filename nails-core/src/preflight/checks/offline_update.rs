@@ -19,7 +19,9 @@
 //! whiteout in the upper is not a marker: it records that a session deleted
 //! one. A marker in the upper is the hidden session's own copy, which neither
 //! the decoy's updater nor an `rm` on the decoy reaches, so the remediation
-//! names the `discard` that deletes it. Every probe reads; nothing here writes.
+//! names the `discard` that deletes it, with `--allow-decoy-storage` when the
+//! run accepted a root on this computer's own storage, which `discard` refuses
+//! without it. Every probe reads; nothing here writes.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::next_step::{NextStep, sudo_line_for};
@@ -38,12 +40,27 @@ pub struct OfflineUpdateCheck {
     /// The root overlay's upper on the hidden volume, where a staged update left
     /// by an earlier session would sit.
     upper: PathBuf,
+    /// Whether the run accepted a hidden root on this computer's own storage
+    /// (`--allow-decoy-storage`).
+    allow_decoy_storage: bool,
 }
 
 impl OfflineUpdateCheck {
     /// Create the check over the decoy `root` and the root overlay's `upper`.
     pub fn new(root: PathBuf, upper: PathBuf) -> Self {
-        Self { root, upper }
+        Self {
+            root,
+            upper,
+            allow_decoy_storage: false,
+        }
+    }
+
+    /// The check for a run that accepted the hidden root on this computer's
+    /// own storage (`--allow-decoy-storage`): the `discard` its remediation
+    /// names takes the same flag, without which it refuses that root.
+    pub fn allowing_decoy_storage(mut self, allow: bool) -> Self {
+        self.allow_decoy_storage = allow;
+        self
     }
 
     /// Whether `path` is present as a file, directory or symlink.
@@ -77,8 +94,9 @@ impl OfflineUpdateCheck {
 
 /// What to do about the markers found: on the decoy, cancel the update or
 /// remove the marker there; in the upper, delete the hidden session's copy with
-/// `discard`, the one command that reaches it.
-fn remediation(on_decoy: &[String], in_upper: &[String]) -> String {
+/// `discard`, the one command that reaches it, given `--allow-decoy-storage`
+/// when the run accepted the root with it (`allow_decoy_storage`).
+fn remediation(on_decoy: &[String], in_upper: &[String], allow_decoy_storage: bool) -> String {
     let mut steps = Vec::new();
     if !on_decoy.is_empty() {
         steps.push(format!(
@@ -92,7 +110,16 @@ fn remediation(on_decoy: &[String], in_upper: &[String]) -> String {
             "The marker in the hidden session's overlay is that session's own copy, which \
              neither the decoy's updater nor `rm` on the decoy reaches: delete it with {} \
              (it lists what it deletes and asks first), then activate again.",
-            commands(in_upper, |marker| sudo_line_for(NextStep::Discard, marker))
+            commands(in_upper, |marker| {
+                if allow_decoy_storage {
+                    sudo_line_for(
+                        NextStep::Discard,
+                        &format!("--allow-decoy-storage {marker}"),
+                    )
+                } else {
+                    sudo_line_for(NextStep::Discard, marker)
+                }
+            })
         ));
     }
     steps.join(" ")
@@ -140,7 +167,7 @@ impl<F: Filesystem> PreFlightCheck<F> for OfflineUpdateCheck {
                  into it",
                 found.join(", ")
             ),
-            remediation(&on_decoy, &in_upper),
+            remediation(&on_decoy, &in_upper, self.allow_decoy_storage),
         ))
     }
 }
@@ -208,6 +235,36 @@ mod tests {
         assert!(
             !remediation.contains("`rm /system-update`"),
             "{remediation}"
+        );
+    }
+
+    #[test]
+    fn on_a_root_accepted_as_decoy_storage_the_discard_takes_the_override() {
+        // `discard` refuses such a root without --allow-decoy-storage, as
+        // activation does: the line the fix names carries the flag the run
+        // was given, and only then.
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type("/mnt/hidden/upper/system-update", PathKind::Symlink);
+        let accepted = check().allowing_decoy_storage(true).run(&fs).unwrap();
+        let remediation = accepted.remediation().unwrap();
+        assert!(
+            remediation.contains(&format!(
+                "`{}`",
+                crate::next_step::sudo_line_for(
+                    NextStep::Discard,
+                    "--allow-decoy-storage /system-update"
+                )
+            )),
+            "{remediation}"
+        );
+        assert!(!accepted.message().contains("/mnt/hidden"), "{accepted:?}");
+        let plain = check().allowing_decoy_storage(false).run(&fs).unwrap();
+        assert!(
+            !plain
+                .remediation()
+                .unwrap()
+                .contains("--allow-decoy-storage"),
+            "{plain:?}"
         );
     }
 
