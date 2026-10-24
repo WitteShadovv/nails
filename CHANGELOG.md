@@ -348,7 +348,8 @@ of this changelog for that version becomes the release notes word for word, and
   were not. GDM's `AutomaticLoginEnable=1` turns autologin on, as for GDM, and each GDM file that turns
   it on is listed, not only the first. A file a display manager refuses as malformed counts as it does
   for that display manager: GDM keeps what it read before the bad line, LightDM skips such a drop-in
-  and does not start on such a `lightdm.conf`.
+  and does not start on such a `lightdm.conf`. Only regular files are read: a FIFO, socket or device
+  in one of these places is skipped, where `check`, the warning and activation could hang reading it.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
