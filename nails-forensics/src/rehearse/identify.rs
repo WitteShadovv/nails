@@ -18,8 +18,8 @@
 //!   ciphertext: its unlocked mapping is what to scan;
 //! - an LVM physical volume, whose logical volumes the scan does not identify;
 //! - storage on which no filesystem is identified at all (zfs, an encrypted
-//!   volume without a header, raw data), even where an ext4 or xfs magic
-//!   shows over a block size no such filesystem uses;
+//!   volume without a header, raw data), even where an ext4, xfs or f2fs
+//!   magic shows over a block size no such filesystem uses;
 //! - a filesystem, a partition, or the disk a GPT was written for, that runs
 //!   past the end of the source, as on an image whose copy stopped early;
 //! - first blocks that cannot be read.
@@ -34,7 +34,8 @@ use std::io;
 
 /// What a raw plaintext scan can make of one region of a source.
 enum Region {
-    /// A filesystem or format the scan reads verbatim (ext4, xfs, vfat, swap).
+    /// A filesystem or format the scan reads verbatim (ext4, xfs, an f2fs made
+    /// without the compression feature, vfat, swap).
     Verbatim,
     /// Storage that can hide the canary from the scan, and why.
     Hidden(String),

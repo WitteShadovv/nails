@@ -846,20 +846,23 @@ A raw scan finds the token only where the decoy stores file contents as they
 are. Where the storage can hide it, the result reports the device as not
 checked, never as clean:
 
-- a filesystem that can compress file contents: btrfs, bcachefs, zfs or f2fs.
-  A zfs dataset has no block device of its own to read, so it is listed as not
+- a filesystem that can compress file contents: btrfs, bcachefs, zfs, or an
+  f2fs made with the compression feature (`mkfs.f2fs -O compression`), which a
+  mounted f2fs shows in its mount options and an image or an unmounted device
+  in its superblock; an f2fs made without it stores every file as it is. A zfs
+  dataset has no block device of its own to read, so it is listed as not
   scanned and not checked;
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
   instead;
 - storage on which the scan identifies no filesystem at all;
-- an image cut short, as a copy that stopped early leaves it: an ext4 or xfs
-  image that ends before its filesystem does, or a whole-disk image that ends
-  before a partition its table lists, or before the disk its GPT was written
-  for. The scan cannot tell when a bare filesystem of another kind, such as
-  vfat or swap, was cut short, so check that a copy finished before you scan
-  it.
+- an image cut short, as a copy that stopped early leaves it: an ext4, xfs or
+  f2fs image that ends before its filesystem does, or a whole-disk image that
+  ends before a partition its table lists, or before the disk its GPT was
+  written for. The scan cannot tell when a bare filesystem of another kind,
+  such as vfat or swap, was cut short, so check that a copy finished before you
+  scan it.
 
 A mounted device is judged by its mount. A device that is not mounted
 (`--device`) or an image (`--offline --image`) has no mount to judge it by, so

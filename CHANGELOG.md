@@ -179,11 +179,11 @@ of this changelog for that version becomes the release notes word for word, and
   superblock is found even beside a stale signature of another format (an ISO9660 descriptor
   mkfs.f2fs left in place), and a zfs dataset of the live decoy is listed as not checked instead of
   being skipped. An image cut short, as a copy that stopped early leaves it, is not checked either: an
-  ext4 or xfs image that ends before its filesystem does, and a whole-disk image that ends before a
-  partition its table lists or before the disk its GPT was written for. An empty image or device (a
-  copy that failed, a loop device with no file behind it) is reported as not scanned with exit 9
-  instead of a clean pass with exit 0, and a scan that left a device unread no longer prints the green
-  "not found" headline.
+  ext4, xfs or f2fs image that ends before its filesystem does, and a whole-disk image that ends
+  before a partition its table lists or before the disk its GPT was written for. An empty image or
+  device (a copy that failed, a loop device with no file behind it) is reported as not scanned with
+  exit 9 instead of a clean pass with exit 0, and a scan that left a device unread no longer prints
+  the green "not found" headline.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up
