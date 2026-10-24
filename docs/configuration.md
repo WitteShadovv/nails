@@ -220,8 +220,11 @@ NAILS reads the autostart entries a desktop session starts: those in
 `/etc/profiles/per-user/<user>`, `/nix/var/nix/profiles/default` and
 `/run/current-system/sw`, where the desktop's own entries live). When several
 directories hold a file of the same name, the first one in that order decides,
-as it does for the desktop, and a `Hidden=true` there hides the entry. User
-services and timers are those enabled in `~/.config/systemd/user` and
+as it does for the desktop, and a `Hidden=true` there hides the entry. Only
+regular files count, once their links are followed, as for systemd's autostart
+generator: a directory, FIFO, socket or device there is skipped unread, and so
+is a link to nothing, so a file of the same name in a later directory decides.
+User services and timers are those enabled in `~/.config/systemd/user` and
 `/etc/systemd/user`. What lives in the home carries over only in `shared-home`;
 the rest carries over in both modes. On NixOS with a hidden configuration, the
 system-wide entries come from that configuration, which normally imports the

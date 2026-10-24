@@ -160,6 +160,37 @@ fn masks_follow_absolute_links_inside_the_next_root() {
     assert!(!root.path().join("nails-test-dotfiles").exists());
 }
 
+/// A FIFO among the autostart entries of the next root's home is skipped
+/// unread: opened, it would hold the entry up until a writer came along.
+#[test]
+fn the_inventory_at_entry_never_opens_a_fifo() {
+    let root = tempfile::tempdir().unwrap();
+    let autostart = root.path().join("home/alice/.config/autostart");
+    std::fs::create_dir_all(&autostart).unwrap();
+    std::fs::write(autostart.join("dropbox.desktop"), "[Desktop Entry]\n").unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        autostart.join("nails-test-fifo.desktop"),
+        rustix::fs::FileType::Fifo,
+        Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let inventory = collect_inherited_persona(
+        &InNextRoot { root: root.path() },
+        &root.path().join("home/alice"),
+        "alice",
+        false,
+    );
+    let in_home: Vec<&str> = inventory
+        .entries
+        .iter()
+        .filter(|entry| entry.source == crate::persona::InheritedSource::UserAutostart)
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(in_home, ["dropbox"]);
+}
+
 #[test]
 fn an_existing_hidden_home_is_kept_as_it_is() {
     let dir = tempfile::tempdir().unwrap();
