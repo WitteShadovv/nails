@@ -248,11 +248,18 @@ another account or empties the setting counts as it does there:
 Only regular files are read: a FIFO, socket or device in one of these places
 is skipped, so reading it can neither block nor go on without end.
 
-Where the files leave the account in doubt, it is listed: a Plasma Login
-Manager setting translated for a language or expanded from the environment,
-and GDM turned on without naming an account, which is listed as you. So the
-list may name an autologin that does not happen, rather than leave out one
-that does.
+Where the files leave the account in doubt, it is listed:
+
+- A line the display manager may read two ways: SDDM on Qt 5 reads a line
+  only up to a NUL, on Qt 6 to its end; and GLib judges a key's language tag
+  beyond ASCII by Unicode tables of its own, so GDM and LightDM may read on
+  past such a line or stop there.
+- A Plasma Login Manager setting translated for a language, which the
+  language it runs in decides, or expanded from the environment.
+- GDM turned on without naming an account, which is listed as you.
+
+So the list may name an autologin that does not happen, rather than leave out
+one that does.
 
 `nails check` lists the inherited entries that need review, and the
 `inherited-autostart` pre-flight check warns about them; activation shows the

@@ -40,12 +40,13 @@
 //! or punctuation in another order.
 //!
 //! Where the files alone do not tell, an account counts whenever it could be
-//! the one logged in: a translated KConfig `User` (the language the display
-//! manager runs in decides), a value KConfig expands from the environment
-//! (`[$e]`), and GDM turned on without naming an account, which counts as the
+//! the one logged in: both readings of a line that SDDM reads one way on
+//! Qt 5 and another on Qt 6, or that GLib takes or refuses by its own Unicode
+//! tables; a KConfig `User` translated for a language (the language the
+//! display manager runs in decides) or expanded from the environment
+//! (`[$e]`); and GDM turned on without naming an account, which counts as the
 //! operator (GDM also reads `/run/gdm/custom.conf` first, which can name
-//! one). So the inventory may list an autologin that does not happen,
-//! rather than leave out one that does.
+//! one).
 
 mod kconfig;
 mod keyfile;
@@ -55,6 +56,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use super::inventory::PersonaSource;
+use sddm::Qt;
 
 /// Where GDM may read its configuration, by build.
 const GDM_FILES: [&str; 3] = [
@@ -90,12 +92,16 @@ const LIGHTDM_FILE: &str = "/etc/lightdm/lightdm.conf";
 /// The seat judged.
 const SEAT: &str = "seat0";
 
+/// The most LightDM drop-ins that GLib may load or refuse, read with and
+/// without each; past it, every account the files name counts.
+const MAX_UNDECIDED_DROP_INS: usize = 8;
+
 /// The accounts the decoy's display managers log in on their own, trimmed,
 /// none empty, possibly repeated. `operator` stands in for the account of a
 /// GDM turned on without naming one.
 pub(super) fn accounts<F: PersonaSource>(fs: &F, operator: &str) -> Vec<String> {
     let mut accounts = gdm(fs, operator);
-    accounts.extend(sddm_account(fs));
+    accounts.extend(sddm_accounts(fs));
     accounts.extend(plasma_login(fs));
     accounts.extend(lightdm(fs));
     accounts
@@ -106,28 +112,31 @@ pub(super) fn accounts<F: PersonaSource>(fs: &F, operator: &str) -> Vec<String> 
         .collect()
 }
 
-/// The account of each GDM file that turns autologin on.
+/// The account of each GDM file that turns autologin on, in each way GLib
+/// may read it: GDM keeps what GLib read before a line it refuses.
 fn gdm<F: PersonaSource>(fs: &F, operator: &str) -> Vec<String> {
-    GDM_FILES
-        .iter()
-        .filter_map(|path| file_text(fs, Path::new(path)))
-        .filter_map(|text| {
-            // GDM keeps what GLib read before a line it refuses.
-            let file = keyfile::parse(&text).file;
+    let mut accounts = Vec::new();
+    for path in GDM_FILES {
+        let Some(text) = file_text(fs, Path::new(path)) else {
+            continue;
+        };
+        let parsed = keyfile::parse(&text);
+        for file in parsed.outcomes() {
             let enabled = file
                 .value("daemon", "AutomaticLoginEnable")
                 .is_some_and(gdm_true);
             let named = file.value("daemon", "AutomaticLogin").unwrap_or_default();
-            enabled.then(|| {
+            if enabled {
                 let account = if named.trim().is_empty() {
                     operator
                 } else {
                     named
                 };
-                account.to_string()
-            })
-        })
-        .collect()
+                accounts.push(account.to_string());
+            }
+        }
+    }
+    accounts
 }
 
 /// Whether GDM reads `value` as true: `true` in any case, or `1`.
@@ -135,18 +144,26 @@ fn gdm_true(value: &str) -> bool {
     value.eq_ignore_ascii_case("true") || value == "1"
 }
 
-/// The account SDDM logs in.
-fn sddm_account<F: PersonaSource>(fs: &F) -> Option<String> {
+/// The accounts SDDM logs in, by a build on Qt 6 and, where a line holds a
+/// NUL, by one on Qt 5.
+fn sddm_accounts<F: PersonaSource>(fs: &F) -> Vec<String> {
     let texts = texts(fs, &qt_files(fs, &SDDM_DIRS, SDDM_FILE));
-    sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()))
+    let mut builds = vec![Qt::Six];
+    if texts.iter().any(|(text, _)| text.contains('\0')) {
+        builds.push(Qt::Five);
+    }
+    builds
+        .into_iter()
+        .filter_map(|qt| sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()), qt))
+        .collect()
 }
 
-/// The accounts Plasma Login Manager logs in, by SDDM's parser and by
-/// KConfig's.
+/// The accounts Plasma Login Manager logs in, by SDDM's parser on Qt 6 and
+/// by KConfig's.
 fn plasma_login<F: PersonaSource>(fs: &F) -> Vec<String> {
     let texts = texts(fs, &qt_files(fs, &PLASMA_LOGIN_DIRS, PLASMA_LOGIN_FILE));
     let mut accounts: Vec<String> =
-        sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()))
+        sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()), Qt::Six)
             .into_iter()
             .collect();
     let sources: Vec<kconfig::Source<'_>> = texts
@@ -161,31 +178,68 @@ fn plasma_login<F: PersonaSource>(fs: &F) -> Vec<String> {
     accounts
 }
 
-/// The account LightDM logs in on the seat, if any.
-fn lightdm<F: PersonaSource>(fs: &F) -> Option<String> {
-    let mut config = keyfile::KeyFile::default();
+/// The accounts LightDM logs in on the seat. A drop-in GLib may load or
+/// refuse is read once with it and once without, and a `lightdm.conf` it
+/// may refuse once with it and once as the display manager that does not
+/// start.
+fn lightdm<F: PersonaSource>(fs: &F) -> Vec<String> {
     let conf = |name: &[u8]| name.ends_with(b".conf");
-    for dir in LIGHTDM_DIRS {
-        for path in files(fs, Path::new(dir), conf) {
-            let Some(text) = fs.text(&path) else {
-                continue;
+    let drop_ins: Vec<keyfile::Parsed> = LIGHTDM_DIRS
+        .iter()
+        .flat_map(|dir| files(fs, Path::new(dir), conf))
+        .filter_map(|path| fs.text(&path))
+        .map(|text| keyfile::parse(&text))
+        .collect();
+    let main = file_text(fs, Path::new(LIGHTDM_FILE)).map(|text| keyfile::parse(&text));
+    // LightDM skips a drop-in GLib refuses.
+    let undecided: Vec<usize> = (0..drop_ins.len())
+        .filter(|&i| drop_ins[i].may_load() && drop_ins[i].may_fail())
+        .collect();
+    if undecided.len() > MAX_UNDECIDED_DROP_INS {
+        return every_lightdm_user(drop_ins.iter().chain(&main));
+    }
+    let mut accounts = Vec::new();
+    for read in 0..1_usize << undecided.len() {
+        let mut config = keyfile::KeyFile::default();
+        for (i, drop_in) in drop_ins.iter().enumerate() {
+            let skipped = match undecided.iter().position(|&u| u == i) {
+                Some(bit) => read & (1 << bit) == 0,
+                None => !drop_in.may_load(),
             };
-            // LightDM skips a drop-in GLib refuses.
-            let parsed = keyfile::parse(&text);
-            if parsed.complete {
-                merge(&mut config, &parsed.file);
+            if !skipped {
+                merge(&mut config, &drop_in.file);
+            }
+        }
+        match &main {
+            None => accounts.extend(seat_account(&config)),
+            Some(main) => {
+                // A main file GLib refuses keeps LightDM from starting.
+                if main.may_load() {
+                    merge(&mut config, &main.file);
+                    accounts.extend(seat_account(&config));
+                }
             }
         }
     }
-    if let Some(text) = file_text(fs, Path::new(LIGHTDM_FILE)) {
-        let parsed = keyfile::parse(&text);
-        if !parsed.complete {
-            return None;
-        }
-        merge(&mut config, &parsed.file);
-    }
-    let account = keyfile::unescape(seat_value(&config, SEAT, "autologin-user")?)?;
+    accounts
+}
+
+/// The account `config` names for the seat, if any.
+fn seat_account(config: &keyfile::KeyFile) -> Option<String> {
+    let account = keyfile::unescape(seat_value(config, SEAT, "autologin-user")?)?;
     (!account.is_empty()).then_some(account)
+}
+
+/// Every account a LightDM file may set for the seat, in any group that can
+/// apply to it.
+fn every_lightdm_user<'a>(files: impl Iterator<Item = &'a keyfile::Parsed>) -> Vec<String> {
+    files
+        .flat_map(keyfile::Parsed::outcomes)
+        .flat_map(keyfile::KeyFile::entries)
+        .filter(|&(group, key, _)| key == "autologin-user" && seat_group_applies(group, SEAT))
+        .filter_map(|(_, _, value)| keyfile::unescape(value))
+        .filter(|account| !account.is_empty())
+        .collect()
 }
 
 /// LightDM's merge of one file into its configuration: every key replaces
@@ -199,6 +253,15 @@ fn merge(config: &mut keyfile::KeyFile, file: &keyfile::KeyFile) {
         };
         config.set(group, key, value);
     }
+}
+
+/// Whether LightDM applies the settings of `group` to `seat`: `[Seat:*]`,
+/// `[SeatDefaults]`, or a `[Seat:…]` whose pattern matches it.
+fn seat_group_applies(group: &str, seat: &str) -> bool {
+    group == "SeatDefaults"
+        || group
+            .strip_prefix("Seat:")
+            .is_some_and(|pattern| glob_matches(pattern, seat))
 }
 
 /// The raw value LightDM gives `key` on `seat`: from `[Seat:*]`, then from
