@@ -162,11 +162,19 @@ jobs:
 
       # The prompt syntax tests skip a shell that is not installed. The
       # chrooted-activation kernel test runs a statically linked busybox when
-      # the host has no Nix store to bind.
-      - name: Install shells for the shell tests
+      # the host has no Nix store to bind, and the network way-back kernel
+      # tests run nft.
+      - name: Install the tools the tests run
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsh fish busybox-static
+          sudo apt-get install -y zsh fish busybox-static nftables
+
+      # The network way-back kernel tests add dummy links and firewall tables
+      # in a network namespace of their own, and NAILS_REQUIRE_USERNS fails
+      # them on a kernel without either; a module the runner's kernel lacks
+      # fails this step instead.
+      - name: Load the modules of the network kernel tests
+        run: sudo modprobe -a dummy nf_tables
 
       # The tests run against an empty private TMPDIR that must still be empty
       # afterwards: a test that leaks temp files makes the suite order-dependent.
