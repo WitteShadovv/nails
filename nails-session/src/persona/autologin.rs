@@ -17,6 +17,12 @@
 //! - SDDM reads every file in `/usr/lib/sddm/sddm.conf.d`, then in
 //!   `/etc/sddm.conf.d`, then `/etc/sddm.conf` ([`sddm`]): `User=` in
 //!   `[Autologin]`.
+//! - Plasma Login Manager reads `/usr/lib/plasmalogin/plasmalogin.conf.d`,
+//!   `/etc/plasmalogin.conf.d` and `/etc/plasmalogin.conf` in the same way:
+//!   `User=` in `[Autologin]`, and since 6.8 in the `[Autologin][seat0]`
+//!   group of the seat when it has one. Up to 6.6 it parsed them as SDDM
+//!   does, since 6.7 through KConfig ([`kconfig`]); an account either way of
+//!   reading names counts.
 //! - LightDM reads the `*.conf` files in `lightdm/lightdm.conf.d` below
 //!   `/usr/share`, `/usr/local/share` and `/etc/xdg`, then in
 //!   `/etc/lightdm/lightdm.conf.d`, then `/etc/lightdm/lightdm.conf`, each a
@@ -27,15 +33,19 @@
 //!
 //! The seat judged is the first one, `seat0`: GDM logs in there only, and
 //! every machine has it. The files of a directory are read in the byte order
-//! of their names, LightDM's order. SDDM sorts them by the system's
-//! collation instead, which can put names that differ in case or punctuation
-//! in another order.
+//! of their names, LightDM's order. SDDM and Plasma Login Manager sort them
+//! by the system's collation instead, which can put names that differ in
+//! case or punctuation in another order.
 //!
-//! GDM turned on without naming an account counts as the operator: GDM also
-//! reads `/run/gdm/custom.conf` first, which can name one. So the inventory
-//! may list an autologin that does not happen, rather than leave out one that
-//! does.
+//! Where the files alone do not tell, an account counts whenever it could be
+//! the one logged in: a translated KConfig `User` (the language the display
+//! manager runs in decides), a value KConfig expands from the environment
+//! (`[$e]`), and GDM turned on without naming an account, which counts as the
+//! operator (GDM also reads `/run/gdm/custom.conf` first, which can name
+//! one). So the inventory may list an autologin that does not happen,
+//! rather than leave out one that does.
 
+mod kconfig;
 mod keyfile;
 mod sddm;
 
@@ -54,6 +64,14 @@ const GDM_FILES: [&str; 3] = [
 /// SDDM's directories of drop-ins in reading order, then its main file.
 const SDDM_DIRS: [&str; 2] = ["/usr/lib/sddm/sddm.conf.d", "/etc/sddm.conf.d"];
 const SDDM_FILE: &str = "/etc/sddm.conf";
+
+/// Plasma Login Manager's directories of drop-ins in reading order, then its
+/// main file.
+const PLASMA_LOGIN_DIRS: [&str; 2] = [
+    "/usr/lib/plasmalogin/plasmalogin.conf.d",
+    "/etc/plasmalogin.conf.d",
+];
+const PLASMA_LOGIN_FILE: &str = "/etc/plasmalogin.conf";
 
 /// LightDM's directories of drop-ins in reading order: below the XDG data
 /// directories (`/usr/local/share:/usr/share` when unset, as for its
@@ -76,6 +94,7 @@ const SEAT: &str = "seat0";
 pub(super) fn accounts<F: PersonaSource>(fs: &F, operator: &str) -> Vec<String> {
     let mut accounts = gdm(fs, operator);
     accounts.extend(sddm_account(fs));
+    accounts.extend(plasma_login(fs));
     accounts.extend(lightdm(fs));
     accounts
         .iter()
@@ -117,7 +136,27 @@ fn gdm_true(value: &str) -> bool {
 /// The account SDDM logs in.
 fn sddm_account<F: PersonaSource>(fs: &F) -> Option<String> {
     let texts = texts(fs, &qt_files(fs, &SDDM_DIRS, SDDM_FILE));
-    sddm::autologin_user(texts.iter().map(String::as_str))
+    sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()))
+}
+
+/// The accounts Plasma Login Manager logs in, by SDDM's parser and by
+/// KConfig's.
+fn plasma_login<F: PersonaSource>(fs: &F) -> Vec<String> {
+    let texts = texts(fs, &qt_files(fs, &PLASMA_LOGIN_DIRS, PLASMA_LOGIN_FILE));
+    let mut accounts: Vec<String> =
+        sddm::autologin_user(texts.iter().map(|(text, _)| text.as_str()))
+            .into_iter()
+            .collect();
+    let sources: Vec<kconfig::Source<'_>> = texts
+        .iter()
+        .map(|(text, path)| kconfig::Source {
+            text: text.as_str(),
+            main: path.as_path() == Path::new(PLASMA_LOGIN_FILE),
+        })
+        .collect();
+    let seat = format!("Autologin\u{1d}{SEAT}");
+    accounts.extend(kconfig::users(&sources, &["Autologin", &seat]));
+    accounts
 }
 
 /// The account LightDM logs in on the seat, if any.
@@ -234,9 +273,12 @@ fn sorted_entries<F: PersonaSource>(
     entries
 }
 
-/// The text of each of `files` that can be read.
-fn texts<F: PersonaSource>(fs: &F, files: &[PathBuf]) -> Vec<String> {
-    files.iter().filter_map(|path| fs.text(path)).collect()
+/// The text of each of `files` that can be read, with its path.
+fn texts<F: PersonaSource>(fs: &F, files: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    files
+        .iter()
+        .filter_map(|path| fs.text(path).map(|text| (text, path.clone())))
+        .collect()
 }
 
 #[cfg(test)]

@@ -1295,12 +1295,15 @@ Disabling changes what *runs*; it does not roll back remote or account state.
 **Autologin repeats at every switch.** Each soft-reboot starts a fresh display
 manager, and one set to log an account in automatically logs it in again, as
 at boot: after `activate` the hidden desktop opens without a password, and after
-`deactivate` or `emergency` the decoy's does. NAILS logs nobody in and leaves
-the setting alone; `nails check` lists an autologin it finds in the decoy's
-GDM, SDDM or LightDM configuration, and keeps listing it while the decoy has
-it, even once the hidden session turns it off. It reads the files as the
-display manager does, in its order, so an empty setting in a file read later
-turns autologin off (see
+`deactivate` or `emergency` the decoy's does. Plasma Login Manager 6.7 and
+later are the exception on systemd 256 and later, which counts soft-reboots:
+they log in on their own after a full boot, and after a soft-reboot only with
+`Relogin=true` under `[Autologin]`. NAILS logs nobody in and leaves the
+setting alone; `nails check` lists an autologin it finds in the decoy's GDM,
+SDDM, Plasma Login Manager or LightDM configuration, whatever `Relogin` says,
+and keeps listing it while the decoy has it, even once the hidden session
+turns it off. It reads the files as the display manager does, in its order,
+so an empty setting in a file read later turns autologin off (see
 [Inherited decoy state](configuration.md#inherited-decoy-state)). To keep
 autologin on the decoy but have the hidden session start at its login screen,
 turn it off in the hidden session only:
@@ -1315,9 +1318,9 @@ turn it off in the hidden session only:
   the others, empty the setting in the file the display manager reads last,
   which overrides its drop-ins: `autologin-user=` in the `[Seat:*]` section
   of `/etc/lightdm/lightdm.conf` for LightDM, `User=` under `[Autologin]` in
-  `/etc/sddm.conf` for SDDM; create the file if it is missing. The edit lands
-  in the upper, so it applies from the next activation and the decoy keeps
-  its own setting.
+  `/etc/sddm.conf` for SDDM or in `/etc/plasmalogin.conf` for Plasma Login
+  Manager; create the file if it is missing. The edit lands in the upper, so
+  it applies from the next activation and the decoy keeps its own setting.
 
 #### Remote state and sync clients
 

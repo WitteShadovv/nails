@@ -302,9 +302,9 @@ fn collect_wants<F: PersonaSource>(
     push_sorted(entries, names, source);
 }
 
-/// The display-manager autologin the decoy carries: the accounts GDM, SDDM and
-/// LightDM log in on their own, read as each of them reads its files
-/// ([`autologin`]).
+/// The display-manager autologin the decoy carries: the accounts GDM, SDDM,
+/// Plasma Login Manager and LightDM log in on their own, read as each of them
+/// reads its files ([`autologin`]).
 fn collect_autologin<F: PersonaSource>(fs: &F, user: &str, entries: &mut Vec<PersonaEntry>) {
     push_sorted(
         entries,
