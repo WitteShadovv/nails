@@ -1302,8 +1302,9 @@ they log in on their own after a full boot, and after a soft-reboot only with
 setting alone; `nails check` lists an autologin it finds in the decoy's GDM,
 SDDM, Plasma Login Manager or LightDM configuration, whatever `Relogin` says,
 and keeps listing it while the decoy has it, even once the hidden session
-turns it off. It reads the files as the display manager does, in its order,
-so an empty setting in a file read later turns autologin off (see
+turns it off. It reads the files as the display manager does, in its order
+(in each order it may take, where its locale decides), so an empty setting in
+a file read later turns autologin off (see
 [Inherited decoy state](configuration.md#inherited-decoy-state)). To keep
 autologin on the decoy but have the hidden session start at its login screen,
 turn it off in the hidden session only:
