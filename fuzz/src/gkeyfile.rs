@@ -7,28 +7,32 @@
 //! functions it calls, then `g_key_file_get_value()` and
 //! `g_key_file_parse_value_as_string()` (glib/gkeyfile.c).
 //!
-//! A NUL ends a C string, so GLib's line functions stop at one where its
-//! byte counts go on; a text that holds one is [`Load::Undecided`]. So is a
-//! key whose language tag holds a character beyond ASCII, which GLib judges
-//! with its own Unicode tables. A translated key is always kept here: GDM
-//! keeps translations, and LightDM's choice by language changes no key
-//! without a tag.
+//! A NUL ends a C string: the functions that take a line as one stop there,
+//! while the byte counts the line is passed with go on past it. A key whose
+//! language tag holds a character beyond ASCII is judged by GLib's own Unicode
+//! tables, so the load may go on past it or fail there; [`Load::refused`]
+//! keeps what GLib holds in the second case. A translated key is always kept
+//! here: GDM keeps translations, and LightDM's choice by language changes no
+//! key without a tag.
 
 /// A loaded key file: the groups in the order they were added, each with its
 /// keys in the order they were added and the value each was last given.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct KeyFile {
     pub groups: Vec<(String, Vec<(String, String)>)>,
 }
 
 /// What loading a text gives.
 #[derive(Debug)]
-pub enum Load {
-    /// What GLib parsed, and whether the load failed on a line (GLib keeps
-    /// what it parsed before).
-    Loaded { file: KeyFile, failed: bool },
-    /// GLib's outcome is not modelled for this text.
-    Undecided,
+pub struct Load {
+    /// What GLib parsed taking each key whose tag goes beyond ASCII for
+    /// valid, and whether the load failed on a line (GLib keeps what it
+    /// parsed before).
+    pub file: KeyFile,
+    pub failed: bool,
+    /// What GLib holds when it takes one of those keys for invalid instead:
+    /// what it parsed before each, the load failed there.
+    pub refused: Vec<KeyFile>,
 }
 
 struct Parser {
@@ -38,11 +42,20 @@ struct Parser {
     current: Option<usize>,
     /// `key_file->start_group`: the first named group.
     start: Option<usize>,
+    refused: Vec<KeyFile>,
 }
 
 enum Line {
     Ok,
     Error,
+}
+
+/// What `g_key_file_is_key_name()` says.
+enum KeyName {
+    Valid,
+    Invalid,
+    /// Valid if the characters of the tag beyond ASCII are letters or digits
+    /// to GLib, invalid otherwise.
     Undecided,
 }
 
@@ -65,15 +78,21 @@ fn next_char(s: &[u8], at: usize) -> usize {
     next
 }
 
-pub fn load(text: &str) -> Load {
-    if text.contains('\0') {
-        return Load::Undecided;
+/// `s` as a C string: up to its first NUL.
+fn c_str(s: &[u8]) -> &[u8] {
+    match s.iter().position(|&c| c == 0) {
+        Some(nul) => &s[..nul],
+        None => s,
     }
+}
+
+pub fn load(text: &str) -> Load {
     let data = text.as_bytes();
     let mut parser = Parser {
         file: KeyFile::default(),
         current: None,
         start: None,
+        refused: Vec::new(),
     };
     let mut buffer: Vec<u8> = Vec::new();
     let mut i = 0;
@@ -87,12 +106,12 @@ pub fn load(text: &str) -> Load {
                 match parser.parse_line(&buffer) {
                     Line::Ok => {}
                     Line::Error => {
-                        return Load::Loaded {
+                        return Load {
                             file: parser.file,
                             failed: true,
+                            refused: parser.refused,
                         };
                     }
-                    Line::Undecided => return Load::Undecided,
                 }
                 buffer.clear();
             }
@@ -107,18 +126,11 @@ pub fn load(text: &str) -> Load {
         }
     }
     // g_key_file_flush_parse_buffer()
-    let failed = if buffer.is_empty() {
-        false
-    } else {
-        match parser.parse_line(&buffer) {
-            Line::Ok => false,
-            Line::Error => true,
-            Line::Undecided => return Load::Undecided,
-        }
-    };
-    Load::Loaded {
+    let failed = !buffer.is_empty() && matches!(parser.parse_line(&buffer), Line::Error);
+    Load {
         file: parser.file,
         failed,
+        refused: parser.refused,
     }
 }
 
@@ -146,7 +158,8 @@ impl Parser {
         while line[name_end] != b']' {
             name_end -= 1;
         }
-        let name = &line[name_start..name_end];
+        // g_strndup()
+        let name = c_str(&line[name_start..name_end]);
         if !is_group_name(name) {
             return Line::Error;
         }
@@ -182,9 +195,9 @@ impl Parser {
         }
         let key = &line[..=key_end];
         match is_key_name(key) {
-            Some(true) => {}
-            Some(false) => return Line::Error,
-            None => return Line::Undecided,
+            KeyName::Valid => {}
+            KeyName::Invalid => return Line::Error,
+            KeyName::Undecided => self.refused.push(self.file.clone()),
         }
         let mut value_start = eq + 1;
         while value_start < line.len() && ascii_isspace(line[value_start]) {
@@ -198,7 +211,8 @@ impl Parser {
             return Line::Error;
         }
         let key = std::str::from_utf8(key).expect("cut at ASCII bytes");
-        let value = std::str::from_utf8(value).expect("cut at ASCII bytes");
+        // g_strndup()
+        let value = std::str::from_utf8(c_str(value)).expect("cut at ASCII bytes");
         // g_key_file_add_key_value_pair(): the lookup map takes the new pair.
         let keys = &mut self.file.groups[group].1;
         match keys.iter_mut().find(|(k, _)| k == key) {
@@ -211,7 +225,7 @@ impl Parser {
 
 /// `g_key_file_line_is_comment()`, the line's leading whitespace skipped.
 fn line_is_comment(line: &[u8]) -> bool {
-    line.is_empty() || line[0] == b'#'
+    line.is_empty() || line[0] == b'#' || line[0] == 0
 }
 
 /// `g_key_file_line_is_group()`.
@@ -220,22 +234,22 @@ fn line_is_group(line: &[u8]) -> bool {
         return false;
     }
     let mut p = 1;
-    while p < line.len() && line[p] != b']' {
+    while p < line.len() && line[p] != 0 && line[p] != b']' {
         p = next_char(line, p);
     }
-    if p >= line.len() {
+    if p >= line.len() || line[p] != b']' {
         return false;
     }
     p = next_char(line, p);
     while p < line.len() && (line[p] == b' ' || line[p] == b'\t') {
         p = next_char(line, p);
     }
-    p == line.len()
+    p == line.len() || line[p] == 0
 }
 
 /// `g_key_file_line_is_key_value_pair()`.
 fn line_is_key_value_pair(line: &[u8]) -> bool {
-    match line.iter().position(|&b| b == b'=') {
+    match c_str(line).iter().position(|&b| b == b'=') {
         None => false,
         // "Key must be non-empty": the `=` is not the first character.
         Some(p) => line[p] != line[0],
@@ -251,19 +265,21 @@ fn is_group_name(name: &[u8]) -> bool {
     !(q < name.len() || q == 0)
 }
 
-/// `g_key_file_is_key_name()`; `None` for a language tag beyond ASCII.
-fn is_key_name(name: &[u8]) -> Option<bool> {
+/// `g_key_file_is_key_name()`, which `g_unichar_isalnum()` decides for a
+/// character beyond ASCII.
+fn is_key_name(name: &[u8]) -> KeyName {
     let end = name.len();
     let mut q = 0;
     while q < end && name[q] != b'=' && name[q] != b'[' && name[q] != b']' {
         q = next_char(name, q);
     }
     if q == 0 {
-        return Some(false);
+        return KeyName::Invalid;
     }
     if name[0] == b' ' || name[q - 1] == b' ' {
-        return Some(false);
+        return KeyName::Invalid;
     }
+    let mut beyond_ascii = false;
     if q < end && name[q] == b'[' {
         q += 1;
         while q < end
@@ -271,17 +287,19 @@ fn is_key_name(name: &[u8]) -> Option<bool> {
                 || matches!(name[q], b'-' | b'_' | b'.' | b'@')
                 || !name[q].is_ascii())
         {
-            if !name[q].is_ascii() {
-                return None;
-            }
+            beyond_ascii |= !name[q].is_ascii();
             q = next_char(name, q);
         }
         if q >= end || name[q] != b']' {
-            return Some(false);
+            return KeyName::Invalid;
         }
         q += 1;
     }
-    Some(q >= end)
+    match (q >= end, beyond_ascii) {
+        (false, _) => KeyName::Invalid,
+        (true, false) => KeyName::Valid,
+        (true, true) => KeyName::Undecided,
+    }
 }
 
 impl KeyFile {
