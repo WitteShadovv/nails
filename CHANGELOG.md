@@ -305,9 +305,11 @@ of this changelog for that version becomes the release notes word for word, and
   longer updates the file's access time on every way back.
 - The 0.3.0-rc.3 notes and the threat model called the process numbers of the getty and login
   records written after the way back a weaker tell that needs a cold-boot baseline and is gone at
-  the next power-off. Where the decoy keeps classic `wtmp` (Ubuntu 24.04, NixOS), those records stay
-  on the decoy disk, next to the low numbers of every earlier boot in the same file. Only a session
-  ended with `--poweroff`, which has no way back, leaves none of them.
+  the next power-off. Where the decoy keeps classic `wtmp` (Ubuntu 24.04, Debian 13 and NixOS), those
+  records stay on the decoy disk, next to the low numbers of every earlier boot in the same file.
+  Debian 13 is among them although `last` there reads wtmpdb, which keeps no process numbers: its
+  getty still writes `/var/log/wtmp`. Only a session ended with `--poweroff`, which has no way back,
+  leaves none of them.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

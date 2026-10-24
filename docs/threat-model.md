@@ -467,14 +467,18 @@ it and the wtmpdb writer's unit loaded from files that are gone, the writer's
 unit with the start command and the drop-in the way back gave it. `nails
 verify` reports any of the pieces still in `/run` when their step never ran.
 
-One difference is left. Where the decoy keeps classic wtmp (Ubuntu 24.04 and
-NixOS do), the getty and login records written after the way back carry process
-numbers that continue from the decoy's boot, where a fresh kernel starts them
-low. These records are written to the decoy disk and stay after any later
-power-off, next to the low numbers of every earlier boot in the same file, so
-the file itself holds the baseline that sets them apart. wtmpdb keeps no process
-numbers. Only a session ended with `deactivate --poweroff` (or `emergency
---poweroff`), which has no way back, leaves none of it.
+One difference is left. Where the decoy keeps classic wtmp, the getty and login
+records written after the way back carry process numbers that continue from the
+decoy's boot, where a fresh kernel starts them low. Ubuntu 24.04 and NixOS keep
+it, and so does Debian 13: its getty still adds a record with its process number
+to `/var/log/wtmp` each time it starts, although `last` there reads wtmpdb.
+These records are written to the decoy disk and stay after any later power-off,
+next to the low numbers of every earlier boot in the same file, so the file
+itself holds the baseline that sets them apart. The way back corrects only a
+backdated boot record in that file and leaves these as they are. wtmpdb keeps no
+process numbers, so on Debian 13 the tell is in `/var/log/wtmp`, not in the
+wtmpdb database. Only a session ended with `deactivate --poweroff` (or
+`emergency --poweroff`), which has no way back, leaves none of it.
 
 ## Evaluation scope
 
