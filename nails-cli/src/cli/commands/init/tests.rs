@@ -668,7 +668,9 @@ mod kernel_tests {
 
     /// Run `body` with a fresh tmpfs volume as its root, in a namespace whose
     /// `/etc/os-release` names NixOS, so the platform gate init runs with
-    /// every flag admits the host whatever distribution runs the test.
+    /// every flag admits the host whatever distribution runs the test. The
+    /// gate reads the rest from the host: one it refuses for another reason
+    /// (PID 1 is not systemd, an image-based system) skips the test.
     fn on_a_volume(test: &str, body: impl FnOnce(&Path)) {
         let _ = Rerun::new(test).in_user_mount_ns().run(|| {
             let release = tempfile::NamedTempFile::new().unwrap();
@@ -681,6 +683,15 @@ mod kernel_tests {
                 None::<&str>,
             )
             .expect("bind a NixOS os-release over /etc/os-release");
+            match nails_core::detect(&RealFilesystem).map(|host| host.require_supported()) {
+                Ok(Ok(())) => {}
+                Ok(Err(refused)) => nails_core::test_support::skip_host(&format!(
+                    "init refuses this host whatever its os-release: {refused}"
+                )),
+                Err(error) => nails_core::test_support::skip_host(&format!(
+                    "the host cannot be detected: {error}"
+                )),
+            }
             let volume = ScratchTmpfs::new("");
             body(volume.path());
         });
