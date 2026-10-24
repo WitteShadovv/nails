@@ -91,7 +91,10 @@ emergency, recover, the forensic scans of the decoy disk after a session, and
 the time budgets in `performance` (the `trigger_to_settled` time of activate and
 deactivate and the `trigger_to_backdoor` time of emergency). A time budget turns
 a slow regression into a failing test; budgets need generous headroom on shared
-runners.
+runners. On Fedora and Arch, which NAILS does not admit yet, a refusal scenario
+run by hand checks that NAILS refuses them, that a refused `activate` changes
+nothing on the hidden root, and that nothing on the decoy's disk filesystems or
+in its journal names the refused run.
 
 ### (d) Contract tests: one body, mock and real
 
