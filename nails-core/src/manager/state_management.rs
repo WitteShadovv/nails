@@ -131,6 +131,20 @@ impl<F: Filesystem> NailsManager<F> {
             )));
         }
         let layout = Layout::new(&self.config.hidden_volume_root);
+        // A symlink the hidden session left above the target in its copy (a
+        // `/home/alice` linking to `/data/alice`) leads every lookup below it
+        // out of the upper: on the decoy, the deletion would follow it to the
+        // decoy's own files.
+        if let Some(link) = self.link_above_in_upper(&layout, target)? {
+            return Err(NailsError::InvalidArgument(format!(
+                "{} lies below {}, a symlink in the hidden session's copy: here it leads out of \
+                 that copy, and the deletion would follow it. Discard {} to delete the link \
+                 itself",
+                target.display(),
+                link.display(),
+                link.display()
+            )));
+        }
         let mounts = self.config.hidden_volume_root.join("root/mounts");
         let candidates = [layout.in_upper(target), mounts.join(escape_path(target))];
         let mut removals = Vec::new();
@@ -147,6 +161,22 @@ impl<F: Filesystem> NailsManager<F> {
             target: target.to_path_buf(),
             removals,
         })
+    }
+
+    /// The first directory above `target` (as the hidden root names it) whose
+    /// copy in the upper is a symlink, checked from `/` down, so each check
+    /// looks up a path whose parents in the upper are real directories.
+    fn link_above_in_upper(&self, layout: &Layout, target: &Path) -> Result<Option<PathBuf>> {
+        let mut above = PathBuf::from("/");
+        for component in target.parent().into_iter().flat_map(Path::components) {
+            if let std::path::Component::Normal(name) = component {
+                above.push(name);
+                if self.filesystem.is_symlink(&layout.in_upper(&above))? {
+                    return Ok(Some(above));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Apply a [`ResetUpperPlan`]: remove what it found. A symlink is removed
@@ -224,6 +254,38 @@ mod tests {
         assert!(std::fs::symlink_metadata(upper.join("system-update")).is_err());
         assert!(std::fs::symlink_metadata(upper.join("linked")).is_err());
         assert!(kept.join("inside").is_dir(), "the link's target must stay");
+    }
+
+    #[test]
+    fn discard_refuses_a_path_below_a_symlink_in_the_upper() {
+        // The hidden session linked /home/alice to a directory that holds
+        // files here: below the link, a deletion would reach those files.
+        let root = tempfile::tempdir().unwrap();
+        let upper = root.path().join("root/upper");
+        std::fs::create_dir_all(upper.join("home")).unwrap();
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join(".cache/files")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, upper.join("home/alice")).unwrap();
+
+        let m = manager(root.path());
+        let error = m
+            .plan_reset_upper_on(Path::new("/home/alice/.cache"), &SessionView::Decoy)
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("/home/alice/.cache lies below /home/alice"),
+            "{text}"
+        );
+        assert!(text.contains("Discard /home/alice"), "{text}");
+        assert!(elsewhere.join(".cache/files").is_dir());
+
+        // The link itself is discarded as the link, the files it names stay.
+        let plan = m
+            .plan_reset_upper_on(Path::new("/home/alice"), &SessionView::Decoy)
+            .unwrap();
+        m.apply_reset_upper(&plan).unwrap();
+        assert!(std::fs::symlink_metadata(upper.join("home/alice")).is_err());
+        assert!(elsewhere.join(".cache/files").is_dir());
     }
 
     #[test]
