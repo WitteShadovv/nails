@@ -276,8 +276,10 @@ impl Fix {
 /// way back must make `/run` `noexec` again, which the reconcile step then does
 /// once the copy has run. The caller leaves `/run` executable until then.
 ///
-/// The binary copy goes last, and a failure removes every piece already
-/// written, so the decoy is left as it would be without the fix.
+/// The writer's drop-in goes last, after the binary copy it starts, so a way
+/// back cut short never leaves the writer a start command that points at a
+/// missing file: it then runs as the decoy has it. A failure removes every
+/// piece already written, so the decoy is left as it would be without the fix.
 pub fn install(
     run: &Path,
     binary: &[u8],
@@ -300,11 +302,10 @@ fn install_pieces(
     restore_noexec: bool,
 ) -> io::Result<()> {
     let bin_path = run.join(FIXUP_DIR).join(FIXUP_BINARY);
-    if let Some(writer) = &fix.writer {
-        boot_writer::install_dropin(run, &bin_path, switched_at, writer)?;
-    }
 
     // The reconcile one-shot and the symlink that pulls it into the first start.
+    // Its start command is prefixed `-`: should the way back stop before the
+    // copy below is in place, the decoy's start skips it.
     let unit_dir = run.join(RUNTIME_UNIT_DIR);
     std::fs::create_dir_all(&unit_dir)?;
     plan::write_atomic_with_mode(
@@ -320,7 +321,14 @@ fn install_pieces(
 
     // The binary copy, in its own directory so the step can remove it whole.
     std::fs::create_dir_all(run.join(FIXUP_DIR))?;
-    write_executable(&bin_path, binary)
+    write_executable(&bin_path, binary)?;
+
+    // Last, the writer's drop-in: it replaces the writer's start command with
+    // the copy, which is in place by now.
+    if let Some(writer) = &fix.writer {
+        boot_writer::install_dropin(run, &bin_path, switched_at, writer)?;
+    }
+    Ok(())
 }
 
 /// Write `bytes` to `path` as a private executable, through a temporary file in
