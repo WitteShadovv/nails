@@ -111,6 +111,10 @@ fn file_round_trip<F: Filesystem>(fs: &F, root: &Path) {
         !fs.is_directory(&file).unwrap(),
         "a written file is not a directory"
     );
+    assert!(
+        fs.is_regular_file(&file).unwrap(),
+        "a written file is a regular file"
+    );
 }
 
 fn file_size_tracks_content<F: Filesystem>(fs: &F, root: &Path) {
@@ -142,6 +146,10 @@ fn missing_file_queries<F: Filesystem>(fs: &F, root: &Path) {
         fs.file_size(&missing).is_err(),
         "sizing a missing file should error"
     );
+    assert!(
+        !fs.is_regular_file(&missing).unwrap(),
+        "a missing path is no regular file"
+    );
 }
 
 fn directory_creation<F: Filesystem>(fs: &F, root: &Path) {
@@ -152,6 +160,10 @@ fn directory_creation<F: Filesystem>(fs: &F, root: &Path) {
     assert!(
         fs.is_directory(&dir).unwrap(),
         "created directory reports as a directory"
+    );
+    assert!(
+        !fs.is_regular_file(&dir).unwrap(),
+        "a directory is no regular file"
     );
 
     // Nested creation (create parents) is supported by both implementations.
@@ -175,6 +187,10 @@ fn symlink_behaviour<F: Filesystem>(fs: &F, root: &Path) {
     assert!(
         !fs.is_symlink(&target).unwrap(),
         "a regular file does not report as a symlink"
+    );
+    assert!(
+        fs.is_regular_file(&link).unwrap(),
+        "a symlink to a regular file leads to one"
     );
 
     // Creating the same symlink again is idempotent.

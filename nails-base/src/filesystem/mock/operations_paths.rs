@@ -56,6 +56,20 @@ impl MockFilesystem {
             .unwrap_or(false))
     }
 
+    /// A path that exists and is neither a directory nor a link, once the
+    /// links `create_symlink` recorded are followed. A link the mock cannot
+    /// follow (one marked with `mock_set_path_type` alone, or a loop) is no
+    /// regular file, as a dangling link is none to `stat`.
+    pub(super) fn is_regular_file_impl(&self, path: &Path) -> Result<bool> {
+        let Ok(target) = self.canonicalize_impl(path) else {
+            return Ok(false);
+        };
+        let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+        Ok(paths
+            .get(&target)
+            .is_some_and(|info| info.exists && !info.is_directory && !info.is_symlink))
+    }
+
     pub(super) fn is_symlink_impl(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths.get(path).map(|info| info.is_symlink).unwrap_or(false))

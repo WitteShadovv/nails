@@ -575,6 +575,16 @@ pub fn exists_in_root(root: &Path, path: &Path) -> bool {
     open_in_root(root, path).is_ok()
 }
 
+/// Whether `path` is a regular file as if `root` were `/`, its symlinks
+/// resolved inside `root` as [`exists_in_root`] resolves them. The lookup
+/// opens nothing it reads (`O_PATH`), so a FIFO or a device found there is
+/// never opened.
+pub fn is_file_in_root(root: &Path, path: &Path) -> bool {
+    open_in_root(root, path)
+        .and_then(|fd| rustix::fs::fstat(&fd).map_err(to_io))
+        .is_ok_and(|stat| (stat.st_mode & libc::S_IFMT) == libc::S_IFREG)
+}
+
 /// How many symlinks [`canonical_in_root`] follows by their text before it
 /// gives a path up, as the kernel's own limit for one lookup.
 const MAX_LINK_HOPS: usize = 40;

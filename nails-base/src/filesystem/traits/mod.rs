@@ -162,6 +162,12 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Check if a path is a directory.
     fn is_directory(&self, path: &Path) -> Result<bool>;
 
+    /// Whether `path` is a regular file once its symlinks are followed, as
+    /// `stat(2)` sees it. A directory, a FIFO, a socket or a device node is
+    /// not one, nor is a path that is missing or cannot be inspected: reading
+    /// a FIFO can block, and reading a device can go on without end.
+    fn is_regular_file(&self, path: &Path) -> Result<bool>;
+
     /// The id of the device that holds `path` (the `st_dev` of its inode).
     ///
     /// Two paths share a device id only when they sit on the same mounted
