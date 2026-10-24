@@ -139,6 +139,31 @@ fn a_link_the_session_made_again_under_a_decoy_links_name_is_deleted() {
 }
 
 #[test]
+fn a_decoy_link_the_session_only_renamed_is_still_the_decoys() {
+    // The session renamed the decoy's bridge and Wi-Fi interface (a link file
+    // of its own, say): each keeps its index, so neither is deleted, and the
+    // interface gets its address back under its new name.
+    let record = record_of(
+        vec![link("br0", 4, true, None), wifi("wlp3s0", 3, "phy0")],
+        b"decoy",
+    );
+    let current = vec![
+        link("lan", 4, true, None),
+        Link {
+            mac: Some(SESSION_MAC.to_string()),
+            ..wifi("wlan0", 3, "phy0")
+        },
+    ];
+    let plan = plan(&record, &current, b"decoy");
+    assert!(plan.delete.is_empty(), "{plan:?}");
+    assert!(plan.delete_wireless.is_empty(), "{plan:?}");
+    assert_eq!(
+        plan.set_mac,
+        vec![("wlan0".to_string(), "02:00:00:00:00:aa".to_string())]
+    );
+}
+
+#[test]
 fn a_wifi_interface_the_session_added_on_a_decoy_radio_is_deleted_and_a_new_adapter_is_left() {
     let record = record_of(vec![wifi("wlan0", 3, "phy0")], b"decoy");
     let current = vec![
@@ -151,6 +176,17 @@ fn a_wifi_interface_the_session_added_on_a_decoy_radio_is_deleted_and_a_new_adap
     let plan = plan(&record, &current, b"decoy");
     assert_eq!(plan.delete_wireless, ["wlan0mon"]);
     assert!(plan.delete.is_empty());
+}
+
+#[test]
+fn an_interface_made_in_place_of_the_decoys_goes_and_the_decoys_is_not_made_again() {
+    // The session's iwd deleted the decoy's interface when it started and made
+    // one of its own on the same radio, under a new index.
+    let record = record_of(vec![wifi("wlan0", 3, "phy0")], b"decoy");
+    let current = vec![wifi("wlan0", 16, "phy0")];
+    let plan = plan(&record, &current, b"decoy");
+    assert_eq!(plan.delete_wireless, ["wlan0"]);
+    assert!(plan.set_mac.is_empty(), "{:?}", plan.set_mac);
 }
 
 #[test]

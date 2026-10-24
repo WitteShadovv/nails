@@ -394,9 +394,10 @@ journal that starts late:
     a dummy, the bridges and virtual ports of containers and virtual machines)
     and the Wi-Fi interfaces it added on one of the decoy's radios (a monitor
     or access point interface; this needs `iw`). A link counts as the decoy's
-    only with the name and the index it had at entry, so a tunnel the session
-    brought up under the name of one of the decoy's, which the decoy's own
-    stop took down, goes too;
+    only with the index it had at entry, and a link made again gets a new
+    one, so a tunnel the session brought up under the name of one of the
+    decoy's, which the decoy's own stop took down, goes too, while a link of
+    the decoy's that the session only renamed stays;
   - the MAC address of each of the decoy's devices, where the session changed
     it. Many drivers refuse to change the MAC address of a device that is up
     (USB Ethernet adapters such as the ASIX AX88179, and many Wi-Fi cards);
@@ -435,21 +436,28 @@ journal that starts late:
   decoy's, so a VPN app's table that blocks all traffic outside its tunnel
   keeps the decoy offline; the settings of a single device
   (`net.ipv4.conf.eth0.*`) and the network settings not listed above; any
-  link, rule or table the session deleted, which is not made again; a Wi-Fi
-  interface it added where `iw` is not installed, and its links and rules
-  where `ip` (iproute2) is not; and a MAC address the way back cannot set
-  back, because the driver refuses the change even with the device down,
-  because `ip` is not installed, or because the device was unplugged and
-  plugged in again during the session, which makes it a new link. The decoy's NetworkManager goes on using such an address
-  unless the decoy's profile sets one, so it can reach the decoy disk (in a
-  DHCP lease, for one). The way back also leaves alone a part of the network
-  state that activation could not read in full, rather than take the decoy's
-  for the session's. It runs with no output after the session has ended, so
-  nothing tells you what it left: take a VPN connection down with its own
-  tool (`wg-quick down`, `nmcli connection down`, the app's disconnect) and
-  stop the containers and virtual machines of the session before you
-  deactivate, and end a session with `deactivate --poweroff` (or
-  `emergency --poweroff`) when none of its network state may reach the decoy.
+  link, rule or table the session deleted, which is not made again, and the
+  name it gave one of the decoy's links; a Wi-Fi interface of the decoy's
+  that software in the session replaced with one of its own, as iwd does by
+  default when it starts and airmon-ng does when it starts monitor mode: the
+  way back deletes the replacement but does not make the decoy's interface
+  again, so the decoy has no Wi-Fi on that radio; a Wi-Fi interface the
+  session added where `iw` is not installed, and its links and rules where
+  `ip` (iproute2) is not; and a MAC address the way back cannot set back,
+  because the driver refuses the change even with the device down, because
+  `ip` is not installed, or because the device was plugged in, or unplugged
+  and plugged in again, during the session, which makes it a new link. The
+  decoy's NetworkManager goes on using such an address unless the decoy's
+  profile sets one, so it can reach the decoy disk (in a DHCP lease, for
+  one). The way back also leaves alone a part of the network state that
+  activation could not read in full, rather than take the decoy's for the
+  session's. It runs with no output after the session has ended, so nothing
+  tells you what it left: take a VPN connection down with its own tool
+  (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
+  monitor mode with `airmon-ng stop`, and stop the containers and virtual
+  machines of the session before you deactivate, and end a session with
+  `deactivate --poweroff` (or `emergency --poweroff`) when none of its
+  network state may reach the decoy.
 - on a volatile decoy, a journal that starts at the return. The way back
   deletes the runtime journal the decoy shared with the hidden session, so the
   decoy's own records from before the session (the activation's sudo line, the
