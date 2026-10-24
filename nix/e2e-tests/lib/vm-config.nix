@@ -51,7 +51,17 @@
   # garbage, it puts the collected paths back into the decoy's store database,
   # a change no session made. The registration belongs to the boot: a marker in
   # /run, which a soft-reboot carries over, keeps it to the first start.
+  #
+  # Opening the store makes Nix create /nix/var/nix/temproots again, which
+  # NixOS deletes at every start of the service manager (the boot-only tmpfiles
+  # rule `R! /nix/var/nix/temproots`), the start after the way back included.
+  # Left unordered, the registration ran after that clean-up, so every boot
+  # ended with the directory on the decoy disk and only the way back, where
+  # the marker skips the registration, without it: the oracle read that as a
+  # removal no reboot makes. Run before the clean-up, a boot ends without the
+  # directory, as on a decoy that has no such unit, until a Nix client runs.
   systemd.services.register-nix-paths = lib.mkIf config.nix.enable {
+    before = [ "systemd-tmpfiles-setup.service" ];
     unitConfig.ConditionPathExists = "!/run/register-nix-paths.done";
     serviceConfig.ExecStartPost = "${pkgs.coreutils}/bin/touch /run/register-nix-paths.done";
   };
