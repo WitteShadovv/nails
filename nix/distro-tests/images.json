@@ -50,7 +50,7 @@
     "enforcing": false,
     "memory": 2048,
     "enabled": false,
-    "upstreamUntil": "2027-06-01",
+    "upstreamUntil": "2027-05-19",
     "prepare": "fedora",
     "source": {
       "kind": "upstream",
@@ -68,7 +68,7 @@
     "enforcing": false,
     "memory": 2048,
     "enabled": false,
-    "upstreamUntil": "2027-12-01",
+    "upstreamUntil": "2027-11-17",
     "prepare": "fedora",
     "source": {
       "kind": "pending",
