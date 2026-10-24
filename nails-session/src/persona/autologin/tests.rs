@@ -517,6 +517,29 @@ fn plasma_login_takes_a_key_that_decodes_to_nothing_for_the_group_marker() {
     assert_eq!(accounts_of(&fs), names(&["a"]));
 }
 
+#[test]
+fn plasma_login_reads_the_main_file_past_a_value_only_the_defaults_hold() {
+    // The drop-ins' alice is immutable in the defaults alone: the main file
+    // sets the entry Plasma Login Manager reads, and bob is logged in.
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_VENDOR,
+        "10-a.conf",
+        "[Autologin][seat0]\nUser[$d]\n[Autologin][seat0][$i]\n",
+    );
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "50-b.conf",
+        "[Autologin][seat0]\nUser[$i]=alice\n\\=x\n",
+    );
+    assert_eq!(
+        one(&fs, PLASMA_MAIN, "[Autologin][seat0]\nUser=bob\n"),
+        names(&["bob"])
+    );
+}
+
 // --- KConfig, as Plasma Login Manager reads it since 6.7 ---
 
 /// What KConfig reads for `[Autologin]` and the first seat's group from
@@ -687,6 +710,33 @@ fn kconfig_takes_a_key_that_decodes_to_nothing_for_its_group_marker() {
             "{clear:?}"
         );
     }
+}
+
+#[test]
+fn kconfig_keeps_the_entry_of_the_defaults_apart_from_the_one_it_reads() {
+    // A drop-in's deletion of a key no file set makes only the defaults'
+    // entry. The immutable group then refuses the other one the drop-ins'
+    // value, and once `\=x` clears the mark the main file sets it.
+    let vendor = "[Autologin][seat0]\nUser[$d]\n[Autologin][seat0][$i]\n";
+    for local in [
+        "[Autologin][seat0]\nUser[$i]=alice\n\\=x\n",
+        "[Autologin][seat0]\nUser[$i]=\n\\=x\n",
+    ] {
+        assert_eq!(
+            kconfig(&[vendor, local], Some("[Autologin][seat0]\nUser=bob\n")),
+            names(&["bob"]),
+            "{local:?}"
+        );
+    }
+    // A drop-in that leaves the defaults' entry as it was passes nothing on,
+    // so alice stays out of the entry read; `[$e]` makes it another entry.
+    let deleted = "[Autologin]\nUser[$d]\n[Autologin][$i]\n";
+    let refused = "[Autologin]\nUser=alice\n\\=x\n";
+    assert!(kconfig(&[deleted, refused, "[Autologin]\nUser=alice\n"], None).is_empty());
+    assert_eq!(
+        kconfig(&[deleted, refused, "[Autologin]\nUser[$e]=alice\n"], None),
+        names(&["alice"])
+    );
 }
 
 #[test]
