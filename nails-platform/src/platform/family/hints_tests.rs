@@ -4,14 +4,24 @@
 //! Tests for the install and upgrade hints, family by family.
 
 use super::*;
-use crate::filesystem::MockFilesystem;
+use crate::filesystem::{MockFilesystem, PathKind};
 
-/// The host detection finds for `os_release` on a systemd machine.
-fn host(os_release: &str) -> HostProfile {
+/// A systemd machine whose os-release is `os_release`.
+fn machine(os_release: &str) -> MockFilesystem {
     let fs = MockFilesystem::new();
     fs.mock_add_file("/etc/os-release", os_release);
     fs.mock_add_file("/proc/1/comm", "systemd");
-    crate::platform::detect(&fs).expect("detection reads through the mock")
+    fs
+}
+
+/// The host detection finds on `fs`.
+fn detected(fs: &MockFilesystem) -> HostProfile {
+    crate::platform::detect(fs).expect("detection reads through the mock")
+}
+
+/// The host detection finds for `os_release` on a systemd machine.
+fn host(os_release: &str) -> HostProfile {
+    detected(&machine(os_release))
 }
 
 /// The upgrade hint for a host whose os-release is `os_release`.
@@ -161,6 +171,26 @@ fn a_host_it_cannot_advise_on_is_pointed_at_the_platforms_nails_runs_on() {
         "VERSION_ID=1\n",
     ] {
         assert_eq!(hint_for(os_release), SUPPORTED, "{os_release}");
+    }
+}
+
+#[test]
+fn an_image_based_fedora_is_pointed_at_the_platforms_not_at_dnf() {
+    // Silverblue, Kinoite and CoreOS boot from an ostree image, a bootc host
+    // from a composefs one. Detection refuses them before it consults the
+    // table, and none of them upgrades with `dnf system-upgrade`.
+    let os_release = "ID=fedora\nVERSION_ID=38\nVARIANT_ID=silverblue\n";
+    assert!(hint_for(os_release).contains("`dnf system-upgrade`"));
+
+    let ostree = machine(os_release);
+    ostree.mock_set_path_type("/run/ostree-booted", PathKind::File);
+    let composefs = machine(os_release);
+    composefs.mock_set_file_content("/proc/cmdline", "root=composefs:fedora/x86_64 rw");
+    for (boot, fs) in [("ostree", ostree), ("composefs", composefs)] {
+        let host = detected(&fs);
+        assert_eq!(host.kind, PlatformKind::Unsupported, "{boot}");
+        assert_eq!(host.family, None, "{boot}");
+        assert_eq!(upgrade_hint(Some(&host)), SUPPORTED, "{boot}");
     }
 }
 

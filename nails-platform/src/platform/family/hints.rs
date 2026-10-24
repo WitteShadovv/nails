@@ -76,7 +76,10 @@ const DERIVATIVE_UPGRADE: &str = "as your distribution's upgrade guide describes
 /// - NixOS moves the decoy to a current release.
 /// - A distribution the table lists follows its row: an upgrade to its tested
 ///   releases, or for a derivative to a release built on those of its base
-///   family, or a full update of a rolling system.
+///   family, or a full update of a rolling system. The row holds only for a
+///   host detection placed in the row's family. A host refused before the
+///   table is consulted, such as a Fedora booted from an ostree or composefs
+///   image, has no family and does not upgrade the way its row says.
 /// - A derivative NAILS runs on without listing it upgrades to a release built
 ///   on one its base family is tested on.
 /// - Any other host, and a run without a detected host, is pointed at the
@@ -88,7 +91,10 @@ pub fn upgrade_hint(host: Option<&HostProfile>) -> String {
     if host.kind == PlatformKind::NixOs {
         return NIXOS_UPGRADE.to_string();
     }
-    if let Some(row) = TABLE.iter().find(|row| host.id.as_deref() == Some(row.id)) {
+    if let Some(row) = TABLE
+        .iter()
+        .find(|row| host.id.as_deref() == Some(row.id) && host.family == Some(row.family))
+    {
         return row_hint(row);
     }
     let derivative = host
