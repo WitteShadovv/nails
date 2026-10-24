@@ -75,7 +75,8 @@ impl CryptType {
 /// One block device in the stack under the hidden root, as sysfs reports it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Layer {
-    /// Kernel name (`dm-3`, `loop0`, `sdb1`); used only in messages.
+    /// Kernel name (`dm-3`, `loop0`, `sdb1`): in messages, and to tell
+    /// whether the walk read every device a layer names in its `slaves`.
     name: String,
     /// Whether this is a device-mapper device.
     is_dm: bool,
@@ -351,13 +352,18 @@ fn discards_over_hidden(layers: &[Layer]) -> bool {
 /// it) is a RAM-only zram device, so TRIM reaches no persistent storage. A
 /// zram device anywhere in a stack that also rests on a disk (the cache of a
 /// cached logical volume, say) excepts nothing, and neither does a layer whose
-/// devices below could not be read.
+/// devices below could not be read, nor a walk that did not read every device
+/// a layer names below it: the walk stops after
+/// [`MAX_STACK_DEVICES`](blockdev::MAX_STACK_DEVICES) devices, and the disks
+/// it did not reach would take the discards.
 fn rests_on_ram_only(layers: &[Layer]) -> bool {
+    let walked = |name: &String| layers.iter().any(|layer| layer.name == *name);
+    let complete = layers.iter().all(|layer| layer.slaves.iter().all(walked));
     let mut bottom = layers
         .iter()
         .filter(|layer| layer.slaves.is_empty())
         .peekable();
-    bottom.peek().is_some() && bottom.all(Layer::is_ram_backed)
+    complete && bottom.peek().is_some() && bottom.all(Layer::is_ram_backed)
 }
 
 // ============================================================================

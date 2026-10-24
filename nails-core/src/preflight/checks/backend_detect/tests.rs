@@ -644,6 +644,76 @@ fn a_zram_device_beside_a_disk_in_the_stack_excepts_nothing() {
     assert!(discards_over_hidden(&cut_short));
 }
 
+/// LUKS with discards (dm-20) on a logical volume cached with dm-cache
+/// (dm-19): its origin (dm-16) is striped over ten physical volumes that are
+/// LUKS mappings opened with discards (dm-0 to dm-9, on sda to sdj), its data
+/// and metadata (dm-17, dm-18) sit on zram0. As in sysfs, each `slaves/` entry
+/// is a link to the device's own directory.
+#[test]
+fn a_walk_cut_short_after_a_zram_leaf_excepts_nothing() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        MOUNTINFO,
+        &mountinfo("254:20", "ext4", "/dev/mapper/hidden"),
+    );
+    // A device at `dir` named `name`, with discards on, and the devices
+    // below it.
+    let device = |dir: &str, name: &str, uuid: Option<&str>, below: &[&str]| {
+        add_device(&fs, dir, name, uuid, None, "4096");
+        let links = below
+            .iter()
+            .map(|slave| {
+                let link = PathBuf::from(format!("{dir}/slaves/{slave}"));
+                fs.create_symlink(&Path::new(SYS_BLOCK).join(slave), &link)
+                    .unwrap();
+                link
+            })
+            .collect();
+        fs.mock_set_directory_contents(&Path::new(dir).join("slaves"), links);
+    };
+    let block = |name: &str| format!("{SYS_BLOCK}/{name}");
+    let top = "/sys/dev/block/254:20";
+    device(top, "dm-20", Some("CRYPT-LUKS2-20-hidden"), &["dm-19"]);
+    device(
+        &block("dm-19"),
+        "dm-19",
+        Some("LVM-cache"),
+        &["dm-16", "dm-17", "dm-18"],
+    );
+    let pvs = [
+        "dm-0", "dm-1", "dm-2", "dm-3", "dm-4", "dm-5", "dm-6", "dm-7", "dm-8", "dm-9",
+    ];
+    device(&block("dm-16"), "dm-16", Some("LVM-corig"), &pvs);
+    device(&block("dm-17"), "dm-17", Some("LVM-cdata"), &["zram0"]);
+    device(&block("dm-18"), "dm-18", Some("LVM-cmeta"), &["zram0"]);
+    let disks = [
+        "sda", "sdb", "sdc", "sdd", "sde", "sdf", "sdg", "sdh", "sdi", "sdj",
+    ];
+    for (pv, disk) in pvs.into_iter().zip(disks) {
+        let uuid = format!("CRYPT-LUKS2-{pv}-pv");
+        device(&block(pv), pv, Some(uuid.as_str()), &[disk]);
+        device(&block(disk), disk, None, &[]);
+    }
+    device(&block("zram0"), "zram0", None, &[]);
+
+    // The walk reads sixteen devices, zram0 the last of them, and stops
+    // before the ten disks: the only bottom device it saw is zram0.
+    let layers = device_layers(&fs, Path::new(top));
+    assert_eq!(layers.len(), blockdev::MAX_STACK_DEVICES);
+    assert!(layers.iter().any(|layer| layer.name == "zram0"));
+    assert!(!layers.iter().any(|layer| layer.name.starts_with("sd")));
+
+    // The disks it did not reach take the discards: refused.
+    let result = assess_offline(&fs, Path::new(ROOT));
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("Discards are enabled over the hidden volume"),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn file_container_on_btrfs_warns_about_cow() {
     let fs = tcrypt_container_fixture("btrfs", "0");
