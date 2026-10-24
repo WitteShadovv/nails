@@ -473,8 +473,11 @@ def diff_captures(control: RecordCapture, session: RecordCapture) -> dict[str, o
 
 # --- does a way back read as a power cycle? ---------------------------------
 
-# wtmpdb's row type for a boot (``BOOT_TIME`` in its header, as in utmpx).
-WTMPDB_BOOT_TIME = 2
+# wtmpdb's row type for a boot. wtmpdb numbers its row types its own way, not
+# as utmpx does (``UTMP_TYPES`` above): ``include/wtmpdb.h`` in 0.73.0 has
+# EMPTY 0, BOOT_TIME 1, RUNLEVEL 2 and USER_PROCESS 3, and its import of a
+# classic wtmp turns utmpx's BOOT_TIME 2 into its own 1.
+WTMPDB_BOOT_TIME = 1
 
 # How far (seconds) a stamped time may lie outside the window the test measured
 # around the way back: the guest's clock reads are whole commands apart.

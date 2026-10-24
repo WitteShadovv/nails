@@ -140,30 +140,42 @@ class LastlogParserTest(unittest.TestCase):
 
 
 class WtmpdbReaderTest(unittest.TestCase):
+    # Rows are numbered as wtmpdb numbers them (``include/wtmpdb.h``), not as
+    # utmpx does: a boot is Type 1, a login Type 3. A boot's shutdown is no row
+    # of its own but the boot row's Logout.
     def test_reads_rows_and_detects_soft_reboot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "wtmp.db"
             _make_wtmpdb(
                 db,
                 [
-                    {"Type": 2, "User": "reboot", "Login": 1000, "Service": "0"},
-                    {"Type": 1, "User": "shutdown", "Login": 2000},
                     {
-                        "Type": 2,
+                        "Type": 1,
                         "User": "reboot",
-                        "Login": 3000,
-                        "Service": "soft-reboot",
+                        "Login": 1000,
+                        "Logout": 2500,
+                        "TTY": "~",
                     },
+                    {
+                        "Type": 3,
+                        "User": "user",
+                        "Login": 2000,
+                        "Logout": 2400,
+                        "TTY": "tty1",
+                        "Service": "login",
+                    },
+                    {"Type": 1, "User": "soft-reboot", "Login": 3000, "TTY": "~"},
                 ],
             )
             rows = rec.read_wtmpdb(db)
             self.assertEqual(len(rows), 3)
+            self.assertEqual([r["Type"] for r in rows], [1, 3, 1])
             self.assertTrue(rec.has_soft_reboot_boot_row(rows))
 
     def test_no_soft_reboot_in_normal_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "wtmp.db"
-            _make_wtmpdb(db, [{"Type": 2, "User": "reboot", "Login": 1000}])
+            _make_wtmpdb(db, [{"Type": 1, "User": "reboot", "Login": 1000, "TTY": "~"}])
             self.assertFalse(rec.has_soft_reboot_boot_row(rec.read_wtmpdb(db)))
 
     def test_absent_db_is_no_rows(self) -> None:
@@ -211,42 +223,28 @@ class DiffTest(unittest.TestCase):
         self.assertEqual(added[0]["type"], "BOOT_TIME")
 
     def test_sql_rows_added_ignores_id_and_timestamp(self) -> None:
-        control = [
-            {"ID": 1, "Type": 2, "User": "reboot", "Login": 1000, "Service": "0"}
-        ]
+        control = [{"ID": 1, "Type": 1, "User": "reboot", "Login": 1000, "TTY": "~"}]
         session = [
-            {"ID": 7, "Type": 2, "User": "reboot", "Login": 9999, "Service": "0"},
-            {
-                "ID": 8,
-                "Type": 2,
-                "User": "reboot",
-                "Login": 9998,
-                "Service": "soft-reboot",
-            },
+            {"ID": 7, "Type": 1, "User": "reboot", "Login": 9999, "TTY": "~"},
+            {"ID": 8, "Type": 1, "User": "soft-reboot", "Login": 9998, "TTY": "~"},
         ]
         added = rec.sql_rows_added(control, session)
         # The first row matches the control but for id/timestamp; only the
         # soft-reboot row is genuinely new.
         self.assertEqual(len(added), 1)
-        self.assertEqual(added[0]["Service"], "soft-reboot")
+        self.assertEqual(added[0]["User"], "soft-reboot")
 
     def test_diff_captures_flags_soft_reboot_and_seed(self) -> None:
         control = rec.RecordCapture(
             label="control",
-            wtmpdb=[{"ID": 1, "Type": 2, "User": "reboot", "Login": 1, "Service": "0"}],
+            wtmpdb=[{"ID": 1, "Type": 1, "User": "reboot", "Login": 1, "TTY": "~"}],
             seed={"length": 256, "sha256": "a"},
         )
         session = rec.RecordCapture(
             label="session",
             wtmpdb=[
-                {"ID": 1, "Type": 2, "User": "reboot", "Login": 1, "Service": "0"},
-                {
-                    "ID": 2,
-                    "Type": 2,
-                    "User": "reboot",
-                    "Login": 2,
-                    "Service": "soft-reboot",
-                },
+                {"ID": 1, "Type": 1, "User": "reboot", "Login": 1, "TTY": "~"},
+                {"ID": 2, "Type": 1, "User": "soft-reboot", "Login": 2, "TTY": "~"},
             ],
             seed={"length": 256, "sha256": "b"},
         )
@@ -261,7 +259,7 @@ class DiffTest(unittest.TestCase):
         # The row as wtmpdb 0.73 writes it on Debian 13: a boot row whose User
         # names the soft-reboot. A control that soft-reboots holds one already;
         # the session's second one must still be flagged.
-        row = {"Type": 2, "User": "soft-reboot", "TTY": "~", "RemoteHost": "6.12"}
+        row = {"Type": 1, "User": "soft-reboot", "TTY": "~", "RemoteHost": "6.12"}
         control = rec.RecordCapture(
             label="control", wtmpdb=[{"ID": 1, "Login": 1, **row}]
         )
@@ -359,9 +357,11 @@ WINDOW = ((WAY_BACK - 30_000_000) / 1e6, (WAY_BACK + 20_000_000) / 1e6)
 def _boot(
     row_id: int, login: int, user: str = "reboot", logout: int | None = None
 ) -> dict[str, object]:
+    # A boot row as wtmpdb 0.73 writes it on Debian 13. Its BOOT_TIME is 1
+    # (``include/wtmpdb.h``), not utmpx's 2, which is wtmpdb's RUNLEVEL.
     return {
         "ID": row_id,
-        "Type": 2,
+        "Type": 1,
         "User": user,
         "Login": login,
         "Logout": logout,
@@ -416,7 +416,8 @@ class WtmpdbWayBackTest(unittest.TestCase):
             self.assertIn("a power cycle adds one", problems[0])
 
     def test_boot_logins_are_listed_in_insertion_order(self) -> None:
-        login_row = {"ID": 2, "Type": 7, "User": "user", "Login": COLD + 9}
+        # A login is wtmpdb's USER_PROCESS, 3 (utmpx numbers it 7).
+        login_row = {"ID": 2, "Type": 3, "User": "user", "Login": COLD + 9}
         rows = [_boot(3, WAY_BACK), login_row, _boot(1, COLD, logout=ACTIVATION)]
         self.assertEqual(rec.wtmpdb_boot_logins(rows), [COLD, WAY_BACK])
         self.assertEqual(rec.wtmpdb_boot_logins([]), [])
@@ -427,6 +428,69 @@ class WtmpdbWayBackTest(unittest.TestCase):
         problems = rec.wtmpdb_way_back_problems(self.reference, after, WINDOW)
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("outside the way back", problems[0])
+
+    def test_a_row_numbered_as_utmpx_numbers_a_boot_is_no_boot(self) -> None:
+        # utmpx's BOOT_TIME is 2, which wtmpdb uses for RUNLEVEL: a check that
+        # took utmpx's numbers would find no boot in what wtmpdb writes.
+        runlevel = {**_boot(2, WAY_BACK), "Type": 2}
+        after = [_boot(1, COLD, logout=ACTIVATION), runlevel]
+        problems = rec.wtmpdb_way_back_problems(self.reference, after, WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("no boot row", problems[0])
+        self.assertEqual(rec.wtmpdb_boot_logins(after), [COLD])
+
+
+class WtmpdbWayBackDatabaseTest(unittest.TestCase):
+    """The way-back checks over rows read back from a wtmpdb database, as the
+    VM test reads them from the guest."""
+
+    @staticmethod
+    def _rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "wtmp.db"
+            _make_wtmpdb(db, rows)
+            return rec.read_wtmpdb(db)
+
+    # A login and logout on tty1 before the session, a wtmpdb USER_PROCESS (3).
+    LOGIN = {
+        "Type": 3,
+        "User": "user",
+        "Login": COLD + 60_000_000,
+        "Logout": COLD + 120_000_000,
+        "TTY": "tty1",
+        "Service": "login",
+    }
+
+    def test_a_clean_way_back_over_a_power_cycle_reference(self) -> None:
+        reference = self._rows([_boot(1, COLD), self.LOGIN])
+        after = self._rows(
+            [_boot(1, COLD, logout=ACTIVATION), self.LOGIN, _boot(3, WAY_BACK)]
+        )
+        self.assertEqual([r["Type"] for r in after], [1, 3, 1])
+        self.assertEqual(rec.wtmpdb_way_back_problems(reference, after, WINDOW), [])
+        self.assertEqual(rec.wtmpdb_boot_logins(after), [COLD, WAY_BACK])
+
+    def test_the_rows_a_soft_reboot_leaves_are_reported(self) -> None:
+        # The row wtmpdb writes on a Debian 13 guest when it records the way
+        # back as it is: a boot (Type 1) named soft-reboot, stamped now.
+        reference = self._rows([_boot(1, COLD)])
+        after = self._rows(
+            [
+                _boot(1, COLD, logout=ACTIVATION),
+                _boot(2, WAY_BACK, user="soft-reboot"),
+            ]
+        )
+        problems = rec.wtmpdb_way_back_problems(reference, after, WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("'soft-reboot'", problems[0])
+        self.assertEqual(rec.wtmpdb_boot_logins(after), [COLD, WAY_BACK])
+
+    def test_a_boot_left_open_before_the_way_back_reads_as_a_crash(self) -> None:
+        reference = self._rows([_boot(1, COLD)])
+        after = self._rows([_boot(1, COLD), _boot(2, WAY_BACK)])
+        problems = rec.wtmpdb_way_back_problems(reference, after, WINDOW)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("crash", problems[0])
 
 
 def _classic(*records: bytes) -> list[dict[str, object]]:
