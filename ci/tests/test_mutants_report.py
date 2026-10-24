@@ -157,7 +157,26 @@ class ReportTest(unittest.TestCase):
         )
         code, _out, err = self.run_main()
         self.assertEqual(code, 1)
-        self.assertIn("its build log cannot be read", err)
+        self.assertIn("1 unviable mutant(s) have no build log to read", err)
+        self.assertIn(f"{UNVIABLE}: its build log cannot be read", err)
+        self.assertIn("(log/missing.log)", err)
+        # Nothing says the runner ran short, so the run must not claim it did.
+        self.assertNotIn("for want of disk", err)
+
+    def test_outcome_that_names_no_build_log_fails_closed(self) -> None:
+        for log in (None, ""):
+            with self.subTest(log=log):
+                outcome = mutant_outcome(UNVIABLE, "Unviable", "log/unused.log")
+                if log is None:
+                    del outcome["log_path"]
+                else:
+                    outcome["log_path"] = log
+                self.write_run({"caught": [CAUGHT], "unviable": [UNVIABLE]}, [outcome])
+                code, _out, err = self.run_main()
+                self.assertEqual(code, 1)
+                self.assertIn("1 unviable mutant(s) have no build log to read", err)
+                self.assertIn(f"  {UNVIABLE}: its outcome names no build log\n", err)
+                self.assertNotIn("for want of disk", err)
 
     def test_outcomes_that_miss_an_unviable_mutant_fail_closed(self) -> None:
         self.write_run(
@@ -217,6 +236,34 @@ class ReportTest(unittest.TestCase):
         self.assertLess(timed_out, untested)
         self.assertEqual(lines[missed + 3], MISSED)
         self.assertIn(f"{UNVIABLE}: Disk quota exceeded (log/", text)
+
+    def test_summary_keeps_mutants_without_a_build_log_apart(self) -> None:
+        starved = "log/nails-base__src__state__file.rs_line_120_col_9.log"
+        second = UNVIABLE.replace(":120:9:", ":140:9:")
+        self.write_run(
+            {"caught": [CAUGHT], "unviable": [UNVIABLE, second]},
+            [
+                mutant_outcome(UNVIABLE, "Unviable", starved),
+                mutant_outcome(second, "Unviable", "log/missing.log"),
+            ],
+            {starved: ENVIRONMENT_FAILURES["Disk quota exceeded"]},
+        )
+        summary = self.out.parent / "summary.md"
+        code, _out, err = self.run_main(summary=summary)
+        self.assertEqual(code, 1)
+        self.assertIn("1 mutant(s) were not tested", err)
+        self.assertIn("1 unviable mutant(s) have no build log to read", err)
+        lines = summary.read_text(encoding="utf-8").splitlines()
+        untested = lines.index("### Not tested: the build failed for want of resources")
+        unexplained = lines.index("### Not shown to be unviable: no build log to read")
+        self.assertEqual(
+            lines[untested + 3], f"{UNVIABLE}: Disk quota exceeded ({starved})"
+        )
+        self.assertTrue(
+            lines[unexplained + 3].startswith(f"{second}: its build log cannot be read")
+        )
+        self.assertEqual(lines[untested + 4], "```")
+        self.assertEqual(lines[unexplained + 4], "```")
 
     def test_without_a_summary_file_nothing_is_written(self) -> None:
         self.unviable_run(COMPILE_ERROR)

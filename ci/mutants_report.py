@@ -27,9 +27,9 @@ nothing caught
 Usage: python3 -m ci.mutants_report [--title TITLE] [--require-caught] MUTANTS_OUT
 
 The counts go to stdout and, in CI, to the job summary ($GITHUB_STEP_SUMMARY)
-together with every missed, timed-out and untested mutant: cargo-mutants flags
-the missed ones as warning annotations, of which GitHub shows only a limited
-number per step.
+together with every missed, timed-out and untested mutant and every unviable one
+whose build log cannot be read: cargo-mutants flags the missed ones as warning
+annotations, of which GitHub shows only a limited number per step.
 """
 
 from __future__ import annotations
@@ -75,11 +75,15 @@ class ReportError(Exception):
 
 @dataclass(frozen=True)
 class Untested:
-    """An unviable mutant whose build failed for want of resources."""
+    """An unviable mutant that may never have been tested, and why."""
 
     mutant: str
     log: str
     error: str
+
+    def __str__(self) -> str:
+        where = f" ({self.log})" if self.log else ""
+        return f"{self.mutant}: {self.error}{where}"
 
 
 @dataclass
@@ -88,7 +92,10 @@ class Report:
     missed: list[str] = field(default_factory=list)
     timed_out: list[str] = field(default_factory=list)
     unviable: list[str] = field(default_factory=list)
+    # Unviable mutants whose build log shows that the runner failed the build.
     untested: list[Untested] = field(default_factory=list)
+    # Unviable mutants with no build log to read: nothing shows why.
+    unexplained: list[Untested] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -124,9 +131,16 @@ def _unviable_outcomes(out: Path) -> list[dict[str, Any]]:
     ]
 
 
-def find_untested(out: Path, outcomes: list[dict[str, Any]]) -> list[Untested]:
-    """Name the unviable mutants whose build log shows a failing environment."""
+def find_untested(
+    out: Path, outcomes: list[dict[str, Any]]
+) -> tuple[list[Untested], list[Untested]]:
+    """Name the unviable mutants that may never have been tested.
+
+    The first list holds those whose build log shows a failing environment,
+    the second those that have no build log to read.
+    """
     untested = []
+    unexplained = []
     for outcome in outcomes:
         scenario = outcome.get("scenario")
         mutant = scenario.get("Mutant") if isinstance(scenario, dict) else None
@@ -134,20 +148,20 @@ def find_untested(out: Path, outcomes: list[dict[str, Any]]) -> list[Untested]:
         log_path = outcome.get("log_path")
         if not isinstance(log_path, str) or not log_path:
             label = name if isinstance(name, str) else "an unviable mutant"
-            untested.append(Untested(label, "", "its outcome names no build log"))
+            unexplained.append(Untested(label, "", "its outcome names no build log"))
             continue
         label = name if isinstance(name, str) else log_path
         try:
             log = (out / log_path).read_text(encoding="utf-8", errors="replace")
         except OSError as error:
-            untested.append(
+            unexplained.append(
                 Untested(label, log_path, f"its build log cannot be read: {error}")
             )
             continue
         match = INFRASTRUCTURE_ERROR.search(log)
         if match:
             untested.append(Untested(label, log_path, match.group(0)))
-    return untested
+    return untested, unexplained
 
 
 def load(out: Path) -> Report:
@@ -165,7 +179,7 @@ def load(out: Path) -> Report:
                 f"outcomes.json holds {len(outcomes)} unviable mutants, "
                 f"unviable.txt {len(report.unviable)}"
             )
-        report.untested = find_untested(out, outcomes)
+        report.untested, report.unexplained = find_untested(out, outcomes)
     return report
 
 
@@ -183,7 +197,11 @@ def format_summary(title: str, report: Report) -> str:
         ("Timed out", report.timed_out),
         (
             "Not tested: the build failed for want of resources",
-            [f"{item.mutant}: {item.error} ({item.log})" for item in report.untested],
+            [str(item) for item in report.untested],
+        ),
+        (
+            "Not shown to be unviable: no build log to read",
+            [str(item) for item in report.unexplained],
         ),
     )
     for heading, entries in sections:
@@ -237,7 +255,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         for item in report.untested:
-            print(f"  {item.mutant}: {item.error} ({item.log})", file=sys.stderr)
+            print(f"  {item}", file=sys.stderr)
+        failed = True
+    if report.unexplained:
+        print(
+            f"{len(report.unexplained)} unviable mutant(s) have no build log to "
+            "read, so nothing shows that the mutation, and not the runner, "
+            f"failed their build; see {args.out}",
+            file=sys.stderr,
+        )
+        for item in report.unexplained:
+            print(f"  {item}", file=sys.stderr)
         failed = True
     if args.require_caught and not report.caught:
         print(
