@@ -244,13 +244,6 @@ of this changelog for that version becomes the release notes word for word, and
   decided at that path, so the hidden systemd cannot mount the decoy's filesystem there. A path that
   such a link leads into the hidden volume is masked, where the hidden volume's own entries are left
   to its bind.
-- Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, metalog,
-  auditd) whether it runs as a service unit, a systemd template instance (such as `syslog-ng@default`)
-  or a bare process, so a logging daemon on the decoy can no longer slip past activation. It also
-  reads the systemd 262 kernel coredump socket pattern correctly instead of mis-reporting it as a raw
-  core-dump path, warns on Ubuntu's default-enabled kdump, and no longer warns about `sudo` logfile
-  or I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
-  symlink.
 - Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, the
   `syslogd` of sysklogd, inetutils or busybox, metalog, socklog, auditd) whether it runs as a service
   unit, a systemd template instance (such as `syslog-ng@default`), the unit `syslog.service` names on
