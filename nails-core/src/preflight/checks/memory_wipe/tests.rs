@@ -16,6 +16,9 @@ const CLASSIC: BoolSpellings = BoolSpellings::Classic;
 /// `CONFIG_PAGE_POISONING=y`, as the NixOS kernel is configured.
 const CONFIG_GZ: &[u8] = include_bytes!("fixtures/config.gz");
 
+/// A config of real size compressed the same way, in four blocks.
+const CONFIG_BLOCKS_GZ: &[u8] = include_bytes!("fixtures/config-blocks.gz");
+
 #[test]
 fn classifies_the_parameter() {
     assert_eq!(parse_init_on_free("quiet", CURRENT), InitOnFree::Unset);
@@ -389,6 +392,21 @@ fn the_running_kernels_own_config_is_read_first() {
         nixos.message().contains("does not zero freed memory"),
         "{}",
         nixos.message()
+    );
+    // A config of real size spans several compressed blocks; it reads the
+    // same.
+    let blocks = Decoy {
+        cmdline: Some("quiet\n"),
+        release: Some("6.12.48"),
+        proc_config_gz: Some(CONFIG_BLOCKS_GZ),
+        ..Decoy::default()
+    }
+    .check();
+    assert!(blocks.is_warn(), "{}", blocks.message());
+    assert!(
+        blocks.message().contains("does not zero freed memory"),
+        "{}",
+        blocks.message()
     );
     // It is the running kernel's own copy, so it wins over a file on disk.
     let both = Decoy {
