@@ -392,11 +392,13 @@ Both transitions log you out. Save your work first.
 
 <img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: place hidden, attention null, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
 
-`place` says where the machine is (`decoy`, `hidden` or `activating`), and
-`attention` names the one thing that needs you, such as `interrupted` or
-`no_way_back`, or is `null`. The object is the `data` of a one-line versioned
-envelope (`schema_version` 2); [Commands](#commands) describes the envelope and
-the exit codes, and [docs/schemas/](docs/schemas/) has a schema per command.
+`place` says where the machine is (`decoy`, `hidden` or `activating`, or
+`unknown`, next to an error, when the state file could not be read), and
+`attention` names the one thing that needs you, such as `interrupted`,
+`no_way_back` or `record_unreadable`, or is `null`. The object is the `data` of
+a one-line versioned envelope (`schema_version` 2); [Commands](#commands)
+describes the envelope and the exit codes, and [docs/schemas/](docs/schemas/)
+has a schema per command.
 
 </details>
 
@@ -576,10 +578,13 @@ stdout, `activate` included: a stable envelope with `schema_version` (currently
 still reports its data). An `error` has a snake_case `code`, a `message` that
 may run to several lines, and `next`: the command to run next, without the
 binary's path (`{"command": "recover"}`), or `null`. A cancel, whether a "no"
-at a prompt or an activation stopped with Ctrl+C, reports the error `cancelled`
-(with no `data`) and exits `130`. Each command's schema is in
-[docs/schemas/](docs/schemas/). A new schema version signals an incompatible
-change.
+at a prompt or a Ctrl+C (or SIGTERM) that stops a command before its result,
+reports the error `cancelled` (with no `data`) and exits `130`. A change that
+cannot stop halfway (the way back, `recover`, the deletion of `discard`, an
+activation past its point of no return) runs to its end and reports its result.
+An internal error reports the error `internal_error` and exits `1`. Each
+command's schema is in [docs/schemas/](docs/schemas/). A new schema version
+signals an incompatible change.
 
 </details>
 
