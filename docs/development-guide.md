@@ -63,9 +63,15 @@ image-based, since the platform gate they pass reads both from the host; on
 any other host they skip with a message, under `just kernel-tests` too.
 [testing-strategy.md](testing-strategy.md)). The network way-back tests
 (`nails-core/tests/network_way_back_kernel.rs`) also need `ip`, `nft` with
-nf_tables and the `dummy` link type (`sudo modprobe dummy` where the kernel
-does not load it on demand), which `just kernel-tests` fails without too; the
-`rust` job of `ci.yml` provides them.
+nf_tables and the `dummy` link type, which `just kernel-tests` fails without
+too; the `rust` job of `ci.yml` provides them. Like the way back, the tests
+take `ip` and `nft` only from the system locations
+(`/run/current-system/sw/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`),
+never from `PATH`, so a tool from the development shell, a Nix profile or
+`nix shell` does not count. On NixOS, `ip` comes with the system, and `nft`
+only once `pkgs.nftables` is in `environment.systemPackages` (or
+`networking.nftables.enable` is set). Where the kernel does not load the
+dummy module on demand, run `sudo modprobe dummy` first.
 
 One test needs real root: the whiteout and opaque-directory test in
 `privileged_mounts.rs` needs `trusted.*` xattrs, which a user namespace cannot
