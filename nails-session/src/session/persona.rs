@@ -137,6 +137,13 @@ impl PersonaSource for InNextRoot<'_> {
             None => RealFilesystem.exists(path),
         }
     }
+
+    fn is_file(&self, path: &Path) -> bool {
+        match self.below(path) {
+            Some(rel) => nextroot::is_file_in_root(self.root, rel),
+            None => RealFilesystem.is_file(path),
+        }
+    }
 }
 
 /// The directory `rel` below the operator's `home` in the next root `root`,
@@ -365,6 +372,15 @@ mod tests {
                 && entry.source == crate::persona::InheritedSource::UserAutostart),
             "{inventory:?}"
         );
+        // It tells a file from a directory through the same links; a path
+        // outside the next root is the running system's.
+        let source = InNextRoot { root: root.path() };
+        let home = root.path().join("home/alice");
+        assert!(source.is_file(&home.join(".config/autostart/dropbox.desktop")));
+        assert!(!source.is_file(&home.join(".config/autostart")));
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        assert!(source.is_file(outside.path()));
+        assert!(!source.is_file(Path::new("/dev/null")));
         let persona = PersonaConfig {
             mode: PersonaMode::SharedHome,
             mask_inherited: vec!["dropbox".into(), "syncthing.service".into()],

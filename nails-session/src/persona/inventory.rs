@@ -43,6 +43,10 @@ pub trait PersonaSource {
     fn text(&self, path: &Path) -> Option<String>;
     /// Whether `path` exists.
     fn exists(&self, path: &Path) -> bool;
+    /// Whether `path` is a regular file once its symlinks are followed. A
+    /// FIFO, socket or device is not one: reading it could block, or never
+    /// end.
+    fn is_file(&self, path: &Path) -> bool;
 }
 
 impl<F: Filesystem> PersonaSource for F {
@@ -56,6 +60,10 @@ impl<F: Filesystem> PersonaSource for F {
 
     fn exists(&self, path: &Path) -> bool {
         self.path_exists(path).unwrap_or(false)
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        self.is_regular_file(path).unwrap_or(false)
     }
 }
 

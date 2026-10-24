@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::Filesystem;
-use crate::filesystem::MockFilesystem;
+use crate::filesystem::{MockFilesystem, PathKind, RealFilesystem};
 
 /// The accounts reported for `fs`, sorted, each once.
 fn accounts_of(fs: &MockFilesystem) -> Vec<String> {
@@ -692,6 +692,64 @@ fn lightdm_reads_the_value_as_glib_does() {
     // GLib refuses an unknown escape: no account.
     assert!(one(&fs, LIGHTDM_MAIN, &seat("bob\\q")).is_empty());
     assert!(one(&fs, LIGHTDM_MAIN, &seat("bob\\")).is_empty());
+}
+
+// --- What is read ---
+
+#[test]
+fn only_regular_files_are_read() {
+    let fs = MockFilesystem::new();
+    for (dir, text) in [
+        (SDDM_LOCAL, "[Autologin]\nUser=sddm\n"),
+        (PLASMA_LOCAL, "[Autologin]\nUser=plasma\n"),
+        (LIGHTDM_ETC, "[Seat:*]\nautologin-user=lightdm\n"),
+    ] {
+        drop_in(&fs, dir, "50-entry.conf", text);
+        fs.mock_set_path_type(&format!("{dir}/50-entry.conf"), PathKind::Dir);
+    }
+    for (path, text) in [
+        (
+            "/etc/gdm/custom.conf",
+            "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=gdm\n",
+        ),
+        ("/etc/sddm.conf", "[Autologin]\nUser=sddm-main\n"),
+        (PLASMA_MAIN, "[Autologin]\nUser=plasma-main\n"),
+        (LIGHTDM_MAIN, "[Seat:*]\nautologin-user=lightdm-main\n"),
+    ] {
+        fs.mock_set_file_content(path, text);
+        fs.mock_set_path_type(path, PathKind::Dir);
+    }
+    assert!(accounts_of(&fs).is_empty());
+}
+
+#[test]
+fn a_fifo_or_a_device_is_never_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("10-file.conf"), "[Autologin]\nUser=a\n").unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        dir.path().join("20-fifo.conf"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("/dev/zero", dir.path().join("30-device.conf")).unwrap();
+    std::os::unix::fs::symlink("10-file.conf", dir.path().join("40-link.conf")).unwrap();
+    // Opened, the FIFO would block the read until a writer came along.
+    let listed = files(&RealFilesystem, dir.path(), |_| true);
+    assert_eq!(
+        listed,
+        vec![
+            dir.path().join("10-file.conf"),
+            dir.path().join("40-link.conf")
+        ]
+    );
+    assert_eq!(
+        file_text(&RealFilesystem, &dir.path().join("20-fifo.conf")),
+        None
+    );
+    assert_eq!(file_text(&RealFilesystem, Path::new("/dev/zero")), None);
 }
 
 // --- GLib's key-file reader ---

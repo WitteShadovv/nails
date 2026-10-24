@@ -32,10 +32,12 @@
 //!   appear. When GLib refuses `lightdm.conf` itself, LightDM does not start.
 //!
 //! The seat judged is the first one, `seat0`: GDM logs in there only, and
-//! every machine has it. The files of a directory are read in the byte order
-//! of their names, LightDM's order. SDDM and Plasma Login Manager sort them
-//! by the system's collation instead, which can put names that differ in
-//! case or punctuation in another order.
+//! every machine has it. Only regular files are read, once their links are
+//! followed: a FIFO, socket or device in these places could block the read,
+//! or never end it. The files of a directory are read in the byte order of
+//! their names, LightDM's order. SDDM and Plasma Login Manager sort them by
+//! the system's collation instead, which can put names that differ in case
+//! or punctuation in another order.
 //!
 //! Where the files alone do not tell, an account counts whenever it could be
 //! the one logged in: a translated KConfig `User` (the language the display
@@ -108,7 +110,7 @@ pub(super) fn accounts<F: PersonaSource>(fs: &F, operator: &str) -> Vec<String> 
 fn gdm<F: PersonaSource>(fs: &F, operator: &str) -> Vec<String> {
     GDM_FILES
         .iter()
-        .filter_map(|path| fs.text(Path::new(path)))
+        .filter_map(|path| file_text(fs, Path::new(path)))
         .filter_map(|text| {
             // GDM keeps what GLib read before a line it refuses.
             let file = keyfile::parse(&text).file;
@@ -164,7 +166,7 @@ fn lightdm<F: PersonaSource>(fs: &F) -> Option<String> {
     let mut config = keyfile::KeyFile::default();
     let conf = |name: &[u8]| name.ends_with(b".conf");
     for dir in LIGHTDM_DIRS {
-        for path in sorted_entries(fs, Path::new(dir), conf) {
+        for path in files(fs, Path::new(dir), conf) {
             let Some(text) = fs.text(&path) else {
                 continue;
             };
@@ -175,7 +177,7 @@ fn lightdm<F: PersonaSource>(fs: &F) -> Option<String> {
             }
         }
     }
-    if let Some(text) = fs.text(Path::new(LIGHTDM_FILE)) {
+    if let Some(text) = file_text(fs, Path::new(LIGHTDM_FILE)) {
         let parsed = keyfile::parse(&text);
         if !parsed.complete {
             return None;
@@ -252,32 +254,39 @@ fn qt_files<F: PersonaSource>(fs: &F, dirs: &[&str], main: &str) -> Vec<PathBuf>
     let visible = |name: &[u8]| !name.starts_with(b".");
     let mut files: Vec<PathBuf> = dirs
         .iter()
-        .flat_map(|dir| sorted_entries(fs, Path::new(dir), visible))
+        .flat_map(|dir| files(fs, Path::new(dir), visible))
         .collect();
     files.push(PathBuf::from(main));
     files
 }
 
-/// The entries of `dir` whose names `keep` accepts, sorted by name.
-fn sorted_entries<F: PersonaSource>(
-    fs: &F,
-    dir: &Path,
-    keep: impl Fn(&[u8]) -> bool,
-) -> Vec<PathBuf> {
-    let mut entries: Vec<PathBuf> = fs
+/// The regular files of `dir` whose names `keep` accepts, sorted by the
+/// bytes of their names.
+fn files<F: PersonaSource>(fs: &F, dir: &Path, keep: impl Fn(&[u8]) -> bool) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = fs
         .entries(dir)
         .into_iter()
         .filter(|path| path.file_name().is_some_and(|name| keep(name.as_bytes())))
+        .filter(|path| fs.is_file(path))
         .collect();
-    entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-    entries
+    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    files
+}
+
+/// The text of the regular file at `path`, if it can be read.
+fn file_text<F: PersonaSource>(fs: &F, path: &Path) -> Option<String> {
+    if fs.is_file(path) {
+        fs.text(path)
+    } else {
+        None
+    }
 }
 
 /// The text of each of `files` that can be read, with its path.
 fn texts<F: PersonaSource>(fs: &F, files: &[PathBuf]) -> Vec<(String, PathBuf)> {
     files
         .iter()
-        .filter_map(|path| fs.text(path).map(|text| (text, path.clone())))
+        .filter_map(|path| file_text(fs, path).map(|text| (text, path.clone())))
         .collect()
 }
 
