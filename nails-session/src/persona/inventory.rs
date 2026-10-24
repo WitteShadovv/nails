@@ -29,8 +29,8 @@
 
 use std::path::Path;
 
-use super::autostart;
 use super::classify::{is_desktop_component, is_trace_writer};
+use super::{autologin, autostart};
 use crate::Filesystem;
 
 /// What the inventory reads. Every [`Filesystem`] is one; activation reads the
@@ -302,123 +302,15 @@ fn collect_wants<F: PersonaSource>(
     push_sorted(entries, names, source);
 }
 
-/// Parse the display-manager autologin configuration and report the autologin
-/// user, if any, for each of GDM, SDDM and LightDM.
+/// The display-manager autologin the decoy carries: the accounts GDM, SDDM and
+/// LightDM log in on their own, read as each of them reads its files
+/// ([`autologin`]).
 fn collect_autologin<F: PersonaSource>(fs: &F, user: &str, entries: &mut Vec<PersonaEntry>) {
-    let mut names: Vec<String> = Vec::new();
-
-    if let Some(login) = gdm_autologin_user(fs) {
-        names.push(login);
-    }
-    if let Some(login) = sddm_autologin_user(fs) {
-        names.push(login);
-    }
-    if let Some(login) = lightdm_autologin_user(fs) {
-        names.push(login);
-    }
-
-    // A display manager may name the autologin user explicitly, or only enable
-    // autologin without naming an account in the file we can read; in the latter
-    // case fall back to the resolved operator so the entry still carries a name.
-    let names: Vec<String> = names
-        .into_iter()
-        .map(|name| {
-            if name.is_empty() {
-                user.to_string()
-            } else {
-                name
-            }
-        })
-        .filter(|name| !name.is_empty())
-        .collect();
-
-    push_sorted(entries, names, InheritedSource::Autologin);
-}
-
-/// GDM autologin from `/etc/gdm/custom.conf`, `/etc/gdm3/custom.conf` (Ubuntu)
-/// or `/etc/gdm3/daemon.conf`, the file Debian builds its gdm3 to read instead.
-fn gdm_autologin_user<F: PersonaSource>(fs: &F) -> Option<String> {
-    for path in [
-        "/etc/gdm/custom.conf",
-        "/etc/gdm3/custom.conf",
-        "/etc/gdm3/daemon.conf",
-    ] {
-        let Some(content) = fs.text(Path::new(path)) else {
-            continue;
-        };
-        let enabled = ini_value(&content, "AutomaticLoginEnable")
-            .map(|value| value.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if !enabled {
-            continue;
-        }
-        return Some(ini_value(&content, "AutomaticLogin").unwrap_or_default());
-    }
-    None
-}
-
-/// SDDM autologin from `/etc/sddm.conf` or any `/etc/sddm.conf.d/*.conf`.
-fn sddm_autologin_user<F: PersonaSource>(fs: &F) -> Option<String> {
-    let mut files = vec![std::path::PathBuf::from("/etc/sddm.conf")];
-    files.extend(conf_d_files(fs, Path::new("/etc/sddm.conf.d")));
-
-    for path in files {
-        let Some(content) = fs.text(&path) else {
-            continue;
-        };
-        if let Some(login) = ini_value(&content, "User")
-            && !login.is_empty()
-        {
-            return Some(login);
-        }
-    }
-    None
-}
-
-/// LightDM autologin from `/etc/lightdm/lightdm.conf` or any
-/// `/etc/lightdm/lightdm.conf.d/*.conf`.
-fn lightdm_autologin_user<F: PersonaSource>(fs: &F) -> Option<String> {
-    let mut files = vec![std::path::PathBuf::from("/etc/lightdm/lightdm.conf")];
-    files.extend(conf_d_files(fs, Path::new("/etc/lightdm/lightdm.conf.d")));
-
-    for path in files {
-        let Some(content) = fs.text(&path) else {
-            continue;
-        };
-        if let Some(login) = ini_value(&content, "autologin-user")
-            && !login.is_empty()
-        {
-            return Some(login);
-        }
-    }
-    None
-}
-
-/// The `*.conf` files in a `conf.d` directory, sorted for a stable read order.
-fn conf_d_files<F: PersonaSource>(fs: &F, dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut files: Vec<std::path::PathBuf> = list_dir(fs, dir)
-        .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.ends_with(".conf"))
-                .unwrap_or(false)
-        })
-        .collect();
-    files.sort();
-    files
-}
-
-/// Read the first value of an INI-style `key = value` line, ignoring sections.
-pub(super) fn ini_value(content: &str, key: &str) -> Option<String> {
-    content.lines().find_map(|line| {
-        let (candidate, value) = line.split_once('=')?;
-        if candidate.trim() == key {
-            Some(value.trim().to_string())
-        } else {
-            None
-        }
-    })
+    push_sorted(
+        entries,
+        autologin::accounts(fs, user),
+        InheritedSource::Autologin,
+    );
 }
 
 /// List a directory, treating any error (missing, unreadable) as empty so the

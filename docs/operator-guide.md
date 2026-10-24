@@ -1304,10 +1304,13 @@ manager, and one set to log an account in automatically logs it in again, as
 at boot: after `activate` the hidden desktop opens without a password, and after
 `deactivate` or `emergency` the decoy's does. NAILS logs nobody in and leaves
 the setting alone; `nails check` lists an autologin it finds in the decoy's
-GDM, LightDM or SDDM configuration, and keeps listing it while the decoy has it,
-even once the hidden session turns it off. To keep autologin on the decoy but
-have the hidden session start at its login screen, turn it off in the hidden
-session only:
+GDM, SDDM or LightDM configuration, and keeps listing it while the decoy has
+it, even once the hidden session turns it off. It reads the files as the
+display manager does, in its order, so an empty setting in a file read later
+turns autologin off (see
+[Inherited decoy state](configuration.md#inherited-decoy-state)). To keep
+autologin on the decoy but have the hidden session start at its login screen,
+turn it off in the hidden session only:
 
 - NixOS, with any display manager: add
   `services.displayManager.autoLogin.enable = lib.mkForce false;` to the hidden
@@ -1315,11 +1318,13 @@ session only:
   hidden flake). The next activation builds it in.
 - Debian and Ubuntu: inside a hidden session, edit the display manager's file.
   For GDM set `AutomaticLoginEnable=false` in the `[daemon]` section of
-  `/etc/gdm3/daemon.conf` (Debian) or `/etc/gdm3/custom.conf` (Ubuntu); for
-  LightDM empty `autologin-user=` in its `[Seat:*]` section (`[SeatDefaults]`
-  in older files); for SDDM empty `User=` under `[Autologin]`; each in the
-  file that sets it. The edit lands in the upper, so it applies from the next
-  activation and the decoy keeps its own setting.
+  `/etc/gdm3/daemon.conf` (Debian) or `/etc/gdm3/custom.conf` (Ubuntu). For
+  the others, empty the setting in the file the display manager reads last,
+  which overrides its drop-ins: `autologin-user=` in the `[Seat:*]` section
+  of `/etc/lightdm/lightdm.conf` for LightDM, `User=` under `[Autologin]` in
+  `/etc/sddm.conf` for SDDM; create the file if it is missing. The edit lands
+  in the upper, so it applies from the next activation and the decoy keeps
+  its own setting.
 
 #### Remote state and sync clients
 

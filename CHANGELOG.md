@@ -446,6 +446,18 @@ of this changelog for that version becomes the release notes word for word, and
   with what to do about it unless something more urgent comes first (a hidden root without a way
   back, an interrupted activation). In the hidden session it showed the inactive default that stands
   in for the record, with no word of the damage.
+- The autologin that `check` and the `inherited-autostart` warning list is read as each display
+  manager reads its files. A key counts only in its own group: `[daemon]` for GDM, `[Autologin]` for
+  SDDM, and for LightDM `[Seat:*]`, `[SeatDefaults]` and the `[Seat:…]` groups that match the first
+  seat. The files are read in the display manager's order, and a later one overrides an earlier one,
+  an empty value too: an empty `User=` in `/etc/sddm.conf` or `autologin-user=` in
+  `/etc/lightdm/lightdm.conf` now turns off the autologin a drop-in sets, where it was skipped and the
+  drop-in's account listed. SDDM's vendor drop-ins in `/usr/lib/sddm/sddm.conf.d` and LightDM's in
+  `lightdm/lightdm.conf.d` below `/usr/share`, `/usr/local/share` and `/etc/xdg` are read too, which
+  were not. GDM's `AutomaticLoginEnable=1` turns autologin on, as for GDM, and each GDM file that turns
+  it on is listed, not only the first. A file a display manager refuses as malformed counts as it does
+  for that display manager: GDM keeps what it read before the bad line, LightDM skips such a drop-in
+  and does not start on such a `lightdm.conf`.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
