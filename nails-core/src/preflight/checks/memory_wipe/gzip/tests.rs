@@ -316,6 +316,24 @@ fn decodes_members_back_to_back() {
 }
 
 #[test]
+fn refuses_a_back_reference_into_the_member_before() {
+    // A member whose fixed block holds nothing but a copy of 3 bytes from 1
+    // back. After STORED, whose `stored\n` ends in a newline, the copy would
+    // make the `\n\n\n` its trailer holds. Each member is a DEFLATE stream of
+    // its own, so the copy has nothing to reach, alone or after STORED, as
+    // zlib says too ("invalid distance too far back").
+    let copy = member_of(&[0x03, 0x02, 0x00], b"\n\n\n");
+    for stream in [copy.clone(), [STORED, copy.as_slice()].concat()] {
+        assert_eq!(
+            decompress(&stream),
+            Err(Malformed(
+                "a back-reference reaches before the start of its member"
+            ))
+        );
+    }
+}
+
+#[test]
 fn refuses_a_stream_that_is_not_whole_and_valid() {
     let mut bad: Vec<(&str, Vec<u8>)> = vec![
         ("empty", Vec::new()),
@@ -352,7 +370,9 @@ fn refuses_malformed_blocks() {
     // anything was written.
     assert_eq!(
         decompress(&framed(&[0x03, 0x02])),
-        Err(Malformed("a back-reference reaches before the start"))
+        Err(Malformed(
+            "a back-reference reaches before the start of its member"
+        ))
     );
     // A stored block whose length and its complement disagree.
     let mut stored = STORED.to_vec();

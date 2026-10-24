@@ -83,6 +83,7 @@ fn decompress_within(data: &[u8], limit: usize) -> Decoded<Vec<u8>> {
     let mut out = Output {
         bytes: Vec::new(),
         limit,
+        start: 0,
     };
     let mut rest = data;
     loop {
@@ -97,6 +98,10 @@ fn decompress_within(data: &[u8], limit: usize) -> Decoded<Vec<u8>> {
 struct Output {
     bytes: Vec<u8>,
     limit: usize,
+    /// Where the member being decoded starts in `bytes`. Each member is a
+    /// DEFLATE stream of its own, so a back-reference cannot reach into the
+    /// member before it.
+    start: usize,
 }
 
 impl Output {
@@ -143,7 +148,7 @@ fn member<'a>(data: &'a [u8], out: &mut Output) -> Decoded<&'a [u8]> {
         pos += 2;
     }
 
-    let start = out.bytes.len();
+    out.start = out.bytes.len();
     let mut input = Bits::new(data.get(pos..).ok_or(Malformed("truncated header"))?);
     inflate(&mut input, out)?;
     let (trailer, rest) = input
@@ -152,7 +157,7 @@ fn member<'a>(data: &'a [u8], out: &mut Output) -> Decoded<&'a [u8]> {
         .ok_or(Malformed("truncated trailer"))?;
     let crc = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
     let size = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
-    let decoded = &out.bytes[start..];
+    let decoded = &out.bytes[out.start..];
     // The trailer keeps the length modulo 2^32, hence the truncating cast.
     if crc != crc32(decoded) || size != decoded.len() as u32 {
         return Err(Malformed("the checksum or length does not match"));
@@ -422,8 +427,10 @@ fn codes(
                     .zip(DISTANCE_EXTRA.get(at))
                     .ok_or(Malformed("invalid distance symbol"))?;
                 let distance = usize::from(base) + input.take(u32::from(extra))? as usize;
-                if distance > out.bytes.len() {
-                    return Err(Malformed("a back-reference reaches before the start"));
+                if distance > out.bytes.len() - out.start {
+                    return Err(Malformed(
+                        "a back-reference reaches before the start of its member",
+                    ));
                 }
                 out.room(length)?;
                 // Byte by byte: a reference may overlap what it writes.
