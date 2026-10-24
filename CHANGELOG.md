@@ -231,23 +231,27 @@ of this changelog for that version becomes the release notes word for word, and
   hidden configuration that imported the module as shipped did not build. The module now leaves that
   mapping out while the hostname is `localhost`, and a VM test builds a hidden system with it.
 - The way back now puts the decoy's network state back before returning to it, after a `deactivate`
-  and after a plain `emergency`. It deletes the virtual links a session brought up (a tunnel, a dummy
-  or a bridge) and, with `iw`, the Wi-Fi interfaces it added on one of the decoy's radios, and counts
-  a link as the decoy's only when it has the name and the index it had at entry, so a tunnel the
-  session brought up under the name of one of the decoy's goes too. It sets each device's hardware
-  address and the hostname back, deletes the policy-routing rules and nftables tables the session
-  added (those of wg-quick, NetworkManager, a VPN app, a container runtime or libvirt), writes back
-  the network settings for all devices and for new ones (`net.ipv4.ip_forward` and the `all` and
-  `default` keys of `net.ipv4.conf` and `net.ipv6.conf`), and puts the per-link state NetworkManager
-  and systemd-resolved keep under `/run`, NetworkManager's in-memory profiles included, back in place,
-  so every file keeps its owner and mode. A part of that state activation could not read in full is
-  left as the session leaves it rather than deleted as if the decoy had none. The decoy's
-  NetworkManager therefore no longer adopts a session link and records a profile for it on disk. The
-  way back does not put back the addresses and routes a session gave the decoy's own devices, what it
-  added inside a firewall table the decoy already had or with legacy iptables, the settings of a
-  single device, anything it deleted, or any firewall table on a decoy without `nft`: take VPN
-  connections down and stop containers and virtual machines before you deactivate, or end the session
-  with `--poweroff`.
+  and after a plain `emergency`. It deletes the virtual links a session brought up (a tunnel, a
+  dummy or a bridge) and, with `iw`, the Wi-Fi interfaces it added on one of the decoy's radios, and
+  counts a link as the decoy's only when it has the index it had at entry, so a tunnel the session
+  brought up under the name of one of the decoy's goes too, while a link the session only renamed
+  stays. It sets each device's hardware address and the hostname back, deletes the policy-routing
+  rules and nftables tables the session added (those of wg-quick, NetworkManager, a VPN app, a
+  container runtime or libvirt), writes back the network settings for all devices and for new ones
+  (`net.ipv4.ip_forward` and the `all` and `default` keys of `net.ipv4.conf` and `net.ipv6.conf`),
+  and puts the per-link state NetworkManager and systemd-resolved keep under `/run`,
+  NetworkManager's in-memory profiles included, back in place, so every file keeps its owner and
+  mode. A part of that state activation could not read in full is left as the session leaves it
+  rather than deleted as if the decoy had none. The decoy's NetworkManager therefore no longer
+  adopts a session link and records a profile for it on disk. The way back does not put back the
+  addresses and routes a session gave the decoy's own devices, what it added inside a firewall table
+  the decoy already had or with legacy iptables, the settings of a single device, anything it
+  deleted or the name it gave one of the decoy's links, or any firewall table on a decoy without
+  `nft`. A Wi-Fi interface of the decoy's that software in the session replaced with its own, as iwd
+  does by default and airmon-ng does for monitor mode, is not made again either, so the decoy has no
+  Wi-Fi on that radio until it powers off or reboots. Take VPN connections down, end monitor mode
+  and stop containers and virtual machines before you deactivate, or end the session with
+  `--poweroff`.
 - `nails activate` and `nails check` refuse a host without `ip`, or without `dmsetup` when the hidden
   volume is on device-mapper (dm-crypt, LUKS or a VeraCrypt mapping) or its backend cannot be read.
   The way back runs both and skipped their work without a word when one was missing: without

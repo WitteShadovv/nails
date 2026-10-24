@@ -33,17 +33,22 @@
 //! runtime-state directories. The way back, once every hidden unit has stopped
 //! and before it switches back, [restores](restore) it.
 //!
-//! A link is the decoy's only when a recorded link has both its name and its
-//! index. The kernel gives a link made again a new index, so a link the
-//! session made under the name of one the decoy had (which the decoy's own
-//! stop took down for the switch) is the session's too. The way back deletes
-//! every virtual link that is not the decoy's, and every Wi-Fi interface that
-//! is not the decoy's on a radio the decoy had (an adapter plugged in during
-//! the session is the decoy's, and left alone); gives each of the decoy's
-//! devices its recorded address again; sets the hostname back wherever it
-//! differs, which is harmless where PID 1 then sets it again from a valid
-//! `/etc/hostname`; puts the routing policy, tables and settings back; and
-//! makes the runtime directories what entry left them.
+//! A link is the decoy's only when a recorded link has its index, which stays
+//! with a link for as long as it exists. The kernel gives a link made again a
+//! new index, so a link the session made under the name of one the decoy had
+//! (which the decoy's own stop took down for the switch) is the session's,
+//! while a link of the decoy's that the session only renamed is still the
+//! decoy's, and keeps the session's name. The way back deletes every virtual
+//! link that is not the decoy's, and every Wi-Fi interface that is not the
+//! decoy's on a radio the decoy had (an adapter plugged in during the session
+//! is the decoy's, and left alone); gives each of the decoy's devices its
+//! recorded address again; sets the hostname back wherever it differs, which
+//! is harmless where PID 1 then sets it again from a valid `/etc/hostname`;
+//! puts the routing policy, tables and settings back; and makes the runtime
+//! directories what entry left them. It makes nothing again that the session
+//! deleted, so a radio whose interface software in the session replaced with
+//! one of its own (iwd does by default when it starts) has none after the way
+//! back.
 //!
 //! Deleting a link and setting an address go through `ip` (iproute2), the one
 //! tool that speaks to the kernel for both and is present wherever networking
@@ -247,12 +252,13 @@ pub struct Kept {
 /// What the way back does to the links `current` and the hostname
 /// `current_hostname`. See the module docs.
 ///
-/// A link is the decoy's when a recorded link has its name and index: it gets
-/// its recorded address back when the current one differs. Another link is
-/// deleted when it is a Wi-Fi interface on a radio the decoy had, or virtual;
-/// a hardware device that appeared is the decoy's (a hot-plugged adapter) and
-/// left alone. Without the decoy's links no link is deleted or changed. The
-/// hostname is set back whenever it differs and was read at entry.
+/// A link is the decoy's when a recorded link has its index, whatever it is
+/// called now: it gets its recorded address back when the current one
+/// differs. Another link is deleted when it is a Wi-Fi interface on a radio
+/// the decoy had, or virtual; a hardware device that appeared is the decoy's
+/// (a hot-plugged adapter) and left alone. Without the decoy's links no link
+/// is deleted or changed. The hostname is set back whenever it differs and was
+/// read at entry.
 pub fn plan(record: &NetworkRecord, current: &[Link], current_hostname: &[u8]) -> RestorePlan {
     let mut plan = RestorePlan {
         hostname: (!record.hostname.is_empty() && current_hostname != record.hostname.as_slice())
@@ -262,10 +268,7 @@ pub fn plan(record: &NetworkRecord, current: &[Link], current_hostname: &[u8]) -
     let Some(then) = record.links.as_deref() else {
         return plan;
     };
-    let decoys = |now: &Link| {
-        then.iter()
-            .find(|was| was.name == now.name && was.index == now.index)
-    };
+    let decoys = |now: &Link| then.iter().find(|was| was.index == now.index);
     let decoy_radio = |phy: &str| then.iter().any(|was| was.phy.as_deref() == Some(phy));
     for link in current {
         match decoys(link) {
