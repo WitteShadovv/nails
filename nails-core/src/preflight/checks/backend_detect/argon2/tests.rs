@@ -221,7 +221,7 @@ fn reads_the_version_from_the_nixos_store_path() {
     )
     .unwrap();
     assert_eq!(
-        installed_version(&fs, Path::new("/")),
+        installed_cryptsetup_version(&fs, Path::new("/")),
         Some(CryptsetupVersion::new(2, 8, 6))
     );
 }
@@ -242,7 +242,7 @@ fn reads_the_version_from_pacmans_database() {
         .collect(),
     );
     assert_eq!(
-        installed_version(&fs, Path::new("/")),
+        installed_cryptsetup_version(&fs, Path::new("/")),
         Some(CryptsetupVersion::new(2, 8, 1))
     );
 }
@@ -364,4 +364,61 @@ fn the_advice_never_blocks_activation() {
         )
         .is_fail()
     );
+}
+
+proptest::proptest! {
+    /// The version dpkg records for cryptsetup-bin is read whatever epoch and
+    /// Debian revision it carries and wherever its stanza sits among other
+    /// packages'. (The `cryptsetup_version` fuzz target searches hostile
+    /// status files; `just fuzz` runs this with many more cases.)
+    #[test]
+    fn fuzz_dpkg_reads_the_version_recorded_among_other_packages(
+        major in 0u16..100,
+        minor in 0u16..100,
+        patch in 0u16..100,
+        epoch in proptest::option::of(0u8..10),
+        revision in "(-[0-9][0-9a-z.+~]{0,8})?",
+        others in proptest::collection::vec("lib[a-z0-9+.-]{1,20}", 0..6),
+        at in 0usize..6,
+    ) {
+        let epoch = epoch.map(|epoch| format!("{epoch}:")).unwrap_or_default();
+        let mut stanzas: Vec<String> = others
+            .iter()
+            .map(|name| {
+                format!("Package: {name}\nStatus: install ok installed\nVersion: 9.{patch}\n")
+            })
+            .collect();
+        stanzas.insert(
+            at.min(stanzas.len()),
+            format!(
+                "Package: cryptsetup-bin\nStatus: install ok installed\n\
+                 Version: {epoch}{major}.{minor}.{patch}{revision}\n"
+            ),
+        );
+        proptest::prop_assert_eq!(
+            dpkg_version(&stanzas.join("\n")),
+            Some(CryptsetupVersion::new(major, minor, patch))
+        );
+    }
+
+    /// A store path's or pacman entry's name for cryptsetup reads as its
+    /// version, and a package whose name only starts the same as none.
+    #[test]
+    fn fuzz_a_cryptsetup_package_name_reads_as_its_version(
+        major in 0u16..100,
+        minor in 0u16..100,
+        patch in 0u16..100,
+        epoch in proptest::option::of(0u8..10),
+        suffix in "(-[0-9a-z]{1,6})?",
+    ) {
+        let epoch = epoch.map(|epoch| format!("{epoch}:")).unwrap_or_default();
+        proptest::prop_assert_eq!(
+            package_version(&format!("cryptsetup-{epoch}{major}.{minor}.{patch}{suffix}")),
+            Some(CryptsetupVersion::new(major, minor, patch))
+        );
+        proptest::prop_assert_eq!(
+            package_version(&format!("cryptsetup-nuke-password-{major}.{minor}{suffix}")),
+            None
+        );
+    }
 }
