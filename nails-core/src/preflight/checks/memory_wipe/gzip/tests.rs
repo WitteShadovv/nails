@@ -170,6 +170,12 @@ fn most_distances() -> Vec<u8> {
     [[4; 2].as_slice(), &[5; 28]].concat()
 }
 
+/// The code lengths of the fixed code's 288 literal/length codes (RFC 1951,
+/// 3.2.6), two more than a dynamic block may define, and a complete code.
+fn fixed_literals() -> Vec<u8> {
+    [[8; 144].as_slice(), &[9; 112], &[7; 24], &[8; 8]].concat()
+}
+
 /// A block with these code lengths that holds `A` and nothing else.
 fn just_a(literals: &[u8], distances: &[u8]) -> Vec<u8> {
     let block = dynamic_block(literals, distances, |out, literal, _| {
@@ -277,13 +283,13 @@ fn decodes_a_block_that_defines_the_most_codes() {
 
 #[test]
 fn refuses_a_block_that_defines_more_codes_than_there_are() {
-    // One literal/length code more than the 286 there are, or one distance
-    // code more than the 30.
-    let literals = [most_literals().as_slice(), &[9]].concat();
-    let distances = [most_distances().as_slice(), &[5]].concat();
+    // More literal/length codes than the 286 there are, or more distance codes
+    // than the 30, each set a complete code: the block would decode to `A`
+    // but for its count, and zlib refuses it too ("too many length or distance
+    // symbols").
     for stream in [
-        just_a(&literals, &most_distances()),
-        just_a(&most_literals(), &distances),
+        just_a(&fixed_literals(), &most_distances()),
+        just_a(&most_literals(), &[5; 32]),
     ] {
         assert_eq!(
             decompress(&stream),
