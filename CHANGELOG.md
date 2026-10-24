@@ -37,8 +37,10 @@ of this changelog for that version becomes the release notes word for word, and
   the IOMMU off by default (no `intel_iommu=on`, as on NixOS) and has it turned on only by the
   firmware's Kernel DMA Protection, which remaps the Thunderbolt and USB4 devices and leaves every
   internal device and slot identity-mapped, warns even while a docked device's group is remapped.
-  NAILS cannot change the firmware setting; the warning says how, and to power off before the
-  machine leaves your control.
+  The warning names the devices in the identity-mapped groups, so you can tell a built-in device the
+  kernel identity-maps on purpose (AMD's kernel does so for an APU's integrated GPU while memory
+  encryption is off) from a card in a slot or a docked device. NAILS cannot change the firmware
+  setting; the warning says how, and to power off before the machine leaves your control.
 - `nails activate` and `nails check` refuse a decoy with a pending offline system update staged
   (a `/system-update` or `/etc/system-update` marker, on the decoy or in the overlay upper), which
   would otherwise be applied inside the hidden session and reboot the machine out from under it.

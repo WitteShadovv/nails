@@ -484,12 +484,71 @@ fn run_warns_when_one_group_is_remapped_and_another_is_not() {
     with_groups(&fs, &["DMA-FQ", "identity"]);
     let result = DmaProtectionCheck::new().run(&fs).unwrap();
     assert!(result.is_warn(), "{}", result.message());
+    let message = result.message();
     assert!(
-        result
-            .message()
-            .contains("1 of the 2 IOMMU groups are identity-mapped"),
-        "{}",
-        result.message()
+        message.contains("1 of the 2 IOMMU groups is identity-mapped"),
+        "{message}"
+    );
+    assert!(message.contains("so a device in it can map"), "{message}");
+    // The group's devices could not be listed, so none is named.
+    assert!(!message.contains("Identity-mapped devices"), "{message}");
+}
+
+/// List `devices` in the `devices` directory of IOMMU group `group`.
+fn with_group_devices(fs: &MockFilesystem, group: usize, devices: &[&str]) {
+    let dir = PathBuf::from(format!(
+        "/sys/kernel/iommu_groups/{group}/{IOMMU_GROUP_DEVICES}"
+    ));
+    let entries = devices.iter().map(|device| dir.join(device)).collect();
+    fs.mock_set_directory_contents(&dir, entries);
+}
+
+#[test]
+fn the_warning_names_the_devices_of_the_identity_mapped_groups() {
+    // An AMD laptop: its kernel identity-maps the APU's integrated GPU (and
+    // its audio function) while every other group is remapped. The names let
+    // the operator tell that built-in device from a card in a slot.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(PROC_CMDLINE, "quiet\n");
+    with_groups(&fs, &["DMA-FQ", "identity", "DMA-FQ"]);
+    with_group_devices(&fs, 0, &["0000:00:00.0"]);
+    with_group_devices(&fs, 1, &["0000:c4:00.1", "0000:c4:00.0"]);
+    with_group_devices(&fs, 2, &["0000:02:00.0"]);
+    let result = DmaProtectionCheck::new().run(&fs).unwrap();
+    assert!(result.is_warn(), "{}", result.message());
+    let message = result.message();
+    assert!(
+        message.contains(
+            "Identity-mapped devices: 0000:c4:00.0 and 0000:c4:00.1 (lspci -s <address> names \
+             each)."
+        ),
+        "{message}"
+    );
+    // A remapped group's devices are not named.
+    assert!(!message.contains("0000:00:00.0"), "{message}");
+    assert!(!message.contains("0000:02:00.0"), "{message}");
+}
+
+#[test]
+fn the_named_devices_are_listed_in_order_and_the_rest_counted() {
+    let names = |count: usize| -> Vec<String> {
+        (0..count).map(|n| format!("0000:00:{n:02x}.0")).collect()
+    };
+    assert_eq!(named_devices(&names(1)), "0000:00:00.0");
+    assert_eq!(named_devices(&names(2)), "0000:00:00.0 and 0000:00:01.0");
+    assert_eq!(
+        named_devices(&names(3)),
+        "0000:00:00.0, 0000:00:01.0 and 0000:00:02.0"
+    );
+    assert_eq!(
+        named_devices(&names(NAMED_DEVICES)),
+        "0000:00:00.0, 0000:00:01.0, 0000:00:02.0, 0000:00:03.0, 0000:00:04.0, 0000:00:05.0, \
+         0000:00:06.0 and 0000:00:07.0"
+    );
+    assert_eq!(
+        named_devices(&names(NAMED_DEVICES + 4)),
+        "0000:00:00.0, 0000:00:01.0, 0000:00:02.0, 0000:00:03.0, 0000:00:04.0, 0000:00:05.0, \
+         0000:00:06.0, 0000:00:07.0 and 4 more"
     );
 }
 
@@ -515,6 +574,7 @@ fn run_warns_when_only_the_thunderbolt_devices_are_remapped() {
         message.contains("4 of the 6 IOMMU groups are identity-mapped"),
         "{message}"
     );
+    assert!(message.contains("so a device in one of them"), "{message}");
     assert!(message.contains("internal PCIe or M.2 slot"), "{message}");
     assert!(message.contains("nails emergency --poweroff"), "{message}");
 }
@@ -535,17 +595,22 @@ fn a_partly_remapping_iommu_warns_whatever_the_controller_reports() {
     let partial = IommuState::Partial {
         identity: 3,
         groups: 9,
+        devices: vec!["0000:00:14.0".to_string()],
     };
     for tb in [
         TbProtection::Protected,
         TbProtection::Absent,
         TbProtection::Exposed,
     ] {
-        let result = verdict(tb, partial, Lockdown::Confidentiality, true);
+        let result = verdict(tb, partial.clone(), Lockdown::Confidentiality, true);
         assert!(result.is_warn(), "{tb:?}: {}", result.message());
         let message = result.message();
         assert!(
             message.contains("3 of the 9 IOMMU groups are identity-mapped"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Identity-mapped devices: 0000:00:14.0 "),
             "{message}"
         );
         // An unprotected controller is named as well.
