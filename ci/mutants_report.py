@@ -47,10 +47,13 @@ from typing import Any
 # What a build prints when its environment fails rather than the mutated code:
 # the errno texts of a full disk or quota, exhausted memory, a failing or
 # read-only device and a full file table; the aborts of Rust and LLVM when an
-# allocation fails; and how cargo and the C compiler driver report a compiler
-# or linker that the kernel's out-of-memory killer stopped. No production code
-# quotes any of them, so the source lines a build log quotes do not match by
-# accident.
+# allocation fails; and how a compiler or linker that the kernel's
+# out-of-memory killer stopped is reported: by cargo for rustc ("signal: 9,
+# SIGKILL: kill"), by rustc for the linker driver it runs ("linking with `cc`
+# failed: signal: 9 (SIGKILL)", the form of Rust's own exit status) and by the
+# C compiler driver for the linker ("ld terminated with signal 9 [Killed]").
+# No production code quotes any of them, so the source lines a build log
+# quotes do not match by accident.
 INFRASTRUCTURE_ERROR = re.compile(
     r"No space left on device"
     r"|Disk quota exceeded"
@@ -61,6 +64,7 @@ INFRASTRUCTURE_ERROR = re.compile(
     r"|memory allocation of \d+ bytes failed"
     r"|LLVM ERROR: out of memory"
     r"|signal: 9, SIGKILL"
+    r"|signal: 9 \(SIGKILL\)"
     r"|signal 9 \[Killed\]"
 )
 

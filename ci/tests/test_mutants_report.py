@@ -39,6 +39,8 @@ ENVIRONMENT_FAILURES = {
     "No space left on device",
     "signal: 9, SIGKILL": "Caused by:\n  process didn't exit successfully: "
     "`rustc --crate-name nails_core` (signal: 9, SIGKILL: kill)",
+    "signal: 9 (SIGKILL)": "error: linking with `cc` failed: signal: 9 (SIGKILL)\n"
+    '  |\n  = note: LC_ALL="C" "cc" "-m64" "-o" "target/debug/deps/nails_core"',
     "Cannot allocate memory": "error: could not exec the linker `cc`: "
     "Cannot allocate memory (os error 12)",
     "memory allocation of 2097152 bytes failed": "memory allocation of 2097152 "
