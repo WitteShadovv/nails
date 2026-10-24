@@ -11,9 +11,10 @@
 //! path, quoted for a POSIX shell where it needs it ([`shell_word`]), so a
 //! volume mounted at a path with a space still gives a line that pastes. The
 //! renderer is the single source of that line, so no hint can drift back to a
-//! bare `nails …`; the copy lint's source scan refuses one anywhere else. It
-//! lives here, below every other crate, so the CLI, the facade, the session
-//! and the forensics all render a hint alike.
+//! bare `nails …`; the copy lint's source scan refuses one anywhere else a
+//! command prints from, outside the few reference texts it names with their
+//! reason. It lives here, below every other crate, so the CLI, the facade, the
+//! session and the forensics all render a hint alike.
 
 use std::ffi::OsStr;
 use std::path::Path;

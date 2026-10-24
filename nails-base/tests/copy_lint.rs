@@ -16,8 +16,11 @@
 //!
 //! The bare-command rule also runs over the source of every crate, outside the
 //! catalogue: `no_source_names_a_bare_nails_command` refuses a `nails <command>`
-//! in any string a command can print, so a next step is always rendered
-//! through `nails_base::next_step` with the real binary path.
+//! on any line a command can print from (every line but a comment, a test-only
+//! file and the body of an inline test module, in every file but the few
+//! reference texts `BARE_COMMAND_ALLOWED` names with their reason), so a next
+//! step is always rendered through `nails_base::next_step` with the real
+//! binary path.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -318,18 +321,58 @@ fn rust_sources(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<Str
     }
 }
 
-/// The lines of `text` a command can print: the code before an inline test
-/// module, without its comments.
-fn printable_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
-    let end = text
-        .find("\n#[cfg(test)]\nmod tests")
-        .or_else(|| text.find("\n#[cfg(test)]\n#[path"))
-        .unwrap_or(text.len());
-    text[..end]
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim_start().starts_with("//"))
-        .map(|(index, line)| (index + 1, line))
+/// The lines of `text` a command can print, numbered from 1: every line but a
+/// comment and the body of an inline test module. A `mod tests;` declaration,
+/// with or without `#[path]`, has no body in the file, so the code after it is
+/// read on, and so is the code after an inline test module.
+fn printable_lines(text: &str) -> Vec<(usize, &str)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut printable = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if let Some(close) = inline_test_module_end(&lines, index) {
+            index = close + 1;
+            continue;
+        }
+        if !lines[index].trim_start().starts_with("//") {
+            printable.push((index + 1, lines[index]));
+        }
+        index += 1;
+    }
+    printable
+}
+
+/// The index of the line that closes the inline test module starting at
+/// `start`, or `None` when none starts there. The module is `#[cfg(test)]`,
+/// any further attribute lines, then `mod tests {`, and it ends at the first
+/// line that is `}` alone, where rustfmt closes a top-level item; one left
+/// open runs to the last line.
+fn inline_test_module_end(lines: &[&str], start: usize) -> Option<usize> {
+    if lines[start] != "#[cfg(test)]" {
+        return None;
+    }
+    let attributes = lines[start + 1..]
+        .iter()
+        .take_while(|line| line.starts_with("#["))
+        .count();
+    let head = start + 1 + attributes;
+    if lines.get(head).copied() != Some("mod tests {") {
+        return None;
+    }
+    Some(
+        lines[head + 1..]
+            .iter()
+            .position(|line| *line == "}")
+            .map_or(lines.len() - 1, |offset| head + 1 + offset),
+    )
+}
+
+/// The printable lines of `text` that name a bare `nails <command>`.
+fn bare_command_lines<'a>(text: &'a str, commands: &[String]) -> Vec<(usize, &'a str)> {
+    printable_lines(text)
+        .into_iter()
+        .filter(|(_, line)| has_bare_nails_command(line, commands))
+        .collect()
 }
 
 /// No string a command prints names a bare `nails <command>`: the binary is
@@ -365,10 +408,8 @@ fn no_source_names_a_bare_nails_command() {
             continue;
         }
         let text = std::fs::read_to_string(root.join(relative)).unwrap();
-        for (number, line) in printable_lines(&text) {
-            if has_bare_nails_command(line, &rules.commands) {
-                found.push(format!("{relative}:{number}: {}", line.trim()));
-            }
+        for (number, line) in bare_command_lines(&text, &rules.commands) {
+            found.push(format!("{relative}:{number}: {}", line.trim()));
         }
     }
     assert!(
@@ -383,11 +424,36 @@ fn no_source_names_a_bare_nails_command() {
 fn the_source_scan_reads_only_the_printable_lines() {
     let text = "let a = \"run nails recover\";\n// nails status in a comment\n\
                 #[cfg(test)]\nmod tests {\n    \"nails verify\"\n}\n";
-    let lines: Vec<(usize, &str)> = printable_lines(text).collect();
+    let lines = printable_lines(text);
     assert_eq!(lines, vec![(1, "let a = \"run nails recover\";")]);
     assert!(is_test_source("nails-cli/src/cli/output/status/tests.rs"));
     assert!(is_test_source("nails-base/src/filesystem/mock/state.rs"));
     assert!(!is_test_source("nails-cli/src/cli/commands/recover.rs"));
+
+    // A test module declared out of line, as most production files declare it
+    // near the top, hides nothing after it: the scan still reports the hint.
+    let rules = load_rules();
+    let hint = "const HINT: &str = \"run nails recover\";";
+    for declaration in [
+        "#[cfg(test)]\nmod tests;",
+        "#[cfg(test)]\n#[path = \"x_tests.rs\"]\nmod tests;",
+    ] {
+        let text = format!("mod inner;\n{declaration}\n\n{hint}\n");
+        let line = declaration.lines().count() + 3;
+        assert_eq!(
+            bare_command_lines(&text, &rules.commands),
+            vec![(line, hint)],
+            "{declaration}"
+        );
+    }
+
+    // Only the body of an inline test module is left out, attributes and all:
+    // the code after it is read on.
+    let text = format!(
+        "#[cfg(test)]\n#[allow(clippy::unwrap_used)]\nmod tests {{\n    \
+         fn f() {{\n        \"nails verify\";\n    }}\n}}\n\n{hint}\n"
+    );
+    assert_eq!(bare_command_lines(&text, &rules.commands), vec![(9, hint)]);
 }
 
 #[test]
