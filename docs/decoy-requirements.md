@@ -18,8 +18,9 @@ The decoy also has to be one the session can enter and leave:
   NixOS qualify; Debian 12 and Ubuntu 22.04 are refused. On an older systemd
   `nails check` names how to upgrade the host the way its distribution
   documents it: Debian by its release notes, Ubuntu with `do-release-upgrade`,
-  Fedora with `dnf system-upgrade`, Arch and its derivatives with a full
-  `pacman -Syu`, and NixOS by moving the decoy's nixpkgs to a current release.
+  Fedora with `dnf system-upgrade`, Arch, EndeavourOS, CachyOS and Manjaro
+  with a full `pacman -Syu`, and NixOS by moving the decoy's nixpkgs to a
+  current release.
   A later Debian or Ubuntu release runs with a warning that NAILS has not been
   tested on it (`platform`). A NixOS decoy on a nixpkgs that does not install
   the two units needs the module `nails check` prints (and so does a hidden
