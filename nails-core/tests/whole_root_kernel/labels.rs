@@ -5,10 +5,11 @@
 //! filesystems: the label of a decoy directory lands on the upper and shows on
 //! the root of an overlay over the two, without moving the decoy directory's
 //! access time; the walk down to a fresh home labels a parent at the next walk
-//! after one refused at it, and the hidden root shows the labels; and nothing
-//! is written where the decoy's directories have no label, where a filesystem
-//! stores none (ramfs), or onto or through a link in place of an upper
-//! directory.
+//! after one refused at it, and the hidden root shows the labels; the walk
+//! along what the upper holds labels what a refused fresh-home entry left
+//! there, or is refused again; and nothing is written where the decoy's
+//! directories have no label, where a filesystem stores none (ramfs), or onto
+//! or through a link in place of an upper directory.
 //!
 //! The namespace's root may write `security.selinux` on its own tmpfs, and a
 //! kernel without SELinux stores the value as given. A kernel that labels every
@@ -16,7 +17,7 @@
 //! instead, which needs a VM with that policy; these tests skip there.
 
 use nails_core::session::labels::{
-    Copied, LABEL_XATTR, Labels, Reason, copy_label, copy_labels_along,
+    Copied, LABEL_XATTR, Labels, Reason, copy_label, copy_labels_along, copy_labels_along_existing,
 };
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs, skip, skip_host};
@@ -402,20 +403,22 @@ fn a_walk_over_decoy_directories_without_labels_leaves_the_way_as_it_was() {
         let decoy_before = (atime(&decoy_parent), atime(&decoy_home));
         tick();
 
-        // The walk of a fresh-home entry, on a host whose facts report no
-        // SELinux and on one that requires the labels, which refuses at the
-        // parent.
-        copy_labels_along(decoy.path(), &upper, rest, Labels::BestEffort).unwrap();
-        let refused = copy_labels_along(decoy.path(), &upper, rest, REQUIRED).unwrap_err();
-        assert!(
-            refused
-                .to_string()
-                .ends_with(&format!("but {} has no label", decoy_parent.display())),
-            "{refused}"
-        );
+        // The walk of a fresh-home entry and that of a shared-home one, on a
+        // host whose facts report no SELinux and on one that requires the
+        // labels, which refuses at the parent.
+        for walk in [copy_labels_along, copy_labels_along_existing] {
+            walk(decoy.path(), &upper, rest, Labels::BestEffort).unwrap();
+            let refused = walk(decoy.path(), &upper, rest, REQUIRED).unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .ends_with(&format!("but {} has no label", decoy_parent.display())),
+                "{refused}"
+            );
+        }
 
-        // Neither wrote anything: neither directory has an attribute at all,
-        // and their status is unchanged.
+        // None of them wrote anything: neither directory has an attribute at
+        // all, and their status is unchanged.
         for dir in [&parent, &home] {
             let mut names: [u8; 0] = [];
             assert_eq!(
@@ -428,5 +431,94 @@ fn a_walk_over_decoy_directories_without_labels_leaves_the_way_as_it_was() {
         assert_eq!((ctime(&parent), ctime(&home)), before);
         // The decoy's directories were only read.
         assert_eq!((atime(&decoy_parent), atime(&decoy_home)), decoy_before);
+    });
+}
+
+#[test]
+fn a_walk_along_what_the_upper_holds_labels_what_a_refused_entry_left() {
+    let _ = Rerun::new(test_path!(
+        a_walk_along_what_the_upper_holds_labels_what_a_refused_entry_left
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // The decoy's `/home/alice`, whose `/home` carries no label yet, so the
+        // fresh-home walk is refused at the parent, as where the policy denies
+        // that relabel.
+        let decoy = tmpfs_without_selinux();
+        let decoy_home = decoy.mkdir("home/alice");
+        set_label(&decoy_home, HOME_LABEL);
+        let hidden = ScratchTmpfs::new("");
+        let upper = hidden.mkdir("root/upper");
+        let parent = hidden.mkdir("root/upper/home");
+        let home = hidden.mkdir("root/upper/home/alice");
+        let rest = Path::new("home/alice");
+        copy_labels_along(decoy.path(), &upper, rest, REQUIRED).unwrap_err();
+        assert_eq!(label(&parent), Err(Errno::NODATA));
+        assert_eq!(label(&home), Err(Errno::NODATA));
+
+        // The persona is set to shared-home, so no entry makes the fresh home
+        // again. The walk along what the upper holds labels the parent and the
+        // home the refused entry left.
+        set_label(&decoy.path().join("home"), HOME_ROOT_LABEL);
+        copy_labels_along_existing(decoy.path(), &upper, rest, REQUIRED).unwrap();
+        assert_eq!(label(&parent).unwrap(), HOME_ROOT_LABEL);
+        assert_eq!(label(&home).unwrap(), HOME_LABEL);
+        assert_eq!(label(&upper), Err(Errno::NODATA));
+
+        // Labels in place are not written again.
+        let labelled = (ctime(&parent), ctime(&home));
+        tick();
+        copy_labels_along_existing(decoy.path(), &upper, rest, REQUIRED).unwrap();
+        assert_eq!((ctime(&parent), ctime(&home)), labelled);
+
+        // An entry that stopped after it made the parent left only that: the
+        // walk labels it and ends where the upper holds no more, though every
+        // label is required.
+        let other = hidden.mkdir("other/upper");
+        let other_parent = hidden.mkdir("other/upper/home");
+        copy_labels_along_existing(decoy.path(), &other, rest, REQUIRED).unwrap();
+        assert_eq!(label(&other_parent).unwrap(), HOME_ROOT_LABEL);
+        assert!(!other_parent.join("alice").exists());
+    });
+}
+
+#[test]
+fn a_home_left_for_an_operator_the_decoy_has_no_home_for_is_refused_in_either_persona() {
+    let _ = Rerun::new(test_path!(
+        a_home_left_for_an_operator_the_decoy_has_no_home_for_is_refused_in_either_persona
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // The decoy has a labelled `/home`, but no home for alice.
+        let decoy = tmpfs_without_selinux();
+        let decoy_parent = decoy.mkdir("home");
+        set_label(&decoy_parent, HOME_ROOT_LABEL);
+        let hidden = ScratchTmpfs::new("");
+        let upper = hidden.mkdir("root/upper");
+        let parent = hidden.mkdir("root/upper/home");
+        let home = hidden.mkdir("root/upper/home/alice");
+        let rest = Path::new("home/alice");
+        let missing = format!(
+            "but {} does not exist",
+            decoy_parent.join("alice").display()
+        );
+
+        // The fresh-home walk labels the parent and is refused at the home.
+        let refused = copy_labels_along(decoy.path(), &upper, rest, REQUIRED).unwrap_err();
+        assert!(refused.to_string().ends_with(&missing), "{refused}");
+        assert_eq!(label(&parent).unwrap(), HOME_ROOT_LABEL);
+        assert_eq!(label(&home), Err(Errno::NODATA));
+
+        // With the persona set to shared-home, the home left in the upper is
+        // refused again, never passed over. Without SELinux it is left alone.
+        let refused = copy_labels_along_existing(decoy.path(), &upper, rest, REQUIRED).unwrap_err();
+        assert!(refused.to_string().ends_with(&missing), "{refused}");
+        copy_labels_along_existing(decoy.path(), &upper, rest, Labels::BestEffort).unwrap();
+        assert_eq!(label(&home), Err(Errno::NODATA));
+
+        // Once that home is gone from the upper, the walk ends at the parent.
+        std::fs::remove_dir(&home).unwrap();
+        copy_labels_along_existing(decoy.path(), &upper, rest, REQUIRED).unwrap();
+        assert_eq!(label(&parent).unwrap(), HOME_ROOT_LABEL);
     });
 }

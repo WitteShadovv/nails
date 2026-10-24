@@ -12,11 +12,12 @@
 //! there, so the policy sees the hidden `/` as `unlabeled_t`, and confined
 //! services may not even look it up: the hidden session does not boot on an
 //! enforcing host. [`copy_label`] gives such a directory the label of the
-//! decoy directory it stands for, and [`copy_labels_along`] gives one to each
-//! directory on the way from the root of an upper down to the home. Both read
-//! the label with `lgetxattr` and write it with `fsetxattr` on the upper
-//! directory itself, so the hidden `/`, a separate `/home` and the empty home
-//! carry the types they have on the decoy (`root_t`, `home_root_t` and
+//! decoy directory it stands for, [`copy_labels_along`] gives one to each
+//! directory on the way from the root of an upper down to the home, and
+//! [`copy_labels_along_existing`] to as much of that way as the upper holds.
+//! They read the label with `lgetxattr` and write it with `fsetxattr` on the
+//! upper directory itself, so the hidden `/`, a separate `/home` and the empty
+//! home carry the types they have on the decoy (`root_t`, `home_root_t` and
 //! `user_home_dir_t` under Fedora's policy). Whatever the hidden session
 //! creates below them then takes its label from the policy, as on the decoy.
 //!
@@ -55,18 +56,24 @@
 //!   filesystem ([`Paths::decoy`](super::Paths::decoy) of its mount point) for
 //!   the upper of [`Layout::mount_layers`](super::Layout::mount_layers), before
 //!   that filesystem's overlay is mounted;
-//! - **the empty home and its parents**: `fresh_home` in [`super::entry`],
-//!   right after [`prepare_fresh_home`](super::persona::prepare_fresh_home)
-//!   returns, whether it created the home or found it in place, as
-//!   `copy_labels_along(&paths.decoy(mount), &upper_root, rest, labels)`. The
-//!   upper root is [`Layout::upper`](super::Layout::upper) for a home on the
-//!   decoy root, else the upper of [`Layout::mount_layers`](super::Layout::mount_layers)
-//!   of `mount`, and `rest` is the home below `mount`. That labels every
-//!   directory below the upper root down to the home, the home included.
-//!   `make_layer` labels the upper root itself, and the directories
-//!   `create_parents_like` makes above it (`root/mounts/<unit>`) belong to no
-//!   overlay. `fresh_home` runs before `make_layer` and `apply_mounts`, so no
-//!   overlay is mounted on either upper yet.
+//! - **the home and its parents**: where `build` in [`super::entry`] calls
+//!   `fresh_home` for the fresh-home persona, at every entry that knows the
+//!   operator, whatever the persona mode. The home is found as `fresh_home`
+//!   finds it: the upper root is [`Layout::upper`](super::Layout::upper) for a
+//!   home on the decoy root, else the upper of [`Layout::mount_layers`](super::Layout::mount_layers)
+//!   of the decoy filesystem `mount` it lives on, and `rest` is the home below
+//!   `mount`. In the fresh-home persona the call is in `fresh_home`, right
+//!   after [`prepare_fresh_home`](super::persona::prepare_fresh_home) returns,
+//!   whether it created the home or found it in place, as
+//!   `copy_labels_along(&paths.decoy(mount), &upper_root, rest, labels)`,
+//!   which labels every directory below the upper root down to the home, the
+//!   home included. In the shared-home persona it is
+//!   `copy_labels_along_existing` with the same arguments, which labels as
+//!   much of that way as the upper holds. `make_layer` labels the upper root
+//!   itself, and the directories `create_parents_like` makes above it
+//!   (`root/mounts/<unit>`) belong to no overlay. Both calls come before
+//!   `make_layer` and `apply_mounts`, so no overlay is mounted on either upper
+//!   yet.
 //!
 //! All three run at every entry: a label already in place is not written again,
 //! and one that is missing or wrong is written at the next entry. The roots of
@@ -90,7 +97,31 @@
 //! the entry is refused. The wiring needs an entry test for this: an entry
 //! refused at the copy for a parent of the home, then a later entry, with the
 //! home in place, that labels that parent or is refused again, never one that
-//! goes on without the label.
+//! goes on without the label, in the fresh-home persona and with the persona
+//! set to shared-home after the refusal.
+//!
+//! The shared-home walk is for what a refused fresh-home entry leaves in the
+//! upper. An entry refused at its walk (the decoy has no home for the operator,
+//! or the policy denied the relabel of a parent) keeps the directories
+//! `prepare_fresh_home` created, without the decoy's labels: `rollback` removes
+//! nothing from the upper. Once the persona is set to shared-home, `fresh_home`
+//! no longer runs, but the overlay still merges those directories into the
+//! hidden root, so without the walk the hidden `/home`, or the opaque home left
+//! there, would show unlabelled. The other way to cover it, a refused entry
+//! removing what its `prepare_fresh_home` created, is not taken: it has to
+//! tell what the entry created from what it found in place, and an entry killed
+//! before the removal, or a removal that fails, leaves the same directories
+//! behind. The walk does not depend on how an earlier entry ended, so it also
+//! covers what one from a release without this module left. It follows the
+//! rules of [`copy_label`] in either persona: with [`Labels::Required`] a
+//! directory on the way that cannot take its label refuses the shared-home
+//! entry as well, so a home left for an operator the decoy has no home for
+//! refuses that operator's shared-home entries too, until it is removed from
+//! the upper. A directory the overlay copied up from the decoy keeps the
+//! decoy's label, so the walk of a usual shared-home entry writes nothing. It
+//! covers the way to the home of the entry's operator only: a home left for
+//! another operator takes its label at that operator's next entry, and an
+//! entry without an operator walks nothing.
 //!
 //! `nextroot` needs no call: it only mounts the uppers prepared here. Every
 //! other directory the entry creates is made through the next root once the
@@ -218,6 +249,36 @@ pub fn copy_label(decoy: &Path, upper: &Path, labels: Labels) -> Result<Copied> 
 /// [`Labels::Required`] refuses. `rest` is relative and made of plain names,
 /// and every directory on it must exist in the upper.
 pub fn copy_labels_along(decoy: &Path, upper: &Path, rest: &Path, labels: Labels) -> Result<()> {
+    walk(decoy, upper, rest, labels, Missing::Error)
+}
+
+/// [`copy_labels_along`] for an entry that has not just created the way (the
+/// shared-home persona): it goes down only as far as the upper holds the way,
+/// and an upper root or a directory on the way that does not exist ends it
+/// there, without an error, on every host. Everything else is as for
+/// [`copy_labels_along`]: a link or a file ends the walk too, with nothing
+/// labelled at or past it, and each directory it reaches gets the label by the
+/// rules of [`copy_label`].
+pub fn copy_labels_along_existing(
+    decoy: &Path,
+    upper: &Path,
+    rest: &Path,
+    labels: Labels,
+) -> Result<()> {
+    walk(decoy, upper, rest, labels, Missing::End)
+}
+
+/// What a walk makes of a directory on the way that the upper does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    /// An error on every host: the entry has just created the way.
+    Error,
+    /// The end of the walk: nothing below it is in the upper either.
+    End,
+}
+
+/// The walk of [`copy_labels_along`] and [`copy_labels_along_existing`].
+fn walk(decoy: &Path, upper: &Path, rest: &Path, labels: Labels, missing: Missing) -> Result<()> {
     let mut names = Vec::new();
     for component in rest.components() {
         match component {
@@ -234,6 +295,7 @@ pub fn copy_labels_along(decoy: &Path, upper: &Path, rest: &Path, labels: Labels
     }
     let mut dir = match rustix::fs::open(upper, DIRECTORY, Mode::empty()) {
         Ok(dir) => dir,
+        Err(Errno::NOENT) if missing == Missing::End => return Ok(()),
         Err(errno) => return judge(decoy, upper, labels, Err(Failure::Upper(errno))).map(drop),
     };
     let (mut decoy, mut upper) = (decoy.to_path_buf(), upper.to_path_buf());
@@ -242,6 +304,7 @@ pub fn copy_labels_along(decoy: &Path, upper: &Path, rest: &Path, labels: Labels
         upper.push(name);
         let next = match rustix::fs::openat(&dir, name, DIRECTORY, Mode::empty()) {
             Ok(next) => next,
+            Err(Errno::NOENT) if missing == Missing::End => return Ok(()),
             // A link or a file: nothing at or below it is labelled.
             Err(errno) => {
                 return judge(&decoy, &upper, labels, Err(Failure::Upper(errno))).map(drop);
