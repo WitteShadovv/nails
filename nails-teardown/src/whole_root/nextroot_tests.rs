@@ -74,6 +74,36 @@ fn files_are_read_through_symlinks_resolved_inside_the_root() {
     assert!(read_in_root(root.path(), Path::new("/etc/absent")).is_err());
 }
 
+#[test]
+fn only_regular_files_count_as_files_inside_the_root() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc/static")).unwrap();
+    std::fs::write(root.path().join("etc/static/sddm.conf"), "x").unwrap();
+    symlink("/etc/static/sddm.conf", root.path().join("etc/sddm.conf")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        root.path().join("etc/fifo"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    for (path, file) in [
+        ("/etc/static/sddm.conf", true),
+        // The absolute link resolves inside the root.
+        ("/etc/sddm.conf", true),
+        ("/etc/static", false),
+        ("/etc/fifo", false),
+        ("/etc/absent", false),
+    ] {
+        assert_eq!(
+            is_file_in_root(root.path(), Path::new(path)),
+            file,
+            "{path}"
+        );
+    }
+}
+
 /// Lookups through a `..` link while another thread renames files: the
 /// kernel gives some of them up with `EAGAIN` (about one in twenty here
 /// without the retry), and none of them may fail.
