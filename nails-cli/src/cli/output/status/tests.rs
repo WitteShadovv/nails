@@ -7,7 +7,6 @@ use nails_core::SystemState;
 use nails_core::config::PersonaMode;
 use nails_core::output::Style;
 use nails_core::status::{CoverView, PolicyMountView, Posture, StatusReport};
-use nails_teardown::whole_root::switch_refusal::SwitchRefusal;
 use std::path::PathBuf;
 
 fn report(posture: Posture, session: &'static str) -> StatusReport {
@@ -309,9 +308,9 @@ fn an_unreadable_record_needs_attention_in_every_place() {
     // It comes ahead of a refused switch and of a disk mounted over the volume.
     let mut unreadable = report(Posture::Active, "hidden");
     unreadable.state_source = "corrupt";
-    unreadable.switch_refusal = Some(SwitchRefusal {
+    unreadable.switch_refusal = Some(nails_core::status::RefusedSwitch {
         reason: "the unit masks failed".into(),
-        at: 1_700_000_000,
+        at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
     });
     unreadable.hidden_root_covered_by = Some(CoverView {
         source: "/dev/sdc1".into(),
