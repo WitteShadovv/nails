@@ -16,6 +16,7 @@
 pub mod checks;
 pub mod entry;
 pub mod fstab;
+pub mod labels;
 pub mod layout;
 pub mod leave;
 pub mod network_state;
