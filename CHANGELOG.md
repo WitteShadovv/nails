@@ -75,9 +75,9 @@ of this changelog for that version becomes the release notes word for word, and
   display manager: `User=` under `[Autologin]`, or under the first seat's `[Autologin][seat0]`, in
   `/etc/plasmalogin.conf` and the drop-ins of `/etc/plasmalogin.conf.d` and
   `/usr/lib/plasmalogin/plasmalogin.conf.d`, read as releases up to 6.6 parse them and as KConfig
-  parses them since 6.7. An account either reading names is listed, whatever `Relogin` says; on
-  systemd 256 and later, Plasma Login Manager 6.7 and later log in after a soft-reboot only with
-  `Relogin=true` (docs/operator-guide.md).
+  parses them since 6.7, in each language a translated `User=` is for. An account any of these
+  readings names is listed, whatever `Relogin` says; on systemd 256 and later, Plasma Login Manager
+  6.7 and later log in after a soft-reboot only with `Relogin=true` (docs/operator-guide.md).
 
 ### Changed
 
