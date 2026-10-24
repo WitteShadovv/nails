@@ -158,6 +158,9 @@ fn the_settings_for_all_and_new_devices_are_read_that_every_user_reads_and_root_
 fn the_settings_the_session_changed_are_written_back() {
     let dir = tempfile::tempdir().unwrap();
     let sys = proc_sys(dir.path());
+    // The decoy's own arp_ignore, not the kernel's default: what goes back is
+    // what entry found.
+    fs::write(sys.join("net/ipv4/conf/all/arp_ignore"), "1\n").unwrap();
     let recorded = read_settings(&sys);
     // A VPN app's settings, and forwarding a container runtime turned on.
     fs::write(sys.join("net/ipv4/ip_forward"), "1\n").unwrap();
