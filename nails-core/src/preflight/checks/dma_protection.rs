@@ -28,7 +28,11 @@
 //! internal device stays identity-mapped and only the devices behind a
 //! Thunderbolt or USB4 port are remapped. One remapped group, a docked
 //! Thunderbolt device's, then says nothing about the internal PCIe and M.2
-//! slots, so an identity-mapped group beside remapped ones warns.
+//! slots, so an identity-mapped group beside remapped ones warns. The warning
+//! names the devices in those groups: a kernel also identity-maps some
+//! built-in devices on purpose (AMD's, an APU's integrated GPU while memory
+//! encryption is off), and the names tell such a device from a card in a slot
+//! or a docked one.
 //!
 //! It **warns, never fails**: real DMA protection lives in firmware (VT-d /
 //! AMD-Vi and "Kernel DMA Protection" in BIOS/UEFI setup, sometimes a kernel
@@ -42,7 +46,7 @@
 use super::super::{CheckResult, PreFlightCheck};
 use super::kernel_cmdline::{self, BoolSpellings};
 use crate::{Filesystem, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The booted kernel command line, read for its IOMMU flags.
 const PROC_CMDLINE: &str = "/proc/cmdline";
@@ -73,6 +77,14 @@ const IOMMU_GROUPS: &str = "/sys/kernel/iommu_groups";
 /// `blocked` when its DMA is refused, `identity` when DMA bypasses the IOMMU
 /// (passthrough). Absent on older kernels, which do not expose it.
 const IOMMU_GROUP_TYPE: &str = "type";
+
+/// The per-group directory that lists the group's devices, each by its bus
+/// address (`0000:00:02.0` for a PCI device).
+const IOMMU_GROUP_DEVICES: &str = "devices";
+
+/// The most identity-mapped devices the warning names one by one; the rest
+/// are counted.
+const NAMED_DEVICES: usize = 8;
 
 /// Why NAILS cannot turn DMA protection on, and the only reliable mitigation,
 /// the power-off named with the real binary path.
@@ -123,28 +135,38 @@ enum IommuCmdline {
 }
 
 /// What `/sys` shows about DMA remapping, group by group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SysIommu {
     /// An IOMMU is active and every group that reports a domain type remaps
     /// (or blocks) DMA, or no group reports one (a kernel before 5.14).
     Remapping,
     /// `identity` of the `groups` that report a domain type bypass the IOMMU,
-    /// while the others remap DMA.
-    Partly { identity: usize, groups: usize },
+    /// while the others remap DMA; `devices` are the devices in the bypassing
+    /// groups, in order.
+    Partly {
+        identity: usize,
+        groups: usize,
+        devices: Vec<String>,
+    },
     /// No IOMMU is active, or every group that reports a type bypasses it.
     NotRemapping,
 }
 
 /// The effective IOMMU DMA-remapping state, from the command line's intent and
 /// the `/sys` ground truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum IommuState {
     /// An IOMMU is active and remapping DMA for every device, not in
     /// passthrough: device DMA is constrained.
     Translating,
     /// The IOMMU remaps DMA for some devices only: `identity` of the `groups`
-    /// are identity-mapped, so a device in one of them can read all of RAM.
-    Partial { identity: usize, groups: usize },
+    /// are identity-mapped, so a device in one of them, any of `devices`, can
+    /// read all of RAM.
+    Partial {
+        identity: usize,
+        groups: usize,
+        devices: Vec<String>,
+    },
     /// DMA is not remapped — the IOMMU is off or in passthrough, or `/sys` lists
     /// no active IOMMU — so a device can read all of RAM.
     Exposed,
@@ -231,7 +253,15 @@ fn iommu_state(intent: IommuCmdline, sys: Option<SysIommu>) -> IommuState {
         IommuCmdline::Off | IommuCmdline::Passthrough => IommuState::Exposed,
         IommuCmdline::Unset => match sys {
             Some(SysIommu::Remapping) => IommuState::Translating,
-            Some(SysIommu::Partly { identity, groups }) => IommuState::Partial { identity, groups },
+            Some(SysIommu::Partly {
+                identity,
+                groups,
+                devices,
+            }) => IommuState::Partial {
+                identity,
+                groups,
+                devices,
+            },
             Some(SysIommu::NotRemapping) => IommuState::Exposed,
             None => IommuState::Unknown,
         },
@@ -258,6 +288,19 @@ const TB_EXPOSED_RISK: &str = "A Thunderbolt/USB4 controller reports no IOMMU DM
      (iommu_dma_protection=0), so a device plugged into that port can map and read all of \
      system RAM over the bus.";
 
+/// `devices` as the warning names them: the first [`NAMED_DEVICES`], then how
+/// many more there are (`0000:00:02.0, 0000:00:14.0 and 3 more`).
+fn named_devices(devices: &[String]) -> String {
+    let mut names: Vec<String> = devices.iter().take(NAMED_DEVICES).cloned().collect();
+    if devices.len() > NAMED_DEVICES {
+        names.push(format!("{} more", devices.len() - NAMED_DEVICES));
+    }
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.concat(),
+    }
+}
+
 /// The warning (never a failure) for a machine whose hardware DMA path is open.
 ///
 /// Reached only when the IOMMU is exposed or remaps some devices only, or a
@@ -271,21 +314,38 @@ fn exposed_warning(iommu: IommuState, tb: TbProtection, lockdown: Lockdown) -> C
              PCIe, an NVMe/M.2 or ExpressCard slot — can map and read all of system RAM over the \
              bus."
             .to_string(),
-        IommuState::Partial { identity, groups } => {
+        IommuState::Partial {
+            identity,
+            groups,
+            devices,
+        } => {
             let thunderbolt = if tb == TbProtection::Exposed {
                 format!(" {TB_EXPOSED_RISK}")
             } else {
                 String::new()
             };
+            let (are, in_them) = if identity == 1 {
+                ("is", "in it")
+            } else {
+                ("are", "in one of them")
+            };
+            let named = if devices.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " Identity-mapped devices: {} (lspci -s <address> names each).",
+                    named_devices(&devices)
+                )
+            };
             format!(
                 "The IOMMU remaps DMA for some devices only: {identity} of the {groups} IOMMU \
-                 groups are identity-mapped (passthrough; /sys/kernel/iommu_groups/*/type shows \
-                 each group's mapping), so a device in one of them can map and read all of \
-                 system RAM over the bus. A remapped group protects only its own devices: where \
-                 the kernel's default is passthrough, as when only the firmware's DMA \
-                 protection turned the IOMMU on, every internal device and any card added to an \
-                 internal PCIe or M.2 slot is identity-mapped, and only the devices behind a \
-                 Thunderbolt or USB4 port are remapped.{thunderbolt}"
+                 groups {are} identity-mapped (passthrough; /sys/kernel/iommu_groups/*/type shows \
+                 each group's mapping), so a device {in_them} can map and read all of system RAM \
+                 over the bus.{named} A remapped group protects only its own devices: where the \
+                 kernel's default is passthrough, as when only the firmware's DMA protection \
+                 turned the IOMMU on, every internal device and any card added to an internal \
+                 PCIe or M.2 slot is identity-mapped, and only the devices behind a Thunderbolt \
+                 or USB4 port are remapped.{thunderbolt}"
             )
         }
         // A Thunderbolt/USB4 controller reports no protection, with the general
@@ -429,7 +489,8 @@ impl DmaProtectionCheck {
     /// `unmanaged`, or `blocked`) group is remapped and an `identity` group is
     /// passthrough, and each group is counted: one remapped group does not make
     /// the others safe. A kernel too old to report a type falls back to
-    /// presence, never downgrading an IOMMU it cannot inspect.
+    /// presence, never downgrading an IOMMU it cannot inspect. The devices of
+    /// the identity-mapped groups are collected for the warning to name.
     fn sys_iommu<F: Filesystem>(&self, fs: &F) -> Option<SysIommu> {
         let class = fs.list_directory(&self.iommu_class_dir).ok();
         let groups = fs.list_directory(&self.iommu_groups_dir).ok();
@@ -439,15 +500,20 @@ impl DmaProtectionCheck {
         let class_populated = class.as_ref().is_some_and(|entries| !entries.is_empty());
         let group_entries = groups.unwrap_or_default();
         let (mut remapped, mut identity) = (0, 0);
+        let mut devices = Vec::new();
         for group in &group_entries {
             if let Ok(kind) = fs.read_file_content(&group.join(IOMMU_GROUP_TYPE)) {
                 match kind.trim() {
                     "DMA" | "DMA-FQ" | "unmanaged" | "blocked" => remapped += 1,
-                    "identity" => identity += 1,
+                    "identity" => {
+                        identity += 1;
+                        devices.extend(group_devices(fs, group));
+                    }
                     _ => {}
                 }
             }
         }
+        devices.sort();
         Some(match (remapped, identity) {
             // No group reports a type (a kernel before 5.14, or an empty `/sys`):
             // fall back to presence, never downgrading an IOMMU we cannot inspect.
@@ -457,6 +523,7 @@ impl DmaProtectionCheck {
             (remapped, identity) => SysIommu::Partly {
                 identity,
                 groups: remapped + identity,
+                devices,
             },
         })
     }
@@ -494,6 +561,16 @@ impl DmaProtectionCheck {
             Err(_) => Lockdown::Unavailable,
         }
     }
+}
+
+/// The devices of the IOMMU group `group`, by bus address, from its `devices`
+/// directory; none when it cannot be listed.
+fn group_devices<F: Filesystem>(fs: &F, group: &Path) -> Vec<String> {
+    fs.list_directory(&group.join(IOMMU_GROUP_DEVICES))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|device| Some(device.file_name()?.to_str()?.to_string()))
+        .collect()
 }
 
 impl Default for DmaProtectionCheck {
