@@ -802,18 +802,23 @@ fn an_image_that_ends_before_its_filesystem_is_not_checked() {
 #[test]
 fn a_partition_its_filesystem_outgrows_is_named() {
     use crate::forensic::layout::tests::{mbr_image, put};
-    // The partition is 16 MiB from 1 MiB in, but the ext4 in it records 32 MiB.
-    let dir = tempfile::tempdir().unwrap();
-    let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768)]);
-    put(&mut file, (1 << 20) + 0x400, &ext4_superblock(8192));
-    file.sync_all().unwrap();
+    // The partition is 16 MiB from 1 MiB in, but the ext4 in it records 32
+    // MiB, or a single 4 KiB block more than the partition holds.
+    for (blocks, spans) in [(8192, 33_554_432), (4097, 16_781_312)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768)]);
+        put(&mut file, (1 << 20) + 0x400, &ext4_superblock(blocks));
+        file.sync_all().unwrap();
 
-    let reason = verdict(path).expect("a cut-short partition is a blind spot");
-    assert!(
-        reason.starts_with("partition 1: the ext2/3/4 filesystem here spans 33554432 bytes"),
-        "{reason}"
-    );
-    assert!(reason.contains("only 16777216 of them"), "{reason}");
+        let reason = verdict(path).expect("a cut-short partition is a blind spot");
+        assert!(
+            reason.starts_with(&format!(
+                "partition 1: the ext2/3/4 filesystem here spans {spans} bytes"
+            )),
+            "{reason}"
+        );
+        assert!(reason.contains("only 16777216 of them"), "{reason}");
+    }
 }
 
 #[test]
