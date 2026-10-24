@@ -1438,11 +1438,15 @@ NixOS), the firmware's Kernel DMA Protection still turns it on, but remaps only
 the devices behind a Thunderbolt or USB4 port and leaves every internal device,
 and any card added to an internal PCIe or M.2 slot, identity-mapped, so the
 check warns about the identity-mapped groups even while a docked device's group
-is remapped. Like the MOR bit it cannot enable the firmware's DMA protection
-for you, so the fix is to turn VT-d/AMD-Vi and Kernel DMA Protection on in
-BIOS/UEFI setup (and `intel_iommu=on` on the decoy kernel command line where
-the kernel does not remap by default) and, above all, to power off before the
-machine leaves your control.
+is remapped. The warning names the devices in those groups, and
+`lspci -s <address>` tells you what each is: a kernel also identity-maps some
+built-in devices on purpose, as AMD's does for an APU's integrated GPU while
+memory encryption is off, and the names tell such a device from a card in a
+slot or a docked one. Like the MOR bit it cannot enable the firmware's DMA
+protection for you, so the fix is to turn VT-d/AMD-Vi and Kernel DMA Protection
+on in BIOS/UEFI setup (and `intel_iommu=on` on the decoy kernel command line
+where the kernel does not remap by default) and, above all, to power off before
+the machine leaves your control.
 
 ### What has not been validated on hardware
 
