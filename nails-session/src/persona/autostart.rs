@@ -19,7 +19,12 @@
 //!
 //! The autostart specification decides between files of the same name: only
 //! the one in the most important directory is used, and when that one says
-//! `Hidden=true` the name is not started at all.
+//! `Hidden=true` the name is not started at all. Only a regular file counts,
+//! once its links are followed, as systemd's autostart generator counts
+//! them: a directory, FIFO, socket or device, or a link to nothing, is
+//! skipped unread, and a file of the same name further down the path
+//! decides. Read, a FIFO would block until a writer came along, and a device
+//! might never end.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -110,6 +115,7 @@ pub(super) fn collect<F: PersonaSource>(
             };
             if file_name == crate::artifacts::LEGACY_NOTIFY_AUTOSTART_FILE
                 || winners.contains_key(stem)
+                || !fs.is_file(&path)
             {
                 continue;
             }
@@ -138,7 +144,7 @@ fn desktop_entry_hidden(content: &str) -> bool {
 mod tests {
     use super::*;
     use crate::Filesystem;
-    use crate::filesystem::MockFilesystem;
+    use crate::filesystem::{MockFilesystem, PathKind, RealFilesystem};
 
     const HOME: &str = "/home/alice";
 
@@ -274,6 +280,47 @@ mod tests {
                 ("tracker".to_string(), InheritedSource::GlobalAutostart),
             ]
         );
+    }
+
+    #[test]
+    fn an_entry_that_is_no_regular_file_leaves_its_name_to_the_next_directory() {
+        let fs = MockFilesystem::new();
+        let (home, system) = ("/home/alice/.config/autostart", "/etc/xdg/autostart");
+        entry(&fs, system, "sync.desktop", "[Desktop Entry]\n");
+        entry(&fs, home, "sync.desktop", "[Desktop Entry]\nHidden=true\n");
+        entry(&fs, home, "folder.desktop", "[Desktop Entry]\n");
+        for path in ["sync.desktop", "folder.desktop"] {
+            fs.mock_set_path_type(&format!("{home}/{path}"), PathKind::Dir);
+        }
+        assert_eq!(
+            started(&fs, false),
+            vec![("sync".to_string(), InheritedSource::GlobalAutostart)]
+        );
+    }
+
+    #[test]
+    fn a_fifo_among_the_entries_is_never_opened() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".config/autostart");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("nails-test-file.desktop"), "[Desktop Entry]\n").unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            dir.join("nails-test-fifo.desktop"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("/dev/zero", dir.join("nails-test-device.desktop")).unwrap();
+        // Opened, the FIFO would block the read until a writer came along,
+        // and the device would never end it.
+        let in_home: Vec<String> = collect(&RealFilesystem, home.path(), "alice", false)
+            .into_iter()
+            .filter(|(_, source)| *source == InheritedSource::UserAutostart)
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(in_home, ["nails-test-file"]);
     }
 
     #[test]
