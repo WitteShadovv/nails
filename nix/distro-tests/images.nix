@@ -17,11 +17,14 @@
 #   enabled        whether the smoke matrix runs it today (false stages an image
 #                  that the next package can boot without putting it in CI);
 #   upstreamUntil  the date the pinned upstream image is expected to lapse from
-#                  its download mirror, or null when no date is known. A
-#                  nix-vm-test pin is a dated upstream URL too, which its mirror
-#                  can prune: the weekly link check probes the URL nix-vm-test
-#                  pins at the locked revision, and a newer lock repins it. A
-#                  self-hosted mirror asset carries no date;
+#                  its download mirror, or null when no date is known. For a
+#                  Fedora release it is the end of life: release engineering
+#                  then stages the release to the archive, and its tree leaves
+#                  the main mirrors about two weeks later. A nix-vm-test pin is
+#                  a dated upstream URL too, which its mirror can prune: the
+#                  weekly link check probes the URL nix-vm-test pins at the
+#                  locked revision, and a newer lock repins it. A self-hosted
+#                  mirror asset carries no date;
 #   prepare        which image-preparation path builds the bootable qcow2
 #                  ("nix-vm-test" for a pinned nix-vm-test release, "fedora" or
 #                  "archlinux" for nix-vm-test's per-family prepare function);
