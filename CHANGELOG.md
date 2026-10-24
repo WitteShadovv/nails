@@ -137,7 +137,8 @@ of this changelog for that version becomes the release notes word for word, and
   point of no return; and, under `--json`, Ctrl+C or SIGTERM during `status`, `verify`, `check`,
   `config`, `init` or `rehearse`. A teardown that has begun (`deactivate` past its prompt,
   `emergency` once it acts, `recover`, `discard` once it deletes) runs to its end and reports its
-  result. An internal error is the error `internal_error`, with exit `1`.
+  result. An internal error is the error `internal_error`, with exit `1`; one that comes after the
+  result was printed leaves that envelope as it is, `ok` included, and still exits `1`.
 
   Exit codes that changed in this release:
 
