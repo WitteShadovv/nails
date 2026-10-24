@@ -3,10 +3,11 @@
 The table is plain data in ``nix/distro-tests/images.json``; the flake turns it
 into VM tests (nix/distro-tests/images.nix). This module is the other half of
 the mirror seam: it validates the table, it is the weekly link check that fails
-before a pinned upstream image is due to lapse or once its URL is gone, and it
-bumps a pin to the latest upstream build (an SHA256 the distribution publishes,
-converted to the subresource-integrity form ``fetchurl`` expects -- the image
-itself is never downloaded here).
+before a pinned upstream image is due to lapse or once its URL is gone (a staged
+entry's as well as an enabled one's), and it bumps a pin to the latest upstream
+build (an SHA256 the distribution publishes, converted to the
+subresource-integrity form ``fetchurl`` expects -- the image itself is never
+downloaded here).
 
 Subcommands::
 
@@ -51,8 +52,8 @@ KNOWN_OS_IDS = frozenset({"debian", "ubuntu", "fedora", "arch"})
 KNOWN_PREPARE = frozenset({"nix-vm-test", "fedora", "archlinux"})
 KNOWN_KINDS = frozenset({"nix-vm-test", "upstream", "mirror", "pending"})
 
-# How far before an enabled entry's upstreamUntil the link check starts failing,
-# so there is time to repin before the image drops off its download mirror.
+# How far before an entry's upstreamUntil the link check starts failing, so
+# there is time to repin before the image drops off its download mirror.
 LEAD_DAYS = 14
 
 # A plain User-Agent: the download mirrors serve automated clients, and the
@@ -265,10 +266,11 @@ def _pinned_url(source: Mapping, resolve: Callable[[Mapping], str]) -> str:
 
 @dataclass
 class LinkReport:
-    """The link check's failures, and which enabled entries it checked.
+    """The link check's failures, and which entries it checked.
 
-    ``checked`` and ``unchecked`` hold one line per enabled entry: its name and
-    what was checked, or why nothing could be.
+    ``checked`` and ``unchecked`` hold one line per entry: its name, marked
+    "(staged)" for a disabled entry, and what was checked, or why nothing could
+    be.
     """
 
     failures: list[str] = field(default_factory=list)
@@ -284,54 +286,67 @@ def link_check(
     url_ok: Callable[[str], bool] = _url_ok,
     pin_url: Callable[[Mapping], str] | None = None,
 ) -> LinkReport:
-    """Check the pin of every enabled entry.
+    """Check the pin of every entry, the staged ones as well as the enabled.
 
     An entry fails when its pin is within ``LEAD_DAYS`` of ``upstreamUntil`` or
     past it (so there is time to repin before the image drops off its mirror)
     and, unless ``offline``, when the image URL it pins does not answer: an
     upstream entry's own URL, or the one nix-vm-test pins for a nix-vm-test
     entry (``pin_url``, by default read from nix-vm-test's image list at the
-    revision ``flake.lock`` locks). Disabled entries are staged on purpose and
-    never checked. A run that could check no enabled entry fails as well: a
-    pass would claim a check that never happened.
+    revision ``flake.lock`` locks). A staged (disabled) entry stays out of the
+    smoke matrix until a change enables it, and the probes boot the Fedora and
+    Arch ones before then; its pin lapses all the same, so it is checked like
+    an enabled one. A run that could check no enabled entry fails as well: a
+    pass would claim a check of the images CI boots that never happened,
+    whatever it found for the staged ones.
     """
     today = today or datetime.date.today()
     resolve = pin_url or _locked_nix_vm_test_url()
     report = LinkReport()
+    checked_enabled = False
     for name, entry in table.items():
-        if not entry.get("enabled"):
-            continue
+        enabled = bool(entry.get("enabled"))
+        label = name if enabled else f"{name} (staged)"
         source = entry.get("source", {})
         kind = source.get("kind")
         done: list[str] = []
         until = entry.get("upstreamUntil")
         if until is not None:
-            done.append(f"lapses {until}")
-            lapses = datetime.date.fromisoformat(str(until))
-            if today >= lapses - datetime.timedelta(days=LEAD_DAYS):
+            try:
+                lapses = datetime.date.fromisoformat(str(until))
+            except ValueError:
+                done.append("its upstreamUntil unreadable")
                 report.failures.append(
-                    f"{name}: upstream pin lapses {until}"
-                    f" (within {LEAD_DAYS} days or past); repin it"
+                    f"{label}: upstreamUntil {until!r} is not a YYYY-MM-DD date"
                 )
+            else:
+                done.append(f"lapses {until}")
+                if today >= lapses - datetime.timedelta(days=LEAD_DAYS):
+                    report.failures.append(
+                        f"{label}: upstream pin lapses {until}"
+                        f" (within {LEAD_DAYS} days or past); repin it"
+                    )
         if not offline and kind in ("upstream", "nix-vm-test"):
             try:
                 url = _pinned_url(source, resolve)
             except LinkError as error:
                 done.append("its pin unreadable")
-                report.failures.append(f"{name}: {error}")
+                report.failures.append(f"{label}: {error}")
             else:
                 done.append(f"probed {url}")
                 if not url_ok(url):
-                    report.failures.append(f"{name}: image URL is unreachable: {url}")
+                    report.failures.append(f"{label}: image URL is unreachable: {url}")
         if done:
-            report.checked.append(f"{name}: {', '.join(done)}")
+            report.checked.append(f"{label}: {', '.join(done)}")
+            checked_enabled = checked_enabled or enabled
         elif kind in ("upstream", "nix-vm-test"):
-            report.unchecked.append(f"{name}: offline, and no upstreamUntil")
+            report.unchecked.append(f"{label}: offline, and no upstreamUntil")
         else:
-            report.unchecked.append(f"{name}: a {kind} source has no URL to probe")
-    if not report.checked:
+            report.unchecked.append(f"{label}: a {kind} source has no URL to probe")
+    if not checked_enabled:
         report.failures.append(
-            "no enabled entry could be checked, so nothing is known to be current"
+            "no enabled entry could be checked, so no image CI boots is known"
+            " to be current"
         )
     return report
 
@@ -540,7 +555,9 @@ def main(argv: list[str] | None = None) -> int:
     check = sub.add_parser("check", help="validate the image table schema")
     check.set_defaults(func=_cmd_check)
 
-    link = sub.add_parser("link-check", help="fail before an enabled pin lapses")
+    link = sub.add_parser(
+        "link-check", help="fail before a pin lapses, a staged entry's as well"
+    )
     link.add_argument("--date", help="treat this YYYY-MM-DD as today")
     link.add_argument(
         "--offline",
