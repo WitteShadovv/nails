@@ -162,6 +162,7 @@ fn test_only_the_commands_that_change_the_system_count_as_mutating() {
         &["transition"],
         &["guard-device", "/dev/sdb"],
         &["reconcile-records"],
+        &["boot-writer"],
     ];
     for argv in mutating {
         assert!(command_is_mutating(&parse(argv).command), "{argv:?}");
