@@ -399,6 +399,20 @@ fn run_warns_when_the_iommu_is_turned_off() {
     // No /sys IOMMU seeded: the off flag alone is decisive.
     let result = DmaProtectionCheck::new().run(&fs).unwrap();
     assert!(result.is_warn(), "{}", result.message());
+    // The warning names what is open, the IOMMU, and blames no Thunderbolt
+    // controller on a machine that has none.
+    assert!(
+        result
+            .message()
+            .contains("not remapping DMA through an IOMMU"),
+        "{}",
+        result.message()
+    );
+    assert!(
+        !result.message().contains("iommu_dma_protection=0"),
+        "{}",
+        result.message()
+    );
 }
 
 #[test]
