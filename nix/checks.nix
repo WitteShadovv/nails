@@ -253,12 +253,14 @@ in
     '';
   };
 
-  # The portable smoke suite's host-side helpers (nix/distro-tests/py), lint
+  # The distribution scenarios' host-side helpers (nix/distro-tests/py), lint
   # and unit-tested without a VM, the same fast lane as e2e-helpers. The smoke
-  # scenario loads distro_checks on the driver; this proves the pure layout
-  # rules it depends on -- the mount-aware canary uppers, the boot-filesystem
-  # read-back and the overlay feature-option check -- stay correct, linted and
-  # typed on every `nix flake check`, not only when a distro VM test runs.
+  # and refusal scenarios load distro_checks on the driver; this proves the pure
+  # rules they depend on -- the smoke scenario's mount-aware canary uppers,
+  # boot-filesystem read-back and overlay feature-option check, and the refusal
+  # scenario's listings, change comparison and journal search -- stay correct,
+  # linted and typed on every `nix flake check`, not only when a distro VM test
+  # runs.
   distro-checks = lint "distro-checks" {
     files = fs.unions [
       ./distro-tests/py
