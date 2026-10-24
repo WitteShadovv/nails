@@ -486,7 +486,9 @@ fn a_logger_running_only_as_a_process_fails_closed() {
 #[test]
 fn a_logger_matched_by_unit_and_process_is_reported_once() {
     // NixOS runs rsyslogd as syslog.service, and its process is rsyslogd: both
-    // routes fire, but the decoy keeps one syslog finding.
+    // routes fire, but the decoy keeps one syslog finding, which names the
+    // daemon. The decoy-persistence-preflight VM test, whose node is this
+    // decoy, looks for that wording.
     let fs = MockFilesystem::new();
     fs.mock_add_file(
         "/etc/systemd/journald.conf",
@@ -501,13 +503,15 @@ fn a_logger_matched_by_unit_and_process_is_reported_once() {
     fs.mock_add_file("/proc/513/comm", "rsyslogd\n");
     let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
     assert!(result.is_fail(), "{result:?}");
+    let message = result.message();
     assert_eq!(
-        result
-            .message()
-            .matches("writes logs to the decoy disk")
-            .count(),
+        message.matches("writes logs to the decoy disk").count(),
         1,
-        "{result:?}"
+        "{message}"
+    );
+    assert!(
+        message.contains("rsyslog is active and writes logs to the decoy disk"),
+        "{message}"
     );
 }
 
