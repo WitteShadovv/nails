@@ -7,16 +7,73 @@ use super::*;
 use crate::session::fstab::parse_fstab;
 use nails_teardown::mountinfo::parse_mountinfo;
 
+/// The host detection finds for `os_release` on a systemd machine.
+fn host(os_release: &str) -> HostProfile {
+    let fs = crate::filesystem::MockFilesystem::new();
+    fs.mock_add_file("/etc/os-release", os_release);
+    fs.mock_add_file("/proc/1/comm", "systemd");
+    crate::platform::detect(&fs).expect("detection reads through the mock")
+}
+
 #[test]
-fn old_systemd_is_refused_naming_the_unsupported_releases() {
-    assert!(judge_version(Some(254)).is_pass());
-    assert!(judge_version(Some(259)).is_pass());
-    let old = judge_version(Some(252));
-    assert!(old.is_fail());
-    assert!(old.message().contains("252"));
-    assert!(old.remediation().unwrap().contains("bookworm"));
-    assert!(old.remediation().unwrap().contains("22.04"));
-    assert!(judge_version(None).is_fail());
+fn a_systemd_new_enough_passes_on_any_host() {
+    assert!(judge_version(Some(254), None).is_pass());
+    assert!(judge_version(Some(259), Some(&host("ID=arch\n"))).is_pass());
+    let unread = judge_version(None, Some(&host("ID=debian\nVERSION_ID=\"13\"\n")));
+    assert!(unread.is_fail());
+    assert!(unread.remediation().unwrap().contains("systemd host"));
+}
+
+/// Each family is told the way its own distribution upgrades, not the Debian
+/// and Ubuntu releases.
+#[test]
+fn an_old_systemd_is_refused_with_how_the_host_upgrades() {
+    for (os_release, version, way) in [
+        (
+            "ID=debian\nVERSION_ID=\"12\"\n",
+            252,
+            "Debian 13 as its release notes describe",
+        ),
+        (
+            "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"22.04\"\n",
+            249,
+            "Ubuntu 24.04 or 26.04 with `do-release-upgrade`",
+        ),
+        (
+            "ID=fedora\nVERSION_ID=38\n",
+            253,
+            "Fedora 44 with `dnf system-upgrade`",
+        ),
+        ("ID=arch\n", 253, "`pacman -Syu`"),
+        ("ID=endeavouros\nID_LIKE=arch\n", 253, "`pacman -Syu`"),
+        (
+            "ID=nixos\nVERSION_ID=\"23.05\"\n",
+            253,
+            "a current NixOS release",
+        ),
+    ] {
+        let profile = host(os_release);
+        let old = judge_version(Some(version), Some(&profile));
+        assert!(old.is_fail(), "{os_release}: {old:?}");
+        assert!(
+            old.message()
+                .contains(&format!("systemd {version} is too old")),
+            "{old:?}"
+        );
+        let remediation = old.remediation().unwrap();
+        assert_eq!(remediation, upgrade_hint(Some(&profile)), "{os_release}");
+        assert!(remediation.contains(way), "{os_release}: {remediation}");
+    }
+
+    // Without a detected host, the hint names the platforms NAILS runs on.
+    let unknown = judge_version(Some(252), None);
+    assert!(
+        unknown
+            .remediation()
+            .unwrap()
+            .contains("a release NAILS supports (Debian 13, Ubuntu 24.04 and 26.04)"),
+        "{unknown:?}"
+    );
 }
 
 #[test]

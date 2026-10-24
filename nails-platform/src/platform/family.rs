@@ -14,13 +14,18 @@
 //! host and turns the result into a [`PlatformKind`].
 //!
 //! Each row carries its family, its version gate, whether it is a base
-//! distribution or a derivative, and whether NAILS admits it. Fedora and Arch
-//! are in the table but not admitted, so they are refused as product data until
-//! their support has been verified, not hidden behind a test flag.
+//! distribution or a derivative, whether NAILS admits it, and how its hosts
+//! upgrade to a newer systemd. Fedora and Arch are in the table but not
+//! admitted, so they are refused as product data until their support has been
+//! verified, not hidden behind a test flag.
 //!
 //! [`PlatformKind`]: super::PlatformKind
 
 use nails_base::Family;
+
+mod hints;
+
+pub use hints::{Package, install_hint, upgrade_hint};
 
 /// A distribution version reduced to `(major, minor)`.
 ///
@@ -92,6 +97,25 @@ pub(crate) enum Kind {
     Derivative,
 }
 
+/// How a distribution's hosts reach a release whose systemd supports
+/// soft-reboot, as the distribution's own documentation describes it.
+/// [`upgrade_hint`] turns it into the sentence `systemd-version` prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Upgrade {
+    /// An upgrade to a newer release, done the way the text says (for Ubuntu,
+    /// "with `do-release-upgrade`, then reboot"). The hint names the row's
+    /// tested releases or, for a derivative, a release built on those of its
+    /// base family.
+    Release(&'static str),
+    /// An update of the whole rolling system, done the way the text says.
+    Rolling(&'static str),
+}
+
+/// How Arch and the Arch derivatives in the table bring a host up to date: a
+/// full upgrade, as each of them documents. A partial upgrade is unsupported
+/// there, so the hint never names `pacman -S systemd` alone.
+const PACMAN_FULL_UPGRADE: Upgrade = Upgrade::Rolling("with `pacman -Syu`, then reboot");
+
 /// One row of the family table.
 pub(crate) struct FamilyRow {
     /// The `/etc/os-release` `ID`, lowercased.
@@ -107,6 +131,8 @@ pub(crate) struct FamilyRow {
     /// Whether NAILS admits this family. A base row that is not admitted is
     /// refused; a derivative is refused until its base family is admitted.
     admitted: bool,
+    /// How the row's hosts upgrade to a systemd new enough for the session.
+    upgrade: Upgrade,
 }
 
 /// The warning the Ubuntu 26.04 row carries. 26.04 is a tested release, but a
@@ -140,6 +166,7 @@ const TABLE: &[FamilyRow] = &[
         },
         kind: Kind::Base,
         admitted: true,
+        upgrade: Upgrade::Release("as its release notes describe, then reboot"),
     },
     FamilyRow {
         id: "ubuntu",
@@ -155,6 +182,7 @@ const TABLE: &[FamilyRow] = &[
         },
         kind: Kind::Base,
         admitted: true,
+        upgrade: Upgrade::Release("with `do-release-upgrade`, then reboot"),
     },
     FamilyRow {
         id: "fedora",
@@ -167,6 +195,9 @@ const TABLE: &[FamilyRow] = &[
         },
         kind: Kind::Base,
         admitted: false,
+        // The upgrade reboots by itself; Fedora supports it across at most two
+        // releases.
+        upgrade: Upgrade::Release("with `dnf system-upgrade`, at most two releases at a time"),
     },
     FamilyRow {
         id: "arch",
@@ -175,6 +206,7 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Rolling,
         kind: Kind::Base,
         admitted: false,
+        upgrade: PACMAN_FULL_UPGRADE,
     },
     // Arch derivatives: refused while Arch is, named so the refusal is precise
     // and flips to a warning the day Arch is admitted.
@@ -185,6 +217,7 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Rolling,
         kind: Kind::Derivative,
         admitted: false,
+        upgrade: PACMAN_FULL_UPGRADE,
     },
     FamilyRow {
         id: "cachyos",
@@ -193,6 +226,7 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Rolling,
         kind: Kind::Derivative,
         admitted: false,
+        upgrade: PACMAN_FULL_UPGRADE,
     },
     FamilyRow {
         id: "manjaro",
@@ -201,6 +235,7 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Rolling,
         kind: Kind::Derivative,
         admitted: false,
+        upgrade: PACMAN_FULL_UPGRADE,
     },
     // Fedora derivatives.
     FamilyRow {
@@ -210,6 +245,9 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Rolling,
         kind: Kind::Derivative,
         admitted: false,
+        // Nobara upgrades through its own updater and warns against
+        // `dnf system-upgrade`.
+        upgrade: Upgrade::Release("as Nobara's upgrade guide describes, then reboot"),
     },
     FamilyRow {
         id: "ultramarine",
@@ -218,6 +256,7 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Rolling,
         kind: Kind::Derivative,
         admitted: false,
+        upgrade: Upgrade::Release("with `dnf system-upgrade`"),
     },
 ];
 
@@ -567,11 +606,22 @@ fn supported_platforms() -> String {
 /// `versions` as a list for a sentence: `13`, `24.04 and 26.04`, or
 /// `22.04, 24.04 and 26.04`.
 fn releases(versions: &[DistroVersion]) -> String {
+    joined(versions, "and")
+}
+
+/// `versions` as alternatives for a sentence: `13`, `24.04 or 26.04`, or
+/// `22.04, 24.04 or 26.04`.
+fn either(versions: &[DistroVersion]) -> String {
+    joined(versions, "or")
+}
+
+/// `versions` in a sentence, the last two joined by `conjunction`.
+fn joined(versions: &[DistroVersion], conjunction: &str) -> String {
     let names: Vec<String> = versions.iter().map(ToString::to_string).collect();
     match names.split_last() {
         None => String::new(),
         Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        Some((last, rest)) => format!("{} {conjunction} {last}", rest.join(", ")),
     }
 }
 

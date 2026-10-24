@@ -174,8 +174,11 @@ pub fn build_registry<F: Filesystem>(
     }
 
     // The hidden root is entered with `systemctl soft-reboot` (systemd 254),
-    // through the two units that implement it.
-    registry.add_check(Box::new(SystemdVersionCheck));
+    // through the two units that implement it. A systemd too old is told how
+    // the detected host's distribution upgrades.
+    registry.add_check(Box::new(SystemdVersionCheck::new(
+        inputs.host_profile.clone(),
+    )));
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
         config_layer.is_some(),

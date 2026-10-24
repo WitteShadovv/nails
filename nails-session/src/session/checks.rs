@@ -3,8 +3,8 @@
 
 //! The pre-flight checks only a whole-root session has.
 //!
-//! - `systemd-version`: systemd >= 254 (`systemctl soft-reboot`); Debian 12
-//!   and Ubuntu 22.04 are refused with a clear message;
+//! - `systemd-version`: systemd >= 254 (`systemctl soft-reboot`); an older one
+//!   is refused with how the host's distribution upgrades to a newer one;
 //! - `soft-reboot-units`: the two units that implement it are installed;
 //! - `decoy-root`: the decoy root can be mounted again by device for the way
 //!   back;
@@ -23,12 +23,14 @@ use super::probe::{self, SessionView};
 use super::systemd::{self, MIN_SYSTEMD};
 use crate::error::Result;
 use crate::filesystem::Filesystem;
+use crate::platform::{HostProfile, upgrade_hint};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use std::path::{Path, PathBuf};
 
-/// Judge a systemd version.
-pub fn judge_version(version: Option<u32>) -> CheckResult {
+/// Judge a systemd version on `host`: one too old fails with how the host's
+/// distribution upgrades to a release that is new enough.
+pub fn judge_version(version: Option<u32>, host: Option<&HostProfile>) -> CheckResult {
     match version {
         Some(v) if v >= MIN_SYSTEMD => {
             CheckResult::Pass(format!("systemd {v} supports soft-reboot"))
@@ -38,9 +40,7 @@ pub fn judge_version(version: Option<u32>) -> CheckResult {
                 "systemd {v} is too old: the hidden session is entered with `systemctl \
                  soft-reboot`, which needs systemd {MIN_SYSTEMD} or newer"
             ),
-            "Debian 12 (bookworm, systemd 252) and Ubuntu 22.04 (jammy, systemd 249) are not \
-             supported. Use Debian 13 (trixie), Ubuntu 24.04 or 26.04, or a current NixOS."
-                .to_string(),
+            upgrade_hint(host),
         ),
         None => CheckResult::fail_with(
             "could not read the version of the running systemd".to_string(),
@@ -50,8 +50,19 @@ pub fn judge_version(version: Option<u32>) -> CheckResult {
 }
 
 /// `systemd-version`.
-#[derive(Debug, Default)]
-pub struct SystemdVersionCheck;
+#[derive(Debug)]
+pub struct SystemdVersionCheck {
+    /// The detected host, whose distribution the upgrade hint names.
+    host: Option<HostProfile>,
+}
+
+impl SystemdVersionCheck {
+    /// The check on the detected `host`; without one, a systemd too old is
+    /// pointed at the platforms NAILS runs on.
+    pub fn new(host: Option<HostProfile>) -> Self {
+        Self { host }
+    }
+}
 
 impl<F: Filesystem> PreFlightCheck<F> for SystemdVersionCheck {
     fn name(&self) -> &'static str {
@@ -61,9 +72,10 @@ impl<F: Filesystem> PreFlightCheck<F> for SystemdVersionCheck {
         "systemd supports soft-reboot (254 or newer)"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(judge_version(systemd::running_version(
-            &crate::process::RealProcessRunner,
-        )))
+        Ok(judge_version(
+            systemd::running_version(&crate::process::RealProcessRunner),
+            self.host.as_ref(),
+        ))
     }
 }
 
