@@ -231,8 +231,12 @@ fn advice(version: Option<CryptsetupVersion>, first: Option<CryptsetupVersion>) 
 /// running or reading the binary (see the [module docs](self)): the NixOS
 /// system profile's link, which comes first as it does in the tool search
 /// path, then dpkg's database, then pacman's. `None` when none of them names
-/// it.
-fn installed_version<F: Filesystem>(fs: &F, root: &Path) -> Option<CryptsetupVersion> {
+/// it. Every one of them is whatever the decoy's disk holds; the
+/// `cryptsetup_version` fuzz target drives this with hostile ones.
+pub fn installed_cryptsetup_version<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+) -> Option<CryptsetupVersion> {
     nix_profile_version(fs, root)
         .or_else(|| {
             let status = fs.read_file_bytes(&root.join(DPKG_STATUS)).ok()?;
@@ -340,7 +344,8 @@ impl<F: Filesystem> PreFlightCheck<F> for CryptsetupArgon2idCheck {
         if !self.privileged {
             return Ok(CheckResult::Pass(UNPRIVILEGED_SKIP.into()));
         }
-        Ok(argon2id_advice(installed_version(fs, &self.root)))
+        let version = installed_cryptsetup_version(fs, &self.root);
+        Ok(argon2id_advice(version))
     }
 }
 
