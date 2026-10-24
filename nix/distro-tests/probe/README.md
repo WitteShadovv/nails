@@ -50,6 +50,10 @@ Each file is an object:
     no file sets it and the compiled-in default applies.
   - `failedBootUnits` -- boot-loader and early units that show as failed on a
     plain boot of the stock image (list of unit names).
+  - `failedUnitsAfterSoftReboot` -- units that show as failed after one plain
+    `systemctl soft-reboot` of the stock image, with no NAILS involved (list of
+    unit names); every way back is a soft-reboot, so these are the units the
+    way back would have to mask.
   - `updatedbPrunePaths` -- the `PRUNEPATHS` the image's `updatedb` ships (list).
   - `avcs` -- AVC denials seen on a plain boot, permissive or enforcing (list of
     raw AVC lines).
