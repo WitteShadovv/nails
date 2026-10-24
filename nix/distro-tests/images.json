@@ -99,15 +99,15 @@
     "enforcing": false,
     "memory": 2048,
     "enabled": false,
-    "upstreamUntil": "2026-12-20",
+    "upstreamUntil": "2027-01-03",
     "prepare": "archlinux",
     "source": {
       "kind": "upstream",
       "family": "arch-boxes",
-      "release": "20261001",
-      "url": "https://geo.mirror.pkgbuild.com/images/v20261001.604814/Arch-Linux-x86_64-basic-20261001.604814.qcow2",
-      "name": "Arch-Linux-x86_64-basic-20261001.604814.qcow2",
-      "sha256": "sha256-+foWxA5qycA/0oqboS+mq1i1ZIrERKbSezHuW9mRMYY="
+      "release": "20261015",
+      "url": "https://geo.mirror.pkgbuild.com/images/v20261015.611680/Arch-Linux-x86_64-basic-20261015.611680.qcow2",
+      "name": "Arch-Linux-x86_64-basic-20261015.611680.qcow2",
+      "sha256": "sha256-u4iKCEVo9OaLEmD/phTr+AbHlmj6IPlGxpGXNTj00zw="
     }
   },
   "arch-install": {
