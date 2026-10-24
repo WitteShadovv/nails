@@ -11,37 +11,39 @@
 //! relabelled they carry no label, or one the kernel derived from their parent
 //! there, so the policy sees the hidden `/` as `unlabeled_t`, and confined
 //! services may not even look it up: the hidden session does not boot on an
-//! enforcing host. [`copy_label`] gives each such directory the label of the
-//! decoy directory it stands for, read with `lgetxattr` and written with
-//! `lsetxattr`, so the hidden `/`, a separate `/home` and the empty home carry
-//! the types they have on the decoy (`root_t`, `home_root_t` and
+//! enforcing host. [`copy_label`] gives such a directory the label of the
+//! decoy directory it stands for, and [`copy_labels_along`] gives one to each
+//! directory on the way from the root of an upper down to the home. Both read
+//! the label with `lgetxattr` and write it with `fsetxattr` on the upper
+//! directory itself, so the hidden `/`, a separate `/home` and the empty home
+//! carry the types they have on the decoy (`root_t`, `home_root_t` and
 //! `user_home_dir_t` under Fedora's policy). Whatever the hidden session
 //! creates below them then takes its label from the policy, as on the decoy.
 //!
-//! Whether a copy must succeed depends on the host ([`Labels::for_host`]). With
-//! SELinux enabled the hidden root needs the labels, so a copy that fails
-//! refuses the entry: a hidden volume whose filesystem cannot store labels, a
-//! policy that does not let NAILS relabel, a decoy directory with no label to
-//! read. Without SELinux nothing reads them and the copy is best effort: a
-//! decoy directory without a label (the usual case there), or a filesystem
-//! without extended attributes, leaves the upper directory as it was, so such a
-//! host gets the same hidden root as before. Any other failure is an error in
-//! both cases.
-//!
-//! SELinux counts as enabled whenever the host facts report it, that is when
-//! [`HostProfile::selinux`](nails_platform::HostProfile::selinux) is `Some`:
-//! selinuxfs is mounted, or `/etc/selinux/config` exists. A host that keeps
-//! only the configuration file (SELinux disabled at boot) counts too. Its facts
-//! cannot be told apart from a mounted selinuxfs whose enforce flag could not be
-//! read, and refusing an entry is the safe side of that doubt.
+//! Whether a copy must succeed depends on the host ([`Labels::for_host`]).
+//! Where the host facts report SELinux, a copy that fails refuses the entry: a
+//! hidden volume whose filesystem cannot store labels, a policy that does not
+//! let NAILS relabel, a decoy directory with no label to read. The facts report
+//! SELinux when `/sys/fs/selinux` exists or `/etc/selinux/config` names a mode
+//! or a policy ([`HostProfile::selinux`] is `Some`). That includes a host that
+//! keeps only the configuration file, `SELINUX=disabled` in it: its facts
+//! cannot be told apart from a mounted selinuxfs whose enforce flag could not
+//! be read, and refusing an entry is the safe side of that doubt. A host that
+//! was not detected at all counts the same way, since nothing rules SELinux
+//! out there. Where the facts report no SELinux, nothing reads the labels and
+//! the copy is best effort: a decoy directory without a label (the usual case
+//! there) or none at all, a filesystem without extended attributes, or a link
+//! or a file in place of an upper directory leaves the upper as it was, so such
+//! a host gets the same hidden root as before. Any other failure is an error
+//! either way.
 //!
 //! # Where the copies go
 //!
-//! Nothing calls [`copy_label`] yet. The entry is to make one [`Labels`] from
-//! the host profile the activation detected, carry it in
-//! [`EntryInputs`](super::entry::EntryInputs), and copy at four places, each
-//! right after the line that gives the new directory the mode and owner of the
-//! same decoy directory:
+//! Nothing calls these yet. The entry is to make one [`Labels`] with
+//! `Labels::for_host(manager.host_profile())`, so a detection that failed
+//! counts as SELinux, carry it in [`EntryInputs`](super::entry::EntryInputs),
+//! and copy at three places, each before the overlay over that upper is
+//! mounted (an upper must not change under a mounted overlay):
 //!
 //! - **the root upper**: `make_layer` in [`super::entry`], after
 //!   `match_attributes(upper, like)`, as `copy_label(like, upper, labels)`.
@@ -53,33 +55,63 @@
 //!   filesystem ([`Paths::decoy`](super::Paths::decoy) of its mount point) for
 //!   the upper of [`Layout::mount_layers`](super::Layout::mount_layers), before
 //!   that filesystem's overlay is mounted;
-//! - **the empty home**: [`prepare_fresh_home`](super::persona::prepare_fresh_home),
-//!   after the `chown` of `upper_home` and before the opaque attribute, as
-//!   `copy_label(decoy_home, upper_home, labels)`. A failure removes
-//!   `upper_home` again, as a failed opaque attribute does, so that no home
-//!   without its label is kept by a later entry;
-//! - **its parents**: `create_parents_like` in [`super::persona`], after the
-//!   `chown` of each directory it creates, from the `like` directory whose mode
-//!   and owner it took. Where `like` is `None` there is no decoy directory to
-//!   copy from, and the directory keeps the label the kernel gave it.
+//! - **the empty home and its parents**: `fresh_home` in [`super::entry`],
+//!   right after [`prepare_fresh_home`](super::persona::prepare_fresh_home)
+//!   returns, whether it created the home or found it in place, as
+//!   `copy_labels_along(&paths.decoy(mount), &upper_root, rest, labels)`. The
+//!   upper root is [`Layout::upper`](super::Layout::upper) for a home on the
+//!   decoy root, else the upper of [`Layout::mount_layers`](super::Layout::mount_layers)
+//!   of `mount`, and `rest` is the home below `mount`. That labels every
+//!   directory below the upper root down to the home, the home included.
+//!   `make_layer` labels the upper root itself, and the directories
+//!   `create_parents_like` makes above it (`root/mounts/<unit>`) belong to no
+//!   overlay. `fresh_home` runs before `make_layer` and `apply_mounts`, so no
+//!   overlay is mounted on either upper yet.
 //!
-//! `make_layer` runs at every entry, so the roots of the uppers take the
-//! decoy's labels again each time, as they take its mode and owner; a label
-//! already in place is not written again. The empty home and its parents get
-//! theirs once, when they are created, and are the hidden session's own after
-//! that. `nextroot` needs no call: it only mounts the uppers prepared here.
-//! Every other directory the entry creates is made through the next root once
-//! the overlays are mounted (the mount points of the fstab policy and of the
+//! All three run at every entry: a label already in place is not written again,
+//! and one that is missing or wrong is written at the next entry. The roots of
+//! the uppers take the decoy's labels again each time, as they take its mode
+//! and owner. The home and its parents take the labels again each time too,
+//! though their mode and owner are set only when they are created, so a label
+//! the hidden session gives one of them gives way to the decoy's at the next
+//! entry. Nothing copies a label where a directory is created
+//! (`create_parents_like`, `prepare_fresh_home`): `create_parents_like` keeps a
+//! directory that exists, and nothing removes a parent whose copy failed, so
+//! with a copy made only there a later entry would go on with that parent
+//! unlabelled, after a relabel the policy denied once, an `ENOSPC` or `EIO` on
+//! the hidden volume, or a decoy directory or label that appeared since.
+//! Whether a directory gets a copy follows the rules of [`copy_label`] alone,
+//! never whether `create_parents_like` could give it the decoy directory's mode
+//! and owner (it gives neither where `like` is `None` or the decoy directory's
+//! metadata cannot be read). With [`Labels::BestEffort`] a directory is left as
+//! it is when its decoy counterpart does not exist or has no label, or a
+//! filesystem stores no labels, and the walk stops at a link or a file in place
+//! of a directory; with [`Labels::Required`] every directory gets the label or
+//! the entry is refused. The wiring needs an entry test for this: an entry
+//! refused at the copy for a parent of the home, then a later entry, with the
+//! home in place, that labels that parent or is refused again, never one that
+//! goes on without the label.
+//!
+//! `nextroot` needs no call: it only mounts the uppers prepared here. Every
+//! other directory the entry creates is made through the next root once the
+//! overlays are mounted (the mount points of the fstab policy and of the
 //! carried decoy filesystems, the persona's masks), and the kernel labels it
-//! by the policy, like a file the hidden session creates. The hidden NixOS
-//! configuration, which `init` writes into the upper's `/etc/nixos`, needs no
-//! copy: only a NixOS hidden system has one, and NixOS does not run SELinux.
+//! by the policy, like a file the hidden session creates.
+//!
+//! The hidden NixOS configuration is not covered yet. `init` writes it into
+//! the upper's `/etc/nixos` directly on the hidden volume, on NixOS and on any
+//! host where `--hardware-config` is given, so it creates the upper's `/etc`
+//! itself, and on an SELinux host the hidden `/etc` would take its label from
+//! that directory. The follow-up either has `init` refuse `--hardware-config`
+//! where the host facts report SELinux, or has the entry copy the decoy's
+//! label onto an upper `/etc` that was not created through the overlay.
 
 use crate::error::{NailsError, Result};
-use nails_platform::SelinuxStatus;
-use rustix::fs::XattrFlags;
+use nails_platform::HostProfile;
+use rustix::fs::{Mode, OFlags, XattrFlags};
 use rustix::io::Errno;
-use std::path::Path;
+use std::os::fd::OwnedFd;
+use std::path::{Component, Path};
 
 /// The extended attribute that holds a file's SELinux label.
 pub const LABEL_XATTR: &str = "security.selinux";
@@ -88,28 +120,49 @@ pub const LABEL_XATTR: &str = "security.selinux";
 /// (`XATTR_SIZE_MAX`): a buffer this size reads any label in one call.
 const LABEL_MAX: usize = 64 * 1024;
 
-/// Whether a label copy must succeed, from the host's SELinux facts.
+/// How an upper directory is opened: the directory itself, for its attributes
+/// only. A symlink in the last component is not followed, and it or a file
+/// there fails the open with `ENOTDIR`.
+const DIRECTORY: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
+/// Whether a label copy must succeed, from what the host facts say about
+/// SELinux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Labels {
-    /// SELinux is enabled: the hidden root needs every label, so a copy that
+    /// The hidden root may need every label, for the reason given: a copy that
     /// fails refuses the entry.
-    Required,
-    /// SELinux is not enabled and nothing reads the labels: a decoy directory
-    /// without one, or a filesystem that stores none, leaves the upper
+    Required(Reason),
+    /// The host facts report no SELinux, so nothing reads the labels: a decoy
+    /// directory that has none or does not exist, a filesystem that stores
+    /// none, or a link or a file in place of an upper directory leaves that
     /// directory as it was.
     BestEffort,
 }
 
+/// Why [`Labels::Required`] applies, for a refusal to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// The host facts report SELinux: `/sys/fs/selinux` exists, or
+    /// `/etc/selinux/config` names a mode or a policy.
+    SelinuxReported,
+    /// The host was not detected, so no facts rule SELinux out.
+    HostUndetected,
+}
+
 impl Labels {
-    /// What a host with these SELinux facts
-    /// ([`HostProfile::selinux`](nails_platform::HostProfile::selinux)) needs:
-    /// [`Labels::Required`] for any SELinux the facts report (see the module
-    /// docs), [`Labels::BestEffort`] for none.
-    pub fn for_host(selinux: Option<&SelinuxStatus>) -> Self {
-        if selinux.is_some() {
-            Self::Required
-        } else {
-            Self::BestEffort
+    /// What a host with this profile needs (the one `NailsManager::host_profile`
+    /// returns, `None` where the detection failed): [`Labels::Required`] where
+    /// its facts report SELinux ([`HostProfile::selinux`] is `Some`, see the
+    /// module docs) and where there is no profile at all,
+    /// [`Labels::BestEffort`] where they report none.
+    pub fn for_host(profile: Option<&HostProfile>) -> Self {
+        match profile {
+            None => Self::Required(Reason::HostUndetected),
+            Some(profile) if profile.selinux.is_some() => Self::Required(Reason::SelinuxReported),
+            Some(_) => Self::BestEffort,
         }
     }
 }
@@ -126,34 +179,104 @@ pub enum Copied {
     /// The decoy directory or the upper one is on a filesystem without extended
     /// attributes ([`Labels::BestEffort`] only).
     Unsupported,
+    /// A link or a file stands where the upper directory should be, and nothing
+    /// was written onto it or through it ([`Labels::BestEffort`] only).
+    NotADirectory,
 }
 
 /// Give `upper`, a directory NAILS created in an upper, the SELinux label of
 /// `decoy`, the decoy directory it stands for in the hidden root.
 ///
-/// Neither call follows a symlink in the last component of its path, so a link
-/// planted where `upper` should be is labelled itself and never leads the write
-/// elsewhere. `decoy` is only read, and reading an extended attribute updates
-/// no access time. Only `upper` is written, and only when its label differs, so
-/// a later entry relabels nothing. With [`Labels::Required`] anything short of
-/// the label on `upper` is an error, which refuses the entry; with
-/// [`Labels::BestEffort`] a missing label or a filesystem without extended
-/// attributes is not.
+/// `decoy` is only read, without following a symlink in its last component,
+/// and reading an extended attribute updates no access time. `upper` is opened
+/// as a directory without following a symlink in its last component (the rest
+/// of its path resolves as it does for `make_layer` and the overlay), and the
+/// label is written through that descriptor, only where it differs, so a later
+/// entry relabels nothing. A link in place of `upper` is never labelled, nor is
+/// its target, though an overlay given that path would take its root from the
+/// target. With [`Labels::Required`] anything short of the label on `upper`
+/// itself is an error, which refuses the entry; with [`Labels::BestEffort`] a
+/// missing label, a filesystem without extended attributes, or a link or a file
+/// in place of `upper` is not.
 pub fn copy_label(decoy: &Path, upper: &Path, labels: Labels) -> Result<Copied> {
     let copied = read_label(decoy).map_err(Failure::Read).and_then(|label| {
-        if read_label(upper).is_ok_and(|current| current == label) {
-            return Ok(());
-        }
-        rustix::fs::lsetxattr(upper, LABEL_XATTR, &label, XattrFlags::empty())
-            .map_err(Failure::Write)
+        let dir = rustix::fs::open(upper, DIRECTORY, Mode::empty()).map_err(Failure::Upper)?;
+        write_label(&dir, &label)
     });
     judge(decoy, upper, labels, copied)
 }
 
+/// Give every directory on the way from the upper root `upper` down to
+/// `upper/rest`, `upper/rest` included and `upper` itself not, the label of
+/// the directory at the same place below `decoy`, nearest to the root first,
+/// by the rules of [`copy_label`].
+///
+/// The way down follows no link: `upper` is opened as [`copy_label`] opens it,
+/// and each directory below it in the one above, without following a symlink.
+/// A link or a file at `upper` or anywhere below it ends the walk there, with
+/// nothing labelled at or past it: [`Labels::BestEffort`] stops, and
+/// [`Labels::Required`] refuses. `rest` is relative and made of plain names,
+/// and every directory on it must exist in the upper.
+pub fn copy_labels_along(decoy: &Path, upper: &Path, rest: &Path, labels: Labels) -> Result<()> {
+    let mut names = Vec::new();
+    for component in rest.components() {
+        match component {
+            Component::Normal(name) => names.push(name),
+            Component::CurDir => {}
+            _ => {
+                return Err(NailsError::InvalidState(format!(
+                    "{} is not a path of plain names below {}",
+                    rest.display(),
+                    upper.display()
+                )));
+            }
+        }
+    }
+    let mut dir = match rustix::fs::open(upper, DIRECTORY, Mode::empty()) {
+        Ok(dir) => dir,
+        Err(errno) => return judge(decoy, upper, labels, Err(Failure::Upper(errno))).map(drop),
+    };
+    let (mut decoy, mut upper) = (decoy.to_path_buf(), upper.to_path_buf());
+    for name in names {
+        decoy.push(name);
+        upper.push(name);
+        let next = match rustix::fs::openat(&dir, name, DIRECTORY, Mode::empty()) {
+            Ok(next) => next,
+            // A link or a file: nothing at or below it is labelled.
+            Err(errno) => {
+                return judge(&decoy, &upper, labels, Err(Failure::Upper(errno))).map(drop);
+            }
+        };
+        let copied = read_label(&decoy)
+            .map_err(Failure::Read)
+            .and_then(|label| write_label(&next, &label));
+        judge(&decoy, &upper, labels, copied)?;
+        dir = next;
+    }
+    Ok(())
+}
+
 /// The SELinux label of `path`, not following a symlink in its last component.
 fn read_label(path: &Path) -> rustix::io::Result<Vec<u8>> {
+    label_with(|buf| rustix::fs::lgetxattr(path, LABEL_XATTR, buf))
+}
+
+/// Write `label` onto the open directory `dir`, unless it carries it already.
+fn write_label(dir: &OwnedFd, label: &[u8]) -> std::result::Result<(), Failure> {
+    if label_with(|buf| rustix::fs::fgetxattr(dir, LABEL_XATTR, buf))
+        .is_ok_and(|current| current == label)
+    {
+        return Ok(());
+    }
+    rustix::fs::fsetxattr(dir, LABEL_XATTR, label, XattrFlags::empty()).map_err(Failure::Write)
+}
+
+/// A label `read` puts into a buffer that holds any.
+fn label_with(
+    read: impl FnOnce(&mut [u8]) -> rustix::io::Result<usize>,
+) -> rustix::io::Result<Vec<u8>> {
     let mut label = vec![0; LABEL_MAX];
-    let len = rustix::fs::lgetxattr(path, LABEL_XATTR, &mut label[..])?;
+    let len = read(&mut label[..])?;
     label.truncate(len);
     Ok(label)
 }
@@ -163,7 +286,10 @@ fn read_label(path: &Path) -> rustix::io::Result<Vec<u8>> {
 enum Failure {
     /// Reading the decoy directory's label.
     Read(Errno),
-    /// Writing it onto the upper directory.
+    /// Opening the upper directory itself: `ENOTDIR` where a link or a file
+    /// stands in its place.
+    Upper(Errno),
+    /// Writing the label onto it.
     Write(Errno),
 }
 
@@ -186,20 +312,25 @@ fn judge(
             Failure::Read(Errno::NOTSUP) | Failure::Write(Errno::NOTSUP) => {
                 return Ok(Copied::Unsupported);
             }
+            Failure::Upper(Errno::NOTDIR | Errno::LOOP) => return Ok(Copied::NotADirectory),
             _ => {}
         }
     }
     Err(refusal(decoy, upper, labels, failure))
 }
 
-/// The error for a copy that failed: what failed and, with SELinux enabled,
-/// why the entry cannot go on without the label.
+/// The error for a copy that failed: what failed and, where every label is
+/// required, why.
 fn refusal(decoy: &Path, upper: &Path, labels: Labels, failure: Failure) -> NailsError {
     let (decoy, upper) = (decoy.display(), upper.display());
     let why = match failure {
         Failure::Read(Errno::NODATA) => format!("{decoy} has no label"),
         Failure::Read(Errno::NOENT) => format!("{decoy} does not exist"),
         Failure::Read(Errno::NOTSUP) => format!("the filesystem of {decoy} stores no labels"),
+        Failure::Upper(Errno::NOTDIR | Errno::LOOP) => {
+            format!("{upper} is a link or a file, not a directory")
+        }
+        Failure::Upper(Errno::NOENT) => format!("{upper} does not exist"),
         Failure::Write(Errno::NOTSUP) => {
             format!("the filesystem of {upper} cannot store labels")
         }
@@ -207,16 +338,25 @@ fn refusal(decoy: &Path, upper: &Path, labels: Labels, failure: Failure) -> Nail
             "reading the label of {decoy} failed: {}",
             std::io::Error::from(errno)
         ),
+        Failure::Upper(errno) => {
+            format!("opening {upper} failed: {}", std::io::Error::from(errno))
+        }
         Failure::Write(errno) => format!(
             "writing the label onto {upper} failed: {}",
             std::io::Error::from(errno)
         ),
     };
     NailsError::InvalidState(match labels {
-        Labels::Required => format!(
-            "SELinux is enabled on this host, so {upper} needs the SELinux label of {decoy} \
-             for the hidden root to boot, but {why}"
-        ),
+        Labels::Required(reason) => {
+            let reason = match reason {
+                Reason::SelinuxReported => {
+                    "the host facts report SELinux (/sys/fs/selinux exists, or \
+                     /etc/selinux/config names a mode or a policy)"
+                }
+                Reason::HostUndetected => "the host could not be detected and may run SELinux",
+            };
+            format!("{reason}, so {upper} must carry the SELinux label of {decoy}, but {why}")
+        }
         Labels::BestEffort => {
             format!("the SELinux label of {decoy} could not be copied onto {upper}: {why}")
         }
