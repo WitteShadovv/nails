@@ -911,3 +911,29 @@ fn no_platform_row_without_a_detected_host() {
     let manager = manager_with(MockFilesystem::new());
     assert!(platform_result(&manager).is_none());
 }
+
+/// The registry builds the systemd-version check on the detected host: on a
+/// Debian 12 host a systemd too old is told the Debian upgrade, not the
+/// platforms NAILS runs on.
+#[test]
+fn the_systemd_version_check_receives_the_detected_host() {
+    let manager = manager_on_host("ID=debian\nVERSION_ID=\"12\"\n");
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator: None,
+        caller_path: None,
+        host_profile: manager.host_profile().cloned(),
+    };
+
+    let old = super::systemd_version_check(&inputs).judge(Some(252));
+    assert!(old.is_fail(), "{old:?}");
+    let remediation = old.remediation().unwrap();
+    assert!(
+        remediation.contains("Upgrade to Debian 13 as its release notes describe"),
+        "{remediation}"
+    );
+}

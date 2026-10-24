@@ -76,6 +76,28 @@ fn an_old_systemd_is_refused_with_how_the_host_upgrades() {
     );
 }
 
+/// `run` hands the version it reads to `judge`, which judges it on the host
+/// the check was built on: a Debian 12 host is told the Debian upgrade, and a
+/// check built without a host names the platforms NAILS runs on.
+#[test]
+fn the_check_judges_on_the_host_it_was_built_on() {
+    let debian = SystemdVersionCheck::new(Some(host("ID=debian\nVERSION_ID=\"12\"\n")));
+    let old = debian.judge(Some(252));
+    assert!(old.is_fail(), "{old:?}");
+    let remediation = old.remediation().unwrap();
+    assert!(
+        remediation.contains("Upgrade to Debian 13 as its release notes describe"),
+        "{remediation}"
+    );
+
+    let without = SystemdVersionCheck::new(None).judge(Some(252));
+    assert_eq!(
+        without.remediation(),
+        Some(upgrade_hint(None).as_str()),
+        "{without:?}"
+    );
+}
+
 #[test]
 fn missing_units_on_nixos_come_with_the_module_snippet() {
     let root = tempfile::tempdir().unwrap();

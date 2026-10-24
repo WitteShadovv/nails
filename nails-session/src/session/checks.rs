@@ -62,6 +62,12 @@ impl SystemdVersionCheck {
     pub fn new(host: Option<HostProfile>) -> Self {
         Self { host }
     }
+
+    /// Judge the running systemd's `version` on the host this check was built
+    /// on.
+    pub fn judge(&self, version: Option<u32>) -> CheckResult {
+        judge_version(version, self.host.as_ref())
+    }
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for SystemdVersionCheck {
@@ -72,10 +78,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SystemdVersionCheck {
         "systemd supports soft-reboot (254 or newer)"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(judge_version(
-            systemd::running_version(&crate::process::RealProcessRunner),
-            self.host.as_ref(),
-        ))
+        Ok(self.judge(systemd::running_version(&crate::process::RealProcessRunner)))
     }
 }
 
