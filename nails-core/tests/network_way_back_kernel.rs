@@ -16,7 +16,9 @@
 //!
 //! What entry found is read in that namespace, never assumed: a new network
 //! namespace starts with a copy of the host's IPv4 settings, so on a host that
-//! forwards (one that runs Docker, say) forwarding is on at entry.
+//! forwards (one that runs Docker, say) forwarding is on at entry. The decoy
+//! gets settings of its own that are not the kernel's defaults, so a way back
+//! that wrote defaults fails on every host, not only on one that forwards.
 //!
 //! It needs `ip` and the `dummy` link type (its module loaded, or installed
 //! for the kernel to load), and the firewall-table test needs `nft` and
@@ -236,6 +238,14 @@ fn the_way_back_puts_a_namespaces_links_rules_and_settings_back() {
         fresh_network_namespace();
         let class_net = Path::new(network::SYS_CLASS_NET);
         let ipv6 = Path::new("/proc/sys/net/ipv6").exists();
+        // The decoy's own arp_ignore and src_valid_mark, which are not the
+        // kernel's defaults. The namespace starts with the host's IPv4
+        // settings, on most hosts the defaults, and a way back that wrote
+        // defaults instead of what entry found would put those back too.
+        // Forwarding stays as the host has it, so the way back turns it on
+        // again where the host forwards and off where it does not.
+        set_setting("ipv4/conf/all/arp_ignore", "1");
+        set_setting("ipv4/conf/all/src_valid_mark", "1");
         // The decoy: a device with its own address, and a link its own stop
         // takes down for the switch.
         add_dummy(&ip, "decoy0");
@@ -269,8 +279,8 @@ fn the_way_back_puts_a_namespaces_links_rules_and_settings_back() {
         let rules = |family| output(&ip, &["-N", family, "rule", "show"]);
         let rules_v4 = rules("-4");
         let rules_v6 = ipv6.then(|| rules("-6"));
-        // As entry finds them here: the namespace started with the host's
-        // IPv4 settings.
+        // As entry finds them here: the host's IPv4 settings, which the
+        // namespace started with, and the decoy's own.
         let settings_then = settings();
         let record = NetworkRecord::capture(&places, &tools);
 
