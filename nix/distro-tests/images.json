@@ -8,7 +8,11 @@
     "enabled": true,
     "upstreamUntil": null,
     "prepare": "nix-vm-test",
-    "source": { "kind": "nix-vm-test", "distro": "debian", "image": "13" }
+    "source": {
+      "kind": "nix-vm-test",
+      "distro": "debian",
+      "image": "13"
+    }
   },
   "ubuntu-24.04": {
     "osId": "ubuntu",
@@ -19,7 +23,11 @@
     "enabled": true,
     "upstreamUntil": null,
     "prepare": "nix-vm-test",
-    "source": { "kind": "nix-vm-test", "distro": "ubuntu", "image": "24_04" }
+    "source": {
+      "kind": "nix-vm-test",
+      "distro": "ubuntu",
+      "image": "24_04"
+    }
   },
   "ubuntu-26.04": {
     "osId": "ubuntu",
@@ -30,7 +38,11 @@
     "enabled": false,
     "upstreamUntil": null,
     "prepare": "nix-vm-test",
-    "source": { "kind": "nix-vm-test", "distro": "ubuntu", "image": "26_04" }
+    "source": {
+      "kind": "nix-vm-test",
+      "distro": "ubuntu",
+      "image": "26_04"
+    }
   },
   "ubuntu-26.10": {
     "osId": "ubuntu",
@@ -41,7 +53,11 @@
     "enabled": false,
     "upstreamUntil": null,
     "prepare": "nix-vm-test",
-    "source": { "kind": "pending", "family": "ubuntu", "release": "26.10" }
+    "source": {
+      "kind": "pending",
+      "family": "ubuntu",
+      "release": "26.10"
+    }
   },
   "fedora-44": {
     "osId": "fedora",
