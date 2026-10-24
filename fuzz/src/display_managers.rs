@@ -17,35 +17,42 @@
 //!   (src/seat.c), for the seat `seat0`.
 //! - SDDM, and Plasma Login Manager up to 6.6: `ConfigBase::load()` and
 //!   `ConfigBase::loadInternal()` (src/common/ConfigReader.cpp) with
-//!   `Display::Display()` (src/daemon/Display.cpp). A text with a NUL is
-//!   undecided: a build on Qt 5 cuts the line there, one on Qt 6 does not.
+//!   `Display::Display()` (src/daemon/Display.cpp). A build on Qt 5 decodes a
+//!   line only up to a NUL (`QString::fromUtf8()` of a `QByteArray`), one on
+//!   Qt 6 the whole line.
 //!
 //! Each takes the texts of the files that exist, in the order the display
-//! manager reads them; `None` stands for undecided.
+//! manager reads them. Where GLib's Unicode tables decide whether a line
+//! loads, each verdict either way can give is returned.
 
-use crate::gkeyfile::{self, KeyFile, Load};
+use crate::gkeyfile::{self, KeyFile};
 
-/// GDM's verdict on its key file: whether autologin is turned on, and the
-/// account named, as GDM reads it (empty when none is).
-pub fn gdm(text: &str) -> Option<(bool, String)> {
-    let file = match gkeyfile::load(text) {
-        Load::Undecided => return None,
-        // The backend keeps what GLib read, whether the load failed or not.
-        Load::Loaded { file, .. } => file,
-    };
-    // gdm_settings_direct_get_boolean(): the schema's default, false, when
-    // the key is missing; a value that is no boolean fails the call, and
-    // get_automatic_login_details() then logs nobody in.
-    let enabled = match file.value("daemon", "AutomaticLoginEnable") {
-        None => false,
-        Some(value) => parse_value_as_boolean(value).unwrap_or(false),
-    };
-    // gdm_settings_direct_get_string(): the schema's default is empty.
-    let user = file
-        .value("daemon", "AutomaticLogin")
-        .unwrap_or_default()
-        .to_string();
-    Some((enabled, user))
+/// GDM's verdicts on its key file, one for each way GLib may load it:
+/// whether autologin is turned on, and the account named, as GDM reads it
+/// (empty when none is).
+pub fn gdm(text: &str) -> Vec<(bool, String)> {
+    let load = gkeyfile::load(text);
+    // The backend keeps what GLib read, whether the load failed or not.
+    load.refused
+        .iter()
+        .chain(std::iter::once(&load.file))
+        .map(|file| {
+            // gdm_settings_direct_get_boolean(): the schema's default, false,
+            // when the key is missing; a value that is no boolean fails the
+            // call, and get_automatic_login_details() then logs nobody in.
+            let enabled = match file.value("daemon", "AutomaticLoginEnable") {
+                None => false,
+                Some(value) => parse_value_as_boolean(value).unwrap_or(false),
+            };
+            // gdm_settings_direct_get_string(): the schema's default is
+            // empty.
+            let user = file
+                .value("daemon", "AutomaticLogin")
+                .unwrap_or_default()
+                .to_string();
+            (enabled, user)
+        })
+        .collect()
 }
 
 /// `gdm_settings_parse_value_as_boolean()`.
@@ -59,27 +66,65 @@ fn parse_value_as_boolean(value: &str) -> Option<bool> {
     }
 }
 
-/// LightDM's `autologin-user` on `seat0`, as `seat_real_start()` takes it:
-/// `Some(None)` when it logs nobody in. `drop_ins` are the `*.conf` files of
-/// its directories in reading order, `main` is `lightdm.conf` when it exists.
-pub fn lightdm(drop_ins: &[&str], main: Option<&str>) -> Option<Option<String>> {
-    let mut config = KeyFile::default();
+/// LightDM's `autologin-user` on `seat0`, as `seat_real_start()` takes it,
+/// for each way GLib may load the files: `None` when it logs nobody in.
+/// `drop_ins` are the `*.conf` files of its directories in reading order,
+/// `main` is `lightdm.conf` when it exists.
+pub fn lightdm(drop_ins: &[&str], main: Option<&str>) -> Vec<Option<String>> {
+    // Each file loads, or fails: for good, or where GLib's tables refuse a
+    // key.
+    let verdicts = |text: &str| -> Vec<Option<KeyFile>> {
+        let load = gkeyfile::load(text);
+        let mut verdicts = Vec::new();
+        if !load.refused.is_empty() || load.failed {
+            verdicts.push(None);
+        }
+        if !load.failed {
+            verdicts.push(Some(load.file));
+        }
+        verdicts
+    };
+    let mut configs = vec![KeyFile::default()];
     for text in drop_ins {
-        match gkeyfile::load(text) {
-            Load::Undecided => return None,
-            // load_config_directory() reports the error and goes on.
-            Load::Loaded { failed: true, .. } => {}
-            Load::Loaded { file, .. } => config_load_from_file(&mut config, &file),
+        let mut next = Vec::new();
+        for verdict in verdicts(text) {
+            for config in &configs {
+                let mut config = config.clone();
+                // load_config_directory() reports a failed load and goes
+                // on.
+                if let Some(file) = &verdict {
+                    config_load_from_file(&mut config, file);
+                }
+                next.push(config);
+            }
+        }
+        configs = next;
+    }
+    let mut accounts = Vec::new();
+    for config in configs {
+        match main {
+            None => accounts.push(seat_autologin_user(&config)),
+            Some(text) => {
+                for verdict in verdicts(text) {
+                    match verdict {
+                        // config_load_from_standard_locations() fails and
+                        // LightDM exits.
+                        None => accounts.push(None),
+                        Some(file) => {
+                            let mut config = config.clone();
+                            config_load_from_file(&mut config, &file);
+                            accounts.push(seat_autologin_user(&config));
+                        }
+                    }
+                }
+            }
         }
     }
-    if let Some(text) = main {
-        match gkeyfile::load(text) {
-            Load::Undecided => return None,
-            // config_load_from_standard_locations() fails and LightDM exits.
-            Load::Loaded { failed: true, .. } => return Some(None),
-            Load::Loaded { file, .. } => config_load_from_file(&mut config, &file),
-        }
-    }
+    accounts
+}
+
+/// The `autologin-user` LightDM takes for `seat0` from `config`.
+fn seat_autologin_user(config: &KeyFile) -> Option<String> {
     // get_config_sections(): "Seat:*" first, then each group of a matching
     // seat pattern in group order; set_seat_properties() sets every key of
     // each, so the last section with the key wins.
@@ -104,10 +149,10 @@ pub fn lightdm(drop_ins: &[&str], main: Option<&str>) -> Option<Option<String>> 
         }
     }
     // seat_real_start(): an empty name is none.
-    Some(match property {
+    match property {
         Some(Some(name)) if !name.is_empty() => Some(name),
         _ => None,
-    })
+    }
 }
 
 /// `config_load_from_file()`: every key of every group, `[SeatDefaults]`
@@ -168,19 +213,27 @@ fn qt_trimmed(s: &str) -> &str {
     s.trim_matches(qt_is_space)
 }
 
+/// The Qt a build of SDDM runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Qt {
+    Five,
+    Six,
+}
+
 /// The `[Autologin] User` SDDM's `ConfigBase` holds once it has read
 /// `texts` in order (`ConfigBase::load()`), empty when none sets it.
-pub fn sddm_user(texts: &[&str]) -> Option<String> {
-    if texts.iter().any(|text| text.contains('\0')) {
-        return None;
-    }
+pub fn sddm_user(texts: &[&str], qt: Qt) -> String {
     let mut user = String::new();
     for text in texts {
         // loadInternal()
         let mut current_section = "General".to_string();
         for raw in text.split_inclusive('\n') {
-            // QString::fromUtf8(in.readLine()) drops a byte order mark that
-            // opens the line.
+            // QString::fromUtf8(in.readLine()): on Qt 5 only up to a NUL.
+            let raw = match qt {
+                Qt::Five => raw.split('\0').next().unwrap_or_default(),
+                Qt::Six => raw,
+            };
+            // It drops a byte order mark that opens the line.
             let line = raw.strip_prefix('\u{feff}').unwrap_or(raw);
             let mut line_ref = qt_trimmed(line);
             if let Some(hash) = line_ref.find('#') {
@@ -203,5 +256,5 @@ pub fn sddm_user(texts: &[&str]) -> Option<String> {
             }
         }
     }
-    Some(user)
+    user
 }

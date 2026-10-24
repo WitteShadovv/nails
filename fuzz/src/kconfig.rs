@@ -12,24 +12,19 @@
 //! The entry map keeps a key apart by its group, its name, whether it is a
 //! translation and whether it was read from a file of defaults, as KConfig
 //! does. A value marked `[$e]` is returned as written, unexpanded, which is
-//! what NAILS reports. Two texts are [`Read::Undecided`]: a translation whose
-//! value holds a bad escape, which counts towards a file's hundred broken
-//! lines in some languages only, and a translation whose name decodes to
-//! nothing, which KConfig takes for its group's marker in some languages
-//! only.
+//! what NAILS reports. A translation counts only in its own language: a bad
+//! escape in its value counts towards the file's hundred broken lines there,
+//! and one whose name decodes to nothing sets its group's marker there.
 
 use std::collections::BTreeMap;
 
 /// What reading gives.
 #[derive(Debug)]
-pub enum Read {
-    /// The value `readEntry("User")` returns in each group asked for, and
-    /// whether a translated `User` was read in one of them.
-    Values {
-        users: Vec<Option<String>>,
-        translated: bool,
-    },
-    Undecided,
+pub struct Read {
+    /// The value `readEntry("User")` returns in each group asked for.
+    pub users: Vec<Option<String>>,
+    /// Whether a translated `User` was read in one of them.
+    pub translated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -305,7 +300,6 @@ struct Reader<'a> {
     language: &'a [u8],
     wanted: &'a [&'a str],
     translated: bool,
-    undecided: bool,
 }
 
 /// `KConfigPrivate::parseUserConfigFiles()` over `files` (text, whether it
@@ -322,7 +316,6 @@ pub fn read(files: &[(&str, bool)], groups: &[&str], locale: &str) -> Read {
         language,
         wanted: groups,
         translated: false,
-        undecided: false,
     };
     let mut file_immutable = false;
     for &(text, main) in files {
@@ -331,10 +324,7 @@ pub fn read(files: &[(&str, bool)], groups: &[&str], locale: &str) -> Read {
         }
         file_immutable = reader.parse_config(text.as_bytes(), !main);
     }
-    if reader.undecided {
-        return Read::Undecided;
-    }
-    Read::Values {
+    Read {
         users: groups
             .iter()
             .map(|g| reader.map.get_entry(g, b"User").map(|v| from_utf8(&v)))
@@ -501,9 +491,6 @@ impl Reader<'_> {
         if let Some(locale) = locale {
             if name == b"User" && self.wanted.contains(&group) {
                 self.translated = true;
-            }
-            if !printable_to_string(value).1 || name.is_empty() {
-                self.undecided = true;
             }
             if !locale.is_empty()
                 && locale != self.locale
