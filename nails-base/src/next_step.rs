@@ -230,7 +230,7 @@ mod tests {
         );
         assert_eq!(
             sudo_line_for_with(Path::new("/mnt/a <b>/nails"), NextStep::Verify, "--deep"),
-            "sudo /mnt/a <b>/nails verify --deep"
+            "sudo '/mnt/a <b>/nails' verify --deep"
         );
         // The running binary, as `sudo_line` names it.
         assert_eq!(
