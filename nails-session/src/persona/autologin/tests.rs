@@ -283,6 +283,296 @@ fn sddm_takes_the_line_with_an_equals_sign_as_an_assignment() {
     assert_eq!(sddm::autologin_user(["[Autologin]\nUser\n"]), None);
 }
 
+// --- Plasma Login Manager ---
+
+const PLASMA_VENDOR: &str = "/usr/lib/plasmalogin/plasmalogin.conf.d";
+const PLASMA_LOCAL: &str = "/etc/plasmalogin.conf.d";
+const PLASMA_MAIN: &str = "/etc/plasmalogin.conf";
+
+#[test]
+fn plasma_login_reads_its_three_places_in_order() {
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_VENDOR,
+        "10-vendor.conf",
+        "[Autologin]\nUser=vendor\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["vendor"]));
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "kde_settings.conf",
+        "[Autologin]\nUser=local\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["local"]));
+    assert_eq!(
+        one(&fs, PLASMA_MAIN, "[Autologin]\nSession=plasma\nUser=main\n"),
+        names(&["main"])
+    );
+    assert!(one(&fs, PLASMA_MAIN, "[Autologin]\nUser=\n").is_empty());
+}
+
+#[test]
+fn plasma_login_reads_files_as_qt_lists_them() {
+    let fs = MockFilesystem::new();
+    drop_in(&fs, PLASMA_LOCAL, "20-later", "[Autologin]\nUser=later\n");
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "10-first.conf",
+        "[Autologin]\nUser=first\n",
+    );
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        ".zz-hidden.conf",
+        "[Autologin]\nUser=hidden\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["later"]));
+}
+
+#[test]
+fn plasma_login_reads_the_group_of_the_seat() {
+    let fs = MockFilesystem::new();
+    let text = "[Autologin]\nUser=everyone\n\n[Autologin][seat0]\nUser=first-seat\n\n\
+                [Autologin][seat1]\nUser=second-seat\n";
+    assert_eq!(
+        one(&fs, PLASMA_MAIN, text),
+        names(&["everyone", "first-seat"])
+    );
+}
+
+#[test]
+fn plasma_login_counts_what_either_parser_reads() {
+    let fs = MockFilesystem::new();
+    // SDDM's parser, before 6.7, takes `#` for a comment anywhere and
+    // knows no escapes; KConfig's, since, does the opposite.
+    let text = "[Autologin]\nUser=al\\x69ce # set by hand\n";
+    assert_eq!(
+        one(&fs, PLASMA_MAIN, text),
+        names(&["al\\x69ce", "alice # set by hand"])
+    );
+    // A byte order mark hides the header from KConfig only.
+    assert_eq!(
+        one(&fs, PLASMA_MAIN, "\u{feff}[Autologin]\nUser=carol\n"),
+        names(&["carol"])
+    );
+}
+
+#[test]
+fn plasma_login_keeps_an_account_kconfig_makes_immutable() {
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_VENDOR,
+        "10-kiosk.conf",
+        "[Autologin][$i]\nUser=kiosk\n",
+    );
+    assert_eq!(
+        one(&fs, PLASMA_MAIN, "[Autologin]\nUser=\n"),
+        names(&["kiosk"])
+    );
+}
+
+// --- KConfig, as Plasma Login Manager reads it since 6.7 ---
+
+/// What KConfig reads for `[Autologin]` and the first seat's group from
+/// drop-ins `extras` and then the main file `main`.
+fn kconfig(extras: &[&str], main: Option<&str>) -> Vec<String> {
+    let mut sources: Vec<kconfig::Source<'_>> = extras
+        .iter()
+        .map(|text| kconfig::Source { text, main: false })
+        .collect();
+    sources.extend(main.map(|text| kconfig::Source { text, main: true }));
+    kconfig::users(&sources, &["Autologin", "Autologin\u{1d}seat0"])
+}
+
+#[test]
+fn kconfig_takes_the_last_file_that_sets_the_key() {
+    assert_eq!(
+        kconfig(&["[Autologin]\nUser=a\n", "[Autologin]\nUser=b\n"], None),
+        names(&["b"])
+    );
+    assert_eq!(
+        kconfig(&["[Autologin]\nUser=a\n"], Some("[Autologin]\nUser=\n")),
+        names(&[""])
+    );
+    assert_eq!(
+        kconfig(&["[Autologin]\nUser=a\n"], Some("[General]\nUser=b\n")),
+        names(&["a"])
+    );
+}
+
+#[test]
+fn kconfig_reads_nested_groups_and_escapes_in_names() {
+    assert_eq!(
+        kconfig(
+            &[],
+            Some("[Auto\\x6cogin]\nUser=a\n[Autologin][seat0]\nUser=b\n")
+        ),
+        names(&["a", "b"])
+    );
+    // Without a backslash a name is taken as written, spaces too.
+    assert!(kconfig(&[], Some("[ Autologin ]\nUser=a\n")).is_empty());
+}
+
+#[test]
+fn kconfig_ignores_what_follows_a_header_and_keeps_the_group_after_a_broken_one() {
+    assert_eq!(
+        kconfig(&[], Some("[Autologin] the autologin group\nUser=a\n")),
+        names(&["a"])
+    );
+    assert_eq!(
+        kconfig(
+            &[],
+            Some("[Autologin]\n[broken\nUser=a\n[Autologin][\nUser=b\n")
+        ),
+        names(&["b"])
+    );
+}
+
+#[test]
+fn kconfig_reads_comments_only_at_the_start_of_a_line() {
+    assert_eq!(
+        kconfig(&[], Some("[Autologin]\n  # User=a\nUser = b # c\n")),
+        names(&["b # c"])
+    );
+}
+
+#[test]
+fn kconfig_decodes_values_as_printable_to_string_does() {
+    for (value, read) in [
+        ("a\\sb", "a b"),
+        ("\\x61lice", "alice"),
+        ("a\\tb\\nc\\rd\\\\e", "a\tb\nc\rd\\e"),
+        ("a\\;b\\,c", "a\\;b\\,c"),
+        // A bad hex digit gives `x`; a `\x` too close to the end ends it.
+        ("a\\xzzb", "axb"),
+        ("ab\\x1", "abx"),
+        // A `\` at the very end is dropped.
+        ("bob\\", "bob"),
+        // An unknown escape leaves the rest as it was.
+        ("a\\sb\\qc", "a b\\\\qc"),
+    ] {
+        assert_eq!(
+            kconfig(&[], Some(&format!("[Autologin]\nUser={value}\n"))),
+            names(&[read]),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn kconfig_deletes_a_key_marked_d() {
+    assert!(kconfig(&["[Autologin]\nUser=a\n"], Some("[Autologin]\nUser[$d]\n")).is_empty());
+    // The deletion names the key left of its bracket.
+    assert_eq!(
+        kconfig(
+            &["[Autologin]\nUser=a\n"],
+            Some("[Autologin]\nUser[x][$d]\n")
+        ),
+        names(&["a"])
+    );
+}
+
+#[test]
+fn kconfig_keeps_immutable_keys_and_groups() {
+    // An immutable key.
+    assert_eq!(
+        kconfig(
+            &["[Autologin]\nUser[$i]=kiosk\n"],
+            Some("[Autologin]\nUser=b\n")
+        ),
+        names(&["kiosk"])
+    );
+    // An immutable group takes no new key, from a drop-in or the main file.
+    assert!(
+        kconfig(
+            &["[Autologin][$i]\nSession=plasma\n", "[Autologin]\nUser=a\n"],
+            Some("[Autologin]\nUser=b\n")
+        )
+        .is_empty()
+    );
+    // A key it had before stays open to a drop-in, not to the main file.
+    assert_eq!(
+        kconfig(
+            &[
+                "[Autologin]\nUser=a\n",
+                "[Autologin][$i]\nSession=plasma\n",
+                "[Autologin]\nUser=b\n"
+            ],
+            Some("[Autologin]\nUser=c\n")
+        ),
+        names(&["b"])
+    );
+    // In a group marked immutable, the first value of a key stands.
+    assert_eq!(
+        kconfig(&["[Autologin][$i]\nUser=a\nUser=b\n"], None),
+        names(&["a"])
+    );
+}
+
+#[test]
+fn kconfig_stops_after_a_file_that_marks_itself_immutable() {
+    assert_eq!(
+        kconfig(
+            &["[$i]\n[Autologin]\nUser=kiosk\n", "[Autologin]\nUser=a\n"],
+            Some("[Autologin]\nUser=b\n")
+        ),
+        names(&["kiosk"])
+    );
+    // Only on a line of its own before any group name.
+    assert_eq!(
+        kconfig(
+            &[
+                "[Autologin][$i] trailing\nUser=kiosk\n",
+                "[Autologin]\nUser=a\n"
+            ],
+            None
+        ),
+        names(&["a"])
+    );
+}
+
+#[test]
+fn kconfig_counts_every_translated_user() {
+    assert_eq!(
+        kconfig(
+            &[],
+            Some("[Autologin]\nUser[de]=hans\nUser[]=any\nUser=b\n")
+        ),
+        names(&["hans", "any", "b"])
+    );
+    // Two languages, or a bracket left open, break the line.
+    assert!(kconfig(&[], Some("[Autologin]\nUser[de][fr]=a\nUser[de=b\n")).is_empty());
+}
+
+#[test]
+fn kconfig_reads_a_file_up_to_its_hundredth_broken_line() {
+    let broken = "no equals sign\n".repeat(100);
+    assert!(kconfig(&[], Some(&format!("[Autologin]\n{broken}User=a\n"))).is_empty());
+    let broken = "no equals sign\n".repeat(99);
+    assert_eq!(
+        kconfig(&[], Some(&format!("[Autologin]\n{broken}User=a\n"))),
+        names(&["a"])
+    );
+    // A key that is all brackets, or none at all, is no error.
+    let empty = "=x\n".repeat(150);
+    assert_eq!(
+        kconfig(&[], Some(&format!("[Autologin]\n{empty}User=a\n"))),
+        names(&["a"])
+    );
+}
+
+#[test]
+fn kconfig_takes_whitespace_as_qt_trims_it() {
+    assert_eq!(
+        kconfig(&[], Some("\u{b}[Autologin]\u{b}\r\n\tUser\t=\u{c}a\u{b}\n")),
+        names(&["a"])
+    );
+}
+
 // --- LightDM ---
 
 const LIGHTDM_SHARE: &str = "/usr/share/lightdm/lightdm.conf.d";

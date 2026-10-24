@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! SDDM's own configuration reader, `ConfigBase::loadInternal()` of
-//! src/common/ConfigReader.cpp.
+//! src/common/ConfigReader.cpp, which Plasma Login Manager kept up to 6.6.
 //!
 //! Each line is trimmed and cut at its first `#`, wherever it is. A line with
 //! a `=` is an assignment, otherwise a line in brackets opens a section; a

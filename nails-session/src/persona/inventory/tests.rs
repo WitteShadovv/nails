@@ -258,6 +258,24 @@ fn reports_sddm_autologin_from_conf_d() {
 }
 
 #[test]
+fn reports_plasma_login_manager_autologin() {
+    let fs = MockFilesystem::new();
+    let dir = PathBuf::from("/etc/plasmalogin.conf.d");
+    let drop_in = dir.join("kde_settings.conf");
+    fs.mock_set_directory_contents(&dir, vec![drop_in.clone()]);
+    fs.mock_set_file_content(
+        drop_in.to_str().unwrap(),
+        "[Autologin]\nRelogin=false\nSession=plasma\nUser=frank\n",
+    );
+
+    let inventory = collect(&fs, true);
+    assert_eq!(
+        names_for(&inventory, InheritedSource::Autologin),
+        vec!["frank".to_string()]
+    );
+}
+
+#[test]
 fn sddm_without_autologin_user_reports_nothing() {
     let fs = MockFilesystem::new();
     fs.mock_set_file_content("/etc/sddm.conf", "[General]\nNumlock=on\n");

@@ -236,14 +236,20 @@ another account or empties the setting counts as it does there:
 - SDDM: `User=` under `[Autologin]` in the files of
   `/usr/lib/sddm/sddm.conf.d`, then of `/etc/sddm.conf.d`, then
   `/etc/sddm.conf`.
+- Plasma Login Manager: `User=` under `[Autologin]`, or under the first seat's
+  `[Autologin][seat0]`, in the files of
+  `/usr/lib/plasmalogin/plasmalogin.conf.d`, then of `/etc/plasmalogin.conf.d`,
+  then `/etc/plasmalogin.conf`.
 - LightDM: `autologin-user=` in `[Seat:*]` (`[SeatDefaults]` in older files)
   and in the `[Seat:…]` groups that match the first seat, in the `*.conf` files
   of `lightdm/lightdm.conf.d` below `/usr/share`, `/usr/local/share`,
   `/etc/xdg` and `/etc`, then in `/etc/lightdm/lightdm.conf`.
 
-GDM turned on without naming an account is listed as you, as GDM can take the
-account from a file it keeps in `/run`. So the list may name an autologin that
-does not happen, rather than leave out one that does.
+Where the files leave the account in doubt, it is listed: a Plasma Login
+Manager setting translated for a language or expanded from the environment,
+and GDM turned on without naming an account, which is listed as you. So the
+list may name an autologin that does not happen, rather than leave out one
+that does.
 
 `nails check` lists the inherited entries that need review, and the
 `inherited-autostart` pre-flight check warns about them; activation shows the
@@ -294,8 +300,9 @@ can also disable an entry from inside the hidden session (`systemctl --user
 mask <unit>`, or remove or override the autostart file): the change lands in the
 upper, so it affects the hidden session only. Lingering is a decoy setting —
 disable it on the decoy itself if it matters. A display manager set to log an
-account in automatically logs it in again at every switch, as at boot; the
-operator guide says how to
+account in automatically logs it in again at every switch, as at boot (Plasma
+Login Manager 6.7 and later, on systemd 256 and later, only with
+`Relogin=true`); the operator guide says how to
 [turn that off for the hidden session only](operator-guide.md#inherited-autostart-services-and-autologin).
 
 Masking hides what *runs*; it does not roll back remote or account state. Shared
