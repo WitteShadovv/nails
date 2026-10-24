@@ -627,6 +627,31 @@ Once a distribution's backend and detection have landed, add one entry to
 The scenario, the flake's `e2e-distro` attribute and the CI matrix are all
 derived by mapping over this table, so nothing else changes.
 
+### The refusal of Fedora and Arch
+
+Fedora and Arch are in the image table, but the family table does not admit
+them yet, so NAILS refuses them. `refusal.nix` proves the refusal on each Fedora
+and Arch image of the table, as one host driver per image (`<name>-refusal`). On
+the stock image, with the binary shared in and a hidden root set up as in the
+smoke scenario, it asserts that `check` fails its `platform` row with the family
+table's reason (exit 4) and leaves the hidden root holding what it held, that
+`activate` exits 8 before it writes a byte or a timestamp to the hidden root or
+anything to `/run`, and that nothing on the decoy's disk filesystems or in its
+persistent journal names the refused run; a planted trace is the positive
+control. The decoy disk is judged inside the guest, through its filesystems and
+its journal, because both images keep their root on btrfs compressed with zstd,
+which the disk-image helpers cannot read. Admitting a family makes its scenario
+fail, so the commit that admits a family takes it out of the scenario.
+
+Like the probes (`probe.nix`), it needs KVM and runs by hand, outside CI. The
+driver keeps the VM state in `TMPDIR`; point it at a directory on disk:
+
+```sh
+nix build .#legacyPackages.x86_64-linux.e2e-distro.fedora-44-refusal -o fedora-44-refusal
+mkdir -p /var/tmp/r
+TMPDIR=/var/tmp/r XDG_RUNTIME_DIR=/var/tmp/r ./fedora-44-refusal/bin/test-driver
+```
+
 ### Running and CI
 
 The tier needs KVM, so it is a VM tier, not a container one. A hosted

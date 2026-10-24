@@ -43,6 +43,10 @@ let
     import ./probe.nix { inherit pkgs nix-vm-test; }
   );
 
+  # The refusal of those same families, keyed "<name>-refusal": host drivers
+  # too, kept out of the metadata like the probes.
+  refusals = import ./refusal.nix { inherit self pkgs nix-vm-test; };
+
   distros = builtins.attrNames enabledImages;
 
   metadata = {
@@ -75,6 +79,7 @@ in
 tests
 // records
 // probes
+// refusals
 // {
   _metadata = metadata;
   # Plain data the `distro-images` check serialises to force evaluation of the
