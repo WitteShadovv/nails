@@ -199,6 +199,24 @@ fn canonicalize_refuses_a_link_loop() {
 }
 
 #[test]
+fn a_whiteout_is_no_regular_file() {
+    let fs = MockFilesystem::new();
+    let file = Path::new("/upper/etc/sddm.conf");
+    let link = Path::new("/upper/etc/link.conf");
+    fs.mock_set_file_content("/upper/etc/sddm.conf", "[Autologin]\n");
+    fs.create_symlink(file, link).unwrap();
+    assert!(fs.is_regular_file(file).unwrap());
+    assert!(fs.is_regular_file(link).unwrap());
+
+    // `stat` finds the 0:0 character device a real upper holds, through a
+    // link too.
+    fs.mock_set_whiteout("/upper/etc/sddm.conf");
+    assert!(fs.is_overlay_whiteout(file).unwrap());
+    assert!(!fs.is_regular_file(file).unwrap());
+    assert!(!fs.is_regular_file(link).unwrap());
+}
+
+#[test]
 fn mock_filesystem_default_matches_new() {
     let fs = MockFilesystem::default();
     assert!(fs.get_mounted_paths().is_empty());
