@@ -519,9 +519,10 @@ impl StateFile {
     ///   `Ok(LoadResult { outcome: Corrupt, .. })`.
     /// - **Loaded and verified** → `Ok(LoadResult { outcome: Loaded, .. })`.
     ///
-    /// Only a permission error returns `Err`; every other problem is reported
+    /// Only a permission error returns `Err`, whether it denies the read or
+    /// already the lookup of the path; every other problem is reported
     /// through the outcome so no command (including emergency) is broken by a
-    /// damaged state file.
+    /// damaged state file. A path that cannot be looked up is never missing.
     pub fn load_with_outcome(path: &Path) -> Result<LoadResult> {
         // Opportunistically sweep stale temp files left by an interrupted save.
         //
@@ -536,40 +537,29 @@ impl StateFile {
             remove_stale_temp_files(dir);
         }
 
-        // Missing file is a legitimate "inactive" signal, not corruption.
-        if !path.exists() {
-            tracing::debug!(
-                "State file not found at {}, assuming INACTIVE",
-                path.display()
-            );
-            return Ok(LoadResult {
-                state_file: StateFile::default(),
-                outcome: LoadOutcome::Missing,
-            });
+        // Missing file is a legitimate "inactive" signal, not corruption. A
+        // file that cannot even be looked up (a directory above it without
+        // search permission, or a security policy that denies the lookup) is
+        // not missing: it fails as a read of it would.
+        match path.try_exists() {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(
+                    "State file not found at {}, assuming INACTIVE",
+                    path.display()
+                );
+                return Ok(LoadResult {
+                    state_file: StateFile::default(),
+                    outcome: LoadOutcome::Missing,
+                });
+            }
+            Err(e) => return unreadable(path, &e),
         }
 
         // Read file contents.
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    return Err(NailsError::PermissionDenied(format!(
-                        "Cannot read state file {}: {}",
-                        path.display(),
-                        e
-                    )));
-                }
-
-                tracing::warn!(
-                    "State file unreadable at {}: {}, treating state as unknown",
-                    path.display(),
-                    e
-                );
-                return Ok(LoadResult {
-                    state_file: StateFile::default(),
-                    outcome: LoadOutcome::Unreadable,
-                });
-            }
+            Err(e) => return unreadable(path, &e),
         };
 
         // Parse JSON.
@@ -637,6 +627,28 @@ fn corrupt_result() -> LoadResult {
         state_file: StateFile::default(),
         outcome: LoadOutcome::Corrupt,
     }
+}
+
+/// The load of a state file at `path` that could not be looked up or read:
+/// a permission error is returned, any other error is the unknown
+/// [`LoadOutcome::Unreadable`].
+fn unreadable(path: &Path, e: &std::io::Error) -> Result<LoadResult> {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        return Err(NailsError::PermissionDenied(format!(
+            "Cannot read state file {}: {}",
+            path.display(),
+            e
+        )));
+    }
+    tracing::warn!(
+        "State file unreadable at {}: {}, treating state as unknown",
+        path.display(),
+        e
+    );
+    Ok(LoadResult {
+        state_file: StateFile::default(),
+        outcome: LoadOutcome::Unreadable,
+    })
 }
 
 /// Which FHS family is kept on the wire of the state file.

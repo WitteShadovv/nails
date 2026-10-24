@@ -256,6 +256,12 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails activate` refuses a state file it is not allowed to read (a permission denied, as an
   SELinux or AppArmor label can cause) as an unknown state, with exit 6, as the 0.3.0-rc.2 notes
   say it refuses an unreadable one. It took such a file for a state it could trust and went on.
+- `nails activate` refuses a state file it is not allowed to read, or even to look up (a permission
+  denied on the file or on a directory above it, as an SELinux or AppArmor policy can cause), as an
+  unknown state, with exit 6, as the 0.3.0-rc.2 notes say it refuses an unreadable one. It took a
+  file it could not read for a state it could trust, and one it could not look up for no state file
+  at all, and went on. Every command now treats a denied lookup of the state file as it treats a
+  denied read.
 - `nails init` refuses a host NAILS does not support with exit 8, the unsupported-platform status,
   before it probes or writes anything, also with `--no-hardware-config` or `--hardware-config`, as
   the 0.3.0-rc.2 notes say unsupported hosts are refused. With either flag it skipped the platform
