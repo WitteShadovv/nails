@@ -24,47 +24,22 @@
 //! detected platform and hidden-volume backend through the same
 //! [`HostCommands`] resolver the runner uses, and fails *before* any state is
 //! written, naming each missing tool and how to install it on the detected
-//! host's family.
+//! host's family ([`install_hint`], from the family table).
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::backend_lock::resolve_backend_chain;
-use crate::platform::{HostCommands, PlatformKind};
+use crate::platform::{HostCommands, Package, PlatformKind, install_hint};
 use crate::{Filesystem, Result};
 use nails_base::Family;
 use std::path::{Path, PathBuf};
 
-/// A host tool NAILS requires, with the package that provides it.
+/// A host tool NAILS requires, with the package that provides it on each
+/// family. The names can differ: Fedora ships `ip` in `iproute`, Fedora and
+/// Arch ship `dmsetup` in `device-mapper`, and nixpkgs ships it in `lvm2`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RequiredTool {
     tool: &'static str,
     package: Package,
-}
-
-/// The package that provides a tool on each family, where the names differ:
-/// Fedora ships `ip` in `iproute`, Fedora and Arch ship `dmsetup` in
-/// `device-mapper`, and nixpkgs ships it in `lvm2`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Package {
-    /// The Debian and Ubuntu package, also named on a host of unknown family.
-    debian: &'static str,
-    /// The Fedora package.
-    fedora: &'static str,
-    /// The Arch package.
-    arch: &'static str,
-    /// The nixpkgs package, for a NixOS host.
-    nixos: &'static str,
-}
-
-impl Package {
-    /// A package of the same name on every family.
-    const fn everywhere(name: &'static str) -> Self {
-        Self {
-            debian: name,
-            fedora: name,
-            arch: name,
-            nixos: name,
-        }
-    }
 }
 
 /// Tools every supported platform must provide.
@@ -142,24 +117,6 @@ fn backend_may_be_device_mapper<F: Filesystem>(fs: &F, hidden_root: &Path) -> bo
     match resolve_backend_chain(fs, hidden_root) {
         Ok(Some(chain)) => chain.is_device_mapper(),
         Ok(None) | Err(_) => true,
-    }
-}
-
-/// How to install `package` on the detected host, named for its family. On
-/// NixOS the check resolves the decoy's system profile, and the way back runs
-/// the decoy's tools, so the package goes into the decoy's configuration.
-fn install_hint(kind: PlatformKind, family: Option<Family>, package: Package) -> String {
-    if kind == PlatformKind::NixOs {
-        return format!(
-            "add {} to the decoy's environment.systemPackages",
-            package.nixos
-        );
-    }
-    match family {
-        Some(Family::Debian) => format!("apt install {}", package.debian),
-        Some(Family::Fedora) => format!("dnf install {}", package.fedora),
-        Some(Family::Arch) => format!("pacman -S {}", package.arch),
-        None => format!("install the {} package", package.debian),
     }
 }
 

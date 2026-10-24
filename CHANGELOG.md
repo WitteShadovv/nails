@@ -114,6 +114,12 @@ of this changelog for that version becomes the release notes word for word, and
   on NixOS — and names a missing one with an install hint for the host's package manager (`apt`,
   `dnf` or `pacman`). It no longer requires `systemd-run`, `cp`, `chown`, `sync`, `swapoff` or
   `kill`, which NAILS does through system calls or systemd units rather than by spawning a binary.
+- When systemd is too old for a soft-reboot, `check` and activation now say how to upgrade this
+  host, the way its distribution documents it: Debian 13 by its release notes, Ubuntu 24.04 or 26.04
+  with `do-release-upgrade`, Fedora 44 with `dnf system-upgrade`, a full `pacman -Syu` on Arch and
+  its derivatives, and on NixOS a current release for the decoy's nixpkgs, rebuilt and booted. A
+  derivative is pointed at a release built on a tested one, upgraded as it documents. The hint used
+  to name the Debian, Ubuntu and NixOS releases whatever the host.
 - `check` shows the "NixOS profile" section only on NixOS, or where an explicit NixOS build target is
   configured; a Debian, Ubuntu, Fedora or Arch decoy no longer prints a NixOS-profile line that does
   not apply to it.

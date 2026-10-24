@@ -30,7 +30,7 @@ use nails_base::{Filesystem, NailsError, Result};
 use nails_base::{
     artifacts, cancel, config, error, filesystem, preflight, process, reporter, target_user,
 };
-use nails_platform::nixos;
+use nails_platform::{nixos, platform};
 
 // The whole-root session: entry, way back, fstab policy, probes.
 pub mod session;

@@ -64,6 +64,18 @@ fn releases_are_listed_as_in_a_sentence() {
     );
 }
 
+#[test]
+fn alternatives_are_listed_as_in_a_sentence() {
+    let v = DistroVersion::new;
+    assert_eq!(either(&[]), "");
+    assert_eq!(either(&[v(13, 0)]), "13");
+    assert_eq!(either(&[v(24, 4), v(26, 4)]), "24.04 or 26.04");
+    assert_eq!(
+        either(&[v(22, 4), v(24, 4), v(26, 4)]),
+        "22.04, 24.04 or 26.04"
+    );
+}
+
 // --- The generated supported-platform sentence ---------------------------
 
 #[test]
