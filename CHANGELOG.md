@@ -49,8 +49,6 @@ of this changelog for that version becomes the release notes word for word, and
   reports it as the `switch_refused` attention, with the refusal's own reason as `reason` and a
   `switch_refusal` object (`reason` and `at`). The next `activate` or `deactivate` clears it when it
   arms its own switch.
-- Ubuntu 26.10 is a validated target: `check` and activation name it as a tested release rather than
-  warning that it is untested.
 - `check` and `rehearse` document and probe more of the cross-distro residue surface a session can
   leave on a persistent decoy: chrony's drift and real-time-clock files, NetworkManager connection
   records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage
