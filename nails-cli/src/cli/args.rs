@@ -657,6 +657,16 @@ pub struct DiscardArgs {
     /// a terminal, refusing to run without one.
     #[arg(short = 'y', long)]
     pub yes: bool,
+
+    /// Discard on a hidden root that this computer's own storage seems to hold
+    ///
+    /// Mirrors `activate --allow-decoy-storage`: by default discard refuses a
+    /// root that this computer's own storage holds, as activation does. Give
+    /// it for a root you activate with that flag. A folder that is no mount
+    /// point, a root with a second filesystem mounted over it and storage
+    /// that cannot be judged are still refused.
+    #[arg(long)]
+    pub allow_decoy_storage: bool,
 }
 
 /// `nails completions` arguments
@@ -790,7 +800,23 @@ mod tests {
     fn discard_defaults_to_prompting() {
         let cli = parse(&["discard", "/nix"]).expect("should parse");
         match cli.command {
-            Commands::Discard(args) => assert!(!args.yes),
+            Commands::Discard(args) => {
+                assert!(!args.yes);
+                assert!(!args.allow_decoy_storage);
+            }
+            other => panic!("expected discard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discard_takes_the_decoy_storage_override_as_activate_does() {
+        let cli =
+            parse(&["discard", "--allow-decoy-storage", "/system-update"]).expect("should parse");
+        match cli.command {
+            Commands::Discard(args) => {
+                assert!(args.allow_decoy_storage);
+                assert_eq!(args.target, PathBuf::from("/system-update"));
+            }
             other => panic!("expected discard, got {other:?}"),
         }
     }

@@ -33,7 +33,10 @@ of this changelog for that version becomes the release notes word for word, and
   would otherwise be applied inside the hidden session and reboot the machine out from under it.
   A marker a session deleted (a whiteout in the upper) does not count. For a marker in the upper,
   which neither the decoy's updater nor an `rm` on the decoy reaches, the refusal names the
-  `discard` command that deletes it.
+  `discard` command that deletes it, with `--allow-decoy-storage` when the run was given it.
+- `nails discard` takes `--allow-decoy-storage`, as `init`, `activate` and `check` do, for a hidden
+  root that this computer's own storage seems to hold. Without it, discard refused such a root even
+  when activation had accepted it, so nothing could be discarded there.
 - `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
   the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
   unexplained; a later successful switch clears it.

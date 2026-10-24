@@ -96,3 +96,19 @@ fn a_declined_discard_is_a_neutral_notice_and_exits_130() {
     assert_eq!(status, None);
     assert!(!shown.contains("cancelled"), "{shown}");
 }
+
+/// The lock's attach gate takes the decoy-storage override only when the
+/// operator gave `--allow-decoy-storage`, as `activate` takes it.
+#[test]
+fn the_decoy_storage_override_reaches_the_attach_gate_only_when_given() {
+    let args = |allow_decoy_storage| DiscardArgs {
+        target: PathBuf::from("/system-update"),
+        yes: true,
+        allow_decoy_storage,
+    };
+    assert_eq!(allow(&args(false)), nails_core::hidden_root::Allow::Nothing);
+    assert_eq!(
+        allow(&args(true)),
+        nails_core::hidden_root::Allow::DecoyStorage
+    );
+}

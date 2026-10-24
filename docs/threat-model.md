@@ -318,8 +318,8 @@ rehearsal state all ask it first. It refuses:
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of
 the parts of the container that changed. `--allow-decoy-storage` (on `init`,
-`activate` and `check`) turns the refusal of the decoy's storage into a
-warning; activation then repeats it in the logout confirmation, the session
+`activate`, `check` and `discard`) turns the refusal of the decoy's storage into
+a warning; activation then repeats it in the logout confirmation, the session
 plan records it for `status`, and `rehearse plant` refuses, since a rehearsal
 on that storage cannot pass. The override never covers a folder, a covered
 root, storage that cannot be judged, or `backend-entries`.
