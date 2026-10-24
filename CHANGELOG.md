@@ -453,6 +453,12 @@ of this changelog for that version becomes the release notes word for word, and
   Qt 5 and whole on Qt 6, and GLib judges a language tag beyond ASCII by its own Unicode tables. Only
   regular files are read: a FIFO, socket or device in one of these places is skipped, where `check`,
   the warning and activation could hang reading it.
+- `check`, the `inherited-autostart` warning and activation read only the autostart entries that are
+  regular files once their links are followed, as systemd's autostart generator does. A FIFO named
+  `*.desktop` in `~/.config/autostart`, `/etc/xdg/autostart` or the autostart directory of a NixOS
+  profile blocked them, as reading it waits for a writer, and a link to a device such as `/dev/zero`
+  was read without end. Such an entry, a directory or a link to nothing is now skipped unread, and a
+  file of the same name in a later directory of the search path decides.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
