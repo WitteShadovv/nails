@@ -276,6 +276,10 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails discard` deletes a symlink the hidden session left at the path also when it points to
   nothing on the decoy, as a staged update's `/system-update` does; it reported nothing to delete.
   A symlink is deleted itself, never what it points at.
+- `nails discard` refuses a path that lies below a symlink in the hidden session's copy (a
+  `/home/alice` that the session linked to `/data/alice`) and names the link to discard instead.
+  Followed on the decoy, the link led the deletion out of the hidden copy, onto the decoy's own
+  files at the path it names.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
