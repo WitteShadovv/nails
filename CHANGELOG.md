@@ -127,10 +127,11 @@ of this changelog for that version becomes the release notes word for word, and
   every device exits `9` and still reads `ok: true`: its exit code, not `ok`, says it is not a clean
   result. `status` reports where the machine is as `place` (`decoy`, `hidden` or `activating`, or
   `unknown` when reading the record was refused, so no report could be built) and the one thing that
-  needs the operator as `attention` (`record_unreadable` wherever the machine is, when the record
-  cannot be read or trusted), replacing the version-1 `posture`, `session`, `state` and
-  `state_source` fields. An error now carries a stable `code`, the human `message`, and a typed
-  `next` step — the command to run next, or `null` — in place of the free-form `hint`. A cancel
+  needs the operator as `attention` (`record_unreadable` in any place when the record cannot be read
+  or trusted; only a hidden root without a way back and an interrupted activation come first),
+  replacing the version-1 `posture`, `session`, `state` and `state_source` fields. An error now
+  carries a stable `code`, the human `message`, and a typed `next` step — the command to run next,
+  or `null` — in place of the free-form `hint`. A cancel
   reports one shape: an error with the code `cancelled`, no data, and exit `130`. That is a "no" at
   any prompt; Ctrl+C at a prompt, during `emergency --countdown` or in an activation before its
   point of no return; and, under `--json`, Ctrl+C or SIGTERM during `status`, `verify`, `check`,
@@ -360,8 +361,9 @@ of this changelog for that version becomes the release notes word for word, and
   entering, none, with the advice to wait for its soft-reboot. A recovery that itself fails (the
   record cannot be written) exits 1 with the error `recover_failed` instead of 6.
 - `status` shows a state file it cannot read or trust as an unknown state, wherever the machine is,
-  with what to do about it. In the hidden session it showed the inactive default that stands in for
-  the record, with no word of the damage.
+  with what to do about it unless something more urgent comes first (a hidden root without a way
+  back, an interrupted activation). In the hidden session it showed the inactive default that stands
+  in for the record, with no word of the damage.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

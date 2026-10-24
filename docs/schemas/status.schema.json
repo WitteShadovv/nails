@@ -21,7 +21,7 @@
           "enum": ["decoy", "hidden", "activating", "unknown"]
         },
         "attention": {
-          "description": "The one thing that needs the operator, or null when nothing does. `record_unreadable` (the state file could not be read or trusted) outranks the rest, in every place.",
+          "description": "The one thing that needs the operator, or null when nothing does. A hidden root without a way back (`no_way_back`) and an interrupted activation (`interrupted`) come first, each with its own remediation; then `record_unreadable` (the state file could not be read or trusted), in every place, ahead of the rest.",
           "type": ["string", "null"],
           "enum": [
             "interrupted",

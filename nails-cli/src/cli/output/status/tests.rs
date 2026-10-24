@@ -7,6 +7,7 @@ use nails_core::SystemState;
 use nails_core::config::PersonaMode;
 use nails_core::output::Style;
 use nails_core::status::{CoverView, PolicyMountView, Posture, StatusReport};
+use nails_teardown::whole_root::switch_refusal::SwitchRefusal;
 use std::path::PathBuf;
 
 fn report(posture: Posture, session: &'static str) -> StatusReport {
@@ -275,27 +276,49 @@ fn an_interrupted_activation_is_on_the_decoy_and_needs_attention() {
 
 /// A record that could not be read or trusted needs the operator wherever the
 /// machine is: the place stays what the live view says, and the attention
-/// names the record, also in the hidden session.
+/// names the record, also in the hidden session. Only what the live view says
+/// needs action now comes first, as its remediation does: a hidden root
+/// without a way back (power off) and an interrupted activation (recover).
 #[test]
 fn an_unreadable_record_needs_attention_in_every_place() {
-    for (posture, session, place) in [
-        (Posture::Unknown, "decoy", "decoy"),
-        (Posture::Active, "hidden", "hidden"),
-        (Posture::Transitioning, "entering", "activating"),
-        (Posture::Degraded, "interrupted", "decoy"),
-        (Posture::Degraded, "hidden_without_plan", "hidden"),
+    for (posture, session, place, attention) in [
+        (Posture::Unknown, "decoy", "decoy", "record_unreadable"),
+        (Posture::Active, "hidden", "hidden", "record_unreadable"),
+        (
+            Posture::Transitioning,
+            "entering",
+            "activating",
+            "record_unreadable",
+        ),
+        (Posture::Degraded, "interrupted", "decoy", "interrupted"),
+        (
+            Posture::Degraded,
+            "hidden_without_plan",
+            "hidden",
+            "no_way_back",
+        ),
     ] {
         for source in ["corrupt", "unreadable"] {
             let mut unreadable = report(posture, session);
             unreadable.state_source = source;
             let value = serde_json::to_value(status_envelope(&unreadable)).unwrap();
             assert_eq!(value["data"]["place"], place, "{session} {source}");
-            assert_eq!(
-                value["data"]["attention"], "record_unreadable",
-                "{session} {source}"
-            );
+            assert_eq!(value["data"]["attention"], attention, "{session} {source}");
         }
     }
+    // It comes ahead of a refused switch and of a disk mounted over the volume.
+    let mut unreadable = report(Posture::Active, "hidden");
+    unreadable.state_source = "corrupt";
+    unreadable.switch_refusal = Some(SwitchRefusal {
+        reason: "the unit masks failed".into(),
+        at: 1_700_000_000,
+    });
+    unreadable.hidden_root_covered_by = Some(CoverView {
+        source: "/dev/sdc1".into(),
+        mount_point: "/mnt/data".into(),
+    });
+    let value = serde_json::to_value(status_envelope(&unreadable)).unwrap();
+    assert_eq!(value["data"]["attention"], "record_unreadable", "{value}");
     // A record read in full, or none at all, needs nothing of its own.
     for source in ["loaded", "missing"] {
         let mut readable = report(Posture::Active, "hidden");

@@ -109,22 +109,23 @@ fn place_of(report: &StatusReport) -> &'static str {
     }
 }
 
-/// The one thing that needs the operator, or `None`. The record being
-/// unreadable or untrusted outranks everything, in every place (nothing it
-/// says can be trusted), then a hidden root without a way back, an interrupted
-/// activation, a refused switch, a session that ended without updating the
-/// record, and a disk mounted over the volume. `volume_lost` and `almost_full`
-/// are reported by the window and the alert, where the live figures are to
-/// hand.
+/// The one thing that needs the operator, or `None`. What the live view says
+/// needs action now comes first, with the `reason` and `remediation` that go
+/// with it: a hidden root without a way back, then an interrupted activation.
+/// Then the record being unreadable or untrusted, in every place (nothing it
+/// says can be trusted), and after it a refused switch, a session that ended
+/// without updating the record, and a disk mounted over the volume.
+/// `volume_lost` and `almost_full` are reported by the window and the alert,
+/// where the live figures are to hand.
 fn attention_of(report: &StatusReport) -> Option<&'static str> {
-    if report.record_unreadable() {
-        return Some("record_unreadable");
-    }
     if report.session == "hidden_without_plan" {
         return Some("no_way_back");
     }
     if report.session == "interrupted" {
         return Some("interrupted");
+    }
+    if report.record_unreadable() {
+        return Some("record_unreadable");
     }
     if report.switch_refusal.is_some() {
         return Some("switch_refused");
