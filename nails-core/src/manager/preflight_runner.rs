@@ -9,6 +9,7 @@
 
 use super::NailsManager;
 use crate::preflight::PreFlightRegistry;
+use crate::session::checks::SystemdVersionCheck;
 use crate::{Config, Filesystem, NailsError, Result, StateFile, SystemState};
 use std::path::PathBuf;
 
@@ -135,7 +136,6 @@ pub fn build_registry<F: Filesystem>(
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
-        SystemdVersionCheck,
     };
 
     let _ = fs;
@@ -174,11 +174,8 @@ pub fn build_registry<F: Filesystem>(
     }
 
     // The hidden root is entered with `systemctl soft-reboot` (systemd 254),
-    // through the two units that implement it. A systemd too old is told how
-    // the detected host's distribution upgrades.
-    registry.add_check(Box::new(SystemdVersionCheck::new(
-        inputs.host_profile.clone(),
-    )));
+    // through the two units that implement it.
+    registry.add_check(Box::new(systemd_version_check(inputs)));
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
         config_layer.is_some(),
@@ -354,6 +351,13 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(StateCheck::new(inputs.current_state.clone())));
 
     Ok(registry)
+}
+
+/// The `systemd-version` check of a registry built from `inputs`, on the host
+/// detection found: a systemd too old is told how that host's distribution
+/// upgrades.
+fn systemd_version_check(inputs: &RegistryInputs) -> SystemdVersionCheck {
+    SystemdVersionCheck::new(inputs.host_profile.clone())
 }
 
 /// The typed event outcome of a check result, for the progress event stream.
