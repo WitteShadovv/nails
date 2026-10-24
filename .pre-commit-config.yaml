@@ -149,7 +149,7 @@ repos:
       # `just check` runs, offline and well under a second, only when a fuzz
       # target, a seed corpus or the manifest changes.
       - id: check-fuzz-targets
-        name: Fuzz targets wired and seeded
+        name: Fuzz targets wired, implemented and seeded
         entry: scripts/check-fuzz-targets.sh
         language: system
         pass_filenames: false
@@ -164,9 +164,10 @@ repos:
         pass_filenames: false
         files: ^deny\.toml$
 
-      # Push gate: formatting, clippy, file sizes and the full test suite.
+      # Push gate: formatting, clippy, file sizes, the fuzz targets and the full
+      # test suite.
       - id: just-check
-        name: just check (fmt, lint, line-count, test)
+        name: just check (fmt, lint, line-count, fuzz-targets, test)
         entry: just check
         language: system
         pass_filenames: false
