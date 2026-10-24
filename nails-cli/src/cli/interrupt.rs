@@ -14,11 +14,19 @@
 //! stdout. Under `--json` that would break the contract of one envelope per
 //! run, so [`report_signals_as_cancel`] has the first SIGINT or SIGTERM print
 //! the cancel envelope (the error `cancelled`, no data) and end the process
-//! with exit 130. When the command's own envelope is already out, the signal
-//! changes nothing and the command ends with its own exit code.
+//! with exit 130.
+//!
+//! The signal and the command's own result can meet. A signal that arrives
+//! before the result wins: a result printed after it, which may be a failure
+//! the signal caused (a child the same Ctrl+C killed), gives way to the cancel
+//! envelope. When the command's own envelope is already out, the signal
+//! changes nothing and the command ends with its own exit code. Either way the
+//! run prints exactly one envelope, with the exit code that goes with it
+//! ([`crate::cli::output::envelope`] holds the one slot both print through).
 
-use crate::cli::output::ExitStatus;
-use crate::cli::output::envelope::{ErrorBody, error_envelope, print_envelope_line};
+use crate::cli::output::envelope::{
+    ErrorBody, end_with_signal_cancel, error_envelope, report_signals_as,
+};
 
 /// The message of that cancel envelope, from the catalogue.
 pub(crate) const INTERRUPTED: &str = nails_core::catalog::CANCEL_INTERRUPTED.text;
@@ -26,13 +34,8 @@ pub(crate) const INTERRUPTED: &str = nails_core::catalog::CANCEL_INTERRUPTED.tex
 /// Have the first SIGINT or SIGTERM end the run of `command` with its cancel
 /// envelope and exit 130 (see the module docs).
 pub(crate) fn report_signals_as_cancel(command: &'static str) {
-    nails_core::cancel::watch_signals(move || {
-        let line = error_envelope(command, ErrorBody::new("cancelled", INTERRUPTED)).to_line();
-        if print_envelope_line(&line) {
-            crate::cli::output::flush_stdio();
-            crate::cli::chokepoint::exit_process(ExitStatus::Cancelled.code());
-        }
-    });
+    report_signals_as(error_envelope(command, ErrorBody::new("cancelled", INTERRUPTED)).to_line());
+    nails_core::cancel::watch_signals(end_with_signal_cancel);
 }
 
 #[cfg(test)]

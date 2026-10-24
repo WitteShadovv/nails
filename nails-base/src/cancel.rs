@@ -35,7 +35,8 @@
 //! but may still have to answer a signal with something of its own:
 //! [`watch_signals`] runs an action on a thread the first time SIGINT or
 //! SIGTERM arrives (the CLI prints its cancel envelope under `--json` and
-//! exits 130).
+//! exits 130), and [`watched_signal_arrived`] tells every thread at once that
+//! one did.
 //!
 //! ## A caller's cancel token
 //!
@@ -117,6 +118,10 @@ pub fn install_handlers() {
 /// it is async-signal-safe; the watcher thread does the work. A signal after
 /// the first one is ignored, so `action` decides whether the process ends.
 ///
+/// The handler also sets the flag [`watched_signal_arrived`] reads, in the
+/// handler itself, so a thread about to finish learns of the signal before
+/// the watcher thread has woken.
+///
 /// Best-effort, like [`install_handlers`]: when the watcher cannot be set up,
 /// a signal keeps its default action.
 pub fn watch_signals(action: impl FnOnce() + Send + 'static) {
@@ -150,8 +155,27 @@ pub fn watch_signals(action: impl FnOnce() + Send + 'static) {
                 error = %err,
                 "could not watch this signal; it keeps its default action"
             );
+            continue;
         }
+        // Without the flag the watcher thread still acts; only the early word
+        // to the other threads is lost.
+        let _ = signal_hook::flag::register(signal, Arc::clone(watched_flag()));
     }
+}
+
+/// The flag the handlers of [`watch_signals`] set when a signal arrives.
+fn watched_flag() -> &'static Arc<AtomicBool> {
+    static FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+    FLAG.get_or_init(|| Arc::new(AtomicBool::new(false)))
+}
+
+/// Whether a signal [`watch_signals`] watches has arrived. True from the
+/// moment its handler ran, possibly before the watcher thread runs the action,
+/// so a command that is about to report a result can tell that the signal
+/// came first.
+#[must_use]
+pub fn watched_signal_arrived() -> bool {
+    watched_flag().load(Ordering::SeqCst)
 }
 
 // A thread-local cancellation override for tests.

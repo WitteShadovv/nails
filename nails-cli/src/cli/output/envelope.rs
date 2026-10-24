@@ -10,13 +10,17 @@
 //! helpers: [`report_error`], [`report_cancelled`], and [`EnvelopePrint::print`]
 //! for printing an envelope on stdout tolerating a broken pipe.
 //!
-//! A process prints at most one envelope. Every envelope goes out through
-//! [`print_envelope_line`], which claims the one slot first, so the paths that
-//! can race the command's own result — the cancel a signal reports
+//! A process prints exactly one envelope. Every envelope goes out through
+//! [`print_envelope_line`], which holds the one slot while it prints, so the
+//! paths that can race the command's own result — the cancel a signal reports
 //! ([`crate::cli::interrupt`]) and the failure a panic reports
-//! ([`crate::cli::chokepoint`]) — never add a second document to it.
+//! ([`crate::cli::chokepoint`]) — never add a second document to it. A
+//! signal's cancel keeps the slot until the process has ended
+//! ([`end_with_signal_cancel`]), so a command that finishes at that moment
+//! waits on it instead of ending the process with no envelope or with its own
+//! exit code.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use serde::Serialize;
 
@@ -24,23 +28,73 @@ pub use nails_api::envelope::{Envelope, ErrorBody, NextStep, SCHEMA_VERSION, err
 
 use super::exit::ExitStatus;
 
-/// Whether this process has claimed its one envelope.
-static ENVELOPE_CLAIMED: AtomicBool = AtomicBool::new(false);
+/// Whether this process has printed its one envelope, behind the lock every
+/// envelope is printed under.
+static ENVELOPE_PRINTED: Mutex<bool> = Mutex::new(false);
 
-/// Claim the one envelope this process prints. True for the first caller only:
-/// whoever gets it prints, everyone after it prints nothing.
-pub(crate) fn claim_envelope() -> bool {
-    !ENVELOPE_CLAIMED.swap(true, Ordering::SeqCst)
+/// The cancel envelope a signal stands for, set for a command that reports a
+/// SIGINT or SIGTERM as its cancel ([`crate::cli::interrupt`]).
+static SIGNAL_CANCEL: OnceLock<String> = OnceLock::new();
+
+/// The one envelope slot. A panic while it was held leaves the flag as it
+/// was, so a poisoned lock is taken as it is.
+fn envelope_slot() -> MutexGuard<'static, bool> {
+    ENVELOPE_PRINTED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Print `line`, one serialized envelope, on stdout, unless this process has
-/// already printed (or is printing) its envelope. Returns whether it printed.
+/// already printed its envelope. Returns whether it printed.
+///
+/// Once a signal the command reports as its cancel has arrived
+/// ([`report_signals_as`]), that cancel is printed instead and the process
+/// ends with exit 130: the signal came before the result, which may be a
+/// failure the signal itself caused (a child killed by the same Ctrl+C).
 pub(crate) fn print_envelope_line(line: &str) -> bool {
-    if !claim_envelope() {
+    let mut printed = envelope_slot();
+    if *printed {
         return false;
+    }
+    *printed = true;
+    if nails_core::cancel::watched_signal_arrived()
+        && let Some(cancel) = SIGNAL_CANCEL.get()
+    {
+        end_with_cancel(cancel);
     }
     super::println_tolerating_broken_pipe(line);
     true
+}
+
+/// Report a SIGINT or SIGTERM as `cancel`, the serialized cancel envelope of
+/// the running command (see [`print_envelope_line`] and
+/// [`end_with_signal_cancel`]). The first call wins.
+pub(crate) fn report_signals_as(cancel: String) {
+    let _ = SIGNAL_CANCEL.set(cancel);
+}
+
+/// What a signal reported as a cancel does once its watcher wakes: print the
+/// cancel envelope and end the process with exit 130, unless the command's own
+/// envelope is already out; then nothing, and the command ends as it would
+/// have.
+pub(crate) fn end_with_signal_cancel() {
+    let Some(cancel) = SIGNAL_CANCEL.get() else {
+        return;
+    };
+    let mut printed = envelope_slot();
+    if !*printed {
+        *printed = true;
+        end_with_cancel(cancel);
+    }
+}
+
+/// Print `cancel` and end the process with exit 130. Called with the slot
+/// held, which is never released: nothing else prints or ends the process
+/// first.
+fn end_with_cancel(cancel: &str) -> ! {
+    super::println_tolerating_broken_pipe(cancel);
+    super::flush_stdio();
+    crate::cli::chokepoint::exit_process(ExitStatus::Cancelled.code())
 }
 
 /// Print a machine-readable [`Envelope`] on stdout.

@@ -12,8 +12,9 @@ use crate::cli::output::envelope::{ErrorBody, error_envelope, print_envelope_lin
 /// [`std::process::ExitCode`] and returns it, so this is the only place in the
 /// binary that exits the process directly: the early dispatch of `emergency`
 /// and `transition` (which run before clap), a signal reported as a cancel
-/// under `--json` ([`crate::cli::interrupt`]) and the test-harness subprocess
-/// entrypoints use it to end the process with a code.
+/// under `--json` ([`crate::cli::interrupt`], from the envelope slot that
+/// prints it) and the test-harness subprocess entrypoints use it to end the
+/// process with a code.
 pub(crate) fn exit_process(code: u8) -> ! {
     std::process::exit(i32::from(code));
 }
