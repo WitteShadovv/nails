@@ -350,10 +350,13 @@ stress iterations="10":
 # decision cores, where a wrong branch is silent (a mutant the suite still
 # passes is a test gap no coverage percentage reveals). Kept here, not in the
 # workflow, so a local run and the weekly lane mutate the same code. The sweep
-# takes these directories whole, less the files in them that hold no decision
-# core, which it leaves out by name. Code that a split moves out of a core file
-# into a new file beside it therefore stays in the sweep, and a new file is
-# swept until it is listed in mutants_skipped.
+# takes these directories whole, less the files that mutants_skipped names. Code
+# that a split moves out of a swept file into a new file beside it therefore
+# stays in the sweep, and a new file is swept until it is listed there. The
+# skipped files are the ones the sweep has not covered so far, not files that
+# decide nothing: several make safety decisions too (the switch transition, the
+# init check before a switch, the /run scrub, the disk guard and the teardown
+# side of the way back), and widening the sweep to them is a budget decision.
 mutants_dirs := "nails-base/src/state " + \
     "nails-teardown/src/whole_root " + \
     "nails-session/src/session"
