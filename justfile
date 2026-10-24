@@ -439,24 +439,29 @@ mutants shard="" shards="":
     python3 -m ci.mutants_report --title "Mutation testing" --require-caught \
         target/mutants/mutants.out
 
+# The cargo-mutants options of the in-diff lane, apart from the shard and the
+# output: mutants-in-diff tests with them and mutants-in-diff-plan lists with
+# them, so the plan counts exactly the mutants that the shards split between
+# them. --timeout keeps one slow mutant from running away inside the lane's own
+# time box.
+mutants_in_diff_options := "--all-features --cargo-arg=--locked --timeout 120"
+
 # Mutation testing restricted to the lines a diff changed (cargo-mutants
 # --in-diff), for a non-blocking pull-request lane: it reports surviving mutants
 # without failing, and a diff that changes no mutable code is a clean pass. A
 # mutant whose build failed for want of disk, memory or I/O was never tested,
 # so it fails the lane although cargo-mutants counts it as unviable
 # (ci/mutants_report.py). `diff` is a unified `git diff` of the change;
-# `shard`/`shards` split the work across a matrix, and --timeout keeps one slow
-# mutant from running away inside the lane's own time box. The report goes to
-# target/mutants/mutants.out, with the survivors in the job summary.
+# `shard`/`shards` split the work across a matrix (mutants-in-diff-plan sizes
+# it). The report goes to target/mutants/mutants.out, with the survivors in the
+# job summary.
 mutants-in-diff diff shard="0" shards="1":
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p target/mutants
     status=0
-    cargo mutants --in-diff '{{ diff }}' --shard '{{ shard }}/{{ shards }}' \
-        --all-features --cargo-arg=--locked \
-        --timeout 120 \
-        --output target/mutants || status=$?
+    cargo mutants --in-diff '{{ diff }}' {{ mutants_in_diff_options }} \
+        --shard '{{ shard }}/{{ shards }}' --output target/mutants || status=$?
     # Survivors (2) and timeouts (3) are reported, never a failure; a diff with
     # no mutable code (0, no mutants) is a clean pass. Anything else, such as a
     # baseline that fails without a mutation, still fails the lane.
@@ -468,3 +473,19 @@ mutants-in-diff diff shard="0" shards="1":
     # so catching none is no failure here.
     python3 -m ci.mutants_report --title "Mutation testing on the diff" \
         target/mutants/mutants.out
+
+# Plan the shards of the in-diff lane for `diff`: list the diff's mutants with
+# the options mutants-in-diff tests with, which builds nothing, and split them
+# over as many shards as keep each inside its time box (ci/mutants_plan.py). The
+# plan goes to stdout as `name=value` lines for $GITHUB_OUTPUT, the reasoning to
+# stderr and the job summary.
+mutants-in-diff-plan diff:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    listed=$(mktemp)
+    trap 'rm -f "$listed"' EXIT
+    # cargo-mutants prints nothing, and exits 0, for a diff that touches no
+    # mutant; a diff that does not match the tree fails here.
+    cargo mutants --list --json \
+        --in-diff '{{ diff }}' {{ mutants_in_diff_options }} > "$listed"
+    python3 -m ci.mutants_plan "$listed"
