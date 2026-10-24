@@ -58,6 +58,7 @@ pub use crate::process::host_commands::{self, HostCommands};
 pub use config_layer::{ConfigLayer, NixOsConfigLayer};
 pub use detect::detect;
 pub use discover::{HostTarget, discover_host_target, discover_with_platform};
+pub use family::{Package, install_hint, upgrade_hint};
 pub use fhs::FhsPlatform;
 pub use host_facts::{SelinuxMode, SelinuxStatus};
 pub use nixos::{HiddenFlake, NixOsPlatform, hidden_flake};
