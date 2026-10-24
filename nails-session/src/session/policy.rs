@@ -40,6 +40,13 @@
 //! unless the entry is `nofail`, would fail with it and start the hidden
 //! session in emergency mode.
 //!
+//! An entry of the decoy's fstab that the next root resolves to another path
+//! than the decoy root does (a symlink on the way that a session replaced or
+//! added) is decided at that path as well ([`decide_redirected`]). There the
+//! hidden-volume rule does not apply: a link that leads the entry into the
+//! hidden volume still names a decoy filesystem, which the hidden systemd
+//! would mount read-write inside the hidden volume, so it is masked.
+//!
 //! Nothing is refused outright today: every entry has a safe decision. The
 //! `Refuse` decision exists for entries whose target cannot be mounted inside
 //! the next root (a relative or odd mount point).
@@ -150,6 +157,41 @@ fn plain_absolute(path: &Path) -> bool {
 
 /// Decide one entry. `mounts` is the decoy's live mount table.
 pub fn decide(entry: &FstabEntry, mounts: &[MountEntry], hidden_root: &Path) -> Decision {
+    decide_entry(entry, mounts, hidden_root, false)
+}
+
+/// Decide an entry of the decoy's fstab at the path the next root resolves
+/// it to, where that differs from the decoy root's (see the module docs): as
+/// [`decide`], except that a path inside the hidden volume is masked rather
+/// than left to the bind of the hidden volume.
+pub fn decide_redirected(
+    entry: &FstabEntry,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+) -> Decision {
+    decide_entry(entry, mounts, hidden_root, true)
+}
+
+/// Mask the units the hidden systemd generates for `entry`: its mount, and
+/// its automount when it has one.
+fn mask(entry: &FstabEntry, reason: &'static str) -> Decision {
+    let mut units = vec![mount_unit(&entry.file)];
+    if entry.is_automount() {
+        units.push(automount_unit(&entry.file));
+    }
+    Decision::Mask {
+        target: entry.file.clone(),
+        units,
+        reason,
+    }
+}
+
+fn decide_entry(
+    entry: &FstabEntry,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    redirected: bool,
+) -> Decision {
     let target = entry.file.clone();
     if entry.is_swap() {
         let units: Vec<String> = swap_unit(&entry.spec).into_iter().collect();
@@ -184,6 +226,13 @@ pub fn decide(entry: &FstabEntry, mounts: &[MountEntry], hidden_root: &Path) -> 
         };
     }
     if target.starts_with(hidden_root) {
+        if redirected {
+            return mask(
+                entry,
+                "a link leads it into the hidden volume, where the hidden session would mount \
+                 a decoy filesystem read-write",
+            );
+        }
         return Decision::Leave {
             target,
             reason: "the hidden volume is bound at its own path",
@@ -199,19 +248,8 @@ pub fn decide(entry: &FstabEntry, mounts: &[MountEntry], hidden_root: &Path) -> 
             reason: "a host share, not mounted now",
         };
     }
-    let mask = |reason: &'static str| {
-        let mut units = vec![mount_unit(&entry.file)];
-        if entry.is_automount() {
-            units.push(automount_unit(&entry.file));
-        }
-        Decision::Mask {
-            target: entry.file.clone(),
-            units,
-            reason,
-        }
-    };
     if entry.is_network() {
-        return mask("the hidden session would write to the server");
+        return mask(entry, "the hidden session would write to the server");
     }
     if entry.vfstype == "overlay" {
         let opts = entry
@@ -230,7 +268,7 @@ pub fn decide(entry: &FstabEntry, mounts: &[MountEntry], hidden_root: &Path) -> 
                 reason: "an overlay with its upper in RAM",
             }
         } else {
-            mask("an overlay with its upper on a disk")
+            mask(entry, "an overlay with its upper on a disk")
         };
     }
     match mounted_at(mounts, &target) {
@@ -242,7 +280,10 @@ pub fn decide(entry: &FstabEntry, mounts: &[MountEntry], hidden_root: &Path) -> 
             target,
             reason: "noauto: never mounted",
         },
-        None => mask("not mounted now; the hidden session would mount it read-write"),
+        None => mask(
+            entry,
+            "not mounted now; the hidden session would mount it read-write",
+        ),
     }
 }
 
@@ -253,9 +294,27 @@ pub fn decide_all(
     mounts: &[MountEntry],
     hidden_root: &Path,
 ) -> Vec<Decision> {
+    by_depth(entries, |entry| decide(entry, mounts, hidden_root))
+}
+
+/// [`decide_all`] for entries the next root resolves elsewhere, each decided
+/// by [`decide_redirected`].
+pub fn decide_all_redirected(
+    entries: &[FstabEntry],
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+) -> Vec<Decision> {
+    by_depth(entries, |entry| {
+        decide_redirected(entry, mounts, hidden_root)
+    })
+}
+
+/// The decision `decide` gives each of `entries`, ordered by mount-point
+/// depth.
+fn by_depth(entries: &[FstabEntry], decide: impl Fn(&FstabEntry) -> Decision) -> Vec<Decision> {
     let mut decisions: Vec<(usize, Decision)> = entries
         .iter()
-        .map(|e| (e.file.components().count(), decide(e, mounts, hidden_root)))
+        .map(|e| (e.file.components().count(), decide(e)))
         .collect();
     decisions.sort_by_key(|(depth, _)| *depth);
     decisions.into_iter().map(|(_, d)| d).collect()
@@ -413,6 +472,37 @@ mod tests {
             .masked_units(),
             ["opt.mount"]
         );
+    }
+
+    #[test]
+    fn a_redirected_entry_inside_the_hidden_volume_is_masked() {
+        // The decoy's /data entry, which a link the hidden session left leads
+        // to /mnt/data/data: a decoy disk the hidden systemd would mount
+        // read-write inside the hidden volume.
+        let decide_redirected_line =
+            |line: &str| decide_redirected(&parse_fstab(line)[0], &mounts(), Path::new(HIDDEN));
+        assert_eq!(
+            decide_redirected_line("UUID=X /mnt/data/data ext4 defaults,nofail 0 2").masked_units(),
+            ["mnt-data-data.mount"]
+        );
+        assert_eq!(
+            decide_redirected_line("UUID=X /mnt/data ext4 x-systemd.automount 0 2").masked_units(),
+            ["mnt-data.mount", "mnt-data.automount"]
+        );
+        // Where the hidden volume's own rule leaves it: the bind is there.
+        assert!(matches!(
+            decide_line("UUID=X /mnt/data/data ext4 defaults,nofail 0 2"),
+            Decision::Leave { .. }
+        ));
+        // Elsewhere, and for RAM or the root, the same decisions as decide.
+        for line in [
+            "tmpfs /mnt/data/tmp tmpfs defaults 0 0",
+            "/dev/vda2 / ext4 defaults 0 1",
+            "LABEL=home /home ext4 defaults 0 2",
+            "/dev/sdb1 /data ext4 defaults 0 2",
+        ] {
+            assert_eq!(decide_redirected_line(line), decide_line(line), "{line}");
+        }
     }
 
     #[test]

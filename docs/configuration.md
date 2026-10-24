@@ -153,11 +153,15 @@ directly.
 
 A mount point the fstab names through a symlink (a `/home` that links to
 `var/home`) is decided, mounted and masked at its real path, the way systemd
-resolves it: `var-home.mount` and `var-home.automount`, never `home.mount`.
+resolves it: `var-home.mount` and `var-home.automount`, not `home.mount`.
 `nails check` resolves each entry in the decoy root. Activation also resolves
 it in the hidden session's root, where a symlink a session changed can lead
-elsewhere, and decides the entry at that path too, so the hidden systemd
-finds it masked or in place there as well.
+elsewhere, and decides the entry at that path too, which is `home.mount` once a
+session replaced the link with a directory. The hidden systemd finds the entry
+masked or in place there as well. A path that a link leads into the hidden
+volume is masked, not bound with the volume: the entry still names a decoy
+filesystem, which the hidden systemd would otherwise mount inside the hidden
+volume.
 
 The hidden volume must be storage of its own, because everything nails writes
 there would otherwise land on the decoy disk. The attach gate refuses a plain

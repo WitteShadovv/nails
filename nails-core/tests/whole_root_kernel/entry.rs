@@ -566,6 +566,40 @@ fn an_entry_the_next_root_resolves_elsewhere_is_masked_there_too() {
 }
 
 #[test]
+fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
+    // The decoy's fstab names /data, an empty directory whose disk is not
+    // mounted now: masked as data.mount. An earlier session moved /data onto
+    // the hidden volume, replacing the directory with a link into it. The
+    // hidden systemd follows the link; left free, the unit it generates there
+    // would mount the decoy's disk read-write inside the hidden volume.
+    let _ = Rerun::new(test_path!(
+        an_entry_a_link_leads_into_the_hidden_volume_is_masked_there
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let decoy = world.decoy.path();
+        world.decoy.mkdir("data");
+        let fstab = decoy.join("etc/fstab");
+        let text = std::fs::read_to_string(&fstab).unwrap();
+        std::fs::write(&fstab, text + "/dev/vdf1 /data ext4 defaults,nofail 0 2\n").unwrap();
+        let moved = world.hidden.mkdir("data");
+        world.hidden.mkdir("root/upper");
+        std::os::unix::fs::symlink(&moved, world.hidden.path().join("root/upper/data")).unwrap();
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        let masks = &entry.plan.masks;
+        assert!(masks.contains(&"data.mount".to_string()), "{masks:?}");
+        let inside = nails_core::session::fstab::mount_unit(&moved);
+        assert!(masks.contains(&inside), "{inside} is not in {masks:?}");
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
 fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
     let _ = Rerun::new(test_path!(
         the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan
