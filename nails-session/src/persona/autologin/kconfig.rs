@@ -20,6 +20,13 @@
 //! file with a header that is only `[$i]` marks itself immutable and is the
 //! last one read. A file is read no further than its hundredth broken line.
 //!
+//! Every file but the main one is read as defaults: a key such a file sets
+//! has an entry of the defaults beside the one `readEntry()` reads, and a
+//! change to the first goes on to the second through the same checks. The
+//! main file sets only the second. So the two can differ: deleting a key
+//! that had no entry makes only the first, and an immutable group refuses a
+//! new second entry where it lets the first one change.
+//!
 //! A translation is read only in its language, and the language the display
 //! manager runs in is not in the files. So the files are read once in each
 //! language that matters: every one a translation names, `en_US` (which reads
@@ -129,61 +136,77 @@ fn lines(text: &str) -> impl Iterator<Item = &[u8]> {
     text.as_bytes().split(|&byte| byte == b'\n').map(trim)
 }
 
-#[derive(Debug, Default)]
+/// An entry, with what `KEntry` compares of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
     /// `None` once deleted.
     value: Option<Vec<u8>>,
     immutable: bool,
+    /// `[$e]`, which changes nothing read here but whether two entries are
+    /// the same.
+    expand: bool,
 }
 
-/// KConfig's entry map, as far as reading entries goes.
+/// KConfig's entry map, as far as reading entries goes. A key read from a
+/// drop-in has an entry of the defaults beside the one `readEntry()` reads.
 #[derive(Debug, Default)]
 struct Map {
-    entries: BTreeMap<(String, Vec<u8>), Entry>,
+    /// By group, key and whether the entry is the defaults' one.
+    entries: BTreeMap<(String, Vec<u8>, bool), Entry>,
     /// The markers of the groups that have one, and whether each group is
     /// immutable.
     groups: BTreeMap<String, bool>,
 }
 
 impl Map {
-    /// `KEntryMap::setEntry()`: nothing changes an immutable key, and an
-    /// immutable group takes no new key. A key that is empty sets the
-    /// group's marker instead, and so whether the group is immutable.
-    fn set(&mut self, group: &str, key: &[u8], value: Option<Vec<u8>>, immutable: bool) {
+    /// `KEntryMap::setEntry()`, into the defaults' entry when `default`:
+    /// nothing changes an immutable entry, and an immutable group takes no
+    /// new one. A change to the defaults' entry goes on to the other one,
+    /// through the same checks, unless it deletes a key that had no entry. A
+    /// key that is empty sets the group's marker instead, and so whether the
+    /// group is immutable.
+    fn set(&mut self, group: &str, key: &[u8], entry: Entry, default: bool) {
         if key.is_empty() {
-            self.groups.insert(group.to_string(), immutable);
+            self.groups.insert(group.to_string(), entry.immutable);
             return;
         }
-        let id = (group.to_string(), key.to_vec());
+        let id = (group.to_string(), key.to_vec(), default);
         match self.entries.get(&id) {
-            Some(entry) if entry.immutable => return,
+            Some(current) if current.immutable || *current == entry => return,
             Some(_) => {}
-            None => match self.groups.get(group) {
-                Some(true) => return,
-                Some(false) => {}
-                None => {
-                    self.groups.insert(group.to_string(), false);
+            None if self.group_immutable(group) => return,
+            None => {
+                self.groups.entry(group.to_string()).or_insert(false);
+                if entry.value.is_none() {
+                    self.entries.insert(id, entry);
+                    return;
                 }
-            },
+            }
         }
-        let entry = self.entries.entry(id).or_default();
-        entry.value = value;
-        entry.immutable = immutable;
+        self.entries.insert(id, entry.clone());
+        if default {
+            self.set(group, key, entry, false);
+        }
     }
 
     fn group_immutable(&self, group: &str) -> bool {
         self.groups.get(group).copied().unwrap_or(false)
     }
 
-    /// The value `KConfigGroup::readEntry()` returns, unexpanded.
+    /// The value `KConfigGroup::readEntry()` returns, unexpanded: never the
+    /// defaults' one.
     fn value(&self, group: &str, key: &[u8]) -> Option<String> {
-        let entry = self.entries.get(&(group.to_string(), key.to_vec()))?;
+        let entry = self
+            .entries
+            .get(&(group.to_string(), key.to_vec(), false))?;
         entry.value.as_deref().map(qt_string)
     }
 }
 
 /// Where the reading of one file stands.
 struct FileState {
+    /// Whether this is the main file; the others are read as defaults.
+    main: bool,
     group: String,
     /// Every key of the current group is immutable.
     group_immutable: bool,
@@ -210,6 +233,7 @@ impl Reader<'_> {
     /// the reading.
     fn read(&mut self, text: &str, main: bool) -> bool {
         let mut state = FileState {
+            main,
             group: "<default>".to_string(),
             group_immutable: false,
             file_immutable: false,
@@ -223,7 +247,7 @@ impl Reader<'_> {
             }
             match line.first() {
                 None | Some(b'#') => {}
-                Some(b'[') => self.header(line, main, &mut state),
+                Some(b'[') => self.header(line, &mut state),
                 // The main file skips the keys of a group an earlier file
                 // made immutable; for the others the map refuses them.
                 Some(_) if state.skip && main => {}
@@ -236,7 +260,7 @@ impl Reader<'_> {
         state.file_immutable
     }
 
-    fn header(&mut self, line: &[u8], main: bool, state: &mut FileState) {
+    fn header(&mut self, line: &[u8], state: &mut FileState) {
         state.group_immutable = state.file_immutable;
         // A header KConfig cannot read leaves the group as it was.
         let Some((name, mark)) = group_header(line) else {
@@ -249,7 +273,7 @@ impl Reader<'_> {
         }
         state.group = qt_string(&name);
         state.skip = self.map.group_immutable(&state.group);
-        if state.group_immutable && !(state.skip && main) {
+        if state.group_immutable && !(state.skip && state.main) {
             state.immutable_groups.push(state.group.clone());
         }
     }
@@ -258,14 +282,24 @@ impl Reader<'_> {
         match parse_key(line) {
             Key::Empty => {}
             Key::Broken => state.errors += 1,
-            Key::Delete { name, immutable } => {
-                let immutable = immutable || state.group_immutable;
-                self.map.set(&state.group, &decode(name).0, None, immutable);
+            Key::Delete {
+                name,
+                immutable,
+                expand,
+            } => {
+                let name = decode(name).0;
+                let entry = Entry {
+                    value: None,
+                    immutable: immutable || state.group_immutable,
+                    expand,
+                };
+                self.map.set(&state.group, &name, entry, !state.main);
             }
             Key::Set {
                 name,
                 locale,
                 immutable,
+                expand,
                 value,
             } => {
                 let name = decode(name).0;
@@ -283,8 +317,12 @@ impl Reader<'_> {
                     }
                     return;
                 }
-                let immutable = immutable || state.group_immutable;
-                self.map.set(&state.group, &name, Some(value), immutable);
+                let entry = Entry {
+                    value: Some(value),
+                    immutable: immutable || state.group_immutable,
+                    expand,
+                };
+                self.map.set(&state.group, &name, entry, !state.main);
             }
         }
     }
@@ -312,12 +350,17 @@ enum Key<'a> {
     /// A line KConfig counts as broken.
     Broken,
     /// `name[$d]`: the key deleted.
-    Delete { name: &'a [u8], immutable: bool },
+    Delete {
+        name: &'a [u8],
+        immutable: bool,
+        expand: bool,
+    },
     /// `name=value`, or `name[locale]=value` for a translation.
     Set {
         name: &'a [u8],
         locale: Option<&'a [u8]>,
         immutable: bool,
+        expand: bool,
         value: &'a [u8],
     },
 }
@@ -332,7 +375,7 @@ fn parse_key(line: &[u8]) -> Key<'_> {
     if key.is_empty() {
         return Key::Empty;
     }
-    let mut immutable = false;
+    let (mut immutable, mut expand) = (false, false);
     let mut locale = None;
     while let Some(open) = key.iter().rposition(|&byte| byte == b'[') {
         let Some(close) = key[open..].iter().position(|&byte| byte == b']') else {
@@ -343,13 +386,15 @@ fn parse_key(line: &[u8]) -> Key<'_> {
             for &option in &key[open + 2..close] {
                 match option {
                     b'i' => immutable = true,
+                    // `$e` changes the value only when it is read.
+                    b'e' => expand = true,
                     b'd' => {
                         return Key::Delete {
                             name: &key[..open],
                             immutable,
+                            expand,
                         };
                     }
-                    // `$e` changes the value only when it is read.
                     _ => {}
                 }
             }
@@ -366,6 +411,7 @@ fn parse_key(line: &[u8]) -> Key<'_> {
             name: key,
             locale,
             immutable,
+            expand,
             value,
         },
         None => Key::Broken,
