@@ -164,10 +164,14 @@ class SelectTest(unittest.TestCase):
             "scripts/run-e2e-tests.sh",
             "pyproject.toml",
             "nix/e2e-tests/lib/helper.sh",
+            "justfile",
         ):
             with self.subTest(path=path):
                 self.assertTrue(changes.select([path])["workflows"])
         self.assertEqual(changes.select(["ci/e2e/plan.py"]), only("workflows"))
+        # scripts/tests checks the stub `just new-fuzz-target` writes against
+        # the fuzz-target check, so a change to it must run them.
+        self.assertEqual(changes.select(["justfile"]), only("rust", "workflows"))
 
     def test_lookalike_paths_match_only_docs(self) -> None:
         paths = ["docs/Cargo.toml.md", "docs/nails-core/notes.md", "docs/flake.nix.md"]
