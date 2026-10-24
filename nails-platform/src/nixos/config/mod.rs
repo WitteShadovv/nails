@@ -96,7 +96,8 @@ pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str = r#"{ config, lib, p
   '';
 
   # An emergency teardown unit you can trigger to leave the hidden session in a
-  # hurry. Point ExecStart at your own `nails emergency` wrapper.
+  # hurry. Point ExecStart at a wrapper that runs the NAILS binary on the hidden
+  # volume with `emergency`.
   # systemd.services.nails-panic = {
   #   description = "Emergency teardown of the hidden session";
   #   serviceConfig = {
