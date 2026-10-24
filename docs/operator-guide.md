@@ -1286,8 +1286,14 @@ turn it off in the hidden session only:
   which overrides its drop-ins: `autologin-user=` in the `[Seat:*]` section
   of `/etc/lightdm/lightdm.conf` for LightDM, `User=` under `[Autologin]` in
   `/etc/sddm.conf` for SDDM or in `/etc/plasmalogin.conf` for Plasma Login
-  Manager; create the file if it is missing. The edit lands in the upper, so
-  it applies from the next activation and the decoy keeps its own setting.
+  Manager; create the file if it is missing. Empty it in the same file under
+  the sections for the seat as well, wherever a file sets it there: LightDM
+  applies each `[Seat:…]` section that matches the seat, such as
+  `[Seat:seat0]` or `[Seat:seat*]`, after `[Seat:*]`, and Plasma Login
+  Manager 6.8 and later read `[Autologin][seat0]` instead of `[Autologin]`
+  when a file has it. A Plasma Login Manager drop-in that marks the setting
+  immutable with `[$i]` has to be edited itself. The edit lands in the upper,
+  so it applies from the next activation and the decoy keeps its own setting.
 
 #### Remote state and sync clients
 
