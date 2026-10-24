@@ -44,6 +44,14 @@ fn tick() {
     std::thread::sleep(Duration::from_millis(20));
 }
 
+/// A walk down the way to a home: both share every rule but what a directory
+/// missing from the upper means.
+type Walk = fn(&Path, &Path, &Path, Labels) -> Result<()>;
+
+/// The walk that follows a fresh home's creation, and the one along what the
+/// upper holds.
+const WALKS: [Walk; 2] = [copy_labels_along, copy_labels_along_existing];
+
 #[test]
 fn a_host_whose_facts_report_no_selinux_copies_labels_on_a_best_effort_basis() {
     let profile = FakePlatform::fhs().host_profile();
@@ -279,19 +287,22 @@ fn the_walk_never_follows_a_link_below_the_upper_root() {
     let before = (ctime(&elsewhere), ctime(&elsewhere.join("alice")));
     tick();
 
-    copy_labels_along(&decoy, &upper, Path::new("home/alice"), Labels::BestEffort).unwrap();
-    for labels in [REPORTED, UNDETECTED] {
-        let text = copy_labels_along(&decoy, &upper, Path::new("home/alice"), labels)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            text.contains(&format!(
-                "must carry the SELinux label of {}, but {} is a link or a file, not a directory",
-                decoy.join("home").display(),
-                upper.join("home").display()
-            )),
-            "{text}"
-        );
+    for walk in WALKS {
+        walk(&decoy, &upper, Path::new("home/alice"), Labels::BestEffort).unwrap();
+        for labels in [REPORTED, UNDETECTED] {
+            let text = walk(&decoy, &upper, Path::new("home/alice"), labels)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                text.contains(&format!(
+                    "must carry the SELinux label of {}, but {} is a link or a file, not a \
+                     directory",
+                    decoy.join("home").display(),
+                    upper.join("home").display()
+                )),
+                "{text}"
+            );
+        }
     }
     // Nothing was written through the link.
     assert_eq!((ctime(&elsewhere), ctime(&elsewhere.join("alice"))), before);
@@ -307,17 +318,19 @@ fn the_walk_stops_at_an_upper_root_that_is_a_link() {
     let before = ctime(&elsewhere.join("home"));
     tick();
 
-    copy_labels_along(&decoy, &upper, Path::new("home/alice"), Labels::BestEffort).unwrap();
-    let text = copy_labels_along(&decoy, &upper, Path::new("home/alice"), REPORTED)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        text.ends_with(&format!(
-            "but {} is a link or a file, not a directory",
-            upper.display()
-        )),
-        "{text}"
-    );
+    for walk in WALKS {
+        walk(&decoy, &upper, Path::new("home/alice"), Labels::BestEffort).unwrap();
+        let text = walk(&decoy, &upper, Path::new("home/alice"), REPORTED)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            text.ends_with(&format!(
+                "but {} is a link or a file, not a directory",
+                upper.display()
+            )),
+            "{text}"
+        );
+    }
     assert_eq!(ctime(&elsewhere.join("home")), before);
 }
 
@@ -344,25 +357,55 @@ fn the_walk_needs_every_directory_on_the_way() {
 }
 
 #[test]
+fn the_walk_along_what_exists_ends_where_the_upper_holds_no_more() {
+    // Real calls, on any host: the walk reads no label before it finds a
+    // directory of the way in the upper. A shared-home entry may find no upper
+    // root yet, or one that holds nothing of the way to the home.
+    let (dir, decoy, upper) = walk_world();
+    let rest = Path::new("home/alice");
+    let no_upper = dir.path().join("no-upper");
+    let before = ctime(&upper);
+    tick();
+
+    for labels in [Labels::BestEffort, REPORTED, UNDETECTED] {
+        copy_labels_along_existing(&decoy, &no_upper, rest, labels).unwrap();
+        copy_labels_along_existing(&decoy, &upper, rest, labels).unwrap();
+    }
+    assert!(!no_upper.exists());
+    assert!(!upper.join("home").exists());
+    assert_eq!(ctime(&upper), before);
+    // The walk after a fresh home's creation needs all of the way.
+    for at in [&no_upper, &upper] {
+        let text = copy_labels_along(&decoy, at, rest, Labels::BestEffort)
+            .unwrap_err()
+            .to_string();
+        assert!(text.ends_with(" does not exist"), "{text}");
+    }
+}
+
+#[test]
 fn the_walk_takes_a_relative_path_of_plain_names() {
     let (_dir, decoy, upper) = walk_world();
-    for rest in ["/home/alice", "../home/alice", "home/../home/alice"] {
-        let error =
-            copy_labels_along(&decoy, &upper, Path::new(rest), Labels::BestEffort).unwrap_err();
-        assert!(
-            error.to_string().ends_with(&format!(
-                "{rest} is not a path of plain names below {}",
-                upper.display()
-            )),
-            "{error}"
-        );
+    for walk in WALKS {
+        for rest in ["/home/alice", "../home/alice", "home/../home/alice"] {
+            let error = walk(&decoy, &upper, Path::new(rest), Labels::BestEffort).unwrap_err();
+            assert!(
+                error.to_string().ends_with(&format!(
+                    "{rest} is not a path of plain names below {}",
+                    upper.display()
+                )),
+                "{error}"
+            );
+        }
     }
     // A home that is the upper root itself (a separate filesystem mounted at
     // the home) leaves nothing to walk.
     let before = ctime(&upper);
     tick();
-    for rest in ["", "."] {
-        copy_labels_along(&decoy, &upper, Path::new(rest), REPORTED).unwrap();
+    for walk in WALKS {
+        for rest in ["", "."] {
+            walk(&decoy, &upper, Path::new(rest), REPORTED).unwrap();
+        }
     }
     assert_eq!(ctime(&upper), before);
 }
