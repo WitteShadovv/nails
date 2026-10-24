@@ -246,6 +246,9 @@ another account or empties the setting counts as it does there:
   of `lightdm/lightdm.conf.d` below `/usr/share`, `/usr/local/share`,
   `/etc/xdg` and `/etc`, then in `/etc/lightdm/lightdm.conf`.
 
+Only regular files are read: a FIFO, socket or device in one of these places
+is skipped, so reading it can neither block nor go on without end.
+
 Where the files leave the account in doubt, it is listed: a Plasma Login
 Manager setting translated for a language or expanded from the environment,
 and GDM turned on without naming an account, which is listed as you. So the
