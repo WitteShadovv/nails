@@ -47,8 +47,11 @@ FILTERS: dict[str, re.Pattern[str]] = {
     "deps": re.compile(r"^(Cargo\.lock|deny\.toml|(.+/)?Cargo\.toml)$"),
     # The flake and what it evaluates besides the Rust sources.
     "nix": re.compile(r"^(flake\.(nix|lock)$|nix/|\.github/actions/setup-nix/)|\.nix$"),
-    # The CI tooling: workflows, composite actions, the ci package, scripts.
-    "workflows": re.compile(r"^(\.github/|ci/|scripts/|pyproject\.toml$)|\.sh$"),
+    # The CI tooling: workflows, composite actions, the ci package, scripts,
+    # and the justfile, whose fuzz-target stub scripts/tests checks.
+    "workflows": re.compile(
+        r"^(\.github/|ci/|scripts/|pyproject\.toml$|justfile$)|\.sh$"
+    ),
     # The Markdown docs and the checker that lints them.
     "docs": re.compile(r"\.md$|^scripts/docs-check\.sh$"),
     # What the release SBOM is made from and what makes it: the manifests and
