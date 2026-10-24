@@ -353,7 +353,8 @@ of this changelog for that version becomes the release notes word for word, and
   pastes as it is. The DMA-protection warning, the warning on an untested release or derivative,
   `verify`'s guidance for a stale record and for RAM, the configuration-not-found error and `init`'s
   errors named a bare `nails` command, which `sudo` cannot run because the binary is not on its
-  `PATH`.
+  `PATH`; so did the comment on the emergency unit in the hidden NixOS module written to a fresh
+  volume.
 - `recover` gives each refusal the next step that fits it: in the hidden session `deactivate`, where
   it pointed at `emergency`, which kills the session and loses unsaved work; while an activation is
   entering, none, with the advice to wait for its soft-reboot. A recovery that itself fails (the
