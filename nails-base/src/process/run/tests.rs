@@ -8,8 +8,33 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Component;
 
+/// Writes `body` to `path` through a child process, so this process never holds
+/// a write descriptor for the file. A process another test thread forks would
+/// inherit such a descriptor until it execs, and running the file in that
+/// window fails with ETXTBSY.
 fn write_file(path: &Path, body: &str, mode: u32) {
-    fs::write(path, body).unwrap();
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let mut writer = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("cat > \"$1\"")
+        .arg("sh")
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(body.as_bytes())
+        .unwrap();
+    assert!(
+        writer.wait().unwrap().success(),
+        "writing {}",
+        path.display()
+    );
     let mut permissions = fs::metadata(path).unwrap().permissions();
     permissions.set_mode(mode);
     fs::set_permissions(path, permissions).unwrap();
