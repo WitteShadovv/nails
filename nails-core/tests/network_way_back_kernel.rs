@@ -18,15 +18,15 @@
 //! namespace starts with a copy of the host's IPv4 settings, so on a host that
 //! forwards (one that runs Docker, say) forwarding is on at entry.
 //!
-//! It needs the `dummy` link type, which an unprivileged user namespace can use
-//! only when the module is already loaded, and `ip` itself; the firewall-table
-//! test needs `nft` and nf_tables. Each one missing is a host skip, which
-//! `NAILS_REQUIRE_USERNS=1` leaves a skip, and so is a sysfs the namespace
-//! cannot mount; a missing user namespace is the skip that variable turns into
-//! a failure.
+//! It needs `ip` and the `dummy` link type (its module loaded, or installed
+//! for the kernel to load), and the firewall-table test needs `nft` and
+//! nf_tables. CI provides them, so each one missing is a skip that
+//! `NAILS_REQUIRE_USERNS=1` turns into a failure, as it does a missing user
+//! namespace, a network namespace the run cannot create and a sysfs it cannot
+//! mount.
 
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, skip_host};
+use nails_core::test_support::{Rerun, skip};
 use nails_teardown::whole_root::network::{
     self, Kept, NetTools, NetworkRecord, Places, RestorePlan, apply_links,
 };
@@ -58,11 +58,11 @@ fn link_present(ip: &Path, name: &str) -> bool {
     ok(ip, &["link", "show", name])
 }
 
-/// `ip`, or a host skip.
+/// `ip`, or a skip.
 fn ip_or_skip() -> PathBuf {
     match tools::find(None, "ip") {
         Some(ip) => ip,
-        None => skip_host("iproute2 (ip) is not installed"),
+        None => skip("iproute2 (ip) is not installed"),
     }
 }
 
@@ -74,7 +74,7 @@ fn fresh_network_namespace() {
     use nix::mount::{MsFlags, mount};
     use nix::sched::{CloneFlags, unshare};
     if let Err(e) = unshare(CloneFlags::CLONE_NEWNET) {
-        skip_host(&format!("cannot create a network namespace: {e}"));
+        skip(&format!("cannot create a network namespace: {e}"));
     }
     if let Err(e) = mount(
         Some("sysfs"),
@@ -83,15 +83,15 @@ fn fresh_network_namespace() {
         MsFlags::empty(),
         None::<&str>,
     ) {
-        skip_host(&format!("cannot mount sysfs in the network namespace: {e}"));
+        skip(&format!("cannot mount sysfs in the network namespace: {e}"));
     }
 }
 
-/// Add a dummy link `name`; the dummy type needs its module, which an
-/// unprivileged user namespace cannot load, so a failure is a host skip.
+/// Add a dummy link `name`, or skip where the kernel has no dummy link type
+/// (its module neither loaded nor installed).
 fn add_dummy(ip: &Path, name: &str) {
     if !ok(ip, &["link", "add", name, "type", "dummy"]) {
-        skip_host("the dummy link type is unavailable in this namespace");
+        skip("the dummy link type is unavailable in this namespace");
     }
 }
 
@@ -359,12 +359,12 @@ fn the_way_back_deletes_the_firewall_tables_the_session_added() {
     .in_user_mount_ns()
     .run(|| {
         let Some(nft) = tools::find(None, "nft") else {
-            skip_host("nftables (nft) is not installed");
+            skip("nftables (nft) is not installed");
         };
         fresh_network_namespace();
         // The decoy: a firewall table of its own, and its WireGuard tunnel's.
         if !ok(&nft, &["add", "table", "inet", "keep"]) {
-            skip_host("nf_tables is unavailable in this namespace");
+            skip("nf_tables is unavailable in this namespace");
         }
         assert!(ok(&nft, &["add", "table", "ip", "wg-quick-wg0"]));
         let before = output(&nft, &["-j", "list", "tables"]);

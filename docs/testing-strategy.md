@@ -56,7 +56,7 @@ What runs in this tier:
 | `nails-cli/tests/early_dispatch.rs` | `emergency` detaching a leftover next root before it reads the configuration |
 | `nails-cli/tests/maintenance_cli.rs` and the `kernel_tests` modules of `rehearse_cli.rs`, `cli_contract.rs`, `activate_gate.rs`, `nails-cli/src/cli/logging/tests.rs` and `nails-cli/src/cli/commands/init/tests.rs` | The real binary's write paths (state, lock, rehearsal state, log file, the init layout) on a tmpfs hidden root, through the real attach gate: the binary they spawn inherits the namespace, so no test hook stands in for a mounted volume. `activate_gate.rs` also mounts a second tmpfs over the root and checks that neither receives a file, and that `activate --json` writes exactly one envelope of its schema to stdout |
 | `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
-| `nails-core/tests/network_way_back_kernel.rs` | The way back's network restore in a throwaway network namespace: the real `ip` deleting the session's links (one made again under the name of a decoy link included) and its policy-routing rules, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace (which starts with the host's IPv4 settings, so forwarding is on where the host forwards), and the real `nft` deleting the session's firewall tables while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it |
+| `nails-core/tests/network_way_back_kernel.rs` | The way back's network restore in a throwaway network namespace: the real `ip` deleting the session's links (one made again under the name of a decoy link included) and its policy-routing rules, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace (which starts with the host's IPv4 settings, so forwarding is on where the host forwards), and the real `nft` deleting the session's firewall tables while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it, and `NAILS_REQUIRE_USERNS=1` fails it |
 | `nails-core/tests/filesystem_contract.rs` | One file contract and one mount-query contract, run against `MockFilesystem` and `RealFilesystem` (tier d) |
 | `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`; all but the whiteout test run rootless |
 | `nails-cli/tests/broken_pipe.rs` | The stderr helpers surviving a reader that has gone |
@@ -148,11 +148,13 @@ owes one.
 ## What to run
 
 - **Locally or in any sandbox:** `just kernel-tests` (fails rather than skips
-  without user namespaces). Plain `just test` runs the same tests and skips them
-  where user namespaces are missing.
-- **CI:** the `rust` job clears `kernel.apparmor_restrict_unprivileged_userns`
-  on the Ubuntu runner and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts`
-  job runs the whiteout test as root.
+  without user namespaces, and without `ip`, `nft` with nf_tables or the `dummy`
+  link type for the network way-back tests). Plain `just test` runs the same
+  tests and skips them where these are missing.
+- **CI:** the `rust` job installs `nftables`, loads the `dummy` and `nf_tables`
+  modules, clears `kernel.apparmor_restrict_unprivileged_userns` on the Ubuntu
+  runner and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts` job runs the
+  whiteout test as root.
 - **VM:** the suites in `nix/e2e-tests`, as its README describes. When a captured
   format changes, refresh the fixture as the fixture README says.
 

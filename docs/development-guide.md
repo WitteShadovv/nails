@@ -61,6 +61,11 @@ skipping, on a host without user namespaces (see
 `kernel_tests` also need a host that runs systemd as PID 1 and is not
 image-based, since the platform gate they pass reads both from the host; on
 any other host they skip with a message, under `just kernel-tests` too.
+[testing-strategy.md](testing-strategy.md)). The network way-back tests
+(`nails-core/tests/network_way_back_kernel.rs`) also need `ip`, `nft` with
+nf_tables and the `dummy` link type (`sudo modprobe dummy` where the kernel
+does not load it on demand), which `just kernel-tests` fails without too; the
+`rust` job of `ci.yml` provides them.
 
 One test needs real root: the whiteout and opaque-directory test in
 `privileged_mounts.rs` needs `trusted.*` xattrs, which a user namespace cannot
