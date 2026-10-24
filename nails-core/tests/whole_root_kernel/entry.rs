@@ -8,7 +8,7 @@
 use nails_core::session::entry::{self, EntryHost, EntryInputs};
 use nails_core::session::layout::Paths;
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host};
+use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host, write_executable};
 use nails_core::{NailsError, nixos::NixOSBuilder};
 use nails_teardown::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::kernel_helpers::{self, KernelSetting};
@@ -19,7 +19,6 @@ use nails_teardown::whole_root::plan::{
 use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
 use nails_teardown::whole_root::{carry, nextroot, runtime_units};
 use std::cell::Cell;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -114,9 +113,11 @@ impl World {
              /dev/vdc1 /srv/data ext4 defaults 0 2\n",
         )
         .unwrap();
-        let init = decoy.path().join("usr/lib/systemd/systemd");
-        std::fs::write(&init, "#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&init, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(
+            &decoy.path().join("usr/lib/systemd/systemd"),
+            "#!/bin/sh\n",
+            0o755,
+        );
         let esp = ScratchTmpfs::new("");
         nix::mount::mount(
             Some(esp.path()),

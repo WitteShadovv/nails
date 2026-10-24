@@ -209,7 +209,7 @@ fn the_override_never_covers_a_folder() {
 mod kernel_tests {
     use super::*;
     use nails_core::test_path;
-    use nails_core::test_support::{Rerun, ScratchTmpfs};
+    use nails_core::test_support::{Rerun, ScratchTmpfs, copy_executable};
 
     /// The gate's codes, none of which a root it accepts may produce.
     const GATE_CODES: &[&str] = &["not_separate_volume", "root_covered", "storage_unjudged"];
@@ -284,7 +284,7 @@ mod kernel_tests {
         .run(|| {
             let volume = ScratchTmpfs::new("");
             let binary = volume.path().join("nails");
-            std::fs::copy(assert_cmd::cargo::cargo_bin!("nails"), &binary).unwrap();
+            copy_executable(assert_cmd::cargo::cargo_bin!("nails"), &binary, 0o755);
             let notice = "config/nails.toml: activation uses the built-in defaults.";
             let progress = "Preparing the hidden session (pre-flight, next root)...";
             for quiet in [false, true] {

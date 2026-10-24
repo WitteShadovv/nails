@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
+use crate::test_support::write_executable;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 /// A fake `/sys/class/net` tree. A link with a `device` entry reads as a
 /// hardware device; one without reads as virtual.
@@ -482,7 +482,7 @@ fn set_back(macs: &[(&str, &str)]) -> RestorePlan {
 /// there fails every call.
 fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) -> PathBuf {
     let tool = dir.join("ip");
-    fs::write(
+    write_executable(
         &tool,
         format!(
             "#!/bin/sh\n\
@@ -507,9 +507,8 @@ fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) ->
             refusing = refusing.join(" "),
             busy = busy_while_up.join(" "),
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     tool
 }
 
@@ -517,7 +516,7 @@ fn fake_ip(dir: &Path, sys: &Path, busy_while_up: &[&str], refusing: &[&str]) ->
 /// (`dev NAME del`) and logs each call.
 fn fake_iw(dir: &Path, sys: &Path) -> PathBuf {
     let tool = dir.join("iw");
-    fs::write(
+    write_executable(
         &tool,
         format!(
             "#!/bin/sh\n\
@@ -526,9 +525,8 @@ fn fake_iw(dir: &Path, sys: &Path) -> PathBuf {
             calls = dir.join("calls").display(),
             sys = sys.display(),
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     tool
 }
 

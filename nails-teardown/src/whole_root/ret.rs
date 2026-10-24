@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn an_idle_backend_is_closed_and_one_in_use_reported() {
-        use std::os::unix::fs::PermissionsExt;
+        use crate::test_support::write_executable;
         let dir = tempfile::tempdir().unwrap();
         let mapper = dir.path().join("mapper");
         std::fs::create_dir(&mapper).unwrap();
@@ -270,8 +270,7 @@ mod tests {
         std::fs::write(mapper.join("top"), "").unwrap();
         for (exit, expected) in [(0, BackendClose::Closed), (1, BackendClose::InUse)] {
             let tool = dir.path().join(format!("dmsetup-{exit}"));
-            std::fs::write(&tool, format!("#!/bin/sh\nexit {exit}\n")).unwrap();
-            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            write_executable(&tool, format!("#!/bin/sh\nexit {exit}\n"), 0o755);
             plan.tools.dmsetup = Some(tool);
             assert_eq!(
                 close_idle_backend(&plan, &mapper),

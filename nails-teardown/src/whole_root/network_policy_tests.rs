@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
+use crate::test_support::write_executable;
 use std::fs;
 
 /// `ip -N -4 rule show` from iproute2 7.0 in a network namespace, with the
@@ -190,7 +191,7 @@ fn the_settings_the_session_changed_are_written_back() {
 /// matches. A rule naming `refused` is never deleted.
 fn fake_ip(dir: &Path) -> PathBuf {
     let tool = dir.join("ip");
-    fs::write(
+    write_executable(
         &tool,
         format!(
             "#!/bin/sh\n\
@@ -212,9 +213,8 @@ fn fake_ip(dir: &Path) -> PathBuf {
              esac\n",
             dir = dir.display(),
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     tool
 }
 
@@ -223,7 +223,7 @@ fn fake_ip(dir: &Path) -> PathBuf {
 /// handle. A table named `locked` is never deleted.
 fn fake_nft(dir: &Path) -> PathBuf {
     let tool = dir.join("nft");
-    fs::write(
+    write_executable(
         &tool,
         format!(
             "#!/bin/sh\n\
@@ -245,9 +245,8 @@ fn fake_nft(dir: &Path) -> PathBuf {
              esac\n",
             dir = dir.display(),
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     tool
 }
 
@@ -407,7 +406,7 @@ fn a_list_that_cannot_be_read_on_the_way_back_is_unknown() {
     let policy = Policy::capture(Some(&ip), Some(&nft), &sys);
     // IPv6 went away, and nft now prints something else.
     fs::remove_file(dir.path().join("rules-6")).unwrap();
-    fs::write(&nft, "#!/bin/sh\necho 'table inet filter'\n").unwrap();
+    write_executable(&nft, "#!/bin/sh\necho 'table inet filter'\n", 0o755);
     let mut kept = Kept::default();
 
     policy.restore(Some(&ip), Some(&nft), &sys, &mut kept);

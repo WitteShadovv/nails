@@ -14,7 +14,7 @@
 
 mod kernel_tests {
     use nails_core::test_path;
-    use nails_core::test_support::{Rerun, ScratchTmpfs};
+    use nails_core::test_support::{Rerun, ScratchTmpfs, write_executable};
     use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts, read_mountinfo, top_mount_at};
     use nails_teardown::whole_root::nextroot;
     use nails_teardown::whole_root::plan::{
@@ -41,9 +41,11 @@ mod kernel_tests {
                 decoy.mkdir(dir);
             }
             std::fs::write(decoy.path().join("etc/os-release"), "ID=decoy\n").unwrap();
-            let init = decoy.path().join("usr/lib/systemd/systemd");
-            std::fs::write(&init, "#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(&init, std::fs::Permissions::from_mode(0o755)).unwrap();
+            write_executable(
+                &decoy.path().join("usr/lib/systemd/systemd"),
+                "#!/bin/sh\n",
+                0o755,
+            );
             let esp = ScratchTmpfs::new("");
             std::fs::write(esp.path().join("random-seed"), "seed").unwrap();
             let hidden = ScratchTmpfs::new("");
@@ -582,8 +584,9 @@ mod nixos_kernel_tests {
 
     use nails_core::session::nixos::activate_in;
     use nails_core::test_path;
-    use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host};
-    use std::os::unix::fs::PermissionsExt;
+    use nails_core::test_support::{
+        Rerun, ScratchTmpfs, copy_executable, skip_host, write_executable,
+    };
     use std::path::{Path, PathBuf};
 
     /// A shell that lives in the host's `/nix/store`, usable inside a root
@@ -653,10 +656,7 @@ mod nixos_kernel_tests {
                     .unwrap();
                     shell
                 } else if let Some(busybox) = static_busybox() {
-                    let sh = root.path().join("bin/sh");
-                    std::fs::copy(&busybox, &sh).unwrap();
-                    std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755))
-                        .unwrap();
+                    copy_executable(&busybox, &root.path().join("bin/sh"), 0o755);
                     PathBuf::from("/bin/sh")
                 } else {
                     skip_host("no /nix/store shell and no static busybox on this host");
@@ -676,9 +676,8 @@ mod nixos_kernel_tests {
                 // ignores: a Ctrl+C on the terminal reaches the whole
                 // foreground group, and an activation killed halfway would
                 // leave the hidden /etc half written.
-                let activate = root.path().join("system/activate");
-                std::fs::write(
-                    &activate,
+                write_executable(
+                    &root.path().join("system/activate"),
                     format!(
                         "#!{}\nset -e\n\
                          test -r /proc/self/mountinfo\n\
@@ -693,10 +692,8 @@ mod nixos_kernel_tests {
                          done < /proc/$$/status\n",
                         shell.display()
                     ),
-                )
-                .unwrap();
-                std::fs::set_permissions(&activate, std::fs::Permissions::from_mode(0o755))
-                    .unwrap();
+                    0o755,
+                );
 
                 activate_in(root.path(), Path::new("/system")).unwrap();
 

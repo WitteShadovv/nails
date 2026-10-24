@@ -23,3 +23,8 @@ pub mod noatime;
 pub mod proc;
 pub mod shells;
 pub mod whole_root;
+
+// Writing or copying a program a test then runs, shared with the test code of
+// the crates above. Test-only; never in a shipped binary.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
