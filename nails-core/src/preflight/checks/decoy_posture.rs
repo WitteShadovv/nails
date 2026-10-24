@@ -275,9 +275,9 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
             return Ok(CheckResult::fail_with(
                 format!("decoy keeps a persistent record of the hidden session: {findings}."),
                 "Make the decoy amnesic (Storage=volatile for journald, set in journald.conf \
-                 or a journald.conf.d/*.conf drop-in; no rsyslog/syslog-ng/auditd), \
-                 or pass --allow-persistent-decoy to allow the risk for this run. \
-                 See docs/decoy-requirements.md.",
+                 or a journald.conf.d/*.conf drop-in; no active syslog or audit daemon, such \
+                 as rsyslog, syslog-ng, a syslogd or auditd), or pass --allow-persistent-decoy \
+                 to allow the risk for this run. See docs/decoy-requirements.md.",
             ));
         }
 
