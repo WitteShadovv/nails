@@ -890,6 +890,36 @@ fn test_missing_file_is_missing_not_unknown() {
 }
 
 #[test]
+fn a_state_file_that_cannot_be_looked_up_is_never_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    // A path below a regular file cannot be looked up at all: unknown.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("a-file");
+    std::fs::write(&file, b"").unwrap();
+    let result = StateFile::load_with_outcome(&file.join("state.json")).unwrap();
+    assert_eq!(result.outcome, LoadOutcome::Unreadable);
+    assert!(result.outcome.is_unknown());
+
+    // A directory without search permission denies the lookup of the file in
+    // it, as a security policy can deny it: the denied read's permission
+    // error, never a missing file. Root searches it whatever its mode.
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let dir = temp_dir.path().join("state");
+    std::fs::create_dir(&dir).unwrap();
+    let state_path = dir.join("state.json");
+    std::fs::write(&state_path, b"{}").unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let result = StateFile::load_with_outcome(&state_path);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        matches!(result, Err(NailsError::PermissionDenied(_))),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn test_degraded_state_round_trips_through_save_load() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mock_root = temp_dir.path().to_str().unwrap();

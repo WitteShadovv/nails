@@ -131,7 +131,8 @@ impl ReadyActivation {
 
     /// Whether the recorded state can be trusted. A corrupt or unreadable state
     /// file means the current state is unknown, so activation must refuse; a
-    /// state file this process is not allowed to read is unreadable too.
+    /// state file this process is not allowed to read, or to look up, is
+    /// unreadable too.
     pub fn is_state_trusted(&self) -> bool {
         trusted(&self.manager.current_state_with_outcome())
     }
@@ -204,8 +205,8 @@ impl ReadyActivation {
 
 /// Whether a load of the state file can be trusted: a file that loaded and
 /// passed its integrity check, or no file at all (inactive). A corrupt or
-/// unreadable file, and an error reading it (a permission denied), leave the
-/// real state unknown.
+/// unreadable file, and an error looking it up or reading it (a permission
+/// denied), leave the real state unknown.
 fn trusted(load: &Result<(crate::SystemState, crate::LoadOutcome)>) -> bool {
     match load {
         Ok((_, outcome)) => !outcome.is_unknown(),
@@ -487,6 +488,38 @@ mod tests {
         assert!(
             !verdict,
             "a state file the activating process cannot read must not be trusted"
+        );
+    }
+
+    #[test]
+    fn a_state_file_this_process_may_not_look_up_is_not_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::geteuid().is_root() {
+            // root searches a directory whatever its mode, so nothing is denied.
+            return;
+        }
+        // The directory holding the state file grants no search, as a
+        // security policy that denies the lookup does: the file is there, but
+        // no stat of it succeeds, which must not read as no state file.
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir(&state_dir).unwrap();
+        let state = state_dir.join("state.json");
+        std::fs::write(&state, b"{}").unwrap();
+        let config = Config {
+            hidden_volume_root: dir.path().to_path_buf(),
+            state_file_path: state.clone(),
+            log_path: dir.path().join("logs"),
+            ..Config::test_default()
+        };
+        let manager = NailsManager::new(RealFilesystem, config, state);
+        let ready = ready(manager, EnterOptions::default(), None, None);
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let verdict = ready.is_state_trusted();
+        std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            !verdict,
+            "a state file the activating process cannot look up must not be trusted"
         );
     }
 
