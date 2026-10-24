@@ -44,7 +44,7 @@ const PANIC_NOTICE: &str = "A fatal internal error occurred; the operation was a
 /// that unwinds out of it into the documented failure instead of the runtime's
 /// exit 101, a code outside the table: exit 1, and under `--json` the one
 /// envelope, the error `internal_error`, unless the command already printed
-/// its envelope.
+/// its envelope, which then stays as it is (its `ok` included) with exit 1.
 ///
 /// A panic is caught only once it has unwound to here, so the guards on the
 /// way (a state lock, a rollback) have run as they would have. Whether the
@@ -151,7 +151,11 @@ mod tests {
         );
     }
 
-    /// A panic after the command printed its envelope adds no second one.
+    /// A panic after the command printed its envelope adds no second one: that
+    /// envelope stays as it is, `ok: true` included, and the exit is 1. The
+    /// trade-off is accepted, and the README's exit codes and JSON output
+    /// section says so: a second line would break the one-envelope contract,
+    /// and the result the envelope reports was established before the panic.
     #[test]
     fn a_panic_after_the_envelope_adds_none() {
         let output = run_subprocess("after-the-envelope");
