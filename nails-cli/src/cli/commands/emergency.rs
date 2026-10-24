@@ -118,11 +118,14 @@ fn log_report(report: &HotReport) {
 /// Ctrl+C (or SIGTERM) during the countdown cancels the emergency before it
 /// did anything: the cancel is reported as every command reports one (under
 /// `--json` the cancel envelope, otherwise a neutral notice on stderr) and its
-/// status returned. `None` when the countdown ran out, or there was none.
+/// status returned. `None` when the countdown ran out, or there was none. A
+/// terminal hangup does not cancel: the emergency still runs when the
+/// countdown ends, as a teardown runs on once its terminal is gone.
 fn countdown(secs: Option<u64>, json: bool, style: Style) -> Option<ExitStatus> {
     let secs = secs?;
     // The handlers set the cancel flag the countdown watches, instead of the
-    // default action ending the process with nothing reported.
+    // default action ending the process with nothing reported; SIGHUP they
+    // catch and ignore.
     nails_core::cancel::install_handlers();
     if run_countdown(secs, nails_core::cancel::is_cancelled) {
         return None;
@@ -342,5 +345,46 @@ mod tests {
         assert!(!ran_out, "a cancel stops the countdown");
         assert!(asked.get() > 3, "the flag was read while it waited");
         assert!(start.elapsed().as_millis() < 2000, "{:?}", start.elapsed());
+    }
+
+    const COUNTDOWN_SUBPROCESS: &str =
+        "cli::commands::emergency::tests::subprocess_countdown_entrypoint";
+
+    /// Run a one-second countdown under `--json` while a thread sends this
+    /// process SIGHUP, as a closed terminal does, and exit 0 when the
+    /// countdown ran out.
+    #[test]
+    fn subprocess_countdown_entrypoint() {
+        if std::env::var_os("NAILS_COUNTDOWN_SUBPROCESS").is_none() {
+            return;
+        }
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            // Its default action would end the whole process, whichever
+            // thread it is raised on.
+            nix::sys::signal::raise(nix::sys::signal::Signal::SIGHUP).expect("raise SIGHUP");
+        });
+        let style = Style {
+            color: false,
+            ascii: true,
+        };
+        let cancelled = countdown(Some(1), true, style);
+        crate::cli::chokepoint::exit_process(if cancelled.is_none() { 0 } else { 2 });
+    }
+
+    /// A terminal hangup during the countdown does not cancel the emergency:
+    /// the process lives on, nothing is reported, and the countdown runs out.
+    #[test]
+    fn a_hangup_does_not_cancel_the_countdown() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", COUNTDOWN_SUBPROCESS, "--nocapture", "--quiet"])
+            .env("NAILS_COUNTDOWN_SUBPROCESS", "1")
+            .output()
+            .expect("run the countdown subprocess");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(
+            crate::cli::output::test_support::stdout_lines(&output).is_empty(),
+            "{output:?}"
+        );
     }
 }

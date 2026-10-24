@@ -345,7 +345,9 @@ of this changelog for that version becomes the release notes word for word, and
   prompts now wait for the answer as `activate`'s does.
 - Ctrl+C during `emergency --countdown` cancels the emergency before it acts, with the cancelled
   notice and exit 130 (under `--json` the cancel envelope). Run as root it ended the process by the
-  signal with nothing reported; run without root it was ignored.
+  signal with nothing reported; run without root it was ignored. A terminal hangup during the
+  countdown no longer aborts it as root: only Ctrl+C or SIGTERM does, so a closed terminal does not
+  stop the emergency.
 - An internal error (a panic) exits 1, a code of the exit table, where it exited 101; under `--json`
   it prints the error `internal_error`. `config path`, `config show` and `config validate` with
   `--json` no longer crash on a configuration path that is not valid UTF-8.
