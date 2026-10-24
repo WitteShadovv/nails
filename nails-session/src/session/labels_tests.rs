@@ -6,6 +6,7 @@ use nails_platform::platform::FakePlatform;
 use nails_platform::{SelinuxMode, SelinuxStatus};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// The decoy directory of the judged copies.
 const DECOY: &str = "/home";
@@ -35,6 +36,12 @@ fn judged(labels: Labels, copied: std::result::Result<(), Failure>) -> Result<Co
 fn ctime(path: &Path) -> (i64, i64) {
     let meta = std::fs::symlink_metadata(path).unwrap();
     (meta.ctime(), meta.ctime_nsec())
+}
+
+/// Long enough for a write to move a time, on a kernel whose timestamps are
+/// coarse.
+fn tick() {
+    std::thread::sleep(Duration::from_millis(20));
 }
 
 #[test]
@@ -235,6 +242,7 @@ fn a_decoy_directory_that_does_not_exist_leaves_the_upper_alone() {
     let upper = dir.path().join("upper");
     std::fs::create_dir(&upper).unwrap();
     let before = ctime(&upper);
+    tick();
 
     assert_eq!(
         copy_label(&decoy, &upper, Labels::BestEffort).unwrap(),
@@ -269,6 +277,7 @@ fn the_walk_never_follows_a_link_below_the_upper_root() {
     std::fs::create_dir_all(elsewhere.join("alice")).unwrap();
     std::os::unix::fs::symlink(&elsewhere, upper.join("home")).unwrap();
     let before = (ctime(&elsewhere), ctime(&elsewhere.join("alice")));
+    tick();
 
     copy_labels_along(&decoy, &upper, Path::new("home/alice"), Labels::BestEffort).unwrap();
     for labels in [REPORTED, UNDETECTED] {
@@ -296,6 +305,7 @@ fn the_walk_stops_at_an_upper_root_that_is_a_link() {
     let upper = dir.path().join("linked-upper");
     std::os::unix::fs::symlink(&elsewhere, &upper).unwrap();
     let before = ctime(&elsewhere.join("home"));
+    tick();
 
     copy_labels_along(&decoy, &upper, Path::new("home/alice"), Labels::BestEffort).unwrap();
     let text = copy_labels_along(&decoy, &upper, Path::new("home/alice"), REPORTED)
@@ -327,7 +337,8 @@ fn the_walk_needs_every_directory_on_the_way() {
     }
     // With all of them in place the walk goes down to the home. What it
     // writes depends on whether this host labels the decoy's directories;
-    // the kernel tier checks the labels themselves.
+    // the kernel tier checks the labels themselves, and that nothing is
+    // written where the decoy's directories carry none.
     std::fs::create_dir_all(upper.join("home/alice")).unwrap();
     copy_labels_along(&decoy, &upper, Path::new("home/alice"), Labels::BestEffort).unwrap();
 }
@@ -349,6 +360,7 @@ fn the_walk_takes_a_relative_path_of_plain_names() {
     // A home that is the upper root itself (a separate filesystem mounted at
     // the home) leaves nothing to walk.
     let before = ctime(&upper);
+    tick();
     for rest in ["", "."] {
         copy_labels_along(&decoy, &upper, Path::new(rest), REPORTED).unwrap();
     }

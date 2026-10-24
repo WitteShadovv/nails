@@ -6,8 +6,9 @@
 //! the root of an overlay over the two, without moving the decoy directory's
 //! access time; the walk down to a fresh home labels a parent at the next walk
 //! after one refused at it, and the hidden root shows the labels; and nothing
-//! is written where the decoy directory has no label, where a filesystem stores
-//! none (ramfs), or onto or through a link in place of an upper directory.
+//! is written where the decoy's directories have no label, where a filesystem
+//! stores none (ramfs), or onto or through a link in place of an upper
+//! directory.
 //!
 //! The namespace's root may write `security.selinux` on its own tmpfs, and a
 //! kernel without SELinux stores the value as given. A kernel that labels every
@@ -375,5 +376,57 @@ fn a_walk_never_labels_through_a_link_below_the_upper_root() {
         assert_eq!(label(elsewhere.path()), Err(Errno::NODATA));
         assert_eq!(label(&target), Err(Errno::NODATA));
         assert_eq!((ctime(elsewhere.path()), ctime(&target)), before);
+    });
+}
+
+#[test]
+fn a_walk_over_decoy_directories_without_labels_leaves_the_way_as_it_was() {
+    let _ = Rerun::new(test_path!(
+        a_walk_over_decoy_directories_without_labels_leaves_the_way_as_it_was
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // A decoy on a host without SELinux: its `/home` and `/home/alice`
+        // carry no label.
+        let decoy = tmpfs_without_selinux();
+        let decoy_parent = decoy.mkdir("home");
+        let decoy_home = decoy.mkdir("home/alice");
+        // The root upper with the home and its parent, as the persona creates
+        // them before the walk.
+        let hidden = ScratchTmpfs::new("");
+        let upper = hidden.mkdir("root/upper");
+        let parent = hidden.mkdir("root/upper/home");
+        let home = hidden.mkdir("root/upper/home/alice");
+        let rest = Path::new("home/alice");
+        let before = (ctime(&parent), ctime(&home));
+        let decoy_before = (atime(&decoy_parent), atime(&decoy_home));
+        tick();
+
+        // The walk of a fresh-home entry, on a host whose facts report no
+        // SELinux and on one that requires the labels, which refuses at the
+        // parent.
+        copy_labels_along(decoy.path(), &upper, rest, Labels::BestEffort).unwrap();
+        let refused = copy_labels_along(decoy.path(), &upper, rest, REQUIRED).unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .ends_with(&format!("but {} has no label", decoy_parent.display())),
+            "{refused}"
+        );
+
+        // Neither wrote anything: neither directory has an attribute at all,
+        // and their status is unchanged.
+        for dir in [&parent, &home] {
+            let mut names: [u8; 0] = [];
+            assert_eq!(
+                rustix::fs::llistxattr(dir, &mut names[..]),
+                Ok(0),
+                "{}",
+                dir.display()
+            );
+        }
+        assert_eq!((ctime(&parent), ctime(&home)), before);
+        // The decoy's directories were only read.
+        assert_eq!((atime(&decoy_parent), atime(&decoy_home)), decoy_before);
     });
 }
