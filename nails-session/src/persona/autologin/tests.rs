@@ -375,6 +375,39 @@ fn plasma_login_keeps_an_account_kconfig_makes_immutable() {
     );
 }
 
+#[test]
+fn plasma_login_takes_a_key_that_decodes_to_nothing_for_the_group_marker() {
+    // `\[$i]=x` makes [Autologin] immutable at once, so the main file's
+    // empty user is skipped and alice is logged in.
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "50-local.conf",
+        "[Autologin]\nUser=alice\n\\[$i]=x\n",
+    );
+    assert_eq!(
+        one(&fs, PLASMA_MAIN, "[Autologin]\nUser=\n"),
+        names(&["alice"])
+    );
+
+    // `\=x` clears what an earlier file made immutable, so a takes.
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_VENDOR,
+        "10-vendor.conf",
+        "[Autologin][seat0][$i]\nSession=plasma\n",
+    );
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "50-local.conf",
+        "[Autologin][seat0]\n\\=x\nUser=a\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["a"]));
+}
+
 // --- KConfig, as Plasma Login Manager reads it since 6.7 ---
 
 /// What KConfig reads for `[Autologin]` and the first seat's group from
@@ -514,6 +547,37 @@ fn kconfig_keeps_immutable_keys_and_groups() {
 }
 
 #[test]
+fn kconfig_takes_a_key_that_decodes_to_nothing_for_its_group_marker() {
+    // The marker takes the line's immutability at once, not at the end of
+    // the file: the main file skips the group.
+    assert_eq!(
+        kconfig(
+            &["[Autologin]\nUser=alice\n\\[$i]=x\n"],
+            Some("[Autologin]\nUser=\n")
+        ),
+        names(&["alice"])
+    );
+    // A new key after it in the same file is refused too.
+    assert!(kconfig(&["[Autologin]\n\\[$i]=x\nUser=alice\n"], None).is_empty());
+    // A marker that is not immutable clears an earlier file's mark, also
+    // through a deletion and with the spaces a key may hold before its
+    // brackets.
+    for clear in ["\\=x", "\\[$d]", "\\ [$e]=x"] {
+        assert_eq!(
+            kconfig(
+                &[
+                    "[Autologin][seat0][$i]\nSession=plasma\n",
+                    &format!("[Autologin][seat0]\n{clear}\nUser=a\n")
+                ],
+                None
+            ),
+            names(&["a"]),
+            "{clear:?}"
+        );
+    }
+}
+
+#[test]
 fn kconfig_stops_after_a_file_that_marks_itself_immutable() {
     assert_eq!(
         kconfig(
@@ -522,7 +586,15 @@ fn kconfig_stops_after_a_file_that_marks_itself_immutable() {
         ),
         names(&["kiosk"])
     );
-    // Only on a line of its own before any group name.
+    // A header that is only `[$i]` marks the file wherever it stands.
+    assert_eq!(
+        kconfig(
+            &["[Autologin]\nUser=kiosk\n[$i]\n", "[Autologin]\nUser=a\n"],
+            None
+        ),
+        names(&["kiosk"])
+    );
+    // An `[$i]` marks only when it closes the header.
     assert_eq!(
         kconfig(
             &[
