@@ -639,6 +639,28 @@ fn nixos_syslogd_under_its_own_syslog_service_is_reported_once() {
 }
 
 #[test]
+fn a_masked_syslog_service_that_still_runs_fails_closed() {
+    // `systemctl mask --runtime syslog.service` without `--now` links the unit
+    // to /dev/null and leaves the daemon running. A link that names no service
+    // unit is not followed, so syslog.service is still probed as itself.
+    let fs = clean_decoy();
+    fs.create_symlink(
+        Path::new("/dev/null"),
+        Path::new("/run/systemd/system/syslog.service"),
+    )
+    .unwrap();
+    set_unit_active(&fs, "syslog.service");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("a syslog daemon (syslog.service) is active"),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn the_syslog_alias_is_resolved_on_a_real_unit_directory() {
     // The alias as `systemctl enable` leaves it: a link in /etc/systemd/system
     // to the package's unit file. Relative here, so it resolves inside the
