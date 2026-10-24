@@ -57,7 +57,10 @@ namespace (`nails_core::test_support::Rerun`). The mount-query contract
 `kernel_semantics.rs` and the `kernel_tests` modules run this way in the normal
 `cargo test`; `just kernel-tests` runs only them and fails, instead of
 skipping, on a host without user namespaces (see
-[testing-strategy.md](testing-strategy.md)).
+[testing-strategy.md](testing-strategy.md)). The `init` command's
+`kernel_tests` also need a host that runs systemd as PID 1 and is not
+image-based, since the platform gate they pass reads both from the host; on
+any other host they skip with a message, under `just kernel-tests` too.
 
 One test needs real root: the whiteout and opaque-directory test in
 `privileged_mounts.rs` needs `trusted.*` xattrs, which a user namespace cannot
