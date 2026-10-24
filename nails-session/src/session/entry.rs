@@ -523,17 +523,19 @@ fn build(
     // hidden session's own changes to a symlink on a mount point's path can
     // lead elsewhere: an entry that resolves to another mount point there is
     // decided at that one too, so what the hidden systemd would mount there is
-    // masked or put in place as well.
+    // masked or put in place as well. One led into the hidden volume is
+    // masked: it still names a decoy filesystem.
     let elsewhere = resolved_elsewhere(
         &decoy_fstab,
         super::fstab::parse_in_root(&decoy_text, &nextroot),
     );
+    let more = decide_elsewhere(&elsewhere, &decoy_mounts, inputs.hidden_root)?;
     decided.add(
         paths,
         &layout,
         &mut plan,
         elsewhere,
-        &decoy_mounts,
+        more,
         inputs.hidden_root,
     )?;
     crate::cancel::checkpoint()?;
@@ -582,12 +584,13 @@ fn build(
         let hidden_text = super::fstab::read_in_root(&nextroot)
             .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
         let hidden_fstab = super::fstab::parse_in_root(&hidden_text, &nextroot);
+        let more = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
         decided.add(
             paths,
             &layout,
             &mut plan,
             hidden_fstab,
-            &decoy_mounts,
+            more,
             inputs.hidden_root,
         )?;
     } else if !inputs.nixos {
@@ -756,7 +759,22 @@ fn decide_fstab(
     mounts: &[MountEntry],
     hidden_root: &Path,
 ) -> Result<Vec<Decision>> {
-    let decisions = policy::decide_all(entries, mounts, hidden_root);
+    refuse_undecided(policy::decide_all(entries, mounts, hidden_root))
+}
+
+/// [`decide_fstab`] for the entries the next root resolves elsewhere
+/// ([`resolved_elsewhere`]), by [`policy::decide_redirected`]: one that a link
+/// leads into the hidden volume is masked, never left to the hidden systemd.
+fn decide_elsewhere(
+    entries: &[FstabEntry],
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+) -> Result<Vec<Decision>> {
+    refuse_undecided(policy::decide_all_redirected(entries, mounts, hidden_root))
+}
+
+/// `decisions`, or the refusal of the first entry that has no safe decision.
+fn refuse_undecided(decisions: Vec<Decision>) -> Result<Vec<Decision>> {
     if let Some(Decision::Refuse { target, reason }) = decisions
         .iter()
         .find(|d| matches!(d, Decision::Refuse { .. }))
@@ -789,18 +807,17 @@ struct Decided {
 }
 
 impl Decided {
-    /// Decide `entries` as well and put in place what they call for that is
-    /// not in place yet, recording it in `plan`.
+    /// Add `entries` and `more`, the decisions made for them, and put in place
+    /// what those call for that is not in place yet, recording it in `plan`.
     fn add(
         &mut self,
         paths: &Paths,
         layout: &Layout,
         plan: &mut Plan,
         entries: Vec<FstabEntry>,
-        mounts: &[MountEntry],
+        more: Vec<Decision>,
         hidden_root: &Path,
     ) -> Result<()> {
-        let more = decide_fstab(&entries, mounts, hidden_root)?;
         let done: Vec<PathBuf> = plan
             .policy_mounts
             .iter()

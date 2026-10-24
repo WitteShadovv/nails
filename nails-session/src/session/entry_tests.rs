@@ -328,6 +328,35 @@ fn only_the_entries_the_next_root_resolves_elsewhere_are_decided_again() {
     assert_eq!(elsewhere[0].file, Path::new("/home"));
     // Decided there, where the decoy mounts nothing: masked, so the hidden
     // systemd never mounts the decoy's disk read-write at /home.
-    let decisions = decide_fstab(&elsewhere, &[], Path::new("/mnt/data")).unwrap();
+    let decisions = decide_elsewhere(&elsewhere, &[], Path::new("/mnt/data")).unwrap();
     assert_eq!(policy::masked_units(&decisions), ["home.mount"]);
+}
+
+#[test]
+fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
+    // The decoy keeps /data and /media for disks it does not mount now. An
+    // earlier session moved both onto the hidden volume, replacing each
+    // directory with a link into it.
+    let decoy = parse_fstab(
+        "UUID=X /data ext4 defaults,nofail 0 2\n\
+         UUID=Y /media ext4 noauto,x-systemd.automount 0 2\n",
+    );
+    let in_nextroot = parse_fstab(
+        "UUID=X /mnt/data/data ext4 defaults,nofail 0 2\n\
+         UUID=Y /mnt/data/media ext4 noauto,x-systemd.automount 0 2\n",
+    );
+    let elsewhere = resolved_elsewhere(&decoy, in_nextroot);
+    assert_eq!(elsewhere.len(), 2, "{elsewhere:?}");
+    // The hidden volume's own rule would leave them to the bind of the
+    // volume, and the hidden systemd would mount the decoy's disks read-write
+    // inside it. They are masked there, the automount with its mount.
+    let decisions = decide_elsewhere(&elsewhere, &[], Path::new("/mnt/data")).unwrap();
+    assert_eq!(
+        policy::masked_units(&decisions),
+        [
+            "mnt-data-data.mount",
+            "mnt-data-media.mount",
+            "mnt-data-media.automount"
+        ]
+    );
 }

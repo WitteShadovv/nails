@@ -17,6 +17,9 @@
 //! - every masked mount entry is masked under the names systemd gives its
 //!   `.mount` and `.automount` units;
 //! - an entry bound or overlaid in the next root has a plain absolute path;
+//! - an entry that a link the hidden session left leads into the hidden
+//!   volume (decided as redirected) is masked under those same names, never
+//!   left to the bind of the volume;
 //! - every crypttab device that NAILS resolves is the node
 //!   systemd-cryptsetup-generator opens.
 
@@ -26,7 +29,7 @@ use libfuzzer_sys::fuzz_target;
 use nails_base::crypttab::parse_crypttab;
 use nails_fuzz::systemd::{UnitName, fstab_node_to_udev_node, unit_name_from_path};
 use nails_session::session::fstab::{FstabEntry, parse_fstab};
-use nails_session::session::policy::{Decision, decide, decide_all, masks};
+use nails_session::session::policy::{Decision, decide, decide_all, decide_redirected, masks};
 use nails_teardown::mountinfo::parse_mountinfo;
 use std::path::{Component, Path};
 
@@ -61,6 +64,18 @@ fuzz_target!(|data: &[u8]| {
         check(entry, &decision);
         for unit in decision.masked_units() {
             assert!(masked.contains(unit), "{unit}");
+        }
+        let redirected = decide_redirected(entry, &mounts, hidden);
+        check(entry, &redirected);
+        if entry.file.starts_with(hidden)
+            && plain_absolute(&entry.file)
+            && !entry.is_swap()
+            && !entry.is_virtual()
+        {
+            assert!(
+                matches!(redirected, Decision::Mask { .. }),
+                "{entry:?} led into the hidden volume: {redirected:?}"
+            );
         }
     }
 
@@ -109,16 +124,18 @@ fn check(entry: &FstabEntry, decision: &Decision) {
             }
         }
         Decision::ReadOnlyBind { target } | Decision::Overlay { target } => {
-            assert!(
-                target.is_absolute()
-                    && target
-                        .components()
-                        .all(|c| matches!(c, Component::RootDir | Component::Normal(_))),
-                "{target:?}"
-            );
+            assert!(plain_absolute(target), "{target:?}");
         }
         Decision::Leave { .. } | Decision::Refuse { .. } => {}
     }
+}
+
+/// Whether `path` is absolute and has no `.` or `..` in it.
+fn plain_absolute(path: &Path) -> bool {
+    path.is_absolute()
+        && path
+            .components()
+            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
 }
 
 /// `unit` is the unit systemd generates for `path` with `suffix`, wherever

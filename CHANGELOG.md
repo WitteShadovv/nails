@@ -206,7 +206,9 @@ of this changelog for that version becomes the release notes word for word, and
   hidden session no longer starts in emergency mode when the filesystem behind it is overlaid, and
   `nails check` reports the decision at the real path. An entry that the hidden session's own files
   resolve to another path than the decoy's (a symlink on the way that a session replaced) is also
-  decided at that path, so the hidden systemd cannot mount the decoy's filesystem there.
+  decided at that path, so the hidden systemd cannot mount the decoy's filesystem there. A path that
+  such a link leads into the hidden volume is masked, where the hidden volume's own entries are left
+  to its bind.
 - Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, metalog,
   auditd) whether it runs as a service unit, a systemd template instance (such as `syslog-ng@default`)
   or a bare process, so a logging daemon on the decoy can no longer slip past activation. It also
