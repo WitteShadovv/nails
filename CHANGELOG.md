@@ -84,8 +84,9 @@ of this changelog for that version becomes the release notes word for word, and
   on can destroy a hidden volume inside it. A LUKS2 mapping with runtime or stored discards is
   included, and a stack that rests on RAM-only zram devices alone is excepted: a zram device
   elsewhere in a stack that also rests on a disk (the cache of a cached logical volume, say)
-  excepts nothing. Every activation runs the refusal, like the decoy-entry and decoy-flake
-  refusals, and it names no device-mapper node.
+  excepts nothing, and neither does a stack the check could not read to its end. Every activation
+  runs the refusal, like the decoy-entry and decoy-flake refusals, and it names no device-mapper
+  node.
 - A derivative of a supported distribution — one whose os-release `ID_LIKE` names `debian` or
   `ubuntu`, such as Linux Mint — now runs with a warning that NAILS has not tested it, instead of
   being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
