@@ -294,7 +294,12 @@ impl Model {
                 Some("still holds an active session"),
                 Some("to reset the record"),
             ),
-            Spot::Decoy if self.record == Record::Corrupt => (None, Some("verify")),
+            // Wherever the machine is, an unreadable record is no guide for
+            // the next activation: unless the place needs the operator first
+            // (the interrupted entry and the hidden root without a way back
+            // above), status points at verify, also while an entry is under
+            // way and in the hidden root.
+            _ if self.record == Record::Corrupt => (None, Some("verify")),
             _ => (None, None),
         };
         Expected {
