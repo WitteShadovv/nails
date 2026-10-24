@@ -271,9 +271,12 @@ Where the files leave the account in doubt, it is listed:
 In these cases the list may name an autologin that does not happen, rather
 than leave out one that does. Some it can leave out: only the first seat,
 `seat0`, is judged; a file that is not valid UTF-8 is skipped, although the
-display managers read it; GDM's runtime configuration in `/run`
-(`/run/gdm/custom.conf` upstream), which GDM reads before its own file, is not
-read; and no display manager but these four is read.
+display managers read it; GDM's timed login (`TimedLoginEnable`, `TimedLogin`
+and `TimedLoginDelay` in `[daemon]`), with which the login screen logs the
+account in once the delay has passed, at every switch as well, is not read;
+GDM's runtime configuration in `/run` (`/run/gdm/custom.conf` upstream), which
+GDM reads before its own file, is not read; and no display manager but these
+four is read.
 
 `nails check` lists the inherited entries that need review, and the
 `inherited-autostart` pre-flight check warns about them; activation shows the
