@@ -6,6 +6,7 @@
 //! signalled.
 
 use super::*;
+use crate::test_support::write_executable;
 use crate::whole_root::plan::sample;
 
 fn host(dir: &Path) -> Host {
@@ -134,19 +135,14 @@ impl Interrupted {
         let modprobe = dir.path().join("modprobe");
         std::fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
         let systemctl = dir.path().join("systemctl");
-        std::fs::write(
+        write_executable(
             &systemctl,
             format!(
                 "#!/bin/sh\necho \"$@\" >> {}\n",
                 dir.path().join("systemctl-calls").display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            &systemctl,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
+            0o755,
+        );
         let mut plan = sample();
         plan.owner = None;
         plan.backend = Vec::new();

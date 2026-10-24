@@ -8,6 +8,7 @@
 
 use super::*;
 use crate::mountinfo::parse_mountinfo;
+use crate::test_support::write_executable;
 use crate::whole_root::plan::{Arm, sample};
 use crate::whole_root::runtime_units::RuntimeUnit;
 use std::fs;
@@ -52,8 +53,7 @@ impl World {
     fn init_in_nextroot(&self, init: &Path) {
         let path = self.nextroot().join(init.strip_prefix("/").unwrap());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&path, "", 0o755);
     }
     fn env(&self, mounted: bool, now: u64) -> Env {
         let table = if mounted {
@@ -366,7 +366,7 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     plan.failed_at_entry = vec!["decoy-before.service".to_string()];
     world.write_plan(&plan);
     let systemctl = world.dir.path().join("systemctl");
-    fs::write(
+    write_executable(
         &systemctl,
         format!(
             "#!/bin/sh\nif [ \"$1\" = reset-failed ]; then echo \"$@\" >> {calls}; exit 0; fi\n\
@@ -388,9 +388,8 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
             utab = r.join("mount/utab").display(),
             calls = calls.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     let mut env = world.env(true, 1_000);
     env.systemctl = Some(systemctl);
 

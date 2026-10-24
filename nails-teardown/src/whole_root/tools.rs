@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn the_wait_ends_once_only_our_jobs_are_left_and_times_out_otherwise() {
-        use std::os::unix::fs::PermissionsExt;
+        use crate::test_support::write_executable;
         assert_eq!(
             job_units("12 late.service stop running\n7 soft-reboot.target start waiting\n"),
             ["late.service", "soft-reboot.target"]
@@ -321,7 +321,7 @@ mod tests {
         // Busy for the first two calls, then only our own jobs.
         let count = dir.path().join("calls");
         let tool = dir.path().join("systemctl");
-        std::fs::write(
+        write_executable(
             &tool,
             format!(
                 "#!/bin/sh\nn=$(cat {c} 2>/dev/null || echo 0); echo $((n + 1)) > {c}\n\
@@ -329,16 +329,18 @@ mod tests {
                  [ \"$n\" -lt 2 ] && echo '12 late.service stop running'\nexit 0\n",
                 c = count.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            0o755,
+        );
         let ours = ["soft-reboot.target", "systemd-soft-reboot.service"];
         assert!(wait_for_other_jobs(&tool, &ours, TOOL_BUDGET));
         assert_eq!(std::fs::read_to_string(&count).unwrap().trim(), "3");
 
         let busy = dir.path().join("busy");
-        std::fs::write(&busy, "#!/bin/sh\necho '12 late.service stop running'\n").unwrap();
-        std::fs::set_permissions(&busy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(
+            &busy,
+            "#!/bin/sh\necho '12 late.service stop running'\n",
+            0o755,
+        );
         let start = Instant::now();
         assert!(!wait_for_other_jobs(
             &busy,

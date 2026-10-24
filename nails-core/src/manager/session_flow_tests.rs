@@ -12,14 +12,13 @@
 use super::*;
 use crate::nixos::NixOSBuilder;
 use crate::platform::FakePlatform;
-use crate::test_support::{Rerun, ScratchTmpfs};
+use crate::test_support::{Rerun, ScratchTmpfs, write_executable};
 use crate::{Config, PlatformState, RealFilesystem, StateFile};
 use nails_teardown::mountinfo::parse_mountinfo;
 use nails_teardown::whole_root::plan::{
     Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, RootSide, Tools,
 };
 use std::cell::{Cell, RefCell};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 // The model-based test of the session flow and its reconciliation, on the
@@ -848,9 +847,11 @@ fn fhs_decoy() -> ScratchTmpfs {
         "/dev/vda2 / ext4 defaults 0 1\n",
     )
     .unwrap();
-    let init = decoy.path().join("usr/lib/systemd/systemd");
-    std::fs::write(&init, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&init, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(
+        &decoy.path().join("usr/lib/systemd/systemd"),
+        "#!/bin/sh\n",
+        0o755,
+    );
     decoy
 }
 

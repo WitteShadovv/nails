@@ -4,12 +4,12 @@
 //! Unit tests for the next-root primitives that need no privileges.
 
 use super::*;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use crate::test_support::write_executable;
+use std::os::unix::fs::symlink;
 
 fn executable(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(path, "#!/bin/sh\n", 0o755);
 }
 
 #[test]

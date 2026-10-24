@@ -27,8 +27,9 @@ path = "src/lib.rs"
 test-hooks = []
 # Exposes the test fixtures (`Config::test_default`, `MockFilesystem`, the
 # real-kernel test support and the captured kernel fixtures) to the test code
-# of the crates above. Off by default.
-test-support = []
+# of the crates above, and with them nails-teardown's test helpers, which
+# `test_support` re-exports. Off by default.
+test-support = ["nails-teardown/test-support"]
 
 [dependencies]
 thiserror = { workspace = true }

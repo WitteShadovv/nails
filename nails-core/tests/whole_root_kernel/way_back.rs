@@ -10,7 +10,7 @@
 //! root.
 
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, ScratchTmpfs};
+use nails_core::test_support::{Rerun, ScratchTmpfs, write_executable};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::decoy_mounts::{self, Record, Why};
 use nails_teardown::whole_root::plan::{
@@ -20,7 +20,6 @@ use nails_teardown::whole_root::ret::{self, ReturnError};
 use nails_teardown::whole_root::transition::{self, Env, Outcome};
 use nails_teardown::whole_root::{carry, nextroot};
 use nix::mount::MsFlags;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 fn bind(source: &Path, target: &Path) {
@@ -62,9 +61,11 @@ impl Decoy {
             root.mkdir(dir);
         }
         std::fs::write(root.path().join("etc/os-release"), "ID=decoy\n").unwrap();
-        let init = root.path().join("usr/lib/systemd/systemd");
-        std::fs::write(&init, "#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&init, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(
+            &root.path().join("usr/lib/systemd/systemd"),
+            "#!/bin/sh\n",
+            0o755,
+        );
         std::fs::write(root.path().join("nix/store/aaa-system"), "decoy").unwrap();
         let store = root.path().join("nix/store");
         bind(&store, &store);
