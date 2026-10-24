@@ -63,6 +63,18 @@ let
     # mounted a second time to test it; the enforcing variant answers whether
     # it mounts and reads under enforcing.
     dump("ninep",          "findmnt -t 9p; f=$(find /nix/.ro-store -maxdepth 3 -type f -print -quit); if [ -n \"$f\" ] && head -c 64 \"$f\" >/dev/null; then echo read-ok; else echo read-failed; fi")
+
+    # Last, a plain soft-reboot with no NAILS involved: the units that fail
+    # after it are the ones the way back has to mask, since every way back is
+    # a soft-reboot, and a cold boot cannot show them.
+    import sys
+    sys.path.insert(0, "${../e2e-tests/py}")
+    from nails_e2e import session  # noqa: E402
+
+    session.follow_soft_reboot(vm, "systemctl soft-reboot", "probe-soft-reboot")
+    vm.wait_for_unit("multi-user.target")
+    dump("soft-reboot-failed-units", "systemctl --failed --no-legend")
+    dump("soft-reboot-boot-id",      "cat /proc/sys/kernel/random/boot_id; systemctl show -p SoftRebootsCount --value")
   '';
 
   probeFor =

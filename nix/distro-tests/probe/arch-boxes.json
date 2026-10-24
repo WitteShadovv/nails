@@ -39,6 +39,7 @@
       "sources": []
     },
     "failedBootUnits": [],
+    "failedUnitsAfterSoftReboot": [],
     "updatedbPrunePaths": [],
     "avcs": [],
     "ninePUnderEnforcing": null,
