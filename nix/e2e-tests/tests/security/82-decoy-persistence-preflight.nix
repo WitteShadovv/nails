@@ -6,7 +6,8 @@
 # activation must fail closed unless the operator explicitly accepts the risk.
 # This node forces journald back to persistent storage (the standard decoy
 # models an amnesic one) and runs rsyslogd (as syslog.service, the NixOS unit
-# name) and auditd.
+# name) and auditd. The refusal names the daemon, rsyslog, whatever unit it
+# runs under.
 #
 #   1. `nails check` and `nails activate` both refuse, naming each persistent
 #      sink and the override; the refused activation leaves the plain decoy
@@ -54,7 +55,7 @@ in
     REFUSAL = [
         "persistent",
         "Storage=volatile",
-        "syslog.service",
+        "rsyslog is active",
         "auditd",
         "--allow-persistent-decoy",
     ]
