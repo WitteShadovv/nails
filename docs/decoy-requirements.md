@@ -65,14 +65,19 @@ NAILS reads journald's `Storage=` the way journald does. The main
 systemd stops reading them at the first line that is not valid UTF-8, unless
 it is a comment, so a setting below that line or in a later drop-in counts for
 nothing. Keep these files in UTF-8. When no file sets `Storage=`, the
-`journal.storage` credential decides, from systemd 256 on: NAILS reads the copy
-journald received, which only root can read, and journald accepts only the
-exact bytes, so write it with `printf volatile`, not `echo volatile`, which
-adds a newline. Failing both, the built-in default applies: `auto` below
+`journal.storage` credential decides, from systemd 256 on. journald accepts
+only the exact bytes, so write it with `printf volatile`, not `echo volatile`,
+which adds a newline. Failing both, the built-in default applies: `auto` below
 systemd 259, which persists when `/var/log/journal` exists on disk, and from
 259 `persistent`, or the default the distribution's own
 `/usr/lib/systemd/journald.conf` documents. A systemd whose version cannot be
 read counts as persistent.
+
+NAILS reads the credential from the copy journald received, in
+`/run/credentials/systemd-journald.service/`, which only root can read. An
+unprivileged `nails check` or `nails status` cannot read it, so there the
+built-in default decides, and a journal that only the credential makes
+volatile can count as persistent. Run them with sudo.
 
 ### Warn (surfaced, never blocking)
 
