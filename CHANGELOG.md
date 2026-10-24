@@ -296,9 +296,9 @@ of this changelog for that version becomes the release notes word for word, and
   wtmpdb 0.73.0 still named the boot row `soft-reboot` once the decoy had been up for five minutes,
   and before that it dated a `reboot` row to the decoy's cold boot, which `wtmpdb last` lists as a
   crash. The way back now starts the writer in a time namespace whose boot clock starts at the
-  switch, so it writes the row a power cycle writes and `soft-reboot` never reaches the disk. This
-  has not yet been verified in a VM: until a release says it has, keep ending Debian 13 sessions
-  with `nails deactivate --poweroff` (or `nails emergency --poweroff`).
+  switch, so it writes the row a power cycle writes and `soft-reboot` never reaches the disk. The
+  cross-distro records test checks this in a VM on Debian 13, with the way back past five minutes
+  of uptime.
 - A backdated classic-`wtmp` boot record (systemd 255 and earlier, as on Ubuntu 24.04) is now
   corrected to the time of the switch, before anyone can log in, instead of the moment the
   correcting step ran, which dated the boot after the first records of its own start. The step no
