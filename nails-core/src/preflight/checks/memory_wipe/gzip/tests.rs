@@ -9,6 +9,12 @@ use super::*;
 /// laid out as Kconfig writes a `.config`.
 const CONFIG_GZ: &[u8] = include_bytes!("../fixtures/config.gz");
 
+/// A larger config in the same form, 64230 bytes in 2258 lines. GNU gzip ends
+/// a block whenever its buffer of symbols fills, so a config of real size is
+/// several blocks: this one is four dynamic-Huffman blocks, and 1331 of its
+/// back-references reach into an earlier block.
+const CONFIG_BLOCKS_GZ: &[u8] = include_bytes!("../fixtures/config-blocks.gz");
+
 /// `stored\n` in a stored block (zlib, level 0).
 const STORED: &[u8] = &[
     0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x03, 0x01, 0x07, 0x00, 0xF8, 0xFF, 0x73,
@@ -60,6 +66,20 @@ fn decodes_what_gzip_writes_for_a_kernel_config() {
     assert!(text.contains("\n# CONFIG_INIT_ON_FREE_DEFAULT_ON is not set\n"));
     assert!(text.contains("\nCONFIG_PAGE_POISONING=y\n"));
     assert!(text.ends_with("# end of Kernel hacking\n"));
+}
+
+#[test]
+fn decodes_a_config_that_spans_several_blocks() {
+    // The first block is a dynamic one that is not the last: BFINAL clear,
+    // BTYPE 2.
+    assert_eq!(CONFIG_BLOCKS_GZ[10] & 0b111, 0b100);
+    let config = decompress(CONFIG_BLOCKS_GZ).expect("the fixture decodes");
+    assert_eq!(config.len(), 64230);
+    let text = String::from_utf8(config).expect("a config is text");
+    assert_eq!(text.lines().count(), 2258);
+    assert!(text.starts_with("#\n# Automatically generated file; DO NOT EDIT.\n"));
+    assert!(text.contains("\n# CONFIG_INIT_ON_FREE_DEFAULT_ON is not set\n"));
+    assert!(text.ends_with("\nCONFIG_PAGE_POISONING=y\n# end of Kernel hacking\n"));
 }
 
 #[test]
