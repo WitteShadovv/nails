@@ -1,0 +1,25 @@
+Package: libcryptsetup12
+Status: install ok installed
+Priority: optional
+Architecture: amd64
+Multi-Arch: same
+Source: cryptsetup
+Version: 2:2.6.1-4
+Description: disk encryption support - shared library
+ libcryptsetup provides an interface.
+
+Package: cryptsetup-bin
+Status: install ok triggers-pending
+Priority: optional
+Section: admin
+Installed-Size: 470
+Architecture: amd64
+Source: cryptsetup
+Version: 2:2.8.4-1ubuntu1
+Config-Version: 2:1.0.0-1
+Description: disk encryption support - command line tools
+ Cryptsetup provides an interface.
+
+Package: cryptsetup-nuke-password
+Status: install ok installed
+Version: 5

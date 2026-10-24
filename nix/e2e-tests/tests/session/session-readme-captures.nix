@@ -6,9 +6,10 @@
 # docs/decoy-requirements.md asks of a clean decoy: a closed lid locks the
 # screen instead of suspending, systemd-coredump keeps no core on the disk, and
 # the static binary sits on the hidden volume, off the decoy's PATH, and runs by
-# its full path through sudo, as the README's quick start shows. On that decoy
-# `check` and `activate` print no warning; a warning fails the test, so the
-# captures cannot show one that only the test VM causes.
+# its full path through sudo, as the README's quick start shows. Its kernel
+# zeroes freed memory, as docs/operator-guide.md advises. On that decoy `check`
+# and `activate` print no warning; a warning fails the test, so the captures
+# cannot show one that only the test VM causes.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -32,7 +33,13 @@ in
       # intel-iommu needs the q35 machine the test framework already uses (see
       # session-disk-mounts' pcie-root-port) and must precede the PCI devices.
       virtualisation.qemu.options = [ "-device intel-iommu" ];
-      boot.kernelParams = [ "intel_iommu=on" ];
+      boot.kernelParams = [
+        "intel_iommu=on"
+        # docs/operator-guide.md, "Cold-boot and running-memory attacks": the
+        # decoy kernel zeroes freed memory. The NixOS kernel does not by
+        # default, which the memory-wipe preflight reads from /proc/config.gz.
+        "init_on_free=1"
+      ];
 
       # docs/decoy-requirements.md, "Suspend and the lid switch".
       services.logind.settings.Login = {

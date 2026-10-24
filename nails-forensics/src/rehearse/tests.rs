@@ -239,25 +239,34 @@ fn a_copy_on_write_decoy_root_is_marked_a_blind_spot() {
 }
 
 #[test]
-fn an_f2fs_decoy_root_is_marked_a_blind_spot() {
-    // An f2fs root with plain mount options is a blind spot all the same: its
-    // on-disk compression feature and a `chattr +c` flag can compress a file
-    // with nothing shown in the mount options, so a raw scan proves nothing.
+fn a_mounted_f2fs_is_judged_by_its_mount_options() {
+    // The kernel lists compress_algorithm= and compress_log_size= among the
+    // options of every mounted f2fs made with the compression feature, so the
+    // root, made with it, is a blind spot. /home was made without it: the
+    // kernel refuses the compression flag there, and a clean scan is clean.
     let mounts = parse_mountinfo(
-        "1 0 8:1 / / rw,relatime - f2fs /dev/sda2 rw,background_gc=on\n\
-         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
+        "1 0 8:2 / / rw,relatime - f2fs /dev/sda2 rw,lazytime,background_gc=on,discard,\
+         compress_algorithm=lz4,compress_log_size=2,compress_mode=fs,alloc_mode=default\n\
+         2 1 8:3 / /home rw,relatime - f2fs /dev/sda3 rw,lazytime,background_gc=on,discard,\
+         flush_merge,extent_cache,mode=adaptive,alloc_mode=default\n\
+         3 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
     );
     let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
-    let root = targets
-        .iter()
-        .find(|t| t.device.as_path() == Path::new("/dev/sda2"))
-        .expect("the f2fs root is a target");
+    let target = |device: &str| {
+        targets
+            .iter()
+            .find(|t| t.device.as_path() == Path::new(device))
+            .unwrap_or_else(|| panic!("{device} is a target: {targets:?}"))
+    };
     assert!(
-        root.blind_spot
+        target("/dev/sda2")
+            .blind_spot
             .as_deref()
-            .is_some_and(|reason| reason.contains("f2fs")),
-        "{root:?}"
+            .is_some_and(|reason| reason.contains("compresses file contents")),
+        "{:?}",
+        target("/dev/sda2")
     );
+    assert_eq!(target("/dev/sda3").blind_spot, None);
 }
 
 #[test]
@@ -484,26 +493,54 @@ fn an_offline_image_on_a_copy_on_write_filesystem_is_classified_from_its_superbl
     );
 }
 
+/// The start of an f2fs superblock (at 1 KiB) as mkfs.f2fs writes it for
+/// `blocks` blocks of 4 KiB, with the compression feature when asked.
+fn f2fs_superblock(blocks: u64, compression: bool) -> Vec<u8> {
+    let mut superblock = vec![0u8; 0x888];
+    superblock[..4].copy_from_slice(&[0x10, 0x20, 0xF5, 0xF2]);
+    superblock[0x10..0x14].copy_from_slice(&12u32.to_le_bytes());
+    superblock[0x24..0x2C].copy_from_slice(&blocks.to_le_bytes());
+    // extra_attr, which compression needs, and the compression feature.
+    let features: u32 = if compression { 0x0008 | 0x2000 } else { 0x0008 };
+    superblock[0x884..].copy_from_slice(&features.to_le_bytes());
+    superblock
+}
+
 #[test]
 fn an_offline_image_on_an_f2fs_filesystem_is_classified_from_its_superblock() {
     let dir = tempfile::tempdir().unwrap();
-    // f2fs superblock magic 0x10 0x20 0xF5 0xF2 at offset 0x400.
-    let f2fs = image(
+    // Made with the compression feature: the files flagged for it are stored
+    // compressed, so a clean scan is not a clean result.
+    let compressing = image(
         &dir,
-        "decoy-root.img",
-        &[(0x400, &[0x10, 0x20, 0xF5, 0xF2])],
+        "compressing.img",
+        &[(0x400, &f2fs_superblock(16384, true))],
     );
-
-    let report = scan(TOKEN, &[ScanTarget::new(f2fs)], None).unwrap();
-
+    let report = scan(TOKEN, &[ScanTarget::new(compressing)], None).unwrap();
     assert!(report.inconclusive());
     assert!(
         report.devices[0]
             .blind_spot
             .as_deref()
-            .is_some_and(|reason| reason.contains("f2fs")),
+            .is_some_and(|reason| reason.contains("f2fs made with the compression feature")),
         "{:?}",
         report.devices[0].blind_spot
+    );
+
+    // Made without it, and whole: every file is stored verbatim.
+    let plain = image(
+        &dir,
+        "plain.img",
+        &[(0x400, &f2fs_superblock(16384, false))],
+    );
+    assert_eq!(verdict(plain), None);
+
+    // Made without it, but cut short: the rest was never read.
+    let cut = image(&dir, "cut.img", &[(0x400, &f2fs_superblock(16385, false))]);
+    let reason = verdict(cut).expect("a cut-short f2fs is a blind spot");
+    assert!(
+        reason.contains("the f2fs filesystem here spans 67112960 bytes"),
+        "{reason}"
     );
 }
 
@@ -624,15 +661,34 @@ fn a_bcachefs_image_is_classified_from_its_superblock() {
 fn an_f2fs_superblock_wins_over_a_stale_iso9660_descriptor() {
     // mkfs.f2fs leaves an older ISO9660 descriptor at 32 KiB in place on a
     // device without discard, and that descriptor comes first in the signature
-    // order. The f2fs is found all the same.
+    // order. The f2fs is found all the same, and judged as an f2fs.
     let dir = tempfile::tempdir().unwrap();
-    let f2fs = image(
+    let compressing = image(
         &dir,
-        "f2fs.img",
-        &[(0x400, &[0x10, 0x20, 0xF5, 0xF2]), (0x8001, b"CD001")],
+        "compressing.img",
+        &[(0x400, &f2fs_superblock(16384, true)), (0x8001, b"CD001")],
     );
-    let reason = verdict(f2fs).expect("the f2fs is a blind spot");
+    let reason = verdict(compressing).expect("the f2fs is a blind spot");
     assert!(reason.contains("f2fs"), "{reason}");
+
+    // Without the compression feature it is verbatim, and its own size, not
+    // the stale descriptor's, decides whether the image holds all of it.
+    let plain = image(
+        &dir,
+        "plain.img",
+        &[(0x400, &f2fs_superblock(16384, false)), (0x8001, b"CD001")],
+    );
+    assert_eq!(verdict(plain), None);
+    let cut = image(
+        &dir,
+        "cut.img",
+        &[(0x400, &f2fs_superblock(32768, false)), (0x8001, b"CD001")],
+    );
+    let reason = verdict(cut).expect("a cut-short f2fs is a blind spot");
+    assert!(
+        reason.contains("the f2fs filesystem here spans"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -746,18 +802,23 @@ fn an_image_that_ends_before_its_filesystem_is_not_checked() {
 #[test]
 fn a_partition_its_filesystem_outgrows_is_named() {
     use crate::forensic::layout::tests::{mbr_image, put};
-    // The partition is 16 MiB from 1 MiB in, but the ext4 in it records 32 MiB.
-    let dir = tempfile::tempdir().unwrap();
-    let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768)]);
-    put(&mut file, (1 << 20) + 0x400, &ext4_superblock(8192));
-    file.sync_all().unwrap();
+    // The partition is 16 MiB from 1 MiB in, but the ext4 in it records 32
+    // MiB, or a single 4 KiB block more than the partition holds.
+    for (blocks, spans) in [(8192, 33_554_432), (4097, 16_781_312)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768)]);
+        put(&mut file, (1 << 20) + 0x400, &ext4_superblock(blocks));
+        file.sync_all().unwrap();
 
-    let reason = verdict(path).expect("a cut-short partition is a blind spot");
-    assert!(
-        reason.starts_with("partition 1: the ext2/3/4 filesystem here spans 33554432 bytes"),
-        "{reason}"
-    );
-    assert!(reason.contains("only 16777216 of them"), "{reason}");
+        let reason = verdict(path).expect("a cut-short partition is a blind spot");
+        assert!(
+            reason.starts_with(&format!(
+                "partition 1: the ext2/3/4 filesystem here spans {spans} bytes"
+            )),
+            "{reason}"
+        );
+        assert!(reason.contains("only 16777216 of them"), "{reason}");
+    }
 }
 
 #[test]

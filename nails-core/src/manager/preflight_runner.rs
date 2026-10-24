@@ -214,8 +214,10 @@ pub fn build_registry<F: Filesystem>(
     ));
 
     // Check-time advice, keyed on the installed cryptsetup version: it cannot
-    // open a VeraCrypt volume made with Argon2id, so one must use PBKDF2.
-    registry.add_check(Box::new(crate::preflight::CryptsetupArgon2idCheck));
+    // open a VeraCrypt volume made with Argon2id, so one must use PBKDF2. The
+    // version is read from package metadata, never by running cryptsetup,
+    // whose access time is a catalogued tell.
+    registry.add_check(Box::new(crate::preflight::CryptsetupArgon2idCheck::new()));
 
     let layout = crate::session::Layout::new(&hidden_root);
     let storage_check = StorageReadinessCheck::new(

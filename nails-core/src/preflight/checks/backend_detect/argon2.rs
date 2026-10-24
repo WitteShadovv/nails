@@ -18,6 +18,25 @@
 //! lasts for years on the LTS decoys, which do not get a newer cryptsetup once
 //! released. `docs/backends.md` keeps the dated note with the version table.
 //!
+//! # Reading the version without a trace
+//!
+//! The check never runs `cryptsetup --version`, and never reads the binary.
+//! Running it would read the decoy's `cryptsetup` and, under the default
+//! `relatime`, stamp its access time with the time of every `nails check` and
+//! activation: the very tell the residue catalog lists for encryption tooling
+//! (`backend-tooling`, "a cryptsetup binary read recently says encrypted
+//! volumes were opened"), and one that would undo the advice to run the backend
+//! tools from another machine or a live medium. The version comes instead from
+//! what names it: the store path the NixOS system profile links `cryptsetup`
+//! to, whose name carries the version (resolving the link reads no file, and
+//! its links lie in `/run` and in the store, which NixOS mounts read-only), or
+//! the package database, dpkg's `status` or pacman's `local` directory, read
+//! with `O_NOATIME`. The kernel grants `O_NOATIME` on a file the caller does
+//! not own only to root, so a check that is not running as root skips the
+//! advice rather than read the database the plain way and stamp its access
+//! time. A host whose version none of these names (rpm's database, which is
+//! not a format read here, or a cryptsetup built by hand) skips it as well.
+//!
 //! # Keeping it current
 //!
 //! Two constants record what has been reviewed: [`NEWEST_REVIEWED_CRYPTSETUP`]
@@ -28,16 +47,47 @@
 //! and the dated note.
 
 use crate::preflight::{CheckResult, PreFlightCheck};
-use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 use crate::{Filesystem, Result};
 use std::fmt;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 
 /// Where the per-backend guidance lives, named in the advice.
 const BACKENDS_DOC: &str = "docs/backends.md";
 
-/// How long `cryptsetup --version` may run: a local tool that prints and exits.
-const CRYPTSETUP_VERSION_BUDGET: Duration = Duration::from_secs(10);
+/// The NixOS system profile's `cryptsetup` link, relative to the root. It
+/// points into the store path of the package, whose name carries the version.
+const NIXOS_PROFILE_CRYPTSETUP: &str = "run/current-system/sw/bin/cryptsetup";
+
+/// The Nix store, relative to the root.
+const NIX_STORE: &str = "nix/store";
+
+/// dpkg's record of every package (Debian, Ubuntu), relative to the root.
+const DPKG_STATUS: &str = "var/lib/dpkg/status";
+
+/// The Debian package that ships the `cryptsetup` binary.
+const DPKG_PACKAGE: &str = "cryptsetup-bin";
+
+/// pacman's database of installed packages (Arch), relative to the root: one
+/// `<name>-<version>-<release>` directory each.
+const PACMAN_LOCAL: &str = "var/lib/pacman/local";
+
+/// The name of the cryptsetup package in the Nix store and in pacman's
+/// database.
+const PACKAGE: &str = "cryptsetup";
+
+/// The dpkg package states in which a package's files are on disk.
+const DPKG_FILES_PRESENT: &[&str] = &[
+    "installed",
+    "triggers-pending",
+    "triggers-awaited",
+    "half-configured",
+    "unpacked",
+];
+
+/// Why the advice is skipped on a check that is not running as root.
+const UNPRIVILEGED_SKIP: &str = "Skipping the VeraCrypt Argon2id advice: only a check running as \
+     root reads the installed cryptsetup version, from the package database, without updating \
+     its access time";
 
 /// The newest cryptsetup release reviewed against this advice: 2.8.8
 /// (September 2026), whose `lib/tcrypt/tcrypt.c` has no Argon2id support. Bump
@@ -160,7 +210,9 @@ pub fn argon2id_advice(version: Option<CryptsetupVersion>) -> CheckResult {
 fn advice(version: Option<CryptsetupVersion>, first: Option<CryptsetupVersion>) -> CheckResult {
     match version {
         None => CheckResult::Pass(
-            "Skipping the VeraCrypt Argon2id advice: could not read the cryptsetup version".into(),
+            "Skipping the VeraCrypt Argon2id advice: could not read the installed cryptsetup \
+             version from the NixOS system profile or the dpkg or pacman database"
+                .into(),
         ),
         Some(version) if opens_argon2id_tcrypt(version, first) => CheckResult::Pass(format!(
             "cryptsetup {version} can open a VeraCrypt volume whose header key uses Argon2id"
@@ -175,21 +227,109 @@ fn advice(version: Option<CryptsetupVersion>, first: Option<CryptsetupVersion>) 
     }
 }
 
-/// Read the installed cryptsetup version with `cryptsetup --version`. Any
-/// failure (tool absent, non-zero exit, unparsable output, a test runtime that
-/// refuses host commands) yields `None`, which the advice treats as "unknown".
-fn detect_version(runner: &dyn ProcessRunner) -> Option<CryptsetupVersion> {
-    let command = ProcessCommand::tool("cryptsetup")
-        .arg("--version")
-        .deadline(CRYPTSETUP_VERSION_BUDGET);
-    let (ok, stdout, _) = runner.run_text(&command).ok()?;
-    ok.then(|| parse_cryptsetup_version(&stdout)).flatten()
+/// The installed cryptsetup's version under `root`, from what names it without
+/// running or reading the binary (see the [module docs](self)): the NixOS
+/// system profile's link, which comes first as it does in the tool search
+/// path, then dpkg's database, then pacman's. `None` when none of them names
+/// it. Every one of them is whatever the decoy's disk holds; the
+/// `cryptsetup_version` fuzz target drives this with hostile ones.
+pub fn installed_cryptsetup_version<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+) -> Option<CryptsetupVersion> {
+    nix_profile_version(fs, root)
+        .or_else(|| {
+            let status = fs.read_file_bytes(&root.join(DPKG_STATUS)).ok()?;
+            dpkg_version(&String::from_utf8_lossy(&status))
+        })
+        .or_else(|| pacman_version(fs, root))
+}
+
+/// The version in the name of the store path the NixOS system profile's
+/// `cryptsetup` resolves into (`/nix/store/<hash>-cryptsetup-2.8.6-bin/...`).
+fn nix_profile_version<F: Filesystem>(fs: &F, root: &Path) -> Option<CryptsetupVersion> {
+    let target = fs.canonicalize(&root.join(NIXOS_PROFILE_CRYPTSETUP)).ok()?;
+    let store_path = target.strip_prefix(root.join(NIX_STORE)).ok()?;
+    let name = store_path.components().next()?.as_os_str().to_str()?;
+    let (_hash, package) = name.split_once('-')?;
+    package_version(package)
+}
+
+/// The version of a `cryptsetup-<version>[-<suffix>]` package name, as the Nix
+/// store and pacman write it; `None` for another package's name, such as
+/// `cryptsetup-nuke-password-1.0-1`.
+fn package_version(name: &str) -> Option<CryptsetupVersion> {
+    let version = name.strip_prefix(PACKAGE)?.strip_prefix('-')?;
+    if !version.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    parse_cryptsetup_version(without_epoch(version))
+}
+
+/// A package version without the epoch Debian and pacman put before a colon
+/// (`2:2.7.5-2` is upstream `2.7.5`).
+fn without_epoch(version: &str) -> &str {
+    version.split_once(':').map_or(version, |(_, rest)| rest)
+}
+
+/// The version of [`DPKG_PACKAGE`] that dpkg's `status` file records with its
+/// files on disk; `None` when it records none.
+fn dpkg_version(status: &str) -> Option<CryptsetupVersion> {
+    status.split("\n\n").find_map(|stanza| {
+        let field = |name: &str| {
+            stanza.lines().find_map(|line| {
+                line.strip_prefix(name)
+                    .and_then(|rest| rest.strip_prefix(':'))
+                    .map(str::trim)
+            })
+        };
+        let present = field("Status")
+            .and_then(|status| status.split_whitespace().next_back())
+            .is_some_and(|state| DPKG_FILES_PRESENT.contains(&state));
+        if field("Package") != Some(DPKG_PACKAGE) || !present {
+            return None;
+        }
+        parse_cryptsetup_version(without_epoch(field("Version")?))
+    })
+}
+
+/// The version in the name of pacman's database entry for cryptsetup
+/// (`cryptsetup-2.8.1-1`).
+fn pacman_version<F: Filesystem>(fs: &F, root: &Path) -> Option<CryptsetupVersion> {
+    fs.list_directory(&root.join(PACMAN_LOCAL))
+        .ok()?
+        .iter()
+        .filter_map(|entry| entry.file_name()?.to_str())
+        .find_map(package_version)
 }
 
 /// Pre-flight advice (never a failure) about cryptsetup's Argon2id limitation,
 /// keyed on the installed cryptsetup version.
-#[derive(Debug, Clone, Default)]
-pub struct CryptsetupArgon2idCheck;
+#[derive(Debug, Clone)]
+pub struct CryptsetupArgon2idCheck {
+    /// The root of the system whose cryptsetup is asked about; `/` outside
+    /// tests.
+    root: PathBuf,
+    /// Whether the check runs as root, the only caller the kernel lets read the
+    /// package database with `O_NOATIME`.
+    privileged: bool,
+}
+
+impl CryptsetupArgon2idCheck {
+    /// The check of the running system, as the current process.
+    pub fn new() -> Self {
+        Self {
+            root: PathBuf::from("/"),
+            privileged: nix::unistd::geteuid().is_root(),
+        }
+    }
+}
+
+impl Default for CryptsetupArgon2idCheck {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<F: Filesystem> PreFlightCheck<F> for CryptsetupArgon2idCheck {
     fn name(&self) -> &'static str {
@@ -200,224 +340,14 @@ impl<F: Filesystem> PreFlightCheck<F> for CryptsetupArgon2idCheck {
         "Advises when the installed cryptsetup cannot open VeraCrypt Argon2id volumes"
     }
 
-    fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(argon2id_advice(detect_version(&RealProcessRunner)))
+    fn run(&self, fs: &F) -> Result<CheckResult> {
+        if !self.privileged {
+            return Ok(CheckResult::Pass(UNPRIVILEGED_SKIP.into()));
+        }
+        let version = installed_cryptsetup_version(fs, &self.root);
+        Ok(argon2id_advice(version))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::NailsError;
-    use crate::filesystem::MockFilesystem;
-    use std::os::unix::process::ExitStatusExt;
-    use std::process::{ExitStatus, Output};
-
-    /// The cryptsetup each supported decoy ships, from the version table in
-    /// docs/backends.md plus the Fedora and Arch releases, checked on
-    /// 2026-10-19. Every entry must still draw the advice, because no release
-    /// here opens Argon2id.
-    const SUPPORTED_DECOY_CRYPTSETUP: &[(&str, &str)] = &[
-        ("Ubuntu 24.04", "2.7.0"),
-        ("Debian 13", "2.7.5"),
-        ("Ubuntu 26.04", "2.8.4"),
-        ("NixOS 26.05", "2.8.6"),
-        ("NixOS unstable", "2.8.8"),
-        ("Fedora 45", "2.8.8"),
-        ("Arch", "2.8.8"),
-    ];
-
-    fn version(text: &str) -> CryptsetupVersion {
-        parse_cryptsetup_version(text).expect("a version")
-    }
-
-    #[test]
-    fn parses_the_version_cryptsetup_prints() {
-        assert_eq!(
-            version("cryptsetup 2.7.5\n"),
-            CryptsetupVersion::new(2, 7, 5)
-        );
-        assert_eq!(version("cryptsetup 2.7.5"), CryptsetupVersion::new(2, 7, 5));
-        // A bare version, and a Debian-style packaging suffix on the patch.
-        assert_eq!(version("2.8.8"), CryptsetupVersion::new(2, 8, 8));
-        assert_eq!(
-            version("cryptsetup 2.7.5-2"),
-            CryptsetupVersion::new(2, 7, 5)
-        );
-        // Missing components default to zero.
-        assert_eq!(version("cryptsetup 2.8"), CryptsetupVersion::new(2, 8, 0));
-        assert_eq!(version("cryptsetup 3"), CryptsetupVersion::new(3, 0, 0));
-    }
-
-    #[test]
-    fn rejects_output_without_a_version() {
-        assert_eq!(parse_cryptsetup_version(""), None);
-        assert_eq!(parse_cryptsetup_version("cryptsetup"), None);
-        assert_eq!(parse_cryptsetup_version("no version here"), None);
-    }
-
-    #[test]
-    fn version_ordering_is_semver() {
-        assert!(version("2.7.5") < version("2.8.0"));
-        assert!(version("2.8.4") < version("2.8.8"));
-        assert!(version("2.8.8") < version("2.9.0"));
-        assert!(version("2.10.0") > version("2.9.9"));
-    }
-
-    #[test]
-    fn at_least_is_inclusive_semver_comparison() {
-        // `at_least` is `self >= other`, compared major first, then minor, then
-        // patch. Each pair below puts one component in charge of the answer,
-        // including the inclusive patch tie, so flipping a branch's comparison
-        // to `<` or `==` changes a result here. (Turning the major or minor `>`
-        // into `>=` is an equivalent mutant: that branch runs only when the
-        // component differs, where `>=` and `>` agree, so no test can catch it.)
-
-        // A version is at least itself (the inclusive patch tie).
-        assert!(version("2.8.8").at_least(version("2.8.8")));
-
-        // The major decides first, over a larger minor and patch on the other
-        // side.
-        assert!(version("3.0.0").at_least(version("2.9.9")));
-        assert!(!version("2.9.9").at_least(version("3.0.0")));
-
-        // With equal majors, the minor decides, over a larger patch.
-        assert!(version("2.9.0").at_least(version("2.8.9")));
-        assert!(!version("2.8.9").at_least(version("2.9.0")));
-
-        // With equal major and minor, the patch decides, and a lower one is
-        // not enough.
-        assert!(version("2.8.8").at_least(version("2.8.7")));
-        assert!(!version("2.8.7").at_least(version("2.8.8")));
-    }
-
-    #[test]
-    fn an_unknown_version_skips_the_advice() {
-        let result = argon2id_advice(None);
-        assert!(result.is_pass(), "{result:?}");
-        assert!(result.message().contains("could not read"));
-    }
-
-    #[test]
-    fn every_supported_decoy_cryptsetup_gets_the_argon2id_advice() {
-        // Fixture tripwire: this fails the day a decoy ships a cryptsetup that
-        // opens Argon2id and FIRST_RELEASE_OPENING_ARGON2ID is set to record
-        // it. When it fails, revisit this advice and the dated note in
-        // docs/backends.md.
-        for (decoy, release) in SUPPORTED_DECOY_CRYPTSETUP {
-            let result = argon2id_advice(Some(version(release)));
-            assert!(result.is_pass(), "{decoy} ({release}): {result:?}");
-            assert!(!result.is_fail(), "the advice never blocks: {decoy}");
-            let message = result.message();
-            assert!(message.contains(*release), "{decoy}: {message}");
-            assert!(message.contains("Argon2"), "{decoy}: {message}");
-            assert!(message.contains("PBKDF2"), "{decoy}: {message}");
-            assert!(message.contains(BACKENDS_DOC), "{decoy}: {message}");
-        }
-    }
-
-    #[test]
-    fn the_newest_reviewed_cryptsetup_release_still_draws_the_advice() {
-        // The boolean is guarded at compile time (see the tripwire assertion);
-        // here we confirm the advice itself still draws the PBKDF2 note (an
-        // informational pass, not a warning) for that release.
-        let result = argon2id_advice(Some(NEWEST_REVIEWED_CRYPTSETUP));
-        assert!(result.is_pass(), "{result:?}");
-        assert!(result.message().contains("PBKDF2"), "{result:?}");
-    }
-
-    #[test]
-    fn the_advice_lifts_once_a_release_opens_argon2id() {
-        // Both branches are informational passes; they are told apart by their
-        // message. Exercised against an explicit first-supporting release while
-        // the real constant is still `None`.
-        let first = CryptsetupVersion::new(2, 9, 0);
-        let supported = advice(Some(version("2.9.0")), Some(first));
-        assert!(supported.is_pass(), "{supported:?}");
-        assert!(supported.message().contains("can open"));
-
-        // A release below the boundary still carries the PBKDF2 advisory.
-        let older = advice(Some(version("2.8.8")), Some(first));
-        assert!(older.is_pass(), "{older:?}");
-        assert!(older.message().contains("PBKDF2"));
-    }
-
-    #[test]
-    fn detect_version_reads_the_tool_output() {
-        let runner = OneShotRunner::ok("cryptsetup 2.7.5\n");
-        assert_eq!(
-            detect_version(&runner),
-            Some(CryptsetupVersion::new(2, 7, 5))
-        );
-    }
-
-    #[test]
-    fn detect_version_is_none_on_failure_or_junk() {
-        assert_eq!(detect_version(&OneShotRunner::ok("not a version")), None);
-        assert_eq!(detect_version(&OneShotRunner::failed()), None);
-        assert_eq!(detect_version(&OneShotRunner::refused()), None);
-    }
-
-    #[test]
-    fn the_check_names_itself() {
-        let check = CryptsetupArgon2idCheck;
-        assert_eq!(
-            <CryptsetupArgon2idCheck as PreFlightCheck<MockFilesystem>>::name(&check),
-            "cryptsetup-argon2id"
-        );
-        assert!(
-            <CryptsetupArgon2idCheck as PreFlightCheck<MockFilesystem>>::description(&check)
-                .contains("Argon2id")
-        );
-    }
-
-    #[test]
-    fn the_advice_never_blocks_activation() {
-        // The PBKDF2 advisory (every real version today), the support note and
-        // the skipped case are all passes, hence non-failures: the check is
-        // advice, so it can never refuse.
-        assert!(!argon2id_advice(None).is_fail());
-        assert!(!argon2id_advice(Some(version("2.7.5"))).is_fail());
-        assert!(
-            !advice(
-                Some(version("2.9.0")),
-                Some(CryptsetupVersion::new(2, 9, 0))
-            )
-            .is_fail()
-        );
-    }
-
-    /// A one-call [`ProcessRunner`] stub for the version probe.
-    struct OneShotRunner(Result<Output>);
-
-    impl OneShotRunner {
-        fn ok(stdout: &str) -> Self {
-            Self(Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: stdout.as_bytes().to_vec(),
-                stderr: Vec::new(),
-            }))
-        }
-
-        fn failed() -> Self {
-            Self(Ok(Output {
-                status: ExitStatus::from_raw(1 << 8),
-                stdout: Vec::new(),
-                stderr: b"cryptsetup: boom\n".to_vec(),
-            }))
-        }
-
-        fn refused() -> Self {
-            Self(Err(NailsError::InvalidState("refused".into())))
-        }
-    }
-
-    impl ProcessRunner for OneShotRunner {
-        fn run(&self, _command: &ProcessCommand) -> Result<Output> {
-            match &self.0 {
-                Ok(output) => Ok(output.clone()),
-                Err(_) => Err(NailsError::InvalidState("refused".into())),
-            }
-        }
-    }
-}
+mod tests;

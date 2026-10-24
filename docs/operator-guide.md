@@ -846,20 +846,23 @@ A raw scan finds the token only where the decoy stores file contents as they
 are. Where the storage can hide it, the result reports the device as not
 checked, never as clean:
 
-- a filesystem that can compress file contents: btrfs, bcachefs, zfs or f2fs.
-  A zfs dataset has no block device of its own to read, so it is listed as not
+- a filesystem that can compress file contents: btrfs, bcachefs, zfs, or an
+  f2fs made with the compression feature (`mkfs.f2fs -O compression`), which a
+  mounted f2fs shows in its mount options and an image or an unmounted device
+  in its superblock; an f2fs made without it stores every file as it is. A zfs
+  dataset has no block device of its own to read, so it is listed as not
   scanned and not checked;
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
   instead;
 - storage on which the scan identifies no filesystem at all;
-- an image cut short, as a copy that stopped early leaves it: an ext4 or xfs
-  image that ends before its filesystem does, or a whole-disk image that ends
-  before a partition its table lists, or before the disk its GPT was written
-  for. The scan cannot tell when a bare filesystem of another kind, such as
-  vfat or swap, was cut short, so check that a copy finished before you scan
-  it.
+- an image cut short, as a copy that stopped early leaves it: an ext4, xfs or
+  f2fs image that ends before its filesystem does, or a whole-disk image that
+  ends before a partition its table lists, or before the disk its GPT was
+  written for. The scan cannot tell when a bare filesystem of another kind,
+  such as vfat or swap, was cut short, so check that a copy finished before you
+  scan it.
 
 A mounted device is judged by its mount. A device that is not mounted
 (`--device`) or an image (`--offline --image`) has no mount to judge it by, so
@@ -1351,12 +1354,17 @@ power-off, followed by a few minutes without power, lets the contents decay:
 - Power off completely (not suspend) in threat situations — `nails emergency
   --poweroff` — and end a normal session with `nails deactivate --poweroff`
   before handing the machine over.
-- Harden the decoy kernel so freed memory is wiped: add `init_on_free=1
-  page_poison=1` to the decoy kernel command line. The hidden session runs on the
-  same kernel, so this covers it too. The `memory-wipe` pre-flight check reads
-  the booted command line and, when it is silent, the kernel config
-  (`CONFIG_INIT_ON_FREE_DEFAULT_ON`), and warns when the decoy kernel does not
-  zero freed memory.
+- Harden the decoy kernel so freed memory is wiped: add `init_on_free=1` to the
+  decoy kernel command line. The hidden session runs on the same kernel, so this
+  covers it too. Do not add `page_poison=1`: on a kernel built with page
+  poisoning (the NixOS kernel is) it takes precedence over `init_on_free` and
+  turns it off, so the kernel overwrites freed pages with a pattern but leaves
+  its freed small allocations (slab objects, such as the names of files the
+  session opened) as they were. The `memory-wipe` pre-flight check reads the
+  booted command line and, when it is silent, the kernel config
+  (`CONFIG_INIT_ON_FREE_DEFAULT_ON`, from the running kernel's own
+  `/proc/config.gz` or the copy in `/boot` or `/usr/lib/modules`), and warns
+  when the decoy kernel does not zero freed memory, `page_poison=1` included.
 - There is no complete software defense against a memory dump of a running
   system; the protection is preventing access while it runs.
 
@@ -1375,10 +1383,21 @@ DMA-read it. An IOMMU set to remap DMA is the hardware defence against this. The
 `dma-protection` pre-flight check reads whether the IOMMU is remapping DMA
 (from `/sys` and the kernel command line) and whether a Thunderbolt/USB4
 controller reports DMA protection (`iommu_dma_protection`), and warns when a
-live memory attacker could read RAM over the bus; like the MOR bit it cannot
-enable the firmware's DMA protection for you, so the fix is to turn VT-d/AMD-Vi
-and Kernel DMA Protection on in BIOS/UEFI setup and, above all, to power off
-before the machine leaves your control.
+live memory attacker could read RAM over the bus. It judges each IOMMU group:
+where the kernel leaves the IOMMU off by default (no `intel_iommu=on`, as on
+NixOS), the firmware's Kernel DMA Protection still turns it on, but remaps only
+the devices behind a Thunderbolt or USB4 port and leaves every internal device,
+and any card added to an internal PCIe or M.2 slot, identity-mapped, so the
+check warns about the identity-mapped groups even while a docked device's group
+is remapped. The warning names the devices in those groups, and
+`lspci -s <address>` tells you what each is: a kernel also identity-maps some
+built-in devices on purpose, as AMD's does for an APU's integrated GPU while
+memory encryption is off, and the names tell such a device from a card in a
+slot or a docked one. Like the MOR bit it cannot enable the firmware's DMA
+protection for you, so the fix is to turn VT-d/AMD-Vi and Kernel DMA Protection
+on in BIOS/UEFI setup (and `intel_iommu=on` on the decoy kernel command line
+where the kernel does not remap by default) and, above all, to power off before
+the machine leaves your control.
 
 ### What has not been validated on hardware
 

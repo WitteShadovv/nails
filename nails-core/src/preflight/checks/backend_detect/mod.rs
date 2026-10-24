@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 mod argon2;
 mod hazards;
 mod luks2;
-pub use argon2::CryptsetupArgon2idCheck;
+pub use argon2::{
+    CryptsetupArgon2idCheck, CryptsetupVersion, installed_cryptsetup_version,
+    parse_cryptsetup_version,
+};
 use hazards::hazards;
 use luks2::{Luks2Metadata, read_luks2_header};
 

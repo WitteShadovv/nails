@@ -21,6 +21,19 @@
 //! reads the kernel `lockdown` LSM state, which governs the separate *software*
 //! memory-read path and so is only ever a modifier here.
 //!
+//! Remapping is judged per device group, never for the host from one group. A
+//! kernel whose IOMMU is off by default (no `intel_iommu=on`, and no
+//! `CONFIG_INTEL_IOMMU_DEFAULT_ON`, as on NixOS) still turns it on when the
+//! firmware asks for DMA protection, but with passthrough as the default: every
+//! internal device stays identity-mapped and only the devices behind a
+//! Thunderbolt or USB4 port are remapped. One remapped group, a docked
+//! Thunderbolt device's, then says nothing about the internal PCIe and M.2
+//! slots, so an identity-mapped group beside remapped ones warns. The warning
+//! names the devices in those groups: a kernel also identity-maps some
+//! built-in devices on purpose (AMD's, an APU's integrated GPU while memory
+//! encryption is off), and the names tell such a device from a card in a slot
+//! or a docked one.
+//!
 //! It **warns, never fails**: real DMA protection lives in firmware (VT-d /
 //! AMD-Vi and "Kernel DMA Protection" in BIOS/UEFI setup, sometimes a kernel
 //! command-line flag and a reboot), NVRAM and boot-configuration changes NAILS
@@ -31,11 +44,15 @@
 //! reads; nothing here writes.
 
 use super::super::{CheckResult, PreFlightCheck};
+use super::kernel_cmdline::{self, BoolSpellings};
 use crate::{Filesystem, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The booted kernel command line, read for its IOMMU flags.
 const PROC_CMDLINE: &str = "/proc/cmdline";
+
+/// The booted kernel's release, which decides the boolean spellings it reads.
+const PROC_OSRELEASE: &str = "/proc/sys/kernel/osrelease";
 
 /// The kernel `lockdown` LSM state (securityfs), `none [integrity] confidentiality`.
 const LOCKDOWN: &str = "/sys/kernel/security/lockdown";
@@ -56,9 +73,18 @@ const IOMMU_CLASS: &str = "/sys/class/iommu";
 const IOMMU_GROUPS: &str = "/sys/kernel/iommu_groups";
 
 /// The per-group domain type (Linux 5.14+): `DMA`/`DMA-FQ` when the group's DMA
-/// is remapped, `identity` when DMA bypasses the IOMMU (passthrough). Absent on
-/// older kernels, which do not expose it.
+/// is remapped (`unmanaged` when a driver such as VFIO maps it itself),
+/// `blocked` when its DMA is refused, `identity` when DMA bypasses the IOMMU
+/// (passthrough). Absent on older kernels, which do not expose it.
 const IOMMU_GROUP_TYPE: &str = "type";
+
+/// The per-group directory that lists the group's devices, each by its bus
+/// address (`0000:00:02.0` for a PCI device).
+const IOMMU_GROUP_DEVICES: &str = "devices";
+
+/// The most identity-mapped devices the warning names one by one; the rest
+/// are counted.
+const NAMED_DEVICES: usize = 8;
 
 /// Why NAILS cannot turn DMA protection on, and the only reliable mitigation.
 ///
@@ -103,13 +129,39 @@ enum IommuCmdline {
     Unset,
 }
 
+/// What `/sys` shows about DMA remapping, group by group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SysIommu {
+    /// An IOMMU is active and every group that reports a domain type remaps
+    /// (or blocks) DMA, or no group reports one (a kernel before 5.14).
+    Remapping,
+    /// `identity` of the `groups` that report a domain type bypass the IOMMU,
+    /// while the others remap DMA; `devices` are the devices in the bypassing
+    /// groups, in order.
+    Partly {
+        identity: usize,
+        groups: usize,
+        devices: Vec<String>,
+    },
+    /// No IOMMU is active, or every group that reports a type bypasses it.
+    NotRemapping,
+}
+
 /// The effective IOMMU DMA-remapping state, from the command line's intent and
 /// the `/sys` ground truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum IommuState {
-    /// An IOMMU is active and remapping DMA, not in passthrough: device DMA is
-    /// constrained.
+    /// An IOMMU is active and remapping DMA for every device, not in
+    /// passthrough: device DMA is constrained.
     Translating,
+    /// The IOMMU remaps DMA for some devices only: `identity` of the `groups`
+    /// are identity-mapped, so a device in one of them, any of `devices`, can
+    /// read all of RAM.
+    Partial {
+        identity: usize,
+        groups: usize,
+        devices: Vec<String>,
+    },
     /// DMA is not remapped — the IOMMU is off or in passthrough, or `/sys` lists
     /// no active IOMMU — so a device can read all of RAM.
     Exposed,
@@ -148,39 +200,19 @@ enum Lockdown {
     Unavailable,
 }
 
-/// The kernel's `kstrtobool`: `None` for a value it rejects.
-fn kstrtobool(value: &str) -> Option<bool> {
-    let mut chars = value.chars().map(|c| c.to_ascii_lowercase());
-    match chars.next()? {
-        'y' | 't' | '1' => Some(true),
-        'n' | 'f' | '0' => Some(false),
-        'o' => match chars.next()? {
-            'n' => Some(true),
-            'f' => Some(false),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Classify the IOMMU DMA-remapping intent from `/proc/cmdline`.
+/// Classify the IOMMU DMA-remapping intent from `/proc/cmdline`, as a kernel
+/// that accepts `spellings` reads it.
 ///
 /// Arguments after a bare `--` go to init, not the kernel, so they are ignored,
 /// and the kernel treats `-` and `_` in parameter names as equivalent. An
 /// explicit `iommu=off` dominates (most exposed); otherwise a requested
-/// passthrough counts, with the last `iommu.passthrough=` assignment winning.
-fn parse_iommu_cmdline(cmdline: &str) -> IommuCmdline {
+/// passthrough counts, with the last `iommu.passthrough=` value the kernel's
+/// `kstrtobool` accepts winning.
+fn parse_iommu_cmdline(cmdline: &str, spellings: BoolSpellings) -> IommuCmdline {
     let mut off = false;
     let mut passthrough: Option<bool> = None;
-    for token in cmdline.split_whitespace() {
-        if token == "--" {
-            break;
-        }
-        let Some((key, value)) = token.split_once('=') else {
-            continue;
-        };
-        let value = value.trim_matches('"');
-        match key.replace('-', "_").as_str() {
+    for (name, value) in kernel_cmdline::parameters(cmdline) {
+        match name.as_str() {
             "iommu" => match value {
                 "off" => off = true,
                 "pt" => passthrough = Some(true),
@@ -193,7 +225,7 @@ fn parse_iommu_cmdline(cmdline: &str) -> IommuCmdline {
                 }
             }
             "iommu.passthrough" => {
-                if let Some(enabled) = kstrtobool(value) {
+                if let Some(enabled) = spellings.parse(value) {
                     passthrough = Some(enabled);
                 }
             }
@@ -210,15 +242,22 @@ fn parse_iommu_cmdline(cmdline: &str) -> IommuCmdline {
 }
 
 /// The effective IOMMU state from the command-line intent and the `/sys` ground
-/// truth (`Some(true)` an IOMMU is active and remapping DMA, `Some(false)` `/sys`
-/// is readable and lists no remapping IOMMU, `None` the ground truth could not be
-/// read).
-fn iommu_state(intent: IommuCmdline, present: Option<bool>) -> IommuState {
+/// truth (`None` when it could not be read).
+fn iommu_state(intent: IommuCmdline, sys: Option<SysIommu>) -> IommuState {
     match intent {
         IommuCmdline::Off | IommuCmdline::Passthrough => IommuState::Exposed,
-        IommuCmdline::Unset => match present {
-            Some(true) => IommuState::Translating,
-            Some(false) => IommuState::Exposed,
+        IommuCmdline::Unset => match sys {
+            Some(SysIommu::Remapping) => IommuState::Translating,
+            Some(SysIommu::Partly {
+                identity,
+                groups,
+                devices,
+            }) => IommuState::Partial {
+                identity,
+                groups,
+                devices,
+            },
+            Some(SysIommu::NotRemapping) => IommuState::Exposed,
             None => IommuState::Unknown,
         },
     }
@@ -239,21 +278,74 @@ fn parse_lockdown(content: &str) -> Lockdown {
     Lockdown::None
 }
 
+/// The risk of a Thunderbolt/USB4 controller that reports no DMA protection.
+const TB_EXPOSED_RISK: &str = "A Thunderbolt/USB4 controller reports no IOMMU DMA protection \
+     (iommu_dma_protection=0), so a device plugged into that port can map and read all of \
+     system RAM over the bus.";
+
+/// `devices` as the warning names them: the first [`NAMED_DEVICES`], then how
+/// many more there are (`0000:00:02.0, 0000:00:14.0 and 3 more`).
+fn named_devices(devices: &[String]) -> String {
+    let mut names: Vec<String> = devices.iter().take(NAMED_DEVICES).cloned().collect();
+    if devices.len() > NAMED_DEVICES {
+        names.push(format!("{} more", devices.len() - NAMED_DEVICES));
+    }
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.concat(),
+    }
+}
+
 /// The warning (never a failure) for a machine whose hardware DMA path is open.
 ///
-/// Reached only when the IOMMU is exposed or a Thunderbolt controller reports
-/// `iommu_dma_protection=0`, so the `else` branch is the Thunderbolt case.
-fn exposed_warning(iommu: IommuState, lockdown: Lockdown) -> CheckResult {
-    let risk = if iommu == IommuState::Exposed {
-        "The kernel is not remapping DMA through an IOMMU (the command line turns it off or into \
-         passthrough, or /sys lists no active IOMMU), so any DMA-capable device — Thunderbolt or \
-         USB4, built-in PCIe, an NVMe/M.2 or ExpressCard slot — can map and read all of system \
-         RAM over the bus."
-    } else {
+/// Reached only when the IOMMU is exposed or remaps some devices only, or a
+/// Thunderbolt controller reports `iommu_dma_protection=0`, so the last branch
+/// is the Thunderbolt case.
+fn exposed_warning(iommu: IommuState, tb: TbProtection, lockdown: Lockdown) -> CheckResult {
+    let risk = match iommu {
+        IommuState::Exposed => "The kernel is not remapping DMA through an IOMMU (the command \
+             line turns it off or into passthrough, /sys lists no active IOMMU, or every IOMMU \
+             group is identity-mapped), so any DMA-capable device — Thunderbolt or USB4, built-in \
+             PCIe, an NVMe/M.2 or ExpressCard slot — can map and read all of system RAM over the \
+             bus."
+            .to_string(),
+        IommuState::Partial {
+            identity,
+            groups,
+            devices,
+        } => {
+            let thunderbolt = if tb == TbProtection::Exposed {
+                format!(" {TB_EXPOSED_RISK}")
+            } else {
+                String::new()
+            };
+            let (are, in_them) = if identity == 1 {
+                ("is", "in it")
+            } else {
+                ("are", "in one of them")
+            };
+            let named = if devices.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " Identity-mapped devices: {} (lspci -s <address> names each).",
+                    named_devices(&devices)
+                )
+            };
+            format!(
+                "The IOMMU remaps DMA for some devices only: {identity} of the {groups} IOMMU \
+                 groups {are} identity-mapped (passthrough; /sys/kernel/iommu_groups/*/type shows \
+                 each group's mapping), so a device {in_them} can map and read all of system RAM \
+                 over the bus.{named} A remapped group protects only its own devices: where the \
+                 kernel's default is passthrough, as when only the firmware's DMA protection \
+                 turned the IOMMU on, every internal device and any card added to an internal \
+                 PCIe or M.2 slot is identity-mapped, and only the devices behind a Thunderbolt \
+                 or USB4 port are remapped.{thunderbolt}"
+            )
+        }
         // A Thunderbolt/USB4 controller reports no protection, with the general
         // IOMMU translating or unknown.
-        "A Thunderbolt/USB4 controller reports no IOMMU DMA protection (iommu_dma_protection=0), \
-         so a device plugged into that port can map and read all of system RAM over the bus."
+        _ => TB_EXPOSED_RISK.to_string(),
     };
     let lockdown_note = if lockdown == Lockdown::Confidentiality {
         " Kernel lockdown is confidentiality, which closes the software memory-read paths, but a \
@@ -319,11 +411,14 @@ fn verdict(
     }
 
     // The hardware DMA path is open: a Thunderbolt/USB4 controller reports no
-    // protection, or the IOMMU is off/passthrough/absent. Effective /sys state
-    // overrides a stale Thunderbolt attribute, so an exposed IOMMU warns even
-    // when a controller claims protection.
-    if tb == TbProtection::Exposed || iommu == IommuState::Exposed {
-        return exposed_warning(iommu, lockdown);
+    // protection, or the IOMMU is off/passthrough/absent for some devices or all
+    // of them. Effective /sys state overrides a stale Thunderbolt attribute, so
+    // an exposed IOMMU warns even when a controller claims protection, and the
+    // controller's protection covers only the devices behind it.
+    if tb == TbProtection::Exposed
+        || matches!(iommu, IommuState::Exposed | IommuState::Partial { .. })
+    {
+        return exposed_warning(iommu, tb, lockdown);
     }
 
     // Could not confirm remapping is active, and there is no Thunderbolt signal
@@ -353,6 +448,8 @@ fn verdict(
 pub struct DmaProtectionCheck {
     /// The booted kernel command line.
     cmdline_path: PathBuf,
+    /// The booted kernel release.
+    osrelease_path: PathBuf,
     /// The kernel `lockdown` LSM state file.
     lockdown_path: PathBuf,
     /// The Thunderbolt/USB4 device directory, enumerated for controllers.
@@ -368,6 +465,7 @@ impl DmaProtectionCheck {
     pub fn new() -> Self {
         Self {
             cmdline_path: PathBuf::from(PROC_CMDLINE),
+            osrelease_path: PathBuf::from(PROC_OSRELEASE),
             lockdown_path: PathBuf::from(LOCKDOWN),
             thunderbolt_devices_dir: PathBuf::from(THUNDERBOLT_DEVICES),
             iommu_class_dir: PathBuf::from(IOMMU_CLASS),
@@ -375,19 +473,20 @@ impl DmaProtectionCheck {
         }
     }
 
-    /// Whether the kernel registered an active IOMMU that is *remapping* DMA:
-    /// `Some(true)` when an IOMMU is present and remapping, `Some(false)` when
-    /// `/sys` is readable but lists no IOMMU or every group reports passthrough
-    /// (`identity`), and `None` when neither `/sys` path could be read.
+    /// Whether the kernel registered an active IOMMU that is *remapping* DMA,
+    /// for every device group or only some, and `None` when neither `/sys` path
+    /// could be read.
     ///
     /// Presence alone is not translation: a kernel built with
     /// `CONFIG_IOMMU_DEFAULT_PASSTHROUGH=y`, or put in passthrough by a firmware
     /// default, still populates these directories while leaving DMA unremapped.
-    /// So when a group exposes its `type` (Linux 5.14+), a `DMA`/`DMA-FQ` group
-    /// proves remapping and an `identity` group is passthrough; a kernel too old
-    /// to report a type falls back to presence, never downgrading an IOMMU it
-    /// cannot inspect.
-    fn iommu_present<F: Filesystem>(&self, fs: &F) -> Option<bool> {
+    /// So when a group exposes its `type` (Linux 5.14+), a `DMA`/`DMA-FQ` (or
+    /// `unmanaged`, or `blocked`) group is remapped and an `identity` group is
+    /// passthrough, and each group is counted: one remapped group does not make
+    /// the others safe. A kernel too old to report a type falls back to
+    /// presence, never downgrading an IOMMU it cannot inspect. The devices of
+    /// the identity-mapped groups are collected for the warning to name.
+    fn sys_iommu<F: Filesystem>(&self, fs: &F) -> Option<SysIommu> {
         let class = fs.list_directory(&self.iommu_class_dir).ok();
         let groups = fs.list_directory(&self.iommu_groups_dir).ok();
         if class.is_none() && groups.is_none() {
@@ -395,29 +494,33 @@ impl DmaProtectionCheck {
         }
         let class_populated = class.as_ref().is_some_and(|entries| !entries.is_empty());
         let group_entries = groups.unwrap_or_default();
-        let mut any_translating = false;
-        let mut any_passthrough = false;
+        let (mut remapped, mut identity) = (0, 0);
+        let mut devices = Vec::new();
         for group in &group_entries {
             if let Ok(kind) = fs.read_file_content(&group.join(IOMMU_GROUP_TYPE)) {
                 match kind.trim() {
-                    "DMA" | "DMA-FQ" => any_translating = true,
-                    "identity" => any_passthrough = true,
+                    "DMA" | "DMA-FQ" | "unmanaged" | "blocked" => remapped += 1,
+                    "identity" => {
+                        identity += 1;
+                        devices.extend(group_devices(fs, group));
+                    }
                     _ => {}
                 }
             }
         }
-        if any_translating {
-            // At least one group is remapped: the IOMMU is translating DMA.
-            return Some(true);
-        }
-        if any_passthrough {
-            // Groups exist and every one that reports a type is passthrough, so
-            // DMA is not remapped and a device can still reach all of RAM.
-            return Some(false);
-        }
-        // No group reports a type (a kernel before 5.14, or an empty `/sys`): fall
-        // back to presence, never downgrading an IOMMU we cannot inspect.
-        Some(class_populated || !group_entries.is_empty())
+        devices.sort();
+        Some(match (remapped, identity) {
+            // No group reports a type (a kernel before 5.14, or an empty `/sys`):
+            // fall back to presence, never downgrading an IOMMU we cannot inspect.
+            (0, 0) if class_populated || !group_entries.is_empty() => SysIommu::Remapping,
+            (0, _) => SysIommu::NotRemapping,
+            (_, 0) => SysIommu::Remapping,
+            (remapped, identity) => SysIommu::Partly {
+                identity,
+                groups: remapped + identity,
+                devices,
+            },
+        })
     }
 
     /// The Thunderbolt/USB4 DMA-protection posture, from the
@@ -455,6 +558,16 @@ impl DmaProtectionCheck {
     }
 }
 
+/// The devices of the IOMMU group `group`, by bus address, from its `devices`
+/// directory; none when it cannot be listed.
+fn group_devices<F: Filesystem>(fs: &F, group: &Path) -> Vec<String> {
+    fs.list_directory(&group.join(IOMMU_GROUP_DEVICES))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|device| Some(device.file_name()?.to_str()?.to_string()))
+        .collect()
+}
+
 impl Default for DmaProtectionCheck {
     fn default() -> Self {
         Self::new()
@@ -473,11 +586,12 @@ impl<F: Filesystem> PreFlightCheck<F> for DmaProtectionCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let cmdline = fs.read_file_content(&self.cmdline_path).ok();
-        let intent = cmdline
-            .as_deref()
-            .map(parse_iommu_cmdline)
-            .unwrap_or(IommuCmdline::Unset);
-        let iommu = iommu_state(intent, self.iommu_present(fs));
+        let release = fs.read_file_content(&self.osrelease_path).ok();
+        let spellings = BoolSpellings::of_release(release.as_deref());
+        let intent = cmdline.as_deref().map_or(IommuCmdline::Unset, |cmdline| {
+            parse_iommu_cmdline(cmdline, spellings)
+        });
+        let iommu = iommu_state(intent, self.sys_iommu(fs));
         let tb = self.thunderbolt_protection(fs);
         let lockdown = self.lockdown(fs);
         Ok(verdict(tb, iommu, lockdown, cmdline.is_some()))
@@ -485,563 +599,4 @@ impl<F: Filesystem> PreFlightCheck<F> for DmaProtectionCheck {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::filesystem::MockFilesystem;
-    use std::path::{Path, PathBuf};
-
-    // ----- pure command-line parsing -----
-
-    #[test]
-    fn classifies_the_iommu_command_line() {
-        assert_eq!(parse_iommu_cmdline("quiet"), IommuCmdline::Unset);
-        assert_eq!(parse_iommu_cmdline(""), IommuCmdline::Unset);
-        // A positive flag leaves the answer to /sys: it is intent, not proof.
-        assert_eq!(
-            parse_iommu_cmdline("BOOT_IMAGE=/vmlinuz intel_iommu=on iommu.passthrough=0 quiet"),
-            IommuCmdline::Unset
-        );
-        assert_eq!(parse_iommu_cmdline("iommu=pt"), IommuCmdline::Passthrough);
-        assert_eq!(
-            parse_iommu_cmdline("iommu.passthrough=1"),
-            IommuCmdline::Passthrough
-        );
-        assert_eq!(parse_iommu_cmdline("iommu=off"), IommuCmdline::Off);
-        assert_eq!(parse_iommu_cmdline("intel_iommu=off"), IommuCmdline::Off);
-        assert_eq!(parse_iommu_cmdline("amd_iommu=off"), IommuCmdline::Off);
-        // Dashes and underscores are equivalent in a parameter name.
-        assert_eq!(parse_iommu_cmdline("intel-iommu=off"), IommuCmdline::Off);
-    }
-
-    #[test]
-    fn the_last_passthrough_assignment_wins_and_off_dominates() {
-        assert_eq!(
-            parse_iommu_cmdline("iommu.passthrough=1 iommu.passthrough=0"),
-            IommuCmdline::Unset
-        );
-        assert_eq!(
-            parse_iommu_cmdline("iommu.passthrough=0 iommu.passthrough=1"),
-            IommuCmdline::Passthrough
-        );
-        // iommu=off is the most exposed intent and dominates a passthrough flag.
-        assert_eq!(parse_iommu_cmdline("iommu=pt iommu=off"), IommuCmdline::Off);
-        assert_eq!(
-            parse_iommu_cmdline("iommu=off iommu.passthrough=1"),
-            IommuCmdline::Off
-        );
-    }
-
-    #[test]
-    fn init_arguments_after_double_dash_are_ignored() {
-        assert_eq!(
-            parse_iommu_cmdline("quiet -- iommu=pt"),
-            IommuCmdline::Unset
-        );
-    }
-
-    #[test]
-    fn kstrtobool_parses_the_kernel_boolean_spellings() {
-        // The documented kstrtobool contract, including the two-character `on`
-        // and `off` spellings that need a second character to disambiguate.
-        for truthy in ["y", "Y", "t", "1", "yes", "true", "on", "ON"] {
-            assert_eq!(kstrtobool(truthy), Some(true), "{truthy:?} should be true");
-        }
-        for falsy in ["n", "N", "f", "0", "no", "false", "off", "OFF"] {
-            assert_eq!(kstrtobool(falsy), Some(false), "{falsy:?} should be false");
-        }
-        // A leading `o` that is neither `on` nor `off` is rejected, as is junk.
-        assert_eq!(kstrtobool("ouch"), None);
-        assert_eq!(kstrtobool("maybe"), None);
-        assert_eq!(kstrtobool(""), None);
-    }
-
-    #[test]
-    fn iommu_nopt_reverses_an_earlier_passthrough_request() {
-        // `iommu=nopt` asks for no passthrough; as the last assignment it cancels
-        // a preceding `iommu=pt`, so nothing ends up requesting passthrough.
-        assert_eq!(
-            parse_iommu_cmdline("iommu=pt iommu=nopt"),
-            IommuCmdline::Unset
-        );
-        // It also cancels an explicit iommu.passthrough=1 that came before it.
-        assert_eq!(
-            parse_iommu_cmdline("iommu.passthrough=1 iommu=nopt"),
-            IommuCmdline::Unset
-        );
-    }
-
-    // ----- pure lockdown parsing -----
-
-    #[test]
-    fn parses_the_bracketed_lockdown_state() {
-        assert_eq!(
-            parse_lockdown("none [integrity] confidentiality\n"),
-            Lockdown::Integrity
-        );
-        assert_eq!(
-            parse_lockdown("none integrity [confidentiality]"),
-            Lockdown::Confidentiality
-        );
-        assert_eq!(
-            parse_lockdown("[none] integrity confidentiality"),
-            Lockdown::None
-        );
-        // No bracketed token, or empty: read as off rather than panicking.
-        assert_eq!(parse_lockdown("garbage"), Lockdown::None);
-        assert_eq!(parse_lockdown(""), Lockdown::None);
-    }
-
-    // ----- pure verdict, the decision table -----
-
-    #[test]
-    fn a_thunderbolt_controller_without_protection_warns() {
-        // iommu_dma_protection=0, even with the general IOMMU translating.
-        let result = verdict(
-            TbProtection::Exposed,
-            IommuState::Translating,
-            Lockdown::Confidentiality,
-            true,
-        );
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("iommu_dma_protection=0"));
-        // confidentiality does not save a machine whose hardware DMA path is open.
-        assert!(
-            result
-                .message()
-                .contains("does not close this hardware path")
-        );
-        assert!(result.message().contains("MOR"), "names the MOR boundary");
-    }
-
-    #[test]
-    fn an_iommu_in_passthrough_warns_even_with_a_protected_controller() {
-        // Effective /sys state overrides a stale Thunderbolt attribute.
-        let result = verdict(
-            TbProtection::Protected,
-            IommuState::Exposed,
-            Lockdown::None,
-            true,
-        );
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("all of system RAM"));
-    }
-
-    #[test]
-    fn an_exposed_machine_warns_but_never_blocks() {
-        let result = verdict(
-            TbProtection::Absent,
-            IommuState::Exposed,
-            Lockdown::None,
-            true,
-        );
-        assert!(result.is_warn());
-        assert!(!result.is_fail(), "the check must never block activation");
-        assert!(
-            result.message().contains("nails emergency --poweroff"),
-            "the fix names the power-off mitigation"
-        );
-    }
-
-    #[test]
-    fn a_protected_machine_with_full_lockdown_passes() {
-        let result = verdict(
-            TbProtection::Protected,
-            IommuState::Translating,
-            Lockdown::Confidentiality,
-            true,
-        );
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(result.message().contains("iommu_dma_protection=1"));
-        assert!(result.message().contains("closed too"));
-        assert!(
-            result
-                .message()
-                .contains("power off before handing it over")
-        );
-    }
-
-    #[test]
-    fn a_protected_machine_advises_on_each_weaker_lockdown() {
-        for (lockdown, needle) in [
-            (Lockdown::Integrity, "lockdown is integrity"),
-            (Lockdown::None, "lockdown is off"),
-        ] {
-            let result = verdict(
-                TbProtection::Absent,
-                IommuState::Translating,
-                lockdown,
-                true,
-            );
-            assert!(result.is_pass(), "{lockdown:?}: {}", result.message());
-            assert!(result.message().contains("Advisory"), "{lockdown:?}");
-            assert!(result.message().contains(needle), "{lockdown:?}");
-        }
-    }
-
-    #[test]
-    fn a_missing_lockdown_lsm_draws_no_advisory() {
-        // CONFIG_SECURITY_LOCKDOWN_LSM=n: judge on the DMA path, do not warn for
-        // the missing file.
-        let result = verdict(
-            TbProtection::Protected,
-            IommuState::Translating,
-            Lockdown::Unavailable,
-            true,
-        );
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(!result.message().contains("Advisory"));
-        assert!(!result.message().contains("software memory-read paths"));
-    }
-
-    #[test]
-    fn an_unconfirmable_iommu_soft_warns() {
-        let result = verdict(
-            TbProtection::Absent,
-            IommuState::Unknown,
-            Lockdown::Unavailable,
-            true, // the command line was readable, so this is not a skip
-        );
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("Could not confirm"));
-        assert!(
-            result
-                .message()
-                .contains("virtual-machine or container guest")
-        );
-    }
-
-    #[test]
-    fn a_protected_pass_crediting_both_signals_names_both() {
-        // Both the active IOMMU and the Thunderbolt controller confirm
-        // protection: the basis names the IOMMU remapping AND the controller.
-        let result = verdict(
-            TbProtection::Protected,
-            IommuState::Translating,
-            Lockdown::Unavailable,
-            true,
-        );
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(
-            result
-                .message()
-                .contains("remapping DMA and the Thunderbolt"),
-            "both signals must be cited: {}",
-            result.message()
-        );
-    }
-
-    #[test]
-    fn a_protected_pass_on_the_thunderbolt_signal_alone_does_not_claim_remapping() {
-        // The controller reports protection but /sys could not confirm remapping
-        // (IOMMU Unknown): the basis is the Thunderbolt signal only, and it must
-        // not assert the IOMMU is remapping DMA.
-        let result = verdict(
-            TbProtection::Protected,
-            IommuState::Unknown,
-            Lockdown::Unavailable,
-            true,
-        );
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(
-            result
-                .message()
-                .contains("controller reports IOMMU DMA protection"),
-            "{}",
-            result.message()
-        );
-        assert!(
-            !result.message().contains("remapping DMA and"),
-            "must not claim the IOMMU is remapping: {}",
-            result.message()
-        );
-    }
-
-    #[test]
-    fn a_protected_pass_on_the_iommu_alone_credits_only_the_iommu() {
-        // No Thunderbolt signal, IOMMU translating: the basis is the active
-        // IOMMU alone and cites no Thunderbolt controller.
-        let result = verdict(
-            TbProtection::Absent,
-            IommuState::Translating,
-            Lockdown::Unavailable,
-            true,
-        );
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(
-            result.message().contains("an active IOMMU is present"),
-            "{}",
-            result.message()
-        );
-        assert!(
-            !result.message().contains("Thunderbolt"),
-            "there is no Thunderbolt signal to cite: {}",
-            result.message()
-        );
-    }
-
-    #[test]
-    fn nothing_readable_at_all_is_skipped() {
-        let result = verdict(
-            TbProtection::Absent,
-            IommuState::Unknown,
-            Lockdown::Unavailable,
-            false,
-        );
-        assert!(result.is_skipped(), "{}", result.message());
-        assert!(!result.is_fail());
-        assert!(
-            result
-                .message()
-                .contains("virtual-machine or container guest")
-        );
-    }
-
-    // ----- integration through run() with a mock filesystem -----
-
-    /// Seed one active IOMMU under /sys/class/iommu.
-    fn with_active_iommu(fs: &MockFilesystem) {
-        fs.mock_set_directory_contents(
-            Path::new(IOMMU_CLASS),
-            vec![PathBuf::from("/sys/class/iommu/dmar0")],
-        );
-    }
-
-    /// Seed one Thunderbolt controller reporting `value` for iommu_dma_protection.
-    fn with_thunderbolt(fs: &MockFilesystem, value: &str) {
-        let dir = "/sys/bus/thunderbolt/devices/domain0";
-        fs.mock_set_directory_contents(Path::new(THUNDERBOLT_DEVICES), vec![PathBuf::from(dir)]);
-        fs.mock_add_file(&format!("{dir}/{TB_DMA_PROTECTION}"), &format!("{value}\n"));
-    }
-
-    /// Seed `count` IOMMU groups, each reporting domain `kind` in its `type`.
-    fn with_iommu_groups(fs: &MockFilesystem, kind: &str, count: usize) {
-        let dirs: Vec<PathBuf> = (0..count)
-            .map(|n| PathBuf::from(format!("/sys/kernel/iommu_groups/{n}")))
-            .collect();
-        for dir in &dirs {
-            fs.mock_add_file(
-                &format!("{}/{IOMMU_GROUP_TYPE}", dir.display()),
-                &format!("{kind}\n"),
-            );
-        }
-        fs.mock_set_directory_contents(Path::new(IOMMU_GROUPS), dirs);
-    }
-
-    #[test]
-    fn run_warns_when_the_command_line_requests_passthrough() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(
-            PROC_CMDLINE,
-            "BOOT_IMAGE=/vmlinuz intel_iommu=on iommu=pt quiet\n",
-        );
-        with_active_iommu(&fs);
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("all of system RAM"));
-        assert!(result.message().contains("nails emergency --poweroff"));
-    }
-
-    #[test]
-    fn run_warns_when_the_iommu_is_turned_off() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=off\n");
-        // No /sys IOMMU seeded: the off flag alone is decisive.
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_warn(), "{}", result.message());
-    }
-
-    #[test]
-    fn run_warns_when_a_thunderbolt_controller_is_unprotected() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=on\n");
-        with_active_iommu(&fs);
-        with_thunderbolt(&fs, "0");
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("iommu_dma_protection=0"));
-    }
-
-    #[test]
-    fn run_passes_a_fully_dma_hardened_machine() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=on iommu.passthrough=0\n");
-        with_active_iommu(&fs);
-        with_thunderbolt(&fs, "1");
-        fs.mock_add_file(LOCKDOWN, "none integrity [confidentiality]\n");
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(result.message().contains("iommu_dma_protection=1"));
-        assert!(result.message().contains("closed too"));
-    }
-
-    #[test]
-    fn run_passes_an_active_iommu_without_thunderbolt_and_advises_on_lockdown() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "quiet\n");
-        with_active_iommu(&fs);
-        fs.mock_add_file(LOCKDOWN, "[none] integrity confidentiality\n");
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(result.message().contains("Advisory"));
-        assert!(result.message().contains("lockdown is off"));
-    }
-
-    #[test]
-    fn run_treats_an_empty_sys_iommu_as_exposed() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "quiet\n");
-        // /sys is readable but lists no IOMMU: genuinely none active.
-        fs.mock_set_directory_contents(Path::new(IOMMU_CLASS), vec![]);
-        fs.mock_set_directory_contents(Path::new(IOMMU_GROUPS), vec![]);
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_warn(), "{}", result.message());
-    }
-
-    #[test]
-    fn run_warns_when_every_iommu_group_is_passthrough() {
-        // CONFIG_IOMMU_DEFAULT_PASSTHROUGH=y, or a firmware default: an IOMMU is
-        // present (and /sys/class/iommu lists it) but every group is identity-
-        // mapped, so DMA is not remapped and no command-line flag says so. The
-        // group type is the only signal, and it must override the mere presence.
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "quiet\n");
-        with_active_iommu(&fs);
-        with_iommu_groups(&fs, "identity", 3);
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("all of system RAM"));
-    }
-
-    #[test]
-    fn run_passes_when_an_iommu_group_is_remapping() {
-        // Only the group type reports translation (no /sys/class/iommu seeded):
-        // a DMA/DMA-FQ group proves the IOMMU is remapping DMA.
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "quiet\n");
-        with_iommu_groups(&fs, "DMA-FQ", 2);
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_pass(), "{}", result.message());
-    }
-
-    #[test]
-    fn run_lets_a_remapping_group_outrank_a_passthrough_group() {
-        // A mix of domain types: one group remaps DMA (DMA-FQ) while another is
-        // identity-mapped (passthrough). A single remapping group proves the
-        // IOMMU is translating, so a passthrough group must not downgrade it.
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "quiet\n");
-        let translating = "/sys/kernel/iommu_groups/0";
-        let passthrough = "/sys/kernel/iommu_groups/1";
-        fs.mock_set_directory_contents(
-            Path::new(IOMMU_GROUPS),
-            vec![PathBuf::from(translating), PathBuf::from(passthrough)],
-        );
-        fs.mock_add_file(&format!("{translating}/{IOMMU_GROUP_TYPE}"), "DMA-FQ\n");
-        fs.mock_add_file(&format!("{passthrough}/{IOMMU_GROUP_TYPE}"), "identity\n");
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_pass(), "{}", result.message());
-        assert!(
-            result.message().contains("remapping DMA"),
-            "{}",
-            result.message()
-        );
-    }
-
-    #[test]
-    fn run_does_not_downgrade_iommu_groups_without_a_type() {
-        // A kernel before 5.14 lists groups but exposes no `type`: fall back to
-        // presence rather than wrongly reading it as passthrough.
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "quiet\n");
-        fs.mock_set_directory_contents(
-            Path::new(IOMMU_GROUPS),
-            vec![PathBuf::from("/sys/kernel/iommu_groups/0")],
-        );
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_pass(), "{}", result.message());
-    }
-
-    #[test]
-    fn run_soft_warns_when_only_the_command_line_is_readable() {
-        // A command line with no IOMMU flag, and no /sys at all (e.g. a guest):
-        // could-not-confirm, a soft warning, not a skip and never a panic.
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "quiet splash\n");
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("Could not confirm"));
-    }
-
-    #[test]
-    fn run_skips_when_nothing_can_be_read() {
-        // An empty mock: no /proc, no /sys, no securityfs. Graceful, no panic.
-        let fs = MockFilesystem::new();
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_skipped(), "{}", result.message());
-    }
-
-    #[test]
-    fn run_tolerates_a_thunderbolt_controller_without_the_attribute() {
-        // An older kernel: the controller directory exists but exposes no
-        // iommu_dma_protection file. No Thunderbolt signal, judged on the IOMMU.
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=on\n");
-        with_active_iommu(&fs);
-        fs.mock_set_directory_contents(
-            Path::new(THUNDERBOLT_DEVICES),
-            vec![PathBuf::from("/sys/bus/thunderbolt/devices/domain0")],
-        );
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_pass(), "{}", result.message());
-    }
-
-    #[test]
-    fn run_lets_one_unprotected_controller_override_a_protected_one() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=on\n");
-        with_active_iommu(&fs);
-        let protected = "/sys/bus/thunderbolt/devices/domain0";
-        let exposed = "/sys/bus/thunderbolt/devices/domain1";
-        fs.mock_set_directory_contents(
-            Path::new(THUNDERBOLT_DEVICES),
-            vec![PathBuf::from(protected), PathBuf::from(exposed)],
-        );
-        fs.mock_add_file(&format!("{protected}/{TB_DMA_PROTECTION}"), "1\n");
-        fs.mock_add_file(&format!("{exposed}/{TB_DMA_PROTECTION}"), "0\n");
-        let result = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(result.is_warn(), "{}", result.message());
-        assert!(result.message().contains("iommu_dma_protection=0"));
-    }
-
-    #[test]
-    fn the_check_names_itself_and_never_fails() {
-        let check = DmaProtectionCheck::new();
-        assert_eq!(
-            <DmaProtectionCheck as PreFlightCheck<MockFilesystem>>::name(&check),
-            "dma-protection"
-        );
-        assert!(
-            <DmaProtectionCheck as PreFlightCheck<MockFilesystem>>::description(&check)
-                .contains("DMA")
-        );
-    }
-
-    #[test]
-    fn the_check_performs_no_writes() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(PROC_CMDLINE, "intel_iommu=on iommu=pt\n");
-        with_active_iommu(&fs);
-        with_thunderbolt(&fs, "0");
-        fs.mock_add_file(LOCKDOWN, "none [integrity] confidentiality\n");
-
-        let before = fs.mock_ops().len();
-        let _ = DmaProtectionCheck::new().run(&fs).unwrap();
-        assert!(fs.mock_written_paths().is_empty(), "nothing was written");
-        assert_eq!(
-            fs.mock_ops().len(),
-            before,
-            "dma-protection check must not write: {:?}",
-            fs.mock_ops()
-        );
-    }
-}
+mod tests;

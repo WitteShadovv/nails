@@ -24,10 +24,23 @@ of this changelog for that version becomes the release notes word for word, and
 ### Added
 
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
-  derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the version
-  `cryptsetup --version` reports. No released cryptsetup opens such a volume, and nothing outside
-  the encrypted header reveals the algorithm, so it advises making both the outer and the hidden
-  VeraCrypt volume with PBKDF2.
+  derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the installed
+  cryptsetup version. No released cryptsetup opens such a volume, and nothing outside the encrypted
+  header reveals the algorithm, so it advises making both the outer and the hidden VeraCrypt volume
+  with PBKDF2. The version is read from the package database (dpkg or pacman) or the NixOS store
+  path, never by running cryptsetup, which would stamp the decoy binary's access time at every
+  check and activation; a `check` that is not running as root, or a host whose cryptsetup none of
+  these name (Fedora's rpm database among them), skips the note.
+- `check` and activation warn when a DMA-capable device could read RAM over the bus: the kernel does
+  not remap DMA through an IOMMU, some devices' IOMMU groups are identity-mapped, or a Thunderbolt or
+  USB4 controller reports no DMA protection. Each group counts on its own, so a kernel that leaves
+  the IOMMU off by default (no `intel_iommu=on`, as on NixOS) and has it turned on only by the
+  firmware's Kernel DMA Protection, which remaps the Thunderbolt and USB4 devices and leaves every
+  internal device and slot identity-mapped, warns even while a docked device's group is remapped.
+  The warning names the devices in the identity-mapped groups, so you can tell a built-in device the
+  kernel identity-maps on purpose (AMD's kernel does so for an APU's integrated GPU while memory
+  encryption is off) from a card in a slot or a docked device. NAILS cannot change the firmware
+  setting; the warning says how, and to power off before the machine leaves your control.
 - `nails activate` and `nails check` refuse a decoy with a pending offline system update staged
   (a `/system-update` or `/etc/system-update` marker, on the decoy or in the overlay upper), which
   would otherwise be applied inside the hidden session and reboot the machine out from under it.
@@ -80,7 +93,10 @@ of this changelog for that version becomes the release notes word for word, and
   raw plaintext scan can neither reach those old copies nor read a compressed extent, and a clean scan
   there cannot prove a trace is gone. A live decoy is classified from its mount table, and an offline
   image or an unmounted `--device` from its on-disk superblock and, for a whole disk, partition by
-  partition, so a decoy read that way is reported "not checked" too.
+  partition, so a decoy read that way is reported "not checked" too. An f2fs counts only when it can
+  compress: a mounted one whose options show compression, which the kernel always lists for an f2fs
+  made with the compression feature, and an image or unmounted device whose superblock carries that
+  feature. A plain f2fs stores every file verbatim and gets a clean result.
 - Discards (TRIM) reaching the hidden volume now refuse activation instead of only warning:
   forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
   deniable volume should look like uniform random data, and writing an outer volume with discards
@@ -165,11 +181,11 @@ of this changelog for that version becomes the release notes word for word, and
   superblock is found even beside a stale signature of another format (an ISO9660 descriptor
   mkfs.f2fs left in place), and a zfs dataset of the live decoy is listed as not checked instead of
   being skipped. An image cut short, as a copy that stopped early leaves it, is not checked either: an
-  ext4 or xfs image that ends before its filesystem does, and a whole-disk image that ends before a
-  partition its table lists or before the disk its GPT was written for. An empty image or device (a
-  copy that failed, a loop device with no file behind it) is reported as not scanned with exit 9
-  instead of a clean pass with exit 0, and a scan that left a device unread no longer prints the green
-  "not found" headline.
+  ext4, xfs or f2fs image that ends before its filesystem does, and a whole-disk image that ends
+  before a partition its table lists or before the disk its GPT was written for. An empty image or
+  device (a copy that failed, a loop device with no file behind it) is reported as not scanned with
+  exit 9 instead of a clean pass with exit 0, and a scan that left a device unread no longer prints
+  the green "not found" headline.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up
@@ -219,9 +235,25 @@ of this changelog for that version becomes the release notes word for word, and
   reads the systemd 262 kernel coredump socket pattern correctly instead of mis-reporting it as a raw
   core-dump path, warns on Ubuntu's default-enabled kdump, and no longer warns about `sudo` logfile
   or I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
+  symlink.
+- Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, the
+  `syslogd` of sysklogd, inetutils or busybox, metalog, socklog, auditd) whether it runs as a service
+  unit, a systemd template instance (such as `syslog-ng@default`), the unit `syslog.service` names on
+  Debian and Ubuntu, or a bare process, so a logging daemon on the decoy can no longer slip past
+  activation. It also reads the systemd 262 kernel coredump socket pattern correctly instead of
+  mis-reporting it as a raw core-dump path, warns on Ubuntu's default-enabled kdump, whose crash
+  kernel writes a dump of kernel memory and the hidden session's kernel log to `/var/crash` on the
+  decoy disk if the kernel crashes during a session, and no longer warns about `sudo` logfile or
+  I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
 - The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
-  when the kernel command line is silent, warns when the decoy kernel does not zero freed memory, and
-  notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module) when one is installed.
+  when the kernel command line is silent, from the running kernel's own `/proc/config.gz` (NixOS and
+  Arch) or the copy in `/boot` or `/usr/lib/modules`, warns when the decoy kernel does not zero freed
+  memory, and notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module) when one is
+  installed. It counts `init_on_free` as off when `page_poison=1` takes precedence over it, and reads
+  `init_on_free=enable` and `=disable` as the kernel does from Linux 6.16. The operator guide of the
+  0.3.0 pre-releases advised `init_on_free=1 page_poison=1`; if you followed it, remove
+  `page_poison=1`: on a kernel built with page poisoning, the NixOS kernel among them, it turns
+  `init_on_free` off, and freed slab objects keep their contents.
 - `nails activate` refuses a host NAILS does not support before it writes anything to the hidden
   volume, so a refused host is left byte-identical, with no state lock and no log line, and the
   command exits with the unsupported-platform status (8). The refusal previously came after the state

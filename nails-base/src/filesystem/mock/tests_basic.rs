@@ -229,6 +229,22 @@ fn mock_disk_usage_reports_the_seeded_sizes() {
 }
 
 #[test]
+fn mock_byte_read_answers_with_the_seeded_text() {
+    // The mock holds text only, so its byte read (the trait's default) is the
+    // text read's bytes: a check that reads a package database as bytes sees
+    // what a test seeded, and a missing file is an error, not empty bytes.
+    let fs = MockFilesystem::new();
+    let status = "/var/lib/dpkg/status";
+    fs.mock_add_file(status, "Package: cryptsetup\nVersion: 2:2.7.5-1\n");
+
+    assert_eq!(
+        fs.read_file_bytes(Path::new(status)).unwrap(),
+        b"Package: cryptsetup\nVersion: 2:2.7.5-1\n"
+    );
+    assert!(fs.read_file_bytes(Path::new("/var/lib/missing")).is_err());
+}
+
+#[test]
 fn mock_writable_and_readable_follow_the_seeds() {
     let fs = MockFilesystem::new();
     assert!(!fs.is_readable(Path::new("/untracked")).unwrap());

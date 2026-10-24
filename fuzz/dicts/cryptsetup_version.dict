@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: dpkg status fields and package states, and package
+# names as pacman and the Nix store write them.
+"Package: "
+"Status: install ok "
+"Version: "
+"installed"
+"triggers-pending"
+"half-configured"
+"unpacked"
+"config-files"
+"cryptsetup-bin"
+"cryptsetup-"
+"-bin"
+"\x0a\x0a"
+":"
+"~"

@@ -11,15 +11,15 @@
 //! verbatim and the source holds all of it; anything else is a blind spot,
 //! reported "not checked":
 //!
-//! - a filesystem that can compress file contents (btrfs, f2fs, bcachefs),
-//!   found by its own magic, so a stale signature of another format beside it
-//!   cannot hide it;
+//! - a filesystem that can compress file contents (btrfs, bcachefs, an f2fs
+//!   whose superblock carries the compression feature), found by its own
+//!   magic, so a stale signature of another format beside it cannot hide it;
 //! - an encrypted container (LUKS, BitLocker), of which a raw scan reads only
 //!   ciphertext: its unlocked mapping is what to scan;
 //! - an LVM physical volume, whose logical volumes the scan does not identify;
 //! - storage on which no filesystem is identified at all (zfs, an encrypted
-//!   volume without a header, raw data), even where an ext4 or xfs magic
-//!   shows over a block size no such filesystem uses;
+//!   volume without a header, raw data), even where an ext4, xfs or f2fs
+//!   magic shows over a block size no such filesystem uses;
 //! - a filesystem, a partition, or the disk a GPT was written for, that runs
 //!   past the end of the source, as on an image whose copy stopped early;
 //! - first blocks that cannot be read.
@@ -34,7 +34,8 @@ use std::io;
 
 /// What a raw plaintext scan can make of one region of a source.
 enum Region {
-    /// A filesystem or format the scan reads verbatim (ext4, xfs, vfat, swap).
+    /// A filesystem or format the scan reads verbatim (ext4, xfs, an f2fs made
+    /// without the compression feature, vfat, swap).
     Verbatim,
     /// Storage that can hide the canary from the scan, and why.
     Hidden(String),
@@ -104,11 +105,19 @@ fn partition_cut_short(partition: &Partition, available: u64) -> String {
 fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
     // A filesystem that can compress wins over whatever else the region's
     // first blocks show: a stale signature of another format must never make
-    // it read as verbatim.
-    if let Some(blind) = layout::compressing_format_at(source, start)?
-        .and_then(|fstype| super::scan_blind_spot(fstype, ""))
-    {
-        return Ok(Region::Hidden(blind.reason().to_string()));
+    // it read as verbatim, nor stand in for it when it is verbatim. An f2fs
+    // compresses only when made with the compression feature, so its
+    // superblock decides.
+    if let Some(fstype) = layout::compressing_format_at(source, start)? {
+        let blind = if fstype == "f2fs" {
+            super::f2fs_image_blind_spot(layout::f2fs_compression(source, start)?)
+        } else {
+            super::scan_blind_spot(fstype, "")
+        };
+        return match blind {
+            Some(blind) => Ok(Region::Hidden(blind.reason().to_string())),
+            None => sized(source, start, end, fstype),
+        };
     }
     Ok(match layout::signature_at(source, start)? {
         Signature::Luks(_) | Signature::Luks2Secondary(_) => Region::Hidden(encrypted("LUKS")),
@@ -116,18 +125,24 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
         Signature::Format("lvm2-pv") => Region::Hidden(VOLUME_GROUP.to_string()),
         Signature::Format(fstype) => match super::scan_blind_spot(fstype, "") {
             Some(blind) => Region::Hidden(blind.reason().to_string()),
-            None => match layout::recorded_size(source, start, fstype)? {
-                RecordedSize::Bytes(recorded) if recorded > end - start => {
-                    Region::Hidden(truncated(fstype, recorded, end - start))
-                }
-                // An ext4 or xfs magic over a superblock with a block size no
-                // such filesystem uses matched other bytes by chance, the
-                // ciphertext of a volume without a header among them.
-                RecordedSize::Implausible => Region::Unidentified,
-                RecordedSize::Bytes(_) | RecordedSize::Unrecorded => Region::Verbatim,
-            },
+            None => sized(source, start, end, fstype)?,
         },
         Signature::Unknown => Region::Unidentified,
+    })
+}
+
+/// A filesystem of `fstype` at `start` that a raw plaintext scan reads
+/// verbatim: verbatim when the region to `end` holds all of it.
+fn sized(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<Region> {
+    Ok(match layout::recorded_size(source, start, fstype)? {
+        RecordedSize::Bytes(recorded) if recorded > end - start => {
+            Region::Hidden(truncated(fstype, recorded, end - start))
+        }
+        // An ext4, xfs or f2fs magic over a superblock with a block size no
+        // such filesystem uses matched other bytes by chance, the ciphertext
+        // of a volume without a header among them.
+        RecordedSize::Implausible => Region::Unidentified,
+        RecordedSize::Bytes(_) | RecordedSize::Unrecorded => Region::Verbatim,
     })
 }
 
