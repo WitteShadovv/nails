@@ -166,10 +166,12 @@ fn vendor_storage_hint<F: Filesystem>(fs: &F, root: &Path) -> Option<JournaldSto
 
 /// The `Storage=` the `journal.storage` credential gives journald, read as
 /// journald reads it: only from systemd 256 (an unknown version counts as
-/// older), only the credential journald was handed, and only when its bytes up
-/// to the first NUL are a value exactly. journald strips nothing, so
-/// `volatile` with a trailing newline, as `echo` writes it, is a value it
-/// ignores. A credential that cannot be read (only root can) counts for
+/// older), only the credential journald was handed, and only when its whole
+/// content is a value exactly. journald strips nothing, so `volatile` with a
+/// trailing newline, as `echo` writes it, is a value it ignores. It reads the
+/// credential without asking for its size, and such a read fails on a NUL
+/// anywhere in the content, so a credential holding a NUL counts for nothing
+/// either. A credential that cannot be read (only root can) counts for
 /// nothing. That misses a volatile one, which fails closed; a persistent one
 /// has had journald create the on-disk `/var/log/journal`, which `auto`
 /// persists to.
@@ -184,8 +186,10 @@ fn storage_credential<F: Filesystem>(
     let data = fs
         .read_file_content(&root.join(RECEIVED_STORAGE_CREDENTIAL))
         .ok()?;
-    // journald compares the credential as a C string, which ends at a NUL.
-    storage_value(data.split('\0').next().unwrap_or_default())
+    // journald reads the credential without asking for its size, a read that
+    // fails on a NUL anywhere, so it ignores such a credential. No value holds
+    // a NUL, so matching the whole content ignores it here too.
+    storage_value(&data)
 }
 
 /// The running service manager's major version, or `None` when it cannot be
@@ -465,10 +469,11 @@ mod tests {
         assert!(journald_persists_to_decoy(&fs));
     }
 
-    /// journald matches the credential's bytes exactly, as a C string that
-    /// ends at a NUL, and reads only the one it was handed: a value it would
-    /// have to trim, or a file in a credential store it was not given, counts
-    /// for nothing and the persistent default decides.
+    /// journald matches the credential's whole content exactly, fails to read
+    /// one that holds a NUL anywhere, and reads only the one it was handed: a
+    /// value it would have to trim, a value with a NUL before, after or inside
+    /// it, or a file in a credential store it was not given, counts for
+    /// nothing and the persistent default decides.
     #[test]
     fn the_storage_credential_is_matched_as_journald_matches_it() {
         for (data, expected) in [
@@ -477,7 +482,10 @@ mod tests {
             ("Volatile", JournaldStorage::Persistent),
             ("", JournaldStorage::Persistent),
             ("none", JournaldStorage::None),
-            ("volatile\0\n", JournaldStorage::Volatile),
+            ("volatile\0", JournaldStorage::Persistent),
+            ("volatile\0\n", JournaldStorage::Persistent),
+            ("\0volatile", JournaldStorage::Persistent),
+            ("vola\0tile", JournaldStorage::Persistent),
         ] {
             let fs = MockFilesystem::new();
             fs.mock_add_file(CREDENTIAL, data);
