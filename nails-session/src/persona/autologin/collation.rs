@@ -7,14 +7,17 @@
 //! collation of the locale they run in (`QDir::LocaleAware`). Which one that
 //! is the files do not tell, and collations disagree: with ICU, `_` comes
 //! before `-` and case counts only between names that are otherwise equal;
-//! glibc's locales skip punctuation; the C locale sorts by code point, so `K`
-//! comes before `a`; and a language may sort a letter, or two letters
-//! together, apart from the others. All of them agree only on two names that
-//! first differ in an ASCII digit, `10-a.conf` before `20-b.conf`, and on a
-//! name before a longer one it starts when that goes on with a printable
-//! ASCII character, `a.conf` before `a.conf.bak`. Any other two names may come
-//! in either order, and the reader takes the files in every order that keeps
-//! those pairs.
+//! glibc's locales and ICU's Thai skip punctuation, so `a` and `a.` are
+//! equal in Thai; the C locale sorts by code point, so `K` comes before `a`;
+//! and a language may sort a letter, or two letters together, apart from the
+//! others: Welsh takes `ng` for one letter before `n`, so `ang` comes before
+//! `an`, and Igbo takes `ch` for one before `c`. All of them agree only on
+//! two names that first differ in an ASCII digit, `10-a.conf` before
+//! `20-b.conf`, and on a name before a longer one it starts when that goes on
+//! with an ASCII digit or punctuation and holds an ASCII digit or letter past
+//! it, `a.conf` before `a.conf.bak`. Any other two names may come in either
+//! order, and the reader takes the files in every order that keeps those
+//! pairs.
 
 /// The most orders read; past it, every account the files name counts.
 pub(super) const MAX_ORDERS: usize = 720;
@@ -26,12 +29,20 @@ const MAX_FILES: usize = 64;
 
 /// Whether every collation sorts the name `a` before `b`: at the first byte
 /// where they differ, both hold an ASCII digit, `a` the lower; or `b` goes on
-/// past all of `a` with a printable ASCII character, which no collation
-/// ignores.
+/// past all of `a` with an ASCII digit or punctuation, which no collation
+/// joins to the character before it, and holds an ASCII digit or letter past
+/// `a`, which none skips. A letter right past `a` may make one letter with
+/// the last of `a`, as `ng` in Welsh, and punctuation alone may count for
+/// nothing, as in Thai.
 fn sorts_before(a: &[u8], b: &[u8]) -> bool {
     match a.iter().zip(b).position(|(x, y)| x != y) {
         Some(i) => a[i].is_ascii_digit() && b[i].is_ascii_digit() && a[i] < b[i],
-        None => b.get(a.len()).is_some_and(u8::is_ascii_graphic),
+        None => {
+            let rest = b.get(a.len()..).unwrap_or_default();
+            rest.first()
+                .is_some_and(|next| next.is_ascii_graphic() && !next.is_ascii_alphabetic())
+                && rest.iter().any(u8::is_ascii_alphanumeric)
+        }
     }
 }
 
