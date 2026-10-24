@@ -26,6 +26,11 @@ Options:
 
           Without this flag discard lists what it would delete and confirms on a terminal, refusing to run without one.
 
+      --allow-decoy-storage
+          Discard on a hidden root that this computer's own storage seems to hold
+
+          Mirrors `activate --allow-decoy-storage`: by default discard refuses a root that this computer's own storage holds, as activation does. Give it for a root you activate with that flag. A folder that is no mount point, a root with a second filesystem mounted over it and storage that cannot be judged are still refused.
+
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 
