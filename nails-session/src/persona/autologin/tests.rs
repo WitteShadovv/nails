@@ -111,6 +111,29 @@ fn gdm_keeps_what_glib_read_before_a_line_it_refuses() {
 }
 
 #[test]
+fn gdm_counts_what_glib_holds_before_a_key_it_may_refuse_and_after() {
+    let fs = MockFilesystem::new();
+    // GLib's own Unicode tables decide whether the circled letter is one:
+    // when it is not, GLib stops at that line and GDM logs bob in.
+    let text = "[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=bob\nX[\u{24d0}]=1\n\
+                AutomaticLoginEnable=false\n";
+    assert_eq!(one(&fs, "/etc/gdm/custom.conf", text), names(&["bob"]));
+    // And when it is, GLib reads on.
+    let text = "[daemon]\nX[\u{e9}]=1\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n";
+    assert_eq!(one(&fs, "/etc/gdm/custom.conf", text), names(&["bob"]));
+}
+
+#[test]
+fn gdm_reads_a_value_up_to_a_nul_as_glib_does() {
+    let fs = MockFilesystem::new();
+    let text = "[daemon]\nAutomaticLoginEnable=true\0x\nAutomaticLogin=bob\0 # set\n";
+    assert_eq!(one(&fs, "/etc/gdm/custom.conf", text), names(&["bob"]));
+    // A line that starts with a NUL is a comment to GLib.
+    let text = "[daemon]\n\0junk\nAutomaticLoginEnable=true\nAutomaticLogin=bob\n";
+    assert_eq!(one(&fs, "/etc/gdm/custom.conf", text), names(&["bob"]));
+}
+
+#[test]
 fn gdm_without_its_file_or_turned_off_logs_nobody_in() {
     let fs = MockFilesystem::new();
     assert!(accounts_of(&fs).is_empty());
@@ -274,13 +297,29 @@ fn sddm_drops_a_byte_order_mark_and_carriage_returns() {
 }
 
 #[test]
+fn sddm_reads_a_line_with_a_nul_as_qt_5_and_qt_6_do() {
+    let fs = MockFilesystem::new();
+    // Qt 5 decodes the line up to the NUL, Qt 6 whole.
+    let accounts = one(&fs, "/etc/sddm.conf", "[Autologin]\nUser=carol\0 # x\n");
+    assert_eq!(accounts, names(&["carol", "carol\0"]));
+    assert_eq!(
+        sddm::autologin_user(["[Autologin]\0\nUser=carol\n"], Qt::Five),
+        Some("carol".to_string())
+    );
+    assert_eq!(
+        sddm::autologin_user(["[Autologin]\0\nUser=carol\n"], Qt::Six),
+        None
+    );
+}
+
+#[test]
 fn sddm_takes_the_line_with_an_equals_sign_as_an_assignment() {
     // `[Autologin=x]` assigns; it opens no section.
     assert_eq!(
-        sddm::autologin_user(["[Autologin]\n[Autologin=x]\nUser=carol\n"]),
+        sddm::autologin_user(["[Autologin]\n[Autologin=x]\nUser=carol\n"], Qt::Six),
         Some("carol".to_string())
     );
-    assert_eq!(sddm::autologin_user(["[Autologin]\nUser\n"]), None);
+    assert_eq!(sddm::autologin_user(["[Autologin]\nUser\n"], Qt::Six), None);
 }
 
 // --- Plasma Login Manager ---
@@ -788,6 +827,56 @@ fn lightdm_skips_a_drop_in_glib_refuses_and_does_not_start_on_such_a_main_file()
 }
 
 #[test]
+fn lightdm_reads_a_file_glib_may_refuse_with_it_and_without_it() {
+    // Refused, the drop-in that empties the setting is skipped and bob is
+    // logged in; loaded, it turns autologin off.
+    let fs = MockFilesystem::new();
+    drop_in(&fs, LIGHTDM_ETC, "10-a.conf", &seat("bob"));
+    drop_in(
+        &fs,
+        LIGHTDM_ETC,
+        "20-b.conf",
+        "[Seat:*]\nautologin-user=\nX[\u{24d0}]=1\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["bob"]));
+    drop_in(
+        &fs,
+        LIGHTDM_ETC,
+        "30-c.conf",
+        "[Seat:*]\nautologin-user=carol\nY[\u{e9}]=1\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["bob", "carol"]));
+    // A main file GLib may refuse keeps LightDM from starting, or names its
+    // account.
+    assert_eq!(
+        one(
+            &fs,
+            LIGHTDM_MAIN,
+            "[Seat:*]\nautologin-user=dave\nZ[\u{e9}]=1\n"
+        ),
+        names(&["dave"])
+    );
+}
+
+#[test]
+fn lightdm_with_too_many_files_glib_may_refuse_counts_every_account_they_name() {
+    let fs = MockFilesystem::new();
+    for i in 0..9 {
+        drop_in(
+            &fs,
+            LIGHTDM_ETC,
+            &format!("{i}.conf"),
+            &format!(
+                "[Seat:*]\nautologin-user=user{i}\nX[\u{e9}]=1\n[Seat:seat1]\nautologin-user=other\n"
+            ),
+        );
+    }
+    fs.mock_set_file_content(LIGHTDM_MAIN, &seat(""));
+    let expected: Vec<String> = (0..9).map(|i| format!("user{i}")).collect();
+    assert_eq!(accounts_of(&fs), expected);
+}
+
+#[test]
 fn lightdm_reads_the_value_as_glib_does() {
     let fs = MockFilesystem::new();
     let text = "[Seat:*]\nautologin-user = \\sbob\\t # mine\n";
@@ -795,6 +884,8 @@ fn lightdm_reads_the_value_as_glib_does() {
     // GLib refuses an unknown escape: no account.
     assert!(one(&fs, LIGHTDM_MAIN, &seat("bob\\q")).is_empty());
     assert!(one(&fs, LIGHTDM_MAIN, &seat("bob\\")).is_empty());
+    // A value ends at a NUL.
+    assert_eq!(one(&fs, LIGHTDM_MAIN, &seat("bob\0x")), names(&["bob"]));
 }
 
 // --- What is read ---
@@ -887,6 +978,8 @@ fn keyfile_refuses_what_glib_refuses() {
         "[g]\nkey]=v\n",
         "[g]\nkey[d e]=v\n",
         "[g]\nkey[de]x=v\n",
+        "[g]\nkey[\u{e9} ]=v\n",
+        "[g]\nkey[\u{e9}=v\n",
         "[g]\nEncoding=latin1\n",
         "[g]\nEncoding=UTF-8 \n",
     ] {
@@ -902,6 +995,41 @@ fn keyfile_refuses_what_glib_refuses() {
     ] {
         assert!(loads(text), "{text:?}");
     }
+}
+
+#[test]
+fn keyfile_keeps_both_outcomes_of_a_key_glib_judges_by_its_tables() {
+    let parsed = keyfile::parse("[g]\nkey=a\nkey[\u{e9}]=x\nkey=b\nother[\u{24d0}]=y\n");
+    assert!(parsed.complete);
+    assert!(parsed.may_load() && parsed.may_fail());
+    let values: Vec<Option<&str>> = parsed
+        .outcomes()
+        .map(|file| file.value("g", "key"))
+        .collect();
+    assert_eq!(values, vec![Some("a"), Some("b"), Some("b")]);
+    // Refused for good further on, the file never loads.
+    let parsed = keyfile::parse("[g]\nkey[\u{e9}]=x\nbroken\n");
+    assert!(!parsed.may_load() && parsed.may_fail());
+    // Keys only translations set in between hold what the last one held.
+    let parsed = keyfile::parse(&format!("[g]\nkey=a\n{}", "key[\u{e9}]=x\n".repeat(1000)));
+    assert_eq!(parsed.refused.len(), 1);
+}
+
+#[test]
+fn keyfile_takes_a_nul_as_glib_does() {
+    // A line that starts with a NUL is a comment.
+    assert!(loads("[g]\n\0junk\n"));
+    // Past a NUL a group line holds anything but another `]`, for the name
+    // runs to the last one.
+    let parsed = keyfile::parse("[g]\0junk\nkey=v\0w\n");
+    assert!(parsed.complete);
+    assert_eq!(parsed.file.value("g", "key"), Some("v"));
+    assert!(!loads("[g]\0]\n"));
+    // A NUL before the `=` leaves no key-value line, and the encoding check
+    // counts the bytes past it.
+    assert!(!loads("[g]\nkey\0=v\n"));
+    assert!(!loads("[g]\nEncoding=UTF-8\0\n"));
+    assert!(loads("[g]\nEncoding=UTF-8\n"));
 }
 
 #[test]
