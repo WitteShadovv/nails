@@ -38,6 +38,14 @@ fn paths(entries: &[RunEntry]) -> Vec<&Path> {
     entries.iter().map(|entry| entry.path.as_path()).collect()
 }
 
+/// `entries` in path order. A directory lists its entries in an order of the
+/// filesystem's own, newest first on a tmpfs, so an entry the way back made
+/// again can come back in another place among its siblings.
+fn by_path(mut entries: Vec<RunEntry>) -> Vec<RunEntry> {
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    entries
+}
+
 #[test]
 fn the_copy_holds_each_entry_with_its_owner_and_mode_parents_first() {
     let run = run_with_state();
@@ -127,7 +135,11 @@ fn the_state_comes_back_in_place_with_its_owner_and_mode() {
         "[device]\nmanaged=true\n",
         "a removed file is made again"
     );
-    assert_eq!(snapshot(r).unwrap(), copy, "entry's state, entry for entry");
+    assert_eq!(
+        by_path(snapshot(r).unwrap()),
+        by_path(copy),
+        "entry's state, entry for entry"
+    );
 }
 
 #[test]
@@ -147,7 +159,7 @@ fn a_removed_entry_is_made_again_with_its_recorded_mode() {
     assert_eq!(mode(&netif), 0o711);
     assert_eq!(mode(&netif.join("2")), 0o640);
     assert_eq!(fs::read_link(netif.join("eth0")).unwrap(), Path::new("2"));
-    assert_eq!(snapshot(r).unwrap(), copy);
+    assert_eq!(by_path(snapshot(r).unwrap()), by_path(copy));
 }
 
 #[test]
@@ -168,7 +180,7 @@ fn a_link_pointing_elsewhere_is_made_again_and_one_of_another_kind_replaced() {
 
     assert_eq!(fs::read_link(devices.join("eth0")).unwrap(), Path::new("2"));
     assert!(devices.join("state").is_dir());
-    assert_eq!(snapshot(r).unwrap(), copy);
+    assert_eq!(by_path(snapshot(r).unwrap()), by_path(copy));
 }
 
 #[test]
