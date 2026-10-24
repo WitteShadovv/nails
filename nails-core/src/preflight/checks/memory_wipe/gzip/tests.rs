@@ -43,6 +43,16 @@ const FLAGGED: &[u8] = &[
     0x00, 0x00, 0x00,
 ];
 
+/// `CONFIG_A=y\nCONFIG_B=y\n` with a sync flush between the lines (zlib,
+/// `Z_SYNC_FLUSH`): the first block is not the last, and an empty stored block
+/// after it brings the stream to a byte boundary, as pigz ends each chunk it
+/// compresses in parallel.
+const SYNC_FLUSHED: &[u8] = &[
+    0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0x72, 0xF6, 0xF7, 0x73, 0xF3, 0x74,
+    0x8F, 0x77, 0xB4, 0xAD, 0xE4, 0x02, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x73, 0x86, 0x30, 0x9D, 0x80,
+    0x4C, 0x00, 0x65, 0x8A, 0x1E, 0x7D, 0x16, 0x00, 0x00, 0x00,
+];
+
 /// A bare member header: no flags, no name.
 const HEADER: [u8; 10] = [0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03];
 
@@ -52,6 +62,143 @@ fn framed(body: &[u8]) -> Vec<u8> {
     stream.extend_from_slice(body);
     stream.extend_from_slice(&[0; 8]);
     stream
+}
+
+/// A member of `HEADER` and the DEFLATE data `deflate`, with the trailer of
+/// `decoded`.
+fn member_of(deflate: &[u8], decoded: &[u8]) -> Vec<u8> {
+    let mut stream = HEADER.to_vec();
+    stream.extend_from_slice(deflate);
+    stream.extend_from_slice(&crc32(decoded).to_le_bytes());
+    stream.extend_from_slice(&u32::try_from(decoded.len()).unwrap().to_le_bytes());
+    stream
+}
+
+/// DEFLATE data written bit by bit, for the blocks no encoder writes on
+/// request.
+#[derive(Default)]
+struct Deflate {
+    bytes: Vec<u8>,
+    /// How many bits of the last byte are written.
+    used: u32,
+}
+
+impl Deflate {
+    /// The low `count` bits of `value`, the lowest first, as a header field or
+    /// extra bits are packed.
+    fn bits(&mut self, value: u32, count: u32) {
+        for bit in 0..count {
+            if self.used == 0 {
+                self.bytes.push(0);
+            }
+            let byte = self.bytes.last_mut().unwrap();
+            *byte |= u8::from((value >> bit) & 1 == 1) << self.used;
+            self.used = (self.used + 1) % 8;
+        }
+    }
+
+    /// A Huffman code, `(code, length)`, its highest bit first.
+    fn code(&mut self, (code, length): (u32, u32)) {
+        for bit in (0..length).rev() {
+            self.bits(code >> bit, 1);
+        }
+    }
+}
+
+/// The canonical code of each symbol with these code lengths, as `(code,
+/// length)` (RFC 1951, 3.2.2).
+fn canonical(lengths: &[u8]) -> Vec<(u32, u32)> {
+    let mut count = [0u32; MAX_BITS + 1];
+    for &length in lengths.iter().filter(|&&length| length != 0) {
+        count[usize::from(length)] += 1;
+    }
+    let mut next = [0u32; MAX_BITS + 1];
+    for bits in 1..=MAX_BITS {
+        next[bits] = (next[bits - 1] + count[bits - 1]) << 1;
+    }
+    lengths
+        .iter()
+        .map(|&length| {
+            let slot = &mut next[usize::from(length)];
+            *slot += 1;
+            (*slot - 1, u32::from(length))
+        })
+        .collect()
+}
+
+/// A last block of the dynamic kind with these literal/length and distance
+/// code lengths, its symbols written by `body` with the codes they make.
+///
+/// The code lengths go through the code-length code that gives each of the
+/// lengths 0 to 15 four bits, a complete code, so none needs a repeat.
+fn dynamic_block(
+    literals: &[u8],
+    distances: &[u8],
+    body: impl FnOnce(&mut Deflate, &[(u32, u32)], &[(u32, u32)]),
+) -> Vec<u8> {
+    let mut block = Deflate::default();
+    // BFINAL, BTYPE 2, then HLIT, HDIST and HCLEN: all 19 lengths of the
+    // code-length code follow.
+    block.bits(1, 1);
+    block.bits(2, 2);
+    block.bits(u32::try_from(literals.len() - 257).unwrap(), 5);
+    block.bits(u32::try_from(distances.len() - 1).unwrap(), 5);
+    block.bits(19 - 4, 4);
+    // The repeat symbols 16 to 18 get no code.
+    let mut code_lengths = [4u8; 19];
+    code_lengths[16..].fill(0);
+    for at in CODE_LENGTH_ORDER {
+        block.bits(u32::from(code_lengths[at]), 3);
+    }
+    let length_code = canonical(&code_lengths);
+    for &length in literals.iter().chain(distances) {
+        block.code(length_code[usize::from(length)]);
+    }
+    body(&mut block, &canonical(literals), &canonical(distances));
+    block.bytes
+}
+
+/// The code lengths of the most literal/length codes a block may define, 286,
+/// as a complete code: 226 of eight bits and 60 of nine.
+fn most_literals() -> Vec<u8> {
+    [[8; 226].as_slice(), &[9; 60]].concat()
+}
+
+/// The code lengths of the most distance codes a block may define, 30, as a
+/// complete code: 2 of four bits and 28 of five.
+fn most_distances() -> Vec<u8> {
+    [[4; 2].as_slice(), &[5; 28]].concat()
+}
+
+/// A block with these code lengths that holds `A` and nothing else.
+fn just_a(literals: &[u8], distances: &[u8]) -> Vec<u8> {
+    let block = dynamic_block(literals, distances, |out, literal, _| {
+        out.code(literal[usize::from(b'A')]);
+        out.code(literal[256]);
+    });
+    member_of(&block, b"A")
+}
+
+/// A literal/length code of four two-bit codes: `a`, `b`, the end of the
+/// block and symbol 257, a length of 3.
+fn four_literals() -> [u8; 258] {
+    let mut lengths = [0; 258];
+    for symbol in [usize::from(b'a'), usize::from(b'b'), 256, 257] {
+        lengths[symbol] = 2;
+    }
+    lengths
+}
+
+/// `aaaa` as `a` and three bytes copied from one back, with this distance
+/// code: the copy reaches back to the first byte written.
+fn a_run(distances: &[u8]) -> Vec<u8> {
+    let block = dynamic_block(&four_literals(), distances, |out, literal, distance| {
+        out.code(literal[usize::from(b'a')]);
+        out.code(literal[257]);
+        out.code(distance[0]);
+        out.code(literal[256]);
+    });
+    member_of(&block, b"aaaa")
 }
 
 #[test]
@@ -92,6 +239,74 @@ fn decodes_stored_fixed_and_empty_members() {
 #[test]
 fn reads_past_every_optional_header_field() {
     assert_eq!(decompress(FLAGGED).unwrap(), b"named\n");
+}
+
+#[test]
+fn reads_past_an_extra_field_without_a_name() {
+    // An extra field and nothing else, as bgzip writes its header: six bytes
+    // that hold one two-byte `BC` subfield (RFC 1952, 2.3.1.1).
+    let mut stream = vec![
+        0x1F, 0x8B, 0x08, FEXTRA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x06, 0x00, b'B', b'C', 0x02,
+        0x00, 0x24, 0x00,
+    ];
+    stream.extend_from_slice(&FIXED[HEADER.len()..]);
+    assert_eq!(decompress(&stream).unwrap(), b"fixed fixed fixed\n");
+}
+
+#[test]
+fn decodes_the_blocks_around_a_sync_flush() {
+    // The empty stored block: a length of 0 and its complement.
+    assert!(
+        SYNC_FLUSHED
+            .windows(4)
+            .any(|window| window == [0x00, 0x00, 0xFF, 0xFF])
+    );
+    assert_eq!(
+        decompress(SYNC_FLUSHED).unwrap(),
+        b"CONFIG_A=y\nCONFIG_B=y\n"
+    );
+}
+
+#[test]
+fn decodes_a_block_that_defines_the_most_codes() {
+    assert_eq!(
+        decompress(&just_a(&most_literals(), &most_distances())).unwrap(),
+        b"A"
+    );
+}
+
+#[test]
+fn refuses_a_block_that_defines_more_codes_than_there_are() {
+    // One literal/length code more than the 286 there are, or one distance
+    // code more than the 30.
+    let literals = [most_literals().as_slice(), &[9]].concat();
+    let distances = [most_distances().as_slice(), &[5]].concat();
+    for stream in [
+        just_a(&literals, &most_distances()),
+        just_a(&most_literals(), &distances),
+    ] {
+        assert_eq!(
+            decompress(&stream),
+            Err(Malformed("a block defines too many codes"))
+        );
+    }
+}
+
+#[test]
+fn accepts_a_lone_one_bit_distance_code() {
+    // A block whose copies all reach the same distance may give it a code of
+    // one bit and leave the other one-bit pattern unused (RFC 1951, 3.2.7):
+    // the one incomplete code a block may hold.
+    assert_eq!(decompress(&a_run(&[1, 0])).unwrap(), b"aaaa");
+}
+
+#[test]
+fn refuses_any_other_incomplete_code() {
+    // Two two-bit distance codes leave half the patterns unused.
+    assert_eq!(
+        decompress(&a_run(&[2, 2])),
+        Err(Malformed("a code is incomplete"))
+    );
 }
 
 #[test]
