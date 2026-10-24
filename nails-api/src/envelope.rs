@@ -11,7 +11,10 @@
 //!
 //! Version 2 of the contract. `ok` is true only for a success (exit 0) or a
 //! success with a warning (exit 9); every other outcome sets it false, so a
-//! script can branch on one field. An [`ErrorBody`] carries a stable `code`, the
+//! script can branch on one field. The one exception is an internal error (a
+//! panic) after the command printed its envelope: that envelope stays as it
+//! is, since a second one would break the one-document rule, and the process
+//! exits 1. An [`ErrorBody`] carries a stable `code`, the
 //! human `message`, and an optional typed [`NextStep`] the reader renders as a
 //! `Next:` line or a button; free-form guidance lives in the message, not in a
 //! field of its own.
