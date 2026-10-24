@@ -43,7 +43,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-nix = { workspace = true, features = ["user", "poll", "signal"] }
+nix = { workspace = true, features = ["user", "poll"] }
 chrono = { workspace = true }
 
 # The stable machine-readable contract types: the `--json` envelope, the error
@@ -83,3 +83,6 @@ jsonschema = { workspace = true }
 # test that regenerates `nails.1` and `docs/cli.md` and fails when they drift.
 clap_mangen = { workspace = true }
 clap-markdown = { workspace = true }
+# The signals of the tests: the Ctrl+C a cancel envelope answers and the
+# hangup a countdown must outlive (`raise`), and SIGKILL to a child (`kill`).
+nix = { workspace = true, features = ["signal"] }
