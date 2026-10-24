@@ -19,11 +19,15 @@
 //! Some steps stay with the front end; a new front end takes them as the CLI
 //! does, since nothing in the types makes it:
 //!
-//! - the exclusive state lock ([`lock`]) around every operation that changes
-//!   the mounts or the state file, taken once the operation's own gates have
-//!   passed and held until its last step: `enter` and `commit` of
-//!   [`activate`], `leave` of [`deactivate`] and `apply` of [`discard_upper`]
-//!   run whether or not it is held;
+//! - the exclusive state lock ([`lock`]) of the operations that leave it to
+//!   the front end, taken once the operation's own gates have passed and held
+//!   until its last step: `enter` and `commit` of [`activate`], `leave` of
+//!   [`deactivate`] and `apply` of [`discard_upper`] run whether or not it is
+//!   held. [`init`] and [`recover`] take the lock themselves and [`emergency`]
+//!   runs without it, so a front end must not hold it around them: the lock
+//!   is taken per open file, so [`init`] would fail on the lock its own front
+//!   end holds, and [`recover`] would wait for it in vain and go on without
+//!   it;
 //! - the trusted-state check of an activation
 //!   ([`activate::ReadyActivation::is_state_trusted`]), made under that lock
 //!   before anything else;
