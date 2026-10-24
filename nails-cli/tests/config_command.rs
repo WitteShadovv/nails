@@ -170,6 +170,65 @@ fn config_validate_uses_the_resolved_file_by_default() {
         .stderr(predicate::str::contains("did you mean `nixos_flake`?"));
 }
 
+/// A configuration path that is not valid UTF-8 still gives one envelope per
+/// subcommand under `--json`, with the path written lossily, never a panic:
+/// `config path`, `config show` and `config validate` on such a file, and
+/// `config path` and `config validate` on a missing one.
+#[test]
+fn a_config_path_that_is_not_utf8_gives_one_envelope() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(OsStr::from_bytes(b"nails-\xff.toml"));
+    std::fs::write(&file, "hidden_volume_root = \"/mnt/hv\"\n").unwrap();
+    let missing = dir.path().join(OsStr::from_bytes(b"missing-\xff.toml"));
+    let schema_path = format!(
+        "{}/../docs/schemas/config.schema.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("compile the schema");
+
+    for (config, subcommand, code) in [
+        (&file, "path", 0),
+        (&file, "show", 0),
+        (&file, "validate", 0),
+        (&missing, "path", 0),
+        (&missing, "validate", 3),
+    ] {
+        let output = nails()
+            .arg("--json")
+            .arg("--config")
+            .arg(config)
+            .args(["config", subcommand])
+            .output()
+            .unwrap();
+        let case = format!("config {subcommand} on {}: {output:?}", config.display());
+        let stdout = String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8");
+        assert_eq!(stdout.lines().count(), 1, "one envelope: {case}");
+        assert_eq!(output.status.code(), Some(code), "{case}");
+        let value: serde_json::Value = serde_json::from_str(&stdout).expect("stdout is JSON");
+        let errors: Vec<String> = validator
+            .iter_errors(&value)
+            .map(|error| error.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}: {case}");
+        assert_ne!(value["error"]["code"], "internal_error", "{case}");
+        assert_eq!(value["ok"], code == 0, "{case}");
+        if code == 0 {
+            assert_eq!(
+                value["data"]["path"],
+                config.display().to_string(),
+                "{case}"
+            );
+        } else {
+            assert_eq!(value["error"]["code"], "config", "{case}");
+        }
+    }
+}
+
 #[test]
 fn activate_exits_3_on_unknown_key_before_any_operation() {
     let bad = write_config("hidden_volume_root = \"/mnt/hv\"\nnixos_flak = \"x\"\n");
