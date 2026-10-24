@@ -12,13 +12,13 @@
 //! The namespace's root may write `security.selinux` on its own tmpfs, and a
 //! kernel without SELinux stores the value as given. A kernel that labels every
 //! file itself (SELinux active) checks each label against the loaded policy
-//! instead, which only the VM tests have; these tests skip there.
+//! instead, which needs a VM with that policy; these tests skip there.
 
 use nails_core::session::labels::{
     Copied, LABEL_XATTR, Labels, Reason, copy_label, copy_labels_along,
 };
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host};
+use nails_core::test_support::{Rerun, ScratchTmpfs, skip, skip_host};
 use nails_teardown::whole_root::nextroot;
 use rustix::fs::XattrFlags;
 use rustix::io::Errno;
@@ -74,7 +74,7 @@ fn tmpfs_without_selinux() -> ScratchTmpfs {
         Err(Errno::NODATA) => tmpfs,
         Ok(found) => skip_host(&format!(
             "the kernel labels new files on this host ({}): SELinux is active, and the label \
-             copy under a loaded policy is tested in a VM",
+             copy under a loaded policy needs a VM",
             String::from_utf8_lossy(&found).trim_end_matches('\0')
         )),
         Err(errno) => panic!("{LABEL_XATTR} of a fresh tmpfs: {errno}"),
@@ -91,7 +91,7 @@ fn ramfs(scratch: &ScratchTmpfs) -> PathBuf {
         nix::mount::MsFlags::empty(),
         None::<&str>,
     ) {
-        skip_host(&format!("cannot mount a ramfs in this namespace: {errno}"));
+        skip(&format!("cannot mount a ramfs in this namespace: {errno}"));
     }
     dir
 }
