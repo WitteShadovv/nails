@@ -63,11 +63,13 @@ jobs:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
+      # HEAD is the merge commit GitHub builds for the pull request, and its
+      # first parent is the base it merged onto. The event's base.sha can be
+      # older than that base when the base branch moved after the event, and a
+      # diff from it would also carry every change merged in between.
       - name: Diff the pull request against its base
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          git diff "$BASE" HEAD > "$RUNNER_TEMP/pr.diff"
+          git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
           echo "Changed lines in the diff: $(wc -l < "$RUNNER_TEMP/pr.diff")"
 
       # cargo-mutants copies the tree into a temporary directory and builds it
