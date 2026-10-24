@@ -23,6 +23,12 @@ pub(super) fn is_directory(path: &Path) -> Result<bool> {
     Ok(path.is_dir())
 }
 
+pub(super) fn is_regular_file(path: &Path) -> Result<bool> {
+    // `stat` reads the type without opening the file: a FIFO cannot block
+    // it, and no device is opened.
+    Ok(path.is_file())
+}
+
 pub(super) fn device_id(path: &Path) -> Result<u64> {
     use std::os::unix::fs::MetadataExt;
     // `metadata` follows symlinks, which is what we want: the attach gate asks

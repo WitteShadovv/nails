@@ -92,6 +92,10 @@ impl Filesystem for RealFilesystem {
         file_ops::is_directory(path)
     }
 
+    fn is_regular_file(&self, path: &Path) -> Result<bool> {
+        file_ops::is_regular_file(path)
+    }
+
     fn device_id(&self, path: &Path) -> Result<u64> {
         file_ops::device_id(path)
     }

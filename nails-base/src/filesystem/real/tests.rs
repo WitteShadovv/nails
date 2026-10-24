@@ -111,6 +111,47 @@ fn test_real_create_symlink_existing_non_symlink_errors() {
 }
 
 #[test]
+fn test_real_is_regular_file_follows_links_and_refuses_special_files() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir.path();
+    fs::write(dir.join("file"), "data").unwrap();
+    fs::create_dir(dir.join("dir")).unwrap();
+    nix::unistd::mkfifo(
+        &dir.join("fifo"),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )
+    .unwrap();
+    for (link, target) in [
+        ("to-file", "file"),
+        ("to-dir", "dir"),
+        ("to-fifo", "fifo"),
+        ("dangling", "missing"),
+    ] {
+        std::os::unix::fs::symlink(target, dir.join(link)).unwrap();
+    }
+
+    for (name, regular) in [
+        ("file", true),
+        ("to-file", true),
+        ("dir", false),
+        ("to-dir", false),
+        ("fifo", false),
+        ("to-fifo", false),
+        ("dangling", false),
+        ("missing", false),
+    ] {
+        assert_eq!(
+            fs.is_regular_file(&dir.join(name)).unwrap(),
+            regular,
+            "{name}"
+        );
+    }
+    // A device node is none either.
+    assert!(!fs.is_regular_file(Path::new("/dev/null")).unwrap());
+}
+
+#[test]
 fn test_real_write_file_content_replaces_contents_and_removes_tmp_file() {
     let fs = RealFilesystem;
     let temp_dir = tempfile::tempdir().unwrap();
