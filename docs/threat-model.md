@@ -204,8 +204,9 @@ upper changes.
   and `[persona] mask_inherited` writes masks for autostart entries and user
   units into the upper at entry, so they never run in the hidden session.
   Lingering and autologin are reported, not masked; autologin logs the account
-  in again at every switch, and can be turned off in the hidden session's own
-  configuration (see the
+  in again at every switch (Plasma Login Manager 6.7 and later, on systemd 256
+  and later, only with `Relogin=true`), and can be turned off in the hidden
+  session's own configuration (see the
   [operator guide](operator-guide.md#inherited-autostart-services-and-autologin)).
 - **Network identity.** The overlay does not change machine-id, hostname, MAC
   addresses or NetworkManager profiles (including VPN autoconnect). The hidden
