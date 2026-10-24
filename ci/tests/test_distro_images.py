@@ -117,33 +117,74 @@ NVT_IMAGES = {
 
 
 class LinkCheckTest(unittest.TestCase):
-    def test_shipped_table_offline_checks_nothing_and_says_so(self) -> None:
+    def test_offline_shipped_table_checks_staged_dates_only(self) -> None:
         # Debian and Ubuntu, the enabled entries, are nix-vm-test pins with no
-        # lapse date: offline, nothing about them can be checked, and a pass
-        # would claim a check that never ran.
-        report = di.link_check(di.load_table(), offline=True)
-        self.assertEqual(report.checked, [])
-        self.assertTrue(report.unchecked)
+        # lapse date: offline, nothing about them can be checked, and the
+        # staged dates it can check say nothing about what CI boots, so the
+        # run still fails rather than pass on them.
+        report = di.link_check(di.load_table(), today=THE_DAY, offline=True)
+        self.assertTrue(report.checked)
+        for line in report.checked:
+            self.assertIn(" (staged): lapses ", line)
+        self.assertIn("debian-13: offline, and no upstreamUntil", report.unchecked)
         self.assertEqual(len(report.failures), 1, report.failures)
         self.assertIn("no enabled entry could be checked", report.failures[0])
 
-    def test_shipped_table_probes_every_enabled_nix_vm_test_pin(self) -> None:
+    def test_shipped_table_probes_every_pin_that_names_a_url(self) -> None:
+        # Every upstream and nix-vm-test pin is probed, the staged ones too;
+        # pending and mirror entries name no URL.
         probed: list[str] = []
 
         def url_ok(url: str) -> bool:
             probed.append(url)
             return True
 
+        table = di.load_table()
         report = di.link_check(
-            di.load_table(),
+            table,
             today=THE_DAY,
             url_ok=url_ok,
             pin_url=lambda source: f"https://x.invalid/{source['image']}",
         )
         self.assertEqual(report.failures, [])
-        enabled = [n for n, e in di.load_table().items() if e["enabled"]]
-        self.assertEqual([line.split(":")[0] for line in report.checked], enabled)
-        self.assertEqual(len(probed), len(enabled))
+        checked = [line.split(":")[0] for line in report.checked]
+        for name, entry in table.items():
+            if entry["enabled"]:
+                self.assertIn(name, checked)
+        pinned = [
+            name
+            for name, entry in table.items()
+            if entry["source"]["kind"] in ("upstream", "nix-vm-test")
+        ]
+        self.assertEqual(len(probed), len(pinned))
+        staged = [name for name in pinned if not table[name]["enabled"]]
+        self.assertTrue(staged, "no staged pin to probe")
+
+    def test_shipped_staged_pins_fail_before_they_lapse(self) -> None:
+        # The property the staged Fedora and Arch pins were missing: each one
+        # fails the check LEAD_DAYS before its upstreamUntil, though it is not
+        # in the matrix.
+        table = di.load_table()
+        staged = {
+            name: datetime.date.fromisoformat(entry["upstreamUntil"])
+            for name, entry in table.items()
+            if not entry["enabled"] and entry["upstreamUntil"] is not None
+        }
+        self.assertTrue(staged)
+        for name, until in staged.items():
+            with self.subTest(name=name):
+                day = until - datetime.timedelta(days=di.LEAD_DAYS)
+                failures = di.link_check(table, today=day, offline=True).failures
+                self.assertIn(
+                    f"{name} (staged): upstream pin lapses {until.isoformat()}"
+                    f" (within {di.LEAD_DAYS} days or past); repin it",
+                    failures,
+                )
+                day -= datetime.timedelta(days=1)
+                failures = di.link_check(table, today=day, offline=True).failures
+                self.assertFalse(
+                    [f for f in failures if f.startswith(f"{name} ")], failures
+                )
 
     def test_expired_enabled_pin_fails(self) -> None:
         # The property the brief names: a deliberately expired upstreamUntil on
@@ -164,19 +205,106 @@ class LinkCheckTest(unittest.TestCase):
         self.assertEqual(report.failures, [])
         self.assertEqual(report.checked, ["fedora-44: lapses 2027-01-01"])
 
-    def test_disabled_entry_is_never_checked(self) -> None:
+    def test_an_expired_staged_pin_fails(self) -> None:
+        # A staged entry is out of the matrix, not out of the check: its pin
+        # lapsing breaks every boot of it outside the matrix just the same.
         table = {
             "fedora-44": upstream_entry(upstreamUntil="2027-01-01"),
-            "fedora-45": upstream_entry(enabled=False, upstreamUntil="2020-01-01"),
+            "arch-boxes": upstream_entry(enabled=False, upstreamUntil="2020-01-01"),
         }
         report = di.link_check(table, today=THE_DAY, offline=True)
-        self.assertEqual(report.failures, [])
-        self.assertEqual(len(report.checked), 1)
+        self.assertEqual(
+            report.failures,
+            [
+                "arch-boxes (staged): upstream pin lapses 2020-01-01"
+                f" (within {di.LEAD_DAYS} days or past); repin it"
+            ],
+        )
+        self.assertEqual(
+            report.checked,
+            ["fedora-44: lapses 2027-01-01", "arch-boxes (staged): lapses 2020-01-01"],
+        )
         self.assertEqual(report.unchecked, [])
 
+    def test_a_staged_pin_fails_within_the_lead_window(self) -> None:
+        entry = upstream_entry(enabled=False, upstreamUntil="2026-11-03")
+        table = {"fedora-44": upstream_entry(), "arch-boxes": entry}
+        failures = di.link_check(table, today=THE_DAY, offline=True).failures
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn(
+            "arch-boxes (staged): upstream pin lapses 2026-11-03", failures[0]
+        )
+
+    def test_an_unreachable_staged_url_fails_when_online(self) -> None:
+        entry = upstream_entry(enabled=False, upstreamUntil="2099-01-01")
+        table = {"fedora-44": upstream_entry(), "arch-boxes": entry}
+        probed: list[str] = []
+
+        def url_ok(url: str) -> bool:
+            probed.append(url)
+            return False
+
+        report = di.link_check(table, today=THE_DAY, url_ok=url_ok)
+        self.assertEqual(len(probed), 2)
+        self.assertIn(
+            "arch-boxes (staged): image URL is unreachable:"
+            " https://example.invalid/image.qcow2",
+            report.failures,
+        )
+
+    def test_a_staged_pending_entry_is_checked_by_its_date_alone(self) -> None:
+        # Fedora 45 before it ships: nothing pinned to probe, but a lapse date
+        # that is still checked, so a pending entry left behind fails too.
+        pending = upstream_entry(
+            enabled=False,
+            upstreamUntil="2026-10-30",
+            source={"kind": "pending", "family": "fedora", "release": "45"},
+        )
+        undated = upstream_entry(
+            enabled=False,
+            upstreamUntil=None,
+            source={"kind": "pending", "family": "ubuntu", "release": "26.10"},
+        )
+        table = {
+            "fedora-44": upstream_entry(),
+            "fedora-45": pending,
+            "ubuntu-26.10": undated,
+        }
+        probed: list[str] = []
+
+        def url_ok(url: str) -> bool:
+            probed.append(url)
+            return True
+
+        report = di.link_check(table, today=THE_DAY, url_ok=url_ok)
+        self.assertEqual(probed, ["https://example.invalid/image.qcow2"])
+        self.assertIn("fedora-45 (staged): lapses 2026-10-30", report.checked)
+        self.assertEqual(
+            report.unchecked,
+            ["ubuntu-26.10 (staged): a pending source has no URL to probe"],
+        )
+        self.assertEqual(len(report.failures), 1, report.failures)
+        self.assertIn("fedora-45 (staged): upstream pin lapses", report.failures[0])
+
+    def test_an_unreadable_lapse_date_fails_as_a_finding(self) -> None:
+        # The schema check refuses such a date; the link check, which does not
+        # run it first, names it instead of stopping on a traceback.
+        entry = upstream_entry(enabled=False, upstreamUntil="soon")
+        table = {"fedora-44": upstream_entry(), "arch-boxes": entry}
+        report = di.link_check(table, today=THE_DAY, offline=True)
+        self.assertEqual(
+            report.failures,
+            ["arch-boxes (staged): upstreamUntil 'soon' is not a YYYY-MM-DD date"],
+        )
+        self.assertIn(
+            "arch-boxes (staged): its upstreamUntil unreadable", report.checked
+        )
+
     def test_a_table_with_nothing_enabled_fails(self) -> None:
+        # A staged entry checked clean is no check of what CI boots.
         entry = upstream_entry(enabled=False, upstreamUntil="2099-01-01")
         report = di.link_check({"fedora-44": entry}, today=THE_DAY, offline=True)
+        self.assertEqual(report.checked, ["fedora-44 (staged): lapses 2099-01-01"])
         self.assertEqual(len(report.failures), 1, report.failures)
         self.assertIn("no enabled entry", report.failures[0])
 
@@ -292,6 +420,17 @@ class LinkCheckCommandTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("not checked debian-13", out)
         self.assertIn("no enabled entry could be checked", err)
+        self.assertNotIn("current", out)
+
+    def test_a_staged_lapse_fails_the_command(self) -> None:
+        table = {
+            "fedora-44": upstream_entry(upstreamUntil="2099-01-01"),
+            "arch-boxes": upstream_entry(enabled=False, upstreamUntil="2026-11-01"),
+        }
+        code, out, err = self.run_main(table, "--offline", "--date", "2026-10-20")
+        self.assertEqual(code, 1)
+        self.assertIn("checked arch-boxes (staged): lapses 2026-11-01", out)
+        self.assertIn("arch-boxes (staged): upstream pin lapses 2026-11-01", err)
         self.assertNotIn("current", out)
 
 
