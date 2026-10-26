@@ -55,16 +55,18 @@ MARGIN = Fraction(5, 4)
 # ordinary shards may get (66 mutants), twice the ordinary one.
 SHARD_MINUTES = 15
 MAX_SHARD_MINUTES = 30
-# The most shards one diff gets. GitHub runs a limited number of hosted jobs at
-# once for the whole account (20 on GitHub Free, 40 on Pro), and every workflow
-# of every open pull request draws on them: a pull request into next starts up
-# to thirty other jobs (ci.yml's, the E2E plan and up to ten shards, CodeQL,
-# fuzzing), and this repository's pull requests ran up to 39 jobs at once on
-# 24 October 2026. Twelve keeps this lane, which gates nothing, to under a
-# third of that. Twelve ordinary shards hold 360 mutants: of the pull requests
-# into next from 22 to 24 October, diffed as the lane diffs them now, only one
-# needed more (409, which fit twelve 18-minute boxes), and the next largest
-# held 275.
+# The most shards one diff gets. GitHub runs only so many hosted jobs at once
+# for an account, and every workflow of every open pull request draws on them:
+# a push to a pull request into next starts up to thirty other jobs (ci.yml's,
+# the E2E plan and up to ten shards, CodeQL, fuzzing). On 24 October 2026 up to
+# 46 jobs of this repository's pull-request runs ran at once, 43 at most when
+# this lane's own are left out and 49 when the push, scheduled and dispatched
+# runs count too (from the jobs API, over every run created that day: each job
+# that ran on a runner, from its start to its end). Twelve keeps this lane,
+# which gates nothing, to about a quarter of that peak. Twelve ordinary shards
+# hold 360 mutants: of the pull requests into next from 22 to 24 October,
+# diffed as the lane diffs them now, only one needed more (409, which fit
+# twelve 18-minute boxes), and the next largest held 275.
 MAX_SHARDS = 12
 
 TITLE = "Mutation testing on the diff: the plan"
