@@ -79,7 +79,8 @@ const DERIVATIVE_UPGRADE: &str = "as your distribution's upgrade guide describes
 ///   family, or a full update of a rolling system. The row holds only for a
 ///   host detection placed in the row's family. A host refused before the
 ///   table is consulted, such as a Fedora booted from an ostree or composefs
-///   image, has no family and does not upgrade the way its row says.
+///   image or a host whose PID 1 is not systemd, has no family and does not
+///   upgrade the way its row says.
 /// - A derivative NAILS runs on without listing it upgrades to a release built
 ///   on one its base family is tested on.
 /// - Any other host, and a run without a detected host, is pointed at the
