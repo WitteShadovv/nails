@@ -1,0 +1,5 @@
+{"table":"Refs","row":{"referrer":7,"reference":3}}
+{"table":"DerivationOutputs","row":{"drv":7,"id":"out","path":"/nix/store/o"}}
+{"table":"sqlite_sequence","row":{"name":"ValidPaths","seq":576}}
+{"table":"SchemaMigrations","row":{"migration":"20220326"}}
+{"table":"sqlite_master","row":{"type":"table","name":"Refs","tbl_name":"Refs","rootpage":4,"sql":"CREATE TABLE Refs (\n referrer integer)"}}

@@ -1,0 +1,3 @@
+{"table":"ValidPaths","row":{"id":1,"path":"/nix/store/a","hash":"sha256:00ab","registrationTime":1,"deriver":null,"narSize":1216,"ultimate":null,"sigs":null,"ca":null}}
+
+{"table":"ValidPaths","row":{"id":2,"path":"/nix/store/b","hash":"sha256:00ab","registrationTime":1,"deriver":null,"narSize":1216,"ultimate":null,"sigs":null,"ca":null}}
