@@ -155,14 +155,15 @@ repos:
         pass_filenames: false
         files: ^(fuzz/|scripts/check-fuzz-targets\.sh$)
 
-      # Every deny.toml advisory ignore needs a current "# expires:" date;
-      # this is offline and only runs when deny.toml changes.
+      # Every advisory ignore of deny.toml and gui/deny.toml needs a current
+      # "# expires:" date; this is offline and only runs when either changes.
+      # Without arguments the check reads both.
       - id: deny-ignores
         name: deny.toml ignore expiry
         entry: python3 ci/deny_ignores.py
         language: system
         pass_filenames: false
-        files: ^deny\.toml$
+        files: ^(gui/)?deny\.toml$
 
       # Push gate: formatting, clippy, file sizes, the fuzz targets and the full
       # test suite.

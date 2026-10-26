@@ -303,10 +303,12 @@ jobs:
       - name: Run the side workspaces' tests
         run: just side-tests
 
-  # Dependency policy over the shipped graph. Advisory results follow the
-  # RustSec database rather than this repository, so they only gate a change
-  # to the dependencies or their policy; scheduled.yml scans the full graph
-  # weekly and never gates a merge.
+  # Dependency policy over the shipped graph: `just deny` checks the root
+  # workspace against deny.toml and the gui/ workspace against gui/deny.toml,
+  # and the expiry check reads both files. Advisory results follow the RustSec
+  # database rather than this repository, so they only gate a change to the
+  # dependencies or their policy; scheduled.yml scans the full graph weekly and
+  # never gates a merge.
   deps:
     name: deps
     needs: changes

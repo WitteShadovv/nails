@@ -43,8 +43,9 @@ FILTERS: dict[str, re.Pattern[str]] = {
     # outside the root one: the lint job checks their formatting and clippy,
     # and the side-tests job runs their tests.
     "side": re.compile(r"^(setup|gui)/"),
-    # The dependency graph and its policy; the advisory check gates on these.
-    "deps": re.compile(r"^(Cargo\.lock|deny\.toml|(.+/)?Cargo\.toml)$"),
+    # The dependency graphs and their cargo-deny policies, the root workspace's
+    # and the gui/ workspace's; the advisory check gates on these.
+    "deps": re.compile(r"^((gui/)?(Cargo\.lock|deny\.toml)|(.+/)?Cargo\.toml)$"),
     # The flake and what it evaluates besides the Rust sources.
     "nix": re.compile(r"^(flake\.(nix|lock)$|nix/|\.github/actions/setup-nix/)|\.nix$"),
     # The CI tooling: workflows, composite actions, the ci package, scripts,

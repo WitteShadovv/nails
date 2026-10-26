@@ -1,0 +1,76 @@
+# cargo-deny configuration for the gui/ workspace
+#
+# The policy of the main deny.toml at the repository root, which explains each
+# setting, applied to the dependency graph of the graphical interface. The
+# toolkit the interface will be built on brings a large graph of its own; this
+# file is in place before it, so that every crate it brings in is checked from
+# the first. Every line that differs from the main deny.toml is marked "GUI:".
+#
+# The justfile checks this file in the recipes, and at the scopes, that check
+# the main one:
+#
+#   just deny        The x86_64 Linux targets without dev-dependencies. This is
+#                    the merge gate in CI.
+#   just deny-full   Every target and every dev-dependency. Runs weekly in
+#                    .github/workflows/scheduled.yml and never blocks a merge.
+#
+# Both name this file with --config. Without it, cargo-deny takes the deny.toml
+# nearest to gui/Cargo.toml, which is the main one if this file goes missing.
+
+# =============================================================================
+# ADVISORIES
+# =============================================================================
+
+[advisories]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+
+# Every entry needs a reason and a "# expires: YYYY-MM-DD" line in the comment
+# block directly above it, at most 180 days ahead; ci/deny_ignores.py checks
+# this file as it checks the main one.
+# GUI: none of the main file's ignores applies here: they concern crates of
+# the main workspace's graph.
+ignore = []
+
+# =============================================================================
+# LICENSES
+# =============================================================================
+
+[licenses]
+confidence-threshold = 0.8
+
+# GUI: no licence is allowed yet, as the workspace has no third-party crate.
+# The main deny.toml lists only the licences its graph uses, and here too a
+# licence joins the list with the first crate that needs it. A licence the main
+# list does not hold, and an exception for a single crate, go in with their
+# reason in the change that brings that crate in, not ahead of it.
+allow = []
+
+# The workspace's own crates are not checked.
+[licenses.private]
+ignore = true
+registries = []
+
+# =============================================================================
+# BANS
+# =============================================================================
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+skip = []
+skip-tree = []
+deny = []
+
+# =============================================================================
+# SOURCES
+# =============================================================================
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

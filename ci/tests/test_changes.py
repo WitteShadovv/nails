@@ -123,14 +123,25 @@ class SelectTest(unittest.TestCase):
             "setup/nails-setup/data/eff_large_wordlist.txt",
             "setup/Cargo.lock",
             "gui/nails-gui/src/main.rs",
-            "gui/Cargo.lock",
         ):
             with self.subTest(path=path):
                 self.assertEqual(changes.select([path]), only("side"))
-        for path in ("setup/Cargo.toml", "setup/nails-setup/Cargo.toml"):
+        for path in (
+            "setup/Cargo.toml",
+            "setup/nails-setup/Cargo.toml",
+            "gui/Cargo.toml",
+            "gui/nails-gui/Cargo.toml",
+        ):
             with self.subTest(path=path):
                 self.assertEqual(changes.select([path]), only("side", "deps"))
         self.assertEqual(changes.select(["docs/setup/notes.md"]), only("docs"))
+
+    def test_gui_graph_and_policy_are_dependency_changes(self) -> None:
+        # gui/ has a cargo-deny policy of its own, which the advisory check
+        # covers; setup/ has none, so its lock above is no dependency change.
+        for path in ("gui/Cargo.lock", "gui/deny.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("side", "deps"))
 
     def test_source_file_is_not_a_dependency_change(self) -> None:
         self.assertEqual(changes.select(["nails-core/src/state.rs"]), only("rust"))
@@ -142,6 +153,9 @@ class SelectTest(unittest.TestCase):
 
     def test_deny_policy_is_only_a_dependency_change(self) -> None:
         self.assertEqual(changes.select(["deny.toml"]), only("deps"))
+        for path in ("docs/deny.toml", "setup/deny.toml"):
+            with self.subTest(path=path):
+                self.assertFalse(changes.select([path])["deps"])
 
     def test_nix_files_run_the_nix_jobs(self) -> None:
         for path in (
@@ -212,6 +226,9 @@ class SelectTest(unittest.TestCase):
             "fuzz/Cargo.toml",
             "fuzz/Cargo.lock",
             "deny.toml",
+            "gui/Cargo.toml",
+            "gui/Cargo.lock",
+            "gui/deny.toml",
             "nix/checks.nix",
             "ci/docs_check.py",
             "ci/e2e/plan.py",

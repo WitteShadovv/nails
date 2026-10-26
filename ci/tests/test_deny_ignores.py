@@ -8,6 +8,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ci import deny_ignores
 from ci.deny_ignores import ConfigError, Ignore, parse_ignores
@@ -217,10 +218,70 @@ class MainTest(unittest.TestCase):
                 deny_ignores.main(["--max-days", "-1"])
         self.assertEqual(raised.exception.code, 2)
 
-    def test_default_config_is_the_repository_deny_toml(self) -> None:
+    def run_configs(self, texts: list[str], *extra: str) -> tuple[int, str, str]:
+        """Run main over one file per text, each named with its index."""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["--today", TODAY.isoformat(), *extra]
+            for index, text in enumerate(texts):
+                path = Path(tmp) / f"deny-{index}.toml"
+                path.write_text(text, encoding="utf-8")
+                argv += ["--config", str(path)]
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = deny_ignores.main(argv)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_every_config_is_checked_and_reported(self) -> None:
+        code, stdout, stderr = self.run_configs(
+            [config(single("2026-12-31")), config(single("2026-09-30"))]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("deny-0.toml: 1 advisory ignore(s)", stdout)
+        self.assertIn("deny-1.toml: line 6: RUSTSEC-2099-0001: expired", stderr)
+
+    def test_an_expired_ignore_in_a_later_config_fails(self) -> None:
+        code, _, stderr = self.run_configs(
+            [config(""), config(""), config(single("2026-09-30"))]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("deny-2.toml: line 6", stderr)
+
+    def test_an_unreadable_config_outranks_an_expired_ignore(self) -> None:
+        for texts in (
+            ["[advisories]\nignore = [\n", config(single("2026-09-30"))],
+            [config(single("2026-09-30")), "[advisories]\nignore = [\n"],
+        ):
+            with self.subTest(texts=texts):
+                code, _, stderr = self.run_configs(texts)
+                self.assertEqual(code, 2)
+                self.assertIn("error: invalid TOML", stderr)
+                self.assertIn("expired", stderr)
+
+    def test_without_config_every_default_is_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            current, expired = Path(tmp) / "deny.toml", Path(tmp) / "gui.toml"
+            current.write_text(config(single("2026-12-31")), encoding="utf-8")
+            expired.write_text(config(single("2026-09-30")), encoding="utf-8")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.object(deny_ignores, "DEFAULT_CONFIGS", (current, expired)),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = deny_ignores.main(["--today", TODAY.isoformat()])
+        self.assertEqual(code, 1)
+        self.assertIn(f"{current}: 1 advisory ignore(s)", stdout.getvalue())
+        self.assertIn(f"{expired}: line 6", stderr.getvalue())
+
+    def test_default_configs_are_the_repository_policies(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        self.assertEqual(deny_ignores.DEFAULT_CONFIG, repo_root / "deny.toml")
-        self.assertTrue(deny_ignores.DEFAULT_CONFIG.is_file())
+        self.assertEqual(
+            deny_ignores.DEFAULT_CONFIGS,
+            (repo_root / "deny.toml", repo_root / "gui" / "deny.toml"),
+        )
+        for path in deny_ignores.DEFAULT_CONFIGS:
+            with self.subTest(path=path):
+                self.assertTrue(path.is_file())
 
 
 if __name__ == "__main__":
