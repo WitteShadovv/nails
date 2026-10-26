@@ -7,6 +7,39 @@
 //! The mechanics are in [`crate::session`] and `nails_teardown::whole_root`;
 //! this adds the pre-flight registry, the hidden NixOS configuration, the
 //! state file and the backend chain.
+//!
+//! The steps that enter, commit, leave and recover are this crate's alone. A
+//! front end runs them through the facade ([`crate::app`]): the handles its
+//! lock steps hand out enter, commit and leave, and
+//! [`app::recover`](crate::app::recover) recovers. None of them can be called
+//! from outside:
+//!
+//! ```compile_fail
+//! fn enter(manager: &mut nails_core::NailsManager<nails_core::RealFilesystem>) {
+//!     let options = nails_core::EnterOptions::default();
+//!     let _ = manager.enter_session(&options, &nails_core::session::RealEntryHost);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn commit(manager: &mut nails_core::NailsManager<nails_core::RealFilesystem>) {
+//!     let target = nails_core::session::RealTargetHost::for_plan(None);
+//!     let _ = manager.trigger_entry(&target, &nails_core::session::RealEntryHost);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn leave(manager: &mut nails_core::NailsManager<nails_core::RealFilesystem>) {
+//!     let target = nails_core::session::RealTargetHost::for_plan(None);
+//!     let _ = manager.leave_session(nails_core::session::LeaveTo::Decoy, &target);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! fn recover(manager: &mut nails_core::NailsManager<nails_core::RealFilesystem>) {
+//!     let _ = manager.recover_session(&nails_core::session::RealEntryHost);
+//! }
+//! ```
 
 use super::{NailsManager, PreflightOptions};
 use crate::error::{NailsError, Result};
@@ -64,14 +97,18 @@ impl EnterOptions {
     }
 }
 
-/// What [`NailsManager::enter_session`] did.
+/// What staging an entry ([`LockedActivation::enter`]) did.
+///
+/// [`LockedActivation::enter`]: crate::app::activate::LockedActivation::enter
 #[derive(Debug, Clone)]
 pub enum EnterOutcome {
     /// Already in the hidden root; nothing changed.
     AlreadyActive,
-    /// The entry is prepared and armed; [`NailsManager::trigger_entry`] starts
-    /// the soft-reboot, and a watching event stream sees the activation end
-    /// there.
+    /// The entry is prepared and armed; committing it
+    /// ([`LockedActivation::commit`]) starts the soft-reboot, and a watching
+    /// event stream sees the activation end there.
+    ///
+    /// [`LockedActivation::commit`]: crate::app::activate::LockedActivation::commit
     Prepared {
         /// The prepared entry.
         entry: Box<entry::Entry>,
@@ -82,7 +119,7 @@ pub enum EnterOutcome {
     },
 }
 
-/// What [`NailsManager::recover_session`] did.
+/// What a recovery ([`app::recover`](crate::app::recover)) did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionRecovery {
     /// Nothing was left to recover.
@@ -238,7 +275,11 @@ impl<F: Filesystem> NailsManager<F> {
     /// boundary with [`NailsError::Cancelled`], everything undone: the last
     /// boundary is right before the state is recorded, after which the caller
     /// only enqueues the soft-reboot.
-    pub fn enter_session(
+    ///
+    /// Only the activation's locked handle calls it
+    /// ([`LockedActivation::enter`](crate::app::activate::LockedActivation::enter)),
+    /// under the state lock and over a state file it trusts.
+    pub(crate) fn enter_session(
         &mut self,
         options: &EnterOptions,
         host: &dyn EntryHost,
@@ -414,7 +455,10 @@ impl<F: Filesystem> NailsManager<F> {
     /// Enqueue the soft-reboot into the prepared root. On failure the entry is
     /// rolled back and the state returns to inactive. Either way the
     /// activation has ended, which a watching event stream sees here.
-    pub fn trigger_entry(
+    ///
+    /// Only the activation's locked handle calls it
+    /// ([`LockedActivation::commit`](crate::app::activate::LockedActivation::commit)).
+    pub(crate) fn trigger_entry(
         &mut self,
         target: &dyn TargetHost,
         entry_host: &dyn EntryHost,
@@ -442,7 +486,10 @@ impl<F: Filesystem> NailsManager<F> {
     /// Leave the hidden root: soft-reboot back to the plain decoy (or power
     /// off). The state file is set inactive first, while the hidden volume is
     /// still mounted.
-    pub fn leave_session(
+    ///
+    /// Only the deactivation's locked handle calls it
+    /// ([`LockedDeactivation::leave`](crate::app::deactivate::LockedDeactivation::leave)).
+    pub(crate) fn leave_session(
         &mut self,
         to: LeaveTo,
         host: &dyn TargetHost,
@@ -480,7 +527,11 @@ impl<F: Filesystem> NailsManager<F> {
     /// Remove the leftovers of an interrupted entry on the decoy. Refused in
     /// the hidden session and while an activation is entering, each with its
     /// own [`RecoverError`].
-    pub fn recover_session(
+    ///
+    /// Only [`app::recover`](crate::app::recover) calls it, once it has taken
+    /// the state lock the way emergency does, which goes on without a lock it
+    /// cannot get.
+    pub(crate) fn recover_session(
         &mut self,
         host: &dyn EntryHost,
     ) -> std::result::Result<SessionRecovery, RecoverError> {

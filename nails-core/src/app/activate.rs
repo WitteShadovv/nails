@@ -21,9 +21,13 @@
 //!    [`LockedActivation::commit`] kills the decoy's shells and enqueues the
 //!    soft-reboot.
 //!
-//! Only the locked handle enters and commits, so no front end can activate
-//! without the lock or over a state file it cannot trust. The confirmation and
-//! the cancel checks between the steps are the front end's.
+//! Only the locked handle enters and commits, and the manager's entry and
+//! commit steps are this crate's alone, so a front end that activates through
+//! this facade cannot do so without the lock or over a state file it cannot
+//! trust. Below the facade the session's entry mechanics and the manager's
+//! state writes stay public and hold neither gate ([the facade](super) names
+//! them). The confirmation and the cancel checks between the steps are the
+//! front end's.
 
 use std::path::Path;
 

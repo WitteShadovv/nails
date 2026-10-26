@@ -16,10 +16,10 @@
 //! code without re-deriving the decision. Nothing here prints, prompts or reads
 //! an exit code: those are the front end's.
 //!
-//! The gates are in the types. An operation that writes under the exclusive
-//! state lock ([`lock`]) hands out the handle that runs its writing steps
-//! only from its lock step, which takes the lock and holds it for as long as
-//! the handle lives:
+//! In this facade the gates are in the types. An operation here that writes
+//! under the exclusive state lock ([`lock`]) hands out the handle that runs
+//! its writing steps only from its lock step, which takes the lock and holds
+//! it for as long as the handle lives:
 //!
 //! - [`activate::ReadyActivation::lock`] also refuses, under the lock, a state
 //!   file it cannot trust, and hands out the [`activate::LockedActivation`]
@@ -29,12 +29,33 @@
 //! - [`discard_upper::ReadyDiscard::lock`] hands out the
 //!   [`discard_upper::LockedDiscard`] that alone plans and applies.
 //!
-//! [`init`] and [`recover`] take the lock themselves and [`emergency`] runs
-//! without it, so a front end must not hold it around them: the lock is taken
-//! per open file, so [`init`] would fail on a lock its own front end holds,
-//! and [`recover`] would wait for it in vain and go on without it. No outcome
-//! carries a secret: a [`rehearse`] outcome names the canary by its
-//! fingerprint and redacts the token from every path.
+//! The manager's steps that enter, commit, leave and recover are this
+//! crate's alone, so a front end reaches them only through these handles and
+//! [`recover`]. [`init`] and [`recover`] take the lock themselves and
+//! [`emergency`] runs without it, so a front end must not hold it around
+//! them: the lock is taken per open file, so [`init`] would fail on a lock its
+//! own front end holds, and [`recover`] would wait for it in vain and go on
+//! without it. No outcome carries a secret: a [`rehearse`] outcome names the
+//! canary by its fingerprint and redacts the token from every path.
+//!
+//! The gates hold for a front end that drives an operation through this
+//! facade. The layers below it stay public, and none of them takes the lock
+//! or runs the trusted-state check, so a front end that calls one goes around
+//! the gates:
+//!
+//! - the manager's [`force_state`](crate::NailsManager::force_state), which
+//!   writes the state file;
+//!   [`stage_hidden_config`](crate::NailsManager::stage_hidden_config), which
+//!   writes the hidden configuration onto the hidden volume; and
+//!   [`plan_reset_upper`](crate::NailsManager::plan_reset_upper),
+//!   [`plan_reset_upper_on`](crate::NailsManager::plan_reset_upper_on) and
+//!   [`apply_reset_upper`](crate::NailsManager::apply_reset_upper), which
+//!   plan and delete what a discard deletes;
+//! - the session's entry and way back that this crate re-exports from
+//!   `nails-session`, such as
+//!   [`session::entry::prepare`](crate::session::entry::prepare) and
+//!   [`session::leave`](fn@crate::session::leave);
+//! - the whole-root mechanics of `nails-teardown` below those.
 //!
 //! Two things stay with the front end:
 //!
