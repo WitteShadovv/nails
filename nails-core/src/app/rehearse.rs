@@ -499,7 +499,9 @@ impl Rehearsal {
         // partition table; a live device is classified from the mount table.
         // Either way a compressed or copy-on-write decoy, an encrypted
         // container, or storage the scan does not identify reports "not
-        // checked".
+        // checked", and so does a --device that holds the folder of an
+        // eCryptfs mount, which sysfs shows for a whole disk too. An offline
+        // scan reads no mount table, so no eCryptfs mount reaches it.
         if options.offline {
             return Ok(options
                 .images
@@ -513,7 +515,7 @@ impl Rehearsal {
             return Ok(options
                 .devices
                 .iter()
-                .map(|device| ScanTarget::classified(device.clone(), &mounts))
+                .map(|device| ScanTarget::classified(&RealFilesystem, device.clone(), &mounts))
                 .collect());
         }
         let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();

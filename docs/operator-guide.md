@@ -991,8 +991,14 @@ checked, never as clean:
   mount, the type ntfs-3g mounts NTFS as, which does not name the format;
 - file-level encryption: an ext4 or f2fs with the encrypt feature (fscrypt),
   which the scan reads from its superblock whether it is mounted or not, and a
-  filesystem with an eCryptfs mount on it (an encrypted home or `Private`
-  folder);
+  device that holds the folder of an eCryptfs mount (an encrypted home or
+  `Private` folder). That is the filesystem the folder lies on, and for a
+  device named with `--device` also a whole disk with that filesystem in a
+  partition, or a device below it (the partition under a LUKS or LVM mapping,
+  an md array's member). A `--device` the scan cannot place against such a
+  folder, because the folder lies on a tmpfs, an overlay or a network share,
+  or because sysfs lists no block device at the path, is reported as not
+  checked too;
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
@@ -1003,13 +1009,18 @@ checked, never as clean:
   that ends before its swap area does, or a whole-disk image that ends before a
   partition its table lists, or before the disk its GPT was written for.
 
-Two kinds of file-level encryption escape that list, and a device that holds
-them can read as clean: an eCryptfs folder that is not mounted while the scan
-runs, since the scan sees one only through its mount, and a vault a FUSE tool
-encrypts (gocryptfs, CryFS or EncFS, as Plasma Vaults use), which the scan does
-not recognise at all. Log in as the eCryptfs folder's owner, which mounts it,
-before you scan, and do not take a clean scan of a disk that holds such a vault
-as proof.
+File-level encryption escapes that list in three cases, and a device that
+holds it can read as clean:
+
+- an eCryptfs folder that is not mounted while the scan runs, since the scan
+  sees one only through its mount;
+- every eCryptfs folder in an `--offline` scan, which reads no mount table;
+- a vault a FUSE tool encrypts (gocryptfs, CryFS or EncFS, as Plasma Vaults
+  use), which the scan does not recognise at all.
+
+Log in as the eCryptfs folder's owner, which mounts it, and scan the decoy's
+devices on the decoy itself rather than an image of them. Do not take a clean
+scan of a disk that holds a FUSE tool's vault as proof.
 
 A mounted device is judged by its mount. A device that is not mounted
 (`--device`) or an image (`--offline --image`) has no mount to judge it by, so

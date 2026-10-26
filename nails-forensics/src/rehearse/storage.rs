@@ -36,7 +36,7 @@
 //!   under it encrypted in a folder of the filesystem below. No mount option
 //!   shows the encrypt feature, so the superblock decides, mounted or not; an
 //!   eCryptfs mount marks the filesystem its folder lies on while it is
-//!   mounted.
+//!   mounted, and every device named for a scan that holds that filesystem.
 //!
 //! On such a decoy the rehearsal reports the device "not checked" rather than
 //! clean. This module turns a filesystem's type and its per-superblock mount
@@ -65,7 +65,8 @@ pub enum ScanBlindSpot {
     /// so it stores the files of an encrypted directory encrypted.
     EncryptionCapable,
     /// A filesystem with an eCryptfs mount stacked on it, which stores the
-    /// files under that mount encrypted in a folder of it.
+    /// files under that mount encrypted in a folder of it, or a device that
+    /// holds such a filesystem (a whole disk, a device below a mapping).
     StackedEncryption,
 }
 
