@@ -133,6 +133,69 @@ def _problems_for_entry(name: str, entry: object) -> list[str]:
         except ValueError:
             out.append(f"{name}: upstreamUntil must be null or YYYY-MM-DD")
     out.extend(_source_problems(name, entry, entry["source"]))
+    out.extend(_known_failed_problems(name, entry.get("knownFailedUnits")))
+    return out
+
+
+# The optional ``knownFailedUnits`` of an entry: the units the smoke scenario
+# must find failed in each phase, mapped to a line their failed start logs, and
+# the units the release's warning names that the image does not install
+# (nix/distro-tests/images.nix describes it and asserts the same shape).
+KNOWN_FAILED_PHASES = ("hiddenSession", "afterReturn")
+KNOWN_FAILED_KEYS = frozenset({*KNOWN_FAILED_PHASES, "notInImage"})
+
+# A systemd unit name: no slash or space, and a unit type as its suffix. The
+# space class is POSIX's [:space:], which images.nix matches with.
+_UNIT_NAME = re.compile(
+    r"[^/ \t\n\v\f\r]+\."
+    r"(?:automount|device|mount|path|scope|service|slice|socket|swap|target|timer)"
+)
+
+
+def _is_unit_name(unit: object) -> bool:
+    return isinstance(unit, str) and _UNIT_NAME.fullmatch(unit) is not None
+
+
+def _known_failed_problems(name: str, known: object) -> list[str]:
+    if known is None:
+        return []
+    if not isinstance(known, Mapping) or set(known) != KNOWN_FAILED_KEYS:
+        return [
+            f"{name}: knownFailedUnits must be null or have exactly the keys"
+            " hiddenSession, afterReturn and notInImage"
+        ]
+    out: list[str] = []
+    named: set[str] = set()
+    for phase in KNOWN_FAILED_PHASES:
+        units = known[phase]
+        if not isinstance(units, Mapping):
+            out.append(f"{name}: knownFailedUnits.{phase} must be an object")
+            continue
+        for unit, line in units.items():
+            if not _is_unit_name(unit):
+                out.append(
+                    f"{name}: knownFailedUnits.{phase}: {unit!r} is not a unit name"
+                )
+            if not isinstance(line, str) or not line:
+                out.append(
+                    f"{name}: knownFailedUnits.{phase}.{unit} must be the non-empty"
+                    " line its failed start logs"
+                )
+            named.add(unit)
+    absent = known["notInImage"]
+    if not isinstance(absent, list):
+        return [*out, f"{name}: knownFailedUnits.notInImage must be a list"]
+    for unit in absent:
+        if not _is_unit_name(unit):
+            out.append(
+                f"{name}: knownFailedUnits.notInImage: {unit!r} is not a unit name"
+            )
+    both = sorted(named.intersection(unit for unit in absent if isinstance(unit, str)))
+    if both:
+        out.append(
+            f"{name}: knownFailedUnits names {', '.join(both)}"
+            " in notInImage and in a phase"
+        )
     return out
 
 

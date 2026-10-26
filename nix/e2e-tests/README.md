@@ -569,11 +569,15 @@ rootfs and cannot exercise journald or a soft-reboot.
 
 Layout:
 
-- `images.nix`: the distribution table, `name -> { distro, image, release }`.
-  `distro` and `image` name a release in `nix-vm-test`, which pins every cloud
-  image as a fixed-output derivation of a dated upstream build; the `flake.lock`
-  pin of `nix-vm-test` therefore fixes exactly what the suite boots. **This is
-  the one place to edit.**
+- `images.json`: the distribution table, one entry per image. Its `source`
+  names a release in `nix-vm-test` (Debian, Ubuntu), which pins every cloud
+  image as a fixed-output derivation of a dated upstream build, so the
+  `flake.lock` pin of `nix-vm-test` fixes exactly what the suite boots, or a
+  hash-pinned upstream image (Fedora, Arch). `enabled` puts the entry in the
+  smoke matrix, and the optional `knownFailedUnits` lists what its image is
+  known to fail ([below](#known-failures)). `images.nix` reads the table and
+  fails evaluation, naming the entry, when one is malformed. **This is the one
+  place to edit.**
 - `lib/distro-vm.nix`: the single call into `nix-vm-test` (`buildVmTest`), so a
   change in its attribute layout is a one-line fix.
 - `lib/hidden-root.nix`: the hidden root (ext4 on a loop device, or LUKS when
@@ -613,7 +617,11 @@ volume keeps the unit's stop from unmounting it; rehearses on that session
 `deactivate` a clean scan of the raw decoy devices in the same boot, which on
 Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
 host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
-NixOS suite) with null and positive controls.
+NixOS suite) with null and positive controls. In each phase (on the decoy
+before the first switch, in both hidden sessions and after both ways back) it
+compares the failed units with the entry's `knownFailedUnits`, and it checks
+that the `platform` row of `check` warns about every unit listed there
+([Known failures](#known-failures)).
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
@@ -623,17 +631,63 @@ disk into `<state_dir>/vm.qcow2` over QMP, where `disk_forensics.snapshot` picks
 it up. A soft-reboot carries `/run` but not the mounts below it, so the scenario
 mounts the 9p share again after every switch.
 
+### Known failures
+
+Some images fail a unit that NAILS cannot fix, an upstream issue that the
+`platform` row of `nails check` warns about on that release. An entry's
+`knownFailedUnits` states what the smoke scenario must find:
+
+```json
+"knownFailedUnits": {
+  "hiddenSession": {
+    "<unit>": "<a line its failed start logs>"
+  },
+  "afterReturn": {
+    "<unit>": "<a line its failed start logs>"
+  },
+  "notInImage": [
+    "<unit>"
+  ]
+}
+```
+
+`hiddenSession` and `afterReturn` map each unit that must be failed in both
+hidden sessions, or on the decoy after both ways back, to a line its failed
+start logs. `notInImage` lists the units the release's warning names that the
+image does not install, so the scenario cannot see them. Ubuntu 24.04 lists
+nothing, so no unit may fail there in any phase. Debian 13 has no list yet: its
+failed units are printed, not checked.
+
+The scenario fails when:
+
+- a unit that the list does not name has failed, on the decoy before the first
+  switch (where nothing may be failed) or after a switch;
+- a listed unit failed, but what it logged since its latest start lacks its
+  line, so it fails in another way;
+- a `notInImage` unit is in the image, which asks for it to move to the phases
+  with its line, or for the warning to be narrowed;
+- the `platform` row does not warn, or does not name every listed unit. The
+  rule goes one way: the row never has to pass, so the warning may cover more
+  than the list does;
+- a listed unit no longer fails, probably fixed in a newer image. Each phase
+  where it now starts is printed at once, and the scenario fails at its end,
+  naming them all. Remove the unit from those phases of the list. Then narrow
+  the release's warning (its caveat in `nails-platform/src/platform/family.rs`
+  and `docs/decoy-requirements.md`) to what still fails, after checking what it
+  names beyond the list (the `notInImage` units) on an image that has them, or
+  by hand. The warning goes only when all of it is shown fixed.
+
+`images.nix` and `python3 -m ci.distro_images check` reject a malformed list.
+
 ### Adding a distribution
 
 Once a distribution's backend and detection have landed, add one entry to
-`nix/distro-tests/images.nix`:
-
-```nix
-"fedora-41" = entry "fedora" "41" "41";   # nix-vm-test set, its image key, release
-```
-
-The scenario, the flake's `e2e-distro` attribute and the CI matrix are all
-derived by mapping over this table, so nothing else changes.
+`nix/distro-tests/images.json` with `enabled` set to `true`; an upstream Fedora
+or Arch image is pinned with `python3 -m ci.distro_images repin <name>`. The
+scenario, the flake's `e2e-distro` attribute and the CI matrix are all derived
+by mapping over this table, so nothing else changes. Once its failed units have
+been recorded in every phase, give it a `knownFailedUnits`, empty where nothing
+fails.
 
 ### The refusal of Fedora and Arch
 
@@ -698,7 +752,9 @@ nix build -L .#legacyPackages.x86_64-linux.e2e-distro.debian-13-smoke
 
 The images are those of the pinned `nix-vm-test` revision. To move forward,
 update that input (`nix flake update nix-vm-test`), check that every
-`distro`/`image` pair in `images.nix` still exists upstream (the `buildVmTest`
-assertion names any that do not), and build the scenarios on a KVM host. An
+`distro`/`image` pair in `images.json` still exists upstream (the `buildVmTest`
+assertion names any that do not), and build the scenarios on a KVM host. A
+newer image can fix a known failure, which fails the scenario until the entry's
+`knownFailedUnits` is narrowed. An
 attribute name containing a dot must be quoted on the command line, e.g.
 `.#legacyPackages.x86_64-linux.e2e-distro."ubuntu-24.04-smoke"`.

@@ -27,6 +27,11 @@
       "kind": "nix-vm-test",
       "distro": "ubuntu",
       "image": "24_04"
+    },
+    "knownFailedUnits": {
+      "hiddenSession": {},
+      "afterReturn": {},
+      "notInImage": []
     }
   },
   "ubuntu-26.04": {
