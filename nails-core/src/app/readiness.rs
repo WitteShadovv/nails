@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use nails_api::ErrorBody;
+use nails_teardown::mountinfo::MountEntry;
 use serde::Serialize;
 
 use crate::config::{PersonaConfig, PersonaMode};
@@ -337,7 +338,8 @@ impl Readiness {
             minimum_space_mb: config.minimum_space_mb,
         };
 
-        let filesystems = decoy_filesystems(&config.hidden_volume_root);
+        let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
+        let filesystems = decoy_filesystems(Path::new("/"), &mounts, &config.hidden_volume_root);
         let profile = profile_summary(
             manager
                 .discover_host_target(options.overlay_only)
@@ -374,16 +376,17 @@ fn attach_refusal<F: Filesystem>(
     }
 }
 
-/// What the fstab policy would do with each decoy filesystem, its mount points
-/// resolved in the decoy root as activation resolves them.
-fn decoy_filesystems(hidden_root: &Path) -> Vec<String> {
+/// What the fstab policy would do with each filesystem in the fstab of the
+/// decoy root at `root` (`/`, but in tests), its mount points resolved in that
+/// root as activation resolves them, given the decoy's mount table `mounts`.
+/// An entry the policy leaves as it is, such as the root itself, is not
+/// listed.
+fn decoy_filesystems(root: &Path, mounts: &[MountEntry], hidden_root: &Path) -> Vec<String> {
     use crate::session::{fstab, policy};
-    let text =
-        nails_teardown::whole_root::nextroot::read_in_root(Path::new("/"), Path::new("/etc/fstab"))
-            .unwrap_or_default();
-    let entries = fstab::parse_in_root(&text, Path::new("/"));
-    let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
-    policy::decide_all(&entries, &mounts, hidden_root)
+    let text = nails_teardown::whole_root::nextroot::read_in_root(root, Path::new("/etc/fstab"))
+        .unwrap_or_default();
+    let entries = fstab::parse_in_root(&text, root);
+    policy::decide_all(&entries, mounts, hidden_root)
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
         .map(policy::Decision::describe)
@@ -603,11 +606,52 @@ mod tests {
         assert_eq!(profile.mode, "flake");
     }
 
+    /// `decoy_filesystems` lists what the fstab policy does with each decoy
+    /// filesystem, in the order activation puts them in place, and leaves out
+    /// the entries the policy leaves as they are. Here the swap and the
+    /// unmounted `/srv/archive` are masked, the ESP is bound read-only and the
+    /// mounted `/srv/data` is overlaid, while the root, a tmpfs, a `noauto`
+    /// entry and one inside the hidden volume are not listed. An empty list
+    /// would make `check` say that only the root is overlaid.
     #[test]
-    fn decoy_filesystems_never_list_the_left_alone_entries() {
-        for line in decoy_filesystems(Path::new("/mnt/data")) {
-            assert!(!line.contains("left as is"), "{line}");
-        }
+    fn decoy_filesystems_list_each_decision_but_the_entries_left_as_they_are() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("etc")).unwrap();
+        std::fs::write(
+            root.path().join("etc/fstab"),
+            "/dev/vda2 / ext4 defaults 0 1\n\
+             /dev/vda1 /boot vfat defaults 0 2\n\
+             /dev/vda3 /srv/data ext4 defaults 0 2\n\
+             /dev/vda4 /srv/archive ext4 defaults 0 2\n\
+             /dev/vda5 /srv/spare ext4 noauto 0 2\n\
+             /dev/vda6 /mnt/data/inner ext4 defaults 0 2\n\
+             tmpfs /tmp tmpfs defaults 0 0\n\
+             /dev/vda7 none swap sw 0 0\n",
+        )
+        .unwrap();
+        let mounts = nails_teardown::mountinfo::parse_mountinfo(
+            "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+             2 1 8:1 / /boot rw - vfat /dev/vda1 rw\n\
+             3 1 8:3 / /srv/data rw - ext4 /dev/vda3 rw\n",
+        );
+
+        let rows = decoy_filesystems(root.path(), &mounts, Path::new("/mnt/data"));
+        // Each row is `<path>: <decision>`, a mask followed by its reason in
+        // the policy's own words.
+        let decisions: Vec<&str> = rows
+            .iter()
+            .map(|row| row.split(" (").next().unwrap_or(row))
+            .collect();
+        assert_eq!(
+            decisions,
+            [
+                "/dev/vda7: masked",
+                "/boot: read-only",
+                "/srv/data: overlaid",
+                "/srv/archive: masked",
+            ],
+            "{rows:?}"
+        );
     }
 
     /// `count` tallies exactly the entries whose status matches the one asked
@@ -690,22 +734,6 @@ mod tests {
             .refusal()
             .expect("a root that does not exist is refused");
         assert_eq!(refusal.code, "not_separate_volume");
-    }
-
-    /// Every line `decoy_filesystems` reports is a real, structured decision
-    /// description of the `"<path>: <verb>"` shape `Decision::describe` produces:
-    /// never an empty string and never a bare token. This holds for whatever the
-    /// host's fstab and mounts yield, so it pins the contract without depending on
-    /// a particular host layout.
-    #[test]
-    fn decoy_filesystems_lines_are_structured_descriptions() {
-        for line in decoy_filesystems(Path::new("/mnt/data")) {
-            assert!(!line.is_empty(), "a decision description is never empty");
-            assert!(
-                line.contains(": "),
-                "every line is a `<path>: <verb>` describe() line, got {line:?}"
-            );
-        }
     }
 
     /// `inherited_summary` honours the persona mode: in shared-home the decoy's
