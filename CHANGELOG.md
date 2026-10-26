@@ -382,6 +382,11 @@ of this changelog for that version becomes the release notes word for word, and
   refuses while an interrupted activation's soft-reboot may still come, and `emergency` on the
   decoy drops it, or powers off at once where it may still come. `emergency` in the hidden session
   still enqueues its soft-reboot directly, without waiting for anything.
+- An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
+  reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
+  left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and
+  the attach gate did not count its device among the storage the decoy uses. The older automount
+  spelling `comment=systemd.automount` counts as an automount, as it does for systemd.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
