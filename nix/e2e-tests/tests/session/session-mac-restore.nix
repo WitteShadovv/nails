@@ -19,6 +19,13 @@
 #   4. A second session does the same and ends with a plain
 #      `nails emergency`, which returns through the same way back: the card
 #      has its permanent address again and is up.
+#
+# Each way back is judged on its own. One that leaves the card with another
+# address, or down, fails its subtest, the test gives the card its own address
+# back by hand, and the second session still runs; the test fails at the end
+# naming each way back that did. So without the down/set/up retry the log
+# shows both ways back failing, not only the first. Any other failure (step 1
+# or a switch) stops the test at once.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -52,6 +59,7 @@ in
 
   testScript = _: ''
     import secrets
+    from contextlib import contextmanager
 
     from nails_e2e import session
 
@@ -62,6 +70,14 @@ in
     PERMANENT = "${permanentMac}"
     #: A link's administrative up flag in its sysfs flags (IFF_UP).
     IFF_UP = 0x1
+
+
+    class CardNotBack(AssertionError):
+        """A way back left the card with another address than its own, or down."""
+
+
+    #: What each way back that failed left the card with.
+    failures: list[str] = []
 
 
     def find_card():
@@ -105,7 +121,7 @@ in
         )
 
 
-    def give_card(address):
+    def set_card(address, where):
         # As NetworkManager sets a cloned MAC address where the driver
         # refuses a live change.
         machine.succeed(
@@ -113,17 +129,33 @@ in
             f"ip link set dev {CARD} address {address} && "
             f"ip link set dev {CARD} up"
         )
-        log_card("the hidden session")
+        log_card(where)
         assert card_address() == address, card_address()
-        assert card_up(), f"{CARD} is down in the hidden session"
+        assert card_up(), f"{where}: {CARD} is down"
 
 
     def assert_decoy_address(where):
         log_card(where)
-        now = card_address()
-        assert now == PERMANENT, f"{where}: {CARD} kept {now}, not its own {PERMANENT}"
         assert permanent_address() == PERMANENT, permanent_address()
-        assert card_up(), f"{where}: the way back left {CARD} down"
+        now = card_address()
+        if now != PERMANENT:
+            raise CardNotBack(f"{where}: {CARD} kept {now}, not its own {PERMANENT}")
+        if not card_up():
+            raise CardNotBack(f"{where}: the way back left {CARD} down")
+
+
+    @contextmanager
+    def way_back(name):
+        # A subtest of its own: a way back that leaves the card with another
+        # address, or down, fails it, and the test records that, gives the card
+        # its own address back by hand, so that the next session starts as
+        # this one did, and goes on. Any other failure stops the test.
+        try:
+            with subtest(name):
+                yield
+        except CardNotBack as failure:
+            failures.append(str(failure))
+            set_card(PERMANENT, "the decoy, by hand")
 
 
     machine.start()
@@ -148,20 +180,23 @@ in
         assert card_address() == PERMANENT, card_address()
         assert card_up(), f"{CARD} went down"
 
-    with subtest("deactivate gives the card its own address back"):
+    with way_back("deactivate gives the card its own address back"):
         canonical_activate(CONFIG, "--overlay-only", "activate-1")
         assert card_address() == PERMANENT and card_up(), "the card as the decoy left it"
-        give_card(random_address())
+        set_card(random_address(), "the hidden session")
         canonical_deactivate(CONFIG, "deactivate")
         assert_decoy_address("after deactivate")
 
-    with subtest("a plain emergency gives the card its own address back"):
+    with way_back("a plain emergency gives the card its own address back"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         canonical_activate(CONFIG, "--overlay-only", "activate-2")
-        give_card(random_address())
+        assert card_address() == PERMANENT and card_up(), "the card as the decoy left it"
+        set_card(random_address(), "the hidden session")
         session.follow_soft_reboot(machine, f"nails --config {CONFIG} emergency", "emergency")
         session.assert_decoy_root(machine)
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
         assert_decoy_address("after emergency")
+
+    assert not failures, "; ".join(failures)
   '';
 }
