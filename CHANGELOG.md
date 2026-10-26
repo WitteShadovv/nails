@@ -448,6 +448,18 @@ of this changelog for that version becomes the release notes word for word, and
   bind, and with `/` on no disk the generator takes the disk of `/usr`. The mask is written at the
   switch and lives in `/run` for the session alone; a switch whose masks cannot be written is
   refused, and `nails verify` warns about a mask left on the decoy.
+- `check` and `activate` no longer mount the trial overlay of the `upper-fs-capability` probe where
+  the rest of the system can see it. The probe mounted it for a moment in PID 1's mount namespace,
+  at `<hidden-root>/.probe-<pid>-<time>/merged`, and when systemd noticed the mount the journal got
+  a line such as `mnt-data-.probe\x2d1141\x2d….mount: Deactivated successfully.`, which names the
+  hidden root's mount point and the time of the run. A decoy whose journal was still persistent
+  (a run before the decoy was made amnesic, or one with `--allow-persistent-decoy`) may hold such a
+  line on its disk. The trial overlay is now mounted detached, through the kernel's mount API: no
+  mount table lists it, and it is gone when the probe ends or the process dies. Where the kernel
+  cannot mount it that way (without root, before Linux 5.2, or in a sandbox that blocks the call),
+  the check fails before it writes anything. The README said that `check` changes nothing; the
+  operator guide now says what it touches: probe files on the hidden volume that it removes again,
+  and no mount.
 - On Debian 13 the way back now has the decoy's wtmpdb boot writer record the decoy's start as an
   ordinary `reboot`, stamped with the time of the switch. The 0.3.0-rc.3 notes said the way back
   already kept the writer from recording `soft-reboot`; that was wrong. Kept from the system bus,

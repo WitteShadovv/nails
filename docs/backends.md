@@ -46,9 +46,13 @@ Whatever the backend, the filesystem at the hidden root must:
   store overlayfs whiteouts** (`upper-fs-capability`). The check proves this
   before the session is touched: in a throwaway `.probe-*` directory on the
   hidden root it sets and removes a trusted xattr, reads directory entry types
-  and trial-mounts a small overlay that it exercises with a copy-up and a
-  whiteout, then removes the directory. On failure it names the detected
-  filesystem type;
+  and tries a small overlay that it exercises with a new file and a whiteout,
+  then removes the directory. The overlay is mounted detached, so no mount
+  table lists it and it is gone when the probe ends; without root, or on a
+  kernel that cannot mount it that way, the check fails before it writes
+  anything (see
+  [What `check` touches](operator-guide.md#what-check-touches)). On failure it
+  names the detected filesystem type;
 - **keep every overlay upper and its work directory on one filesystem**.
   overlayfs refuses an upper and work directory on different filesystems.
   NAILS keeps both under the hidden root (`<root>/root/upper` and

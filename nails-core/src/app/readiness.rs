@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `readiness` operation (the CLI's `check`): a strictly read-only
-//! check of whether activation would run.
+//! The `readiness` operation (the CLI's `check`): a check of whether
+//! activation would run that leaves nothing behind.
 //!
 //! It builds the same pre-flight registry activation would run, runs it without
-//! staging or mutating anything, and gathers the effective configuration, the
+//! staging anything (its only writes are the probes on the hidden volume, which
+//! remove what they write), and gathers the effective configuration, the
 //! overlay targets, how the decoy filesystems would be handled, which NixOS
 //! profile would be built and the decoy persona state the hidden session would
 //! inherit. The whole picture is one [`ReadinessReport`] a front end renders;
@@ -299,10 +300,10 @@ impl Readiness {
         self.refusal.as_ref()
     }
 
-    /// Assemble the same pre-flight registry activation would run (read-only
-    /// to run; no staging happens here), run it and gather the whole readiness
-    /// picture. An error means the checks could not be assembled; everything
-    /// else is reported in the result.
+    /// Assemble the same pre-flight registry activation would run (no staging
+    /// happens here; see [`crate::build_registry`]), run it and gather the
+    /// whole readiness picture. An error means the checks could not be
+    /// assembled; everything else is reported in the result.
     pub fn run(self) -> Result<ReadinessReport> {
         let Self {
             manager,

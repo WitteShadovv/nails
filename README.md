@@ -180,7 +180,11 @@ Also refused by the pre-flight checks:
 - running inside a container or another mount namespace than PID 1's
   (`mount-namespace`).
 
-`nails check` runs every check, changes nothing and prints what it would do.
+`nails check` runs every check and prints what activation would do. It leaves
+no file and no mount behind: its probes write only on the hidden volume and
+remove what they write, and the small overlay it tries there is mounted
+detached, so no mount table ever lists it. The operator guide says
+[exactly what `check` touches](docs/operator-guide.md#what-check-touches).
 For the strongest posture, keep state such as `/var` and `/home` on storage that
 is wiped at boot (impermanence-style); the decoy *root* itself must stay on a
 disk. See
@@ -330,7 +334,8 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    sudo /mnt/data/nails activate
    ```
 
-   `check` runs the same pre-flight checks as `activate` and changes nothing.
+   `check` runs the same pre-flight checks as `activate` and leaves no file
+   and no mount behind ([what it touches](docs/operator-guide.md#what-check-touches)).
    `activate` asks for confirmation, prepares the hidden root and soft-reboots:
    **every program closes and you are logged out.** Log in again at the hidden
    session's login screen. NAILS logs nobody in, but a display manager set to

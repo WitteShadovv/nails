@@ -190,7 +190,8 @@ Keep all of it `root`-owned on the hidden volume.
    requirements](decoy-requirements.md#nixos) list each form), `backend-detect`, `storage-readiness`, `swap`,
    `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks
-   and changes nothing.
+   and leaves no file and no mount behind (see
+   [What `check` touches](#what-check-touches)).
 2. It snapshots `/run` and writes the session plan to `/run/overlay-runtime`,
    together with a RAM copy of the binary and the configuration, and a copy of
    libmount's `utab` with the mount table lines of the mounts it names.
@@ -770,6 +771,44 @@ never land on the decoy. See the "Common host traces" guidance in
 volatile journal loses these lines at the way back, together with the hidden
 session's records (see "What a soft-reboot leaves" under
 [How it works](#how-it-works)).
+
+### What `check` touches
+
+`nails check` (and `activate --dry-run`, which is the same command) writes no
+log file, no state file and nothing in `/run`, and it leaves no file and no
+mount behind. Activation runs the same checks first, so it touches the same
+things before it writes anything of its own. In detail:
+
+- **Probes on the hidden volume.** Three checks try what the session needs and
+  remove what they wrote before they finish. `symlink-support` makes the link
+  `.nails_symlink_probe` in the hidden root. `upper-fs-capability` makes the
+  directory `.probe-<pid>-<time>` in the hidden root, sets and removes a
+  `trusted.*` extended attribute on it, and tries a small overlay whose layers
+  are inside it. `storage-readiness` makes the file `.nails_write_test` in
+  `root/upper` and `root/work` when they exist. The hidden root, `root/upper`
+  and `root/work` keep new modification times, and so does the container file
+  of a hidden volume in a file container. A `check` killed in the middle of a
+  probe can leave that probe's file or directory on the hidden volume, never on
+  the decoy; remove it from inside a hidden session, not from the decoy shell.
+- **No mount the system can see.** The trial overlay is mounted detached,
+  through the kernel's mount API: no mount table lists it at any moment, so
+  systemd never sees it and writes no `.mount` unit line about it to the
+  journal. It is gone when the probe ends, and also when `nails` is killed.
+  Where the kernel cannot mount it that way (without root, before Linux 5.2, or
+  in a sandbox that blocks the call), `upper-fs-capability` fails before it
+  writes anything; it never falls back to an ordinary mount. Trying the overlay
+  loads the kernel's overlay module if it is not loaded yet, as activation
+  does.
+- **A kernel warning, when the hidden filesystem lacks a feature.** When the
+  filesystem under the trial overlay lacks something overlayfs wants (such as
+  `upper fs does not support tmpfile`), overlayfs writes a warning to the
+  kernel log, and journald keeps kernel messages like any other. ext4, xfs,
+  btrfs and f2fs made with their default options, the filesystems
+  [backends.md](backends.md) expects to work, lack none of it.
+- **Reads on the decoy.** `check` reads the decoy's configuration and state and
+  runs some of the decoy's own tools to ask what they report, such as
+  `systemctl` for the systemd version. On a decoy root mounted without
+  `noatime`, a read or a program start can update an access time.
 
 ### Pre-activation checklist
 
