@@ -10,12 +10,15 @@
 //! the switch (the soft-reboot stops its terminal), so the operation is split:
 //! [`prepare`] builds the manager and refuses, before anything is asked, outside
 //! a hidden session and in a hidden root whose session plan cannot be read,
-//! where the way back is unknown; [`ReadyDeactivation::leave`] commits the way
-//! back once the front end has confirmed, taken the state lock and, for a
-//! person, printed. A machine-readable result waits for the commit, so it
-//! reports the outcome.
+//! where the way back is unknown; [`ReadyDeactivation::warnings`] names what
+//! the return will not put back, for the front end to show before it asks; and
+//! [`ReadyDeactivation::leave`] commits the way back once the front end has
+//! confirmed, taken the state lock and, for a person, printed. A
+//! machine-readable result waits for the commit, so it reports the outcome.
 
 use std::path::Path;
+
+use nails_teardown::whole_root::plan::Plan;
 
 use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView};
 use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv};
@@ -36,6 +39,8 @@ pub enum Prepared {
 /// A deactivation whose preconditions hold, ready to commit.
 pub struct ReadyDeactivation {
     manager: NailsManager<RealFilesystem>,
+    /// The session plan the probe read, which the way back returns with.
+    plan: Box<Plan>,
 }
 
 impl ReadyDeactivation {
@@ -47,6 +52,19 @@ impl ReadyDeactivation {
     /// The state file path, for taking the state lock.
     pub fn state_path(&self) -> &Path {
         &self.manager.config().state_file_path
+    }
+
+    /// What the return to the decoy will not put back, as far as the hidden
+    /// session can tell before the switch, one sentence each, for the front
+    /// end to show before it asks: its last step, which cannot report, finds
+    /// no `ip` to delete the session's links and set the MAC addresses back
+    /// with. None for a power-off, after which the decoy starts afresh.
+    pub fn warnings(&self, to: LeaveTo) -> Vec<String> {
+        way_back_warnings(
+            to,
+            &self.plan,
+            crate::session::leave::way_back_finds(&self.plan, "ip"),
+        )
     }
 
     /// Commit the way back: enqueue the soft-reboot (or the power-off). A
@@ -78,12 +96,31 @@ pub fn prepare(env: &RuntimeEnv, config_override: Option<&Path>) -> Prepared {
 /// only the hidden root with its plan has a way back to take.
 fn prepared(manager: NailsManager<RealFilesystem>, view: SessionView) -> Prepared {
     match view {
-        SessionView::Hidden(_) => Prepared::Ready(Box::new(ReadyDeactivation { manager })),
+        SessionView::Hidden(plan) => Prepared::Ready(Box::new(ReadyDeactivation { manager, plan })),
         SessionView::HiddenWithoutPlan(why) => Prepared::WayBackUnknown(why),
         SessionView::Entering(_) | SessionView::Interrupted { .. } | SessionView::Decoy => {
             Prepared::NotHidden
         }
     }
+}
+
+/// The warnings for leaving `to` with `plan`, given whether the last step of
+/// the way back finds `ip`.
+fn way_back_warnings(to: LeaveTo, plan: &Plan, finds_ip: bool) -> Vec<String> {
+    use crate::next_step::{NextStep, sudo_line};
+    if to == LeaveTo::Poweroff || finds_ip {
+        return Vec::new();
+    }
+    let place = if plan.decoy.system.is_some() {
+        "in the decoy's NixOS system or the hidden session's system directories"
+    } else {
+        "in the hidden session's system directories"
+    };
+    vec![format!(
+        "The return finds no `ip` (iproute2) {place}, so the links the session made and the \
+         MAC addresses it changed stay on the decoy until power-off. `{}` leaves none of them.",
+        sudo_line(NextStep::DeactivatePoweroff)
+    )]
 }
 
 #[cfg(test)]
@@ -110,6 +147,7 @@ mod tests {
     fn ready_at(dir: &Path) -> ReadyDeactivation {
         ReadyDeactivation {
             manager: manager_at(dir),
+            plan: plan(),
         }
     }
 
@@ -184,5 +222,48 @@ mod tests {
             plan: Some(plan()),
             nextroot_mounted: true,
         }));
+    }
+
+    /// A return whose last step finds no `ip` is announced before the switch,
+    /// with the power-off that leaves nothing behind; a power-off, or a return
+    /// that finds it, has nothing to announce.
+    #[test]
+    fn a_return_that_finds_no_ip_is_announced_before_the_switch() {
+        use crate::next_step::{NextStep, sudo_line};
+        let fhs = plan();
+        assert_eq!(
+            way_back_warnings(LeaveTo::Decoy, &fhs, false),
+            [format!(
+                "The return finds no `ip` (iproute2) in the hidden session's system \
+                 directories, so the links the session made and the MAC addresses it changed \
+                 stay on the decoy until power-off. `{}` leaves none of them.",
+                sudo_line(NextStep::DeactivatePoweroff)
+            )]
+        );
+        assert!(way_back_warnings(LeaveTo::Decoy, &fhs, true).is_empty());
+        assert!(way_back_warnings(LeaveTo::Poweroff, &fhs, false).is_empty());
+
+        let mut nixos = plan();
+        nixos.decoy.system = Some("/nix/store/aaa-nixos-system-decoy".into());
+        let warnings = way_back_warnings(LeaveTo::Decoy, &nixos, false);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("in the decoy's NixOS system or the hidden session's"),
+            "{warnings:?}"
+        );
+    }
+
+    /// The prepared deactivation asks the real lookup: a return to a decoy
+    /// system that holds `ip` warns of nothing, and a power-off never does.
+    #[test]
+    fn the_warnings_follow_where_the_return_finds_ip() {
+        let dir = tempfile::tempdir().unwrap();
+        let system = dir.path().join("decoy-system");
+        std::fs::create_dir_all(system.join("sw/bin")).unwrap();
+        std::fs::write(system.join("sw/bin/ip"), "").unwrap();
+        let mut ready = ready_at(dir.path());
+        ready.plan.decoy.system = Some(system);
+        assert!(ready.warnings(LeaveTo::Decoy).is_empty());
+        assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
     }
 }

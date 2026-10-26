@@ -68,15 +68,111 @@ fn subprocess_deactivate_entrypoint() {
     let (settings, to, outcome) = match case.as_str() {
         "json-enqueued" => (json(), LeaveTo::Poweroff, Ok(LeaveReport::default())),
         "json-refused" => (json(), LeaveTo::Decoy, Err(refused())),
+        "json-left-open" => (json(), LeaveTo::Decoy, Ok(left_open())),
         "human-enqueued" => (ascii, LeaveTo::Decoy, Ok(LeaveReport::default())),
         "human-refused" => (ascii, LeaveTo::Decoy, Err(refused())),
+        "human-left-open" => (ascii, LeaveTo::Decoy, Ok(left_open())),
         other => panic!("unknown deactivate subprocess case: {other}"),
     };
-    let status = super::leave_and_report(&settings, to, |_| {
+    // The warning given before the question rides along in the envelope.
+    let warnings = if case.ends_with("left-open") {
+        vec![EARLIER_WARNING.to_string()]
+    } else {
+        Vec::new()
+    };
+    let status = super::leave_and_report(&settings, to, warnings, |_| {
         crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
         outcome
     });
     crate::cli::chokepoint::exit_process(status.code());
+}
+
+/// A warning given before the question.
+const EARLIER_WARNING: &str = "The return finds no `ip` (iproute2) in the hidden session's system \
+                               directories";
+
+/// A way back that marked one backend device to close and not the other.
+fn left_open() -> LeaveReport {
+    LeaveReport {
+        deferred: vec![
+            ("hidden-crypt".to_string(), false),
+            ("hidden-loop".to_string(), true),
+        ],
+        unmounted: Vec::new(),
+    }
+}
+
+/// A backend device the way back could not mark to close is named in the one
+/// envelope, after the warning given before the question: `ok`, exit 0.
+#[test]
+fn a_device_left_open_is_named_in_the_envelope() {
+    let output = run_subprocess("json-left-open");
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    let value = envelope("deactivate", &lines[1]);
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["data"]["status"], "return_requested", "{value}");
+    assert_eq!(
+        value["data"]["backend_left_open"],
+        serde_json::json!(["hidden-crypt"]),
+        "{value}"
+    );
+    assert_eq!(
+        value["data"]["warnings"],
+        serde_json::json!([
+            EARLIER_WARNING,
+            crate::cli::output::deactivate::backend_left_open_warning("hidden-crypt"),
+        ]),
+        "{value}"
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+/// A person reads a device left open after the lines that come before the
+/// switch, once the way back is enqueued.
+#[test]
+fn a_person_reads_a_device_left_open_after_the_enqueue() {
+    let output = run_subprocess("human-left-open");
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines[2..],
+        [
+            ENQUEUED.to_string(),
+            format!(
+                "[WARN] {}",
+                crate::cli::output::deactivate::backend_left_open_warning("hidden-crypt")
+            ),
+        ],
+        "{output:?}"
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+/// The warnings come before the question, one marked line each, on the
+/// question's stream.
+#[test]
+fn the_warnings_are_written_before_the_question() {
+    let settings = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let mut out = Vec::new();
+    super::write_warnings(
+        &settings,
+        &["first".to_string(), "second".to_string()],
+        &mut out,
+    );
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "[WARN] first\n[WARN] second\n"
+    );
+    let mut none = Vec::new();
+    super::write_warnings(&settings, &[], &mut none);
+    assert!(none.is_empty());
 }
 
 /// Under `--json` a way back that cannot be enqueued is the only envelope on

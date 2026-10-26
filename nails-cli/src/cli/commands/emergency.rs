@@ -233,6 +233,12 @@ fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
     if report.kernel_power_off {
         out.push("  ! The kernel was asked to power off directly".to_string());
     }
+    for name in app::backend_left_open(report) {
+        out.push(format!(
+            "  ! {}",
+            crate::cli::output::deactivate::backend_left_open_warning(&name)
+        ));
+    }
     if report.side == Side::Hidden {
         out.push(format!(
             "  Killed {} and {}",
@@ -263,8 +269,13 @@ fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
     out
 }
 
+/// Print the report for a person. `--quiet` silences a clean run only: one
+/// that left mounts behind, or a backend device open, is still reported.
 fn render_human(settings: &OutputSettings, report: &HotReport) {
-    if settings.is_quiet() && app::exit_status(report) == ExitStatus::Ok {
+    if settings.is_quiet()
+        && app::exit_status(report) == ExitStatus::Ok
+        && app::backend_left_open(report).is_empty()
+    {
         return;
     }
     for line in human_lines(settings, report) {
@@ -308,6 +319,32 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line.contains("Power action: poweroff")),
+            "{lines:?}"
+        );
+    }
+
+    /// A backend device the hot path could not mark to close is named, with
+    /// what that leaves: it stays open after the switch.
+    #[test]
+    fn a_backend_device_left_open_is_named() {
+        let mut report = simulated(None, Finish::Return);
+        report.side = Side::Hidden;
+        report.dispatched = Some(Finish::Return);
+        report.deferred = vec![
+            ("hidden-crypt".to_string(), false),
+            ("hidden-loop".to_string(), true),
+        ];
+        let lines = human_lines(&OutputSettings::default(), &report);
+        let left_open: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("could not be marked to close"))
+            .collect();
+        assert_eq!(
+            left_open,
+            [
+                "  ! The hidden backend device hidden-crypt could not be marked to close: it \
+                 stays open after the switch, its key in RAM, until power-off"
+            ],
             "{lines:?}"
         );
     }

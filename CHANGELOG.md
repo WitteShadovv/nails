@@ -373,6 +373,17 @@ of this changelog for that version becomes the release notes word for word, and
   plan there either and does nothing. After a way back that fails, its hint no longer says a plain
   `emergency` returns to the decoy: it returns where it can prepare the return and powers off where
   it cannot.
+- `nails deactivate` and `nails emergency` name each hidden backend device they could not mark for
+  deferred removal (the hidden session removed `dmsetup`, say) once the soft-reboot is enqueued:
+  it stays open after the switch, its key in RAM, until power-off. `deactivate` logged such a
+  device only at debug level and `emergency` left it out of its report. Under `--json` both list
+  it as `backend_left_open`, `deactivate` with a sentence in its new `warnings`, and
+  `emergency --quiet` no longer stays silent about it.
+- `nails deactivate` warns before it asks when the last step of the way back will find no `ip`
+  (iproute2), in the hidden session's system directories or, on NixOS, in the decoy's system it
+  returns to: the links the session made and the MAC addresses it changed then stay on the decoy
+  until power-off, which `deactivate --poweroff` avoids. Under `--json` the warning is in the
+  envelope's `warnings`.
 - `nails activate` refuses a state file it is not allowed to read (a permission denied, as an
   SELinux or AppArmor label can cause) as an unknown state, with exit 6, as the 0.3.0-rc.2 notes
   say it refuses an unreadable one. It took such a file for a state it could trust and went on.

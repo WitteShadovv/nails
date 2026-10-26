@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::{deactivate_error_body, print_deactivate_json};
+use super::{DeactivateData, deactivate_error_body, print_deactivate_json};
 use nails_core::NailsError;
 use std::path::PathBuf;
 
@@ -9,7 +9,37 @@ use std::path::PathBuf;
 fn success_json_prints_one_parseable_envelope() {
     // Smoke test: the renderer prints to stdout without panicking and the shape
     // is exercised by the envelope's own serialization tests.
-    print_deactivate_json(false);
+    print_deactivate_json(DeactivateData::enqueued(false, Vec::new(), Vec::new()));
+}
+
+/// A clean return carries its status alone; one with something it does not
+/// put back carries the sentences and names each device left open.
+#[test]
+fn the_data_names_what_the_return_leaves_and_omits_it_when_nothing_is_left() {
+    let clean =
+        serde_json::to_value(DeactivateData::enqueued(false, Vec::new(), Vec::new())).unwrap();
+    assert_eq!(clean, serde_json::json!({"status": "return_requested"}));
+
+    let warning = super::backend_left_open_warning("hidden-crypt");
+    let left = serde_json::to_value(DeactivateData::enqueued(
+        false,
+        vec![warning.clone()],
+        vec!["hidden-crypt".to_string()],
+    ))
+    .unwrap();
+    assert_eq!(
+        left,
+        serde_json::json!({
+            "status": "return_requested",
+            "warnings": [warning],
+            "backend_left_open": ["hidden-crypt"],
+        })
+    );
+    assert_eq!(
+        warning,
+        "The hidden backend device hidden-crypt could not be marked to close: it stays open \
+         after the switch, its key in RAM, until power-off"
+    );
 }
 
 #[test]

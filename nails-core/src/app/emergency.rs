@@ -67,6 +67,18 @@ pub fn record_inactive(env: &RuntimeEnv, report: &HotReport, config_override: Op
     }
 }
 
+/// The hidden backend's device-mapper devices the hot path could not mark
+/// for deferred removal, top first: they stay open after the switch, their
+/// key in RAM, until power-off.
+pub fn backend_left_open(report: &HotReport) -> Vec<String> {
+    report
+        .deferred
+        .iter()
+        .filter(|(_, marked)| !marked)
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 /// The name of a finish on the wire.
 pub fn finish_name(finish: Finish) -> &'static str {
     match finish {
@@ -106,6 +118,9 @@ pub struct EmergencyData {
     kernel_power_off: bool,
     /// Device-mapper names marked for deferred removal.
     backend_closing: Vec<String>,
+    /// Device-mapper names whose mark for deferred removal did not take: they
+    /// stay open after the switch, their key in RAM, until power-off.
+    backend_left_open: Vec<String>,
     /// cgroups killed.
     cgroups_killed: usize,
     /// Processes killed one by one.
@@ -132,6 +147,7 @@ pub fn data(report: &HotReport) -> EmergencyData {
             .filter(|(_, ok)| *ok)
             .map(|(n, _)| n.clone())
             .collect(),
+        backend_left_open: backend_left_open(report),
         cgroups_killed: report.kill.cgroups.len(),
         processes_killed: report.kill.processes.len(),
         remaining_mounts: report
@@ -272,6 +288,29 @@ mod tests {
     fn a_kernel_only_power_off_is_a_degraded_reboot() {
         let r = report(Side::Hidden, Finish::Reboot, None, vec![], true);
         assert_eq!(exit_status(&r), ExitStatus::DegradedReboot);
+    }
+
+    /// A device whose mark did not take is named apart from those that are
+    /// closing, never dropped: it stays open after the switch.
+    #[test]
+    fn a_device_left_open_is_named_apart_from_those_closing() {
+        let mut r = report(
+            Side::Hidden,
+            Finish::Return,
+            Some(Finish::Return),
+            vec![],
+            false,
+        );
+        r.deferred = vec![("top".to_string(), false), ("lower".to_string(), true)];
+        assert_eq!(backend_left_open(&r), ["top"]);
+        let json = serde_json::to_value(data(&r)).unwrap();
+        assert_eq!(json["backend_closing"], serde_json::json!(["lower"]));
+        assert_eq!(json["backend_left_open"], serde_json::json!(["top"]));
+
+        r.deferred = vec![("top".to_string(), true)];
+        assert!(backend_left_open(&r).is_empty());
+        let json = serde_json::to_value(data(&r)).unwrap();
+        assert_eq!(json["backend_left_open"], serde_json::json!([]));
     }
 
     /// The wire names for each side are a stable contract read by `data`.

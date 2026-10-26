@@ -82,6 +82,19 @@ pub struct LeaveReport {
     pub unmounted: Vec<PathBuf>,
 }
 
+impl LeaveReport {
+    /// The hidden backend's device-mapper devices whose mark for deferred
+    /// removal did not take (no `dmsetup`, or it refused), top first: they
+    /// stay open after the switch, their key in RAM, until power-off.
+    pub fn left_open(&self) -> Vec<String> {
+        self.deferred
+            .iter()
+            .filter(|(_, marked)| !marked)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+}
+
 /// The disks mounted during the session, deepest first: every mount under
 /// `paths.root` backed by a block device (`is_block`) that is not the
 /// session's own (inside the hidden volume, the decoy root at
@@ -129,6 +142,17 @@ fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Vec<PathBuf> {
                 || rustix::mount::unmount(target, UnmountFlags::DETACH).is_ok()
         })
         .collect()
+}
+
+/// Whether the last step of the way back will find `tool`, such as `ip`
+/// (iproute2), which it runs to delete the links the session made and set
+/// each device's recorded MAC address back. The step runs in the hidden root
+/// once every hidden unit has stopped, and on NixOS only after it repointed
+/// `/run/current-system` to the decoy's system: it looks in the system
+/// directories as they resolve then ([`tools::find_for_system`]). It cannot
+/// report anything itself, so the hidden session checks before the switch.
+pub fn way_back_finds(plan: &Plan, tool: &str) -> bool {
+    tools::find_for_system(plan.decoy.system.as_deref(), tool).is_some()
 }
 
 /// Prepare the way back and enqueue the soft-reboot (or power off).
@@ -215,5 +239,40 @@ mod tests {
             session_disk_mounts(&paths, &plan(), &mounts, &is_block),
             vec![PathBuf::from("/scratch/decoy/mnt")]
         );
+    }
+
+    #[test]
+    fn a_device_whose_mark_did_not_take_is_left_open() {
+        let report = LeaveReport {
+            deferred: vec![
+                ("hidden-crypt".to_string(), false),
+                ("hidden-loop".to_string(), true),
+                ("hidden-base".to_string(), false),
+            ],
+            unmounted: Vec::new(),
+        };
+        assert_eq!(report.left_open(), ["hidden-crypt", "hidden-base"]);
+        assert!(LeaveReport::default().left_open().is_empty());
+    }
+
+    /// On NixOS the step looks in the decoy's system it repoints to, never in
+    /// the hidden system the link names during the session.
+    #[test]
+    fn the_way_back_looks_for_a_tool_in_the_decoy_system_it_returns_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let decoy = dir.path().join("decoy-system");
+        let hidden = dir.path().join("hidden-system");
+        for system in [&decoy, &hidden] {
+            std::fs::create_dir_all(system.join("sw/bin")).unwrap();
+        }
+        let mut plan = plan();
+        plan.decoy.system = Some(decoy.clone());
+        plan.hidden.system = Some(hidden.clone());
+        // A name no system directory of the host holds.
+        let tool = "way-back-test-tool";
+        std::fs::write(hidden.join("sw/bin").join(tool), "").unwrap();
+        assert!(!way_back_finds(&plan, tool));
+        std::fs::write(decoy.join("sw/bin").join(tool), "").unwrap();
+        assert!(way_back_finds(&plan, tool));
     }
 }

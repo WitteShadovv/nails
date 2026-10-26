@@ -32,6 +32,22 @@
             "return_requested",
             "poweroff_requested"
           ]
+        },
+        "warnings": {
+          "description": "What the return does not put back, one sentence each, as a person reads them: the network state the session set where its last step finds no `ip`, and each backend device in `backend_left_open`. Absent when there is nothing to say; a power-off has none.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "backend_left_open": {
+          "description": "The hidden backend's device-mapper devices that could not be marked to close (no dmsetup, or it refused): they stay open after the switch, their key in RAM, until power-off. Absent when every device was marked.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },

@@ -350,8 +350,11 @@ holds (the hidden session unmounted a carried filesystem, or mounted something
 on one) stops the way back instead of being left out or replaced: `deactivate`
 then refuses, and `emergency` powers off. It then marks the hidden backend's
 device-mapper stack for deferred removal, records the state as inactive and
-soft-reboots. The orderly shutdown stops every hidden program. The last step
-before the switch:
+soft-reboots. A device it cannot mark (the hidden session removed `dmsetup`,
+say) stays open after the switch, its key in RAM, until power-off:
+`deactivate` and `emergency` name it once the soft-reboot is enqueued
+(`backend_left_open` under `--json`). The orderly shutdown stops every hidden
+program. The last step before the switch:
 
 - scrubs the top of `/run`: it judges the entries two levels deep (three
   below `/run/systemd`), so a daemon's state deeper down stays, such as
@@ -459,8 +462,11 @@ journal that starts late:
   profile sets one, so it can reach the decoy disk (in a DHCP lease, for
   one). The way back also leaves alone a part of the network state that
   activation could not read in full, rather than take the decoy's for the
-  session's. It runs with no output after the session has ended, so nothing
-  tells you what it left: take a VPN connection down with its own tool
+  session's. Before it asks, `deactivate` warns when that step will find no
+  `ip` (iproute2), in the hidden session's system directories or, on NixOS,
+  the decoy's system. Beyond that, the step runs with no output after the
+  session has ended, so nothing tells you what it left: take a VPN connection
+  down with its own tool
   (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
   monitor mode with `airmon-ng stop`, and stop the containers and virtual
   machines of the session before you deactivate, and end a session with
@@ -579,8 +585,9 @@ In the hidden session, emergency:
 
 1. prepares the way back (the decoy root at `/run/nextroot`, `/run` bound into
    it, the init checked);
-2. marks the hidden backend's device-mapper stack for deferred removal (the
-   backend is always closed; there is no option to leave it open);
+2. marks the hidden backend's device-mapper stack for deferred removal (there
+   is no option to leave it open; a device it cannot mark is named in its
+   report and stays open until power-off);
 3. enqueues the soft-reboot directly with PID 1, so the pending stop jobs keep
    `Restart=` from reviving anything;
 4. kills every hidden cgroup at once with `cgroup.kill`. Only PID 1 and its own
