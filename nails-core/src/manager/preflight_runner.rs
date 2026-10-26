@@ -137,9 +137,10 @@ pub fn build_registry<F: Filesystem>(
     use crate::preflight::{
         BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
         DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck,
-        InheritedAutostartCheck, MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
-        OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck,
-        StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        InheritedAutostartCheck, MemoryWipeCheck, MountNamespaceCheck, NetworkToolsCheck,
+        NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck,
+        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
@@ -210,6 +211,12 @@ pub fn build_registry<F: Filesystem>(
     // list before anything is built: the way back's `ip` among them, and its
     // `dmsetup` when the hidden volume is (or may be) on device-mapper.
     registry.add_check(Box::new(HostToolsCheck::new(hidden_root.clone())));
+
+    // Warns (never fails) when the way back will find no `nft` to delete the
+    // firewall tables a session adds, or, where a link is a Wi-Fi interface,
+    // no `iw` to delete one a session adds on the decoy's radio, looking where
+    // the way back looks. Read-only.
+    registry.add_check(Box::new(NetworkToolsCheck::new(paths.clone())));
 
     registry.add_check(Box::new(SymlinkSupportCheck::new(hidden_root.clone())));
 

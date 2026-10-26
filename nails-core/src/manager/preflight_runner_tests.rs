@@ -51,6 +51,7 @@ fn build_registry_includes_the_shared_checks() {
         "binary-location",
         "dma-protection",
         "kernel-modules",
+        "network-tools",
         "state",
     ] {
         assert!(

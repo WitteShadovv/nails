@@ -404,11 +404,12 @@ journal that starts late:
   - the links: it deletes the virtual links the session brought up (a tunnel,
     a dummy, the bridges and virtual ports of containers and virtual machines)
     and the Wi-Fi interfaces it added on one of the decoy's radios (a monitor
-    or access point interface; this needs `iw`). A link counts as the decoy's
-    only with the index it had at entry, and a link made again gets a new
-    one, so a tunnel the session brought up under the name of one of the
-    decoy's, which the decoy's own stop took down, goes too, while a link of
-    the decoy's that the session only renamed stays;
+    or access point interface; this needs `iw` on the decoy, see below). A
+    link counts as the decoy's only with the index it had at entry, and a
+    link made again gets a new one, so a tunnel the session brought up under
+    the name of one of the decoy's, which the decoy's own stop took down,
+    goes too, while a link of the decoy's that the session only renamed
+    stays;
   - the MAC address of each of the decoy's devices, where the session changed
     it. Many drivers refuse to change the MAC address of a device that is up
     (USB Ethernet adapters such as the ASIX AX88179, and many Wi-Fi cards);
@@ -418,8 +419,9 @@ journal that starts late:
   - the policy-routing rules (`ip rule`, IPv4 and IPv6) and the nftables
     firewall tables the session added, such as those of a WireGuard full
     tunnel (wg-quick or NetworkManager), a VPN app, a container runtime or
-    libvirt. It reads the tables with `nft`, so this needs nftables installed
-    on the decoy;
+    libvirt. Activation lists the decoy's own tables with `nft` and the way
+    back lists them again with it, so this needs nftables installed on the
+    decoy (see below);
   - the network settings for all devices and for new ones
     (`net.ipv4.ip_forward`, `net.ipv4.conf.all.*`, `net.ipv4.conf.default.*`,
     `net.ipv6.conf.all.*` and `net.ipv6.conf.default.*`), such as the
@@ -462,8 +464,15 @@ journal that starts late:
   profile sets one, so it can reach the decoy disk (in a DHCP lease, for
   one). The way back also leaves alone a part of the network state that
   activation could not read in full, rather than take the decoy's for the
-  session's.
+  session's: activation lists the decoy's own firewall tables with the
+  decoy's `nft`, so a session that starts on a decoy without it leaves every
+  table it adds even where the way back finds an `nft` later.
 
+  `check` and `activate` warn before a session when the decoy has no `nft`,
+  or has a Wi-Fi interface and no `iw` (the `network-tools` check), and name
+  the package to install ([the decoy
+  requirements](decoy-requirements.md#nixos) say how on NixOS). They warn and
+  do not refuse, since a stock NixOS decoy has no `nft`.
   Before it asks, `deactivate` warns when the way back's last step will find
   no `ip` (iproute2), no `nft` (nftables) or, on a machine with a Wi-Fi
   interface, no `iw`, in the hidden session's system directories or, on
