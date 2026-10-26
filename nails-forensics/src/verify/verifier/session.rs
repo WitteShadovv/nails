@@ -118,8 +118,9 @@ impl<F: Filesystem> Verifier<F> {
     /// Flag what a session leaves in `/run` when verify runs on the decoy: a
     /// populated `/run/nextroot`, the runtime directory and the plan in it, the
     /// transition drop-in on `systemd-soft-reboot.service`, and the session's
-    /// own units or masks among the runtime unit files. Inside the hidden root
-    /// all of these are expected, so it reports that as information instead.
+    /// own units or masks among the runtime unit files and generators. Inside
+    /// the hidden root all of these are expected, so it reports that as
+    /// information instead.
     pub(super) fn check_session_leftovers(
         &self,
         session: Option<&HiddenSession>,
