@@ -593,6 +593,136 @@ mod kernel_tests {
         });
     }
 
+    /// Set in the process that
+    /// [`the_trial_overlay_is_gone_once_the_process_holding_it_is_killed`]
+    /// starts to hold a trial overlay: the directory with its layers.
+    const HOLDER_ENV: &str = "NAILS_TEST_TRIAL_OVERLAY_HOLDER";
+
+    /// The line the holder prints once its trial overlay is mounted.
+    const HOLDER_READY: &str = "trial overlay mounted";
+
+    /// How long the test waits for the holder to mount its trial overlay
+    /// before it fails, so a holder that never does cannot hang it.
+    const HOLDER_START_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// In the holder: mount the trial overlay of the layers in `dir` as the
+    /// probe does, say so, and keep its descriptor until the process is
+    /// killed, as a `nails check` killed in the middle of its probe keeps it.
+    fn hold_a_trial_overlay(dir: &Path) -> ! {
+        use std::io::Write;
+        let [lower, upper, work] = ["lower", "upper", "work"].map(|d| dir.join(d));
+        let _overlay = mount_trial_overlay(
+            overlay_context().expect("an overlay context"),
+            &lower,
+            &upper,
+            &work,
+        )
+        .expect("the trial overlay");
+        // With one test thread libtest prints `test <name> ... ` before the
+        // test runs and ends that line only once it is over, so the marker
+        // starts a line of its own.
+        let mut stdout = std::io::stdout();
+        writeln!(stdout, "\n{HOLDER_READY}")
+            .and_then(|()| stdout.flush())
+            .expect("say the trial overlay is mounted");
+        loop {
+            std::thread::park();
+        }
+    }
+
+    /// A process that holds a trial overlay. Dropping it kills and reaps the
+    /// process, so a test that fails leaves no holder behind.
+    struct Holder(Option<std::process::Child>);
+
+    impl Holder {
+        /// Start the test `test` again as a holder of the trial overlay of the
+        /// layers in `dir`, and wait until its overlay is mounted.
+        fn start(test: &str, dir: &Path) -> Self {
+            use std::io::BufRead;
+            let exe = std::env::current_exe().expect("locate the test binary");
+            let mut child = std::process::Command::new(exe)
+                .args([test, "--exact", "--nocapture", "--test-threads", "1"])
+                .env(HOLDER_ENV, dir)
+                .env_remove(crate::test_support::CHILD_ENV)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("start the holder");
+            let stdout = child.stdout.take().expect("the holder's stdout");
+            let holder = Self(Some(child));
+            // The holder's output is read on a thread of its own, so the wait
+            // for the marker can end without it.
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let ready = std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                    .any(|line| line == HOLDER_READY);
+                let _ = ready_tx.send(ready);
+            });
+            assert_eq!(
+                ready_rx.recv_timeout(HOLDER_START_LIMIT),
+                Ok(true),
+                "the holder did not mount its trial overlay"
+            );
+            holder
+        }
+
+        /// Kill the holder with `SIGKILL`, which no process can catch, and
+        /// return how it ended once it is reaped.
+        fn kill(&mut self) -> std::process::ExitStatus {
+            let mut child = self.0.take().expect("a live holder");
+            child.kill().expect("kill the holder");
+            child.wait().expect("reap the holder")
+        }
+    }
+
+    impl Drop for Holder {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    #[test]
+    fn the_trial_overlay_is_gone_once_the_process_holding_it_is_killed() {
+        // The holder runs this test too, and holds the overlay instead.
+        if let Some(dir) = std::env::var_os(HOLDER_ENV) {
+            hold_a_trial_overlay(Path::new(&dir));
+        }
+        let test =
+            crate::test_path!(the_trial_overlay_is_gone_once_the_process_holding_it_is_killed);
+        let _ = Rerun::new(test).in_user_mount_ns().run(|| {
+            use std::os::unix::process::ExitStatusExt;
+            let scratch = ScratchTmpfs::new("");
+            let [lower, upper, work] = ["lower", "upper", "work"].map(|d| scratch.mkdir(d));
+            std::fs::write(lower.join("seed"), b"seed").unwrap();
+            let watch = MountTableWatch::start();
+
+            // Another process of this namespace mounts the trial overlay and
+            // is killed while it holds it, before the probe could drop it.
+            let mut holder = Holder::start(test, scratch.path());
+            assert!(
+                upper_in_use(&lower, &upper, &work),
+                "the holder's trial overlay holds its upper"
+            );
+            watch.assert_unchanged("while the holder holds the trial overlay");
+            let status = holder.kill();
+            assert_eq!(status.signal(), Some(nix::libc::SIGKILL), "{status}");
+
+            // Its descriptors closed as it died, and the overlay with them: no
+            // overlay holds the upper any more, and the mount table neither
+            // listed it nor signalled a change at any point.
+            assert!(
+                !upper_in_use(&lower, &upper, &work),
+                "nothing holds the upper once the holder is killed"
+            );
+            watch.assert_unchanged("after the holder was killed");
+        });
+    }
+
     #[test]
     fn a_trial_overlay_the_kernel_refuses_mounts_nothing() {
         // overlayfs needs the upper and work directories on one filesystem;

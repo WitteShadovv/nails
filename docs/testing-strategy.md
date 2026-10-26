@@ -75,7 +75,8 @@ stay `#[ignore]`d and run in CI's `privileged-mounts` job. The probe's steps
 after the xattr run rootless in the `kernel_tests` module of
 `nails-core/src/preflight/checks/upper_fs_probe/tests.rs`: its trial overlay
 works while the namespace's mount table neither lists it nor signals a change,
-and nothing holds its upper once its descriptor is closed.
+and nothing holds its upper once its descriptor is closed, or once a process
+that holds it is killed with `SIGKILL`.
 
 ### (b) Recorded real-world fixtures
 
