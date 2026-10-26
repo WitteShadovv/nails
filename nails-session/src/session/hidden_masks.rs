@@ -97,6 +97,17 @@ mod tests {
     }
 
     #[test]
+    fn every_entry_masks_the_gpt_auto_generator() {
+        // What the entry records in the plan, whatever the next root holds.
+        let generators = generators();
+        assert_eq!(generators, GENERATORS);
+        assert!(generators.iter().any(|g| g == "systemd-gpt-auto-generator"));
+        for generator in &generators {
+            assert!(valid_generator_name(generator), "{generator}");
+        }
+    }
+
+    #[test]
     fn ubuntu_2604_s_grub_unit_is_masked() {
         // Ubuntu 26.04 names GRUB's boot record grub2-common.service: it
         // failed in every hidden session entered with /boot mounted.
