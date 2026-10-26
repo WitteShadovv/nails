@@ -9,20 +9,22 @@
 //! here as a small service; a front end renders the outcome and never holds the
 //! orchestration.
 //!
-//! The outcomes carry the canary token: each holds the recorded
-//! [`RehearsalState`], whose `token` field is public and goes with it into
-//! `Debug` and `Serialize`, and [`ResetOutcome::removed`] lists paths with the
-//! token in them. A front end shows only [`RehearsalState::fingerprint`] and
-//! [`RehearsalState::redacted_channels`], redacts the token from the removed
-//! paths, and never logs, serializes or forwards an outcome's state: a token
-//! that reaches a log on the decoy is a canary the next scan finds there.
+//! The token never leaves this module: an outcome carries a
+//! [`RehearsalView`] of the recorded rehearsal, with the token's fingerprint
+//! in its place and the token redacted from the channels, and the removed
+//! paths with the token redacted. A front end can log, serialize or forward
+//! an outcome without planting the canary in a log on the decoy, where the
+//! next scan would find it.
 
 use std::path::PathBuf;
 
 use nails_api::ExitStatus;
 
 use crate::hidden_root::{Assessment, Refusal, recorded_acceptance, refusal};
-use crate::rehearse::{self, Here, LiveSession, Phase, RehearsalState, ScanReport, ScanTarget};
+use crate::rehearse::{
+    self, ChannelRecord, Here, LiveSession, Phase, RehearsalState, ScanReport, ScanSummary,
+    ScanTarget,
+};
 use crate::session::SessionView;
 use crate::{Config, HiddenRoot, RealFilesystem, RuntimeEnv, TargetUser};
 
@@ -56,18 +58,54 @@ pub enum PlantError {
     Refused(Box<Refusal>),
 }
 
+/// What stands in for the token in what an outcome carries.
+const REDACTED: &str = "<canary>";
+
+/// A recorded rehearsal as a front end may show, log or forward it: the
+/// token's fingerprint in its place and the token redacted from the channels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RehearsalView {
+    /// A short stand-in for the token, safe to print.
+    pub fingerprint: String,
+    /// Where the rehearsal stands.
+    pub phase: Phase,
+    /// When the canary was planted.
+    pub planted_at: String,
+    /// The channels, planted or skipped, with the token redacted.
+    pub channels: Vec<ChannelRecord>,
+    /// The scans run so far.
+    pub scans: Vec<ScanSummary>,
+    /// Whether the command that read it runs in the hidden session the canary
+    /// was planted in, where a scan is refused.
+    pub planted_here: bool,
+}
+
+impl RehearsalView {
+    /// The view of `state` for a command that runs `here`.
+    fn of(state: &RehearsalState, here: &Here) -> Self {
+        Self {
+            fingerprint: state.fingerprint(),
+            phase: state.phase,
+            planted_at: state.planted_at.clone(),
+            channels: state.redacted_channels(),
+            scans: state.scans.clone(),
+            planted_here: state.planted_in_this_session(here),
+        }
+    }
+}
+
 /// The status of a rehearsal on the hidden volume.
 pub struct StatusOutcome {
     /// The recorded rehearsal, if any.
-    pub state: Option<RehearsalState>,
+    pub rehearsal: Option<RehearsalView>,
     /// Where the command runs (session, boot id, soft-reboots), for the next step.
     pub here: Here,
 }
 
 /// A freshly planted canary.
 pub struct PlantOutcome {
-    /// The recorded rehearsal state.
-    pub state: RehearsalState,
+    /// The recorded rehearsal.
+    pub rehearsal: RehearsalView,
     /// Where the plant ran, for the next step.
     pub here: Here,
 }
@@ -76,8 +114,8 @@ pub struct PlantOutcome {
 pub struct ScanOutcome {
     /// The scan report.
     pub report: ScanReport,
-    /// The rehearsal state the scan ran against (absent for an offline token scan).
-    pub state: Option<RehearsalState>,
+    /// The rehearsal the scan ran against (absent for an offline token scan).
+    pub rehearsal: Option<RehearsalView>,
     /// Where the scan ran, for the next step.
     pub here: Here,
     /// The token's fingerprint.
@@ -88,9 +126,9 @@ pub struct ScanOutcome {
 
 /// A removed rehearsal.
 pub struct ResetOutcome {
-    /// The rehearsal that was removed.
-    pub state: RehearsalState,
-    /// The paths removed, with the token still in them (a front end redacts it).
+    /// The removed rehearsal's fingerprint.
+    pub fingerprint: String,
+    /// The paths removed, with the token redacted from them.
     pub removed: Vec<PathBuf>,
 }
 
@@ -111,9 +149,9 @@ pub struct ScanOptions {
     pub max_bytes: Option<u64>,
 }
 
-/// The phase name for a rehearsal state.
-pub fn phase_name(state: Option<&RehearsalState>) -> &'static str {
-    match state.map(|s| s.phase) {
+/// The phase name for a rehearsal.
+pub fn phase_name(rehearsal: Option<&RehearsalView>) -> &'static str {
+    match rehearsal.map(|r| r.phase) {
         None => "none",
         Some(Phase::Planted) => "planted",
         Some(Phase::Scanned) => "scanned",
@@ -122,21 +160,21 @@ pub fn phase_name(state: Option<&RehearsalState>) -> &'static str {
 
 /// The guided next step for where the rehearsal stands, run `here`. Each nails
 /// command is named with the real binary path, through the one renderer.
-pub fn next_step(state: Option<&RehearsalState>, here: &Here) -> String {
+pub fn next_step(rehearsal: Option<&RehearsalView>, here: &Here) -> String {
     use crate::catalog;
     use crate::next_step::{NextStep, sudo_line};
-    match state {
+    match rehearsal {
         None if here.session.is_some() => catalog::REHEARSE_GUIDE_PLANT_ACTIVE
             .render(&[("command", sudo_line(NextStep::RehearsePlant).as_str())]),
         None => catalog::REHEARSE_GUIDE_PLANT_INACTIVE
             .render(&[("command", sudo_line(NextStep::RehearsePlant).as_str())]),
-        Some(s) if s.phase == Phase::Planted && s.planted_in_this_session(here) => {
+        Some(r) if r.phase == Phase::Planted && r.planted_here => {
             catalog::REHEARSE_GUIDE_SCAN_NEXT_SESSION.render(&[
                 ("deactivate", sudo_line(NextStep::Deactivate).as_str()),
                 ("scan", sudo_line(NextStep::RehearseScan).as_str()),
             ])
         }
-        Some(s) if s.phase == Phase::Planted => catalog::REHEARSE_GUIDE_SCAN_NOW
+        Some(r) if r.phase == Phase::Planted => catalog::REHEARSE_GUIDE_SCAN_NOW
             .render(&[("command", sudo_line(NextStep::RehearseScan).as_str())]),
         Some(_) => catalog::REHEARSE_GUIDE_DONE
             .render(&[("command", sudo_line(NextStep::RehearseReset).as_str())]),
@@ -174,7 +212,10 @@ impl Rehearsal {
             .load()
             .map_err(|e| RehearseFailure::new(ExitStatus::InvalidState, "rehearse_state", e))?;
         let here = Here::read(self.live_session());
-        Ok(StatusOutcome { state, here })
+        Ok(StatusOutcome {
+            rehearsal: state.as_ref().map(|state| RehearsalView::of(state, &here)),
+            here,
+        })
     }
 
     /// Plant a canary in the active hidden session.
@@ -313,7 +354,10 @@ impl Rehearsal {
                 e.to_string(),
             )));
         }
-        Ok(PlantOutcome { state, here })
+        Ok(PlantOutcome {
+            rehearsal: RehearsalView::of(&state, &here),
+            here,
+        })
     }
 
     /// Scan the decoy's storage for the canary.
@@ -381,7 +425,7 @@ impl Rehearsal {
         Ok(ScanOutcome {
             fingerprint: rehearse::fingerprint(&token),
             report,
-            state,
+            rehearsal: state.as_ref().map(|state| RehearsalView::of(state, &here)),
             here,
             exit,
         })
@@ -418,7 +462,10 @@ impl Rehearsal {
         let hidden = root.canonicalize().unwrap_or_else(|_| root.clone());
         let removed = rehearse::reset(&RealFilesystem, &hidden, &state)
             .map_err(|e| RehearseFailure::new(ExitStatus::Failed, "reset", e.to_string()))?;
-        Ok(ResetOutcome { state, removed })
+        Ok(ResetOutcome {
+            fingerprint: state.fingerprint(),
+            removed: redacted(removed, &state.token),
+        })
     }
 
     /// The token for a scan, and the state it came from when it came from one.
@@ -501,6 +548,14 @@ fn nothing_planted(channels: &[rehearse::ChannelRecord]) -> bool {
         .any(|c| c.planted() && c.kind == rehearse::ChannelKind::OverlayFile)
 }
 
+/// `paths` with `token` replaced in each by [`REDACTED`].
+fn redacted(paths: Vec<PathBuf>, token: &str) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .map(|path| PathBuf::from(path.to_string_lossy().replace(token, REDACTED)))
+        .collect()
+}
+
 /// Whether a scan must be refused: it would read the disks from the hidden
 /// session that planted the canary (`state`, run `here`), whose writes may not
 /// have reached them yet. An offline scan of images never runs there, and
@@ -515,418 +570,5 @@ fn refuses_same_session(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A canary planted in the session entered at 100, in boot `b1`.
-    fn planted() -> RehearsalState {
-        RehearsalState {
-            schema_version: 1,
-            token: "0".repeat(32),
-            phase: Phase::Planted,
-            planted_at: "2026-10-15T20:00:00Z".to_string(),
-            planted_boot_id: Some("b1".to_string()),
-            planted_entered_at: Some(100),
-            planted_soft_reboots: None,
-            channels: Vec::new(),
-            scans: Vec::new(),
-        }
-    }
-
-    /// The same canary, after a scan has run.
-    fn scanned() -> RehearsalState {
-        RehearsalState {
-            phase: Phase::Scanned,
-            ..planted()
-        }
-    }
-
-    fn in_session(entered_at: u64) -> Here {
-        Here {
-            session: Some(LiveSession {
-                entered_at: Some(entered_at),
-            }),
-            boot_id: Some("b1".to_string()),
-            soft_reboots: None,
-        }
-    }
-
-    /// A well-formed rehearsal token (32 hex digits).
-    const HEX_TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"; // pragma: allowlist secret
-
-    /// A rehearsal service whose hidden root is an empty scratch directory, so
-    /// the offline scan and token paths never touch a real hidden volume.
-    fn rooted_at(root: &std::path::Path) -> Rehearsal {
-        Rehearsal::new(Config {
-            hidden_volume_root: root.to_path_buf(),
-            ..Config::test_default()
-        })
-    }
-
-    #[test]
-    fn phase_name_is_the_exact_contract_string_for_every_state() {
-        assert_eq!(phase_name(None), "none");
-        assert_eq!(phase_name(Some(&planted())), "planted");
-        assert_eq!(phase_name(Some(&scanned())), "scanned");
-    }
-
-    #[test]
-    fn next_step_with_no_canary_in_a_session_guides_plant_in_this_session() {
-        let guide = next_step(None, &in_session(100));
-        assert!(
-            guide.contains("in this hidden session"),
-            "plant-active guidance: {guide}"
-        );
-    }
-
-    #[test]
-    fn next_step_with_no_canary_on_the_decoy_guides_activate_first() {
-        let guide = next_step(None, &Here::default());
-        assert!(
-            guide.contains("activate a hidden session"),
-            "plant-inactive guidance: {guide}"
-        );
-    }
-
-    #[test]
-    fn next_step_after_planting_in_this_session_guides_deactivate_then_scan() {
-        let guide = next_step(Some(&planted()), &in_session(100));
-        assert!(
-            guide.contains("Step 2 of 3"),
-            "scan-next-session guidance: {guide}"
-        );
-    }
-
-    #[test]
-    fn next_step_after_planting_in_an_earlier_session_guides_scan_now() {
-        let guide = next_step(Some(&planted()), &in_session(200));
-        assert!(guide.contains("Step 3 of 3"), "scan-now guidance: {guide}");
-    }
-
-    #[test]
-    fn next_step_after_a_scan_guides_done_and_reset() {
-        let guide = next_step(Some(&scanned()), &in_session(100));
-        assert!(guide.contains("Done. Scan again"), "done guidance: {guide}");
-    }
-
-    #[test]
-    fn load_reads_the_rehearsal_state_written_under_the_hidden_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = planted();
-        std::fs::create_dir_all(dir.path().join(rehearse::REHEARSE_DIR)).unwrap();
-        std::fs::write(
-            dir.path().join(rehearse::state_relative_path()),
-            serde_json::to_string(&state).unwrap(),
-        )
-        .unwrap();
-        let loaded = rooted_at(dir.path()).load().unwrap();
-        assert_eq!(loaded.expect("a state file is present").token, state.token);
-    }
-
-    #[test]
-    fn status_outside_a_hidden_session_reports_no_live_session() {
-        // The hidden root is an unmounted scratch directory, so the live probe
-        // of the real system finds the decoy, not a hidden session: `status`
-        // must carry no live session. This pins `live_session`'s `None` result
-        // outside a session against a mutant that always reports one.
-        let dir = tempfile::tempdir().unwrap();
-        // RehearseFailure is not Debug, so carry only its message into unwrap.
-        let outcome = rooted_at(dir.path())
-            .status()
-            .map_err(|e| e.message)
-            .unwrap();
-        assert!(
-            outcome.here.session.is_none(),
-            "no hidden session is mounted at the scratch root, so none is reported"
-        );
-    }
-
-    #[test]
-    fn scan_token_reads_and_trims_a_valid_token_from_the_token_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let token_file = dir.path().join("token");
-        std::fs::write(&token_file, format!("  {HEX_TOKEN}\n")).unwrap();
-        let options = ScanOptions {
-            token_file: Some(token_file),
-            offline: true,
-            ..ScanOptions::default()
-        };
-        let (token, state) = rooted_at(dir.path()).scan_token(&options).unwrap();
-        assert_eq!(token, HEX_TOKEN);
-        assert!(state.is_none(), "a token-file scan carries no state");
-    }
-
-    #[test]
-    fn scan_token_rejects_a_token_file_that_holds_no_valid_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let token_file = dir.path().join("token");
-        std::fs::write(&token_file, "not-a-valid-token!!").unwrap();
-        let options = ScanOptions {
-            token_file: Some(token_file),
-            offline: true,
-            ..ScanOptions::default()
-        };
-        let err = rooted_at(dir.path())
-            .scan_token(&options)
-            .expect_err("an invalid token must be refused");
-        assert!(err.contains("no valid token"), "{err}");
-    }
-
-    #[test]
-    fn scan_targets_offline_reads_the_given_images() {
-        let dir = tempfile::tempdir().unwrap();
-        let images = vec![PathBuf::from("/x/a.img"), PathBuf::from("/x/b.img")];
-        let options = ScanOptions {
-            offline: true,
-            images: images.clone(),
-            ..ScanOptions::default()
-        };
-        let targets = rooted_at(dir.path()).scan_targets(&options).unwrap();
-        assert_eq!(
-            targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
-            images
-        );
-    }
-
-    #[test]
-    fn scan_targets_live_uses_the_explicit_devices_when_given() {
-        let dir = tempfile::tempdir().unwrap();
-        let device = PathBuf::from("/dev/nails-mutant-canary-device");
-        let options = ScanOptions {
-            offline: false,
-            devices: vec![device.clone()],
-            ..ScanOptions::default()
-        };
-        let targets = rooted_at(dir.path()).scan_targets(&options).unwrap();
-        assert!(
-            targets.iter().any(|t| t.device == device),
-            "the explicit device is scanned, not the default set: {targets:?}"
-        );
-    }
-
-    /// Run an offline scan over `images`, reading the token from a file.
-    fn offline_scan(images: Vec<PathBuf>) -> Result<ScanOutcome, RehearseFailure> {
-        let dir = tempfile::tempdir().unwrap();
-        let token_file = dir.path().join("token");
-        std::fs::write(&token_file, HEX_TOKEN).unwrap();
-        let options = ScanOptions {
-            token_file: Some(token_file),
-            offline: true,
-            images,
-            ..ScanOptions::default()
-        };
-        rooted_at(dir.path()).scan(&options)
-    }
-
-    #[test]
-    fn a_scan_that_finds_the_canary_is_critical() {
-        let dir = tempfile::tempdir().unwrap();
-        let image = dir.path().join("leaky.img");
-        std::fs::write(&image, format!("padding {HEX_TOKEN} padding")).unwrap();
-        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
-        assert!(outcome.report.total_hits() >= 1, "the canary is found");
-        assert_eq!(outcome.exit, ExitStatus::VerifyCritical);
-    }
-
-    /// Write an image the scan identifies as ext4 (its superblock magic at
-    /// 0x438), which keeps file contents verbatim, followed by `text`.
-    fn ext4_image(path: &std::path::Path, text: &str) {
-        let mut bytes = vec![0u8; 4096];
-        bytes[0x438..0x43A].copy_from_slice(&[0x53, 0xEF]);
-        bytes.extend_from_slice(text.as_bytes());
-        std::fs::write(path, bytes).unwrap();
-    }
-
-    #[test]
-    fn a_clean_fully_read_scan_is_ok() {
-        let dir = tempfile::tempdir().unwrap();
-        let image = dir.path().join("clean.img");
-        ext4_image(&image, "nothing to see here");
-        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
-        assert_eq!(outcome.report.total_hits(), 0);
-        assert!(!outcome.report.incomplete());
-        assert!(!outcome.report.inconclusive());
-        assert_eq!(outcome.exit, ExitStatus::Ok);
-    }
-
-    #[test]
-    fn a_clean_scan_of_storage_the_scan_does_not_identify_only_warns() {
-        // No filesystem the scan knows: zfs, an encrypted volume or raw data
-        // may hold the canary where a raw scan cannot see it.
-        let dir = tempfile::tempdir().unwrap();
-        let image = dir.path().join("raw.img");
-        std::fs::write(&image, "nothing to see here").unwrap();
-        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
-        assert_eq!(outcome.report.total_hits(), 0);
-        assert!(outcome.report.inconclusive());
-        assert_eq!(outcome.exit, ExitStatus::SuccessWithWarnings);
-    }
-
-    #[test]
-    fn a_scan_of_an_empty_image_only_warns() {
-        let dir = tempfile::tempdir().unwrap();
-        let image = dir.path().join("empty.img");
-        std::fs::write(&image, "").unwrap();
-        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
-        assert!(outcome.report.incomplete(), "nothing was read");
-        assert_eq!(outcome.exit, ExitStatus::SuccessWithWarnings);
-    }
-
-    #[test]
-    fn a_clean_scan_that_could_not_read_a_device_only_warns() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("missing.img");
-        let outcome = offline_scan(vec![missing]).map_err(|e| e.message).unwrap();
-        assert_eq!(outcome.report.total_hits(), 0);
-        assert!(outcome.report.incomplete(), "the device could not be read");
-        assert!(!outcome.report.inconclusive());
-        assert_eq!(outcome.exit, ExitStatus::SuccessWithWarnings);
-    }
-
-    #[test]
-    fn a_scan_with_no_device_to_read_fails() {
-        // ScanOutcome is not Debug, so discard it before expect_err.
-        let err = offline_scan(Vec::new())
-            .map(|_| ())
-            .expect_err("no device, no scan");
-        assert_eq!(err.code, "no_devices");
-    }
-
-    #[test]
-    fn a_scan_in_the_planting_session_is_refused_unless_allowed() {
-        let state = planted();
-        let here = in_session(100);
-        assert!(refuses_same_session(Some(&state), &here, false, false));
-        assert!(
-            !refuses_same_session(Some(&state), &here, false, true),
-            "--allow-same-boot"
-        );
-        assert!(
-            !refuses_same_session(Some(&state), &here, true, false),
-            "an offline scan of images"
-        );
-    }
-
-    #[test]
-    fn a_scan_elsewhere_or_without_a_state_is_not_refused() {
-        let state = planted();
-        assert!(!refuses_same_session(
-            Some(&state),
-            &in_session(200),
-            false,
-            false
-        ));
-        assert!(!refuses_same_session(
-            Some(&state),
-            &Here::default(),
-            false,
-            false
-        ));
-        assert!(!refuses_same_session(None, &in_session(100), false, false));
-    }
-
-    /// A plan for the live-session view, entered at `entered_at`.
-    fn plan(entered_at: u64) -> Box<nails_teardown::whole_root::plan::Plan> {
-        use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
-        let json = serde_json::json!({
-            "version": PLAN_VERSION,
-            "hidden_root": "/mnt/data",
-            "upper": "/mnt/data/root/upper",
-            "work": "/mnt/data/root/work",
-            "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
-            "decoy": {"init": "/sbin/init"},
-            "hidden": {"init": "/sbin/init"},
-            "entered_at": entered_at,
-        });
-        Box::new(Plan::from_json(&json.to_string()).expect("a minimal plan"))
-    }
-
-    #[test]
-    fn a_hidden_root_is_a_live_session_with_its_entry_time() {
-        assert_eq!(
-            live_session_of(SessionView::Hidden(plan(100))),
-            Some(LiveSession {
-                entered_at: Some(100)
-            })
-        );
-    }
-
-    /// A hidden root whose `/run` plan cannot be read is still a live session:
-    /// read as the decoy, a scan there would read the disks before the
-    /// session's writes reach them and a reset would change the uppers under
-    /// the mounted overlay.
-    #[test]
-    fn a_hidden_root_without_its_plan_is_still_a_live_session() {
-        let session = live_session_of(SessionView::HiddenWithoutPlan(
-            "no session plan in /run (upper /mnt/data/root/upper)".to_string(),
-        ));
-        assert_eq!(session, Some(LiveSession { entered_at: None }));
-
-        // A canary planted there, in this boot: the scan is refused.
-        let state = RehearsalState {
-            planted_entered_at: None,
-            ..planted()
-        };
-        let here = Here {
-            session,
-            boot_id: Some("b1".to_string()),
-            soft_reboots: None,
-        };
-        assert!(refuses_same_session(Some(&state), &here, false, false));
-    }
-
-    #[test]
-    fn the_decoy_and_an_entry_under_way_are_no_live_session() {
-        assert_eq!(live_session_of(SessionView::Decoy), None);
-        assert_eq!(live_session_of(SessionView::Entering(plan(100))), None);
-        assert_eq!(
-            live_session_of(SessionView::Interrupted {
-                plan: Some(plan(100)),
-                nextroot_mounted: true,
-            }),
-            None
-        );
-    }
-
-    /// A channel record of `kind`, planted or skipped.
-    fn channel(kind: rehearse::ChannelKind, planted: bool) -> rehearse::ChannelRecord {
-        rehearse::ChannelRecord {
-            kind,
-            location: "/somewhere".to_string(),
-            upper_copy: None,
-            skipped: (!planted).then(|| "not planted".to_string()),
-        }
-    }
-
-    /// A plant that no overlaid tree took is refused, however many of the
-    /// other channels took the canary: a scan of the log, a process or the
-    /// home alone could prove nothing.
-    #[test]
-    fn a_plant_without_an_overlay_file_is_nothing_planted() {
-        use rehearse::ChannelKind::{
-            HomeFile, Notification, OverlayFile, ProcessCmdline, RecentFiles, SystemLog,
-        };
-        assert!(nothing_planted(&[]));
-        assert!(nothing_planted(&[
-            channel(OverlayFile, false),
-            channel(HomeFile, true),
-            channel(RecentFiles, true),
-            channel(SystemLog, true),
-            channel(ProcessCmdline, true),
-            channel(Notification, true),
-        ]));
-    }
-
-    /// One overlaid tree that took the canary is enough, whatever else was
-    /// skipped.
-    #[test]
-    fn a_plant_with_an_overlay_file_is_planted() {
-        use rehearse::ChannelKind::{HomeFile, OverlayFile, SystemLog};
-        assert!(!nothing_planted(&[
-            channel(OverlayFile, false),
-            channel(OverlayFile, true),
-            channel(HomeFile, false),
-            channel(SystemLog, false),
-        ]));
-    }
-}
+#[path = "rehearse_tests.rs"]
+mod tests;
