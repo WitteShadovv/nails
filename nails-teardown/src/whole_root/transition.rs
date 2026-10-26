@@ -12,14 +12,14 @@
 //!
 //! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
-//!   the decoy units the hidden systemd must never start and, best effort, the
-//!   units that would only fail in the hidden root, install the hidden
-//!   session's runtime units (and, opted in, the udev rule that keeps unused
-//!   disks read-only, [`crate::whole_root::disk_guard`]), narrow the `/run`
-//!   snapshot to what the decoy's own shutdown left, drop the `utab` lines of
-//!   the mounts the switch leaves behind ([`crate::whole_root::utab`]), copy
-//!   the decoy's records ([`crate::whole_root::run_records`]), and record the
-//!   entry.
+//!   the decoy units the hidden systemd must never start and the generators it
+//!   must never run and, best effort, the units that would only fail in the
+//!   hidden root, install the hidden session's runtime units (and, opted in,
+//!   the udev rule that keeps unused disks read-only,
+//!   [`crate::whole_root::disk_guard`]), narrow the `/run` snapshot to what the
+//!   decoy's own shutdown left, drop the `utab` lines of the mounts the switch
+//!   leaves behind ([`crate::whole_root::utab`]), copy the decoy's records
+//!   ([`crate::whole_root::run_records`]), and record the entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
@@ -343,7 +343,13 @@ fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
         let _ = crate::whole_root::ret::close_backend_deferred(plan);
         let kept = env.saved_snapshot().unwrap_or_default();
         remove_dropin(&env.run, &kept);
-        runtime_units::remove_masks(&env.run, &plan.masks, &plan.boot_masks, &kept);
+        runtime_units::remove_masks(
+            &env.run,
+            &plan.masks,
+            &plan.boot_masks,
+            &plan.generator_masks,
+            &kept,
+        );
         kernel_helpers::restore(&plan.kernel_settings);
         nextroot::remove_runtime_dir(&env.runtime_dir);
         if plan.run_noexec {
@@ -375,12 +381,19 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
         return disarm(env, plan, &why);
     }
     // Without its masks the hidden systemd would swap onto, or mount read-write,
-    // a decoy disk: never enter without them.
-    if let Err(e) = runtime_units::mask_units(&env.run, &plan.masks) {
+    // a decoy disk: never enter without them, nor without the generator masks,
+    // which keep it from mounting partitions the decoy's fstab does not list.
+    let masked = runtime_units::mask_units(&env.run, &plan.masks)
+        .map_err(|e| format!("could not mask decoy units: {e}"))
+        .and_then(|_| {
+            runtime_units::mask_generators(&env.run, &plan.generator_masks)
+                .map_err(|e| format!("could not mask generators: {e}"))
+        });
+    if let Err(why) = masked {
         if let Some(system) = &plan.decoy.system {
             let _ = repoint_current_system(&env.run, system);
         }
-        return disarm(env, plan, &format!("could not mask decoy units: {e}"));
+        return disarm(env, plan, &why);
     }
     // The session's own units (watcher, sleep guard) are best-effort, and so
     // is the read-only rule for unused disks: the watcher sweeps them too. So

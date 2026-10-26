@@ -1,18 +1,21 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Runtime units in `/run/systemd/system`.
+//! Runtime units in `/run/systemd/system`, and runtime masks of units and
+//! generators.
 //!
 //! A soft-reboot carries `/run`, and a fresh PID 1 loads the runtime unit
-//! directory `/run/systemd/system` when it starts. At entry the transition
-//! installs the hidden session's own units (the backend watcher, the sleep
-//! guard) and masks the decoy units the hidden systemd must never start (decoy
-//! swap, decoy filesystems it would mount read-write). They live only in `/run`
-//! and the return scrub removes them, so the decoy's PID 1 never sees them.
+//! directory `/run/systemd/system` and runs the generators when it starts. At
+//! entry the transition installs the hidden session's own units (the backend
+//! watcher, the sleep guard), masks the decoy units the hidden systemd must
+//! never start (decoy swap, decoy filesystems it would mount read-write) and
+//! the generators it must never run. They live only in `/run` and the return
+//! scrub removes them, so the decoy's PID 1 never sees them.
 //!
-//! Unit names are validated: a plain file name with a known unit suffix, so a
-//! plan can never make the transition write outside `/run/systemd/system`
-//! and `/run/systemd/system.control`.
+//! Unit and generator names are validated: a plain file name with a known
+//! unit suffix, or one ending in `-generator`, so a plan can never make the
+//! transition write outside `/run/systemd/system`,
+//! `/run/systemd/system.control` and `/run/systemd/system-generators`.
 
 use crate::whole_root::run_scrub::Snapshot;
 use serde::{Deserialize, Serialize};
@@ -28,6 +31,15 @@ pub const RUNTIME_UNIT_DIR: &str = "systemd/system";
 /// `/etc/systemd/system`, where NixOS links every unit: a mask there only
 /// hides a unit installed below `/usr` (or generated from fstab).
 pub const RUNTIME_CONTROL_DIR: &str = "systemd/system.control";
+
+/// The runtime generator directory below a `/run` root. PID 1 runs a
+/// generator from the first directory that has one of its name, and this one
+/// comes first, before `/etc/systemd/system-generators`: a link to
+/// `/dev/null` here masks the generator wherever it is installed.
+pub const GENERATOR_DIR: &str = "systemd/system-generators";
+
+/// The suffix every systemd generator's name ends in.
+const GENERATOR_SUFFIX: &str = "-generator";
 
 /// The unit suffixes a runtime unit or mask may have. The fstab policy masks
 /// an automount with its mount.
@@ -68,6 +80,18 @@ pub fn valid_unit_name(name: &str) -> bool {
             .any(|s| name.len() > s.len() && name.ends_with(s))
 }
 
+/// Whether `name` is a plain file name that ends in `-generator`, as every
+/// systemd generator's does.
+pub fn valid_generator_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.starts_with('.')
+        && !name.contains('/')
+        && !name.contains('\0')
+        && name.len() > GENERATOR_SUFFIX.len()
+        && name.ends_with(GENERATOR_SUFFIX)
+}
+
 /// Mask `units` under `run` in [`RUNTIME_CONTROL_DIR`], so the mask wins
 /// wherever the unit is installed. Best effort and one at a time: a name that
 /// is not a unit name, or a path that already holds anything (a mask or an
@@ -90,32 +114,63 @@ pub fn mask_units_best_effort(run: &Path, units: &[String]) -> Vec<PathBuf> {
 }
 
 /// Remove the masks a session wrote below `run`: `masks` from the runtime
-/// unit directory and `boot_masks` from the control directory, each only
-/// where it is still a link to `/dev/null` and `kept` (the `/run` snapshot the
-/// entry took) does not hold it, so a mask the decoy had before stays. The
-/// control directory goes too when the decoy had none and it is empty now.
+/// unit directory, `boot_masks` from the control directory and
+/// `generator_masks` from the generator directory, each only where it is
+/// still a link to `/dev/null` and `kept` (the `/run` snapshot the entry
+/// took) does not hold it, so a mask the decoy had before stays. The control
+/// and generator directories go too when the decoy had none and they are
+/// empty now.
 ///
 /// The return scrub removes them with the rest of the session's `/run`; this
 /// is for the decoy side: an entry rolled back, a next root disarmed, or an
 /// emergency on the decoy after a switch that never happened. Without it the
-/// decoy would keep its swap, its other disks or its boot-loader units masked
-/// until the next boot. Returns whether a mask went, which PID 1 keeps
-/// loaded until its next reload.
-pub fn remove_masks(run: &Path, masks: &[String], boot_masks: &[String], kept: &Snapshot) -> bool {
-    let mut removed = false;
-    for (dir, names) in [(RUNTIME_UNIT_DIR, masks), (RUNTIME_CONTROL_DIR, boot_masks)] {
-        for name in names.iter().filter(|name| valid_unit_name(name)) {
-            let relative = Path::new(dir).join(name);
-            let link = run.join(&relative);
-            if !kept.contains(relative.as_os_str())
-                && std::fs::read_link(&link).is_ok_and(|target| target == Path::new("/dev/null"))
-            {
-                removed |= std::fs::remove_file(&link).is_ok();
-            }
+/// decoy would keep its swap, its other disks, its boot-loader units or its
+/// generators masked until the next boot. Returns whether a mask went: PID 1
+/// keeps a unit masked, and the units a masked generator would make missing,
+/// until its next reload.
+pub fn remove_masks(
+    run: &Path,
+    masks: &[String],
+    boot_masks: &[String],
+    generator_masks: &[String],
+    kept: &Snapshot,
+) -> bool {
+    let mut removed = remove_links(run, RUNTIME_UNIT_DIR, masks, valid_unit_name, kept);
+    removed |= remove_links(run, RUNTIME_CONTROL_DIR, boot_masks, valid_unit_name, kept);
+    removed |= remove_links(
+        run,
+        GENERATOR_DIR,
+        generator_masks,
+        valid_generator_name,
+        kept,
+    );
+    for dir in [RUNTIME_CONTROL_DIR, GENERATOR_DIR] {
+        if !kept.contains(std::ffi::OsStr::new(dir)) {
+            let _ = std::fs::remove_dir(run.join(dir));
         }
     }
-    if !kept.contains(std::ffi::OsStr::new(RUNTIME_CONTROL_DIR)) {
-        let _ = std::fs::remove_dir(run.join(RUNTIME_CONTROL_DIR));
+    removed
+}
+
+/// Remove from `dir` below `run` each of `names` that `valid` accepts, where
+/// it is still a link to `/dev/null` and `kept` does not hold it. Returns
+/// whether one went.
+fn remove_links(
+    run: &Path,
+    dir: &str,
+    names: &[String],
+    valid: fn(&str) -> bool,
+    kept: &Snapshot,
+) -> bool {
+    let mut removed = false;
+    for name in names.iter().filter(|name| valid(name)) {
+        let relative = Path::new(dir).join(name);
+        let link = run.join(&relative);
+        if !kept.contains(relative.as_os_str())
+            && std::fs::read_link(&link).is_ok_and(|target| target == Path::new("/dev/null"))
+        {
+            removed |= std::fs::remove_file(&link).is_ok();
+        }
     }
     removed
 }
@@ -173,6 +228,51 @@ pub fn mask_units(run: &Path, units: &[String]) -> io::Result<Vec<PathBuf>> {
     Ok(written)
 }
 
+/// Mask the generators `names` under `run`: a `/dev/null` symlink in
+/// [`GENERATOR_DIR`], so PID 1 runs none of them, from any directory. A name
+/// that is not a generator name fails the call before anything is written,
+/// and so does a generator directory reached through a link or on a
+/// filesystem of its own: the scrub on the way back follows no link and stays
+/// on the filesystem of `/run`, so a mask written there would outlive the
+/// session. A path that already holds anything is left as it is, a mask the
+/// decoy had before or its own generator of that name, which it runs at its
+/// own start as well. Returns the links written.
+pub fn mask_generators(run: &Path, names: &[String]) -> io::Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+    if let Some(name) = names.iter().find(|name| !valid_generator_name(name)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a generator name: {name:?}"),
+        ));
+    }
+    let mut written = Vec::new();
+    if names.is_empty() {
+        return Ok(written);
+    }
+    let dir = run.join(GENERATOR_DIR);
+    std::fs::create_dir_all(&dir)?;
+    if std::fs::canonicalize(&dir)? != std::fs::canonicalize(run)?.join(GENERATOR_DIR)
+        || std::fs::metadata(&dir)?.dev() != std::fs::metadata(run)?.dev()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} is reached through a link or is a filesystem of its own",
+                dir.display()
+            ),
+        ));
+    }
+    for name in names {
+        let link = dir.join(name);
+        if std::fs::symlink_metadata(&link).is_ok() {
+            continue;
+        }
+        std::os::unix::fs::symlink("/dev/null", &link)?;
+        written.push(link);
+    }
+    Ok(written)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +300,25 @@ mod tests {
             "x.conf",
         ] {
             assert!(!valid_unit_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn generator_names_are_plain_file_names_ending_in_generator() {
+        assert!(valid_generator_name("systemd-gpt-auto-generator"));
+        assert!(valid_generator_name("zram-generator"));
+        for bad in [
+            "",
+            "-generator",
+            "../x-generator",
+            "a/b-generator",
+            ".x-generator",
+            "x-generator\0",
+            "systemd-gpt-auto",
+            "systemd-gpt-auto-generator.service",
+            "x-generator/",
+        ] {
+            assert!(!valid_generator_name(bad), "{bad:?}");
         }
     }
 
@@ -261,6 +380,79 @@ mod tests {
     }
 
     #[test]
+    fn generator_masks_rank_first_and_never_replace_what_is_there() {
+        let run = tempfile::tempdir().unwrap();
+        let dir = run.path().join(GENERATOR_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("local-generator"), "#!/bin/sh\n").unwrap();
+        let names = ["systemd-gpt-auto-generator", "local-generator"].map(String::from);
+        let written = mask_generators(run.path(), &names).unwrap();
+        assert_eq!(written, vec![dir.join("systemd-gpt-auto-generator")]);
+        assert_eq!(
+            std::fs::read_link(&written[0]).unwrap(),
+            Path::new("/dev/null")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("local-generator")).unwrap(),
+            "#!/bin/sh\n",
+            "the decoy's own generator stays"
+        );
+        // Masking again finds the mask there and writes nothing.
+        assert!(mask_generators(run.path(), &names).unwrap().is_empty());
+        assert!(mask_generators(run.path(), &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_bad_generator_name_or_a_linked_generator_directory_writes_nothing() {
+        let run = tempfile::tempdir().unwrap();
+        let names = ["systemd-gpt-auto-generator", "../escape-generator"].map(String::from);
+        assert!(mask_generators(run.path(), &names).is_err());
+        assert!(!run.path().join("systemd").exists());
+
+        // A generator directory that is a link into a directory the scrub
+        // never enters: a mask written there would outlive the session.
+        let elsewhere = run.path().join("udev/elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(run.path().join("systemd")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, run.path().join(GENERATOR_DIR)).unwrap();
+        let gpt = ["systemd-gpt-auto-generator".to_string()];
+        assert!(mask_generators(run.path(), &gpt).is_err());
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn the_generator_masks_go_and_the_decoy_s_own_stay() {
+        let gpt = ["systemd-gpt-auto-generator".to_string()];
+        // A /run without a generator directory: the mask and the directory go.
+        let run = tempfile::tempdir().unwrap();
+        let written = mask_generators(run.path(), &gpt).unwrap();
+        assert!(remove_masks(
+            run.path(),
+            &[],
+            &[],
+            &gpt,
+            &Snapshot::default()
+        ));
+        assert!(std::fs::symlink_metadata(&written[0]).is_err());
+        assert!(!run.path().join(GENERATOR_DIR).exists());
+
+        // The decoy masks a generator itself: its mask and the directory stay.
+        let run = tempfile::tempdir().unwrap();
+        let dir = run.path().join(GENERATOR_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("/dev/null", dir.join("zram-generator")).unwrap();
+        let kept = Snapshot::take(run.path());
+        let both = ["zram-generator", "systemd-gpt-auto-generator"].map(String::from);
+        mask_generators(run.path(), &both).unwrap();
+        assert!(remove_masks(run.path(), &[], &[], &both, &kept));
+        assert!(std::fs::symlink_metadata(dir.join("systemd-gpt-auto-generator")).is_err());
+        assert_eq!(
+            std::fs::read_link(dir.join("zram-generator")).unwrap(),
+            Path::new("/dev/null")
+        );
+    }
+
+    #[test]
     fn masks_point_at_dev_null() {
         let run = tempfile::tempdir().unwrap();
         // A swap, and a filesystem the policy masks with its automount.
@@ -270,7 +462,13 @@ mod tests {
             let link = run.path().join(RUNTIME_UNIT_DIR).join(unit);
             assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
         }
-        assert!(remove_masks(run.path(), &units, &[], &Snapshot::default()));
+        assert!(remove_masks(
+            run.path(),
+            &units,
+            &[],
+            &[],
+            &Snapshot::default()
+        ));
         assert!(
             std::fs::read_dir(run.path().join(RUNTIME_UNIT_DIR))
                 .unwrap()

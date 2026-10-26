@@ -218,8 +218,9 @@ Keep all of it `root`-owned on the hidden volume.
    Whatever the fstab says, the hidden session also masks
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which would
    only fail there: the root filesystem they remount and grow is the root
-   overlay in the hidden session. The full table is in
-   [configuration.md](configuration.md#what-the-session-covers).
+   overlay in the hidden session. It masks systemd's GPT auto-generator as
+   well, so systemd mounts no partition the fstab does not list. The full
+   table is in [configuration.md](configuration.md#what-the-session-covers).
 
    `nails check` lists the decision for each entry.
 6. It binds `/run` and the hidden volume into the next root (the hidden volume

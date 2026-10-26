@@ -253,9 +253,9 @@ relative to a plain reboot.
 How the code upholds this:
 
 - **Everything is set up at runtime from the hidden volume.** The next root,
-  the session plan, the transition drop-in and the runtime units live in RAM
-  (`/run`) and the hidden volume only; the transition step removes them on the
-  way back. Nothing is installed on the decoy disk.
+  the session plan, the transition drop-in, the runtime units and the masks
+  live in RAM (`/run`) and the hidden volume only; the transition step removes
+  them on the way back. Nothing is installed on the decoy disk.
 - **The ESP is read-only in the hidden root.** The fstab policy binds the ESP
   and other boot filesystems read-only into the next root before the switch, so
   no hidden process (a bootloader install, `systemd-boot-random-seed`, a
@@ -402,11 +402,13 @@ through its mounts, because every one of them starts inside the overlay after a
 soft-reboot. The question "which application leaks?" becomes "which writes
 bypass the mount layer?", and that set is small and enumerable: the residual
 channels listed above, and the decoy filesystems the fstab policy has to
-handle. Residual risk is limited to those channels and
-to the shared state in the previous section, which the overlay does not claim to
-isolate. All of this assumes the upper is on storage of its own, which
-[the attach gate](#the-attach-gate) checks before the first write; an upper on
-the decoy's own storage would put every redirected write back on its disk.
+handle (systemd's GPT auto-generator, which would mount partitions the fstab
+does not list, is masked in the hidden session). Residual risk is limited to
+those channels and to the shared state in the previous section, which the
+overlay does not claim to isolate. All of this assumes the upper is on storage
+of its own, which [the attach gate](#the-attach-gate) checks before the first
+write; an upper on the decoy's own storage would put every redirected write
+back on its disk.
 
 ## Known residual changes
 

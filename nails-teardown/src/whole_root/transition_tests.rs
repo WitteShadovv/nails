@@ -766,6 +766,7 @@ fn the_masks_of_an_entry_whose_switch_failed_go_and_the_decoy_s_own_stay() {
         "systemd-boot-random-seed.service".to_string(),
         "grub-common.service".to_string(),
     ];
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
     world.init_in_nextroot(&plan.hidden.init);
     world.write_plan(&plan);
     let kept = Snapshot::take(&world.run());
@@ -773,11 +774,19 @@ fn the_masks_of_an_entry_whose_switch_failed_go_and_the_decoy_s_own_stay() {
     assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
     let swap = world.run().join("systemd/system/dev-vda3.swap");
     let seed = control.join("systemd-boot-random-seed.service");
+    let generators = world.run().join(runtime_units::GENERATOR_DIR);
     assert!(fs::symlink_metadata(&swap).is_ok() && fs::symlink_metadata(&seed).is_ok());
+    assert!(fs::symlink_metadata(generators.join(GPT_AUTO)).is_ok());
 
     // The switch failed: the decoy userspace runs again over the same /run.
     let plan = world.plan();
-    runtime_units::remove_masks(&world.run(), &plan.masks, &plan.boot_masks, &kept);
+    runtime_units::remove_masks(
+        &world.run(),
+        &plan.masks,
+        &plan.boot_masks,
+        &plan.generator_masks,
+        &kept,
+    );
     assert!(
         fs::symlink_metadata(&swap).is_err(),
         "the decoy swap is masked"
@@ -786,10 +795,104 @@ fn the_masks_of_an_entry_whose_switch_failed_go_and_the_decoy_s_own_stay() {
         fs::symlink_metadata(&seed).is_err(),
         "the seed unit is masked"
     );
+    assert!(!generators.exists(), "the decoy's generators are masked");
     assert_eq!(
         fs::read_link(control.join("grub-common.service")).unwrap(),
         Path::new("/dev/null"),
         "the decoy's own mask stays"
+    );
+}
+
+/// The generator every entry masks.
+const GPT_AUTO: &str = "systemd-gpt-auto-generator";
+
+/// The generator masks are written at the switch, where they rank above every
+/// other generator directory, and go with the session's `/run` on the way
+/// back: the whole directory when the decoy had none, and only the session's
+/// mask when the decoy keeps one of its own.
+#[test]
+fn the_generator_masks_are_written_at_the_switch_and_go_with_the_session() {
+    for decoy_has_generators in [false, true] {
+        let world = World::new();
+        let generators = world.run().join(runtime_units::GENERATOR_DIR);
+        if decoy_has_generators {
+            fs::create_dir_all(&generators).unwrap();
+            symlink("/dev/null", generators.join("zram-generator")).unwrap();
+        }
+        let mut plan = armed(Direction::Enter);
+        plan.generator_masks = vec![GPT_AUTO.to_string()];
+        world.init_in_nextroot(&plan.hidden.init);
+        world.write_plan(&plan);
+        fs::write(
+            world.runtime().join(SNAPSHOT_NAME),
+            Snapshot::take(&world.run()).to_text(),
+        )
+        .unwrap();
+        assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+        let mask = generators.join(GPT_AUTO);
+        assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
+
+        let mut plan = world.plan();
+        plan.armed = Some(Arm {
+            direction: Direction::Leave,
+            at: 1_020,
+        });
+        world.init_in_nextroot(&plan.decoy.init);
+        world.write_plan(&plan);
+        let outcome = run(&world.env(true, 1_030));
+        assert!(
+            matches!(outcome, Outcome::Returned { failed: 0, .. }),
+            "{outcome:?}"
+        );
+        assert!(
+            fs::symlink_metadata(&mask).is_err(),
+            "the decoy runs the generator again"
+        );
+        if decoy_has_generators {
+            assert_eq!(
+                fs::read_link(generators.join("zram-generator")).unwrap(),
+                Path::new("/dev/null"),
+                "the decoy's own mask stays"
+            );
+        } else {
+            assert!(!generators.exists());
+        }
+    }
+}
+
+/// A generator mask that cannot be written refuses the switch, as a unit mask
+/// does: through a generator directory that is a link into a directory the
+/// scrub never enters, the mask would outlive the session on the decoy.
+#[test]
+fn an_entry_whose_generator_masks_cannot_be_written_is_refused() {
+    let world = World::new();
+    let elsewhere = world.run().join("udev/elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::create_dir_all(world.run().join("systemd")).unwrap();
+    symlink(&elsewhere, world.run().join(runtime_units::GENERATOR_DIR)).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+
+    let outcome = run(&world.env(true, 1_010));
+    assert!(
+        matches!(&outcome, Outcome::Disarmed(why) if why.starts_with("could not mask generators")),
+        "{outcome:?}"
+    );
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+    assert!(
+        fs::symlink_metadata(world.run().join("systemd/system/dev-vda3.swap")).is_err(),
+        "the decoy units are unmasked again"
+    );
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/aaa-nixos-system")
     );
 }
 
@@ -808,8 +911,9 @@ fn modprobe_now(world: &World) -> String {
 }
 
 /// The entry's snapshot of `/run`, then the masks the entry transition
-/// writes: the decoy units in the runtime unit directory, the boot-loader
-/// units in the control directory.
+/// writes: the decoy units in the runtime unit directory, the units that would
+/// only fail in the hidden root in the control directory, the generators in
+/// the generator directory.
 fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
     fs::write(
         world.runtime().join(SNAPSHOT_NAME),
@@ -821,19 +925,24 @@ fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
         &world.run(),
         &plan.boot_masks,
     ));
-    assert_eq!(masks.len(), plan.masks.len() + plan.boot_masks.len());
+    masks.extend(runtime_units::mask_generators(&world.run(), &plan.generator_masks).unwrap());
+    assert_eq!(
+        masks.len(),
+        plan.masks.len() + plan.boot_masks.len() + plan.generator_masks.len()
+    );
     masks
 }
 
 /// A reboot met a next root the activation left unarmed, after an entry
 /// transition whose switch failed: the decoy gets back its kernel paths and
-/// loses the session's masks of both kinds.
+/// loses the session's masks of every kind.
 #[test]
 fn a_disarmed_next_root_gives_the_decoy_back_its_kernel_paths_and_units() {
     let world = World::new();
     let mut plan = armed(Direction::Enter);
     plan.armed = None;
     plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
     plan.kernel_settings = repointed_modprobe(&world);
     world.write_plan(&plan);
     let masks = masked_after_snapshot(&world, &plan);
@@ -852,6 +961,7 @@ fn the_way_back_gives_the_decoy_back_its_kernel_paths_and_units() {
     let mut plan = armed(Direction::Leave);
     plan.entered_at = Some(900);
     plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
     plan.kernel_settings = repointed_modprobe(&world);
     world.init_in_nextroot(&plan.decoy.init);
     world.write_plan(&plan);

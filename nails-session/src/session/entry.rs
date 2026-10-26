@@ -26,8 +26,8 @@
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
 //!    generation's own fstab for what the decoy's did not cover;
 //! 7. the masks the entry transition writes at the switch: the fstab
-//!    policy's and the units that would only fail in the hidden root
-//!    ([`super::hidden_masks`]);
+//!    policy's, the units that would only fail in the hidden root and the
+//!    generators the hidden systemd must never run ([`super::hidden_masks`]);
 //! 8. the decoy filesystems the way back needs carried onto the hidden volume,
 //!    and the decoy's mounts recorded for the way back to make again
 //!    ([`super::way_back`]); `/run` bound in and everything below the next
@@ -328,7 +328,13 @@ pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
     let remaining = nextroot::detach_tree(&paths.nextroot());
     transition::remove_dropin(&paths.run, &kept);
     if let Some(plan) = &plan {
-        runtime_units::remove_masks(&paths.run, &plan.masks, &plan.boot_masks, &kept);
+        runtime_units::remove_masks(
+            &paths.run,
+            &plan.masks,
+            &plan.boot_masks,
+            &plan.generator_masks,
+            &kept,
+        );
         kernel_helpers::restore(&plan.kernel_settings);
     }
     nextroot::remove_runtime_dir(&paths.runtime());
@@ -427,6 +433,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         policy_mounts: Vec::new(),
         masks: Vec::new(),
         boot_masks: Vec::new(),
+        generator_masks: Vec::new(),
         session_units: inputs.session_units.clone(),
         backend: inputs.backend.clone(),
         tools: Tools {
@@ -601,6 +608,7 @@ fn build(
     activation_step(ActivationPhase::MaskUnits, building);
     plan.masks = policy::masks(&decided.fstab, &decided.decisions);
     plan.boot_masks = hidden_masks::units(&nextroot, &plan.masks);
+    plan.generator_masks = hidden_masks::generators();
     if let Some(operator) = &inputs.operator {
         super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }

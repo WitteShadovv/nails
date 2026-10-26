@@ -104,7 +104,7 @@ in
     CONFIG = "/mnt/data/config/nails.toml"
     WATCH_UNIT = "overlay-runtime-monitor.service"
     # The units the hidden root masks where the decoy has them, as the distro
-    # smoke lists them.
+    # smoke lists them, and the generator it always masks.
     HIDDEN_MASKED_UNITS = (
         "systemd-boot-random-seed.service",
         "grub-common.service",
@@ -113,6 +113,7 @@ in
         "systemd-remount-fs.service",
         "systemd-growfs-root.service",
     )
+    GPT_AUTO_MASK = "/run/systemd/system-generators/systemd-gpt-auto-generator"
 
 
     def load_states():
@@ -207,6 +208,7 @@ in
     machine.wait_for_unit("pidfile-probe.service")
     decoy_masked_units = load_states()
     machine.log(f"units the hidden root masks, on the decoy: {decoy_masked_units}")
+    machine.fail(f"test -L {GPT_AUTO_MASK}")
     decoy_initrd_mounts = initrd_mounts()
     machine.log(f"initrd mounts on the decoy: {sorted(decoy_initrd_mounts)}")
     assert "/" in decoy_initrd_mounts, decoy_initrd_mounts
@@ -237,6 +239,8 @@ in
         for unit, state in load_states().items():
             if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden session: {state}"
+        mask = machine.succeed(f"readlink {GPT_AUTO_MASK}").strip()
+        assert mask == "/dev/null", f"{GPT_AUTO_MASK} -> {mask}"
         assert_quiet_kernel_log("the hidden session")
         assert_utab_names_live_mounts("the hidden session")
         hidden_utab, _ = utab_and_mounts()
@@ -280,6 +284,7 @@ in
         _, avahi = machine.execute("journalctl -b -u avahi-daemon.service --no-pager")
         assert "trying to remove PID file" not in avahi, avahi
         assert load_states() == decoy_masked_units, "the decoy's own units again"
+        machine.fail(f"test -L {GPT_AUTO_MASK}")
         assert_quiet_kernel_log("after the emergency")
         assert_utab_names_live_mounts("after the emergency")
         back_utab, back_mountinfo = utab_and_mounts()

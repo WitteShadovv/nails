@@ -1164,7 +1164,7 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
     // Ubuntu 26.04's GRUB unit. The entry picks the masks, the entry
     // transition writes them at the switch, never before (the decoy's PID 1
     // must not reload with them), and a rollback after a failed switch gives
-    // the decoy its units back.
+    // the decoy its units and generators back.
     let _ = Rerun::new(test_path!(
         the_hidden_root_masks_are_written_at_the_switch_only
     ))
@@ -1191,8 +1191,14 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
                 "systemd-growfs-root.service"
             ]
         );
+        assert_eq!(plan.generator_masks, ["systemd-gpt-auto-generator"]);
         let control = paths.run.join(runtime_units::RUNTIME_CONTROL_DIR);
+        let generators = paths.run.join(runtime_units::GENERATOR_DIR);
         assert!(!control.exists(), "a unit is masked before the switch");
+        assert!(
+            !generators.exists(),
+            "a generator is masked before the switch"
+        );
 
         let env = Env {
             run: paths.run.clone(),
@@ -1211,10 +1217,15 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
                 "{unit}"
             );
         }
+        assert_eq!(
+            std::fs::read_link(generators.join("systemd-gpt-auto-generator")).unwrap(),
+            Path::new("/dev/null")
+        );
 
         // The switch failed: the decoy runs again over the same /run.
         entry::rollback(&paths);
         assert!(!control.exists(), "the decoy's units stay masked");
+        assert!(!generators.exists(), "the decoy's generators stay masked");
     });
 }
 
