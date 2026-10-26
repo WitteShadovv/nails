@@ -1019,11 +1019,16 @@ seconds or minutes.
   (`modules.dep`, or `modules.dep.bin`, the form `modprobe` reads), made one
   of those directories anew so the decoy's copy no longer shows through, or
   wrote its own index before the decoy last rebuilt its own; and when the
-  decoy itself lacks the tree, as after a kernel update without a reboot. Its
-  fix: update the decoy's kernel and reboot the decoy into it, or `discard`
-  the path it names; for an outdated index, `sudo depmod <release>` in a
-  hidden session rebuilds it. An index a hidden session wrote no earlier than
-  the decoy's (a `depmod` after installing a module) passes with a note, and a
+  decoy itself lacks the tree, as after a kernel update without a reboot. It
+  names the path that holds the change and the `discard` that deletes the
+  hidden sessions' copy of it. When that path is `/usr/lib/modules/<release>`
+  itself, updating the decoy's kernel to a new release and rebooting the decoy
+  into it works too, since the new kernel's modules are in a tree of their
+  own; a change above it (to `/usr/lib/modules`, `/usr/lib` or `/usr`) hides
+  the decoy's modules for every kernel, so there a kernel update does not
+  bring them back. For an outdated index, `sudo depmod <release>` in a hidden
+  session rebuilds it. An index a hidden session wrote no earlier than the
+  decoy's (a `depmod` after installing a module) passes with a note, and a
   decoy without `/usr/lib/modules`, such as NixOS, keeps its modules elsewhere
   and passes. Only root can see whether a directory was made anew, so an
   unprivileged `nails check` that needs to know says it cannot tell and names

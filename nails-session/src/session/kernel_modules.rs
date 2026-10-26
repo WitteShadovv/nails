@@ -485,31 +485,39 @@ impl KernelModulesCheck {
         }
     }
 
-    /// The fix for the change `how` at `at`: a new kernel on the decoy, which
-    /// no hidden session changed, or the `discard` that deletes the hidden
-    /// sessions' copy of `at`.
+    /// The fix for the change `how` at `at`: the `discard` that deletes the
+    /// hidden sessions' copy of `at`, and, for a change to the running
+    /// kernel's own tree, a kernel of a new release on the decoy, whose
+    /// modules are in a tree of their own. A change above that tree hides the
+    /// decoy's modules for every kernel, so there a kernel update is no fix.
     fn fix(&self, at: Step, how: Hiding) -> String {
         let place = self.path(at);
-        let restore = |also: &str| {
+        let back = |also: &str| {
             format!(
-                "bring the decoy's {place} back with `{}`, which deletes what hidden sessions \
-                 changed there{also} (it lists what it deletes and asks first)",
+                "the decoy's {place} back with `{}`, which deletes what hidden sessions changed \
+                 there{also} (it lists what it deletes and asks first)",
                 self.discard(&place)
             )
         };
         match how {
             Hiding::OwnCopy => format!(
-                "If modules fail to load in hidden sessions, {}.",
-                restore("")
+                "If modules fail to load in hidden sessions, bring {}.",
+                back("")
             ),
             Hiding::StaleIndex => format!(
-                "Rebuild the index in a hidden session with `sudo depmod {}`, or {}.",
+                "Rebuild the index in a hidden session with `sudo depmod {}`, or bring {}.",
                 shell_word(&self.release),
-                restore(", the modules they added included")
+                back(", the modules they added included")
+            ),
+            _ if at == Step::Release => format!(
+                "Update the decoy's kernel to a new release and reboot the decoy into it, or \
+                 bring {}.",
+                back("")
             ),
             _ => format!(
-                "Update the decoy's kernel and reboot the decoy into it, or {}.",
-                restore("")
+                "Bring {}. A kernel update on the decoy would not bring its modules back, since \
+                 the change hides them for every kernel.",
+                back("")
             ),
         }
     }
