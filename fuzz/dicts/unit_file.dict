@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: the sections and keys NAILS reads from a mount, swap
+# or automount unit, and the line syntax of systemd's unit files.
+"[Unit]"
+"[Mount]"
+"[Swap]"
+"[Automount]"
+"[Install]"
+"[X-"
+"What="
+"Where="
+"Type="
+"Options="
+"SourcePath="
+"Requires="
+"BindsTo="
+"Wants="
+"/dev/"
+"/etc/fstab"
+"tmpfs"
+"ext4"
+"%%"
+"%H"
+"\\\x0a"
+"\x0d\x0a"
+"\x00"
+"#"
+";"
+"\xef\xbb\xbf"
+"\xef\xbf\xbf"

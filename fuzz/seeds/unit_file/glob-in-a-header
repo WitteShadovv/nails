@@ -1,0 +1,4 @@
+[Mount]
+What=/dev/vdb1
+[Mo*unt]
+Type=tmpfs
