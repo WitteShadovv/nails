@@ -23,8 +23,8 @@
 //! addresses would stay behind. This check resolves every required tool for the
 //! detected platform and hidden-volume backend through the same
 //! [`HostCommands`] resolver the runner uses, and fails *before* any state is
-//! written, naming each missing tool and how to install it on the detected
-//! host's family ([`install_hint`], from the family table).
+//! written, naming each missing tool and how to install it with the package
+//! manager of the detected host's family ([`install_hint`]).
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::backend_lock::resolve_backend_chain;
