@@ -155,7 +155,7 @@ soft-reboot.
 | Other releases: Debian after 13, Ubuntu after 24.04 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
 | Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` runs with a warning that NAILS has not tested it, when its systemd is new enough; its base release is not version-gated. One whose `ID_LIKE` also names Fedora, RHEL, CentOS or Arch is refused, wherever each stands in the list. |
 | Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |
-| Fedora, Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). |
+| Fedora, Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). Fedora's gate checks the edition too: Cloud is the tested one, so once Fedora is admitted, Workstation, KDE Plasma Desktop, any other edition and a Fedora host whose os-release names none will run with a warning. Its derivatives Nobara and Ultramarine will need release 44 or newer. |
 | ostree and image-based hosts | Refused | NAILS cannot overlay an immutable system. |
 | Non-systemd hosts (OpenRC, runit, ...) | Refused | The session is entered and left with a systemd soft-reboot. |
 

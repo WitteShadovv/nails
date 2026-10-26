@@ -237,6 +237,7 @@ fn a_release_upgrade_without_a_release_to_name_falls_back_to_the_platforms() {
         kind: Kind::Base,
         admitted: false,
         upgrade: Upgrade::Release("as its guide describes"),
+        editions: &[],
     };
     assert_eq!(row_hint(&row), SUPPORTED);
 }

@@ -6,9 +6,10 @@
 //!
 //! The check reports the [`HostProfile`] that detection gathered once for the
 //! run, so `check` and activation name the same host. It passes with the
-//! host's name (`Ubuntu 24.04`), warns on a Debian or Ubuntu release NAILS
-//! admits but has not been tested on, and fails on a host NAILS refuses, with
-//! the reason activation refuses it with.
+//! host's name (`Ubuntu 24.04`, or `Fedora 44 Cloud` where the edition is
+//! gated too), warns on a host NAILS admits but has not been tested on (its
+//! release, its edition, or a derivative) or that carries a known issue, and
+//! fails on a host NAILS refuses, with the reason activation refuses it with.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::platform::HostProfile;
@@ -134,6 +135,19 @@ mod tests {
         let result = run_on("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"22.04\"\n");
         assert!(result.is_fail(), "{result:?}");
         assert!(result.message().contains("(Ubuntu 24.04)"), "{result:?}");
+    }
+
+    #[test]
+    fn a_tested_edition_passes_naming_it() {
+        // Fedora is refused until it is admitted; this is how its row passes
+        // then.
+        let mut profile = FakePlatform::fhs().host_profile();
+        profile.id = Some("fedora".to_string());
+        profile.version_id = Some("44".to_string());
+        profile.variant_id = Some("cloud".to_string());
+        let result = judge(&profile);
+        assert!(result.is_pass(), "{result:?}");
+        assert_eq!(result.message(), "Fedora 44 Cloud");
     }
 
     #[test]

@@ -41,8 +41,9 @@ enum UsrMerge {
 
 /// Detect the running host.
 ///
-/// Reads `/etc/os-release` (`ID`, `ID_LIKE`, `VERSION_ID`), `/run/ostree-booted`,
-/// `/run/current-system` and PID 1's command name, then classifies the host:
+/// Reads `/etc/os-release` (`ID`, `ID_LIKE`, `VERSION_ID`, `VARIANT_ID`),
+/// `/run/ostree-booted`, `/run/current-system` and PID 1's command name, then
+/// classifies the host:
 ///
 /// - An ostree / image-based boot, or a PID 1 that is not systemd, resolves to
 ///   [`PlatformKind::Unsupported`] with an actionable reason. Detection still
@@ -51,9 +52,9 @@ enum UsrMerge {
 /// - A host whose `ID` is `nixos`, or that has a live `/run/current-system`,
 ///   resolves to [`PlatformKind::NixOs`].
 /// - Any other systemd host resolves to [`PlatformKind::Fhs`] when the
-///   Debian-family table admits it, and to [`PlatformKind::Unsupported`]
-///   otherwise. A release the table admits but does not list as tested carries
-///   its warning in [`HostProfile::support_warning`].
+///   family table admits it, and to [`PlatformKind::Unsupported`] otherwise. A
+///   release or an edition the table admits but does not list as tested
+///   carries its warning in [`HostProfile::support_warning`].
 ///
 /// [`UnsupportedPlatform`]: super::UnsupportedPlatform
 pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
@@ -202,8 +203,8 @@ struct Verdict {
     /// Why the host is refused, when [`kind`](Self::kind) is
     /// [`PlatformKind::Unsupported`].
     unsupported_reason: Option<String>,
-    /// The warning an admitted host carries: a release NAILS has not been
-    /// tested on.
+    /// The warning an admitted host carries: a release or an edition NAILS has
+    /// not been tested on, a derivative, or a tested release's known issue.
     support_warning: Option<String>,
     /// The FHS family the host resolved to, where one was determined. `None` for
     /// NixOS and for hosts refused before the family table is consulted.
@@ -241,10 +242,10 @@ impl Verdict {
 /// Refusals come first: an ostree / image-based host, a composefs-native host
 /// and a non-systemd PID 1 are all declined, because NAILS cannot safely lay a
 /// hidden overlay over an immutable image or drive teardown without systemd. A
-/// systemd host is then resolved to NixOS, a supported Debian-family release
-/// (with a warning when NAILS has not been tested on that release), or a
-/// documented refusal (unsupported distribution, release below the minimum, or
-/// a non-merged layout).
+/// systemd host is then resolved to NixOS, a release the family table admits
+/// (with a warning when NAILS has not been tested on that release or edition),
+/// or a documented refusal (unsupported distribution, release below the
+/// minimum, or a non-merged layout).
 fn classify(
     is_ostree: bool,
     composefs_refusal: Option<String>,
@@ -287,6 +288,7 @@ fn classify(
         fields.id.as_deref(),
         &fields.id_like,
         fields.version_id.as_deref(),
+        fields.variant_id.as_deref(),
     );
     let family = classification.family;
     let support_warning = match classification.support {
@@ -432,6 +434,16 @@ mod tests {
             "linuxmint 22"
         );
         assert_eq!(name("VERSION_ID=\"1\"\n"), "this host");
+        // A distribution the family table lists by edition is named with it.
+        let fedora =
+            |variant: &str| name(&format!("ID=fedora\nVERSION_ID=44\nVARIANT_ID={variant}\n"));
+        assert_eq!(fedora("cloud"), "Fedora 44 Cloud");
+        assert_eq!(fedora("kde"), "Fedora 44 KDE Plasma Desktop");
+        assert_eq!(fedora("server"), "Fedora 44");
+        assert_eq!(
+            name("ID=debian\nVERSION_ID=13\nVARIANT_ID=cloud\n"),
+            "Debian 13"
+        );
 
         // A live generation without os-release is NixOS all the same.
         let fs = MockFilesystem::new();

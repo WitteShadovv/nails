@@ -19,12 +19,18 @@
 //! admitted, so they are refused as product data until their support has been
 //! verified, not hidden behind a test flag.
 //!
+//! A distribution that ships editions (Fedora's Cloud, Workstation, KDE Plasma
+//! Desktop) also lists them in its row, as os-release `VARIANT_ID` names them:
+//! a host runs clean only on a release and an edition NAILS is tested on.
+//!
 //! [`PlatformKind`]: super::PlatformKind
 
 use nails_base::Family;
 
+mod gate;
 mod hints;
 
+use gate::admitted_verdict;
 pub use hints::{Package, install_hint, upgrade_hint};
 
 /// A distribution version reduced to `(major, minor)`.
@@ -79,6 +85,8 @@ pub(crate) enum Gate {
     /// `validated` release that also appears in `caveats` stays tested — it is
     /// still listed in the tested-release sentence — but carries that specific
     /// warning, for a known issue that affects an otherwise supported release.
+    /// A derivative lists neither: NAILS tests no release of one, so from `min`
+    /// upward it runs as an untested derivative.
     Versioned {
         min: DistroVersion,
         validated: &'static [DistroVersion],
@@ -116,6 +124,29 @@ pub(crate) enum Upgrade {
 /// there, so the hint never names `pacman -S systemd` alone.
 const PACMAN_FULL_UPGRADE: Upgrade = Upgrade::Rolling("with `pacman -Syu`, then reboot");
 
+/// An edition of a distribution, as os-release `VARIANT_ID` names it.
+pub(crate) struct Edition {
+    /// The `VARIANT_ID`, lowercased.
+    id: &'static str,
+    /// Human-facing name used in messages.
+    label: &'static str,
+    /// Whether NAILS is tested on this edition. An edition NAILS knows by
+    /// name but has not been tested on is listed so its warning can name it.
+    validated: bool,
+}
+
+/// Fedora's minimum release. Nobara and Ultramarine number their releases
+/// after the Fedora release each is built on, so it is their minimum too.
+const FEDORA_MIN: DistroVersion = DistroVersion::new(44, 0);
+
+/// The gate of a Fedora derivative: refused below Fedora's minimum release,
+/// and from there run as an untested derivative.
+const FEDORA_DERIVATIVE: Gate = Gate::Versioned {
+    min: FEDORA_MIN,
+    validated: &[],
+    caveats: &[],
+};
+
 /// One row of the family table.
 pub(crate) struct FamilyRow {
     /// The `/etc/os-release` `ID`, lowercased.
@@ -133,6 +164,11 @@ pub(crate) struct FamilyRow {
     admitted: bool,
     /// How the row's hosts upgrade to a systemd new enough for the session.
     upgrade: Upgrade,
+    /// The distribution's editions, for a base row that gates on them; empty
+    /// for one that does not. A host of a row that lists editions runs clean
+    /// only on a validated one: any other edition, listed or not, and a host
+    /// that names none, run with a warning.
+    editions: &'static [Edition],
 }
 
 /// The warning the Ubuntu 26.04 row carries. 26.04 is a tested release, but a
@@ -167,6 +203,7 @@ const TABLE: &[FamilyRow] = &[
         kind: Kind::Base,
         admitted: true,
         upgrade: Upgrade::Release("as its release notes describe, then reboot"),
+        editions: &[],
     },
     FamilyRow {
         id: "ubuntu",
@@ -183,13 +220,14 @@ const TABLE: &[FamilyRow] = &[
         kind: Kind::Base,
         admitted: true,
         upgrade: Upgrade::Release("with `do-release-upgrade`, then reboot"),
+        editions: &[],
     },
     FamilyRow {
         id: "fedora",
         label: "Fedora",
         family: Family::Fedora,
         gate: Gate::Versioned {
-            min: DistroVersion::new(44, 0),
+            min: FEDORA_MIN,
             validated: &[DistroVersion::new(44, 0)],
             caveats: &[],
         },
@@ -198,6 +236,27 @@ const TABLE: &[FamilyRow] = &[
         // The upgrade reboots by itself; Fedora supports it across at most two
         // releases.
         upgrade: Upgrade::Release("with `dnf system-upgrade`, at most two releases at a time"),
+        // Cloud is the edition of the image the Fedora distribution tests
+        // boot, so it is the one admission validates. Workstation and KDE
+        // Plasma Desktop warn until a run of NAILS on each has passed, as any
+        // other edition does.
+        editions: &[
+            Edition {
+                id: "cloud",
+                label: "Cloud",
+                validated: true,
+            },
+            Edition {
+                id: "workstation",
+                label: "Workstation",
+                validated: false,
+            },
+            Edition {
+                id: "kde",
+                label: "KDE Plasma Desktop",
+                validated: false,
+            },
+        ],
     },
     FamilyRow {
         id: "arch",
@@ -207,6 +266,7 @@ const TABLE: &[FamilyRow] = &[
         kind: Kind::Base,
         admitted: false,
         upgrade: PACMAN_FULL_UPGRADE,
+        editions: &[],
     },
     // Arch derivatives: refused while Arch is, named so the refusal is precise
     // and flips to a warning the day Arch is admitted.
@@ -218,6 +278,7 @@ const TABLE: &[FamilyRow] = &[
         kind: Kind::Derivative,
         admitted: false,
         upgrade: PACMAN_FULL_UPGRADE,
+        editions: &[],
     },
     FamilyRow {
         id: "cachyos",
@@ -227,6 +288,7 @@ const TABLE: &[FamilyRow] = &[
         kind: Kind::Derivative,
         admitted: false,
         upgrade: PACMAN_FULL_UPGRADE,
+        editions: &[],
     },
     FamilyRow {
         id: "manjaro",
@@ -236,27 +298,30 @@ const TABLE: &[FamilyRow] = &[
         kind: Kind::Derivative,
         admitted: false,
         upgrade: PACMAN_FULL_UPGRADE,
+        editions: &[],
     },
-    // Fedora derivatives.
+    // Fedora derivatives, gated on the Fedora release each is built on.
     FamilyRow {
         id: "nobara",
         label: "Nobara",
         family: Family::Fedora,
-        gate: Gate::Rolling,
+        gate: FEDORA_DERIVATIVE,
         kind: Kind::Derivative,
         admitted: false,
         // Nobara upgrades through its own updater and warns against
         // `dnf system-upgrade`.
         upgrade: Upgrade::Release("as Nobara's upgrade guide describes, then reboot"),
+        editions: &[],
     },
     FamilyRow {
         id: "ultramarine",
         label: "Ultramarine",
         family: Family::Fedora,
-        gate: Gate::Rolling,
+        gate: FEDORA_DERIVATIVE,
         kind: Kind::Derivative,
         admitted: false,
         upgrade: Upgrade::Release("with `dnf system-upgrade`"),
+        editions: &[],
     },
 ];
 
@@ -317,8 +382,9 @@ pub(crate) enum FamilySupport {
     /// issue affects the session. It stays a tested release — it is named in
     /// the tested-release sentence — and the string is the warning NAILS emits.
     SupportedWithCaveat(String),
-    /// An admitted family NAILS has not tested on this release, or a derivative
-    /// of an admitted family. It runs; the string is the warning that says so.
+    /// An admitted family NAILS has not tested on this release or this
+    /// edition, or a derivative of an admitted family. It runs; the string is
+    /// the warning that says so.
     Untested(String),
     /// A family NAILS does not admit, a derivative of one, or a host refused by
     /// name or as unknown. Carries the documented refusal reason.
@@ -350,13 +416,27 @@ pub(crate) fn label(id: &str) -> Option<&'static str> {
         })
 }
 
+/// The name a message uses for a host's edition (`Cloud` for a Fedora host
+/// whose `VARIANT_ID` is `cloud`), or `None` when the host's row lists no such
+/// edition.
+pub(crate) fn edition_label(id: &str, variant_id: &str) -> Option<&'static str> {
+    TABLE
+        .iter()
+        .find(|row| row.id == id)?
+        .editions
+        .iter()
+        .find(|edition| edition.id == variant_id)
+        .map(|edition| edition.label)
+}
+
 /// Classify a non-NixOS systemd host against the family table.
 ///
 /// - A named refusal (Enterprise Linux, SteamOS) is declined by name first.
 /// - A table `ID` is resolved by its row, whatever `ID_LIKE` says: an admitted
-///   base is version-gated, a non-admitted base is refused as product data, and
-///   a derivative follows its base family (a warning once the base is admitted,
-///   a refusal until then).
+///   base is gated on its release and, where the row lists editions, on its
+///   `VARIANT_ID`; a non-admitted base is refused as product data; and a
+///   derivative follows its base family (a warning once the base is admitted,
+///   from the row's minimum release, and a refusal until then).
 /// - A non-table `ID` whose `ID_LIKE` names `fedora`, `rhel`, `centos` or `arch`
 ///   anywhere is refused, naming the first such family in the list's
 ///   closest-first order. This holds whatever else `ID_LIKE` names: a host that
@@ -370,6 +450,7 @@ pub(crate) fn classify(
     id: Option<&str>,
     id_like: &[String],
     version_id: Option<&str>,
+    variant_id: Option<&str>,
 ) -> Classification {
     if let Some(id) = id {
         if let Some(named) = NAMED_REFUSALS.iter().find(|row| row.id == id) {
@@ -379,7 +460,7 @@ pub(crate) fn classify(
             };
         }
         if let Some(row) = TABLE.iter().find(|row| row.id == id) {
-            return classify_row(row, version_id);
+            return classify_row(row, version_id, variant_id);
         }
     }
 
@@ -409,18 +490,18 @@ pub(crate) fn classify(
 }
 
 /// Resolve a matched table row to a verdict.
-fn classify_row(row: &FamilyRow, version_id: Option<&str>) -> Classification {
+fn classify_row(
+    row: &FamilyRow,
+    version_id: Option<&str>,
+    variant_id: Option<&str>,
+) -> Classification {
     let family = Some(row.family);
     let support = match row.kind {
-        Kind::Derivative => {
-            if base_admitted(row.family) {
-                FamilySupport::Untested(derivative_warning(row.family))
-            } else {
-                FamilySupport::Refused(derivative_refusal(row))
-            }
+        Kind::Derivative if !base_admitted(row.family) => {
+            FamilySupport::Refused(derivative_refusal(row))
         }
         Kind::Base if !row.admitted => FamilySupport::Refused(not_validated_refusal(row)),
-        Kind::Base => gate_version(row, version_id),
+        Kind::Base | Kind::Derivative => admitted_verdict(row, version_id, variant_id),
     };
     Classification { family, support }
 }
@@ -445,67 +526,6 @@ fn family_from_id_like(id_like: &[String]) -> Option<Family> {
         }
     }
     None
-}
-
-/// Version-gate an admitted base row.
-fn gate_version(row: &FamilyRow, version_id: Option<&str>) -> FamilySupport {
-    let Gate::Versioned {
-        min,
-        validated,
-        caveats,
-    } = row.gate
-    else {
-        // A rolling admitted family has no release to gate on.
-        return FamilySupport::Supported;
-    };
-
-    let Some(raw) = version_id else {
-        return FamilySupport::Refused(format!(
-            "{} host declares no VERSION_ID, so NAILS cannot confirm it is at \
-             least {min} (the minimum supported release).",
-            row.label,
-        ));
-    };
-
-    let Some(version) = DistroVersion::parse(raw) else {
-        return FamilySupport::Refused(format!(
-            "{} host has an unparseable VERSION_ID ('{raw}'); NAILS requires at \
-             least {min}.",
-            row.label,
-        ));
-    };
-
-    if version < min {
-        return FamilySupport::Refused(format!(
-            "{} {raw} is older than the minimum supported release ({} {min}). \
-             Upgrade the host or run NAILS on a supported release.",
-            row.label, row.label,
-        ));
-    }
-
-    if !validated.contains(&version) {
-        return FamilySupport::Untested(format!(
-            "{} {raw} is not a release NAILS has been tested on (tested: {} {}). NAILS runs \
-             on it, but a change in this release can break the session or leave a trace \
-             NAILS does not know about. Use a tested release, or run `{}` on this computer \
-             before you rely on it.",
-            row.label,
-            row.label,
-            releases(validated),
-            rehearse_line(),
-        ));
-    }
-
-    // A tested release can still carry a specific, documented caveat.
-    if let Some((_, caveat)) = caveats
-        .iter()
-        .copied()
-        .find(|(caveated, _)| *caveated == version)
-    {
-        return FamilySupport::SupportedWithCaveat(caveat.to_string());
-    }
-
-    FamilySupport::Supported
 }
 
 /// The warning for a derivative of an admitted family.
@@ -615,9 +635,10 @@ fn either(versions: &[DistroVersion]) -> String {
     joined(versions, "or")
 }
 
-/// `versions` in a sentence, the last two joined by `conjunction`.
-fn joined(versions: &[DistroVersion], conjunction: &str) -> String {
-    let names: Vec<String> = versions.iter().map(ToString::to_string).collect();
+/// `items` in a sentence, the last two joined by `conjunction`: `a`,
+/// `a and b`, or `a, b and c`.
+fn joined<T: ToString>(items: &[T], conjunction: &str) -> String {
+    let names: Vec<String> = items.iter().map(ToString::to_string).collect();
     match names.split_last() {
         None => String::new(),
         Some((last, [])) => last.clone(),
