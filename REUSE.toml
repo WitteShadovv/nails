@@ -47,8 +47,13 @@ SPDX-License-Identifier = "CC-BY-4.0"
 # name no holder, so wasmtime's name for its authors and Google LLC stand in. A
 # new import needs its licence and holder added here. Like the word list, this
 # comes after the catch-all, because the last matching annotation wins.
+#
+# The gui/ workspace's store imports the same sets, and cargo-vet copies their
+# records into gui/supply-chain/imports.lock as soon as a crate they audit
+# joins that graph, so the file is covered here from the start. This table
+# also comes after the gui/ one.
 [[annotations]]
-path = "supply-chain/imports.lock"
+path = ["supply-chain/imports.lock", "gui/supply-chain/imports.lock"]
 SPDX-FileCopyrightText = [
     "The Wasmtime Project Developers",
     "2019 Embark Studios",

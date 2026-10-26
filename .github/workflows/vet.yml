@@ -8,7 +8,8 @@ name: Vet
 # so it only reports: a new dependency that is not yet audited surfaces here as
 # a red advisory run without blocking the merge. Adopting cargo-vet on more of
 # the graph means replacing exemptions with audits over time, not making this
-# lane a required check.
+# lane a required check. The gui/ workspace keeps a store of its own under
+# gui/supply-chain/, which the gui-vet job of ci.yml checks as a gate instead.
 #
 # --locked uses the committed supply-chain/imports.lock, so the result is
 # reproducible and never drifts with an upstream audit update between runs.

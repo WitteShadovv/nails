@@ -9,6 +9,7 @@ This guide documents the security validation mechanisms that are actually in use
 The primary CI workflow performs:
 
 - the dependency policy over the shipped dependency graph (`just deny`), and over the graph of the `gui/` workspace against its own `gui/deny.toml`: bans, licenses and sources on every run; RustSec advisories and the ignore expiry check of both policies when a `Cargo.toml`, a `Cargo.lock` or a `deny.toml` of either workspace changes
+- the cargo-vet audit gate over the `gui/` workspace (`just vet gui`): every third-party crate of its graph needs an audit or a recorded exemption
 - the test suite with an enforced line-coverage threshold, the doctests and the privileged real-overlayfs tests, which support security-sensitive change control
 - the canonical Nix build of `.#nails-release` with an archive smoke test
 - the release SBOM and the VEX document, written and checked by `sbom.yml` as a release writes and checks them, on every push to `main` and on pull requests that change what they are made from; nothing is attested there
@@ -111,9 +112,11 @@ ignore = [
 
 cargo-vet records, under `supply-chain/`, why each third-party crate in the main workspace is trusted: an audit imported from a public audit set (the Bytecode Alliance, Mozilla, Google, Embark, ISRG and Zcash sets named in `supply-chain/config.toml`) or an exemption for a version that nobody has audited yet. `just vet` runs `cargo vet --locked`, which checks against the committed `supply-chain/imports.lock` and so never changes with an upstream audit update. The `vet.yml` lane runs it on pull requests that change the dependency graph; it reports and never blocks a merge.
 
-A new or updated dependency that no audit covers turns that lane red. Run `cargo vet` to see what is missing, then either review the crate and record it with `cargo vet certify`, or record an exemption with `cargo vet add-exemption`. The `setup/` and `gui/` workspaces are not vetted yet.
+A new or updated dependency that no audit covers turns that lane red. Run `cargo vet` to see what is missing, then either review the crate and record it with `cargo vet certify`, or record an exemption with `cargo vet add-exemption`.
 
-Importing another audit set, a new `[imports]` entry in `supply-chain/config.toml`, also needs that repository's license and copyright holder added to the `supply-chain/imports.lock` annotation in `REUSE.toml`. cargo-vet copies audit records from the set into `imports.lock`, and they stay under the license of the repository that publishes them.
+The `gui/` workspace keeps a store of its own, `gui/supply-chain/`, which imports the same public audit sets, and `just vet gui` checks its graph against it. There the check is a gate: the `gui-vet` job of `ci.yml` fails a pull request that brings in a crate that no audit or exemption covers, so the dependency graph of the graphical interface's toolkit cannot land unvetted. The workspace has no third-party crate yet, so the store holds no exemption. Record what a new crate needs as above, with `--manifest-path gui/Cargo.toml`. The `setup/` workspace is not vetted yet.
+
+Importing another audit set, a new `[imports]` entry in `supply-chain/config.toml` or `gui/supply-chain/config.toml`, also needs that repository's license and copyright holder added to the `imports.lock` annotation in `REUSE.toml`, which covers both stores. cargo-vet copies audit records from the set into `imports.lock`, and they stay under the license of the repository that publishes them.
 
 ### Run locally
 
@@ -123,6 +126,7 @@ The tools come from the flake dev shell:
 nix develop -c just deny        # the merge gate
 nix develop -c just deny-full   # the weekly full-graph scan
 nix develop -c just vet         # the cargo-vet audit check
+nix develop -c just vet gui     # the cargo-vet gate over gui/
 python3 ci/deny_ignores.py
 ```
 
