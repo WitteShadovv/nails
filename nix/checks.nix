@@ -260,7 +260,8 @@ in
   # boot-filesystem read-back and overlay feature-option check, and the refusal
   # scenario's listings, change comparison and journal search -- stay correct,
   # linted and typed on every `nix flake check`, not only when a distro VM test
-  # runs.
+  # runs. The probes load probe_facts the same way, for their queries and for the
+  # reading of their output into the fixture record.
   distro-checks = lint "distro-checks" {
     files = fs.unions [
       ./distro-tests/py
@@ -277,7 +278,9 @@ in
       ruff check nix/distro-tests/py
       MYPYPATH=nix/distro-tests/py mypy \
         nix/distro-tests/py/distro_checks.py \
-        nix/distro-tests/py/tests/test_distro_checks.py
+        nix/distro-tests/py/probe_facts.py \
+        nix/distro-tests/py/tests/test_distro_checks.py \
+        nix/distro-tests/py/tests/test_probe_facts.py
     '';
   };
 
