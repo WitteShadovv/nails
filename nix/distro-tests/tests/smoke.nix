@@ -11,7 +11,10 @@
 # decoy runs blk-availability.service as Debian's and Ubuntu's lvm2 ships it
 # (the image's own unit where lvm2 is installed, a copy where only dmsetup
 # is), and the second session, entered without /boot or the ESP mounted, keeps
-# its hidden volume through that unit's stop. A decoy service that keeps a PID
+# its hidden volume through that unit's stop. local-fs.target requires those
+# boot filesystems, so the second session skips their units rather than
+# masking them: the target is reached, and their fsck never runs on the decoy
+# disk. A decoy service that keeps a PID
 # file in /run starts again after an emergency killed its hidden copy, and a
 # Ctrl+C during the pre-flight checks cancels an activation. The second
 # session is also a rehearsal, run the way `nails rehearse` guides it: plant in
@@ -390,6 +393,73 @@ distroVm.buildVmTest {
                 if value
             }
             assert not needed, f"{unit} is masked in the hidden root, but {needed} need it"
+
+
+    def unit_props(unit, *props):
+        out = vm.succeed(
+            "systemctl show "
+            + " ".join(f"--property={p}" for p in props)
+            + " "
+            + shlex.quote(unit)
+        )
+        return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+    def assert_local_fs_reached(where):
+        # A masked unit that local-fs.target requires keeps the target from
+        # being reached, and nothing fails: assert it.
+        state = vm.succeed("systemctl is-active local-fs.target || true").strip()
+        assert state == "active", f"{where}: local-fs.target is {state}"
+
+
+    def monotonic_us():
+        # The clock of systemd's *Monotonic timestamps, in microseconds. The
+        # boot clock /proc/uptime reads runs with it in a machine that never
+        # suspends, as this one.
+        return int(float(vm.succeed("cut -d' ' -f1 /proc/uptime").strip()) * 1_000_000)
+
+
+    def assert_skipped_off_the_disk(where, targets, entered_after):
+        # The boot filesystems the decoy did not mount at the entry: their
+        # units are skipped, not masked, the filesystems stay unmounted, and
+        # the units they pull in that act on the disk never ran in the hidden
+        # session. systemd 255 keeps a unit's timestamps, and the userspace
+        # start time, across a soft-reboot, so both are held to the clock read
+        # on the decoy just before the entry (`entered_after`): the condition
+        # was tested after it, and the last run, if any, came before it.
+        for target in targets:
+            unit = distro_checks.escape_path(target) + ".mount"
+            state = unit_props(unit, "LoadState", "ActiveState", "ConditionResult")
+            assert state == {
+                "LoadState": "loaded",
+                "ActiveState": "inactive",
+                "ConditionResult": "no",
+            }, f"{where}: {unit}: {state}"
+            vm.fail(f"mountpoint -q {shlex.quote(target)}")
+            deps = vm.succeed(
+                f"systemctl show -P Requires {shlex.quote(unit)}; "
+                + f"systemctl show -P Wants {shlex.quote(unit)}"
+            )
+            checkers = distro_checks.device_units(deps)
+            print(f"{where}: {unit} pulls in {checkers}")
+            for checker in checkers:
+                # Pulled in, its condition tested and unmet in this root, and
+                # never run.
+                props = unit_props(
+                    checker,
+                    "ConditionResult",
+                    "ConditionTimestampMonotonic",
+                    "ExecMainStartTimestampMonotonic",
+                    "ActiveState",
+                )
+                assert props.get("ConditionResult") == "no", f"{where}: {checker}: {props}"
+                tested = int(props.get("ConditionTimestampMonotonic") or 0)
+                assert tested > entered_after, f"{where}: {checker}: {props}"
+                started = int(props.get("ExecMainStartTimestampMonotonic") or 0)
+                assert started < entered_after, (
+                    f"{where}: {checker} ran on the decoy disk: {props}"
+                )
+                assert props.get("ActiveState") != "failed", f"{where}: {checker}: {props}"
 
 
     def assert_gpt_auto_masked(where, masked):
@@ -805,6 +875,7 @@ distroVm.buildVmTest {
         if blk_availability:
             assert_guarded_blk_availability("the first session")
         assert_quiet_kernel_log("the first session")
+        assert_local_fs_reached("the first session")
         # The units the hidden root does not need are masked there where the
         # decoy has them, and so is the GPT auto-generator.
         for unit, state in load_states(hidden_masked_units).items():
@@ -918,6 +989,7 @@ distroVm.buildVmTest {
             ]
             for target in reversed(boot_mounts):
                 vm.succeed(f"umount {target}")
+        entered_after = monotonic_us()
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
         check_failed_units("in the second hidden session", "hiddenSession")
@@ -929,6 +1001,8 @@ distroVm.buildVmTest {
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
         assert_gpt_auto_masked("the second session", masked=True)
+        assert_local_fs_reached("the second session")
+        assert_skipped_off_the_disk("the second session", boot_mounts, entered_after)
         # The rehearsal's first step, and the refusal of a scan in the
         # planting session.
         rc, out, err = rehearse("plant --user root")
@@ -969,6 +1043,8 @@ distroVm.buildVmTest {
             assert blkdeactivate in stop, stop
             for target in boot_mounts:
                 vm.succeed(f"mountpoint -q {target}")
+                unit = distro_checks.escape_path(target) + ".mount"
+                vm.fail(f"test -e /run/systemd/system/{shlex.quote(unit)}.d")
         probe_report("after deactivate")
         assert_gpt_auto_masked("after deactivate", masked=False)
         vm.wait_for_unit("pidfile-probe.service")
