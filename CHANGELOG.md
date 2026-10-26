@@ -432,6 +432,11 @@ of this changelog for that version becomes the release notes word for word, and
   write went to the same stderr and panicked there, so an emergency run with `--verbose` whose
   kill took the terminal or the pipe reader its stderr led to exited 1 at its first log line,
   without recording the session as ended. A notice about the log file itself is dropped there too.
+- An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
+  reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
+  left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and
+  the attach gate did not count its device among the storage the decoy uses. The older automount
+  spelling `comment=systemd.automount` counts as an automount, as it does for systemd.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
