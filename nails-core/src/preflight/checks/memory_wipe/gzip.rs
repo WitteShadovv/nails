@@ -70,16 +70,13 @@ const FRESERVED: u8 = 0xE0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Malformed(&'static str);
 
-/// A decoding step's result.
-type Decoded<T> = Result<T, Malformed>;
-
 /// Decode the gzip stream `data`: one member or several, back to back.
-pub(super) fn decompress(data: &[u8]) -> Decoded<Vec<u8>> {
+pub(super) fn decompress(data: &[u8]) -> Result<Vec<u8>, Malformed> {
     decompress_within(data, MAX_OUTPUT)
 }
 
 /// [`decompress`], refusing a stream that decodes to more than `limit` bytes.
-fn decompress_within(data: &[u8], limit: usize) -> Decoded<Vec<u8>> {
+fn decompress_within(data: &[u8], limit: usize) -> Result<Vec<u8>, Malformed> {
     let mut out = Output {
         bytes: Vec::new(),
         limit,
@@ -87,10 +84,16 @@ fn decompress_within(data: &[u8], limit: usize) -> Decoded<Vec<u8>> {
     };
     let mut rest = data;
     loop {
-        rest = member(rest, &mut out)?;
-        if rest.is_empty() {
+        let after = member(rest, &mut out)?;
+        // A member takes at least its header and trailer, so less is left
+        // after each one, and the loop ends with the input.
+        if after.len() >= rest.len() {
+            return Err(Malformed("a member takes none of the input"));
+        }
+        if after.is_empty() {
             return Ok(out.bytes);
         }
+        rest = after;
     }
 }
 
@@ -106,7 +109,7 @@ struct Output {
 
 impl Output {
     /// Refuse `more` bytes that would take the output past its limit.
-    fn room(&self, more: usize) -> Decoded<()> {
+    fn room(&self, more: usize) -> Result<(), Malformed> {
         if self.bytes.len().saturating_add(more) > self.limit {
             return Err(Malformed("decodes to more than the limit"));
         }
@@ -116,7 +119,7 @@ impl Output {
 
 /// Decode the member at the start of `data` onto `out`, and return the bytes
 /// that follow it.
-fn member<'a>(data: &'a [u8], out: &mut Output) -> Decoded<&'a [u8]> {
+fn member<'a>(data: &'a [u8], out: &mut Output) -> Result<&'a [u8], Malformed> {
     let header = data.get(..10).ok_or(Malformed("truncated header"))?;
     if !header.starts_with(&[0x1F, 0x8B]) {
         return Err(Malformed("not a gzip stream"));
@@ -186,7 +189,7 @@ impl<'a> Bits<'a> {
     }
 
     /// The next `need` bits (at most 16), the first one read lowest.
-    fn take(&mut self, need: u32) -> Decoded<u32> {
+    fn take(&mut self, need: u32) -> Result<u32, Malformed> {
         let mut value = self.buffer;
         while self.count < need {
             let (&byte, rest) = self.rest.split_first().ok_or(Malformed("truncated data"))?;
@@ -207,7 +210,7 @@ impl<'a> Bits<'a> {
     }
 
     /// The next `len` whole bytes, after the ones loaded so far.
-    fn bytes(&mut self, len: usize) -> Decoded<&'a [u8]> {
+    fn bytes(&mut self, len: usize) -> Result<&'a [u8], Malformed> {
         let (bytes, rest) = self
             .rest
             .split_at_checked(len)
@@ -232,7 +235,7 @@ impl Huffman {
     /// and whether it is complete (every bit pattern is a code). A code with
     /// no symbols at all counts as complete; nothing decodes with it. Lengths
     /// that ask for more codes than exist are refused.
-    fn new(lengths: &[u8]) -> Decoded<(Self, bool)> {
+    fn new(lengths: &[u8]) -> Result<(Self, bool), Malformed> {
         let mut count = [0u16; MAX_BITS + 1];
         for &length in lengths {
             *count
@@ -270,7 +273,7 @@ impl Huffman {
     }
 
     /// Decode one symbol from `input`, a bit at a time.
-    fn decode(&self, input: &mut Bits<'_>) -> Decoded<u16> {
+    fn decode(&self, input: &mut Bits<'_>) -> Result<u16, Malformed> {
         // The code read so far, its first bit highest; the first code of the
         // current length; and where that length's symbols start.
         let (mut code, mut first, mut index) = (0u32, 0u32, 0usize);
@@ -294,7 +297,7 @@ impl Huffman {
 }
 
 /// Decode the DEFLATE blocks at `input` onto `out`, up to the last one.
-fn inflate(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
+fn inflate(input: &mut Bits<'_>, out: &mut Output) -> Result<(), Malformed> {
     loop {
         let last = input.take(1)? == 1;
         match input.take(2)? {
@@ -313,7 +316,7 @@ fn inflate(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
 }
 
 /// Copy a stored block (RFC 1951, 3.2.4).
-fn stored(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
+fn stored(input: &mut Bits<'_>, out: &mut Output) -> Result<(), Malformed> {
     input.align();
     let header = input.bytes(4)?;
     let len = u16::from_le_bytes([header[0], header[1]]);
@@ -329,7 +332,7 @@ fn stored(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
 }
 
 /// The codes of a block that uses the fixed code (RFC 1951, 3.2.6).
-fn fixed_codes() -> Decoded<(Huffman, Huffman)> {
+fn fixed_codes() -> Result<(Huffman, Huffman), Malformed> {
     let mut lengths = [0u8; FIXED_LITERAL_CODES];
     lengths[..144].fill(8);
     lengths[144..256].fill(9);
@@ -341,7 +344,7 @@ fn fixed_codes() -> Decoded<(Huffman, Huffman)> {
 }
 
 /// Read a block's own codes, then decode the block (RFC 1951, 3.2.7).
-fn dynamic(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
+fn dynamic(input: &mut Bits<'_>, out: &mut Output) -> Result<(), Malformed> {
     let literal_count = input.take(5)? as usize + 257;
     let distance_count = input.take(5)? as usize + 1;
     let code_length_count = input.take(4)? as usize + 4;
@@ -388,7 +391,7 @@ fn dynamic(input: &mut Bits<'_>, out: &mut Output) -> Decoded<()> {
 
 /// The code for these lengths, refused when it is incomplete, unless it is the
 /// lone one-bit code of a block that uses a single symbol.
-fn usable(lengths: &[u8]) -> Decoded<Huffman> {
+fn usable(lengths: &[u8]) -> Result<Huffman, Malformed> {
     let (code, complete) = Huffman::new(lengths)?;
     let lone = usize::from(code.count[0]) + usize::from(code.count[1]) == lengths.len();
     if complete || lone {
@@ -405,7 +408,7 @@ fn codes(
     out: &mut Output,
     literals: &Huffman,
     distances: &Huffman,
-) -> Decoded<()> {
+) -> Result<(), Malformed> {
     loop {
         let symbol = literals.decode(input)?;
         match symbol {
