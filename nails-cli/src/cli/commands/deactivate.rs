@@ -20,7 +20,9 @@ use nails_core::session::{LeaveReport, LeaveTo};
 
 use super::prompt::{Answer, read_answer_from_stdin};
 use crate::cli::args::DeactivateArgs;
-use crate::cli::output::deactivate::{deactivate_error_body, print_deactivate_json};
+use crate::cli::output::deactivate::{
+    DeactivateData, backend_left_open_warning, deactivate_error_body, print_deactivate_json,
+};
 use crate::cli::output::envelope::{ErrorBody, NextStep, report_cancelled, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
@@ -98,26 +100,38 @@ fn deactivate_prepared(
         }
     };
 
-    if !args.yes {
-        if !std::io::stdin().is_terminal() {
-            return report_error(
-                json,
-                "deactivate",
-                ExitStatus::Usage,
-                ErrorBody::new(
-                    "needs_confirmation",
-                    "deactivate ends the hidden session and needs confirmation, but stdin is not a terminal; pass -y/--yes to run non-interactively",
-                ),
-            );
-        }
-        if let Some(status) = confirm_or_cancel(
+    let to = if args.poweroff {
+        LeaveTo::Poweroff
+    } else {
+        LeaveTo::Decoy
+    };
+    if !args.yes && !std::io::stdin().is_terminal() {
+        return report_error(
+            json,
+            "deactivate",
+            ExitStatus::Usage,
+            ErrorBody::new(
+                "needs_confirmation",
+                "deactivate ends the hidden session and needs confirmation, but stdin is not a terminal; pass -y/--yes to run non-interactively",
+            ),
+        );
+    }
+    // What the return will not put back, shown to a person before the
+    // question, so a power-off can be chosen instead; under --json the one
+    // envelope carries it once the switch is enqueued.
+    let warnings = ready.warnings(to);
+    if !json {
+        write_warnings(settings, &warnings, &mut std::io::stderr());
+    }
+    if !args.yes
+        && let Some(status) = confirm_or_cancel(
             settings,
             args.poweroff,
             &mut std::io::stderr(),
             read_answer_from_stdin,
-        ) {
-            return status;
-        }
+        )
+    {
+        return status;
     }
 
     let _state_lock = match super::acquire_state_lock_or_report(
@@ -131,12 +145,16 @@ fn deactivate_prepared(
         Err(status) => return status,
     };
 
-    let to = if args.poweroff {
-        LeaveTo::Poweroff
-    } else {
-        LeaveTo::Decoy
-    };
-    leave_and_report(settings, to, |to| ready.leave(to))
+    leave_and_report(settings, to, warnings, |to| ready.leave(to))
+}
+
+/// Write each of the `warnings` before the question, on `out` (stderr, as
+/// the question).
+fn write_warnings(settings: &OutputSettings, warnings: &[String], out: &mut impl std::io::Write) {
+    let style = settings.stderr_style();
+    for warning in warnings {
+        let _ = writeln!(out, "{}", style.marked(Mark::Warn, warning));
+    }
 }
 
 /// Commit the way back with `leave` and report it, returning the status to
@@ -146,13 +164,16 @@ fn deactivate_prepared(
 /// lines come first, and a failure to prepare or enqueue it follows them on
 /// stderr. Under `--json` the one envelope reports the outcome instead, so it
 /// is printed only once the soft-reboot (or the power-off) is enqueued: a
-/// failure is the only envelope, never one after a success. The process
+/// failure is the only envelope, never one after a success, and it carries
+/// the `warnings` given before the question. A backend device the way back
+/// could not mark to close is named after the enqueue, on both. The process
 /// outlives the switch long enough to print it, since a mutating command
 /// catches SIGTERM and ignores SIGHUP, but a reader the switch stops first may
 /// not read it.
 fn leave_and_report(
     settings: &OutputSettings,
     to: LeaveTo,
+    mut warnings: Vec<String>,
     leave: impl FnOnce(LeaveTo) -> Result<LeaveReport, NailsError>,
 ) -> ExitStatus {
     let json = settings.is_json();
@@ -182,10 +203,20 @@ fn leave_and_report(
                 unmounted = ?report.unmounted,
                 "the way back is enqueued"
             );
+            let left_open = report.left_open();
+            let left_open_warnings = left_open.iter().map(|name| backend_left_open_warning(name));
             if json {
-                print_deactivate_json(poweroff);
-                crate::cli::output::flush_stdio();
+                warnings.extend(left_open_warnings);
+                print_deactivate_json(DeactivateData::enqueued(poweroff, warnings, left_open));
+            } else {
+                let style = settings.stdout_style();
+                for warning in left_open_warnings {
+                    crate::cli::output::println_tolerating_broken_pipe(
+                        &style.marked(Mark::Warn, warning),
+                    );
+                }
             }
+            crate::cli::output::flush_stdio();
             ExitStatus::Ok
         }
         Err(e) => report_error(

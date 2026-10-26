@@ -42,6 +42,35 @@ pub fn find(recorded: Option<&Path>, name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// The link the first system directory goes through.
+const CURRENT_SYSTEM: &str = "/run/current-system";
+
+/// The system directories as they resolve once `/run/current-system` names
+/// `system`: its `sw/bin` stands in place of the link's. Without a system (a
+/// host that is not NixOS) they are as they are.
+fn system_dirs_for(system: Option<&Path>) -> Vec<PathBuf> {
+    SYSTEM_BIN_DIRS
+        .iter()
+        .map(
+            |dir| match (system, Path::new(dir).strip_prefix(CURRENT_SYSTEM)) {
+                (Some(system), Ok(rest)) => system.join(rest),
+                _ => PathBuf::from(dir),
+            },
+        )
+        .collect()
+}
+
+/// `name` where [`find`] will find it once `/run/current-system` names
+/// `system`: the last step of the way back repoints that link to the decoy's
+/// NixOS system before it runs a tool, so the hidden session can check before
+/// the switch that the step will find what it needs.
+pub fn find_for_system(system: Option<&Path>, name: &str) -> Option<PathBuf> {
+    system_dirs_for(system)
+        .into_iter()
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
 /// How a bounded tool call ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -381,5 +410,43 @@ mod tests {
         std::fs::remove_file(&recorded).unwrap();
         assert_ne!(find(Some(&recorded), "sh"), Some(recorded));
         assert_eq!(find(None, "no-such-tool-anywhere"), None);
+    }
+
+    /// Once the link names a NixOS system, its `sw/bin` is searched in the
+    /// link's place, first; the other directories stay. Without a system
+    /// nothing is repointed.
+    #[test]
+    fn a_repointed_system_stands_in_for_the_current_system_link() {
+        let decoy = Path::new("/nix/store/aaa-nixos-system-decoy");
+        let dirs = system_dirs_for(Some(decoy));
+        assert_eq!(dirs[0], decoy.join("sw/bin"));
+        assert_eq!(
+            dirs[1..],
+            SYSTEM_BIN_DIRS[1..]
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            system_dirs_for(None),
+            SYSTEM_BIN_DIRS
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_tool_in_the_repointed_system_is_found_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "no-such-tool-outside-this-system";
+        assert_eq!(find_for_system(Some(dir.path()), name), None);
+        std::fs::create_dir_all(dir.path().join("sw/bin")).unwrap();
+        std::fs::write(dir.path().join("sw/bin").join(name), "").unwrap();
+        assert_eq!(
+            find_for_system(Some(dir.path()), name),
+            Some(dir.path().join("sw/bin").join(name))
+        );
+        assert_eq!(find_for_system(None, name), None);
     }
 }

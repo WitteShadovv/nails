@@ -30,6 +30,7 @@
         "fallback",
         "kernel_power_off",
         "backend_closing",
+        "backend_left_open",
         "cgroups_killed",
         "processes_killed",
         "remaining_mounts",
@@ -69,6 +70,15 @@
           "type": "boolean"
         },
         "backend_closing": {
+          "description": "The hidden backend's device-mapper devices marked for deferred removal: they close when the switch releases the hidden volume.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "backend_left_open": {
+          "description": "The hidden backend's device-mapper devices whose mark for deferred removal did not take (no dmsetup, or it refused): they stay open after the switch, their key in RAM, until power-off. Empty when every device was marked, and on a run that marks none.",
           "type": "array",
           "items": {
             "type": "string",

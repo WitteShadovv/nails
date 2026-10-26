@@ -19,19 +19,46 @@ use crate::cli::output::envelope::{Envelope, EnvelopePrint, ErrorBody, NextStep}
 pub struct DeactivateData {
     /// What happens (`return_requested` or `poweroff_requested`).
     status: &'static str,
+    /// What the return does not put back, one sentence each, as a person
+    /// reads them; absent when there is nothing to say.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+    /// The hidden backend's device-mapper devices that could not be marked to
+    /// close: they stay open after the switch, their key in RAM, until
+    /// power-off. Absent when every device was marked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    backend_left_open: Vec<String>,
 }
 
-/// Print the success envelope for a deactivation whose soft-reboot back to the
-/// decoy, or power-off when `poweroff` is set, is enqueued.
-pub fn print_deactivate_json(poweroff: bool) {
-    let data = DeactivateData {
-        status: if poweroff {
-            "poweroff_requested"
-        } else {
-            "return_requested"
-        },
-    };
+impl DeactivateData {
+    /// The payload of a deactivation whose soft-reboot back to the decoy, or
+    /// power-off when `poweroff` is set, is enqueued, with the `warnings` it
+    /// gives and the backend devices it `left_open`.
+    pub fn enqueued(poweroff: bool, warnings: Vec<String>, left_open: Vec<String>) -> Self {
+        Self {
+            status: if poweroff {
+                "poweroff_requested"
+            } else {
+                "return_requested"
+            },
+            warnings,
+            backend_left_open: left_open,
+        }
+    }
+}
+
+/// Print the success envelope for an enqueued deactivation.
+pub fn print_deactivate_json(data: DeactivateData) {
     Envelope::success("deactivate", data).print();
+}
+
+/// What a hidden backend device the way back could not mark to close leaves
+/// behind, as `deactivate` and `emergency` both say it.
+pub fn backend_left_open_warning(name: &str) -> String {
+    format!(
+        "The hidden backend device {name} could not be marked to close: it stays open after \
+         the switch, its key in RAM, until power-off"
+    )
 }
 
 /// Map a deactivation failure to a structured error: a stable code, a `message`
