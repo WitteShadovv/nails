@@ -114,24 +114,35 @@ pub struct HostProfile {
     pub has_current_system: bool,
     /// When [`kind`](Self::kind) is [`PlatformKind::Unsupported`], why.
     pub unsupported_reason: Option<String>,
-    /// When the host is admitted on a release NAILS has not been tested on (a
-    /// Debian or Ubuntu release at or above the minimum that the support table
-    /// does not list as tested), the warning that says so.
+    /// When the host is admitted with a warning, the warning: a release or an
+    /// edition the family table admits but does not list as tested, a
+    /// derivative NAILS has not tested, or a known issue of a tested release.
     pub support_warning: Option<String>,
 }
 
 impl HostProfile {
     /// The host as people name it, for messages: `NixOS 26.05`, `Ubuntu 24.04`,
-    /// or the os-release `ID` and `VERSION_ID` of another host (`linuxmint 22`).
+    /// with the edition for a distribution the family table lists by edition
+    /// (`Fedora 44 Cloud`), or the os-release `ID` and `VERSION_ID` of another
+    /// host (`linuxmint 22`).
     pub fn name(&self) -> String {
-        let distribution = match (self.kind, self.id.as_deref()) {
-            (PlatformKind::NixOs, _) => "NixOS",
-            (_, Some(id)) => family::label(id).unwrap_or(id),
+        let (distribution, edition) = match (self.kind, self.id.as_deref()) {
+            (PlatformKind::NixOs, _) => ("NixOS", None),
+            (_, Some(id)) => (
+                family::label(id).unwrap_or(id),
+                self.variant_id
+                    .as_deref()
+                    .and_then(|variant| family::edition_label(id, variant)),
+            ),
             (_, None) => return "this host".to_string(),
         };
-        match self.version_id.as_deref() {
+        let name = match self.version_id.as_deref() {
             Some(version) => format!("{distribution} {version}"),
             None => distribution.to_string(),
+        };
+        match edition {
+            Some(edition) => format!("{name} {edition}"),
+            None => name,
         }
     }
 

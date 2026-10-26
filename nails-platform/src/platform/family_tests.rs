@@ -5,10 +5,44 @@
 
 use super::*;
 
-/// The verdict for a host with this `ID`, `ID_LIKE` and `VERSION_ID`.
+/// The verdict for a host with this `ID`, `ID_LIKE` and `VERSION_ID`, and no
+/// `VARIANT_ID`.
 fn classify_of(id: Option<&str>, id_like: &[&str], version_id: Option<&str>) -> Classification {
+    classify_variant_of(id, id_like, version_id, None)
+}
+
+/// The verdict for a host with this `ID`, `ID_LIKE`, `VERSION_ID` and
+/// `VARIANT_ID`.
+fn classify_variant_of(
+    id: Option<&str>,
+    id_like: &[&str],
+    version_id: Option<&str>,
+    variant_id: Option<&str>,
+) -> Classification {
     let like: Vec<String> = id_like.iter().map(|t| t.to_string()).collect();
-    classify(id, &like, version_id)
+    classify(id, &like, version_id, variant_id)
+}
+
+/// The table row for `id`.
+fn row(id: &str) -> &'static FamilyRow {
+    TABLE
+        .iter()
+        .find(|row| row.id == id)
+        .unwrap_or_else(|| panic!("the table has no row '{id}'"))
+}
+
+/// The verdict on a host of the row for `id` once NAILS admits the row (for a
+/// derivative, its base family): the gate the row is held to then.
+fn once_admitted(id: &str, version_id: Option<&str>, variant_id: Option<&str>) -> FamilySupport {
+    admitted_verdict(row(id), version_id, variant_id)
+}
+
+/// The warning in `support`, or a panic naming what it was instead.
+fn warning_of(support: FamilySupport) -> String {
+    match support {
+        FamilySupport::Untested(warning) => warning,
+        other => panic!("expected a warning, got {other:?}"),
+    }
 }
 
 // --- DistroVersion -------------------------------------------------------
@@ -76,6 +110,16 @@ fn alternatives_are_listed_as_in_a_sentence() {
     );
 }
 
+#[test]
+fn editions_are_listed_as_in_a_sentence() {
+    assert_eq!(joined(&["Cloud"], "and"), "Cloud");
+    assert_eq!(
+        joined(&["Cloud", "Server", "IoT"], "and"),
+        "Cloud, Server and IoT"
+    );
+    assert_eq!(gate::tested_editions(row("fedora")), "Fedora Cloud");
+}
+
 // --- The generated supported-platform sentence ---------------------------
 
 #[test]
@@ -105,6 +149,19 @@ fn label_names_table_and_named_refusal_rows() {
     assert_eq!(label("rhel"), Some("Red Hat Enterprise Linux"));
     assert_eq!(label("steamos"), Some("SteamOS"));
     assert_eq!(label("linuxmint"), None);
+}
+
+#[test]
+fn edition_label_names_an_edition_the_row_lists() {
+    assert_eq!(edition_label("fedora", "cloud"), Some("Cloud"));
+    assert_eq!(edition_label("fedora", "workstation"), Some("Workstation"));
+    assert_eq!(edition_label("fedora", "kde"), Some("KDE Plasma Desktop"));
+    // An edition the row does not list, a row with no editions, an ID the
+    // table does not list.
+    assert_eq!(edition_label("fedora", "server"), None);
+    assert_eq!(edition_label("nobara", "kde"), None);
+    assert_eq!(edition_label("ubuntu", "cloud"), None);
+    assert_eq!(edition_label("linuxmint", "cloud"), None);
 }
 
 // --- Admitted base families ---------------------------------------------
@@ -236,6 +293,191 @@ fn fedora_is_refused_as_an_unvalidated_family() {
 }
 
 #[test]
+fn fedora_is_refused_whatever_its_edition() {
+    // The edition gate is the one Fedora will take once admitted; until then
+    // every edition gets the same refusal.
+    for variant in [Some("cloud"), Some("workstation"), Some("server"), None] {
+        let c = classify_variant_of(Some("fedora"), &[], Some("44"), variant);
+        assert_eq!(
+            c,
+            classify_of(Some("fedora"), &[], Some("44")),
+            "{variant:?}"
+        );
+        assert!(
+            matches!(&c.support, FamilySupport::Refused(reason)
+                if reason.starts_with("Fedora is not yet a validated platform")),
+            "{variant:?}: {:?}",
+            c.support
+        );
+    }
+}
+
+// --- Fedora's gate once admitted: its release and its edition -------------
+
+#[test]
+fn fedora_cloud_on_a_tested_release_runs_clean_once_admitted() {
+    assert_eq!(
+        once_admitted("fedora", Some("44"), Some("cloud")),
+        FamilySupport::Supported
+    );
+}
+
+#[test]
+fn fedora_workstation_and_kde_warn_as_untested_editions_once_admitted() {
+    for (variant, label) in [
+        ("workstation", "Workstation"),
+        ("kde", "KDE Plasma Desktop"),
+    ] {
+        let warning = warning_of(once_admitted("fedora", Some("44"), Some(variant)));
+        assert!(
+            warning.starts_with(&format!(
+                "Fedora 44 {label} is not an edition NAILS has been tested on \
+                 (tested: Fedora Cloud). NAILS runs on it, but a change in this \
+                 edition can break the session"
+            )),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("Use a tested edition, or run `"),
+            "{warning}"
+        );
+        assert!(warning.contains(&rehearse_line()), "{warning}");
+    }
+}
+
+#[test]
+fn any_other_fedora_edition_warns_naming_its_variant_id_once_admitted() {
+    for variant in ["server", "xfce", "kde-mobile", "cosmic"] {
+        let warning = warning_of(once_admitted("fedora", Some("44"), Some(variant)));
+        assert!(
+            warning.starts_with(&format!(
+                "Fedora 44 with VARIANT_ID '{variant}' is not an edition NAILS has been \
+                 tested on (tested: Fedora Cloud)."
+            )),
+            "{warning}"
+        );
+    }
+}
+
+#[test]
+fn a_fedora_host_that_names_no_edition_warns_once_admitted() {
+    // Fedora's basic install sets no VARIANT_ID; an empty one names none either.
+    for variant in [None, Some("")] {
+        let warning = warning_of(once_admitted("fedora", Some("44"), variant));
+        assert!(
+            warning.starts_with(
+                "Fedora 44 declares no edition (its os-release has no VARIANT_ID), so NAILS \
+                 cannot tell whether it is a tested one (tested: Fedora Cloud)."
+            ),
+            "{variant:?}: {warning}"
+        );
+        assert!(warning.contains("Use a tested edition"), "{warning}");
+    }
+}
+
+#[test]
+fn an_untested_fedora_release_of_the_tested_edition_warns_about_the_release() {
+    let warning = warning_of(once_admitted("fedora", Some("45"), Some("cloud")));
+    assert!(
+        warning.starts_with(
+            "Fedora 45 is not a release NAILS has been tested on (tested: Fedora 44). NAILS \
+             runs on it, but a change in this release can break the session"
+        ),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("Use a tested release, or run `"),
+        "{warning}"
+    );
+    assert!(!warning.contains("is not an edition"), "{warning}");
+}
+
+#[test]
+fn an_untested_release_and_edition_warn_once_naming_both() {
+    let warning = warning_of(once_admitted("fedora", Some("45"), Some("workstation")));
+    assert!(
+        warning.starts_with(
+            "Fedora 45 is not a release NAILS has been tested on (tested: Fedora 44). \
+             Fedora 45 Workstation is not an edition NAILS has been tested on (tested: \
+             Fedora Cloud). NAILS runs on it, but a change in this release or edition can \
+             break the session"
+        ),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("Use a tested release and edition, or run `"),
+        "{warning}"
+    );
+    // One warning, pointing at the rehearsal once.
+    assert_eq!(warning.matches(&rehearse_line()).count(), 1, "{warning}");
+}
+
+#[test]
+fn fedoras_release_gate_still_refuses_whatever_the_edition() {
+    let FamilySupport::Refused(reason) = once_admitted("fedora", Some("43"), Some("cloud")) else {
+        panic!("Fedora 43 is below the minimum");
+    };
+    assert!(reason.contains("(Fedora 44)"), "{reason}");
+    assert!(reason.contains("minimum"), "{reason}");
+
+    for version in [None, Some("rawhide")] {
+        assert!(
+            matches!(
+                once_admitted("fedora", version, Some("cloud")),
+                FamilySupport::Refused(reason) if reason.contains("VERSION_ID")
+            ),
+            "{version:?}"
+        );
+    }
+}
+
+#[test]
+fn a_caveat_of_a_tested_release_holds_on_an_untested_edition() {
+    // No row both lists editions and carries a caveat yet; this is the rule
+    // for the first that does.
+    let caveated = FamilyRow {
+        gate: Gate::Versioned {
+            min: FEDORA_MIN,
+            validated: &[FEDORA_MIN],
+            caveats: &[(FEDORA_MIN, "A known issue affects it.")],
+        },
+        ..*row("fedora")
+    };
+    assert_eq!(
+        admitted_verdict(&caveated, Some("44"), Some("cloud")),
+        FamilySupport::SupportedWithCaveat("A known issue affects it.".to_string())
+    );
+    let warning = warning_of(admitted_verdict(&caveated, Some("44"), Some("kde")));
+    assert!(
+        warning.starts_with("Fedora 44 KDE Plasma Desktop is not an edition"),
+        "{warning}"
+    );
+    assert!(warning.ends_with(" A known issue affects it."), "{warning}");
+}
+
+#[test]
+fn a_rolling_row_that_lists_editions_gates_the_edition_alone() {
+    // No rolling row lists editions yet; this is the rule for the first that
+    // does: no release to gate on or to name, only the edition.
+    let rolling = FamilyRow {
+        gate: Gate::Rolling,
+        ..*row("fedora")
+    };
+    assert_eq!(
+        admitted_verdict(&rolling, None, Some("cloud")),
+        FamilySupport::Supported
+    );
+    let warning = warning_of(admitted_verdict(&rolling, None, Some("kde")));
+    assert!(
+        warning.starts_with(
+            "Fedora KDE Plasma Desktop is not an edition NAILS has been tested on \
+             (tested: Fedora Cloud)."
+        ),
+        "{warning}"
+    );
+}
+
+#[test]
 fn arch_is_refused_as_an_unvalidated_family() {
     let c = classify_of(Some("arch"), &[], None);
     assert_eq!(c.family, Some(Family::Arch));
@@ -279,13 +521,88 @@ fn an_arch_derivative_is_refused_naming_its_base() {
 
 #[test]
 fn a_fedora_derivative_is_refused_naming_its_base() {
+    // Whatever its release: the base refusal comes before the release gate.
     for id in ["nobara", "ultramarine"] {
-        let c = classify_of(Some(id), &["fedora"], Some("44"));
-        assert_eq!(c.family, Some(Family::Fedora), "{id}");
-        assert!(
-            matches!(&c.support, FamilySupport::Refused(reason) if reason.contains("based on Fedora")),
-            "{id}: {:?}",
-            c.support
+        for version in [Some("44"), Some("41"), None] {
+            let c = classify_of(Some(id), &["fedora"], version);
+            assert_eq!(c.family, Some(Family::Fedora), "{id}");
+            assert!(
+                matches!(&c.support, FamilySupport::Refused(reason) if reason.contains("based on Fedora")),
+                "{id} {version:?}: {:?}",
+                c.support
+            );
+        }
+    }
+}
+
+#[test]
+fn a_fedora_derivative_needs_release_44_once_fedora_is_admitted() {
+    for (id, label) in [("nobara", "Nobara"), ("ultramarine", "Ultramarine")] {
+        for version in ["43", "41"] {
+            let FamilySupport::Refused(reason) = once_admitted(id, Some(version), Some("kde"))
+            else {
+                panic!("{id} {version} is below the minimum");
+            };
+            assert!(
+                reason.starts_with(&format!(
+                    "{label} {version} is older than the minimum supported release \
+                     ({label} 44)."
+                )),
+                "{reason}"
+            );
+        }
+        for version in [None, Some("rolling")] {
+            assert!(
+                matches!(
+                    once_admitted(id, version, None),
+                    FamilySupport::Refused(reason) if reason.contains("VERSION_ID")
+                ),
+                "{id} {version:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_fedora_derivative_from_release_44_warns_as_an_untested_derivative_once_admitted() {
+    // A derivative's own editions are not gated: it warns as a derivative.
+    for id in ["nobara", "ultramarine"] {
+        for (version, variant) in [("44", Some("kde")), ("45", None), ("46", Some("plasma"))] {
+            assert_eq!(
+                once_admitted(id, Some(version), variant),
+                FamilySupport::Untested(derivative_warning(Family::Fedora)),
+                "{id} {version} {variant:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_derivative_row_is_held_to_its_gate_once_its_base_family_is_admitted() {
+    // No derivative row has an admitted base yet. Placed in the Debian family,
+    // which is admitted, Nobara's row shows the path it takes the day Fedora
+    // is: refused below its minimum, an untested derivative from it.
+    let derivative = FamilyRow {
+        family: Family::Debian,
+        ..*row("nobara")
+    };
+    assert_eq!(
+        classify_row(&derivative, Some("44"), Some("kde")).support,
+        FamilySupport::Untested(derivative_warning(Family::Debian))
+    );
+    assert!(matches!(
+        classify_row(&derivative, Some("43"), Some("kde")).support,
+        FamilySupport::Refused(reason) if reason.contains("minimum")
+    ));
+}
+
+#[test]
+fn an_arch_derivative_is_not_release_gated_once_admitted() {
+    for id in ["endeavouros", "cachyos", "manjaro"] {
+        assert_eq!(
+            once_admitted(id, None, None),
+            FamilySupport::Untested(derivative_warning(Family::Arch)),
+            "{id}"
         );
     }
 }
@@ -415,30 +732,113 @@ fn an_unknown_host_is_refused() {
 // --- Table consistency ---------------------------------------------------
 
 #[test]
-fn every_tested_release_of_an_admitted_family_is_supported() {
-    for row in TABLE {
+fn every_tested_release_and_edition_runs_clean_once_its_row_is_admitted() {
+    for row in TABLE.iter().filter(|row| row.kind == Kind::Base) {
         let Gate::Versioned { min, validated, .. } = row.gate else {
             continue;
         };
-        if !(row.kind == Kind::Base && row.admitted) {
-            continue;
-        }
         assert!(!validated.is_empty(), "{} lists no release", row.id);
+        // The tested editions, or the host that names none where the row
+        // lists no editions.
+        let editions: Vec<Option<&str>> = if row.editions.is_empty() {
+            vec![None]
+        } else {
+            row.editions
+                .iter()
+                .filter(|edition| edition.validated)
+                .map(|edition| Some(edition.id))
+                .collect()
+        };
         for version in validated {
             assert!(*version >= min, "{} {version}", row.id);
-            // A tested release is never refused: it either runs clean or is
-            // admitted with a documented caveat. Both keep it in the
-            // tested-release sentence; a caveat only adds a warning.
-            let support = classify_of(Some(row.id), &[], Some(&version.to_string())).support;
+            let raw = version.to_string();
+            for edition in &editions {
+                // A tested release and edition are never refused: they either
+                // run clean or are admitted with a documented caveat. Both
+                // keep the release in the tested-release sentence; a caveat
+                // only adds a warning.
+                let support = admitted_verdict(row, Some(&raw), *edition);
+                assert!(
+                    matches!(
+                        support,
+                        FamilySupport::Supported | FamilySupport::SupportedWithCaveat(_)
+                    ),
+                    "{} {raw} {edition:?}: {support:?}",
+                    row.id
+                );
+                // An admitted row is classified so today.
+                if row.admitted {
+                    assert_eq!(
+                        classify_variant_of(Some(row.id), &[], Some(&raw), *edition).support,
+                        support
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_row_that_lists_editions_is_a_base_with_a_tested_edition() {
+    for row in TABLE.iter().filter(|row| !row.editions.is_empty()) {
+        // A derivative warns as a derivative, whatever its edition.
+        assert_eq!(row.kind, Kind::Base, "{}", row.id);
+        assert!(
+            row.editions.iter().any(|edition| edition.validated),
+            "{} lists no tested edition",
+            row.id
+        );
+        for (i, edition) in row.editions.iter().enumerate() {
+            // os-release writes a VARIANT_ID in lowercase, and detection
+            // lowercases it, so an edition is listed the same way.
             assert!(
-                matches!(
-                    support,
-                    FamilySupport::Supported | FamilySupport::SupportedWithCaveat(_)
-                ),
-                "{} {version}: {support:?}",
-                row.id
+                !edition.id.is_empty() && edition.id == edition.id.to_ascii_lowercase(),
+                "{} {}",
+                row.id,
+                edition.id
+            );
+            assert!(!edition.label.is_empty(), "{} {}", row.id, edition.id);
+            assert!(
+                row.editions[..i].iter().all(|other| other.id != edition.id),
+                "{} lists {} twice",
+                row.id,
+                edition.id
             );
         }
+    }
+}
+
+#[test]
+fn a_derivative_lists_no_tested_release_and_a_caveat_names_a_tested_one() {
+    for row in TABLE {
+        let Gate::Versioned {
+            validated, caveats, ..
+        } = row.gate
+        else {
+            continue;
+        };
+        if row.kind == Kind::Derivative {
+            // NAILS tests no release of a derivative: the gate holds only its
+            // minimum.
+            assert!(validated.is_empty() && caveats.is_empty(), "{}", row.id);
+        }
+        for (version, _) in caveats {
+            assert!(validated.contains(version), "{} {version}", row.id);
+        }
+    }
+}
+
+#[test]
+fn the_fedora_derivatives_start_at_fedoras_minimum() {
+    // Nobara and Ultramarine number their releases after Fedora's.
+    let Gate::Versioned { min: fedora, .. } = row("fedora").gate else {
+        panic!("Fedora is versioned");
+    };
+    for id in ["nobara", "ultramarine"] {
+        assert!(
+            matches!(row(id).gate, Gate::Versioned { min, .. } if min == fedora),
+            "{id}"
+        );
     }
 }
 
@@ -498,6 +898,36 @@ fn listed_ids() -> Vec<&'static str> {
         .map(|row| row.id)
         .chain(NAMED_REFUSALS.iter().map(|row| row.id))
         .collect()
+}
+
+/// A `VARIANT_ID` for a generated host, or none: an edition the table lists,
+/// another Fedora edition, an empty value, or a word no row lists.
+fn variant_id() -> impl proptest::strategy::Strategy<Value = Option<String>> {
+    use proptest::strategy::Strategy;
+    proptest::option::of(proptest::prop_oneof![
+        proptest::sample::select(vec!["cloud", "workstation", "kde", "server", ""])
+            .prop_map(str::to_string),
+        "[a-z0-9._-]{1,12}",
+    ])
+}
+
+/// The `ID` of every row that lists editions.
+fn edition_row_ids() -> Vec<&'static str> {
+    TABLE
+        .iter()
+        .filter(|row| !row.editions.is_empty())
+        .map(|row| row.id)
+        .collect()
+}
+
+/// An `ID` for a generated host: one the table or the named refusals list, or
+/// a word they do not.
+fn host_id() -> impl proptest::strategy::Strategy<Value = String> {
+    use proptest::strategy::Strategy;
+    proptest::prop_oneof![
+        proptest::sample::select(listed_ids()).prop_map(str::to_string),
+        "[a-z][a-z0-9_-]{0,12}",
+    ]
 }
 
 proptest::proptest! {
@@ -566,19 +996,108 @@ proptest::proptest! {
     }
 
     /// An `ID` the table or the named refusals list is classified by its row
-    /// alone: whatever `ID_LIKE` names, the verdict is the one the same `ID`
-    /// and version get with no `ID_LIKE` at all.
+    /// alone: whatever `ID_LIKE` names, the verdict is the one the same `ID`,
+    /// version and edition get with no `ID_LIKE` at all.
     #[test]
     fn a_listed_id_is_classified_by_its_row_whatever_id_like_says(
         id in proptest::sample::select(listed_ids()),
         like in proptest::collection::vec(id_like_token(), 1..4),
         version in proptest::option::of("[0-9][0-9.]{0,6}"),
+        variant in variant_id(),
     ) {
         let like_refs: Vec<&str> = like.iter().map(String::as_str).collect();
         proptest::prop_assert_eq!(
-            classify_of(Some(id), &like_refs, version.as_deref()),
-            classify_of(Some(id), &[], version.as_deref()),
+            classify_variant_of(Some(id), &like_refs, version.as_deref(), variant.as_deref()),
+            classify_variant_of(Some(id), &[], version.as_deref(), variant.as_deref()),
             "{} {:?}", id, like
         );
+    }
+
+    /// `VARIANT_ID` decides a verdict only on an admitted row that lists
+    /// editions. For any other host, listed or not, the verdict is the one it
+    /// gets without a `VARIANT_ID`.
+    #[test]
+    fn variant_id_decides_nothing_outside_an_admitted_row_with_editions(
+        id in host_id(),
+        like in proptest::collection::vec(id_like_token(), 0..4),
+        version in proptest::option::of("[0-9][0-9.]{0,6}"),
+        variant in variant_id(),
+    ) {
+        let gated = TABLE
+            .iter()
+            .any(|row| row.id == id && row.admitted && !row.editions.is_empty());
+        proptest::prop_assume!(!gated);
+        let like_refs: Vec<&str> = like.iter().map(String::as_str).collect();
+        proptest::prop_assert_eq!(
+            classify_variant_of(Some(&id), &like_refs, version.as_deref(), variant.as_deref()),
+            classify_of(Some(&id), &like_refs, version.as_deref()),
+            "{} {:?} {:?}", id, like, variant
+        );
+    }
+
+    /// The edition gate only warns: on a tested release of a row that lists
+    /// editions, once NAILS admits the row, a host runs clean exactly when its
+    /// `VARIANT_ID` names a tested edition, and runs with a warning otherwise.
+    /// It is never refused.
+    #[test]
+    fn the_edition_gate_passes_a_tested_edition_and_warns_on_any_other(
+        id in proptest::sample::select(edition_row_ids()),
+        variant in variant_id(),
+    ) {
+        let row = row(id);
+        // The row's tested releases, or no release for a rolling row.
+        let releases: Vec<Option<String>> = match row.gate {
+            Gate::Versioned { validated, .. } => {
+                validated.iter().map(|version| Some(version.to_string())).collect()
+            }
+            Gate::Rolling => vec![None],
+        };
+        let tested = row
+            .editions
+            .iter()
+            .any(|edition| edition.validated && Some(edition.id) == variant.as_deref());
+        for release in releases {
+            let support = admitted_verdict(row, release.as_deref(), variant.as_deref());
+            if tested {
+                proptest::prop_assert!(
+                    matches!(support, FamilySupport::Supported | FamilySupport::SupportedWithCaveat(_)),
+                    "{} {:?} {:?}: {:?}", id, release, variant, support
+                );
+            } else {
+                proptest::prop_assert!(
+                    matches!(&support, FamilySupport::Untested(warning)
+                        if warning.contains("Use a tested edition, or run `")),
+                    "{} {:?} {:?}: {:?}", id, release, variant, support
+                );
+            }
+        }
+    }
+
+    /// Once Fedora is admitted, a Fedora derivative runs, as an untested
+    /// derivative, exactly from Fedora's minimum release upward, whatever
+    /// edition it names; below it, or without a release NAILS can read, it is
+    /// refused.
+    #[test]
+    fn a_fedora_derivative_runs_from_fedoras_minimum_once_admitted(
+        id in proptest::sample::select(vec!["nobara", "ultramarine"]),
+        version in proptest::option::of("[0-9][0-9.]{0,6}"),
+        variant in variant_id(),
+    ) {
+        let support = once_admitted(id, version.as_deref(), variant.as_deref());
+        let from_minimum = version
+            .as_deref()
+            .and_then(DistroVersion::parse)
+            .is_some_and(|release| release >= FEDORA_MIN);
+        if from_minimum {
+            proptest::prop_assert_eq!(
+                support,
+                FamilySupport::Untested(derivative_warning(Family::Fedora))
+            );
+        } else {
+            proptest::prop_assert!(
+                matches!(support, FamilySupport::Refused(_)),
+                "{} {:?}: {:?}", id, version, support
+            );
+        }
     }
 }

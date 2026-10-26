@@ -111,6 +111,14 @@ of this changelog for that version becomes the release notes word for word, and
   them and says NAILS has not yet validated them. A host whose `ID_LIKE` names `debian` or `ubuntu`
   and also `fedora`, `rhel`, `centos` or `arch` is refused, naming that family, wherever each
   stands in the list; 0.3.0-rc.3 accepted it as a Debian derivative.
+- The platform table now holds the gate Fedora and its derivatives take once Fedora is admitted.
+  Fedora is gated on its edition (os-release `VARIANT_ID`) as well as its release: Cloud is the
+  tested edition, and Workstation, KDE Plasma Desktop, any other edition and a Fedora host that
+  names none run with a warning that NAILS has not been tested on that edition, in `init`, `check`
+  and `activate`; the `platform` row of `check` names a tested edition (`Fedora 44 Cloud`). Nobara
+  and Ultramarine are refused below release 44 or without a release, and from 44 run with the
+  untested-derivative warning. Fedora, Nobara and Ultramarine are still refused until Fedora's
+  support has been verified, so no host's verdict changes yet.
 - `check` and activation now warn on Ubuntu 26.04 instead of treating it as a clean tested release.
   A known upstream issue affects it: after the switch into the hidden session, AppArmor blocks chrony
   and CUPS from reaching systemd and the journal, so the clock does not sync and printing times out,

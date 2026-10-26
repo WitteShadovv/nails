@@ -9,7 +9,8 @@
 //! `VERSION_ID`, `VARIANT_ID`), written back as os-release(5) quotes a value (in
 //! double quotes, with `$`, `"`, `\` and `` ` `` escaped), are read again
 //! unchanged, with the same decision: the same resolved family and the same
-//! support verdict.
+//! support verdict. The edition (`VARIANT_ID`) can only add a warning: without
+//! it, the host is admitted or refused as before, for the same reason.
 
 #![no_main]
 
@@ -54,6 +55,17 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(again.family, first.family);
     assert_eq!(again.unsupported_reason, first.unsupported_reason);
     assert_eq!(again.support_warning, first.support_warning);
+
+    let mut unnamed = first.clone();
+    unnamed.variant_id = None;
+    let written = write(&unnamed);
+    let without_edition = detect_with(&written);
+    assert_eq!(without_edition.kind, first.kind, "{written}");
+    assert_eq!(without_edition.family, first.family, "{written}");
+    assert_eq!(
+        without_edition.unsupported_reason, first.unsupported_reason,
+        "{written}"
+    );
 });
 
 /// What detection makes of a systemd host with `os_release`.
