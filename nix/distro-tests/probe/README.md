@@ -43,9 +43,12 @@ Each file is an object:
 - `enforcing` -- `true` for the probe that left SELinux enforcing, `false`
   otherwise.
 - `imageFile` -- the name of the pinned image file the facts come from, so that
-  a repin shows which fixtures are older than the pin; `null` until recorded.
-- `recorded` -- `false` until a probe run has filled `facts`; a consumer must
-  skip or xfail a fact file whose `recorded` is `false`.
+  a repin shows which fixtures are older than the pin; `null` in a placeholder.
+- `recorded` -- whether a probe run filled `facts`: `true` when they hold a
+  kernel release in `kernelRelease` and a `softRebootsCount` of `1`, which
+  every run on a booted image reads, and `false` for a placeholder or a run
+  whose queries failed. A consumer must skip or xfail a fact file whose
+  `recorded` is `false`.
 - `facts` -- the recorded facts, in this order. A fact whose query has not run
   is `null`, or empty for a list or map. The SELinux facts are `null` on an
   image without SELinux.
@@ -147,9 +150,10 @@ the image and runs the rest. The driver prints one `=== <label> ===` block per
 query and writes `<probe>.json`, the record, and `<probe>.raw.json`, every
 query's output by label, into the directory `NAILS_PROBE_OUT` names, or the
 one it runs in. A fixture is that record as written: copy `<probe>.json` over
-the file here rather than editing it. The `distro-checks` flake check fails a
-fixture that leaves the schema, is not named after its probe or is not written
-the way the probe writes it.
+the file here rather than editing it, once its `recorded` is `true`. The
+`distro-checks` flake check fails a fixture that leaves the schema, is not
+named after its probe, is not written the way the probe writes it, or whose
+`recorded` does not follow from its facts.
 
 On a KVM-capable host, build the driver and run it. The driver keeps the VM
 state and its sockets in `XDG_RUNTIME_DIR`, falling back to `TMPDIR`; point

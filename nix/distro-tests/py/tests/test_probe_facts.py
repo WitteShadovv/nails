@@ -728,6 +728,34 @@ class RecordTest(unittest.TestCase):
             ],
         )
 
+    def test_a_run_that_read_no_kernel_or_soft_reboot_is_not_recorded(self) -> None:
+        def recorded(blocks: Mapping[str, str]) -> bool:
+            document = pf.record(
+                blocks,
+                image="fedora-44",
+                os_id="fedora",
+                enforcing=False,
+                image_file="Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+            )
+            return bool(document["recorded"])
+
+        read = {
+            "kernel": "6.19.10-300.fc44.x86_64\n",
+            "soft-reboot-boot-id": "e33116d5-0019-46e3-86a9-c0710ea7efee\n1\n",
+        }
+        self.assertTrue(recorded(read))
+        failed = {
+            "kernel": "bash: line 1: uname: command not found\n",
+            "soft-reboot-boot-id": "Failed to connect to bus: No such file\n",
+        }
+        for label, output in failed.items():
+            with self.subTest(query=label):
+                self.assertFalse(recorded({**read, label: output}))
+                missing = {key: value for key, value in read.items() if key != label}
+                self.assertFalse(recorded(missing))
+        # A count other than 1 is not the one soft-reboot the probe made.
+        self.assertFalse(recorded({**read, "soft-reboot-boot-id": "e33116d5\n2\n"}))
+
     def test_placeholder_has_every_fact(self) -> None:
         placeholder = pf.record(
             {},
@@ -735,7 +763,6 @@ class RecordTest(unittest.TestCase):
             os_id="fedora",
             enforcing=False,
             image_file=None,
-            recorded=False,
         )
         self.assertFalse(placeholder["recorded"])
         self.assertEqual(
@@ -785,6 +812,12 @@ class FixtureTest(unittest.TestCase):
                 document = json.loads(path.read_text(encoding="utf-8"))
                 if document["recorded"]:
                     self.assertTrue(document["imageFile"])
+
+    def test_a_fixture_is_recorded_exactly_when_its_facts_are_complete(self) -> None:
+        for path in self.fixtures():
+            with self.subTest(fixture=path.name):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(document["recorded"], pf.complete(document["facts"]))
 
 
 if __name__ == "__main__":

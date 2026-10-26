@@ -246,7 +246,12 @@ jobs:
               TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" NAILS_PROBE_OUT="$out" \
                 timeout "$PROBE_SECONDS" "$driver/bin/test-driver" </dev/null
             ) 2>&1 | tee "$out/$name.log"
-            jq -e '.recorded == true' "$out/$name.json" >/dev/null
+            # A record is recorded only when it holds a kernel release and the
+            # one soft-reboot, which every run on a booted image reads.
+            if ! jq -e '.recorded == true' "$out/$name.json" >/dev/null; then
+              echo "::error::The $name record is not recorded: the run read no kernel release or no soft-reboot (its log is in the probe-$name artifact)."
+              exit 1
+            fi
             {
               echo "### Probe \`$name\`"
               echo

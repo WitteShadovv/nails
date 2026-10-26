@@ -222,6 +222,8 @@ _DMESG = re.compile(r"\[\s*\d+\.\d+\]\s*(.*)")
 # to run.
 _LOAD_TIME = re.compile(r" in \d[\w. ]*\.$")
 _AVC_EVENT = re.compile(r"audit\((\d+\.\d+:\d+)\)")
+# A kernel release as ``uname -r`` prints it: 6.19.10-300.fc44.x86_64.
+_RELEASE = re.compile(r"\d+\.\d+\S*")
 _SERVICE_LINE = re.compile(r"(\S+) (is-enabled|is-active):\s*(.*)")
 _PRUNEPATHS = re.compile(r'PRUNEPATHS\s*=\s*"([^"]*)"')
 _HEADER = re.compile(r"# (/\S+)")
@@ -695,6 +697,21 @@ def facts(blocks: Mapping[str, str], os_id: str) -> dict[str, Any]:
     }
 
 
+def complete(found: Mapping[str, Any]) -> bool:
+    """Whether a run's facts hold the two that every run on a booted image
+    reads: the kernel's release, and a ``SoftRebootsCount`` of 1 after the
+    soft-reboot. A run without them read nothing it can be trusted for (its
+    queries failed, or the soft-reboot never happened), so its record is not
+    recorded.
+    """
+    release = found.get("kernelRelease")
+    return (
+        isinstance(release, str)
+        and _RELEASE.fullmatch(release) is not None
+        and found.get("softRebootsCount") == 1
+    )
+
+
 def record(
     blocks: Mapping[str, str],
     *,
@@ -702,22 +719,23 @@ def record(
     os_id: str,
     enforcing: bool,
     image_file: str | None,
-    recorded: bool = True,
 ) -> dict[str, Any]:
     """The fixture record of one probe run (see ``probe/README.md``).
 
     ``image`` is the image table key, ``enforcing`` whether SELinux was left
     enforcing, and ``image_file`` the name of the pinned image file the run
-    booted, so a fixture says which pin its facts came from. With no blocks and
-    ``recorded`` false it is the placeholder of a probe that has not run.
+    booted, so a fixture says which pin its facts came from. ``recorded`` is
+    whether the facts are :func:`complete`, so with no blocks the record is the
+    placeholder of a probe that has not run.
     """
+    found = facts(blocks, os_id)
     return {
         "image": image,
         "osId": os_id,
         "enforcing": enforcing,
         "imageFile": image_file,
-        "recorded": recorded,
-        "facts": facts(blocks, os_id),
+        "recorded": complete(found),
+        "facts": found,
     }
 
 
