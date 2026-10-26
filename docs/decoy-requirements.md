@@ -596,8 +596,7 @@ is in use on the decoy:
 - one of its service units is active, or one of its daemons runs (`sssd`, or
   a responder or back end named `sssd_<name>`);
 - the socket of its Kerberos ticket cache, `/run/.heim_org.h5l.kcm-socket`
-  (`sssd-kcm.socket`), is in place. A stopped socket leaves the file there
-  until the next boot, and the warning with it;
+  (`sssd-kcm.socket`), is in place;
 - `/var/lib/sss` holds one of the files sssd writes when it runs: its
   configuration databases, the memory caches of its accounts, the database of
   its Kerberos ticket cache or the sockets of its responders. Only root can see
@@ -609,9 +608,35 @@ a directory listing on the decoy disk, so no access time there changes. Fedora
 even when it is not joined to a domain.
 
 Use a decoy that is not joined to a domain. Where nothing on the decoy needs
-sssd, disable it: `sudo systemctl disable --now sssd.service sssd-kcm.socket`.
-On Fedora this also turns off the Kerberos ticket cache that `kinit` uses by
-default.
+sssd, disable it, then delete the files it leaves behind:
+
+```bash
+sudo systemctl disable --now sssd.service
+sudo systemctl disable --now sssd-kcm.socket
+sudo rm -f /run/.heim_org.h5l.kcm-socket \
+  /var/lib/sss/db/config.ldb /var/lib/sss/db/config_kcm.ldb \
+  /var/lib/sss/mc/passwd /var/lib/sss/mc/group /var/lib/sss/mc/initgroups \
+  /var/lib/sss/mc/sid /var/lib/sss/secrets/secrets.ldb \
+  /var/lib/sss/pipes/nss /var/lib/sss/pipes/pam
+```
+
+Skip the second command where `sssd-kcm.socket` does not exist: Debian and
+Ubuntu install it only with the `sssd-kcm` package. Keep the two commands
+apart: systemd before 257 refuses a `disable` that names a unit it does not
+have and leaves every unit as it was. On NixOS the configuration owns the
+units, so `systemctl disable` cannot change them: set `services.sssd.enable`
+and `services.sssd.kcm` to `false` and run `nixos-rebuild switch` in place of
+the two `systemctl` commands.
+
+Stopping sssd leaves these files in place, the socket file until the next boot
+clears `/run` and the others until they are deleted, and each of them keeps the
+warning. So the warning names the ones it finds and the `rm` that deletes them.
+Deleting them once sssd is stopped is safe: sssd builds its configuration
+databases again from `sssd.conf` at every start, and makes its memory caches,
+its sockets and an empty ticket database anew. What is lost is the Kerberos
+tickets its ticket cache kept, which nothing reaches while `sssd-kcm` is off.
+On Fedora, turning `sssd-kcm` off also turns off the ticket cache that `kinit`
+uses by default.
 
 ## Session-time records
 
