@@ -368,7 +368,9 @@ mod tests {
 
         assert_eq!((stat.sid, stat.pgid), (pid, pid), "setsid made it a leader");
         assert_eq!(stat.ppid, std::process::id());
-        assert!(matches!(stat.state, 'S' | 'R'), "{stat:?}");
+        // Running, sleeping, or in an uninterruptible wait while it pages in or
+        // execs `sleep` under load: any state of a live process.
+        assert!(matches!(stat.state, 'S' | 'R' | 'D'), "{stat:?}");
         assert!(stat.start_time > 0);
         assert!(stat.start_time >= super::stat(std::process::id()).unwrap().start_time);
         assert_eq!(child_uid, Some(rustix::process::getuid().as_raw()));
