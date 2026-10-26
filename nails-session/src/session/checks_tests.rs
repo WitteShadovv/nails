@@ -163,24 +163,62 @@ fn only_the_plain_decoy_may_activate() {
 }
 
 #[test]
-fn masked_filesystems_warn_and_a_refusal_fails() {
+fn filesystems_kept_off_warn_and_a_refusal_fails() {
     let mounts = parse_mountinfo(
         "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n2 1 8:1 / /boot rw - vfat /dev/vda1 rw\n",
     );
-    let decide =
-        |text: &str| policy::decide_all(&parse_fstab(text), &mounts, Path::new("/mnt/data"));
+    let decide = |text: &str, present: bool| {
+        policy::decide_all(&parse_fstab(text), &mounts, Path::new("/mnt/data"), &|_| {
+            present
+        })
+    };
+    // Swap is never available, skipped or masked: nothing to warn about while
+    // its device is there.
     let boot = judge_fstab(&decide(
         "/dev/vda1 /boot vfat defaults 0 2\n/dev/vda3 none swap sw 0 0\n",
+        true,
     ));
     assert!(boot.is_pass(), "{boot:?}");
     assert!(boot.message().contains("/boot: read-only"));
-    assert!(judge_fstab(&decide("/dev/sdb1 /data ext4 defaults 0 2\n")).is_warn());
-    assert!(judge_fstab(&decide("/dev/sdb1 data ext4 defaults 0 2\n")).is_fail());
+    assert!(boot.message().contains("/dev/vda3: skipped"), "{boot:?}");
+    let data = judge_fstab(&decide("/dev/sdb1 /data ext4 defaults 0 2\n", true));
+    assert!(data.is_warn(), "{data:?}");
+    assert!(data.message().contains("/data: skipped"), "{data:?}");
+    assert!(
+        data.message()
+            .contains("not available in the hidden session")
+    );
+    assert!(judge_fstab(&decide("/dev/sdb1 data ext4 defaults 0 2\n", true)).is_fail());
+}
+
+#[test]
+fn a_mask_that_leaves_a_boot_target_unreached_warns_with_how_to_avoid_it() {
+    // The swap partition and the disk are not there: their units are masked,
+    // and swap.target and local-fs.target are not reached.
+    let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    let decisions = policy::decide_all(
+        &parse_fstab("/dev/vda3 none swap sw 0 0\n/dev/sdb1 /data ext4 defaults 0 2\n"),
+        &mounts,
+        Path::new("/mnt/data"),
+        &|_| false,
+    );
+    let result = judge_fstab(&decisions);
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    for part in [
+        "/dev/vda3: masked",
+        "/data: masked",
+        "the hidden session will not reach swap.target",
+        "the hidden session will not reach local-fs.target",
+        "nofail",
+    ] {
+        assert!(message.contains(part), "{part}: {message}");
+    }
 }
 
 /// The check decides a symlinked mount point where activation does, at its
 /// real path inside the decoy root, so `nails check` names the unit the
-/// hidden session masks.
+/// hidden session keeps off.
 #[test]
 fn the_policy_check_decides_a_symlinked_mount_point_at_its_real_path() {
     let root = tempfile::tempdir().unwrap();
@@ -196,11 +234,13 @@ fn the_policy_check_decides_a_symlinked_mount_point_at_its_real_path() {
     let result = check
         .run(&crate::filesystem::MockFilesystem::new())
         .unwrap();
+    // local-fs.target requires the automount, which waits for no device: it
+    // is skipped, whatever the host's devices.
     assert!(
-        result.message().contains("/var/nails-check-home: masked"),
+        result.message().contains("/var/nails-check-home: skipped"),
         "{result:?}"
     );
-    assert!(!result.message().contains("/home: masked"), "{result:?}");
+    assert!(!result.message().contains("/home: skipped"), "{result:?}");
 }
 
 /// An fstab that cannot be read fails the check: taken for an empty one, it

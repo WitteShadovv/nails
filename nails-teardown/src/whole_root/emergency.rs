@@ -48,7 +48,7 @@ use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
 use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::tools;
 use crate::whole_root::transition;
-use crate::whole_root::{kernel_helpers, logind, ret, runtime_units};
+use crate::whole_root::{kernel_helpers, logind, ret, runtime_units, skips};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -406,7 +406,7 @@ fn kernel_power_off() -> bool {
 }
 
 /// The decoy side's cleanup: the next root detached and the runtime pieces
-/// removed. Returns whether it removed a drop-in or a mask, which PID 1 keeps
+/// removed. Returns whether it removed a drop-in, a mask or a skip, which PID 1 keeps
 /// loaded until its next reload.
 fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) -> bool {
     report.remaining = report.timed("detach-nextroot", |_| {
@@ -432,9 +432,10 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) -> bool {
             &plan.generator_masks,
             &kept,
         );
+        let skipped = skips::remove_skips(&host.run, &plan.skips, &kept);
         kernel_helpers::restore(&plan.kernel_settings);
         nextroot::remove_runtime_dir(&host.runtime_dir);
-        dropins || masks
+        dropins || masks || skipped
     })
 }
 

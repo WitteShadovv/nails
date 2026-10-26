@@ -14,7 +14,7 @@
 //! | Entry | Decision |
 //! | --- | --- |
 //! | `/` | the root overlay itself |
-//! | swap | masked: never activated |
+//! | swap | kept off: never activated |
 //! | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 //! | the hidden volume, or a path inside it | left alone: it is bound at its own path |
 //! | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
@@ -22,11 +22,30 @@
 //! | `/boot`, `/boot/efi`, `/efi` (the ESP and boot partitions) | read-only bind of the decoy mount |
 //! | a local filesystem mounted read-only in the decoy | read-only bind |
 //! | any other local filesystem mounted in the decoy | an overlay with its upper on the hidden volume |
-//! | a local filesystem not mounted now, mounted at boot | masked (and its automount) |
+//! | a local filesystem not mounted now, mounted at boot | kept unmounted (and its automount off) |
 //! | `noauto` without an automount | left alone: never mounted |
-//! | a network filesystem | masked: the hidden session would write to the server |
+//! | a network filesystem | kept unmounted: the hidden session would write to the server |
 //! | an overlay entry not mounted now, its upper in RAM | left to the hidden systemd |
-//! | an overlay entry not mounted now, its upper on a disk | masked |
+//! | an overlay entry not mounted now, its upper on a disk | kept unmounted |
+//!
+//! A unit kept off is masked in `/run`, or skipped where a boot target
+//! requires it ([`Decision::Skip`]): `local-fs.target` requires the mount of
+//! an entry without `nofail` (or its automount), `remote-fs.target` that of a
+//! network filesystem, `swap.target` a swap line without `nofail` or
+//! `noauto` ([`super::fstab::required_by`]). PID 1 cannot pull a masked unit
+//! into a transaction, so it drops the job of a target that requires one,
+//! silently, and with the target every unit only it pulls in: the hidden
+//! session would run without `local-fs.target`. A skipped unit gets a runtime
+//! drop-in whose start condition never holds
+//! ([`nails_teardown::whole_root::skips`]); the units its fstab line has it
+//! pull in that act on its device (its fsck, makefs, growfs or mkswap,
+//! [`super::fstab::checkers`]) start before that condition is tested, so they
+//! are skipped with it. A skipped mount or swap still waits for its device,
+//! and one that is not there would hold the hidden session up until the
+//! device timeout and then start emergency mode: an entry whose device is not
+//! there now is masked, with a warning that its target will not be reached
+//! ([`Decision::warning`]). A mount behind a skipped automount stays masked:
+//! the target does not pull it in.
 //!
 //! A mounted host share or overlay is overlaid rather than left to the hidden
 //! systemd because the next root must already hold its contents when PID 1
@@ -34,11 +53,12 @@
 //! share and a tmpfs, and the next root would otherwise have an empty store.
 //!
 //! An entry behind an automount (`x-systemd.automount`, often the ESP) whose
-//! filesystem the policy binds or overlays itself keeps its automount masked
-//! too ([`masks`]): the hidden systemd would find the mount point taken and
-//! fail to set the automount up, and `local-fs.target`, which requires it
+//! filesystem the policy binds or overlays itself keeps its automount off too
+//! ([`runtime_units`]): the hidden systemd would find the mount point taken
+//! and fail to set the automount up, and `local-fs.target`, which requires it
 //! unless the entry is `nofail`, would fail with it and start the hidden
-//! session in emergency mode.
+//! session in emergency mode. The automount is skipped where the target
+//! requires it, and masked where the target only wants it.
 //!
 //! An entry of the decoy's fstab that the next root resolves to another path
 //! than the decoy root does (a symlink on the way that a session replaced or
@@ -51,9 +71,22 @@
 //! `Refuse` decision exists for entries whose target cannot be mounted inside
 //! the next root (a relative or odd mount point).
 
-use super::fstab::{FstabEntry, automount_unit, mount_unit, swap_unit};
+use super::fstab::{
+    FstabEntry, automount_unit, checkers, mount_unit, required_by, swap_unit, waits_for,
+};
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
+use nails_teardown::whole_root::plan::Skip;
 use std::path::{Component, Path, PathBuf};
+
+/// Whether a device is there now: [`device_present`] on the running system,
+/// a fixed answer in tests.
+pub type Present<'a> = &'a dyn Fn(&Path) -> bool;
+
+/// Whether `device` is there on the running system now: its node, or the
+/// link udev makes for it, resolves.
+pub fn device_present(device: &Path) -> bool {
+    device.exists()
+}
 
 /// Mount points whose filesystem is kept read-only in the hidden root. The
 /// units that write there at every start are masked in the hidden root
@@ -82,8 +115,23 @@ pub enum Decision {
         units: Vec<String>,
         /// Why.
         reason: &'static str,
+        /// The boot target the mask keeps from being reached, when one
+        /// requires the units and their device was not there to skip them.
+        unreached: Option<Unreached>,
     },
-    /// Leave it to the hidden systemd or skip it.
+    /// Skip these units in the hidden root: a boot target requires them, and
+    /// a mask would keep the target from being reached (see the module docs).
+    Skip {
+        /// The entry's mount point (or swap spec).
+        target: PathBuf,
+        /// The units skipped, those they pull in, and their device.
+        skip: Skip,
+        /// Units masked with them: the mount behind a skipped automount.
+        masked: Vec<String>,
+        /// Why they must not start.
+        reason: &'static str,
+    },
+    /// Leave it to the hidden systemd, or leave it alone.
     Leave {
         /// The mount point.
         target: PathBuf,
@@ -99,12 +147,31 @@ pub enum Decision {
     },
 }
 
+/// Why a mask keeps a boot target from being reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreached {
+    /// The target that requires the masked unit (`local-fs.target`).
+    pub target: String,
+    /// The device the unit waits for, which was not there: a skipped unit
+    /// would have waited for it until the device timeout.
+    pub device: PathBuf,
+}
+
 impl Decision {
-    /// The units to mask, if this is a mask.
+    /// The units to mask: a mask's, or those masked with a skip.
     pub fn masked_units(&self) -> &[String] {
         match self {
             Decision::Mask { units, .. } => units,
+            Decision::Skip { masked, .. } => masked,
             _ => &[],
+        }
+    }
+
+    /// The units to skip, if this is a skip.
+    pub fn skip(&self) -> Option<&Skip> {
+        match self {
+            Decision::Skip { skip, .. } => Some(skip),
+            _ => None,
         }
     }
 
@@ -116,6 +183,9 @@ impl Decision {
             Decision::Mask { target, reason, .. } => {
                 format!("{}: masked ({reason})", target.display())
             }
+            Decision::Skip { target, reason, .. } => {
+                format!("{}: skipped ({reason})", target.display())
+            }
             Decision::Leave { target, reason } => {
                 format!("{}: left as is ({reason})", target.display())
             }
@@ -123,6 +193,31 @@ impl Decision {
                 format!("{}: refused ({reason})", target.display())
             }
         }
+    }
+
+    /// What the operator should know about this decision before the switch:
+    /// a mask that keeps a boot target from being reached.
+    pub fn warning(&self) -> Option<String> {
+        let Decision::Mask {
+            target,
+            unreached:
+                Some(Unreached {
+                    target: boot,
+                    device,
+                }),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(format!(
+            "{} is masked rather than skipped, as its device {} is not there: the hidden \
+             session will not reach {boot}, which requires it, and the units only {boot} \
+             pulls in will not start there. Attach the device before activating, or give \
+             the fstab entry the nofail option",
+            target.display(),
+            device.display()
+        ))
     }
 }
 
@@ -146,34 +241,103 @@ fn plain_absolute(path: &Path) -> bool {
             .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
 }
 
-/// Decide one entry. `mounts` is the decoy's live mount table.
-pub fn decide(entry: &FstabEntry, mounts: &[MountEntry], hidden_root: &Path) -> Decision {
-    decide_entry(entry, mounts, hidden_root, false)
+/// Decide one entry. `mounts` is the decoy's live mount table, and `present`
+/// tells whether a device is there now ([`device_present`]).
+pub fn decide(
+    entry: &FstabEntry,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    present: Present<'_>,
+) -> Decision {
+    decide_entry(entry, mounts, hidden_root, false, present)
 }
 
 /// Decide an entry of the decoy's fstab at the path the next root resolves
 /// it to, where that differs from the decoy root's (see the module docs): as
-/// [`decide`], except that a path inside the hidden volume is masked rather
-/// than left to the bind of the hidden volume.
+/// [`decide`], except that a path inside the hidden volume is kept unmounted
+/// rather than left to the bind of the hidden volume.
 pub fn decide_redirected(
     entry: &FstabEntry,
     mounts: &[MountEntry],
     hidden_root: &Path,
+    present: Present<'_>,
 ) -> Decision {
-    decide_entry(entry, mounts, hidden_root, true)
+    decide_entry(entry, mounts, hidden_root, true, present)
 }
 
-/// Mask the units the hidden systemd generates for `entry`: its mount, and
-/// its automount when it has one.
-fn mask(entry: &FstabEntry, reason: &'static str) -> Decision {
-    let mut units = vec![mount_unit(&entry.file)];
+/// Keep the units the hidden systemd generates for `entry` from starting:
+/// its mount, and its automount when it has one. They are skipped where a
+/// boot target requires them, unless the device they wait for is not there
+/// now, and masked otherwise (see the module docs).
+fn keep_off(entry: &FstabEntry, reason: &'static str, present: Present<'_>) -> Decision {
+    let target = entry.file.clone();
+    let mount = mount_unit(&entry.file);
+    let required = required_by(entry);
     if entry.is_automount() {
-        units.push(automount_unit(&entry.file));
+        let automount = automount_unit(&entry.file);
+        if required.is_none() {
+            return Decision::Mask {
+                target,
+                units: vec![mount, automount],
+                reason,
+                unreached: None,
+            };
+        }
+        // The target pulls in the automount alone, which waits for no device;
+        // the mount, which nothing starts then, stays masked.
+        return Decision::Skip {
+            target,
+            skip: Skip {
+                units: vec![automount],
+                pulled: Vec::new(),
+                device: None,
+            },
+            masked: vec![mount],
+            reason,
+        };
     }
-    Decision::Mask {
-        target: entry.file.clone(),
-        units,
-        reason,
+    gate(target, vec![mount], entry, required, reason, present)
+}
+
+/// The decision for `units` of `entry` that must not start: a skip when
+/// `required` names what requires them and the device they wait for, if any,
+/// is there now; a mask otherwise.
+fn gate(
+    target: PathBuf,
+    units: Vec<String>,
+    entry: &FstabEntry,
+    required: Option<String>,
+    reason: &'static str,
+    present: Present<'_>,
+) -> Decision {
+    let Some(required) = required else {
+        return Decision::Mask {
+            target,
+            units,
+            reason,
+            unreached: None,
+        };
+    };
+    match waits_for(entry) {
+        Some(device) if !present(&device) => Decision::Mask {
+            target,
+            units,
+            reason,
+            unreached: Some(Unreached {
+                target: required,
+                device,
+            }),
+        },
+        device => Decision::Skip {
+            target,
+            skip: Skip {
+                units,
+                pulled: checkers(entry),
+                device,
+            },
+            masked: Vec::new(),
+            reason,
+        },
     }
 }
 
@@ -182,21 +346,24 @@ fn decide_entry(
     mounts: &[MountEntry],
     hidden_root: &Path,
     redirected: bool,
+    present: Present<'_>,
 ) -> Decision {
     let target = entry.file.clone();
     if entry.is_swap() {
-        let units: Vec<String> = swap_unit(&entry.spec).into_iter().collect();
-        if units.is_empty() {
+        let Some(unit) = swap_unit(&entry.spec) else {
             return Decision::Leave {
                 target,
                 reason: "a swap entry without a device",
             };
-        }
-        return Decision::Mask {
-            target: PathBuf::from(&entry.spec),
-            units,
-            reason: "swap would take hidden RAM onto a decoy disk",
         };
+        return gate(
+            PathBuf::from(&entry.spec),
+            vec![unit],
+            entry,
+            required_by(entry),
+            "swap would take hidden RAM onto a decoy disk",
+            present,
+        );
     }
     if !plain_absolute(&target) {
         return Decision::Refuse {
@@ -218,10 +385,11 @@ fn decide_entry(
     }
     if target.starts_with(hidden_root) {
         if redirected {
-            return mask(
+            return keep_off(
                 entry,
                 "a link leads it into the hidden volume, where the hidden session would mount \
                  a decoy filesystem read-write",
+                present,
             );
         }
         return Decision::Leave {
@@ -240,7 +408,11 @@ fn decide_entry(
         };
     }
     if entry.is_network() {
-        return mask(entry, "the hidden session would write to the server");
+        return keep_off(
+            entry,
+            "the hidden session would write to the server",
+            present,
+        );
     }
     if entry.vfstype == "overlay" {
         let opts = entry
@@ -259,7 +431,7 @@ fn decide_entry(
                 reason: "an overlay with its upper in RAM",
             }
         } else {
-            mask(entry, "an overlay with its upper on a disk")
+            keep_off(entry, "an overlay with its upper on a disk", present)
         };
     }
     match mounted_at(mounts, &target) {
@@ -271,9 +443,10 @@ fn decide_entry(
             target,
             reason: "noauto: never mounted",
         },
-        None => mask(
+        None => keep_off(
             entry,
             "not mounted now; the hidden session would mount it read-write",
+            present,
         ),
     }
 }
@@ -284,8 +457,9 @@ pub fn decide_all(
     entries: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
+    present: Present<'_>,
 ) -> Vec<Decision> {
-    by_depth(entries, |entry| decide(entry, mounts, hidden_root))
+    by_depth(entries, |entry| decide(entry, mounts, hidden_root, present))
 }
 
 /// [`decide_all`] for entries the next root resolves elsewhere, each decided
@@ -294,9 +468,10 @@ pub fn decide_all_redirected(
     entries: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
+    present: Present<'_>,
 ) -> Vec<Decision> {
     by_depth(entries, |entry| {
-        decide_redirected(entry, mounts, hidden_root)
+        decide_redirected(entry, mounts, hidden_root, present)
     })
 }
 
@@ -319,28 +494,87 @@ pub fn masked_units(decisions: &[Decision]) -> Vec<String> {
         .collect()
 }
 
-/// Every unit the hidden session keeps masked, each once: the units the
-/// `decisions` mask, and the automount of each entry of `fstab` whose
-/// filesystem they put in place themselves, read-only or overlaid (see the
-/// module docs).
-pub fn masks(fstab: &[FstabEntry], decisions: &[Decision]) -> Vec<String> {
+/// What the hidden session keeps from starting: the units it masks, each
+/// once, and the units it skips.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeptOff {
+    /// The units masked in `/run`.
+    pub masks: Vec<String>,
+    /// The units skipped, with those they pull in and their device.
+    pub skips: Vec<Skip>,
+}
+
+/// What the hidden session keeps from starting for `decisions` and every
+/// entry of `fstab` the hidden systemd may read: what the decisions mask and
+/// skip, and the automount of each entry whose filesystem they put in place
+/// themselves, read-only or overlaid (see the module docs), skipped where a
+/// boot target requires it and masked otherwise.
+///
+/// The hidden systemd reads one fstab, but the entry decides several (the
+/// decoy's, its entries resolved elsewhere, a hidden generation's), and two
+/// of them can disagree about a unit. A unit that one of them masks is
+/// masked, and its skip goes: a mask starts nothing, while a skip made for
+/// another line could leave a checker of the line the hidden systemd reads
+/// free to start. Two skips of the same unit become one, pulling in what
+/// either pulls in; when they wait for different devices the unit is masked.
+pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
     let placed = |file: &Path| {
         decisions.iter().any(|decision| match decision {
             Decision::ReadOnlyBind { target } | Decision::Overlay { target } => target == file,
             _ => false,
         })
     };
-    let automounts = fstab
+    let mut masks: Vec<String> = masked_units(decisions);
+    let mut skips: Vec<Skip> = decisions
+        .iter()
+        .filter_map(Decision::skip)
+        .cloned()
+        .collect();
+    for entry in fstab
         .iter()
         .filter(|entry| entry.is_automount() && placed(&entry.file))
-        .map(|entry| automount_unit(&entry.file));
-    let mut masks: Vec<String> = Vec::new();
-    for unit in masked_units(decisions).into_iter().chain(automounts) {
-        if !masks.contains(&unit) {
-            masks.push(unit);
+    {
+        let automount = automount_unit(&entry.file);
+        if required_by(entry).is_some() {
+            skips.push(Skip {
+                units: vec![automount],
+                pulled: Vec::new(),
+                device: None,
+            });
+        } else {
+            masks.push(automount);
         }
     }
-    masks
+    let mut merged: Vec<Skip> = Vec::new();
+    for skip in skips {
+        match merged.iter_mut().find(|other| other.units == skip.units) {
+            Some(other) if other.device == skip.device => {
+                for unit in skip.pulled {
+                    if !other.pulled.contains(&unit) {
+                        other.pulled.push(unit);
+                    }
+                }
+            }
+            Some(_) => masks.extend(skip.units),
+            None => merged.push(skip),
+        }
+    }
+    let mut kept = KeptOff::default();
+    for unit in masks {
+        if !kept.masks.contains(&unit) {
+            kept.masks.push(unit);
+        }
+    }
+    kept.skips = merged
+        .into_iter()
+        .filter(|skip| !skip.units.iter().any(|unit| kept.masks.contains(unit)))
+        .collect();
+    kept
+}
+
+/// The units the hidden session keeps masked ([`runtime_units`]).
+pub fn masks(fstab: &[FstabEntry], decisions: &[Decision]) -> Vec<String> {
+    runtime_units(fstab, decisions).masks
 }
 
 #[cfg(test)]

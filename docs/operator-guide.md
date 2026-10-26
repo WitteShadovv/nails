@@ -222,7 +222,12 @@ Keep all of it `root`-owned on the hidden volume.
      `<hidden-root>/root/mounts/`;
    - swap, local filesystems that are not mounted now, network filesystems and
      overlay entries that are not mounted now but have their upper on a disk
-     are masked in `/run`, so the hidden systemd never activates them.
+     are kept off, so the hidden systemd never activates them: masked in
+     `/run`, or skipped where a boot target requires them (an entry without
+     `nofail`), so that `local-fs.target`, `remote-fs.target` and `swap.target`
+     are still reached. An entry a target requires whose device is not there
+     is masked, and activation warns that the hidden session will not reach
+     that target.
 
    Whatever the fstab says, the hidden session also masks
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail

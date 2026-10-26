@@ -1626,6 +1626,40 @@ fn session_leftovers_are_critical_on_the_decoy() {
 }
 
 #[test]
+fn a_skip_drop_in_left_on_the_decoy_is_critical() {
+    use nails_teardown::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT};
+    let (fs, verifier) = overlay_verifier("");
+    // The skip of a decoy disk's mount, and the administrator's own drop-in
+    // of that name for another unit, which is no skip.
+    let dir = std::path::Path::new("/run/systemd/system");
+    fs.mock_set_path_exists(dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(dir.to_str().unwrap(), PathKind::Dir);
+    let skipped = dir.join("srv-data.mount.d");
+    let own = dir.join("nginx.service.d");
+    fs.mock_set_directory_contents(dir, vec![skipped.clone(), own.clone()]);
+    fs.mock_set_file_content(skipped.join(SKIP_DROPIN_NAME).to_str().unwrap(), SKIP_TEXT);
+    fs.mock_set_file_content(
+        own.join(SKIP_DROPIN_NAME).to_str().unwrap(),
+        "[Service]\nRestart=always\n",
+    );
+    let result = verifier.run(false).unwrap();
+    let findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "session")
+        .collect();
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].severity, Severity::Critical);
+    assert!(
+        findings[0]
+            .message
+            .contains("srv-data.mount is skipped whenever it starts"),
+        "{findings:?}"
+    );
+    assert!(findings[0].fix_guidance.is_some());
+}
+
+#[test]
 fn a_runtime_mask_left_on_the_decoy_only_warns() {
     let (fs, verifier) = overlay_verifier("");
     // A swap mask in the runtime unit directory, and a boot-loader mask in
