@@ -178,8 +178,8 @@ fn untested_warning(
                  (tested: {tested})"
             ),
             UntestedEdition::Unnamed => format!(
-                "{host} declares no edition (its os-release has no VARIANT_ID), so NAILS cannot \
-                 tell whether it is a tested one (tested: {tested})"
+                "{host} declares no edition (its os-release has no VARIANT_ID, or an empty \
+                 one), so NAILS cannot tell whether it is a tested one (tested: {tested})"
             ),
         });
     }

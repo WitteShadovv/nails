@@ -366,8 +366,9 @@ fn a_fedora_host_that_names_no_edition_warns_once_admitted() {
         let warning = warning_of(once_admitted("fedora", Some("44"), variant));
         assert!(
             warning.starts_with(
-                "Fedora 44 declares no edition (its os-release has no VARIANT_ID), so NAILS \
-                 cannot tell whether it is a tested one (tested: Fedora Cloud)."
+                "Fedora 44 declares no edition (its os-release has no VARIANT_ID, or an \
+                 empty one), so NAILS cannot tell whether it is a tested one (tested: Fedora \
+                 Cloud)."
             ),
             "{variant:?}: {warning}"
         );
