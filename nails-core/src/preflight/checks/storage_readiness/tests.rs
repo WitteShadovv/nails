@@ -387,8 +387,8 @@ fn test_storage_readiness_debug() {
     assert!(debug.contains("StorageReadinessCheck"));
 }
 
-/// The read-only check on the root overlay as activation and `check` build
-/// it: lower `/`, upper and work under `root/`.
+/// The check with `read_only` on, on the root overlay as activation and
+/// `check` build it: lower `/`, upper and work under `root/`.
 fn root_check() -> StorageReadinessCheck {
     StorageReadinessCheck::new(
         PathBuf::from("/mnt/data"),

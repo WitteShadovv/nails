@@ -178,7 +178,7 @@ Bad: "Storage not ready"
 Good: "Storage not ready: Missing /etc/ directory. Create with: sudo mkdir -p /mnt/data/etc"
 
 ### 4. Idempotent Checks
-Checks should be safe to run multiple times without side effects (except auto-creation features).
+Checks should be safe to run multiple times and leave nothing behind: a probe that writes removes what it wrote (auto-creation features aside).
 
 ### 5. Test Coverage
 All checks require comprehensive unit tests exercising every branch. Use `MockFilesystem` for deterministic testing; it is test-only infrastructure and does not count toward the coverage figure.

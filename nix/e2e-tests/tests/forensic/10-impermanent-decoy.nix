@@ -93,7 +93,7 @@ in
         machine.log(f"decoy-root: {checks['decoy-root']['message']}")
         nothing_left_behind()
 
-    with subtest("activate is refused by the same check and changes nothing"):
+    with subtest("activate is refused by the same check and leaves nothing behind"):
         rc, out = machine.execute(
             f"nails --config {CONFIG} activate -y --overlay-only 2>&1"
         )

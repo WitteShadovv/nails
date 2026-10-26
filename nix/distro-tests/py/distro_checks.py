@@ -267,13 +267,13 @@ def overlay_targets_with_violations(
 
 # --- What a refused run may leave behind ----------------------------------------
 #
-# The refusal scenario proves that a run NAILS refuses changes nothing: it lists
-# the hidden root and the decoy's disk filesystems before and after the refused
-# commands, compares the listings and reads the journal entries written in
-# between. A listing is plain ``find`` output, so the guest needs nothing the
-# stock images do not ship. The listings of the decoy disk run to megabytes and
-# are compared in the guest (``comm``), so only what differs crosses the
-# driver's console.
+# The refusal scenario proves that a run NAILS refuses leaves nothing behind:
+# it lists the hidden root and the decoy's disk filesystems before and after
+# the refused commands, compares the listings and reads the journal entries
+# written in between. A listing is plain ``find`` output, so the guest needs
+# nothing the stock images do not ship. The listings of the decoy disk run to
+# megabytes and are compared in the guest (``comm``), so only what differs
+# crosses the driver's console.
 
 #: The fields of a listed entry, in the order :func:`listing_command` prints them
 #: between the device number and the path: the file type, the permission bits,

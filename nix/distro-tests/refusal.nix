@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The refusal scenario: NAILS refuses the families it has not admitted yet
-# (Fedora, Arch) and changes nothing while it does. Admitting a family is a data
-# change in the family table (nails-platform/src/platform/family.rs); until it
-# is made, this runs the refusal on the family's own stock cloud image. The
-# binary is shared in and a hidden root is set up as the smoke suite does it,
-# and the scenario proves that:
+# (Fedora, Arch) and leaves nothing behind while it does. Admitting a family
+# is a data change in the family table (nails-platform/src/platform/family.rs);
+# until it is made, this runs the refusal on the family's own stock cloud
+# image. The binary is shared in and a hidden root is set up as the smoke
+# suite does it, and the scenario proves that:
 #
 #   - `check` fails its platform row with the family table's reason, and the
 #     hidden root still holds what it held;

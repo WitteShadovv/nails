@@ -12,8 +12,8 @@
 //! Every test here runs unprivileged and performs no destructive operation.
 //! `activate`, `deactivate` and `emergency` are only exercised along paths
 //! that refuse before any mount, switch or teardown: the confirmation gate off
-//! a terminal, a config error, or the read-only `--dry-run` alias. A case that
-//! would need root is marked `#[ignore]`, never silently skipped on an
+//! a terminal, a config error, or `--dry-run`, the alias of `check`. A case
+//! that would need root is marked `#[ignore]`, never silently skipped on an
 //! environment variable.
 
 use assert_cmd::prelude::*;
@@ -955,8 +955,8 @@ fn test_activate_flags_parse_and_still_refuse_off_terminal() {
         .code(2);
 }
 
-/// `activate --dry-run --json` is a read-only alias for `check`: it emits one
-/// parseable JSON document and never touches the system.
+/// `activate --dry-run --json` is an alias for `check`: it emits one parseable
+/// JSON document, the envelope of `check`.
 #[test]
 fn test_activate_dry_run_json_is_parseable() {
     let config = create_test_config_file("/tmp/nails-contract-volume");
@@ -971,7 +971,7 @@ fn test_activate_dry_run_json_is_parseable() {
         .output()
         .expect("run nails activate --dry-run --json");
     let value = parse_json_tail(&output);
-    // --dry-run defers to the read-only `check` command, so the envelope is its.
+    // --dry-run defers to the `check` command, so the envelope is its.
     assert_eq!(value["command"], "check");
     assert!(
         value.get("ok").is_some(),

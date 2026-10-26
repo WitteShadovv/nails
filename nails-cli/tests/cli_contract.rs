@@ -1038,8 +1038,9 @@ fn exit_code_3_config_on_missing_config() {
 
 #[test]
 fn exit_code_4_preflight_refused_on_check() {
-    // `check` runs the activation pre-flights read-only; in this unprivileged,
-    // non-mounted sandbox they cannot all pass, so it refuses with code 4.
+    // `check` runs the activation pre-flights and stages nothing; in this
+    // unprivileged, non-mounted sandbox they cannot all pass, so it refuses
+    // with code 4.
     let harness = Harness::new();
     let code = run(&harness.config, &[], &["check"]).status.code();
     assert_eq!(code, Some(4));
