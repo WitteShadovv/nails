@@ -4,13 +4,17 @@
 # tests) and escapes both clippy and the test runner. A file counts as declared
 # when some source file resolves to it through a `mod <name>;` declaration or a
 # `#[path = "..."]` include, following the same resolution rules rustc uses.
-# Every crate directory of the repository (nails-*/) is checked, as
-# check-line-count.sh counts them, so a new crate needs no edit here.
+# Every crate directory of the repository (nails-*/) and every crate of the side
+# workspaces (setup/ and gui/) is checked, as check-line-count.sh counts them,
+# so a new crate needs no edit here. It checks the repository it lives in, or
+# the directory given as the only argument.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_ROOTS=("$REPO_ROOT"/nails-*/src)
+# The physical path: realpath resolves a `#[path]` include to one, and it must
+# match the paths find reports below.
+REPO_ROOT="$(cd "${1:-$(dirname "$0")/..}" && pwd -P)"
+SOURCE_ROOTS=("$REPO_ROOT"/nails-*/src "$REPO_ROOT"/setup/*/src "$REPO_ROOT"/gui/*/src)
 
 # A pattern that matches nothing stays as written, and find fails on it inside
 # the process substitutions below without failing the script, which would then

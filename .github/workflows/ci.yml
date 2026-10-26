@@ -65,9 +65,10 @@ jobs:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         run: python3 -m ci.changes ${BASE:+--base "$BASE"} >> "$GITHUB_OUTPUT"
 
-  # `just fmt-check` also checks the fuzz crate and the side workspaces, and
-  # `just lint` runs clippy over the side workspaces, so a change to the fuzz
-  # crate or to a side workspace runs this job too.
+  # `just fmt-check` also checks the fuzz crate and the side workspaces, `just
+  # lint` runs clippy over the side workspaces, and the file size and orphan
+  # module checks cover them as well, so a change to the fuzz crate or to a
+  # side workspace runs this job too.
   lint:
     name: lint
     needs: changes
