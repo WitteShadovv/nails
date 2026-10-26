@@ -12,7 +12,7 @@ use nails_core::app::rehearse::{
     PlantError, Rehearsal, RehearseFailure, ScanOptions, next_step, phase_name,
 };
 use nails_core::output::{Mark, Style};
-use nails_core::rehearse::{ChannelRecord, Here, RehearsalState, ScanReport};
+use nails_core::rehearse::{ChannelRecord, Here, ScanReport};
 use serde::Serialize;
 
 use crate::cli::args::{RehearseArgs, RehearsePlantArgs, RehearseScanArgs, RehearseStep};
@@ -89,40 +89,38 @@ fn status(settings: &OutputSettings, rehearsal: &Rehearsal) -> ExitStatus {
         Ok(outcome) => outcome,
         Err(failure) => return report_fail(settings.is_json(), failure),
     };
-    let state = outcome.state;
+    let recorded = outcome.rehearsal;
     let here = outcome.here;
     let data = RehearseData {
-        phase: phase_name(state.as_ref()),
-        fingerprint: state.as_ref().map(RehearsalState::fingerprint),
-        planted_at: state.as_ref().map(|s| s.planted_at.as_str()),
-        channels: state
+        phase: phase_name(recorded.as_ref()),
+        fingerprint: recorded.as_ref().map(|r| r.fingerprint.clone()),
+        planted_at: recorded.as_ref().map(|r| r.planted_at.as_str()),
+        channels: recorded
             .as_ref()
-            .map(RehearsalState::redacted_channels)
+            .map(|r| r.channels.clone())
             .unwrap_or_default(),
         scan: None,
         removed: Vec::new(),
-        next_step: next_step(state.as_ref(), &here),
+        next_step: next_step(recorded.as_ref(), &here),
     };
-    emit(settings, true, &data, |style| match &state {
+    emit(settings, true, &data, |style| match &recorded {
         None => println!(
             "{}",
             style.marked(Mark::Info, "No rehearsal on this hidden volume.")
         ),
-        Some(s) => {
+        Some(r) => {
             println!(
                 "{}",
                 style.marked(
                     Mark::Info,
                     format_args!(
                         "Rehearsal {} planted at {} ({})",
-                        s.fingerprint(),
-                        s.planted_at,
-                        data.phase
+                        r.fingerprint, r.planted_at, data.phase
                     )
                 )
             );
             print_channels(style, &data.channels);
-            for summary in &s.scans {
+            for summary in &r.scans {
                 println!(
                     "  {} scan at {}: {} on {}",
                     style.glyph(Mark::Bullet),
@@ -142,8 +140,8 @@ fn plant(
     rehearsal: &Rehearsal,
     args: &RehearsePlantArgs,
 ) -> ExitStatus {
-    let (state, here) = match rehearsal.plant(env, args.user.as_deref()) {
-        Ok(outcome) => (outcome.state, outcome.here),
+    let (planted, here) = match rehearsal.plant(env, args.user.as_deref()) {
+        Ok(outcome) => (outcome.rehearsal, outcome.here),
         Err(PlantError::Refused(refusal)) => {
             return report_refusal(settings.is_json(), COMMAND, &refusal);
         }
@@ -151,19 +149,19 @@ fn plant(
     };
     let data = RehearseData {
         phase: "planted",
-        fingerprint: Some(state.fingerprint()),
-        planted_at: Some(&state.planted_at),
-        channels: state.redacted_channels(),
+        fingerprint: Some(planted.fingerprint.clone()),
+        planted_at: Some(&planted.planted_at),
+        channels: planted.channels.clone(),
         scan: None,
         removed: Vec::new(),
-        next_step: next_step(Some(&state), &here),
+        next_step: next_step(Some(&planted), &here),
     };
     emit(settings, true, &data, |style| {
         println!(
             "{}",
             style.marked(
                 Mark::Pass,
-                format_args!("Planted canary {}", state.fingerprint())
+                format_args!("Planted canary {}", planted.fingerprint)
             )
         );
         print_channels(style, &data.channels);
@@ -188,21 +186,21 @@ fn scan(settings: &OutputSettings, rehearsal: &Rehearsal, args: &RehearseScanArg
         Err(failure) => return report_fail(settings.is_json(), failure),
     };
     let report = outcome.report;
-    let state = outcome.state;
+    let scanned = outcome.rehearsal;
     let here = outcome.here;
     let fingerprint = outcome.fingerprint;
     let exit = outcome.exit;
     let data = RehearseData {
-        phase: phase_name(state.as_ref()),
+        phase: phase_name(scanned.as_ref()),
         fingerprint: Some(fingerprint.clone()),
-        planted_at: state.as_ref().map(|s| s.planted_at.as_str()),
-        channels: state
+        planted_at: scanned.as_ref().map(|r| r.planted_at.as_str()),
+        channels: scanned
             .as_ref()
-            .map(RehearsalState::redacted_channels)
+            .map(|r| r.channels.clone())
             .unwrap_or_default(),
         scan: Some(&report),
         removed: Vec::new(),
-        next_step: next_step(state.as_ref(), &here),
+        next_step: next_step(scanned.as_ref(), &here),
     };
     emit(settings, exit.is_success(), &data, |style| {
         print_scan(style, &report, &fingerprint, &data.channels);
@@ -215,27 +213,24 @@ fn reset(settings: &OutputSettings, rehearsal: &Rehearsal) -> ExitStatus {
         Ok(outcome) => outcome,
         Err(failure) => return report_fail(settings.is_json(), failure),
     };
-    let state = outcome.state;
-    let removed = outcome.removed;
+    let fingerprint = outcome.fingerprint;
     let data = RehearseData {
         phase: "none",
-        fingerprint: Some(state.fingerprint()),
+        fingerprint: Some(fingerprint.clone()),
         planted_at: None,
         channels: Vec::new(),
         scan: None,
-        removed: removed
+        removed: outcome
+            .removed
             .iter()
-            .map(|p| p.display().to_string().replace(&state.token, "<canary>"))
+            .map(|p| p.display().to_string())
             .collect(),
         next_step: next_step(None, &Here::default()),
     };
     emit(settings, true, &data, |style| {
         println!(
             "{}",
-            style.marked(
-                Mark::Pass,
-                format_args!("Removed rehearsal {}", state.fingerprint())
-            )
+            style.marked(Mark::Pass, format_args!("Removed rehearsal {fingerprint}"))
         );
         for path in &data.removed {
             println!("  removed {path}");
