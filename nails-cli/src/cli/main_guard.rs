@@ -24,9 +24,9 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Whether `command` must run as root.
 ///
-/// `activate --dry-run` is read-only (it is an alias for `check`), so it is
-/// exempt; every other activation, and deactivation and emergency teardown,
-/// require root.
+/// `activate --dry-run` is an alias for `check`, which keeps nothing it
+/// writes, so it is exempt; every other activation, and deactivation and
+/// emergency teardown, require root.
 pub fn requires_root(command: &Commands) -> bool {
     match command {
         Commands::Activate(args) => !args.dry_run,

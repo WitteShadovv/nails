@@ -634,7 +634,8 @@ fn json_report_lists_each_item_and_its_status() {
 
 /// Init runs on the decoy, so its next steps never send the operator to an
 /// editor there, never ask for a copy of the binary that is already running
-/// from the volume, and point at `check` as the read-only preview.
+/// from the volume, and point at `check` as the preview that leaves nothing
+/// behind.
 #[test]
 fn next_steps_keep_editing_and_copying_off_the_decoy() {
     let steps = next_steps(Path::new("/mnt/data"));
