@@ -319,6 +319,10 @@ _EXT_TYPES = frozenset({"ext2", "ext3", "ext4"})
 # EFI system partition and swap. Any other filesystem or volume it finds
 # (btrfs, xfs, f2fs, bcachefs, an encrypted or LVM volume) can be the root.
 _NOT_ROOT_TYPES = frozenset({"vfat", "swap"})
+# blkid(8)'s exit statuses: 2 when it finds nothing, 8 when its low-level probe
+# is ambivalent, finding more than one filesystem or volume signature.
+_BLKID_NOTHING_FOUND = 2
+_BLKID_AMBIVALENT = 8
 
 
 def _fs_type(
@@ -329,17 +333,35 @@ def _fs_type(
     none.
 
     ``blkid`` honours an offset and a size only in its low-level mode (``-p``),
-    which probes the superblock itself rather than a cache.
+    which probes the superblock itself rather than a cache. It exits 2 when it
+    finds nothing there. Any other failure raises rather than reading as
+    nothing found: above all an ambivalent probe (exit 8), which finds more
+    than one signature where it looks and cannot tell which one is in use, so
+    that place may hold the root.
     """
     cmd = [BLKID, "-p", "-o", "value", "-s", "TYPE"]
+    where = "in the image"
     if window is not None:
         start, size = window
         cmd += ["-O", str(start), "-S", str(size)]
+        where = f"in the partition at byte {start}"
     cmd.append(str(image))
     try:
         return _run(cmd).stdout.strip()
-    except subprocess.CalledProcessError:
-        return ""
+    except subprocess.CalledProcessError as failed:
+        if failed.returncode == _BLKID_NOTHING_FOUND:
+            return ""
+        if failed.returncode == _BLKID_AMBIVALENT:
+            raise RuntimeError(
+                f"{image}: blkid finds more than one filesystem or volume "
+                f"signature {where} and cannot tell which one is in use (an "
+                "ambivalent probe), so it may hold the root; scan the root "
+                "filesystem's own image instead"
+            ) from None
+        raise RuntimeError(
+            f"{image}: blkid could not probe {where} (exit "
+            f"{failed.returncode}): {(failed.stderr or '').strip()}"
+        ) from None
 
 
 def partition_offset(image: str | os.PathLike[str]) -> int:
@@ -359,7 +381,9 @@ def partition_offset(image: str | os.PathLike[str]) -> int:
     and swap. A separate ``/boot`` next to a btrfs, xfs or encrypted root, or a
     ``/home`` next to the root, cannot be told apart from the root safely, so
     such a disk raises. A partition in which ``blkid`` finds nothing (a BIOS
-    boot partition, or one encrypted without a header) is not counted.
+    boot partition, or one encrypted without a header) is not counted; one
+    whose probe fails otherwise raises, an ambivalent one (more than one
+    signature in it) included, since it may hold the root.
     """
     try:
         proc = _run([MMLS, str(image)])
