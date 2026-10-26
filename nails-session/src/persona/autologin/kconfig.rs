@@ -69,7 +69,7 @@ pub(super) enum Frameworks {
 }
 
 /// The values of `User` in the groups `groups` after reading `sources` in
-/// order with the entry map of `frameworks`, in each language that reads
+/// order with the entry map of `frameworks`, in each language that may read
 /// them differently. A translated `User` in one of them counts as well,
 /// whatever comes after it: which value `readEntry()` then returns depends
 /// on more than the files tell. A value KConfig would expand (`[$e]`) counts
@@ -130,27 +130,22 @@ pub(super) fn every_user(sources: &[Source<'_>], groups: &[&str]) -> Vec<String>
     users
 }
 
-/// The languages to read `sources` in: the language each translation names,
-/// `en_US` and one that names none. Without a translation every language
-/// reads them alike, and one is enough.
-fn locales(sources: &[Source<'_>]) -> Vec<Vec<u8>> {
-    let mut locales: BTreeSet<Vec<u8>> = sources
+/// The languages to read `sources` in: `en_US`, one that no translation
+/// names, and the language each translation names. The empty locale stands
+/// for the one none names: it reads only the translations for no language
+/// (`[]`), which every language reads.
+fn locales(sources: &[Source<'_>]) -> BTreeSet<Vec<u8>> {
+    let mut locales = BTreeSet::from([Vec::new(), b"en_US".to_vec()]);
+    let tags = sources
         .iter()
         .flat_map(|source| lines(source.text))
         .filter(|line| !matches!(line.first(), None | Some(b'#' | b'[')))
         .filter_map(|line| match parse_key(line) {
-            Key::Set {
-                locale: Some(tag), ..
-            } if !tag.is_empty() => Some(tag.to_vec()),
+            Key::Set { locale, .. } => locale,
             _ => None,
-        })
-        .collect();
-    if !locales.is_empty() {
-        locales.insert(b"en_US".to_vec());
-    }
-    // No tag is empty: the empty locale stands for a language none names.
-    locales.insert(Vec::new());
-    locales.into_iter().collect()
+        });
+    locales.extend(tags.map(<[u8]>::to_vec));
+    locales
 }
 
 /// The lines of `text` as `parseConfig()` reads them: split at `\n` and
@@ -427,7 +422,9 @@ fn parse_key(line: &[u8]) -> Key<'_> {
             return Key::Broken;
         };
         let close = open + close;
-        if close > open + 1 && key[open + 1] == b'$' {
+        // A `$` right after the `[` makes them options, `[$i]` say; anything
+        // else, `[]` too, names a language.
+        if key[open + 1] == b'$' {
             for &option in &key[open + 2..close] {
                 match option {
                     b'i' => immutable = true,
@@ -549,9 +546,12 @@ fn decode(raw: &[u8]) -> (Vec<u8>, bool) {
                     out[r] = hex(text[i + 1], text[i + 2]);
                     i += 2;
                 }
+                // Too close to the end for two digits: the text ends with
+                // the `x`.
                 b'x' => {
                     out[r] = b'x';
-                    i = text.len() - 1;
+                    out.truncate(r + 1);
+                    return (out, true);
                 }
                 _ => {
                     out[r] = b'\\';

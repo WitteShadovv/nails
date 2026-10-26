@@ -177,8 +177,9 @@ fn parse_line(parsed: &mut Parsed, current: &mut Option<usize>, line: &str) -> b
         *current = Some(parsed.file.group_index(name));
         return true;
     }
-    // A key-value line: a `=` with a key before it.
-    let Some(eq) = text.find('=').filter(|&eq| eq > 0) else {
+    // A key-value line: a `=`, with a key before it that `key_name()`
+    // refuses when it is empty.
+    let Some(eq) = text.find('=') else {
         return false;
     };
     let Some(group) = *current else {
@@ -239,9 +240,9 @@ enum KeyName {
     Undecided,
 }
 
-/// `g_key_file_is_key_name()`: a name without brackets that does not end in
-/// a space, optionally followed by one `[locale]` of letters, digits and
-/// `-_.@`, and nothing after it.
+/// `g_key_file_is_key_name()`: a name that is not empty, holds no bracket and
+/// does not end in a space, optionally followed by one `[locale]` of letters,
+/// digits and `-_.@`, and nothing after it.
 fn key_name(key: &str) -> KeyName {
     let end = key.find(['[', ']']).unwrap_or(key.len());
     if end == 0 || key[..end].ends_with(' ') {
