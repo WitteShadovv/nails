@@ -84,7 +84,7 @@
     "enforcing": false,
     "memory": 2048,
     "enabled": false,
-    "upstreamUntil": "2027-11-17",
+    "upstreamUntil": "2027-12-01",
     "prepare": "fedora",
     "source": {
       "kind": "pending",

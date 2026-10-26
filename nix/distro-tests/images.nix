@@ -20,7 +20,12 @@
 #                  its download mirror, or null when no date is known. For a
 #                  Fedora release it is the end of life: release engineering
 #                  then stages the release to the archive, and its tree leaves
-#                  the main mirrors about two weeks later. A nix-vm-test pin is
+#                  the main mirrors about two weeks later. An arch-boxes build
+#                  is dated 80 days after it was built, inside the 90 days
+#                  after which arch-boxes deletes a release; to move to a newer
+#                  build, set source.release to its date (or "latest") and
+#                  then run `repin`, which re-resolves a dated release as it
+#                  stands. A nix-vm-test pin is
 #                  a dated upstream URL too, which its mirror can prune: the
 #                  weekly link check probes the URL nix-vm-test pins at the
 #                  locked revision, and a newer lock repins it. A self-hosted
