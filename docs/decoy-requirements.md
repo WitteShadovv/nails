@@ -443,6 +443,17 @@ during it; `nails deactivate` unmounts them before the way back (see
 [`nails rehearse`](operator-guide.md#rehearsing-before-you-rely-on-it) scans
 every mounted disk for its canary.
 
+In the `fresh-home` persona activation itself writes into an upper, before
+the overlay over it is mounted: it makes your home there at the first entry,
+with the directories missing on the way to it. These writes pass through no
+overlay, so activation looks up and makes each of those directories inside
+the upper without following a symbolic link. A hidden session that replaced
+`/home`, or a directory below it on the way to your home, with a link (to
+`/var/home`, say, or a relative one) would otherwise have the new home made
+wherever the link leads, which can be the decoy disk. While such a link
+stands there, activation is refused and makes nothing (see
+[Persona modes](configuration.md#persona-modes)).
+
 ## Session-time records
 
 Some records do not hold what the session did, only that the machine was

@@ -197,7 +197,13 @@ account:
 - `fresh-home`: at the first entry, activation creates the operator's home in
   the upper as an opaque directory, so nothing of the decoy home shows through.
   It stays the hidden home at every later entry. The operator is the account
-  that ran `sudo`, so activation must run through `sudo`.
+  that ran `sudo`, so activation must run through `sudo`. Activation makes the
+  home, and each directory missing on the way to it, only through directories
+  of that upper and never follows a symbolic link there. A hidden session may
+  have replaced `/home`, or a directory below it on the way to the home, with
+  a link (to `/var/home`, say), and the link could lead the new home onto the
+  decoy disk: activation is then refused, makes nothing, and names the link.
+  Delete it from the upper on the hidden volume and activate again.
 
 Test the mode you choose on your own machine before trusting it.
 
