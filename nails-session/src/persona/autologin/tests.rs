@@ -1388,6 +1388,7 @@ fn glob_matches_as_glib_does() {
     for (pattern, text, matches) in [
         ("seat0", "seat0", true),
         ("*", "seat0", true),
+        ("**", "seat0", true),
         ("**", "", true),
         ("s*t0", "seat0", true),
         ("s*0*", "seat0", true),

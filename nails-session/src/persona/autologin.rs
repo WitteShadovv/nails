@@ -385,34 +385,29 @@ fn seat_value<'a>(config: &'a keyfile::KeyFile, seat: &str, key: &str) -> Option
 }
 
 /// `g_pattern_match_simple()`: `*` matches any run of characters, `?` any
-/// one character.
+/// one character. Each loop runs over the pattern or the text once.
 fn glob_matches(pattern: &str, text: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
     let text: Vec<char> = text.chars().collect();
-    let (mut p, mut t) = (0, 0);
-    // The last `*` seen and where in the text it began to match.
-    let mut star: Option<(usize, usize)> = None;
-    while t < text.len() {
-        match pattern.get(p) {
-            Some('*') => {
-                star = Some((p, t));
-                p += 1;
+    // Whether the pattern read so far matches the first `n` characters of the
+    // text, for each `n`.
+    let mut matches = vec![false; text.len() + 1];
+    matches[0] = true;
+    for c in pattern.chars() {
+        if c == '*' {
+            // A run of any length carries each match on.
+            for n in 1..=text.len() {
+                matches[n] |= matches[n - 1];
             }
-            Some(&c) if c == '?' || c == text[t] => {
-                p += 1;
-                t += 1;
+        } else {
+            // One character more, from the end, so that each step reads the
+            // matches before it.
+            for n in (1..=text.len()).rev() {
+                matches[n] = matches[n - 1] && (c == '?' || c == text[n - 1]);
             }
-            _ => match star {
-                Some((star_p, star_t)) => {
-                    star = Some((star_p, star_t + 1));
-                    p = star_p + 1;
-                    t = star_t + 1;
-                }
-                None => return false,
-            },
+            matches[0] = false;
         }
     }
-    pattern[p..].iter().all(|&c| c == '*')
+    matches[text.len()]
 }
 
 /// The regular files of `dir` whose names `keep` accepts, sorted by the
