@@ -82,6 +82,13 @@ of this changelog for that version becomes the release notes word for word, and
   1.26.28, which upgrading VeraCrypt does not repair: if you rely on deniability, recreate the
   container and its hidden volume with 1.26.29 or later, away from the decoy, then securely erase
   the old container.
+- Development: the `gui/` workspace, where the graphical interface will be built, gets its
+  guardrails before any toolkit dependency lands. Its graph is checked against a cargo-deny policy
+  of its own, `gui/deny.toml`, wherever `deny.toml` is checked, and cargo-vet is part of the CI gate
+  for it: a third-party crate that no audit or recorded exemption covers fails the pull request that
+  brings it in. Its tests are held to a line-coverage floor of 85%, the file size and orphan module
+  checks now cover it and the `setup/` workspace, and `nix build .#nails-gui` builds its binary,
+  still a placeholder that draws no window.
 
 ### Changed
 
