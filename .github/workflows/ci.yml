@@ -44,6 +44,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      testdata: ${{ steps.filter.outputs.testdata }}
       fuzz: ${{ steps.filter.outputs.fuzz }}
       side: ${{ steps.filter.outputs.side }}
       deps: ${{ steps.filter.outputs.deps }}
@@ -129,10 +130,13 @@ jobs:
       - name: Check for orphan (undeclared) modules
         run: ./scripts/check-orphan-modules.sh
 
+  # The tests of the workspace under coverage, and its doctests. It is the one
+  # job the testdata filter runs: the files outside the crates that the tests
+  # read, such as the JSON schemas and the docs they check.
   rust:
     name: rust
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.testdata == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
