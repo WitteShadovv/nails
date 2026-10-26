@@ -11,17 +11,23 @@
 //! after another NUL the decoy's mount table (a typical one when it is
 //! missing). The target checks that:
 //!
-//! - every swap entry whose device systemd would activate is masked, under
-//!   the name systemd-fstab-generator gives its unit (the model in
-//!   `nails_fuzz::systemd`);
-//! - every masked mount entry is masked under the names systemd gives its
-//!   `.mount` and `.automount` units;
+//! - every swap entry whose device systemd would activate is masked or
+//!   skipped, under the name systemd-fstab-generator gives its unit (the model
+//!   in `nails_fuzz::systemd`);
+//! - every mount entry kept off is masked or skipped under the names systemd
+//!   gives its `.mount` and `.automount` units: an automount skipped with its
+//!   mount masked;
+//! - a skip waits for a device only while that device is there, and a mask
+//!   that leaves a boot target unreached names a device that is not;
 //! - an entry bound or overlaid in the next root has a plain absolute path;
 //! - an entry that a link the hidden session left leads into the hidden
-//!   volume (decided as redirected) is masked under those same names, never
+//!   volume (decided as redirected) is kept off under those same names, never
 //!   left to the bind of the volume;
+//! - the fstab decided twice keeps off what deciding it once does;
 //! - every crypttab device that NAILS resolves is the node
 //!   systemd-cryptsetup-generator opens.
+//!
+//! Every entry is decided twice, with every device there and with none.
 
 #![no_main]
 
@@ -29,7 +35,9 @@ use libfuzzer_sys::fuzz_target;
 use nails_base::crypttab::parse_crypttab;
 use nails_fuzz::systemd::{UnitName, fstab_node_to_udev_node, unit_name_from_path};
 use nails_session::session::fstab::{FstabEntry, parse_fstab};
-use nails_session::session::policy::{Decision, decide, decide_all, decide_redirected, masks};
+use nails_session::session::policy::{
+    Decision, decide, decide_all, decide_redirected, runtime_units,
+};
 use nails_teardown::mountinfo::parse_mountinfo;
 use std::path::{Component, Path};
 
@@ -56,26 +64,39 @@ fuzz_target!(|data: &[u8]| {
     let mounts = parse_mountinfo(parts.get(2).map_or(MOUNTS, String::as_str));
     let hidden = Path::new(HIDDEN_ROOT);
 
-    let decisions = decide_all(&fstab, &mounts, hidden);
-    assert_eq!(decisions.len(), fstab.len());
-    let masked = masks(&fstab, &decisions);
-    for entry in &fstab {
-        let decision = decide(entry, &mounts, hidden);
-        check(entry, &decision);
-        for unit in decision.masked_units() {
-            assert!(masked.contains(unit), "{unit}");
-        }
-        let redirected = decide_redirected(entry, &mounts, hidden);
-        check(entry, &redirected);
-        if entry.file.starts_with(hidden)
-            && plain_absolute(&entry.file)
-            && !entry.is_swap()
-            && !entry.is_virtual()
-        {
-            assert!(
-                matches!(redirected, Decision::Mask { .. }),
-                "{entry:?} led into the hidden volume: {redirected:?}"
-            );
+    for there in [true, false] {
+        let present = |_: &Path| there;
+        let decisions = decide_all(&fstab, &mounts, hidden, &present);
+        assert_eq!(decisions.len(), fstab.len());
+        let kept = runtime_units(&fstab, &decisions);
+        let twice: Vec<Decision> = decisions.iter().chain(&decisions).cloned().collect();
+        let doubled: Vec<FstabEntry> = fstab.iter().chain(&fstab).cloned().collect();
+        assert_eq!(runtime_units(&doubled, &twice), kept);
+        let skipped = |unit: &String| kept.skips.iter().any(|skip| skip.units.contains(unit));
+        for entry in &fstab {
+            let decision = decide(entry, &mounts, hidden, &present);
+            check(entry, &decision, there);
+            for unit in decision.masked_units() {
+                assert!(kept.masks.contains(unit), "{unit}");
+            }
+            for unit in decision.skip().map_or(&[][..], |skip| &skip.units) {
+                assert!(
+                    skipped(unit) || kept.masks.contains(unit),
+                    "{unit} is neither skipped nor masked"
+                );
+            }
+            let redirected = decide_redirected(entry, &mounts, hidden, &present);
+            check(entry, &redirected, there);
+            if entry.file.starts_with(hidden)
+                && plain_absolute(&entry.file)
+                && !entry.is_swap()
+                && !entry.is_virtual()
+            {
+                assert!(
+                    matches!(redirected, Decision::Mask { .. } | Decision::Skip { .. }),
+                    "{entry:?} led into the hidden volume: {redirected:?}"
+                );
+            }
         }
     }
 
@@ -94,9 +115,23 @@ fuzz_target!(|data: &[u8]| {
     }
 });
 
-/// The decision for `entry` keeps the hidden systemd off the decoy's disks
-/// as systemd names its units.
-fn check(entry: &FstabEntry, decision: &Decision) {
+/// The decision for `entry`, made with every device there or with none
+/// (`there`), keeps the hidden systemd off the decoy's disks as systemd names
+/// its units.
+fn check(entry: &FstabEntry, decision: &Decision, there: bool) {
+    match decision {
+        Decision::Mask { unreached, .. } => {
+            // A mask leaves a target unreached only for a device not there.
+            if let Some(unreached) = unreached {
+                assert!(!there, "{entry:?}: {unreached:?} with every device there");
+            }
+        }
+        Decision::Skip { skip, .. } => {
+            // A skip waits for no device that is not there.
+            assert!(there || skip.device.is_none(), "{entry:?}: {skip:?}");
+        }
+        _ => {}
+    }
     if entry.is_swap() {
         if entry.spec.contains('\0') {
             return;
@@ -106,21 +141,31 @@ fn check(entry: &FstabEntry, decision: &Decision) {
         if !device.starts_with('/') {
             return;
         }
-        let Decision::Mask { units, .. } = decision else {
-            panic!(
-                "swap {:?} on {device} is not masked: {decision:?}",
+        let units = match decision {
+            Decision::Mask { units, .. } => units,
+            Decision::Skip { skip, .. } => &skip.units,
+            _ => panic!(
+                "swap {:?} on {device} is neither masked nor skipped: {decision:?}",
                 entry.spec
-            );
+            ),
         };
         expect_unit(&units[0], &device, ".swap");
         return;
     }
+    let file = entry.file.to_string_lossy();
     match decision {
         Decision::Mask { units, .. } => {
-            let file = entry.file.to_string_lossy();
             expect_unit(&units[0], &file, ".mount");
             if entry.is_automount() {
                 expect_unit(&units[1], &file, ".automount");
+            }
+        }
+        Decision::Skip { skip, masked, .. } => {
+            if entry.is_automount() {
+                expect_unit(&skip.units[0], &file, ".automount");
+                expect_unit(&masked[0], &file, ".mount");
+            } else {
+                expect_unit(&skip.units[0], &file, ".mount");
             }
         }
         Decision::ReadOnlyBind { target } | Decision::Overlay { target } => {

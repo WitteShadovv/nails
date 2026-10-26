@@ -236,7 +236,7 @@ and checks more than that nothing panics or hangs:
 | --- | --- | --- |
 | `mountinfo` | a mount table and its overlay options | entries printed back as the kernel prints them parse the same; overlay layers survive NAILS's escaping and the kernel's; a lookup answers with a mount at the path asked for |
 | `utab` | libmount's `utab` and two mount tables | each line reads as libmount 2.42 reads it; across a switch and on the way back only whole input lines survive, changed at most in their ID |
-| `fstab_crypttab` | a decoy's fstab, crypttab and mount table | every swap and mount the session masks is masked under the unit name systemd generates; a crypttab device is the node systemd opens |
+| `fstab_crypttab` | a decoy's fstab, crypttab and mount table | every swap and mount the session keeps off is masked or skipped under the unit name systemd generates, a skip waits for no device that is not there, and deciding the fstab twice keeps off what deciding it once does; a crypttab device is the node systemd opens |
 | `nixos_reference` | `configuration.nix` and udev's record of the hidden volume's partition | every reference lies in the file; ASCII case changes nothing; the scan reads forward only |
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `autologin` | GDM's, SDDM's, Plasma Login Manager's and LightDM's configuration with drop-ins | the accounts listed are the ones each display manager may log in, read with its parser in each order its locale may sort the drop-ins in |
