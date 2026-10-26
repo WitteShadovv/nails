@@ -573,9 +573,15 @@ session deleted (a whiteout in the upper) does not. Install or cancel a pending
 update on the decoy before you activate. A link a hidden session staged stays
 in the upper: the way back is a soft-reboot into the decoy root, which does not
 show the upper, so the decoy starts as usual, and the next activation is
-refused until `nails discard` deletes the link, as the refusal says. The check
-runs before the switch, so it does not see an update staged in the seconds
-between the check and the soft-reboot.
+refused until `nails discard` deletes the link, as the refusal says.
+
+The check runs before activation prepares the hidden root, so it does not see
+an update staged after it and before the service manager starts again in the
+hidden root. On every family that window spans the setup of the hidden root and
+the soft-reboot, which stops the decoy's services before it switches. On NixOS,
+unless activation runs with `--overlay-only`, it also spans the build of the
+hidden system, the copy of its closure onto the hidden volume and its
+activation, which can take minutes.
 
 ## Decoys joined to a domain
 
