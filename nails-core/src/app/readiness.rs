@@ -378,15 +378,17 @@ fn attach_refusal<F: Filesystem>(
 
 /// What the fstab policy would do with each filesystem in the fstab of the
 /// decoy root at `root` (`/`, but in tests), its mount points resolved in that
-/// root as activation resolves them, given the decoy's mount table `mounts`.
-/// An entry the policy leaves as it is, such as the root itself, is not
-/// listed.
+/// root as activation resolves them, given the decoy's mount table `mounts`,
+/// and with the decoy's mount, swap and automount units outside its fstab. An
+/// entry the policy leaves as it is, such as the root itself, is not listed.
 fn decoy_filesystems(root: &Path, mounts: &[MountEntry], hidden_root: &Path) -> Vec<String> {
-    use crate::session::{fstab, policy};
+    use crate::session::{checks, fstab, policy};
     let text = nails_teardown::whole_root::nextroot::read_in_root(root, Path::new("/etc/fstab"))
         .unwrap_or_default();
     let entries = fstab::parse_in_root(&text, root);
-    policy::decide_all(&entries, mounts, hidden_root, &policy::device_present)
+    let mut decisions = policy::decide_all(&entries, mounts, hidden_root, &policy::device_present);
+    decisions.extend(checks::decoy_units(root, mounts, hidden_root));
+    decisions
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
         .map(policy::Decision::describe)
