@@ -262,8 +262,10 @@ mod kernel_tests {
                 assert_eq!(value["schema_version"], 2, "{output:?}");
                 assert_eq!(value["command"], "activate", "{output:?}");
                 // The pre-flight checks refuse, so the one envelope is a
-                // failure, and `ok` agrees with the exit code.
+                // failure with the refusal's own code, and `ok` agrees with
+                // the exit code.
                 assert_eq!(value["ok"], false, "{output:?}");
+                assert_eq!(value["error"]["code"], "not_ready", "{output:?}");
                 assert!(!matches!(output.status.code(), Some(0 | 9)), "{output:?}");
                 // No line-stream tag survives the version-2 contract.
                 assert!(value.get("type").is_none(), "{output:?}");
