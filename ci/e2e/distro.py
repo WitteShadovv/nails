@@ -12,6 +12,10 @@ is a single entry in ``nix/distro-tests/images.nix`` -- this module and the
 workflow enumerate whatever the metadata reports. The matrix is bounded so the
 total number of parallel jobs (distributions times their shards) never exceeds a
 ceiling, because every job holds a dedicated KVM runner.
+
+The metadata also names the fact probes of the families not admitted yet whose
+image is pinned. A dispatch can run those instead of the smokes
+(:func:`plan_probe_matrix`), one job per probe.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import plan
 
@@ -43,12 +47,15 @@ class DistroMetadata:
 
     ``distros`` is every distribution name, in declaration order. ``scenarios``
     maps each distribution to its smoke scenario attribute names, and
-    ``timeouts`` maps each scenario to its effective timeout in seconds.
+    ``timeouts`` maps each scenario, and each probe attribute, to its effective
+    timeout in seconds. ``probes`` maps each probe a run can boot to its
+    attribute name.
     """
 
     distros: list[str]
     scenarios: dict[str, list[str]]
     timeouts: dict[str, int]
+    probes: dict[str, str] = field(default_factory=dict)
 
     def resolve(self, requested: Sequence[str]) -> list[str]:
         """Return the requested distributions, or all of them when none given."""
@@ -59,6 +66,21 @@ class DistroMetadata:
         for name in requested:
             if name not in known:
                 raise DistroError(f"unknown distribution: {name}")
+            if name not in resolved:
+                resolved.append(name)
+        return resolved
+
+    def resolve_probes(self, requested: Sequence[str]) -> list[str]:
+        """Return the requested probes, or every probe when none are named."""
+        if not self.probes:
+            raise DistroError("no probe can run: no image of the probe table is pinned")
+        if not requested:
+            return list(self.probes)
+        resolved: list[str] = []
+        for name in requested:
+            if name not in self.probes:
+                known = ", ".join(self.probes)
+                raise DistroError(f"unknown probe: {name} (probes: {known})")
             if name not in resolved:
                 resolved.append(name)
         return resolved
@@ -92,7 +114,16 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
         for scenario in scenarios[distro]:
             if scenario not in timeouts:
                 raise DistroError(f"distro metadata has no timeout for {scenario}")
-    return DistroMetadata(distros=distros, scenarios=scenarios, timeouts=timeouts)
+    raw_probes = payload.get("probes", {})
+    if not isinstance(raw_probes, Mapping):
+        raise DistroError("distro metadata probes must map a probe to its attribute")
+    probes = {str(name): str(attr) for name, attr in raw_probes.items()}
+    for attr in probes.values():
+        if attr not in timeouts:
+            raise DistroError(f"distro metadata has no timeout for {attr}")
+    return DistroMetadata(
+        distros=distros, scenarios=scenarios, timeouts=timeouts, probes=probes
+    )
 
 
 def load_distro_metadata(attr: str = DISTRO_METADATA_ATTR) -> DistroMetadata:
@@ -173,4 +204,30 @@ def plan_distro_matrix(
                     "timeout": plan.shard_timeout_minutes(load),
                 }
             )
+    return {"include": include}
+
+
+def plan_probe_matrix(
+    metadata: DistroMetadata, requested: Sequence[str] = ()
+) -> dict[str, list[dict[str, object]]]:
+    """Return a GitHub matrix (``{"include": [...]}``) for a probe run.
+
+    A probe is a single host driver, so each is one job with one shard, in the
+    same shape as a smoke job. ``seconds`` is the probe's own time limit, which
+    the job puts on its driver; ``timeout`` is the job's, in minutes.
+    """
+    include: list[dict[str, object]] = []
+    for name in metadata.resolve_probes(requested):
+        attr = metadata.probes[name]
+        seconds = metadata.timeouts[attr]
+        include.append(
+            {
+                "distro": name,
+                "index": 1,
+                "count": 1,
+                "tests": [attr],
+                "timeout": plan.shard_timeout_minutes(seconds),
+                "seconds": seconds,
+            }
+        )
     return {"include": include}

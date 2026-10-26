@@ -82,6 +82,23 @@ let
       (vmPkgs.callPackage (nix-vm-test + "/archlinux") { inherit generic system; }).prepareArchlinuxImage;
   };
 
+  # Whether an entry's image can be had today: a release nix-vm-test pins, a
+  # hash-pinned upstream image, or a mirrored asset once the mirror is set and
+  # the entry names its asset. A pending entry has none. `fetchImage` fetches
+  # exactly these, and the probe metadata lists only the probes they boot.
+  imageAvailable =
+    entry:
+    let
+      inherit (entry) source;
+      kind = source.kind or "nix-vm-test";
+    in
+    if kind == "nix-vm-test" || kind == "upstream" then
+      true
+    else if kind == "mirror" then
+      mirrors.urlFor { inherit (source) family asset; } != null && source.sha256 != null
+    else
+      false;
+
   # The upstream (or mirrored) cloud image, by hash, or null when the entry is
   # not pinned or hosted yet (so the caller can stage a buildable-later entry).
   fetchImage =
@@ -89,23 +106,19 @@ let
     let
       inherit (entry) source;
     in
-    if source.kind == "upstream" then
+    if !(imageAvailable entry) then
+      null
+    else if source.kind == "upstream" then
       vmPkgs.fetchurl {
         inherit (source) url name;
         hash = source.sha256;
       }
     else if source.kind == "mirror" then
-      let
+      vmPkgs.fetchurl {
         url = mirrors.urlFor { inherit (source) family asset; };
-      in
-      if url != null && source.sha256 != null then
-        vmPkgs.fetchurl {
-          inherit url;
-          hash = source.sha256;
-          name = source.asset;
-        }
-      else
-        null
+        hash = source.sha256;
+        name = source.asset;
+      }
     else
       null;
 
@@ -140,6 +153,8 @@ let
     '';
 in
 {
+  inherit imageAvailable;
+
   # Build one distribution VM test.
   #
   #   entry      one value from images.nix.

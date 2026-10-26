@@ -6,8 +6,10 @@
 # py/probe_facts.py in it, soft-reboots it once and runs the queries that follow
 # the soft-reboot. It writes the facts as <probe>.json, the record the matching
 # probe/<probe>.json fixture holds (see probe/README.md), and the raw output of
-# every query beside it. The build server has no KVM, so a probe is not part
-# of CI; it is a host driver, run by hand on a KVM-capable host.
+# every query beside it. A probe is a host driver: a maintainer runs it on a
+# KVM-capable host, or dispatches distro-e2e.yml with the probe suite, which
+# runs it on a hosted KVM runner and uploads the JSON. Nothing runs a probe
+# unasked.
 { pkgs, nix-vm-test }:
 let
   inherit (pkgs) lib;
@@ -45,6 +47,10 @@ let
     root = ./py;
     fileset = ./py/probe_facts.py;
   };
+
+  # The seconds a probe run gets, from the boot to the JSON, soft-reboot
+  # included; a hosted run stops the driver after them.
+  timeout = 1200;
 
   # Boot the stock image (no nails share, no activation), run the queries and
   # write the record. Every query runs in a subshell with its status discarded
@@ -121,4 +127,12 @@ let
       target = "driver";
     };
 in
-lib.mapAttrs probeFor probes
+{
+  # Probe name -> its host driver.
+  drivers = lib.mapAttrs probeFor probes;
+  # The probes whose image is pinned or hosted, so that a run can boot them.
+  runnable = builtins.attrNames (
+    lib.filterAttrs (_: probe: distroVm.imageAvailable probe.entry) probes
+  );
+  inherit timeout;
+}

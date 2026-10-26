@@ -15,6 +15,11 @@ name: Distro E2E
 # at or below eight parallel jobs (distributions times their shards), planned by
 # `python3 -m ci.e2e distro-plan`. Adding a distribution is one entry in
 # nix/distro-tests/images.nix -- this workflow enumerates whatever it reports.
+#
+# A dispatch or call with `suite` set to probe runs the fact probes instead
+# (nix/distro-tests/probe.nix): each boots the stock image of a family not
+# admitted yet without nails, and its job uploads the facts it records as a
+# JSON artifact, the record of the matching nix/distro-tests/probe fixture.
 
 on:
   schedule:
@@ -27,6 +32,14 @@ on:
     types: [labeled]
   workflow_dispatch:
     inputs:
+      suite:
+        description: >-
+          What the VM jobs run: the smoke scenarios, or the fact probes of the
+          images not admitted yet, each uploading its facts as JSON (distros
+          then names probes, such as fedora-44-enforcing)
+        type: choice
+        default: smoke
+        options: [smoke, probe]
       runner:
         description: >-
           runs-on for the VM jobs, as JSON: "ubuntu-26.04" or a label list such
@@ -35,8 +48,9 @@ on:
         default: '"ubuntu-26.04"'
       distros:
         description: >-
-          Space-separated distributions to run (e.g. "debian-13 ubuntu-24.04");
-          empty runs every distribution in the image table.
+          Space-separated distributions to run (e.g. "debian-13 ubuntu-24.04"),
+          or probes with the probe suite; empty runs every distribution in the
+          image table, or every probe whose image is pinned.
         type: string
         default: ""
       max-jobs:
@@ -45,6 +59,9 @@ on:
         default: 8
   workflow_call:
     inputs:
+      suite:
+        type: string
+        default: smoke
       runner:
         type: string
         default: '"ubuntu-26.04"'
@@ -70,8 +87,9 @@ concurrency:
   # request's run in progress. A scheduled or dispatched run waits for an
   # earlier run of the same event and ref instead; GitHub keeps one waiting
   # run per group, so a newer run replaces one that has not started. A call
-  # counts as its caller's event.
-  group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') && format('-{0}', github.run_id) || '' }}
+  # counts as its caller's event. A probe run waits in a group of its own, so
+  # it neither waits for a smoke run of the same ref nor replaces one.
+  group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') && format('-{0}', github.run_id) || '' }}${{ inputs.suite == 'probe' && '-probe' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -87,6 +105,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     outputs:
+      suite: ${{ steps.select.outputs.suite }}
       runner: ${{ steps.select.outputs.runner }}
       matrix: ${{ steps.matrix.outputs.matrix }}
 
@@ -96,13 +115,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Select runner and job ceiling
+      - name: Select suite, runner and job ceiling
         id: select
         env:
+          SUITE_INPUT: ${{ inputs.suite }}
           RUNNER_INPUT: ${{ inputs.runner }}
           MAX_JOBS_INPUT: ${{ inputs.max-jobs }}
         run: |
           set -euo pipefail
+          suite=${SUITE_INPUT:-smoke}
+          if [ "$suite" != smoke ] && [ "$suite" != probe ]; then
+            echo "::error::suite must be smoke or probe, got '$suite'"
+            exit 1
+          fi
           runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-26.04\"}")
           max_jobs=${MAX_JOBS_INPUT:-8}
           if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
@@ -110,10 +135,11 @@ jobs:
             exit 1
           fi
           {
+            echo "suite=$suite"
             echo "runner=$runner"
             echo "max-jobs=$max_jobs"
           } >> "$GITHUB_OUTPUT"
-          echo "Runner: $runner, max jobs: $max_jobs"
+          echo "Suite: $suite, runner: $runner, max jobs: $max_jobs"
 
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
@@ -121,22 +147,29 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
       # Built once here, so the VM jobs substitute it from the cache instead
-      # of each compiling the static binary (when a cache is configured).
+      # of each compiling the static binary (when a cache is configured). A
+      # probe boots no nails.
       - name: Build nails
+        if: steps.select.outputs.suite == 'smoke'
         run: nix build -L --no-link .#nails
 
       - name: Plan the distro matrix
         id: matrix
         env:
           DISTROS: ${{ inputs.distros }}
+          SUITE: ${{ steps.select.outputs.suite }}
           MAX_JOBS: ${{ steps.select.outputs.max-jobs }}
         run: |
           set -euo pipefail
           read -ra distros <<< "$DISTROS"
-          matrix=$(python3 -m ci.e2e distro-plan "${distros[@]}" --max-jobs "$MAX_JOBS")
+          matrix=$(python3 -m ci.e2e distro-plan "${distros[@]}" --suite "$SUITE" --max-jobs "$MAX_JOBS")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          heading="Distro E2E plan"
+          if [ "$SUITE" = probe ]; then
+            heading="Distro E2E probe plan"
+          fi
           {
-            echo "## Distro E2E plan"
+            echo "## $heading"
             echo
             echo "| Distribution | Shard | Scenarios | Timeout (min) |"
             echo "|---|---|---|---:|"
@@ -166,6 +199,7 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
       - name: Run the distro smoke scenarios
+        if: needs.plan.outputs.suite == 'smoke'
         env:
           TESTS: ${{ join(matrix.tests, ' ') }}
         run: |
@@ -182,6 +216,58 @@ jobs:
           done
           nix build -L --no-link "${attrs[@]}"
 
+      # A probe is a host driver, so its job builds the driver and runs it here,
+      # as the oracle nightly runs its test, and every run boots the image
+      # afresh. Outside the Nix sandbox the driver keeps the VM state in
+      # XDG_RUNTIME_DIR, falling back to TMPDIR, and XDG_RUNTIME_DIR is a small
+      # tmpfs in RAM on a hosted runner, so both name a directory on the root
+      # disk. The driver writes <probe>.json and <probe>.raw.json where
+      # NAILS_PROBE_OUT names, and the step adds its log and puts the facts in
+      # the job summary.
+      - name: Run the probes
+        if: needs.plan.outputs.suite == 'probe'
+        env:
+          TESTS: ${{ join(matrix.tests, ' ') }}
+          PROBE_SECONDS: ${{ matrix.seconds }}
+        run: |
+          set -euo pipefail
+          read -ra tests <<< "$TESTS"
+          out="$RUNNER_TEMP/probe"
+          scratch="$RUNNER_TEMP/vm"
+          mkdir -p "$out" "$scratch"
+          for test in "${tests[@]}"; do
+            name=${test%-probe}
+            driver="$RUNNER_TEMP/$test"
+            # Quote the attribute, as above: a name may contain a dot.
+            nix build --print-build-logs --out-link "$driver" \
+              ".#legacyPackages.x86_64-linux.e2e-distro.\"$test\""
+            (
+              cd "$scratch"
+              TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" NAILS_PROBE_OUT="$out" \
+                timeout "$PROBE_SECONDS" "$driver/bin/test-driver" </dev/null
+            ) 2>&1 | tee "$out/$name.log"
+            jq -e '.recorded == true' "$out/$name.json" >/dev/null
+            {
+              echo "### Probe \`$name\`"
+              echo
+              echo '```json'
+              cat "$out/$name.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # The artifact holds the record, the raw output of every query and the
+      # driver's log; a probe that failed before its record still leaves the
+      # log.
+      - name: Upload the probe facts
+        if: needs.plan.outputs.suite == 'probe' && !cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: probe-${{ matrix.distro }}
+          path: ${{ runner.temp }}/probe/
+          if-no-files-found: warn
+          retention-days: 30
+
   distro-result:
     name: distro-result
     needs: [plan, distro]
@@ -196,6 +282,7 @@ jobs:
     steps:
       - name: Report the outcome
         env:
+          SUITE: ${{ needs.plan.outputs.suite }}
           PLAN_RESULT: ${{ needs.plan.result }}
           DISTRO_RESULT: ${{ needs.distro.result }}
         run: |
@@ -212,6 +299,10 @@ jobs:
             exit 1
           fi
           if [ "$DISTRO_RESULT" != success ] && [ "$DISTRO_RESULT" != skipped ]; then
-            echo "::warning::One or more distro smoke scenarios failed."
+            if [ "$SUITE" = probe ]; then
+              echo "::warning::One or more distro probes failed."
+            else
+              echo "::warning::One or more distro smoke scenarios failed."
+            fi
           fi
           echo "Distro smoke tier finished."

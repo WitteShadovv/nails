@@ -14,8 +14,8 @@ whether a 9p share works while SELinux is enforcing, the `os-release` values a
 derivative carries, and what one plain soft-reboot changes.
 
 These facts need a booted VM, which needs KVM, so they are recorded on a
-KVM-capable host (the build server has none): one JSON file per probe, with
-`"recorded": false` until the probe has run on it.
+KVM-capable host or a hosted runner (the build server has none): one JSON file
+per probe, with `"recorded": false` until the probe has run on it.
 
 ## Files
 
@@ -162,3 +162,14 @@ cp /var/tmp/p/out/fedora-44.json nix/distro-tests/probe/
 
 A Fedora image also has the enforcing variant, `<image>-enforcing-probe`, which
 boots the same image with SELinux enforcing.
+
+Without a KVM host, dispatch `.github/workflows/distro-e2e.yml` with the probe
+suite: each named probe then runs on a hosted runner, and its job uploads the
+`probe-<probe>` artifact with `<probe>.json`, `<probe>.raw.json` and the
+driver's log (see [docs/ci.md](../../../docs/ci.md)). An empty `distros` runs
+every probe whose image is pinned.
+
+```bash
+gh workflow run distro-e2e.yml --ref <branch> -f suite=probe \
+  -f distros='fedora-44 fedora-44-enforcing arch-boxes'
+```
