@@ -492,25 +492,44 @@ fn the_encrypt_feature_of_an_ext4_or_f2fs_comes_from_its_superblock() {
     let source = RawSource::open(&path).unwrap();
     let encrypting = |start, format| encryption_feature(&source, start, format).unwrap();
 
-    assert!(!encrypting(0, "ext2/3/4"));
-    assert!(encrypting(64 << 10, "ext2/3/4"));
-    assert!(!encrypting(128 << 10, "f2fs"));
-    assert!(encrypting(192 << 10, "f2fs"));
-    assert!(!encrypting(256 << 10, "f2fs"));
+    assert_eq!(encrypting(0, "ext2/3/4"), Some(false));
+    assert_eq!(encrypting(64 << 10, "ext2/3/4"), Some(true));
+    assert_eq!(encrypting(128 << 10, "f2fs"), Some(false));
+    assert_eq!(encrypting(192 << 10, "f2fs"), Some(true));
+    assert_eq!(encrypting(256 << 10, "f2fs"), Some(false));
     // Each format's flags are its own: the f2fs flag is no ext4 flag.
-    assert!(!encrypting(192 << 10, "ext2/3/4"));
-    assert!(!encrypting(64 << 10, "f2fs"));
+    assert_eq!(encrypting(192 << 10, "ext2/3/4"), Some(false));
+    assert_eq!(encrypting(64 << 10, "f2fs"), Some(false));
     // No other format has the feature, whatever its bytes there.
     put(&mut file, 0xC84, &[0xFF; 4]);
     put(&mut file, 0x460, &[0xFF; 4]);
     file.sync_all().unwrap();
     let source = RawSource::open(&path).unwrap();
-    assert!(!encryption_feature(&source, 0, "xfs").unwrap());
-    assert!(!encryption_feature(&source, 0, "vfat").unwrap());
-    // A superblock the source ends inside, before its flags, counts as one
-    // with the feature.
-    assert!(encryption_feature(&source, (1 << 20) - 0x400, "ext2/3/4").unwrap());
-    assert!(encryption_feature(&source, (1 << 20) - 0x800, "f2fs").unwrap());
+    assert_eq!(encryption_feature(&source, 0, "xfs").unwrap(), Some(false));
+    assert_eq!(encryption_feature(&source, 0, "vfat").unwrap(), Some(false));
+    // A superblock the source ends inside, before its flags, shows nothing
+    // either way, by a byte as by the whole flags.
+    let ext4_flags = (1 << 20) - 0x460;
+    assert_eq!(
+        encryption_feature(&source, ext4_flags - 4, "ext2/3/4").unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        encryption_feature(&source, ext4_flags - 3, "ext2/3/4").unwrap(),
+        None
+    );
+    assert_eq!(
+        encryption_feature(&source, (1 << 20) - 0x400, "ext2/3/4").unwrap(),
+        None
+    );
+    assert_eq!(
+        encryption_feature(&source, (1 << 20) - 0x800, "f2fs").unwrap(),
+        None
+    );
+    assert_eq!(
+        encryption_feature(&source, (1 << 20) - 0x800, "xfs").unwrap(),
+        Some(false)
+    );
 }
 
 #[test]
@@ -545,12 +564,12 @@ fn the_size_and_compression_of_an_f2fs_come_from_its_superblock() {
     assert_eq!(size(128 << 10), Bytes(3 << 16));
     assert_eq!(size(192 << 10), Implausible);
 
-    assert!(!f2fs_compression(&source, 0).unwrap());
-    assert!(f2fs_compression(&source, 64 << 10).unwrap());
-    assert!(!f2fs_compression(&source, 128 << 10).unwrap());
-    // A superblock the source ends inside, before its flags, counts as one
-    // with the feature.
-    assert!(f2fs_compression(&source, (1 << 20) - 0x800).unwrap());
+    assert_eq!(f2fs_compression(&source, 0).unwrap(), Some(false));
+    assert_eq!(f2fs_compression(&source, 64 << 10).unwrap(), Some(true));
+    assert_eq!(f2fs_compression(&source, 128 << 10).unwrap(), Some(false));
+    // A superblock the source ends inside, before its flags, shows nothing
+    // either way.
+    assert_eq!(f2fs_compression(&source, (1 << 20) - 0x800).unwrap(), None);
 }
 
 #[test]

@@ -271,40 +271,44 @@ const EXT4_INCOMPAT: u64 = 0x400 + 0x60;
 const EXT4_FEATURE_ENCRYPT: u32 = 0x1_0000;
 
 /// Whether the 32-bit feature flags `at` bytes into the region at `start`
-/// carry `flag`. Flags the source ends before count as carrying it: what
-/// cannot be read is not shown to be verbatim.
-fn feature(source: &RawSource, start: u64, at: u64, flag: u32) -> io::Result<bool> {
+/// carry `flag`; `None` when the source ends before the flags, so they say
+/// nothing either way.
+fn feature(source: &RawSource, start: u64, at: u64, flag: u32) -> io::Result<Option<bool>> {
     let mut features = [0u8; 4];
     let read = source.read_at(&mut features, start.saturating_add(at))?;
-    Ok(read < features.len() || u32::from_le_bytes(features) & flag != 0)
+    Ok((read == features.len()).then(|| u32::from_le_bytes(features) & flag != 0))
 }
 
 /// Whether the f2fs at `start` was made with the compression feature
-/// (`mkfs.f2fs -O compression`), from its superblock's feature flags. A
-/// superblock that ends before its flags counts as one with the feature: what
-/// cannot be read is not shown to be verbatim.
+/// (`mkfs.f2fs -O compression`), from its superblock's feature flags; `None`
+/// when the source ends inside the superblock, before its flags.
 ///
 /// # Errors
 ///
 /// Propagates a read error.
-pub fn f2fs_compression(source: &RawSource, start: u64) -> io::Result<bool> {
+pub fn f2fs_compression(source: &RawSource, start: u64) -> io::Result<Option<bool>> {
     feature(source, start, F2FS_FEATURES, F2FS_FEATURE_COMPRESSION)
 }
 
 /// Whether the filesystem of `format` at `start` has the encrypt feature
 /// (fscrypt, which `mkfs.ext4 -O encrypt` or `mkfs.f2fs -O encrypt` sets),
 /// from its superblock's feature flags. An ext2/3/4 or f2fs with it stores the
-/// files of an encrypted directory encrypted. A superblock that ends before
-/// its flags counts as one with the feature; no other format has it.
+/// files of an encrypted directory encrypted; no other format has it. `None`
+/// when the source ends inside the superblock of an ext2/3/4 or f2fs, before
+/// its flags.
 ///
 /// # Errors
 ///
 /// Propagates a read error.
-pub fn encryption_feature(source: &RawSource, start: u64, format: &str) -> io::Result<bool> {
+pub fn encryption_feature(
+    source: &RawSource,
+    start: u64,
+    format: &str,
+) -> io::Result<Option<bool>> {
     match format {
         "ext2/3/4" => feature(source, start, EXT4_INCOMPAT, EXT4_FEATURE_ENCRYPT),
         "f2fs" => feature(source, start, F2FS_FEATURES, F2FS_FEATURE_ENCRYPT),
-        _ => Ok(false),
+        _ => Ok(Some(false)),
     }
 }
 

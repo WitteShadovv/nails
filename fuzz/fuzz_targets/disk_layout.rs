@@ -15,8 +15,9 @@
 //! At the start of the disk and of each partition it also reads what a
 //! rehearsal scan classifies a region by: its signature, the magic of a
 //! filesystem that can compress, whether an f2fs was made with compression,
-//! whether an ext4 or f2fs has the encrypt feature, and the size an ext4, xfs
-//! or f2fs superblock, a FAT, NTFS or exFAT boot sector or a swap header
+//! whether an ext4 or f2fs has the encrypt feature (or the image ends before
+//! its flags, as a partition in its last sector does), and the size an ext4,
+//! xfs or f2fs superblock, a FAT, NTFS or exFAT boot sector or a swap header
 //! records. None of them may fail on an image that reads fine anywhere, and
 //! each answers within its range.
 
@@ -108,8 +109,13 @@ fn classify(source: &RawSource, start: u64) {
             !SIZED.contains(&fstype),
             "{fstype}: {recorded:?}"
         );
+        // Only an ext4 or f2fs can have the encrypt feature, and only their
+        // flags can lie past the end of the image.
         let encrypting =
             encryption_feature(source, start, fstype).expect("the image reads at any offset");
-        assert!(!encrypting || ENCRYPTING.contains(&fstype), "{fstype}");
+        assert!(
+            encrypting == Some(false) || ENCRYPTING.contains(&fstype),
+            "{fstype}: {encrypting:?}"
+        );
     }
 }

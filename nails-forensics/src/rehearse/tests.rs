@@ -986,6 +986,47 @@ fn an_offline_ext4_or_f2fs_with_the_encrypt_feature_is_not_checked() {
     );
 }
 
+#[test]
+fn an_image_cut_inside_its_superblock_is_cut_short() {
+    // A copy that stopped inside the superblock of an ext4, between its magic
+    // and its feature flags at 0x460, or of an f2fs, before its flags at
+    // 0xC84, holds no flags to read: the size its superblock records shows it
+    // cut short, whatever the flags would have said.
+    let dir = tempfile::tempdir().unwrap();
+    let cut = |name: &str, superblock: &[u8], len: usize| {
+        let mut bytes = vec![0u8; 0x400];
+        bytes.extend_from_slice(superblock);
+        bytes.truncate(len);
+        let path = dir.path().join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        verdict(path).unwrap_or_else(|| panic!("{name} is a blind spot"))
+    };
+    assert_eq!(
+        cut("ext4.img", &ext4_encrypting_superblock(16384), 0x450),
+        "the ext2/3/4 filesystem here spans 67108864 bytes, but the source holds only 1104 of \
+         them, so the rest was never read"
+    );
+    let f2fs = cut("f2fs.img", &f2fs_superblock(16384, true), 0x800);
+    assert!(
+        f2fs.starts_with(
+            "the f2fs filesystem here spans 67108864 bytes, but the source holds only 2048 of them"
+        ),
+        "{f2fs}"
+    );
+
+    // A superblock that records no more than the source holds, yet ends
+    // before its flags, contradicts itself: not checked either.
+    let mut tiny = ext4_superblock(1);
+    tiny[0x18..0x1C].copy_from_slice(&0u32.to_le_bytes());
+    let reason = cut("tiny.img", &tiny, 0x450);
+    assert!(
+        reason.starts_with(
+            "the source ends inside the ext2/3/4 superblock here, before its feature flags"
+        ),
+        "{reason}"
+    );
+}
+
 /// A target the mount table shows as `fstype` on the image at `path`.
 fn mounted(path: PathBuf, fstype: &str) -> ScanTarget {
     ScanTarget {
@@ -1040,6 +1081,16 @@ fn a_mounted_ext4_or_f2fs_is_read_for_the_encrypt_feature() {
         ..mounted(ext4.clone(), "f2fs")
     };
     assert_eq!(blind(compressed).as_deref(), Some("compressed"));
+
+    // A device that ends inside its superblock, before the flags, shows
+    // nothing either way.
+    let short = dir.path().join("short.img");
+    std::fs::write(&short, vec![0u8; 0x450]).unwrap();
+    let reason = blind(mounted(short, "ext4")).unwrap_or_default();
+    assert!(
+        reason.starts_with("the source ends inside the ext2/3/4 superblock here"),
+        "{reason}"
+    );
 
     // A superblock that cannot be read is no evidence the filesystem is plain.
     let source = crate::forensic::RawSource::unreadable(&ext4).unwrap();
