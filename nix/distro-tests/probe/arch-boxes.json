@@ -13,6 +13,7 @@
     "moduleDirs": [
       "7.2.9-arch1-1"
     ],
+    "systemdVersion": "systemd 262 (262-1-arch)",
     "mounts": [
       {
         "target": "/",
@@ -222,7 +223,9 @@
     "packages": null,
     "journaldVendorConfig": {
       "storage": "persistent",
-      "sources": []
+      "sources": [],
+      "credential": null,
+      "vendorHint": null
     },
     "failedBootUnits": [],
     "maskedUnits": [

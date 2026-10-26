@@ -11,6 +11,7 @@
     "selinuxPolicyLoads": null,
     "kernelRelease": null,
     "moduleDirs": null,
+    "systemdVersion": null,
     "mounts": [],
     "fstab": null,
     "swaps": [],
@@ -42,7 +43,9 @@
     "packages": {},
     "journaldVendorConfig": {
       "storage": null,
-      "sources": []
+      "sources": [],
+      "credential": null,
+      "vendorHint": null
     },
     "failedBootUnits": [],
     "maskedUnits": [],
