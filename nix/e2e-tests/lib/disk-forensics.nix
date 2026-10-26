@@ -21,6 +21,7 @@ in
     _nails_os.environ["NAILS_QEMU_IMG"] = "${pkgs.qemu-utils}/bin/qemu-img"
     _nails_os.environ["NAILS_FLS"] = "${pkgs.sleuthkit}/bin/fls"
     _nails_os.environ["NAILS_MMLS"] = "${pkgs.sleuthkit}/bin/mmls"
+    _nails_os.environ["NAILS_BLKID"] = "${pkgs.util-linux}/bin/blkid"
     _nails_os.environ["NAILS_ICAT"] = "${pkgs.sleuthkit}/bin/icat"
     _nails_os.environ["NAILS_DEBUGFS"] = "${pkgs.e2fsprogs}/bin/debugfs"
     _nails_os.environ["NAILS_JOURNALCTL"] = "${pkgs.systemd}/bin/journalctl"
