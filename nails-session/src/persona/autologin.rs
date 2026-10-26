@@ -288,25 +288,33 @@ fn lightdm<F: PersonaSource>(fs: &F) -> Vec<String> {
         .map(|text| keyfile::parse(&text))
         .collect();
     let main = file_text(fs, Path::new(LIGHTDM_FILE)).map(|text| keyfile::parse(&text));
-    // LightDM skips a drop-in GLib refuses.
-    let undecided: Vec<usize> = (0..drop_ins.len())
-        .filter(|&i| drop_ins[i].may_load() && drop_ins[i].may_fail())
-        .collect();
-    if undecided.len() > MAX_UNDECIDED_DROP_INS {
+    let undecided = drop_ins
+        .iter()
+        .filter(|drop_in| drop_in.may_load() && drop_in.may_fail())
+        .count();
+    if undecided > MAX_UNDECIDED_DROP_INS {
         return every_lightdm_user(drop_ins.iter().chain(&main));
     }
-    let mut accounts = Vec::new();
-    for read in 0..1_usize << undecided.len() {
-        let mut config = keyfile::KeyFile::default();
-        for (i, drop_in) in drop_ins.iter().enumerate() {
-            let skipped = match undecided.iter().position(|&u| u == i) {
-                Some(bit) => read & (1 << bit) == 0,
-                None => !drop_in.may_load(),
-            };
-            if !skipped {
+    // Each configuration the drop-ins may add up to. LightDM skips a drop-in
+    // GLib refuses, so a reading goes on without each drop-in GLib may
+    // refuse and with each it may load: both ways for one it may do either.
+    let mut configs = vec![keyfile::KeyFile::default()];
+    for drop_in in &drop_ins {
+        let mut next = Vec::new();
+        for config in configs {
+            if drop_in.may_fail() {
+                next.push(config.clone());
+            }
+            if drop_in.may_load() {
+                let mut config = config;
                 merge(&mut config, &drop_in.file);
+                next.push(config);
             }
         }
+        configs = next;
+    }
+    let mut accounts = Vec::new();
+    for mut config in configs {
         match &main {
             None => accounts.extend(seat_account(&config)),
             Some(main) => {
