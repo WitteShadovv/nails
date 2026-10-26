@@ -162,26 +162,31 @@ fn masks_follow_absolute_links_inside_the_next_root() {
 
 /// A FIFO among the autostart entries of the next root's home is skipped
 /// unread: opened, it would hold the entry up until a writer came along.
+/// Here a writer comes at once, so an inventory that opens it lists it and
+/// fails the test rather than hanging it.
 #[test]
 fn the_inventory_at_entry_never_opens_a_fifo() {
     let root = tempfile::tempdir().unwrap();
     let autostart = root.path().join("home/alice/.config/autostart");
     std::fs::create_dir_all(&autostart).unwrap();
     std::fs::write(autostart.join("dropbox.desktop"), "[Desktop Entry]\n").unwrap();
+    let fifo = autostart.join("nails-test-fifo.desktop");
     rustix::fs::mknodat(
         rustix::fs::CWD,
-        autostart.join("nails-test-fifo.desktop"),
+        &fifo,
         rustix::fs::FileType::Fifo,
         Mode::from_raw_mode(0o600),
         0,
     )
     .unwrap();
-    let inventory = collect_inherited_persona(
-        &InNextRoot { root: root.path() },
-        &root.path().join("home/alice"),
-        "alice",
-        false,
-    );
+    let inventory = crate::test_fifo::releasing_readers(&fifo, || {
+        collect_inherited_persona(
+            &InNextRoot { root: root.path() },
+            &root.path().join("home/alice"),
+            "alice",
+            false,
+        )
+    });
     let in_home: Vec<&str> = inventory
         .entries
         .iter()

@@ -304,22 +304,27 @@ mod tests {
         let dir = home.path().join(".config/autostart");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("nails-test-file.desktop"), "[Desktop Entry]\n").unwrap();
+        let fifo = dir.join("nails-test-fifo.desktop");
         rustix::fs::mknodat(
             rustix::fs::CWD,
-            dir.join("nails-test-fifo.desktop"),
+            &fifo,
             rustix::fs::FileType::Fifo,
             rustix::fs::Mode::from_raw_mode(0o600),
             0,
         )
         .unwrap();
-        std::os::unix::fs::symlink("/dev/zero", dir.join("nails-test-device.desktop")).unwrap();
+        std::os::unix::fs::symlink("/dev/null", dir.join("nails-test-device.desktop")).unwrap();
         // Opened, the FIFO would block the read until a writer came along,
-        // and the device would never end it.
-        let in_home: Vec<String> = collect(&RealFilesystem, home.path(), "alice", false)
-            .into_iter()
-            .filter(|(_, source)| *source == InheritedSource::UserAutostart)
-            .map(|(name, _)| name)
-            .collect();
+        // and a device such as /dev/zero would never end it. Here a writer
+        // comes at once and /dev/null ends at once, so an entry read anyway
+        // is listed and fails the test rather than hanging it.
+        let in_home: Vec<String> = crate::test_fifo::releasing_readers(&fifo, || {
+            collect(&RealFilesystem, home.path(), "alice", false)
+        })
+        .into_iter()
+        .filter(|(_, source)| *source == InheritedSource::UserAutostart)
+        .map(|(name, _)| name)
+        .collect();
         assert_eq!(in_home, ["nails-test-file"]);
     }
 
