@@ -32,6 +32,8 @@ TOOLS = (
     "journalctl",
     "dmsetup",
     "ip",
+    "iw",
+    "nft",
     "cryptsetup",
     "veracrypt",
     "tcplay",

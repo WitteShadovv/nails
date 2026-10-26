@@ -93,14 +93,6 @@
         "sourcePath": null
       },
       {
-        "unit": "etc-machine\\x2did.mount",
-        "load": "loaded",
-        "active": "active",
-        "sub": "mounted",
-        "fragmentPath": null,
-        "sourcePath": "/proc/self/mountinfo"
-      },
-      {
         "unit": "home.mount",
         "load": "not-found",
         "active": "inactive",
@@ -196,6 +188,7 @@
       "journalctl": "/usr/bin/journalctl",
       "dmsetup": "/usr/bin/dmsetup",
       "ip": "/usr/bin/ip",
+      "nft": "/usr/bin/nft",
       "cryptsetup": "/usr/bin/cryptsetup",
       "sh": "/usr/bin/sh",
       "mount": "/usr/bin/mount",
