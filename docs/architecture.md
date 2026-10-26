@@ -199,10 +199,10 @@ the code never branches on "is this NixOS?" directly.
      ostree and image-based hosts, non-systemd init, Fedora, Arch and unknown
      distributions. For those hosts the refusal *is* the behaviour. Fedora and
      Arch are rows of the support table that are not admitted yet, and
-     Fedora's row already holds the gate it will take: its tested releases and
-     its tested edition, by os-release `VARIANT_ID` (Cloud; any other edition,
-     or none, warns), and release 44 or newer for its derivatives Nobara and
-     Ultramarine.
+     Fedora's row already holds the gate it will take: the releases and the
+     edition, by os-release `VARIANT_ID`, it will be tested on (Cloud; any
+     other edition, or none, will warn), and release 44 or newer for its
+     derivatives Nobara and Ultramarine.
 3. **Policy.** The trait collects the host-specific decisions: where host tools
    live (`host_command_dirs`) and which declarative build target activation and
    `check` use (`discover_build_target`). `verify` picks its read-only drift

@@ -236,10 +236,10 @@ const TABLE: &[FamilyRow] = &[
         // The upgrade reboots by itself; Fedora supports it across at most two
         // releases.
         upgrade: Upgrade::Release("with `dnf system-upgrade`, at most two releases at a time"),
-        // Cloud is the edition of the image the Fedora distribution tests
-        // boot, so it is the one admission validates. Workstation and KDE
-        // Plasma Desktop warn until a run of NAILS on each has passed, as any
-        // other edition does.
+        // Cloud is the edition of the Fedora distro-test images
+        // (Fedora-Cloud-Base-Generic, in nix/distro-tests), so it is the one
+        // admission validates. Workstation and KDE Plasma Desktop warn until a
+        // run of NAILS on each has passed, as any other edition does.
         editions: &[
             Edition {
                 id: "cloud",
