@@ -3,8 +3,15 @@
 The forensic oracle turns the output of disk-image analysis tools into one
 pass/fail verdict: did a torn-down hidden session leave a trace an examiner
 could find? The verdict tool is the `nails-oracle` crate; this directory holds
-its two input policy files. The nightly `oracle-nightly.yml` workflow builds the
-images, runs the analysis tools, and runs the verdict tool over their output.
+its input policy files and `run-scan.sh`, the scan that feeds it.
+
+The only oracle run in CI is `.github/workflows/oracle-real-nightly.yml`. Every
+night it images real ext4 decoy roots in the `oracle-images` E2E test, runs
+`run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict.
+`oracle-nightly.yml` in this directory is a template for a run over synthetic
+btrfs images. It is not installed under `.github/workflows`, so nothing runs
+it, and it could not pass as it stands: plaso cannot open btrfs (see
+[Proving plaso read each image](#proving-plaso-read-each-image)).
 
 ## What it compares
 
