@@ -234,9 +234,11 @@ pub fn mask_units(run: &Path, units: &[String]) -> io::Result<Vec<PathBuf>> {
 /// and so does a generator directory reached through a link or on a
 /// filesystem of its own: the scrub on the way back follows no link and stays
 /// on the filesystem of `/run`, so a mask written there would outlive the
-/// session. A path that already holds anything is left as it is, a mask the
-/// decoy had before or its own generator of that name, which it runs at its
-/// own start as well. Returns the links written.
+/// session. A path that already holds a mask, the decoy's own, is left as it
+/// is. A path that holds anything else fails the call before anything is
+/// written: PID 1 would run the decoy's program of that name, or skip an entry
+/// it cannot run (a dangling link, a directory, a file not marked executable)
+/// and run the generator from the next directory. Returns the links written.
 pub fn mask_generators(run: &Path, names: &[String]) -> io::Result<Vec<PathBuf>> {
     use std::os::unix::fs::MetadataExt;
     if let Some(name) = names.iter().find(|name| !valid_generator_name(name)) {
@@ -262,6 +264,16 @@ pub fn mask_generators(run: &Path, names: &[String]) -> io::Result<Vec<PathBuf>>
             ),
         ));
     }
+    if let Some(taken) = names
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| std::fs::symlink_metadata(path).is_ok() && !masks_generator(path))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} is there and does not mask it", taken.display()),
+        ));
+    }
     for name in names {
         let link = dir.join(name);
         if std::fs::symlink_metadata(&link).is_ok() {
@@ -271,6 +283,15 @@ pub fn mask_generators(run: &Path, names: &[String]) -> io::Result<Vec<PathBuf>>
         written.push(link);
     }
     Ok(written)
+}
+
+/// Whether the entry at `path` masks a generator the way PID 1 reads a mask
+/// there: it resolves to a character device (a link to `/dev/null`) or to an
+/// empty regular file.
+fn masks_generator(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.file_type().is_char_device() || (meta.is_file() && meta.len() == 0))
 }
 
 #[cfg(test)]
@@ -380,26 +401,82 @@ mod tests {
     }
 
     #[test]
-    fn generator_masks_rank_first_and_never_replace_what_is_there() {
+    fn generator_masks_rank_first_and_never_replace_a_mask_that_is_there() {
         let run = tempfile::tempdir().unwrap();
         let dir = run.path().join(GENERATOR_DIR);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("local-generator"), "#!/bin/sh\n").unwrap();
-        let names = ["systemd-gpt-auto-generator", "local-generator"].map(String::from);
+        // The decoy masks two generators itself, with the two masks PID 1
+        // reads: a link to /dev/null and an empty file.
+        std::os::unix::fs::symlink("/dev/null", dir.join("zram-generator")).unwrap();
+        std::fs::write(dir.join("local-generator"), "").unwrap();
+        let names = [
+            "systemd-gpt-auto-generator",
+            "zram-generator",
+            "local-generator",
+        ]
+        .map(String::from);
         let written = mask_generators(run.path(), &names).unwrap();
         assert_eq!(written, vec![dir.join("systemd-gpt-auto-generator")]);
         assert_eq!(
             std::fs::read_link(&written[0]).unwrap(),
             Path::new("/dev/null")
         );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("local-generator")).unwrap(),
-            "#!/bin/sh\n",
-            "the decoy's own generator stays"
+        assert!(
+            std::fs::read(dir.join("local-generator"))
+                .unwrap()
+                .is_empty(),
+            "the decoy's own mask stays"
         );
-        // Masking again finds the mask there and writes nothing.
+        // Masking again finds the masks there and writes nothing.
         assert!(mask_generators(run.path(), &names).unwrap().is_empty());
         assert!(mask_generators(run.path(), &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_entry_there_that_does_not_mask_the_generator_writes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        /// Makes an entry at its second path; the first is a directory
+        /// outside the generator directory.
+        type Make = fn(&Path, &Path);
+        fn executable(path: &Path) {
+            std::fs::write(path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // PID 1 skips the first three and runs the generator from the next
+        // directory, and runs the last two in its place.
+        let entries: [(&str, Make); 5] = [
+            ("a dangling link", |_, path| {
+                std::os::unix::fs::symlink("/nonexistent", path).unwrap()
+            }),
+            ("a directory", |_, path| std::fs::create_dir(path).unwrap()),
+            ("a file not marked executable", |_, path| {
+                std::fs::write(path, "#!/bin/sh\n").unwrap()
+            }),
+            ("an executable", |_, path| executable(path)),
+            ("a link to an executable", |elsewhere, path| {
+                let target = elsewhere.join("real-generator");
+                executable(&target);
+                std::os::unix::fs::symlink(&target, path).unwrap()
+            }),
+        ];
+        for (what, make) in entries {
+            let run = tempfile::tempdir().unwrap();
+            let dir = run.path().join(GENERATOR_DIR);
+            std::fs::create_dir_all(&dir).unwrap();
+            let gpt = dir.join("systemd-gpt-auto-generator");
+            make(run.path(), &gpt);
+            let names = ["zram-generator", "systemd-gpt-auto-generator"].map(String::from);
+            let err = mask_generators(run.path(), &names).unwrap_err();
+            assert!(
+                err.to_string().contains("does not mask it"),
+                "{what}: {err}"
+            );
+            assert!(
+                std::fs::symlink_metadata(dir.join("zram-generator")).is_err(),
+                "{what}: a mask is written"
+            );
+            assert!(std::fs::symlink_metadata(&gpt).is_ok(), "{what} stays");
+        }
     }
 
     #[test]

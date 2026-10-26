@@ -15,7 +15,8 @@
 //! The [`GENERATORS`] are masked at the switch as well, in
 //! `/run/systemd/system-generators`, ahead of every other generator
 //! directory. Those masks are not best effort: as for the fstab policy's
-//! masks, the switch is refused when one cannot be written.
+//! masks, the switch is refused when one cannot be written, or when the decoy
+//! has an entry of that name there that does not mask the generator.
 //!
 //! All of them live in `/run` only: the return scrub removes them with the
 //! rest of the session's `/run`, and the decoy side removes them when a switch

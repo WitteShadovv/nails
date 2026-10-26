@@ -896,6 +896,39 @@ fn an_entry_whose_generator_masks_cannot_be_written_is_refused() {
     );
 }
 
+/// An entry of the decoy at a generator mask's path that does not mask the
+/// generator refuses the switch: PID 1 would skip this directory and run the
+/// generator from the next one. The entry stays as the decoy left it.
+#[test]
+fn an_entry_whose_generator_path_holds_no_mask_is_refused() {
+    let world = World::new();
+    let taken = world
+        .run()
+        .join(runtime_units::GENERATOR_DIR)
+        .join(GPT_AUTO);
+    fs::create_dir_all(&taken).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+
+    let outcome = run(&world.env(true, 1_010));
+    assert!(
+        matches!(&outcome, Outcome::Disarmed(why) if why.starts_with("could not mask generators")),
+        "{outcome:?}"
+    );
+    assert!(taken.is_dir(), "the decoy's entry stays");
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/aaa-nixos-system")
+    );
+}
+
 /// A file that stands for the kernel's module loader path: the decoy's
 /// value recorded, then the session's written over it.
 fn repointed_modprobe(world: &World) -> Vec<kernel_helpers::KernelSetting> {
