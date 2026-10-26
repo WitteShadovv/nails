@@ -109,8 +109,9 @@ Each file is an object:
   - `updatedbPrunePaths` -- the `PRUNEPATHS` the image's `updatedb` ships (list).
   - `avcs` -- the AVC and USER_AVC denials of the plain boot, from the kernel
     log and the audit log (`ausearch`), each denial once, as the record from
-    `avc:  denied` on (list). A permissive boot logs the denials an enforcing
-    one would enforce.
+    `avc:  denied` on (list). A permissive boot logs each denial instead of
+    enforcing it, so it can log denials an enforcing boot never reaches, and
+    the reverse.
   - `ninePUnderEnforcing` -- whether the harness's 9p share mounted and a file
     reads through it while SELinux is enforcing (`true`/`false`); `null` unless
     the probe ran enforcing.
