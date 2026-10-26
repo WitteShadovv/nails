@@ -20,8 +20,13 @@ use nails_teardown::whole_root::transition::{
 const RUN_UNIT_DIR: &str = "/run/systemd/system";
 
 /// The runtime directory that outranks `/etc/systemd/system`, where the entry
-/// masks the boot-loader units.
+/// masks the units the hidden root does not need (the boot-loader units among
+/// them).
 const RUN_CONTROL_DIR: &str = "/run/systemd/system.control";
+
+/// The runtime generator directory, which outranks every other, where the
+/// entry masks systemd's GPT auto-generator.
+const RUN_GENERATOR_DIR: &str = "/run/systemd/system-generators";
 
 /// Guidance for an interrupted entry's leftovers, naming the real binary path.
 fn recover_fix() -> String {
@@ -214,13 +219,15 @@ impl<F: Filesystem> Verifier<F> {
     }
 
     /// The session's units (by their names) in `/run/systemd/system`, and
-    /// runtime masks (links to `/dev/null`) there and in
-    /// `/run/systemd/system.control`, where the entry masks the boot-loader
-    /// units. A mask may also be the administrator's own `systemctl mask
-    /// --runtime`, so it only warns.
+    /// runtime masks (links to `/dev/null`) there, in
+    /// `/run/systemd/system.control`, where the entry masks the units the
+    /// hidden root does not need, and in `/run/systemd/system-generators`,
+    /// where it masks the GPT auto-generator. A mask may also be the
+    /// administrator's own (`systemctl mask --runtime`, or a link of their
+    /// own), so it only warns.
     fn leftover_run_units(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for dir in [RUN_UNIT_DIR, RUN_CONTROL_DIR] {
+        for dir in [RUN_UNIT_DIR, RUN_CONTROL_DIR, RUN_GENERATOR_DIR] {
             findings.extend(self.leftover_units_in(Path::new(dir))?);
         }
         Ok(findings)
