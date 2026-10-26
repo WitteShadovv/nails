@@ -27,9 +27,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         ),
         mitigation: "Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`.",
         doc_anchor: "decoy-requirements.md#pending-offline-updates",
-        e2e: E2e::None(
-            "the refusal is unit-tested for links on the decoy and in the upper, a dangling link and a whiteout included; no VM test stages an offline update",
-        ),
+        e2e: E2e::Test("preflight-checks"),
         residual: false,
         conclusion: None,
     },
