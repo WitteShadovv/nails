@@ -132,6 +132,8 @@ SourcePath=
 FEDORA_TOOLS = """\
 systemctl: /usr/bin/systemctl
 ip: /usr/bin/ip
+iw:
+nft: /usr/bin/nft
 cryptsetup:
 veracrypt:
 kill: /usr/bin/kill
@@ -165,6 +167,17 @@ class QueriesTest(unittest.TestCase):
     def test_cold_boot_labels_are_unique(self) -> None:
         labels = [label for label, _ in pf.cold_boot_queries("fedora")]
         self.assertEqual(len(labels), len(set(labels)))
+
+    def test_the_tools_include_those_of_the_network_record_and_way_back(
+        self,
+    ) -> None:
+        # The entry records the decoy's firewall tables with nft. The way back
+        # deletes the tables a session added with nft, its Wi-Fi interfaces
+        # with iw and its links with ip.
+        tools = dict(pf.cold_boot_queries("arch"))["tools"]
+        for tool in ("ip", "iw", "nft"):
+            self.assertIn(tool, pf.TOOLS)
+            self.assertIn(f" {tool} ", tools)
 
     def test_rpm_is_queried_on_fedora_only(self) -> None:
         self.assertIn("rpm", dict(pf.cold_boot_queries("fedora")))
@@ -585,6 +598,7 @@ class ImageFactsTest(unittest.TestCase):
             {
                 "systemctl": "/usr/bin/systemctl",
                 "ip": "/usr/bin/ip",
+                "nft": "/usr/bin/nft",
                 "kill": "/usr/bin/kill",
             },
         )

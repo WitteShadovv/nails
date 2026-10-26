@@ -273,6 +273,7 @@
       "journalctl": "/usr/bin/journalctl",
       "dmsetup": "/usr/bin/dmsetup",
       "ip": "/usr/bin/ip",
+      "nft": "/usr/bin/nft",
       "sh": "/usr/bin/sh",
       "mount": "/usr/bin/mount",
       "sync": "/usr/bin/sync",
