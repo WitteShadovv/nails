@@ -33,6 +33,7 @@ fn build_registry_includes_the_shared_checks() {
         operator: None,
         caller_path: None,
         host_profile: None,
+        systemd_version: None,
     };
 
     let registry =
@@ -74,6 +75,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         operator: None,
         caller_path: None,
         host_profile: None,
+        systemd_version: None,
     };
 
     let registry =
@@ -100,6 +102,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         operator: None,
         caller_path: None,
         host_profile: None,
+        systemd_version: None,
     };
 
     let registry = build_registry(&fs, &config, &inputs, None).expect("registry builds");
@@ -227,6 +230,7 @@ fn read_only_registry_creates_nothing() {
         operator: None,
         caller_path: None,
         host_profile: None,
+        systemd_version: None,
     };
 
     let registry =
@@ -598,6 +602,7 @@ fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
         operator: None,
         caller_path: None,
         host_profile: None,
+        systemd_version: None,
     };
     for (scene, table, unreadable_crypttab) in scenes {
         let fs = MockFilesystem::new();
@@ -912,12 +917,11 @@ fn no_platform_row_without_a_detected_host() {
     assert!(platform_result(&manager).is_none());
 }
 
-/// The registry builds the systemd-version check on the detected host: on a
-/// Debian 12 host a systemd too old is told the Debian upgrade, not the
-/// platforms NAILS runs on.
-#[test]
-fn the_systemd_version_check_receives_the_detected_host() {
-    let manager = manager_on_host("ID=debian\nVERSION_ID=\"12\"\n");
+/// The systemd-version row of the registry built from inputs that carry the
+/// host a manager detects on `os_release` (no host for `None`) and the running
+/// systemd's `version`.
+fn systemd_version_row(os_release: Option<&str>, version: Option<u32>) -> CheckResult {
+    let fs = MockFilesystem::new();
     let inputs = RegistryInputs {
         options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
@@ -926,14 +930,62 @@ fn the_systemd_version_check_receives_the_detected_host() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
-        host_profile: manager.host_profile().cloned(),
+        host_profile: os_release
+            .and_then(|os_release| manager_on_host(os_release).host_profile().cloned()),
+        systemd_version: version,
     };
+    build_registry(&fs, &explicit_config(), &inputs, None)
+        .expect("registry builds")
+        .run_all_detailed(&fs)
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "systemd-version")
+        .map(|(_, result)| result)
+        .expect("a systemd-version row")
+}
 
-    let old = super::systemd_version_check(&inputs).judge(Some(252));
-    assert!(old.is_fail(), "{old:?}");
-    let remediation = old.remediation().unwrap();
-    assert!(
-        remediation.contains("Upgrade to Debian 13 as its release notes describe"),
-        "{remediation}"
+/// The registry judges the running systemd on the detected host: a systemd
+/// too old is told how that host's distribution upgrades, and without a host
+/// the platforms NAILS runs on.
+#[test]
+fn an_old_systemd_is_told_how_the_detected_host_upgrades() {
+    for (os_release, version, upgrade) in [
+        (
+            "ID=debian\nVERSION_ID=\"12\"\n",
+            252,
+            "Upgrade to Debian 13 as its release notes describe, then reboot.",
+        ),
+        (
+            "ID=fedora\nVERSION_ID=38\n",
+            253,
+            "Upgrade to Fedora 44 with `dnf system-upgrade`, at most two releases at a time.",
+        ),
+    ] {
+        let row = systemd_version_row(Some(os_release), Some(version));
+        assert!(row.is_fail(), "{os_release}: {row:?}");
+        assert!(
+            row.message()
+                .contains(&format!("systemd {version} is too old")),
+            "{row:?}"
+        );
+        assert_eq!(row.remediation(), Some(upgrade), "{os_release}");
+    }
+
+    let unknown = systemd_version_row(None, Some(252));
+    assert_eq!(
+        unknown.remediation(),
+        Some(crate::platform::upgrade_hint(None).as_str()),
+        "{unknown:?}"
     );
+}
+
+/// The row judges the version the inputs carry: one new enough passes, and
+/// one that could not be read fails.
+#[test]
+fn the_systemd_version_row_judges_the_version_it_is_given() {
+    let debian = Some("ID=debian\nVERSION_ID=\"13\"\n");
+    let current = systemd_version_row(debian, Some(257));
+    assert!(current.is_pass(), "{current:?}");
+    let unread = systemd_version_row(debian, None);
+    assert!(unread.is_fail(), "{unread:?}");
 }

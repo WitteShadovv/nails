@@ -13,8 +13,9 @@
 //! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
 //!   safe decision ([`super::policy`]).
 //!
-//! Each check reads the live system in `run` and judges through a pure
-//! function, which the tests exercise directly.
+//! Each check judges through a pure function, which the tests exercise
+//! directly. `systemd-version` judges the version it is built with; the others
+//! read the live system in `run`.
 
 use super::fstab::{parse_in_root, read_in_root as read_fstab};
 use super::layout::Paths;
@@ -49,24 +50,23 @@ pub fn judge_version(version: Option<u32>, host: Option<&HostProfile>) -> CheckR
     }
 }
 
-/// `systemd-version`.
+/// `systemd-version`: the running systemd's version, read once with the other
+/// facts the registry is built from ([`systemd::running_version`]), judged on
+/// the detected host.
 #[derive(Debug)]
 pub struct SystemdVersionCheck {
+    /// The running systemd's version, `None` when it could not be read.
+    version: Option<u32>,
     /// The detected host, whose distribution the upgrade hint names.
     host: Option<HostProfile>,
 }
 
 impl SystemdVersionCheck {
-    /// The check on the detected `host`; without one, a systemd too old is
+    /// The check of the running systemd's `version` on the detected `host`.
+    /// Without a version it fails; without a host, a systemd too old is
     /// pointed at the platforms NAILS runs on.
-    pub fn new(host: Option<HostProfile>) -> Self {
-        Self { host }
-    }
-
-    /// Judge the running systemd's `version` on the host this check was built
-    /// on.
-    pub fn judge(&self, version: Option<u32>) -> CheckResult {
-        judge_version(version, self.host.as_ref())
+    pub fn new(version: Option<u32>, host: Option<HostProfile>) -> Self {
+        Self { version, host }
     }
 }
 
@@ -78,7 +78,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SystemdVersionCheck {
         "systemd supports soft-reboot (254 or newer)"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        Ok(self.judge(systemd::running_version(&crate::process::RealProcessRunner)))
+        Ok(judge_version(self.version, self.host.as_ref()))
     }
 }
 

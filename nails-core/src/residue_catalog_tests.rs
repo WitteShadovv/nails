@@ -25,6 +25,7 @@ fn preflight_check_names() -> BTreeSet<&'static str> {
         caller_path: None,
         // A detected host adds the platform check.
         host_profile: Some(crate::platform::FakePlatform::nixos().host_profile()),
+        systemd_version: None,
     };
     let registry = build_registry(
         &fs,
