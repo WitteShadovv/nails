@@ -46,6 +46,7 @@
   "session-fstab-policy": 29,
   "session-interrupted-entry": 30,
   "session-lifecycle": 36,
+  "session-mac-restore": 39,
   "session-nixos-hidden-system": 193,
   "session-nixos-store-gc": 325,
   "session-readme-captures": 20,
