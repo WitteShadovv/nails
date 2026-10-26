@@ -9,8 +9,10 @@
 //! `VERSION_ID`, `VARIANT_ID`), written back as os-release(5) quotes a value (in
 //! double quotes, with `$`, `"`, `\` and `` ` `` escaped), are read again
 //! unchanged, with the same decision: the same resolved family and the same
-//! support verdict. The edition (`VARIANT_ID`) can only add a warning: without
-//! it, the host is admitted or refused as before, for the same reason.
+//! support verdict. The edition (`VARIANT_ID`) can only change the warning,
+//! never whether or why the host is admitted or refused: without it, the host
+//! resolves to the same family and is admitted or refused as before, for the
+//! same reason.
 
 #![no_main]
 
