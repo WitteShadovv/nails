@@ -173,6 +173,9 @@ impl World {
             run,
         }
     }
+    pub(crate) fn hidden_path(&self) -> &Path {
+        self.hidden.path()
+    }
     pub(crate) fn paths(&self) -> Paths {
         Paths {
             root: self.decoy.path().to_path_buf(),

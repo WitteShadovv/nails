@@ -627,6 +627,9 @@ mod package_drift_kernel_tests;
 #[path = "whole_root_kernel/skips.rs"]
 mod skips_kernel_tests;
 
+#[path = "whole_root_kernel/mount_units.rs"]
+mod mount_units_kernel_tests;
+
 mod nixos_kernel_tests {
     //! The chrooted activation of a hidden toplevel:
     //! it runs inside the next root, sees `/proc`, `/dev` and `/sys`, writes

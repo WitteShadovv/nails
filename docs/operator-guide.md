@@ -223,6 +223,10 @@ Keep all of it `root`-owned on the hidden volume.
      is masked, and activation warns that the hidden session will not reach
      that target.
 
+   The decoy's own mount, swap and automount units that a target pulls in
+   outside the fstab (a NixOS `systemd.mounts` unit, zram-generator's swap,
+   the GPT auto-generator's ESP) get the same decisions.
+
    Whatever the fstab says, the hidden session also masks
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail
    there or do nothing: the root filesystem they remount and grow is the root
