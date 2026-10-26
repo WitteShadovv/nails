@@ -551,6 +551,32 @@ wherever the link leads, which can be the decoy disk. While such a link
 stands there, activation is refused and makes nothing (see
 [Persona modes](configuration.md#persona-modes)).
 
+## Pending offline updates
+
+Desktop updaters that use PackageKit, such as GNOME Software, and
+`dnf system-upgrade` can stage an update to be installed offline: they link
+`/system-update` (or `/etc/system-update`) to it. At the next start of the
+service manager, `systemd-system-update-generator` sees the link and starts
+`system-update.target` instead of the default target, where the updater
+deletes the link, installs the update and reboots.
+
+A soft-reboot starts the service manager again, and its generators run in the
+new root as at a boot. A link the hidden root shows would turn the start of the
+hidden session into the update: the decoy's updater would install it into the
+upper on the hidden volume and then reboot or power off the machine, so the
+session ends without its way back. That run deletes the link only in the upper,
+so the decoy keeps its own and installs the update itself at its next boot.
+
+So activation is refused while a link is staged (`pending-offline-update`),
+on the decoy or in the root overlay's upper. A dangling link counts; a link a
+session deleted (a whiteout in the upper) does not. Install or cancel a pending
+update on the decoy before you activate. A link a hidden session staged stays
+in the upper: the way back is a soft-reboot into the decoy root, which does not
+show the upper, so the decoy starts as usual, and the next activation is
+refused until `nails discard` deletes the link, as the refusal says. The check
+runs before the switch, so it does not see an update staged in the seconds
+between the check and the soft-reboot.
+
 ## Decoys joined to a domain
 
 A decoy joined to a domain (Active Directory or FreeIPA, through sssd) checks
@@ -689,8 +715,8 @@ Disable VeraCrypt's history, harden the decoy shell history (see
 
 ## Residue catalog
 
-Generated from `nails-forensics/src/residue_catalog/rows.rs`; do not edit the
-tables by hand. A unit test fails when they drift; regenerate them with
+Generated from the rows under `nails-forensics/src/residue_catalog/rows/`; do
+not edit the tables by hand. A unit test fails when they drift; regenerate them with
 `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`.
 
 A row with "none" in the pre-flight or verify column says why nothing at that
@@ -737,6 +763,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Snapper timeline snapshots](#session-time-records) (`snapper-timeline`) | `/.snapshots`, `/var/lib/snapper` | all | path probe (info) | path probe (info) | Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity. | none: asserted on a btrfs decoy with snapper by the cross-distro forensic probe once those images boot |
 | [Copy-on-write and compressed storage history](threat-model.md#residual-channels) (`btrfs-cow-history`) | old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs, zfs or an f2fs mount with compression | all | none: a copy-on-write or compressed decoy is a property of the decoy's own storage, not a session write | none: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean: a mounted one (a zfs dataset included) by its mount, an image or an unmounted device by its superblock, and a whole disk partition by partition, where an encrypted partition, or one on which no filesystem is identified, is not checked either | Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean. | none: the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems |
 | [Fedora GRUB boot-success state](#session-time-records) (`grubenv-boot-success`) | `/boot/grub2/grubenv`, `/boot/efi/EFI/fedora/grubenv` | Fedora | none: Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it | path probe (info) | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | none: asserted on the Fedora decoy by the cross-distro forensic probe once its image boots |
+| [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: an update staged on the decoy is the decoy's own state, not a trace of a session, and one a session staged sits in the upper, where activation finds it | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | none: the refusal is unit-tested for links on the decoy and in the upper, a dangling link and a whiteout included; no VM test stages an offline update |
+| [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |
 <!-- residue-catalog:end session -->
 
 ### Setup traces
