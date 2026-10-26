@@ -9,6 +9,8 @@
 use super::super::{CheckResult, PreFlightCheck};
 use crate::config::get_default_hidden_volume_root;
 use crate::{Filesystem, Result};
+use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
+use rustix::mount::{FsMountFlags, FsOpenFlags, MountAttrFlags};
 use std::path::{Path, PathBuf};
 
 /// The overlay-upper capability a probe could not confirm.
@@ -30,6 +32,12 @@ enum ProbeError {
     /// The probe scaffolding itself failed (scratch dir, syscall wiring). The
     /// check then fails closed because it cannot prove the backend is usable.
     Scaffold(std::io::Error),
+    /// The kernel gave no filesystem context to mount the trial overlay
+    /// detached (`fsopen(2)` failed: no root, a kernel before Linux 5.2, or a
+    /// sandbox that blocks the call). The probe never mounts it where a mount
+    /// table would show it instead, so it stops before writing anything and
+    /// the check fails closed.
+    NoDetachedMount(std::io::Error),
 }
 
 /// Pre-flight check that the hidden root can back an overlayfs upper layer.
@@ -50,8 +58,18 @@ enum ProbeError {
 /// hidden root, removed on every path; nothing outside it, and nothing on the
 /// decoy, is ever touched. The probe sets and removes a `trusted.*` xattr,
 /// confirms `readdir` reports a file type, and trial-mounts a self-contained
-/// overlay (lower/upper/work/merged all inside the scratch dir) that it exercises
-/// with a copy-up and a whiteout before unmounting.
+/// overlay (lower/upper/work all inside the scratch dir) that it exercises with
+/// a new file and a whiteout.
+///
+/// The trial overlay is mounted detached, through the mount API
+/// (`fsopen`/`fsconfig`/`fsmount`): the kernel hands back a file descriptor for
+/// the mount and attaches it nowhere. No mount table lists it, so neither
+/// systemd nor any other process sees a mount come and go (a mount in PID 1's
+/// namespace could make systemd log a `.mount` unit for it, a line naming the
+/// hidden root that a persistent decoy journal keeps), and closing the
+/// descriptor dissolves it, also when the process dies. When the kernel cannot
+/// mount it detached, the check fails closed before anything is written: the
+/// probe never falls back to a mount the system could see.
 ///
 /// # Portability
 ///
@@ -144,17 +162,20 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
             }
         }
 
-        // The probe writes to and mounts over the real hidden root, so there is
-        // nothing to probe under a test binary. Skip it there, like every other
-        // host-touching check, so mock-driven preflight tests stay hermetic; a
-        // real deployment always runs the probe.
+        // The probe writes to the real hidden root and mounts an overlay from
+        // it, so there is nothing to probe under a test binary. Skip it there,
+        // like every other host-touching check, so mock-driven preflight tests
+        // stay hermetic; a real deployment always runs the probe.
         if crate::runtime_safety::should_skip_host_interaction() {
             return Ok(CheckResult::Pass(
                 "Upper-fs capability check skipped under the test runtime".into(),
             ));
         }
 
-        Ok(self.verdict(fs, probe_upper_capabilities(&self.hidden_volume_root)))
+        Ok(self.verdict(
+            fs,
+            probe_upper_capabilities(&self.hidden_volume_root, overlay_context()),
+        ))
     }
 }
 
@@ -185,6 +206,13 @@ impl UpperFsCapabilityCheck {
                  Ensure it is a mounted, writable, local Linux filesystem and retry.",
                 self.hidden_volume_root.display()
             )),
+            Err(ProbeError::NoDetachedMount(e)) => CheckResult::fail(format!(
+                "Could not verify the hidden root at {} can host an overlayfs upper layer: the \
+                 kernel refused to set up a detached trial overlay ({e}), and the probe never \
+                 mounts one where a mount table would show it. Nothing was written. Run NAILS \
+                 as root from a host shell, on Linux 5.2 or newer with overlayfs.",
+                self.hidden_volume_root.display()
+            )),
         }
     }
 }
@@ -193,20 +221,35 @@ impl UpperFsCapabilityCheck {
 // Host probe (runs only on a real host; skipped under any test binary)
 // ============================================================================
 
+/// A filesystem context for the trial overlay, from `fsopen(2)`. A mount made
+/// from it is detached: it enters no mount table unless it is attached, which
+/// the probe never does.
+fn overlay_context() -> std::io::Result<OwnedFd> {
+    rustix::mount::fsopen("overlay", FsOpenFlags::FSOPEN_CLOEXEC).map_err(std::io::Error::from)
+}
+
 /// Probe that the hidden root can back an overlay upper/work dir.
 ///
-/// All I/O happens inside a throwaway `.probe-<unique>` directory on the hidden
+/// `context` is the overlay context the trial mount is made from
+/// ([`overlay_context`]). Without one the probe stops before it writes
+/// anything, since it mounts the trial overlay detached or not at all. All I/O
+/// then happens inside a throwaway `.probe-<unique>` directory on the hidden
 /// root; nothing outside it is ever touched, and the scratch dir is removed on
 /// every path.
-fn probe_upper_capabilities(hidden_root: &Path) -> std::result::Result<(), ProbeError> {
+fn probe_upper_capabilities(
+    hidden_root: &Path,
+    context: std::io::Result<OwnedFd>,
+) -> std::result::Result<(), ProbeError> {
+    let context = context.map_err(ProbeError::NoDetachedMount)?;
     let scratch = hidden_root.join(format!(".probe-{}", unique_suffix()));
     std::fs::create_dir(&scratch).map_err(ProbeError::Scaffold)?;
 
-    let outcome = probe_in_scratch(&scratch);
+    let outcome = probe_in_scratch(&scratch, context);
 
     // Clean up on every path: a leftover probe dir would itself be a trace. A
     // failure to remove it is only surfaced when the probe otherwise passed, so
-    // a real capability failure keeps its specific message.
+    // a real capability failure keeps its specific message. The trial overlay
+    // is already gone: its descriptor closed inside `probe_in_scratch`.
     let cleanup = std::fs::remove_dir_all(&scratch);
     match outcome {
         Ok(()) => cleanup.map_err(ProbeError::Scaffold),
@@ -215,24 +258,28 @@ fn probe_upper_capabilities(hidden_root: &Path) -> std::result::Result<(), Probe
 }
 
 /// Run the three capability probes inside an already-created scratch dir.
-fn probe_in_scratch(scratch: &Path) -> std::result::Result<(), ProbeError> {
+fn probe_in_scratch(scratch: &Path, context: OwnedFd) -> std::result::Result<(), ProbeError> {
     // 1. Trusted xattrs on the upper directory.
     probe_trusted_xattr(scratch)?;
 
-    // Lay out a self-contained overlay inside the scratch dir.
+    // Lay out a self-contained overlay inside the scratch dir, with a file that
+    // exists only in the lower layer, so deleting it through the overlay must
+    // store a whiteout in the upper layer.
     let lower = scratch.join("lower");
     let upper = scratch.join("upper");
     let work = scratch.join("work");
-    let merged = scratch.join("merged");
-    for dir in [&lower, &upper, &work, &merged] {
+    for dir in [&lower, &upper, &work] {
         std::fs::create_dir(dir).map_err(ProbeError::Scaffold)?;
     }
+    std::fs::write(lower.join("seed"), b"seed").map_err(ProbeError::Scaffold)?;
 
     // 2. readdir d_type: the scratch dir now holds real sub-entries to classify.
     probe_dir_entry_type(scratch)?;
 
-    // 3. Trial overlay mount exercising a copy-up and a whiteout.
-    probe_trial_overlay(&lower, &upper, &work, &merged)
+    // 3. Trial overlay, mounted detached, exercising a new file and a whiteout.
+    // Dropping its descriptor at the end of this function dissolves it.
+    let overlay = mount_trial_overlay(context, &lower, &upper, &work)?;
+    exercise_mounted_overlay(overlay.as_fd())
 }
 
 /// Set then remove a `trusted.*` probe xattr on `dir`.
@@ -306,54 +353,63 @@ fn probe_dir_entry_type(dir: &Path) -> std::result::Result<(), ProbeError> {
     }
 }
 
-/// Trial-mount a self-contained overlay and exercise a copy-up and a whiteout.
-fn probe_trial_overlay(
+/// Mount a self-contained overlay of `lower`, `upper` and `work`, detached,
+/// from `context`, and return the descriptor of its root.
+///
+/// The mount is attached to no mount namespace, so no mount table ever lists
+/// it; it lives as long as the returned descriptor, and dropping that
+/// dissolves it.
+fn mount_trial_overlay(
+    context: OwnedFd,
     lower: &Path,
     upper: &Path,
     work: &Path,
-    merged: &Path,
-) -> std::result::Result<(), ProbeError> {
-    // A file that exists only in the lower layer, so deleting it through the
-    // merged view must store a whiteout in the upper layer.
-    std::fs::write(lower.join("seed"), b"seed").map_err(ProbeError::Scaffold)?;
-
-    // Exercise the exact option string the real overlay mount uses, so the
-    // probe proves the backend under the same pinned feature options.
-    let options = nails_teardown::whole_root::nextroot::overlay_data(lower, upper, work)
+) -> std::result::Result<OwnedFd, ProbeError> {
+    // Exercise the exact options the real overlay mount uses, so the probe
+    // proves the backend under the same pinned feature options.
+    let params = nails_teardown::whole_root::nextroot::overlay_params(lower, upper, work)
         .map_err(ProbeError::Scaffold)?;
 
-    // A failed mount is the common NFS/FUSE/FAT verdict, so it is a Missing
-    // capability rather than a scaffolding error.
-    nix::mount::mount(
-        Some("overlay"),
-        merged,
-        Some("overlay"),
-        nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
-        Some(options.as_str()),
+    // A refused option, superblock or mount is the common NFS/FUSE/FAT
+    // verdict, so it is a Missing capability rather than a scaffolding error.
+    let refused = |_| ProbeError::Missing(MissingCapability::TrialOverlay);
+    for (key, value) in &params {
+        rustix::mount::fsconfig_set_string(&context, *key, value.as_str()).map_err(refused)?;
+    }
+    rustix::mount::fsconfig_create(&context).map_err(refused)?;
+    rustix::mount::fsmount(
+        &context,
+        FsMountFlags::FSMOUNT_CLOEXEC,
+        MountAttrFlags::MOUNT_ATTR_NOSUID
+            | MountAttrFlags::MOUNT_ATTR_NODEV
+            | MountAttrFlags::MOUNT_ATTR_NOEXEC,
     )
-    .map_err(|_| ProbeError::Missing(MissingCapability::TrialOverlay))?;
-
-    // The overlay is mounted now; tear it down on every path below.
-    let exercised = exercise_mounted_overlay(merged);
-    let unmounted = nix::mount::umount2(merged, nix::mount::MntFlags::MNT_DETACH);
-
-    exercised?;
-    unmounted.map_err(|e| ProbeError::Scaffold(std::io::Error::from_raw_os_error(e as i32)))?;
-    Ok(())
+    .map_err(refused)
 }
 
-/// Create+delete a fresh file and delete the lower-only file through `merged`.
-fn exercise_mounted_overlay(merged: &Path) -> std::result::Result<(), ProbeError> {
-    let created = merged.join("probe-create");
-    std::fs::write(&created, b"x")
-        .map_err(|_| ProbeError::Missing(MissingCapability::TrialOverlay))?;
-    std::fs::remove_file(&created)
-        .map_err(|_| ProbeError::Missing(MissingCapability::TrialOverlay))?;
+/// Create+delete a fresh file and delete the lower-only file through the
+/// overlay whose root is `root`.
+fn exercise_mounted_overlay(root: BorrowedFd<'_>) -> std::result::Result<(), ProbeError> {
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    let refused = |_| ProbeError::Missing(MissingCapability::TrialOverlay);
+
+    let created = rustix::fs::openat(
+        root,
+        "probe-create",
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )
+    .map_err(refused)?;
+    let written = rustix::io::write(&created, b"x");
+    drop(created);
+    if written != Ok(1) {
+        return Err(ProbeError::Missing(MissingCapability::TrialOverlay));
+    }
+    rustix::fs::unlinkat(root, "probe-create", AtFlags::empty()).map_err(refused)?;
 
     // Removing the lower-only file forces overlayfs to write a whiteout in the
     // upper layer; a backend that cannot store whiteouts fails here.
-    std::fs::remove_file(merged.join("seed"))
-        .map_err(|_| ProbeError::Missing(MissingCapability::TrialOverlay))?;
+    rustix::fs::unlinkat(root, "seed", AtFlags::empty()).map_err(refused)?;
     Ok(())
 }
 

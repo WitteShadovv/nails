@@ -80,6 +80,9 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }
+# poll(2) on /proc/self/mountinfo, the mount-table change event systemd waits
+# for, in the tests that prove a probe never changes the mount table.
+nix = { workspace = true, features = ["poll"] }
 # Drives the session flow and the reconciliation of the recorded state and the
 # live session view as a state machine: random sequences of the real activate,
 # deactivate, emergency and recover operations and of machine events, against a

@@ -58,15 +58,22 @@ What runs in this tier:
 | `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
 | `nails-core/tests/network_way_back_kernel.rs` | The way back's network restore in a throwaway network namespace: the real `ip` deleting the session's links (one made again under the name of a decoy link included) and its policy-routing rules, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace, not to the kernel's defaults (the namespace starts with the host's IPv4 settings, so forwarding is on where the host forwards, and the decoy's own `arp_ignore` and `src_valid_mark` are not the defaults), and the real `nft` deleting the session's firewall tables while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it, and `NAILS_REQUIRE_USERNS=1` fails it |
 | `nails-core/tests/filesystem_contract.rs` | One file contract and one mount-query contract, run against `MockFilesystem` and `RealFilesystem` (tier d) |
-| `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`; all but the whiteout test run rootless |
+| `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`, and the whole upper-filesystem probe as `check` runs it; all but the whiteout test and the probe test run rootless |
 | `nails-cli/tests/broken_pipe.rs` | The stderr helpers surviving a reader that has gone |
 | `kernel_tests` modules in the crates | Unit-level checks that need a real mount table or process |
 
 The limits are the kernel's rules for unprivileged overlays: no redirects (hence
 `redirect_dir=nofollow` everywhere), and no `trusted.*` xattrs, so directory
-whiteouts and opaque directories need real root. That one test,
-`privileged_mounts::whiteout_and_opaque_hide_lower_entries_without_deleting_them`,
-stays `#[ignore]`d and runs in CI's `privileged-mounts` job.
+whiteouts and opaque directories need real root, and so does the
+upper-filesystem probe as a whole, whose first step sets a `trusted.*` xattr.
+Those two tests,
+`privileged_mounts::whiteout_and_opaque_hide_lower_entries_without_deleting_them`
+and `privileged_mounts::the_upper_fs_probe_as_root_passes_and_leaves_nothing`,
+stay `#[ignore]`d and run in CI's `privileged-mounts` job. The probe's steps
+after the xattr run rootless in the `kernel_tests` module of
+`nails-core/src/preflight/checks/upper_fs_probe/tests.rs`: its trial overlay
+works while the namespace's mount table neither lists it nor signals a change,
+and nothing holds its upper once its descriptor is closed.
 
 ### (b) Recorded real-world fixtures
 
@@ -166,7 +173,7 @@ owes one.
 - **CI:** the `rust` job installs `nftables`, loads the `dummy` and `nf_tables`
   modules, clears `kernel.apparmor_restrict_unprivileged_userns` on the Ubuntu
   runner and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts` job runs the
-  whiteout test as root.
+  whiteout test and the upper-filesystem probe test as root.
 - **VM:** the suites in `nix/e2e-tests`, as its README describes. When a captured
   format changes, refresh the fixture as the fixture README says.
 

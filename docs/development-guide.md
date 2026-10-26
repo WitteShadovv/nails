@@ -73,10 +73,11 @@ only once `pkgs.nftables` is in `environment.systemPackages` (or
 `networking.nftables.enable` is set). Where the kernel does not load the
 dummy module on demand, run `sudo modprobe dummy` first.
 
-One test needs real root: the whiteout and opaque-directory test in
-`privileged_mounts.rs` needs `trusted.*` xattrs, which a user namespace cannot
-set. It is `#[ignore]`d and CI runs it in the dedicated `privileged-mounts` job
-of `ci.yml` on every PR, which `gate` aggregates.
+Two tests need real root: the whiteout and opaque-directory test and the test
+of the whole upper-filesystem probe in `privileged_mounts.rs` need `trusted.*`
+xattrs, which a user namespace cannot set. They are `#[ignore]`d and CI runs
+them in the dedicated `privileged-mounts` job of `ci.yml` on every PR, which
+`gate` aggregates.
 
 The whole-root session's mechanics have a rootless real-kernel tier of their
 own, `nails-core/tests/whole_root_kernel.rs`. Each test re-runs itself in a
@@ -164,12 +165,12 @@ for line in sys.stdin:
         print(msg["executable"])
 ')
 
-# 2. Run the ignored test in a fresh private mount namespace.
+# 2. Run the ignored tests in a fresh private mount namespace.
 sudo unshare --mount --propagation private "$bin" --ignored --test-threads=1
 ```
 
-`--ignored` selects exactly the root-only test; the other tests of the binary
+`--ignored` selects exactly the root-only tests; the other tests of the binary
 run rootless in the normal test run.
 
 This is the same command the CI `privileged-mounts` job runs; it is part of the
-required `gate` check, so the test must pass before a PR can merge.
+required `gate` check, so the tests must pass before a PR can merge.
