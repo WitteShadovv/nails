@@ -101,7 +101,7 @@ fn classify_trial_overlay_names_vfat() {
     assert!(result.is_fail());
     let message = result.message();
     assert!(message.contains("vfat"));
-    assert!(message.contains("overlay mount"));
+    assert!(message.contains("overlay with its layers on the hidden root"));
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn a_missing_capability_on_an_unknown_filesystem_leaves_the_type_out() {
     assert!(
         result
             .message()
-            .contains("overlay mount over the hidden root failed")
+            .contains("overlay with its layers on the hidden root could not be mounted or used")
     );
     assert!(
         !result.message().contains("is on a"),
