@@ -265,9 +265,10 @@ pub struct Plan {
     /// (decoy swap, decoy filesystems that would be mounted read-write).
     #[serde(default)]
     pub masks: Vec<String>,
-    /// Boot-loader units masked in the hidden root, best effort: they write
-    /// to the boot filesystems at every start, which the hidden root has
-    /// read-only, so they would only fail there. Kept apart from
+    /// Units masked in the hidden root alone, best effort: units of the decoy
+    /// that would only fail there and whose job the hidden root does not
+    /// need, the boot-loader units that write to the read-only boot
+    /// filesystems at every start among them. Kept apart from
     /// [`masks`](Self::masks), without which the entry must not happen.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boot_masks: Vec<String>,

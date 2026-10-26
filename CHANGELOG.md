@@ -216,6 +216,13 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- Units that only fail in the hidden root are masked there, as the boot-loader units already were.
+  On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
+  overlay refuses the decoy root's fstab options, and so did `systemd-growfs-root.service`, which
+  cannot grow it. On Ubuntu 26.04, GRUB's boot-record unit is `grub2-common.service`, which failed
+  in every hidden session entered with `/boot` mounted (`grub-editenv` cannot write the read-only
+  `grubenv`); it is now masked like `grub-common.service` on Debian and Ubuntu 24.04. The masks
+  hold in the hidden session only, and the decoy runs the units as before.
 - `nails rehearse scan` reports more storage it cannot vouch for as "not checked" (exit 9) where it
   used to report a clean pass (exit 0). An offline image or an unmounted `--device` that is an
   encrypted container (LUKS or BitLocker) is reported "not checked" with the advice to scan its

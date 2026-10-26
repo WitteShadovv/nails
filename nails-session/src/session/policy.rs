@@ -55,19 +55,10 @@ use super::fstab::{FstabEntry, automount_unit, mount_unit, swap_unit};
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
 use std::path::{Component, Path, PathBuf};
 
-/// Mount points whose filesystem is kept read-only in the hidden root.
+/// Mount points whose filesystem is kept read-only in the hidden root. The
+/// units that write there at every start are masked in the hidden root
+/// ([`super::hidden_masks`]).
 pub const BOOT_PATHS: &[&str] = &["/boot", "/boot/efi", "/efi"];
-
-/// Units that write to the boot filesystems at every start: systemd-boot's
-/// random seed, and GRUB's record of a good boot on Debian and Ubuntu. On the
-/// read-only boot filesystems they would only fail in every hidden session,
-/// so the entry masks those the hidden root has, in the hidden root alone. The
-/// decoy runs them at its own start, as it always does.
-pub const BOOT_WRITER_UNITS: &[&str] = &[
-    "systemd-boot-random-seed.service",
-    "grub-common.service",
-    "grub-initrd-fallback.service",
-];
 
 /// What to do with one fstab entry.
 #[derive(Debug, Clone, PartialEq, Eq)]

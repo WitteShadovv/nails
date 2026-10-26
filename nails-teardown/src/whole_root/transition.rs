@@ -13,13 +13,13 @@
 //! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
 //!   the decoy units the hidden systemd must never start and, best effort, the
-//!   boot-loader units that would only fail on the read-only boot filesystems,
-//!   install the hidden session's runtime units (and, opted in, the udev rule
-//!   that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
-//!   narrow the `/run` snapshot to what the decoy's own shutdown left, drop the
-//!   `utab` lines of the mounts the switch leaves behind
-//!   ([`crate::whole_root::utab`]), copy the decoy's records
-//!   ([`crate::whole_root::run_records`]), and record the entry.
+//!   units that would only fail in the hidden root, install the hidden
+//!   session's runtime units (and, opted in, the udev rule that keeps unused
+//!   disks read-only, [`crate::whole_root::disk_guard`]), narrow the `/run`
+//!   snapshot to what the decoy's own shutdown left, drop the `utab` lines of
+//!   the mounts the switch leaves behind ([`crate::whole_root::utab`]), copy
+//!   the decoy's records ([`crate::whole_root::run_records`]), and record the
+//!   entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
@@ -384,7 +384,7 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     }
     // The session's own units (watcher, sleep guard) are best-effort, and so
     // is the read-only rule for unused disks: the watcher sweeps them too. So
-    // are the boot-loader masks, which only keep units from failing.
+    // are the masks of the units that would only fail in the hidden root.
     let _ = runtime_units::install_units(&env.run, &plan.session_units);
     if plan.read_only_disks {
         let _ = disk_guard::install_rule(&env.run, &env.runtime_dir.join(BINARY_NAME));

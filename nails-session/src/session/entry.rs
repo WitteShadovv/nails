@@ -25,14 +25,17 @@
 //!    garbage collection cannot break it ([`super::store`]), and activated
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
 //!    generation's own fstab for what the decoy's did not cover;
-//! 7. the decoy filesystems the way back needs carried onto the hidden volume,
+//! 7. the masks the entry transition writes at the switch: the fstab
+//!    policy's and the units that would only fail in the hidden root
+//!    ([`super::hidden_masks`]);
+//! 8. the decoy filesystems the way back needs carried onto the hidden volume,
 //!    and the decoy's mounts recorded for the way back to make again
 //!    ([`super::way_back`]); `/run` bound in and everything below the next
 //!    root made private (its own mount stays shared until the switch, so a
 //!    rollback reaches the copies other mount namespaces hold; see
 //!    [`nextroot`]); the init checked the way PID 1 will, and the soft-reboot
 //!    units the way back needs found in the next root;
-//! 8. the plan armed for the entry.
+//! 9. the plan armed for the entry.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
 //! must never be left behind, or a later plain reboot would enter it. A
@@ -41,6 +44,7 @@
 //! after the signal.
 
 use super::fstab::FstabEntry;
+use super::hidden_masks;
 use super::layout::{Layout, Paths};
 use super::network_state;
 use super::nixos;
@@ -596,10 +600,7 @@ fn build(
     }
     activation_step(ActivationPhase::MaskUnits, building);
     plan.masks = policy::masks(&decided.fstab, &decided.decisions);
-    plan.boot_masks = super::systemd::units_in_root(&nextroot, policy::BOOT_WRITER_UNITS)
-        .into_iter()
-        .filter(|unit| !plan.masks.contains(unit))
-        .collect();
+    plan.boot_masks = hidden_masks::units(&nextroot, &plan.masks);
     if let Some(operator) = &inputs.operator {
         super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }

@@ -173,12 +173,16 @@ distroVm.buildVmTest {
         )
     )
 
-    # Units that write to the boot filesystems at every start, masked in the
-    # hidden root where the decoy has them.
-    boot_writers = (
+    # Units that would only fail in the hidden root (writes to the read-only
+    # boot filesystems, a remount or resize of the root overlay), masked there
+    # where the decoy has them, as session::hidden_masks::UNITS lists them.
+    hidden_masked_units = (
         "systemd-boot-random-seed.service",
         "grub-common.service",
+        "grub2-common.service",
         "grub-initrd-fallback.service",
+        "systemd-remount-fs.service",
+        "systemd-growfs-root.service",
     )
 
 
@@ -301,6 +305,29 @@ distroVm.buildVmTest {
 
     def load_states(units):
         return {unit: unit_state(unit)["LoadState"] for unit in units}
+
+
+    def assert_nothing_requires(units):
+        # A masked unit gets no start job, and neither does a unit that
+        # requires it: such a unit would silently not start in the hidden root.
+        for unit in units:
+            out = vm.succeed(
+                f"systemctl show --property=RequiredBy,RequisiteOf,BoundBy {unit}"
+            )
+            needed = {
+                key: value
+                for key, value in (
+                    line.split("=", 1) for line in out.splitlines() if "=" in line
+                )
+                if value
+            }
+            assert not needed, f"{unit} is masked in the hidden root, but {needed} need it"
+
+
+    def failed_units(where):
+        # The units failed now, for the log. Never fails.
+        _, out = vm.execute("timeout 30 systemctl --failed --no-pager", check_return=False)
+        print(f"=== failed units: {where} ===\n{out.rstrip()}")
 
 
     def assert_quiet_kernel_log(where):
@@ -467,8 +494,11 @@ distroVm.buildVmTest {
         vm.succeed("systemctl daemon-reload && systemctl enable --now pidfile-probe.service")
         vm.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
         probe_report("the decoy")
-        decoy_boot_writers = load_states(boot_writers)
-        print(f"boot-loader units on the decoy: {decoy_boot_writers}")
+        decoy_masked_units = load_states(hidden_masked_units)
+        print(f"units the hidden root masks, on the decoy: {decoy_masked_units}")
+        assert_nothing_requires(
+            [unit for unit, state in decoy_masked_units.items() if state != "not-found"]
+        )
 
     with subtest("Ctrl+C during the pre-flight checks cancels the activation"):
         # A CPU quota stretches the activation, so the interrupt reaches it
@@ -509,9 +539,10 @@ distroVm.buildVmTest {
         if blk_availability:
             assert_guarded_blk_availability("the first session")
         assert_quiet_kernel_log("the first session")
-        # The boot-loader units the decoy has are masked in the hidden root.
-        for unit, state in load_states(boot_writers).items():
-            if decoy_boot_writers[unit] != "not-found":
+        # The units that would only fail in the hidden root are masked there
+        # where the decoy has them.
+        for unit, state in load_states(hidden_masked_units).items():
+            if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden root: {state}"
         vm.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
         probe_report("the first hidden session")
@@ -593,7 +624,9 @@ distroVm.buildVmTest {
         # left its file; the way back removed it, so the decoy's copy starts.
         probe_report("after the emergency")
         vm.wait_for_unit("pidfile-probe.service")
-        assert load_states(boot_writers) == decoy_boot_writers, "the decoy's own units again"
+        assert load_states(hidden_masked_units) == decoy_masked_units, (
+            "the decoy's own units again"
+        )
         assert_quiet_kernel_log("after the emergency")
 
     with subtest("a second session ends with deactivate"):
@@ -621,6 +654,7 @@ distroVm.buildVmTest {
             # until the way back has switched.
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
+        failed_units("the second hidden session")
         # The rehearsal's first step, and the refusal of a scan in the
         # planting session.
         rc, out, err = rehearse("plant --user root")
@@ -650,6 +684,7 @@ distroVm.buildVmTest {
             for target in boot_mounts:
                 vm.succeed(f"mountpoint -q {target}")
         probe_report("after deactivate")
+        failed_units("after deactivate")
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
 
