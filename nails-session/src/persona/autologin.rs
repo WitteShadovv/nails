@@ -21,8 +21,8 @@
 //!   `/etc/plasmalogin.conf.d` and `/etc/plasmalogin.conf` in the same way:
 //!   `User=` in `[Autologin]`, and since 6.8 in the `[Autologin][seat0]`
 //!   group of the seat when it has one. Up to 6.6 it parsed them as SDDM
-//!   does, since 6.7 through KConfig ([`kconfig`]); an account either way of
-//!   reading names counts.
+//!   does, since 6.7 through KConfig ([`kconfig`]), whose entry map changed
+//!   in KDE Frameworks 6.29; an account any of these readings names counts.
 //! - LightDM reads the `*.conf` files in `lightdm/lightdm.conf.d` below
 //!   `/usr/share`, `/usr/local/share` and `/etc/xdg`, then in
 //!   `/etc/lightdm/lightdm.conf.d`, then `/etc/lightdm/lightdm.conf`, each a
@@ -58,6 +58,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use super::inventory::PersonaSource;
+use kconfig::Frameworks;
 use sddm::Qt;
 
 /// Where GDM may read its configuration, by build.
@@ -170,7 +171,7 @@ fn sddm_accounts<F: PersonaSource>(fs: &F) -> Vec<String> {
 }
 
 /// The accounts Plasma Login Manager logs in, by SDDM's parser on Qt 6 and
-/// by KConfig's.
+/// by KConfig's, with the entry map of KDE Frameworks before 6.29 and since.
 fn plasma_login<F: PersonaSource>(fs: &F) -> Vec<String> {
     let config = QtConfig::read(fs, &PLASMA_LOGIN_DIRS, PLASMA_LOGIN_FILE);
     let seat = format!("Autologin\u{1d}{SEAT}");
@@ -183,7 +184,10 @@ fn plasma_login<F: PersonaSource>(fs: &F) -> Vec<String> {
                     order.iter().map(|(text, _)| *text),
                     Qt::Six,
                 ));
-                accounts.extend(kconfig::users(&kconfig_sources(order), &groups));
+                let sources = kconfig_sources(order);
+                for frameworks in [Frameworks::Before6_29, Frameworks::Since6_29] {
+                    accounts.extend(kconfig::users(&sources, &groups, frameworks));
+                }
             }
         }
         None => {

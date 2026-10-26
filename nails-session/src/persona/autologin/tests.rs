@@ -547,20 +547,66 @@ fn plasma_login_reads_the_main_file_past_a_value_only_the_defaults_hold() {
     );
 }
 
+#[test]
+fn plasma_login_reads_as_kconfig_before_6_29_too() {
+    // On KDE Frameworks 6.26 to 6.28 the deletion makes no entry, so bob is
+    // logged in; since 6.29 it locks the key, and SDDM's parser reads no
+    // `[Autologin][$i]`.
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "50-lock.conf",
+        "[Autologin][$i]\nUser[$d]\nUser=bob\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["bob"]));
+
+    // There the immutable group refuses the first alice and lets the last
+    // one in as a new key; since 6.29 the last one changes nothing. Only
+    // KConfig decodes the escape.
+    let fs = MockFilesystem::new();
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "10-a.conf",
+        "[Autologin]\nUser[$d]\n[Autologin][$i]\n",
+    );
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "50-b.conf",
+        "[Autologin]\nUs\\x65r=alice\n\\=x\n",
+    );
+    drop_in(
+        &fs,
+        PLASMA_LOCAL,
+        "60-c.conf",
+        "[Autologin]\nUs\\x65r=alice\n",
+    );
+    assert_eq!(accounts_of(&fs), names(&["alice"]));
+}
+
 // --- KConfig, as Plasma Login Manager reads it since 6.7 ---
 
-/// What KConfig reads for `[Autologin]` and the first seat's group from
-/// drop-ins `extras` and then the main file `main`, sorted, each once.
-fn kconfig(extras: &[&str], main: Option<&str>) -> Vec<String> {
+/// What KConfig with the entry map of `frameworks` reads for `[Autologin]`
+/// and the first seat's group from drop-ins `extras` and then the main file
+/// `main`, sorted, each once.
+fn kconfig_on(frameworks: Frameworks, extras: &[&str], main: Option<&str>) -> Vec<String> {
     let mut sources: Vec<kconfig::Source<'_>> = extras
         .iter()
         .map(|text| kconfig::Source { text, main: false })
         .collect();
     sources.extend(main.map(|text| kconfig::Source { text, main: true }));
-    let mut users = kconfig::users(&sources, &["Autologin", "Autologin\u{1d}seat0"]);
+    let groups = ["Autologin", "Autologin\u{1d}seat0"];
+    let mut users = kconfig::users(&sources, &groups, frameworks);
     users.sort();
     users.dedup();
     users
+}
+
+/// What KConfig of KDE Frameworks 6.29 and later reads, as [`kconfig_on`].
+fn kconfig(extras: &[&str], main: Option<&str>) -> Vec<String> {
+    kconfig_on(Frameworks::Since6_29, extras, main)
 }
 
 #[test]
@@ -739,11 +785,46 @@ fn kconfig_keeps_the_entry_of_the_defaults_apart_from_the_one_it_reads() {
     // so alice stays out of the entry read; `[$e]` makes it another entry.
     let deleted = "[Autologin]\nUser[$d]\n[Autologin][$i]\n";
     let refused = "[Autologin]\nUser=alice\n\\=x\n";
-    assert!(kconfig(&[deleted, refused, "[Autologin]\nUser=alice\n"], None).is_empty());
+    let again = "[Autologin]\nUser=alice\n";
+    assert!(kconfig(&[deleted, refused, again], None).is_empty());
     assert_eq!(
         kconfig(&[deleted, refused, "[Autologin]\nUser[$e]=alice\n"], None),
         names(&["alice"])
     );
+    // Before 6.29 the deletion made no entry and the immutable group
+    // refused the first alice, so the last one is a new key.
+    assert_eq!(
+        kconfig_on(Frameworks::Before6_29, &[deleted, refused, again], None),
+        names(&["alice"])
+    );
+}
+
+#[test]
+fn kconfig_before_6_29_deletes_the_entry_it_reads_and_copies_the_defaults_over_it() {
+    let before = |extras: &[&str]| kconfig_on(Frameworks::Before6_29, extras, None);
+    // A drop-in's `[$d]` deletes the entry read and keeps the defaults'
+    // alice, which a later alice leaves as it was. Since 6.29 the deletion
+    // reaches both, and the later alice comes back.
+    let deleted = [
+        "[Autologin]\nUser=alice\n",
+        "[Autologin]\nUser[$d]\n",
+        "[Autologin]\nUser=alice\n",
+    ];
+    assert!(before(&deleted).is_empty());
+    assert_eq!(kconfig(&deleted, None), names(&["alice"]));
+    // A change to the defaults' entry is copied over the entry read
+    // unchecked: bob replaces a deletion marked immutable, which since 6.29
+    // locks the defaults' entry first. The main file cannot replace it.
+    let locked = ["[Autologin]\nUser=alice\n", "[Autologin]\nUser[$id]\n"];
+    let bob = "[Autologin]\nUser=bob\n";
+    assert_eq!(before(&[locked[0], locked[1], bob]), names(&["bob"]));
+    assert!(kconfig(&[locked[0], locked[1], bob], None).is_empty());
+    assert!(kconfig_on(Frameworks::Before6_29, &locked, Some(bob)).is_empty());
+    // Deleting a key that had no entry makes nothing, so bob is a new key,
+    // and the group turns immutable only once the file is read.
+    let lock = ["[Autologin][$i]\nUser[$d]\nUser=bob\n"];
+    assert_eq!(before(&lock), names(&["bob"]));
+    assert!(kconfig(&lock, None).is_empty());
 }
 
 #[test]

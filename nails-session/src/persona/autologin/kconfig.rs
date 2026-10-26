@@ -27,6 +27,13 @@
 //! that had no entry makes only the first, and an immutable group refuses a
 //! new second entry where it lets the first one change.
 //!
+//! That is the entry map of KDE Frameworks 6.29 and later. Plasma Login
+//! Manager 6.7 also runs on 6.26 to 6.28, whose map differs in three ways
+//! ([`Frameworks::Before6_29`]): a drop-in's `[$d]` deletes the entry
+//! `readEntry()` reads, deleting a key that had no entry makes nothing, and a
+//! change to the defaults' entry is copied over the other one unchecked. So
+//! there a later drop-in's value wins over a deletion marked immutable.
+//!
 //! A translation is read only in its language, and the language the display
 //! manager runs in is not in the files. So the files are read once in each
 //! language that matters: every one a translation names, `en_US` (which reads
@@ -50,16 +57,32 @@ pub(super) struct Source<'a> {
     pub(super) main: bool,
 }
 
+/// The KDE Frameworks release KConfig comes with, as far as its entry map
+/// goes: Plasma Login Manager 6.7 runs on 6.26 and later, 6.8 on 6.30 and
+/// later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Frameworks {
+    /// 6.26 to 6.28.
+    Before6_29,
+    /// 6.29 and later.
+    Since6_29,
+}
+
 /// The values of `User` in the groups `groups` after reading `sources` in
-/// order, in each language that reads them differently. A translated `User`
-/// in one of them counts as well, whatever comes after it: which value
-/// `readEntry()` then returns depends on more than the files tell. A value
-/// KConfig would expand (`[$e]`) counts as written.
-pub(super) fn users(sources: &[Source<'_>], groups: &[&str]) -> Vec<String> {
+/// order with the entry map of `frameworks`, in each language that reads
+/// them differently. A translated `User` in one of them counts as well,
+/// whatever comes after it: which value `readEntry()` then returns depends
+/// on more than the files tell. A value KConfig would expand (`[$e]`) counts
+/// as written.
+pub(super) fn users(
+    sources: &[Source<'_>],
+    groups: &[&str],
+    frameworks: Frameworks,
+) -> Vec<String> {
     let mut users = Vec::new();
     for locale in locales(sources) {
         let mut reader = Reader {
-            map: Map::default(),
+            map: Map::new(frameworks),
             wanted: groups,
             locale: &locale,
             translated: Vec::new(),
@@ -149,22 +172,33 @@ struct Entry {
 
 /// KConfig's entry map, as far as reading entries goes. A key read from a
 /// drop-in has an entry of the defaults beside the one `readEntry()` reads.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Map {
     /// By group, key and whether the entry is the defaults' one.
     entries: BTreeMap<(String, Vec<u8>, bool), Entry>,
     /// The markers of the groups that have one, and whether each group is
     /// immutable.
     groups: BTreeMap<String, bool>,
+    frameworks: Frameworks,
 }
 
 impl Map {
+    fn new(frameworks: Frameworks) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            groups: BTreeMap::new(),
+            frameworks,
+        }
+    }
+
     /// `KEntryMap::setEntry()`, into the defaults' entry when `default`:
     /// nothing changes an immutable entry, and an immutable group takes no
     /// new one. A change to the defaults' entry goes on to the other one,
-    /// through the same checks, unless it deletes a key that had no entry. A
-    /// key that is empty sets the group's marker instead, and so whether the
-    /// group is immutable.
+    /// through the same checks, unless it deletes a key that had no entry.
+    /// Before 6.29 such a deletion makes no entry at all, and a change to the
+    /// defaults' entry is copied over the other one unchecked. A key that is
+    /// empty sets the group's marker instead, and so whether the group is
+    /// immutable.
     fn set(&mut self, group: &str, key: &[u8], entry: Entry, default: bool) {
         if key.is_empty() {
             self.groups.insert(group.to_string(), entry.immutable);
@@ -178,14 +212,22 @@ impl Map {
             None => {
                 self.groups.entry(group.to_string()).or_insert(false);
                 if entry.value.is_none() {
-                    self.entries.insert(id, entry);
+                    if self.frameworks == Frameworks::Since6_29 {
+                        self.entries.insert(id, entry);
+                    }
                     return;
                 }
             }
         }
         self.entries.insert(id, entry.clone());
         if default {
-            self.set(group, key, entry, false);
+            match self.frameworks {
+                Frameworks::Since6_29 => self.set(group, key, entry, false),
+                Frameworks::Before6_29 => {
+                    let other = (group.to_string(), key.to_vec(), false);
+                    self.entries.insert(other, entry);
+                }
+            }
         }
     }
 
@@ -293,7 +335,10 @@ impl Reader<'_> {
                     immutable: immutable || state.group_immutable,
                     expand,
                 };
-                self.map.set(&state.group, &name, entry, !state.main);
+                // Before 6.29 a drop-in deletes the entry `readEntry()`
+                // reads, not the defaults' one.
+                let default = !state.main && self.map.frameworks == Frameworks::Since6_29;
+                self.map.set(&state.group, &name, entry, default);
             }
             Key::Set {
                 name,

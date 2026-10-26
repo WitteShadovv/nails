@@ -266,6 +266,10 @@ Where the files leave the account in doubt, it is listed:
   past such a line or stop there.
 - A Plasma Login Manager setting translated for a language, which the
   language it runs in decides, or expanded from the environment.
+- The KDE Frameworks release Plasma Login Manager 6.7 runs on, 6.26 or
+  later: before 6.29 KConfig keeps the settings of drop-ins differently, so
+  that a later drop-in's `User=` wins over a deletion marked immutable
+  (`User[$id]`). The files are read both ways.
 - GDM turned on without naming an account, which is listed as you.
 
 In these cases the list may name an autologin that does not happen, rather
