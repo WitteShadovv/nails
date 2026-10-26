@@ -269,7 +269,7 @@ class MainTest(unittest.TestCase):
             "at 18 minutes."
         )
         self.assertIn(message, err)
-        self.assertNotIn("::warning", err)
+        self.assertNotIn("::", err)
         self.assertIn(message, self.summary.read_text(encoding="utf-8"))
 
     def test_one_shard(self) -> None:
@@ -285,15 +285,24 @@ class MainTest(unittest.TestCase):
         self.assertEqual(json.loads(outputs["matrix"]), {"include": []})
         self.assertIn("no mutable code", self.summary.read_text(encoding="utf-8"))
 
-    def test_a_diff_too_large_is_reported_and_passes(self) -> None:
+    def test_a_diff_too_large_fails_and_says_nothing_was_tested(self) -> None:
+        # The plan still prints its outputs, those of a plan without shards,
+        # before it fails.
         code, outputs, err = self.run_main(listing(1000))
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 1)
         self.assertEqual(outputs["shards"], "0")
         self.assertEqual(json.loads(outputs["matrix"]), {"include": []})
-        self.assertIn("::warning title=Diff too large for mutation testing::", err)
+        message = (
+            "The diff holds 1000 mutants, more than the lane can test: 12 shards "
+            "of 66, in 30-minute time boxes, hold 792. No shard runs, so none of "
+            "the diff's mutants is tested, and the lane fails."
+        )
+        self.assertIn(
+            "::error title=Diff too large for mutation testing::" + message, err
+        )
         summary = self.summary.read_text(encoding="utf-8")
-        self.assertIn("The diff holds 1000 mutants, more than the lane can", summary)
-        self.assertIn("hold 792. No shard runs and the lane passes", summary)
+        self.assertIn(message, summary)
+        self.assertNotIn("passes", summary)
 
     def test_a_listing_it_cannot_read_fails_without_outputs(self) -> None:
         for text in (None, "not json", '{"mutants": []}'):

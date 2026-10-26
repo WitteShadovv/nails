@@ -1,32 +1,34 @@
 name: Mutants (in diff)
 
 # A non-blocking pull-request lane that mutation-tests only the lines the pull
-# request changed (cargo-mutants --in-diff), apart from the weekly full sweep in
-# scheduled.yml. It never gates the merge: surviving mutants are a triage
-# artifact for the integration log, and a change that touches no mutable code is
-# a clean pass. A shard goes red when a mutant's build failed for want of disk,
-# memory or I/O: cargo-mutants counts that mutant as unviable, but it was never
-# tested. The lane is for the diff of a feature pull request: it catches a
-# coverage gap in a change as that change lands on `next`.
+# request changed (cargo-mutants --in-diff). It is informational and never
+# gates the merge: a pull request can merge into `next` with a shard of this
+# lane red, cancelled or skipped, and nothing in CI re-runs such a shard.
+# Surviving mutants are a triage artifact for the integration log, and a change
+# that touches no mutable code is a clean pass. A shard goes red when a
+# mutant's build failed for want of disk, memory or I/O: cargo-mutants counts
+# that mutant as unviable, but it was never tested. The lane is for the diff of
+# a feature pull request: it shows a coverage gap in a change as that change
+# lands on `next`.
 #
 # The lane sizes itself to the diff. The plan job lists the diff's mutants,
 # which builds nothing, and splits them over as many shards as keep each inside
 # its time box with a margin, at most twelve (`just mutants-in-diff-plan`;
 # ci/mutants_plan.py holds the numbers and where they come from). A diff too
 # large for twelve shards in the ordinary 15-minute box gets longer boxes, up to
-# 30 minutes. A diff too large even for those runs no shard: the plan's job
-# summary and a warning give its count, and the lane passes, since it gates
-# nothing and the weekly sweep still mutates the code it covers. A diff with no
-# mutant runs the plan job alone. A shard that runs out of its time box is
-# stopped there and goes red, and it still uploads its report and lists in the
-# job summary the survivors it found and the mutants it never reached.
+# 30 minutes. A diff too large even for those runs no shard, so none of its
+# mutants is tested: the plan job fails with an error that gives the count. A
+# diff with no mutant runs the plan job alone. A shard that runs out of its
+# time box is stopped there and goes red, and it still uploads its report and
+# lists in the job summary the survivors it found and the mutants it never
+# reached.
 #
-# It runs on pull requests into `next`, not into `main`. A `next` -> `main`
-# release pull request carries the whole accumulated round, whose diff holds
-# more mutants than even the longest time boxes can test, and re-testing them
-# proves nothing, because every line in that diff already went through this
-# lane on the feature pull request that added it. The weekly full sweep in
-# scheduled.yml is the release-level backstop.
+# It runs on pull requests into `next`, not into `main`, so a `next` -> `main`
+# release pull request gets no in-diff run: its diff carries the whole round,
+# more mutants than even the longest time boxes can test. The weekly sweep in
+# scheduled.yml does not stand in for it: it runs on `main`, and it mutates
+# only its three directories, less the files that mutants_skipped in the
+# justfile names, and nothing in the other crates.
 
 on:
   pull_request:
@@ -83,6 +85,7 @@ jobs:
           git diff HEAD^1 HEAD > "$RUNNER_TEMP/pr.diff"
           echo "Changed lines in the diff: $(wc -l < "$RUNNER_TEMP/pr.diff")"
 
+      # Fails, after it writes its outputs, for a diff too large for the lane.
       - name: Plan the shards
         id: plan
         run: just mutants-in-diff-plan "$RUNNER_TEMP/pr.diff" >> "$GITHUB_OUTPUT"
@@ -90,8 +93,8 @@ jobs:
   in-diff:
     name: In-diff mutants (shard ${{ matrix.shard }}/${{ matrix.shards }})
     needs: plan
-    # No shard runs for a diff without mutants or with more than the lane can
-    # test; the plan job's summary says which.
+    # No shard runs for a diff without mutants, and none for a diff with more
+    # than the lane can test, whose plan job fails.
     if: needs.plan.outputs.shards != '0'
     runs-on: ubuntu-26.04
     # The mutation step keeps to the shard's time box (see there); this limit
