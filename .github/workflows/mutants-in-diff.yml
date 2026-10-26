@@ -17,7 +17,9 @@ name: Mutants (in diff)
 # 30 minutes. A diff too large even for those runs no shard: the plan's job
 # summary and a warning give its count, and the lane passes, since it gates
 # nothing and the weekly sweep still mutates the code it covers. A diff with no
-# mutant runs the plan job alone.
+# mutant runs the plan job alone. A shard that runs out of its time box is
+# stopped there and goes red, and it still uploads its report and lists in the
+# job summary the survivors it found and the mutants it never reached.
 #
 # It runs on pull requests into `next`, not into `main`. A `next` -> `main`
 # release pull request carries the whole accumulated round, whose diff holds
@@ -92,8 +94,9 @@ jobs:
     # test; the plan job's summary says which.
     if: needs.plan.outputs.shards != '0'
     runs-on: ubuntu-26.04
-    # The shard's time box from the plan; cargo-mutants' own --timeout bounds
-    # a single mutant so one slow test cannot eat the whole box.
+    # The mutation step keeps to the shard's time box (see there); this limit
+    # from the plan gives the job the box and a few minutes for the steps
+    # around it, and only a step that hangs reaches it.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       # One slow or red shard must not cancel the others; each reports on its
@@ -129,12 +132,21 @@ jobs:
       # there. /tmp on the ubuntu-26.04 runners is too small for a build of the
       # workspace (the copy fails with "Disk quota exceeded"), so the copy goes
       # to the runner's disk instead.
+      #
+      # The recipe stops cargo-mutants when the shard's time box runs out,
+      # reports the mutants tested by then and fails, so the shard goes red and
+      # the upload below still runs. cargo-mutants' own --timeout bounds a
+      # single mutant, so one slow test cannot eat the whole box. A
+      # timeout-minutes of the step would not do: GitHub stops a step that
+      # runs over it by signalling the step's shell alone, and cargo-mutants
+      # would go on testing, and writing its report, while the upload reads it.
       - name: Mutate the changed lines
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ matrix.shards }}
+          MINUTES: ${{ matrix.minutes }}
           TMPDIR: ${{ runner.temp }}
-        run: just mutants-in-diff "$RUNNER_TEMP/pr.diff" "$SHARD" "$SHARDS"
+        run: just mutants-in-diff "$RUNNER_TEMP/pr.diff" "$SHARD" "$SHARDS" "$MINUTES"
 
       - name: Upload the mutants report
         if: ${{ !cancelled() }}

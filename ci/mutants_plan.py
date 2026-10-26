@@ -52,9 +52,16 @@ SECONDS_PER_MUTANT = 20
 MARGIN = Fraction(5, 4)
 # A shard's time box, in minutes: the lane's ordinary box, which holds 30
 # mutants at the cost above, and the longest a diff too large for MAX_SHARDS
-# ordinary shards may get (66 mutants), twice the ordinary one.
+# ordinary shards may get (66 mutants), twice the ordinary one. The box bounds
+# the shard's mutation step, which stops cargo-mutants when it runs out.
 SHARD_MINUTES = 15
 MAX_SHARD_MINUTES = 30
+# How much longer than its box a shard's job may run: the checkout and the
+# installs before the mutation step (a part of the setup above, at most 133 s
+# with the copy and the baseline), and after it the stop of cargo-mutants (a
+# minute at most), the report and the upload. Only a step that hangs reaches
+# the job's limit.
+JOB_MINUTES_PAST_BOX = 5
 # The most shards one diff gets. GitHub runs only so many hosted jobs at once
 # for an account, and every workflow of every open pull request draws on them:
 # a push to a pull request into next starts up to thirty other jobs (ci.yml's,
@@ -92,6 +99,11 @@ class Plan:
     @property
     def too_large(self) -> bool:
         return self.mutants > 0 and self.shards == 0
+
+    @property
+    def job_minutes(self) -> int:
+        """The limit of a shard's job: its time box and the steps around it."""
+        return self.minutes + JOB_MINUTES_PAST_BOX
 
 
 def shard_minutes(mutants: int) -> int:
@@ -143,10 +155,20 @@ def count_mutants(text: str) -> int:
 
 
 def matrix(planned: Plan) -> dict[str, list[dict[str, int]]]:
-    """The shard job's matrix: shard k of n and its time box, for each k."""
+    """The shard job's matrix, for each shard k of n.
+
+    ``minutes`` is the shard's time box, which the mutation step keeps to, and
+    ``timeout`` the limit of its job: GitHub's expressions cannot add the one to
+    the other.
+    """
     return {
         "include": [
-            {"shard": shard, "shards": planned.shards, "timeout": planned.minutes}
+            {
+                "shard": shard,
+                "shards": planned.shards,
+                "minutes": planned.minutes,
+                "timeout": planned.job_minutes,
+            }
             for shard in range(planned.shards)
         ]
     }

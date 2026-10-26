@@ -453,26 +453,42 @@ mutants_in_diff_options := "--all-features --cargo-arg=--locked --timeout 120"
 # so it fails the lane although cargo-mutants counts it as unviable
 # (ci/mutants_report.py). `diff` is a unified `git diff` of the change;
 # `shard`/`shards` split the work across a matrix (mutants-in-diff-plan sizes
-# it). The report goes to target/mutants/mutants.out, with the survivors in the
-# job summary.
-mutants-in-diff diff shard="0" shards="1":
+# it). `minutes`, when given, is the shard's time box: cargo-mutants is stopped
+# when it runs out, the mutants tested by then are still reported, and the
+# recipe fails, since the rest were never tested. The report goes to
+# target/mutants/mutants.out, with the survivors in the job summary.
+mutants-in-diff diff shard="0" shards="1" minutes="":
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p target/mutants
+    # On SIGTERM cargo-mutants ends the build or test it runs and exits,
+    # keeping the outcome of every mutant it finished. --foreground leaves it
+    # in this shell's process group, so a Ctrl-C still reaches it.
+    limit=()
+    if [ -n '{{ minutes }}' ]; then
+        limit=(timeout --foreground --kill-after=1m '{{ minutes }}m')
+    fi
     status=0
-    cargo mutants --in-diff '{{ diff }}' {{ mutants_in_diff_options }} \
+    "${limit[@]}" cargo mutants --in-diff '{{ diff }}' {{ mutants_in_diff_options }} \
         --shard '{{ shard }}/{{ shards }}' --output target/mutants || status=$?
     # Survivors (2) and timeouts (3) are reported, never a failure; a diff with
-    # no mutable code (0, no mutants) is a clean pass. Anything else, such as a
-    # baseline that fails without a mutation, still fails the lane.
+    # no mutable code (0, no mutants) is a clean pass. A run stopped at its time
+    # box (124) is reported as far as it got and then fails. Anything else, such
+    # as a baseline that fails without a mutation, still fails the lane.
     case "$status" in
-        0 | 2 | 3) ;;
+        0 | 2 | 3 | 124) ;;
         *) exit "$status" ;;
     esac
     # A shard of a small diff may hold a single mutant that does not compile,
     # so catching none is no failure here.
+    report=0
     python3 -m ci.mutants_report --title "Mutation testing on the diff" \
-        target/mutants/mutants.out
+        target/mutants/mutants.out || report=$?
+    if [ "$status" = 124 ]; then
+        echo "The shard ran out of its {{ minutes }}-minute time box." >&2
+        exit 1
+    fi
+    exit "$report"
 
 # Plan the shards of the in-diff lane for `diff`: list the diff's mutants with
 # the options mutants-in-diff tests with, which builds nothing, and split them

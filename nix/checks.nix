@@ -162,12 +162,13 @@ in
   # docs/ci.md plus .github/workflows (the workflow-documentation check), the
   # root Cargo.toml (the workspace members the path filters must cover), the
   # justfile (the in-diff mutation lane's plan must list with the cargo-mutants
-  # options its shards test with), and the E2E metadata sources the shard
-  # planner's tests scan (default.nix, the tests tree and the checked-in
-  # weights) and the helper library and batched scenarios the E2E
-  # synchronisation lint scans. git is a tool because changes.py shells out to
-  # it and its tests build throwaway repositories, and e2fsprogs because the
-  # oracle's free-space planting is tested on ext4 images it makes and checks.
+  # options its shards test with, and its shards take their time box), and the
+  # E2E metadata sources the shard planner's tests scan (default.nix, the tests
+  # tree and the checked-in weights) and the helper library and batched
+  # scenarios the E2E synchronisation lint scans. git is a tool because
+  # changes.py shells out to it and its tests build throwaway repositories, and
+  # e2fsprogs because the oracle's free-space planting is tested on ext4 images
+  # it makes and checks.
   ci-python = lint "ci-python" {
     files = fs.unions [
       ../ci
