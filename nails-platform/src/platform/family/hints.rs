@@ -6,11 +6,13 @@
 //! how to reach a release whose systemd supports soft-reboot
 //! (`systemd-version`).
 //!
-//! Both hints are built here, from the family table, so they place a host in
-//! the same family: each row of the table carries how its hosts upgrade, and
-//! the package manager each family installs with sits beside it. Every command
-//! is the one the distribution's own documentation gives; where it documents
-//! no single command, the hint names its guide instead.
+//! The upgrade hint comes from the family table: each row carries how its
+//! hosts upgrade, and a row's advice holds only for a host detection placed in
+//! that row's family. The install hint sits beside the table and keys on the
+//! detected family alone; the package each tool comes from is named by the
+//! check that requires the tool. Every command is the one the distribution's
+//! own documentation gives; where it documents no single command, the hint
+//! names its guide instead.
 
 use super::{FamilyRow, Gate, Kind, TABLE, Upgrade, either, supported_platforms};
 use crate::platform::{HostProfile, PlatformKind};
