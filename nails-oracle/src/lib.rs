@@ -16,9 +16,12 @@
 //! or a cited allowlist entry explains it. Three self-checks keep a clean
 //! verdict honest: planted positive controls must be detected (or the scan is
 //! blind), a coverage canary must be detected (or the scan did not read the
-//! image), and every analysis channel must report on every image (or the scan
-//! could not look through it). The verdict also names what it cannot see
-//! ([`unseen`]), so a clean one claims no more than its keys tell apart.
+//! image), and every analysis channel but the Nix store database's rows must
+//! report on every image (or the scan could not look through it). Only a Nix
+//! decoy has that database, so its rows are required instead wherever the
+//! restore carve holds it, and the scan stops without them. The verdict also
+//! names what it cannot see ([`unseen`]), so a clean one claims no more than
+//! its keys tell apart.
 //!
 //! The decision lives in [`verdict::scan_verdict`], a pure function unit-tested
 //! over synthetic findings. The [`scan`] parsers that feed it are lenient with

@@ -21,9 +21,13 @@
 //!    detected in `after` while `before` and the control cycle lack it, and
 //!    there is at least one to check;
 //! 5. checks the coverage canary, validated the same way, is detected; and
-//! 6. for a real scan, checks every analysis channel reported at least one
-//!    finding on every image: a tool that did not run, failed or read nothing
-//!    sees no residue, and no channel stands in for another.
+//! 6. for a real scan, checks every required analysis channel
+//!    ([`Tool::REQUIRED`]: restore, bulk_extractor and plaso) reported at
+//!    least one finding on every image: a tool that did not run, failed or
+//!    read nothing sees no residue, and no channel stands in for another. The
+//!    nix_db channel is not required, since only a Nix decoy has a store
+//!    database: the scan holds its rows to the database instead (see
+//!    [`crate::scan`]).
 //!
 //! The run is [`Status::Clean`] only when all six hold. [`verdict`] decides the
 //! first five over the findings alone, so a test world needs only the findings
@@ -124,11 +128,11 @@ pub enum Failure {
         /// Why it was rejected.
         reason: String,
     },
-    /// An analysis channel reported no finding at all for one image: the tool
-    /// did not run, failed, or read nothing. No other channel stands in for it
-    /// (the restore channel leaves the rotating journal files to plaso, and
-    /// every shipped self-check is a bulk_extractor finding), so a scan missing
-    /// a channel could not look and is never clean.
+    /// A required analysis channel ([`Tool::REQUIRED`]) reported no finding at
+    /// all for one image: the tool did not run, failed, or read nothing. No
+    /// other channel stands in for it (the restore channel leaves the rotating
+    /// journal files to plaso, and every shipped self-check is a bulk_extractor
+    /// finding), so a scan missing a channel could not look and is never clean.
     ChannelMissing {
         /// The silent channel.
         tool: Tool,
@@ -192,9 +196,9 @@ pub struct Verdict {
     /// Clean or fail.
     pub status: Status,
     /// Whether the scan was blind: a positive control was missing or already
-    /// in the baseline or, in [`scan_verdict`], an analysis channel reported
-    /// nothing for an image. Set independently of `status` so a blind run
-    /// reads unmistakably.
+    /// in the baseline or, in [`scan_verdict`], a required analysis channel
+    /// reported nothing for an image. Set independently of `status` so a blind
+    /// run reads unmistakably.
     pub blind: bool,
     /// A one-line human summary.
     pub summary: String,
@@ -594,9 +598,9 @@ fn summarize(
 }
 
 /// Decide the verdict over the normalized findings: the first five rules of the
-/// module docs. It does not check that every channel ran, so a real run is
-/// decided with [`scan_verdict`]. Pure: the whole decision is a function of the
-/// scans, the policy and the catalog.
+/// module docs. It does not check that the required channels reported, so a
+/// real run is decided with [`scan_verdict`]. Pure: the whole decision is a
+/// function of the scans, the policy and the catalog.
 pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdict {
     let (valid, mut failures) = validate_allowlist(&policy.allowlist.entries, catalog);
     let (checks, self_check_failures) = validate_self_checks(&policy.controls);
