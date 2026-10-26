@@ -24,6 +24,8 @@ const TEARDOWN_ALLOWED: &[&str] = &[
     "whole_root::plan::RUNTIME_DIR",
     "whole_root::nextroot::NEXTROOT",
     "whole_root::nextroot::is_mount_point",
+    "whole_root::skips::SKIP_DROPIN_NAME",
+    "whole_root::skips::SKIP_TEXT",
     "whole_root::transition::DROPIN_DIR",
     "whole_root::transition::DROPIN_NAME",
     "whole_root::transition::STOP_GUARD_NAME",

@@ -256,7 +256,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         preflight: Probe::Check("fstab-policy"),
         preflight_blocks: true,
         verify: Probe::None("verify cannot tell what a session wrote to another filesystem"),
-        mitigation: "NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, and masks swap, unmounted disks and systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch.",
+        mitigation: "NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, keeps swap and unmounted disks off (masked, or skipped where a boot target requires them, so that the target is still reached) and masks systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch.",
         doc_anchor: "decoy-requirements.md#writes-that-bypass-the-overlays",
         e2e: E2e::Test("soft-reboot-mechanics"),
         residual: false,

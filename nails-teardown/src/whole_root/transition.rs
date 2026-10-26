@@ -12,7 +12,8 @@
 //!
 //! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
-//!   the decoy units the hidden systemd must never start and the generators it
+//!   the decoy units the hidden systemd must never start, skip those a boot
+//!   target requires ([`crate::whole_root::skips`]), mask the generators it
 //!   must never run and, best effort, the units the hidden root does not need,
 //!   install the hidden session's runtime units (and, opted in, the udev rule
 //!   that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
@@ -55,7 +56,7 @@ use crate::whole_root::plan::{
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::{
-    boot_records, kernel_helpers, network, run_records, runtime_units, switch_refusal, utab,
+    boot_records, kernel_helpers, network, run_records, runtime_units, skips, switch_refusal, utab,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -350,6 +351,7 @@ fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
             &plan.generator_masks,
             &kept,
         );
+        skips::remove_skips(&env.run, &plan.skips, &kept);
         kernel_helpers::restore(&plan.kernel_settings);
         nextroot::remove_runtime_dir(&env.runtime_dir);
         if plan.run_noexec {
@@ -380,12 +382,16 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     if let Err(why) = repoint_and_check(env, &plan.hidden) {
         return disarm(env, plan, &why);
     }
-    // Without its masks the hidden systemd would swap onto, or mount read-write,
-    // a decoy disk: never enter without them, nor without the generator masks,
-    // which keep it from mounting the partitions the GPT auto-generator would
-    // find, or swapping onto them.
+    // Without its masks and skips the hidden systemd would swap onto, or mount
+    // read-write, a decoy disk: never enter without them, nor without the
+    // generator masks, which keep it from mounting the partitions the GPT
+    // auto-generator would find, or swapping onto them.
     let masked = runtime_units::mask_units(&env.run, &plan.masks)
         .map_err(|e| format!("could not mask decoy units: {e}"))
+        .and_then(|_| {
+            skips::skip_units(&env.run, &plan.skips)
+                .map_err(|e| format!("could not skip decoy units: {e}"))
+        })
         .and_then(|_| {
             runtime_units::mask_generators(&env.run, &plan.generator_masks)
                 .map_err(|e| format!("could not mask generators: {e}"))
@@ -483,10 +489,11 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     let no_snapshot = Snapshot::default();
     let kept = snapshot.as_ref().unwrap_or(&no_snapshot);
     remove_dropin(&env.run, kept);
-    // The masks go by name as well: the scrub removes them with the rest of
-    // the session's /run, but keeps them all when the snapshot is gone, and
-    // the decoy would start with its swap, its other disks, the units the
-    // hidden root does not need and its generators masked.
+    // The masks and skips go by name as well: the scrub removes them with the
+    // rest of the session's /run, but keeps them all when the snapshot is
+    // gone, and the decoy would start with its swap, its other disks, the
+    // units the hidden root does not need and its generators masked, and
+    // would skip the units the session skipped.
     runtime_units::remove_masks(
         &env.run,
         &plan.masks,
@@ -494,6 +501,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         &plan.generator_masks,
         kept,
     );
+    skips::remove_skips(&env.run, &plan.skips, kept);
     let runtime_rel = env
         .runtime_dir
         .strip_prefix(&env.run)

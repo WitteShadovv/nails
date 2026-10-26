@@ -383,7 +383,7 @@ fn decoy_filesystems(hidden_root: &Path) -> Vec<String> {
             .unwrap_or_default();
     let entries = fstab::parse_in_root(&text, Path::new("/"));
     let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
-    policy::decide_all(&entries, &mounts, hidden_root)
+    policy::decide_all(&entries, &mounts, hidden_root, &policy::device_present)
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
         .map(policy::Decision::describe)

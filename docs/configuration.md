@@ -132,25 +132,45 @@ gets a fixed decision before the switch:
 | `/boot`, `/boot/efi`, `/efi` (the ESP and boot partitions) | bound read-only |
 | a local filesystem mounted read-only in the decoy | bound read-only |
 | any other local filesystem mounted in the decoy (a separate `/home`, `/var` or `/nix`) | an overlay with its upper at `<hidden_volume_root>/root/mounts/<systemd-escaped path>/upper` |
-| swap | masked: never activated |
-| a local filesystem not mounted now but mounted at boot | masked, with its automount |
-| a network filesystem | masked: the hidden session would write to the server |
+| swap | kept off: never activated |
+| a local filesystem not mounted now but mounted at boot | kept unmounted, with its automount |
+| a network filesystem | kept unmounted: the hidden session would write to the server |
 | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
-| an overlay entry not mounted now, its upper on a disk | masked |
+| an overlay entry not mounted now, its upper on a disk | kept unmounted |
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
 | a `noauto` entry without an automount | left alone: never mounted |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | the hidden volume, or a path inside it | bound at its own path |
 
+A unit kept off is masked in `/run`, or skipped where a boot target requires
+it: `local-fs.target` requires the mount of an entry without `nofail` (or its
+automount), `remote-fs.target` that of a network filesystem, and `swap.target`
+a swap line without `nofail` or `noauto`. A masked unit there would leave the
+target unreached, silently: systemd drops the start of a target that requires a
+masked unit, and with it every unit only that target pulls in, such as another
+mount the target only wants. A skipped unit gets a runtime drop-in with a start
+condition that never holds (`ConditionPathExists=!/`): the hidden systemd
+starts it, finds the condition unmet, and reaches the target. The units its
+fstab line has it pull in that act on its disk (its fsck, its makefs or
+mkswap, its growfs, pcrfs and validatefs, and its quota units) are skipped with
+it, since they would start before its condition is tested. A skipped mount or
+swap still waits for its device, so an entry whose device is not there at
+activation (activation also asks systemd whether the device's unit is active)
+is masked instead, and `nails check` and `nails activate` warn that the hidden
+session will not reach its target; attach the device, or give the entry
+`nofail`. A device that is gone by the switch has its units masked then.
+An entry with `nofail` is masked: its target only wants it.
+
 An entry behind an automount (`x-systemd.automount`, often the ESP) that is
-bound read-only or overlaid keeps its automount masked: the hidden systemd
-would find the mount point taken and fail the automount, and with it
-`local-fs.target`, which would start the hidden session in emergency mode.
-Masks are runtime masks in `/run`, gone with the session. systemd's GPT
-auto-generator, which would mount partitions the fstab does not list, is masked
-the same way. `nails check` prints the decision for every entry (the
-`fstab-policy` check). A decoy partition you mount by hand inside the hidden
-session is outside this policy and is written directly.
+bound read-only or overlaid keeps its automount off as well: the hidden
+systemd would find the mount point taken and fail the automount, and with it
+`local-fs.target`, which would start the hidden session in emergency mode. The
+automount is skipped where `local-fs.target` requires it and masked where the
+entry has `nofail`. Masks and skips are runtime files in `/run`, gone with the
+session. systemd's GPT auto-generator, which would mount partitions the fstab
+does not list, is masked the same way. `nails check` prints the decision for
+every entry (the `fstab-policy` check). A decoy partition you mount by hand
+inside the hidden session is outside this policy and is written directly.
 
 A mount point the fstab names through a symlink (a `/home` that links to
 `var/home`) is decided, mounted and masked at its real path, the way systemd
@@ -159,10 +179,10 @@ resolves it: `var-home.mount` and `var-home.automount`, not `home.mount`.
 it in the hidden session's root, where a symlink a session changed can lead
 elsewhere, and decides the entry at that path too, which is `home.mount` once a
 session replaced the link with a directory. The hidden systemd finds the entry
-masked or in place there as well. A path that a link leads into the hidden
-volume is masked, not bound with the volume: the entry still names a decoy
-filesystem, which the hidden systemd would otherwise mount inside the hidden
-volume.
+kept off or in place there as well. A path that a link leads into the hidden
+volume is kept unmounted, not bound with the volume: the entry still names a
+decoy filesystem, which the hidden systemd would otherwise mount inside the
+hidden volume.
 
 The hidden volume must be storage of its own, because everything nails writes
 there would otherwise land on the decoy disk. The attach gate refuses a plain
