@@ -5,8 +5,8 @@
 # read text and data NAILS does not control: the kernel's and libmount's mount
 # tables, the kernel's compressed config, a decoy's fstab, crypttab, os-release,
 # package databases, the rows of its Nix store database the forensic oracle
-# reads, systemd, display-manager and NixOS configuration, udev's records, and
-# raw disks.
+# reads, systemd units and configuration, display-manager and NixOS
+# configuration, udev's records, and raw disks.
 # docs/testing-strategy.md says how to run a target; .clusterfuzzlite/ builds
 # them for CI.
 #
@@ -163,6 +163,13 @@ bench = false
 [[bin]]
 name = "package_drift"
 path = "fuzz_targets/package_drift.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unit_file"
+path = "fuzz_targets/unit_file.rs"
 test = false
 doc = false
 bench = false
