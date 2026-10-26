@@ -385,7 +385,7 @@ Rules for adding a scenario to a batch:
 
 | Batch | Former tests (aliases) | Node |
 | --- | --- | --- |
-| `preflight-checks` | preflight-nixos-config, preflight-nixos-build-target, preflight-upper-fs-capability, preflight-state-check | base node |
+| `preflight-checks` | preflight-nixos-config, preflight-nixos-build-target, preflight-upper-fs-capability, preflight-state-check; preflight-pending-offline-update was written as a scenario | base node |
 | `preflight-vfat-targets` | preflight-symlink-support | vm-config, nails, dosfstools |
 | `preflight-hidden-root` | preflight-hidden-volume, preflight-mount-namespace | vm-config, nails, e2fsprogs |
 | `init-config` | init-bootstrap, init-idempotency, init-refuse-overwrite, config-unknown-key | base node |
