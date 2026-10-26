@@ -576,8 +576,8 @@ fn test_nixos_config_check_fails_on_parse_error_before_mount() {
 #[test]
 fn nixos_config_check_performs_no_writes() {
     // A fully-staged, valid hidden layout: the check must only read it, never
-    // create or write any file. This pins the "preflight writes nothing"
-    // guarantee — all filesystem creation lives in `nails init`, not in a check.
+    // create or write any file. Creating the layout is the job of `nails init`
+    // and of activation's staging, never of this check.
     let fs = MockFilesystem::new();
 
     fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);

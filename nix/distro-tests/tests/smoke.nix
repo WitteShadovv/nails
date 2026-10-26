@@ -463,8 +463,8 @@ distroVm.buildVmTest {
         # on-disk /var/log/journal); create the directory in case an image ever
         # stops shipping it, so the refusal path is always exercised.
         vm.succeed("mkdir -p /var/log/journal")
-        # The check is read-only, so a refusal is a non-zero exit, not a side
-        # effect.
+        # check stages nothing, so its refusal is a non-zero exit with the
+        # reason and leaves nothing to undo.
         refusal = vm.fail(f"{nails_cmd} check --overlay-only 2>&1")
         assert "journal" in refusal.lower() or "persist" in refusal.lower(), (
             f"expected a decoy-persistence refusal, got: {refusal}"

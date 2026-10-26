@@ -1,4 +1,4 @@
-# Test 29: `activate --dry-run` and `check` are read-only
+# Test 29: `activate --dry-run` and `check` build and stage nothing
 #
 # With a hidden flake named but the hidden NixOS layout never staged, `nails
 # check --nixos-flake` reports its sections (pre-flight checks, the decoy
@@ -71,7 +71,7 @@ in
             for line in calls.splitlines()
             if line.startswith("nix-build") or " build " in f" {line} "
         ]
-        assert not builds, f"a read-only command started a build: {builds}"
+        assert not builds, f"check or activate --dry-run started a build: {builds}"
 
 
     machine.start()
@@ -99,7 +99,7 @@ in
         shim_env = install_build_shims()
         machine.fail("test -e /mnt/data/state.json")
 
-    with subtest("check reports readiness without mutating anything"):
+    with subtest("check reports readiness without building or staging anything"):
         check = run_command_capture(
             machine,
             "nails-check",
@@ -115,8 +115,8 @@ in
         ):
             assert section in out, f"missing {section!r} in check output: {out!r}"
         assert f"NixOS flake: {flake_ref}" in out, out
-        # The hidden layout was never staged, so the read-only check refuses
-        # (exit 4) with the nixos-config check instead of creating it.
+        # The hidden layout was never staged and check stages nothing, so it
+        # refuses (exit 4) with the nixos-config check instead of creating it.
         assert check["rc"] == 4, (
             f"expected check to refuse (rc=4), got rc={check['rc']}, stderr={check['stderr']!r}"
         )

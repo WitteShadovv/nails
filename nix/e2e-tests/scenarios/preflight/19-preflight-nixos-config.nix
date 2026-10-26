@@ -44,13 +44,13 @@ in
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
         with subtest("broken hidden hardware configuration blocks activation"):
-            # Activation stages the hidden layout before the read-only checks: the
-            # hidden hardware-configuration.nix becomes a wrapper importing
-            # ./nails/configuration.nix and the original is preserved verbatim as
-            # hardware-configuration.base.nix (all on the hidden volume). A file that
-            # merely lacks the import is therefore valid; a genuinely broken one (a
-            # syntax error) must make the nixos-config parse gate refuse before any
-            # next root is prepared.
+            # Activation stages the hidden layout before the checks, which never
+            # stage it themselves: the hidden hardware-configuration.nix becomes a
+            # wrapper importing ./nails/configuration.nix and the original is
+            # preserved verbatim as hardware-configuration.base.nix (all on the
+            # hidden volume). A file that merely lacks the import is therefore
+            # valid; a genuinely broken one (a syntax error) must make the
+            # nixos-config parse gate refuse before any next root is prepared.
             write_text_file(
                 "/mnt/data/root/upper/etc/nixos/hardware-configuration.nix",
                 "{ config, pkgs, ... }: { boot.loader.grub.enable = false;\n",

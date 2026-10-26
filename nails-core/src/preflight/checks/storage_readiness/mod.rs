@@ -92,9 +92,11 @@ impl StorageReadinessCheck {
         }
     }
 
-    /// Make the check read-only: it validates the layout without creating any
-    /// missing directory or changing permissions. Missing directories activation
-    /// would auto-create are reported as a warning rather than a failure.
+    /// Make the check leave the layout as it is: it validates the layout
+    /// without creating any missing directory or changing permissions, and its
+    /// write probe still makes and removes `.nails_write_test`. Missing
+    /// directories activation would auto-create are reported as a warning
+    /// rather than a failure.
     pub fn read_only(mut self) -> Self {
         self.read_only = true;
         self

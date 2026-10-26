@@ -48,7 +48,7 @@ pub struct PreflightOptions {
 }
 
 impl Default for PreflightOptions {
-    /// No flag given: the full registry, read-only.
+    /// No flag given: the full registry, with `read_only` on.
     fn default() -> Self {
         Self {
             overlay_only: false,
@@ -453,9 +453,10 @@ impl<F: Filesystem> NailsManager<F> {
     /// fails. Creates an empty state file when all pass.
     ///
     /// Activation passes [`EnterOptions::preflight`](super::EnterOptions::preflight).
-    /// The registry is read-only whatever `options.read_only` says: a refused
-    /// activation must leave nothing on the hidden volume, and the entry
-    /// creates the root overlay's directories itself once every check passed.
+    /// The registry keeps `read_only` on whatever `options.read_only` says: a
+    /// refused activation must leave nothing on the hidden volume, and the
+    /// entry creates the root overlay's directories itself once every check
+    /// passed.
     pub fn run_preflight_checks(&self, options: &PreflightOptions) -> Result<()> {
         let registry = self.preflight_registry(&PreflightOptions {
             read_only: true,

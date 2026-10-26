@@ -75,8 +75,8 @@ pub struct EnterOptions {
 
 impl EnterOptions {
     /// The pre-flight options of this activation: what `nails check` builds
-    /// from the same flags, so both run the same checks. The registry stays
-    /// read-only, as it does for `check`.
+    /// from the same flags, so both run the same checks. The registry keeps
+    /// `read_only` on, as it does for `check`.
     pub fn preflight(&self) -> PreflightOptions {
         PreflightOptions {
             overlay_only: self.overlay_only,
