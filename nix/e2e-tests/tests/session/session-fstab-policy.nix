@@ -2,11 +2,13 @@
 # a safe decision before the switch.
 #
 # The decoy here has an ESP at /boot, a separate ext4 filesystem at /srv/data,
-# one on LVM at /srv/files and a swap partition in its fstab, besides the root
-# and the VM's own Nix store. Like a Debian or Ubuntu host with dmsetup, it
-# also runs blk-availability.service (lib/blk-availability.nix), whose stop in
-# every soft-reboot unmounts the filesystems on device-mapper devices. In the
-# hidden session:
+# one on LVM at /srv/files, a disk at /srv/spare that it does not mount now and
+# a swap partition in its fstab, besides the root and the VM's own Nix store,
+# and a disk at /srv/native that a mount unit of its own mounts, outside the
+# fstab. Like a Debian or Ubuntu host with dmsetup, it also runs
+# blk-availability.service (lib/blk-availability.nix), whose stop in every
+# soft-reboot unmounts the filesystems on device-mapper devices. In the hidden
+# session:
 #
 #   - /boot is a read-only bind: a write fails with EROFS and the ESP is
 #     unchanged afterwards;
@@ -14,6 +16,12 @@
 #     write lands there and never on the extra disk;
 #   - the swap unit is masked, so the hidden systemd never swaps onto a decoy
 #     disk;
+#   - /srv/spare, which local-fs.target requires (no nofail), is skipped
+#     rather than masked: local-fs.target is reached, the disk stays
+#     unmounted and unchanged, and its fsck and makefs never start. A mask
+#     there would leave local-fs.target unreached without a failure;
+#   - /srv/native, mounted by the decoy's own unit, is an overlay whose upper
+#     is on the hidden volume, as an fstab line would be;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
@@ -66,6 +74,14 @@ in
           size = 64;
           driveConfig.deviceExtraOpts.serial = "lvm";
         }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "spare";
+        }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "native";
+        }
       ];
       boot.supportedFilesystems = [ "vfat" ];
       virtualisation.fileSystems = {
@@ -79,7 +95,24 @@ in
           fsType = "ext4";
           autoFormat = true;
         };
+        # No nofail: local-fs.target requires it, with its fsck and makefs.
+        "/srv/spare" = {
+          device = "/dev/disk/by-id/virtio-spare";
+          fsType = "ext4";
+          autoFormat = true;
+        };
       };
+      # A disk the decoy mounts through a unit of its own. The disk is empty
+      # at boot: the test makes its filesystem, then starts the mount.
+      systemd.mounts = [
+        {
+          what = "/dev/disk/by-id/virtio-native";
+          where = "/srv/native";
+          type = "ext4";
+          wantedBy = [ "local-fs.target" ];
+          unitConfig.ConditionPathExists = "/run/native-disk-ready";
+        }
+      ];
     };
 
   testScript = _: ''
@@ -90,6 +123,14 @@ in
 
     CONFIG = "/mnt/data/config/nails.toml"
     SWAP_UNIT = "dev-disk-by\\x2did-virtio\\x2dswap.swap"
+    SPARE = "/dev/disk/by-id/virtio-spare"
+    SPARE_UNIT = "srv-spare.mount"
+    # The units the fstab line of /srv/spare has its mount pull in, which act
+    # on its disk.
+    SPARE_CHECKERS = (
+        "systemd-fsck@dev-disk-by\\x2did-virtio\\x2dspare.service",
+        "systemd-makefs@dev-disk-by\\x2did-virtio\\x2dspare.service",
+    )
     LV = "/dev/mapper/vg0-files"
     BLK_UNIT = "blk-availability.service"
     BLKDEACTIVATE = "/bin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
@@ -103,6 +144,42 @@ in
 
     def blk_availability_stop():
         return machine.succeed(f"systemctl show -P ExecStop {BLK_UNIT}").strip()
+
+
+    def unit_props(unit, *props):
+        out = machine.succeed(
+            "systemctl show " + " ".join(f"-p {p}" for p in props) + f" '{unit}'"
+        )
+        return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+    def monotonic_us():
+        # The clock of systemd's *Monotonic timestamps, in microseconds. The
+        # boot clock /proc/uptime reads runs with it in a machine that never
+        # suspends, as this one.
+        return int(float(machine.succeed("cut -d' ' -f1 /proc/uptime").strip()) * 1_000_000)
+
+
+    def assert_skipped_here(unit, entered_after):
+        # The hidden PID 1 pulled the unit in and tested its condition, which
+        # was unmet, after the entry, and the unit's last run, if any, came
+        # before it: a soft-reboot can carry a unit's timestamps into the
+        # other root. Only a service has a main process start time.
+        props = unit_props(
+            unit,
+            "ConditionResult",
+            "ConditionTimestampMonotonic",
+            "ExecMainStartTimestampMonotonic",
+        )
+        assert props.get("ConditionResult") == "no", f"{unit}: {props}"
+        tested = int(props.get("ConditionTimestampMonotonic") or 0)
+        assert tested > entered_after, f"{unit}: {props}"
+        started = int(props.get("ExecMainStartTimestampMonotonic") or 0)
+        assert started < entered_after, f"{unit} ran on the decoy disk: {props}"
+
+
+    def spare_hash():
+        return machine.succeed(f"sha256sum {SPARE}").split()[0]
 
 
     machine.start()
@@ -132,6 +209,15 @@ in
         "echo decoy > /srv/files/decoy-file && sync"
     )
     esp_before = esp_hashes()
+    # The decoy's own unit mounts its disk once it has a filesystem.
+    machine.succeed(
+        "mkfs.ext4 -q /dev/disk/by-id/virtio-native && touch /run/native-disk-ready && "
+        "systemctl start srv-native.mount && echo decoy > /srv/native/decoy-file && sync"
+    )
+    # local-fs.target requires /srv/spare, which the decoy does not mount now:
+    # the hidden systemd would mount it read-write.
+    machine.succeed("mountpoint -q /srv/spare && umount /srv/spare")
+    spare_before = spare_hash()
 
     with subtest("blk-availability's stop unmounts the decoy's device-mapper filesystems"):
         # Started at boot, so every soft-reboot runs its stop. Stopping it here
@@ -164,7 +250,10 @@ in
         assert "/srv/data: overlaid" in out, out
         assert "/srv/files: overlaid" in out, out
         assert "masked" in out, out
+        assert "/srv/spare: skipped" in out, out
+        assert "/srv/native: overlaid" in out, out
 
+    entered_after = monotonic_us()
     canonical_activate(CONFIG, "--overlay-only", "activate")
 
     with subtest("the switch left the hidden volume and the carried LVM filesystem mounted"):
@@ -206,6 +295,35 @@ in
         machine.fail(f"systemctl start '{SWAP_UNIT}'")
         assert machine.succeed("swapon --show --noheadings").strip() == ""
 
+    with subtest("a disk local-fs.target requires is skipped, and the target reached"):
+        assert machine.succeed("systemctl is-active local-fs.target").strip() == "active"
+        spare = unit_props(SPARE_UNIT, "LoadState", "ActiveState", "ConditionResult")
+        assert spare == {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "ConditionResult": "no",
+        }, spare
+        machine.fail("mountpoint -q /srv/spare")
+        for unit in (SPARE_UNIT, *SPARE_CHECKERS):
+            assert_skipped_here(unit, entered_after)
+        failed = machine.succeed("systemctl --failed --no-legend --plain")
+        machine.log(f"failed units in the hidden session:\n{failed}")
+        for unit in (SPARE_UNIT, *SPARE_CHECKERS):
+            assert unit not in failed, failed
+        assert spare_hash() == spare_before, "the hidden session changed the skipped disk"
+
+    with subtest("a disk the decoy mounts through a unit of its own is overlaid"):
+        assert machine.succeed("findmnt -no FSTYPE /srv/native").strip() == "overlay"
+        assert machine.succeed("cat /srv/native/decoy-file").strip() == "decoy"
+        machine.succeed("echo hidden > /srv/native/hidden-file && sync")
+        machine.succeed("test -s /mnt/data/root/mounts/srv-native/upper/hidden-file")
+        machine.succeed(
+            "mkdir -p /run/peek && mount /dev/disk/by-id/virtio-native /run/peek "
+            "&& mount -o remount,bind,ro /run/peek"
+        )
+        machine.fail("test -e /run/peek/hidden-file")
+        machine.succeed("umount /run/peek && rmdir /run/peek")
+
     with subtest("the Nix store of the VM is overlaid too"):
         assert machine.succeed("findmnt -no FSTYPE /nix/store").strip() == "overlay"
         machine.succeed("test -x /run/current-system/systemd/lib/systemd/systemd")
@@ -223,6 +341,12 @@ in
         source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
         assert source == LV, f"/srv/files is {source!r} after the way back"
         assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
+        machine.fail("test -e /srv/native/hidden-file")
+        assert machine.succeed("cat /srv/native/decoy-file").strip() == "decoy"
+        # The decoy mounts its disk again, and skips none of its units.
+        machine.fail(f"test -e /run/systemd/system/{SPARE_UNIT}.d")
+        machine.succeed(f"systemctl start {SPARE_UNIT} && mountpoint -q /srv/spare")
+        assert machine.succeed("systemctl is-active local-fs.target").strip() == "active"
 
     with subtest("blk-availability's stop is back for the decoy's own shutdown"):
         machine.fail(f"test -e /run/systemd/system/{BLK_UNIT}.d")
