@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when an advisory ignore in deny.toml lacks a current expiry date.
+"""Fail when an advisory ignore in a deny.toml lacks a current expiry date.
 
 cargo-deny accepts only ``id`` and ``reason`` in an ignore entry, so the
 expiry lives in a comment: every entry of ``[advisories] ignore`` needs a
@@ -8,12 +8,15 @@ ignore is valid through its expiry day, and that day may lie at most
 ``--max-days`` ahead, so each exception is re-reviewed instead of silently
 outliving its reason.
 
+Without ``--config`` every cargo-deny policy of the repository is checked: the
+main workspace's deny.toml and the gui/ workspace's gui/deny.toml.
+
 tomllib decides which entries exist. The line scan only attaches comments to
 them, and any disagreement between the two is an error rather than a guess.
 
 Exit status: 0 when every ignore is current, 1 when at least one is not, and
-2 when deny.toml cannot be read or its ignore entries cannot be matched to
-lines.
+2 when a deny.toml cannot be read or its ignore entries cannot be matched to
+lines. Every file is checked and reported, and the worst status is returned.
 """
 
 from __future__ import annotations
@@ -26,7 +29,10 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "deny.toml"
+REPO = Path(__file__).resolve().parent.parent
+# Every cargo-deny policy of the repository: the main workspace's and that of
+# the gui/ workspace, which is a Cargo workspace of its own.
+DEFAULT_CONFIGS = (REPO / "deny.toml", REPO / "gui" / "deny.toml")
 DEFAULT_MAX_DAYS = 180
 
 _ADVISORIES_HEADER = re.compile(r"\s*\[\s*advisories\s*\]\s*(?:#.*)?")
@@ -158,13 +164,34 @@ def problems(ignores: list[Ignore], today: dt.date, max_days: int) -> list[str]:
     return out
 
 
+def check_config(config: Path, today: dt.date, max_days: int) -> int:
+    """Report on the ignores of one deny.toml and return its exit status."""
+    try:
+        ignores = parse_ignores(config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ConfigError) as err:
+        print(f"{config}: error: {err}", file=sys.stderr)
+        return 2
+    found = problems(ignores, today, max_days)
+    for problem in found:
+        print(f"{config}: {problem}", file=sys.stderr)
+    if found:
+        return 1
+    count = len(ignores)
+    print(f"{config}: {count} advisory ignore(s), all with a current expiry")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument(
         "--config",
+        dest="configs",
         type=Path,
-        default=DEFAULT_CONFIG,
-        help="deny.toml to check (default: the repository's)",
+        action="append",
+        help=(
+            "deny.toml to check, repeated for several (default: the "
+            "repository's deny.toml and gui/deny.toml)"
+        ),
     )
     parser.add_argument(
         "--today",
@@ -182,19 +209,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_days < 0:
         parser.error("--max-days must not be negative")
 
-    try:
-        ignores = parse_ignores(args.config.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ConfigError) as err:
-        print(f"{args.config}: error: {err}", file=sys.stderr)
-        return 2
-    found = problems(ignores, args.today, args.max_days)
-    for problem in found:
-        print(f"{args.config}: {problem}", file=sys.stderr)
-    if found:
-        return 1
-    count = len(ignores)
-    print(f"{args.config}: {count} advisory ignore(s), all with a current expiry")
-    return 0
+    configs = args.configs or DEFAULT_CONFIGS
+    return max(check_config(config, args.today, args.max_days) for config in configs)
 
 
 if __name__ == "__main__":

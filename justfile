@@ -15,6 +15,14 @@ default:
 
 shipped_targets := "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu"
 
+# The gui/ workspace's cargo-deny policy, which the recipes name with --config:
+# without it, cargo-deny takes the deny.toml nearest to gui/Cargo.toml, which
+# is the main one if this file goes missing, and the gui/ graph would pass the
+# main policy unnoticed. The path is absolute, so it does not depend on what
+# cargo-deny resolves a relative one against.
+
+gui_deny_config := justfile_directory() / "gui" / "deny.toml"
+
 # --- Rust quality gate ---
 
 # Check formatting without rewriting files: the workspace, then the fuzz, setup
@@ -232,19 +240,24 @@ ci-rust: fmt-check lint line-count fuzz-targets coverage doctest side-tests
 
 # --- Dependency policy ---
 
-# Check the shipped dependency graph against deny.toml (the CI merge gate).
-# One run per target: cargo-deny 0.20 accepts `--target` only once (fixed
-# upstream after 0.20.2), and the targets' graphs together are the shipped one.
+# Check the shipped dependency graph against deny.toml (the CI merge gate), and
+# the gui/ workspace's graph at the same scope against gui/deny.toml. One run
+# per target: cargo-deny 0.20 accepts `--target` only once (fixed upstream
+# after 0.20.2), and the targets' graphs together are the shipped one.
 deny *checks="advisories bans licenses sources":
     #!/usr/bin/env bash
     set -euo pipefail
     for target in {{ shipped_targets }}; do
         cargo deny --locked --exclude-dev --target "$target" check {{ checks }}
+        cargo deny --manifest-path gui/Cargo.toml --config '{{ gui_deny_config }}' \
+            --locked --exclude-dev --target "$target" check {{ checks }}
     done
 
-# Check every target and dev-dependency against deny.toml (weekly, never gates).
+# Check every target and dev-dependency against deny.toml, and those of the
+# gui/ workspace against gui/deny.toml (weekly, never gates).
 deny-full *checks="advisories bans licenses sources":
     cargo deny --locked check {{ checks }}
+    cargo deny --manifest-path gui/Cargo.toml --config '{{ gui_deny_config }}' --locked check {{ checks }}
 
 # Audit the dependency graph against the recorded supply-chain reviews
 # (cargo-vet): every third-party crate must be covered by an imported public

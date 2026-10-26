@@ -8,7 +8,7 @@ This guide documents the security validation mechanisms that are actually in use
 
 The primary CI workflow performs:
 
-- the dependency policy over the shipped dependency graph (`just deny`): bans, licenses and sources on every run; RustSec advisories and the `deny.toml` ignore expiry check when `Cargo.toml`, `Cargo.lock` or `deny.toml` change
+- the dependency policy over the shipped dependency graph (`just deny`), and over the graph of the `gui/` workspace against its own `gui/deny.toml`: bans, licenses and sources on every run; RustSec advisories and the ignore expiry check of both policies when a `Cargo.toml`, a `Cargo.lock` or a `deny.toml` of either workspace changes
 - the test suite with an enforced line-coverage threshold, the doctests and the privileged real-overlayfs tests, which support security-sensitive change control
 - the canonical Nix build of `.#nails-release` with an archive smoke test
 - the release SBOM and the VEX document, written and checked by `sbom.yml` as a release writes and checks them, on every push to `main` and on pull requests that change what they are made from; nothing is attested there
@@ -18,7 +18,7 @@ The primary CI workflow performs:
 The scheduled workflow never gates a merge. It runs:
 
 - the dependency policy over every target and dev-dependency (`just deny-full`)
-- the `deny.toml` ignore expiry check
+- the ignore expiry check of `deny.toml` and `gui/deny.toml`
 - two from-source builds of `.#nails-release` on fresh runners, compared byte for byte (`reproducibility.yml`)
 
 ### Weekly and on every push to main (`.github/workflows/scorecard.yml`)
@@ -89,7 +89,9 @@ grype sbom:sbom.cdx.json --vex musl.openvex.json
 
 Both recipes take the checks to run, for example `just deny advisories`.
 
-In CI, bans, licenses and sources are checked on every run. Advisories are checked when `Cargo.toml`, `Cargo.lock` or `deny.toml` change, and on manual runs. Advisory results follow the RustSec database rather than the change under review, so a newly published advisory does not turn unrelated pull requests or `main` red; the weekly full-graph scan reports it instead. Crates that never ship, such as wasm-only crates or benchmark dependencies, are outside the merge gate and covered only by that scan.
+The `gui/` workspace, where the graphical interface will be built, is a Cargo workspace of its own with a policy of its own, `gui/deny.toml`: the rules of `deny.toml` applied to its graph. Both recipes check it after `deny.toml`, at the same scope. The workspace has no third-party crate yet, so the policy allows no licence and ignores no advisory; a licence, an exception or an ignore that a crate of the interface needs goes into `gui/deny.toml`, with its reason, in the change that brings the crate in.
+
+In CI, bans, licenses and sources are checked on every run. Advisories are checked when a `Cargo.toml`, `Cargo.lock`, `gui/Cargo.lock`, `deny.toml` or `gui/deny.toml` changes, and on manual runs. Advisory results follow the RustSec database rather than the change under review, so a newly published advisory does not turn unrelated pull requests or `main` red; the weekly full-graph scan reports it instead. Crates that never ship, such as wasm-only crates or benchmark dependencies, are outside the merge gate and covered only by that scan.
 
 ### Ignoring an advisory
 
@@ -103,7 +105,7 @@ ignore = [
 ]
 ```
 
-`ci/deny_ignores.py` fails when an ignore has no expiry, a malformed one, one that has passed, or one more than 180 days ahead. It runs in CI next to the advisory check, weekly in `scheduled.yml`, and as a pre-commit hook whenever `deny.toml` changes.
+`ci/deny_ignores.py` fails when an ignore has no expiry, a malformed one, one that has passed, or one more than 180 days ahead. It checks `deny.toml` and `gui/deny.toml`, or the files named with `--config`, and runs in CI next to the advisory check, weekly in `scheduled.yml`, and as a pre-commit hook whenever either file changes.
 
 ### Audits
 
