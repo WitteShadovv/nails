@@ -352,7 +352,11 @@ pub(super) const ROWS: &[ResidueClass] = &[
         verify: Probe::None("a link the decoy adopted looks like one the decoy made itself"),
         mitigation: "A deactivate or a plain emergency puts most of it back on its own. Stop VPN apps, containers and virtual machines in the session before you deactivate (wg-quick down, nmcli connection down, the app's own disconnect), keep nftables installed on the decoy so the way back sees the firewall tables, and end the session with `--poweroff` when none of its network state may reach the decoy.",
         doc_anchor: "operator-guide.md#how-it-works",
-        e2e: E2e::Tests(&["session-dns-records", "session-nixos-hidden-system"]),
+        e2e: E2e::Tests(&[
+            "session-dns-records",
+            "session-nixos-hidden-system",
+            "session-mac-restore",
+        ]),
         residual: true,
         conclusion: None,
     },
