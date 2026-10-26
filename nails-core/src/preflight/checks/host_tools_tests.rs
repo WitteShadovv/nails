@@ -324,8 +324,7 @@ fn every_required_tool_has_a_spawn_site() {
         sources.contains("tool(\"systemctl\")"),
         "the source scan found no spawn sites at all"
     );
-    for required in required_tools(PlatformKind::NixOs, true) {
-        let tool = required.tool;
+    let spawned = |tool: &str| {
         // The way back runs its tools by the absolute path it finds for them:
         // `tools::find(recorded, "dmsetup")`, then `tools::run` on that path.
         let found_for_the_way_back = sources.match_indices("tools::find(").any(|(at, _)| {
@@ -334,12 +333,208 @@ fn every_required_tool_has_a_spawn_site() {
                 .next()
                 .is_some_and(|call| call.contains(&format!("\"{tool}\")")))
         });
-        let spawned = sources.contains(&format!("tool(\"{tool}\")"))
+        sources.contains(&format!("tool(\"{tool}\")"))
             || sources.contains(&format!("caller_path(\"{tool}\")"))
-            || found_for_the_way_back;
+            || found_for_the_way_back
+    };
+    for required in required_tools(PlatformKind::NixOs, true) {
+        let tool = required.tool;
         assert!(
-            spawned,
+            spawned(tool),
             "{tool} is required but NAILS has no spawn site for it"
         );
     }
+    // So does every tool the network-tools check warns about.
+    for tool in NetworkTool::ALL {
+        let tool = tool.command();
+        assert!(
+            spawned(tool),
+            "the network-tools check looks for {tool}, but NAILS has no spawn site for it"
+        );
+    }
+}
+
+impl NetworkToolsCheck {
+    /// The check of the decoy whose root is `root`, with the decoy's NixOS
+    /// `system` and the platform the probe stands in for.
+    fn with_probe(
+        root: &Path,
+        system: Option<&str>,
+        kind: PlatformKind,
+        family: Option<Family>,
+    ) -> Self {
+        Self {
+            paths: Paths {
+                root: root.to_path_buf(),
+                run: root.join("run"),
+            },
+            probe: Some(NetworkToolsProbe {
+                decoy_system: system.map(PathBuf::from),
+                kind,
+                family,
+            }),
+        }
+    }
+}
+
+/// Put an empty file at `path` below `root`.
+fn put(root: &Path, path: &str) {
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(file, "").unwrap();
+}
+
+/// List a Wi-Fi interface of radio `phy0` below the tree's `/sys/class/net`,
+/// as the kernel lists one.
+fn put_wifi_link(root: &Path) {
+    let link = root.join("sys/class/net/wlan0");
+    fs::create_dir_all(link.join("device")).unwrap();
+    fs::write(link.join("ifindex"), "3\n").unwrap();
+    std::os::unix::fs::symlink("../../ieee80211/phy0", link.join("phy80211")).unwrap();
+}
+
+/// The network-tools row of a Debian decoy whose root is `root`.
+fn debian_network_row(root: &Path) -> CheckResult {
+    NetworkToolsCheck::with_probe(root, None, PlatformKind::Fhs, Some(Family::Debian))
+        .run(&MockFilesystem::new())
+        .unwrap()
+}
+
+/// What stays on the decoy without `nft`, as the row says it.
+const WITHOUT_NFT: &str = "without it the nftables tables a session adds stay on the decoy until \
+                           power-off, and a VPN app's table that blocks all traffic outside its \
+                           tunnel keeps the decoy offline";
+
+/// What stays on the decoy without `iw`, as the row says it.
+const WITHOUT_IW: &str = "without it a Wi-Fi interface a session adds on one of the decoy's \
+                          radios (a monitor or access point interface) stays on the decoy until \
+                          power-off";
+
+#[test]
+fn a_decoy_without_nft_warns_with_the_package_of_each_family() {
+    // The way back deletes the firewall tables a session adds only with
+    // `nft`, which entry needs as well to list the decoy's own tables.
+    let root = tempfile::tempdir().unwrap();
+    for (family, hint) in [
+        (Some(Family::Debian), "nft (apt install nftables)"),
+        (Some(Family::Fedora), "nft (dnf install nftables)"),
+        (Some(Family::Arch), "nft (pacman -S nftables)"),
+        (None, "nft (install the nftables package)"),
+    ] {
+        let check = NetworkToolsCheck::with_probe(root.path(), None, PlatformKind::Fhs, family);
+        let result = check.run(&MockFilesystem::new()).unwrap();
+        assert!(result.is_warn(), "{family:?}: {result:?}");
+        assert_eq!(
+            result.message(),
+            format!(
+                "The decoy lacks a tool the way back runs to put its network state back. \
+                 Install it:\n  {hint}: {WITHOUT_NFT}"
+            ),
+            "{family:?}"
+        );
+    }
+}
+
+#[test]
+fn a_decoy_with_nft_passes_and_needs_no_iw_without_wifi() {
+    let root = tempfile::tempdir().unwrap();
+    put(root.path(), "usr/sbin/nft");
+    let result = debian_network_row(root.path());
+    assert!(result.is_pass(), "{result:?}");
+    // A link that is no Wi-Fi interface needs no `iw` either.
+    let lo = root.path().join("sys/class/net/lo");
+    fs::create_dir_all(&lo).unwrap();
+    fs::write(lo.join("ifindex"), "1\n").unwrap();
+    assert!(debian_network_row(root.path()).is_pass());
+}
+
+#[test]
+fn a_decoy_with_wifi_warns_until_it_has_iw() {
+    // The way back deletes a Wi-Fi interface a session adds on one of the
+    // decoy's radios only with `iw`.
+    let root = tempfile::tempdir().unwrap();
+    put(root.path(), "usr/sbin/nft");
+    put_wifi_link(root.path());
+    let result = debian_network_row(root.path());
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "The decoy lacks a tool the way back runs to put its network state back. Install \
+             it:\n  iw (apt install iw): {WITHOUT_IW}"
+        )
+    );
+    put(root.path(), "sbin/iw");
+    let result = debian_network_row(root.path());
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn a_decoy_without_both_names_each_and_never_ip() {
+    // `ip` is the host-tools check's, which refuses a decoy without it; this
+    // row names only the tools the way back runs where they are installed.
+    let root = tempfile::tempdir().unwrap();
+    put_wifi_link(root.path());
+    let result = debian_network_row(root.path());
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "The decoy lacks tools the way back runs to put its network state back. Install \
+             them:\n  nft (apt install nftables): {WITHOUT_NFT}\n  iw (apt install iw): \
+             {WITHOUT_IW}"
+        )
+    );
+}
+
+#[test]
+fn a_nixos_decoy_is_pointed_at_its_configuration_and_its_own_system() {
+    // On NixOS the way back looks in the decoy's system it repoints
+    // `/run/current-system` to, so the hint names the decoy's configuration:
+    // the package, or networking.nftables.enable, which installs it too.
+    let root = tempfile::tempdir().unwrap();
+    let system = "/nix/store/aaa-nixos-system-decoy";
+    put_wifi_link(root.path());
+    let row = || {
+        NetworkToolsCheck::with_probe(root.path(), Some(system), PlatformKind::NixOs, None)
+            .run(&MockFilesystem::new())
+            .unwrap()
+    };
+    let result = row();
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "The decoy lacks tools the way back runs to put its network state back. Install \
+             them:\n  nft (add nftables to the decoy's environment.systemPackages, or set \
+             networking.nftables.enable, which installs it and moves the decoy's firewall to \
+             nftables): {WITHOUT_NFT}\n  iw (add iw to the decoy's environment.systemPackages): \
+             {WITHOUT_IW}"
+        )
+    );
+    // Another system's tools do not count.
+    put(root.path(), "nix/store/bbb-nixos-system-hidden/sw/bin/nft");
+    put(root.path(), "nix/store/bbb-nixos-system-hidden/sw/bin/iw");
+    assert_eq!(row(), result);
+    put(root.path(), "nix/store/aaa-nixos-system-decoy/sw/bin/nft");
+    put(root.path(), "nix/store/aaa-nixos-system-decoy/sw/bin/iw");
+    let result = row();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn the_network_tools_check_skips_in_test_context_without_a_probe() {
+    // As the host-tools check, it never reads the real host from the shared
+    // registry in a test runtime.
+    let check = NetworkToolsCheck::new(Paths::system());
+    let result = check.run(&MockFilesystem::new()).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(
+        PreFlightCheck::<MockFilesystem>::name(&check),
+        "network-tools"
+    );
+    assert!(
+        PreFlightCheck::<MockFilesystem>::description(&check).contains("way back"),
+        "the description must name what the row is about"
+    );
 }

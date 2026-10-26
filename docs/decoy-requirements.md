@@ -39,6 +39,21 @@ The decoy also has to be one the session can enter and leave:
   with `dmsetup`. Without them it would leave both behind, so activation is
   refused while one is missing; `nails check` names it and the package that
   provides it.
+- **The tools the way back runs where they are installed**
+  (`network-tools`): `nft` (nftables), with which activation lists the
+  decoy's own firewall tables and the way back deletes the ones a session
+  added, and, on a machine with a Wi-Fi interface, `iw`, with which the way
+  back deletes a Wi-Fi interface a session added on one of the decoy's radios
+  (a monitor or access point interface). Without `nft` every nftables table a
+  session adds stays on the decoy until power-off: root lists it with
+  `nft list tables`, a table's name can name the VPN that made it, and a VPN
+  app's table that blocks all traffic outside its tunnel keeps the decoy
+  offline. Without `iw` such a Wi-Fi interface stays until power-off.
+  `nails check` and activation warn and name the package to install; they do
+  not refuse, since a stock NixOS decoy has no `nft`. NAILS looks for both
+  where the way back does, never in `PATH`: in `/run/current-system/sw/bin`
+  (on NixOS, the decoy's system), `/usr/bin`, `/bin`, `/usr/sbin` and
+  `/sbin`.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
@@ -202,6 +217,11 @@ logind.
   `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
   `boot.resumeDevice` or a resume kernel parameter.
+- **nftables, and iw on a machine with Wi-Fi** (`network-tools`):
+  `environment.systemPackages = [ pkgs.nftables pkgs.iw ];`, so the way back
+  can delete the firewall tables and Wi-Fi interfaces a session adds.
+  `networking.nftables.enable` installs `nft` as well, and moves the decoy's
+  firewall to nftables.
 - **Nothing in `/etc/nixos` names the hidden environment**. The
   `suspicious-nails-reference` check reads every `.nix` file there and refuses
   activation with the file, the line and the text it found, in comments as in
@@ -303,6 +323,9 @@ logind.
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
 - Mount the root with `noatime`; disable swap and hibernation.
+- Keep `nftables` installed, and `iw` on a machine with Wi-Fi
+  (`apt install nftables iw`), so the way back can delete the firewall tables
+  and Wi-Fi interfaces a session adds (`network-tools`).
 
 ### Debian
 
@@ -316,6 +339,9 @@ logind.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
+- `nftables`, and `iw` on a machine with Wi-Fi (`apt install nftables iw`), so
+  the way back can delete the firewall tables and Wi-Fi interfaces a session
+  adds (`network-tools`).
 
 ## The sudo-log exposure and its mitigation
 

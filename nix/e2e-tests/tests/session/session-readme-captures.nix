@@ -4,9 +4,10 @@
 # and `nails status --json` from one run of this test (docs/assets/README.md
 # says how to cut it from the log). The decoy is the standard test VM with what
 # docs/decoy-requirements.md asks of a clean decoy: a closed lid locks the
-# screen instead of suspending, systemd-coredump keeps no core on the disk, and
-# the static binary sits on the hidden volume, off the decoy's PATH, and runs by
-# its full path through sudo, as the README's quick start shows. Its kernel
+# screen instead of suspending, systemd-coredump keeps no core on the disk,
+# nftables is installed for the way back, and the static binary sits on the
+# hidden volume, off the decoy's PATH, and runs by its full path through sudo,
+# as the README's quick start shows. Its kernel
 # zeroes freed memory, as docs/operator-guide.md advises. On that decoy `check`
 # and `activate` print no warning; a warning fails the test, so the captures
 # cannot show one that only the test VM causes.
@@ -22,9 +23,14 @@ in
   ];
 
   nodes.machine =
-    { ... }:
+    { pkgs, ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
+
+      # docs/decoy-requirements.md, NixOS: nftables on the decoy, so the way
+      # back can delete the firewall tables a session adds; the network-tools
+      # check warns without it. The VM has no Wi-Fi, so it needs no iw.
+      environment.systemPackages = [ pkgs.nftables ];
 
       # Give the VM an active IOMMU so the dma-protection preflight sees DMA
       # remapping and passes: a clean decoy then prints no warning (the README

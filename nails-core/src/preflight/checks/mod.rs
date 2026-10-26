@@ -38,7 +38,7 @@ pub use binary_location::BinaryLocationCheck;
 pub use decoy_posture::DecoyPersistenceCheck;
 pub use dma_protection::DmaProtectionCheck;
 pub use hidden_volume::HiddenVolumeCheck;
-pub use host_tools::HostToolsCheck;
+pub use host_tools::{HostToolsCheck, NetworkToolsCheck};
 pub use incremental_history_flush::IncrementalHistoryFlushCheck;
 pub use inherited_autostart::InheritedAutostartCheck;
 pub use journald_storage::{JournaldStorage, parse_journald_storage};
