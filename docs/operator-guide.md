@@ -203,9 +203,10 @@ Keep all of it `root`-owned on the hidden volume.
    - the ESP and `/boot` filesystems are bound read-only, so nothing in the
      hidden session rewrites `loader/random-seed`, `grubenv` or a boot entry;
      the units that write there at every start
-     (`systemd-boot-random-seed.service`, and `grub-common.service` and
-     `grub-initrd-fallback.service` on Debian and Ubuntu) are masked in the
-     hidden session, so they do not fail there, and run as usual on the decoy;
+     (`systemd-boot-random-seed.service`; GRUB's `grub-common.service` on
+     Debian and Ubuntu 24.04, `grub2-common.service` from Ubuntu 26.04 and
+     `grub-initrd-fallback.service` on Ubuntu) are masked in the hidden
+     session, so they do not fail there, and run as usual on the decoy;
    - a filesystem mounted read-only in the decoy is bound read-only;
    - every other mounted local filesystem (a separate `/home`, `/var` or
      `/nix`) gets an overlay of its own, with its upper under
@@ -214,7 +215,10 @@ Keep all of it `root`-owned on the hidden volume.
      overlay entries that are not mounted now but have their upper on a disk
      are masked in `/run`, so the hidden systemd never activates them.
 
-   The full table is in
+   Whatever the fstab says, the hidden session also masks
+   `systemd-remount-fs.service` and `systemd-growfs-root.service`, which would
+   only fail there: the root filesystem they remount and grow is the root
+   overlay in the hidden session. The full table is in
    [configuration.md](configuration.md#what-the-session-covers).
 
    `nails check` lists the decision for each entry.

@@ -103,17 +103,22 @@ in
 
     CONFIG = "/mnt/data/config/nails.toml"
     WATCH_UNIT = "overlay-runtime-monitor.service"
-    BOOT_WRITERS = (
+    # The units the hidden root masks where the decoy has them, as the distro
+    # smoke lists them.
+    HIDDEN_MASKED_UNITS = (
         "systemd-boot-random-seed.service",
         "grub-common.service",
+        "grub2-common.service",
         "grub-initrd-fallback.service",
+        "systemd-remount-fs.service",
+        "systemd-growfs-root.service",
     )
 
 
     def load_states():
         return {
             unit: machine.succeed(f"systemctl show --property=LoadState --value {unit}").strip()
-            for unit in BOOT_WRITERS
+            for unit in HIDDEN_MASKED_UNITS
         }
 
 
@@ -200,8 +205,8 @@ in
 
     machine.wait_for_unit("avahi-daemon.service")
     machine.wait_for_unit("pidfile-probe.service")
-    decoy_boot_writers = load_states()
-    machine.log(f"boot-loader units on the decoy: {decoy_boot_writers}")
+    decoy_masked_units = load_states()
+    machine.log(f"units the hidden root masks, on the decoy: {decoy_masked_units}")
     decoy_initrd_mounts = initrd_mounts()
     machine.log(f"initrd mounts on the decoy: {sorted(decoy_initrd_mounts)}")
     assert "/" in decoy_initrd_mounts, decoy_initrd_mounts
@@ -230,7 +235,7 @@ in
         )
         session.assert_hidden_root(machine)
         for unit, state in load_states().items():
-            if decoy_boot_writers[unit] != "not-found":
+            if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden session: {state}"
         assert_quiet_kernel_log("the hidden session")
         assert_utab_names_live_mounts("the hidden session")
@@ -274,7 +279,7 @@ in
         machine.wait_for_unit("resolvconf.service")
         _, avahi = machine.execute("journalctl -b -u avahi-daemon.service --no-pager")
         assert "trying to remove PID file" not in avahi, avahi
-        assert load_states() == decoy_boot_writers, "the decoy's own units again"
+        assert load_states() == decoy_masked_units, "the decoy's own units again"
         assert_quiet_kernel_log("after the emergency")
         assert_utab_names_live_mounts("after the emergency")
         back_utab, back_mountinfo = utab_and_mounts()

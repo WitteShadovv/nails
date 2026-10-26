@@ -1158,6 +1158,66 @@ fn a_rollback_gives_the_decoy_back_its_kernel_paths_and_unit_masks() {
     });
 }
 
+#[test]
+fn the_hidden_root_masks_are_written_at_the_switch_only() {
+    // A root with the two units that failed on Debian 13's root overlay and
+    // Ubuntu 26.04's GRUB unit. The entry picks the masks, the entry
+    // transition writes them at the switch, never before (the decoy's PID 1
+    // must not reload with them), and a rollback after a failed switch gives
+    // the decoy its units back.
+    let _ = Rerun::new(test_path!(
+        the_hidden_root_masks_are_written_at_the_switch_only
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let units = world.decoy.path().join("usr/lib/systemd/system");
+        for unit in [
+            "systemd-remount-fs.service",
+            "systemd-growfs-root.service",
+            "grub2-common.service",
+        ] {
+            std::fs::write(units.join(unit), "").unwrap();
+        }
+        let paths = world.paths();
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+        let plan = &entry.plan;
+        assert_eq!(
+            plan.boot_masks,
+            [
+                "grub2-common.service",
+                "systemd-remount-fs.service",
+                "systemd-growfs-root.service"
+            ]
+        );
+        let control = paths.run.join(runtime_units::RUNTIME_CONTROL_DIR);
+        assert!(!control.exists(), "a unit is masked before the switch");
+
+        let env = Env {
+            run: paths.run.clone(),
+            nextroot: paths.nextroot(),
+            runtime_dir: paths.runtime(),
+            kmsg: paths.run.join("no-kmsg"),
+            systemctl: None,
+            now: unix_now(),
+            mounts: read_mountinfo().unwrap(),
+        };
+        assert_eq!(transition::run(&env), Outcome::Entered);
+        for unit in &plan.boot_masks {
+            assert_eq!(
+                std::fs::read_link(control.join(unit)).unwrap(),
+                Path::new("/dev/null"),
+                "{unit}"
+            );
+        }
+
+        // The switch failed: the decoy runs again over the same /run.
+        entry::rollback(&paths);
+        assert!(!control.exists(), "the decoy's units stay masked");
+    });
+}
+
 /// Every path below `dir` with its kind: what a test compares to see that a
 /// tree did not change.
 fn listing(dir: &Path) -> Vec<(PathBuf, &'static str)> {
