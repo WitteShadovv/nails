@@ -94,6 +94,10 @@ of this changelog for that version becomes the release notes word for word, and
   daemon, the socket of its Kerberos ticket cache (`sssd-kcm.socket`, which Fedora 44 Cloud enables
   by default, so a decoy made from it warns), or a file sssd writes under `/var/lib/sss` when it
   runs. On the decoy disk the probes read only file metadata, so no access time there changes.
+- The residue catalog in docs/decoy-requirements.md lists a pending offline update, with what
+  systemd's offline-update mechanism does across a soft-reboot and the way back, and sssd on a decoy
+  joined to a domain, which docs/threat-model.md also lists among its residual channels. `verify`
+  lists both among its areas not checked, each with the reason no scan of the decoy sees it.
 - `nails discard` takes `--allow-decoy-storage`, as `init`, `activate` and `check` do, for a hidden
   root that this computer's own storage seems to hold. Without it, discard refused such a root even
   when activation had accepted it, so nothing could be discarded there.

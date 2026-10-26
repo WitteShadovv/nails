@@ -165,6 +165,8 @@ Also refused by the pre-flight checks:
 - active disk swap; only RAM-backed zram is allowed (`swap`);
 - a persistent journal or an active syslog or audit daemon, unless overridden
   (`decoy-persistence`);
+- a pending offline system update, staged on the decoy or left in the root
+  overlay's upper by a hidden session (`pending-offline-update`);
 - a hidden volume that is not storage of its own: a folder, a btrfs subvolume
   or bind mount of a filesystem the decoy uses, a volume stacked on the
   decoy's storage, an image file on a decoy filesystem, a filesystem that shows

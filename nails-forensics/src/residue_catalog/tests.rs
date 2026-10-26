@@ -260,6 +260,42 @@ fn the_new_research_classes_are_catalogued() {
 }
 
 #[test]
+fn the_offline_update_and_domain_rows_say_how_they_are_caught() {
+    // A staged offline update refuses activation through its own check; what
+    // the update would write lands in the upper, so it is no residual channel.
+    let update = class("pending-offline-update").expect("the offline-update row");
+    assert_eq!(update.preflight, Probe::Check("pending-offline-update"));
+    assert!(update.preflight_blocks);
+    assert!(!update.residual);
+    // sssd in use on the decoy only warns, through the decoy-posture check;
+    // the domain controller's records are out of reach, a residual channel.
+    let sssd = class("sssd-domain-records").expect("the sssd row");
+    assert_eq!(sssd.preflight, Probe::Check("decoy-persistence"));
+    assert!(!sssd.preflight_blocks);
+    assert!(sssd.residual);
+    for row in [update, sssd] {
+        assert_eq!(row.kind, ResidueKind::Session, "{}", row.id);
+        assert_eq!(row.platforms, Platforms::ALL, "{}", row.id);
+        assert!(!row.verify.detects(), "{}", row.id);
+    }
+    // They follow the other session rows, ahead of the setup traces.
+    let ids: Vec<&str> = catalog().iter().map(|row| row.id).collect();
+    let first_setup = catalog()
+        .iter()
+        .position(|row| row.kind == ResidueKind::Setup)
+        .expect("setup traces are catalogued");
+    assert_eq!(
+        ids[first_setup - 2..first_setup],
+        ["pending-offline-update", "sssd-domain-records"]
+    );
+    assert!(
+        catalog()[first_setup..]
+            .iter()
+            .all(|row| row.kind == ResidueKind::Setup)
+    );
+}
+
+#[test]
 fn sync_rewrites_only_marked_blocks() {
     let text = "intro\n<!-- residue-catalog:begin residual -->\nstale\n\
                 <!-- residue-catalog:end residual -->\noutro\n";
