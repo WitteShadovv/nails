@@ -370,6 +370,10 @@ mod tests {
         assert_eq!(way_back_lacks(root, None), [Ip, Nft]);
         link(root, "lo", 1, None);
         assert_eq!(way_back_lacks(root, None), [Ip, Nft]);
+        // A wired link has a device and no radio, so iw still does not count.
+        link(root, "eth0", 2, None);
+        std::fs::create_dir(root.join("sys/class/net/eth0/device")).unwrap();
+        assert_eq!(way_back_lacks(root, None), [Ip, Nft]);
         link(root, "wlan0", 3, Some("phy0"));
         assert_eq!(way_back_lacks(root, None), NetworkTool::ALL);
         put(root, "usr/sbin/nft");
