@@ -5,7 +5,8 @@
 
 use crate::filesystem::MountEntry;
 use crate::forensic::{Hit, RawSource, TokenScan};
-use crate::{NailsError, Result};
+use crate::{Filesystem, NailsError, Result};
+use nails_base::blockdev::{self, Layer, LoopFollow};
 use serde::Serialize;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ pub const NOT_VISIBLE: &[&str] = &[
     "blocks discarded with TRIM: they read back as zeros here even where the flash still holds them",
     "disks and partitions not mounted while the scan runs (a second disk, an unused swap partition) unless named with --device",
     "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, an f2fs made with compression): this raw plaintext scan cannot match it, so such storage is reported not checked. A mounted device is judged by its mount, an image or an unmounted --device by its superblock (a whole disk partition by partition), and an encrypted container, or storage on which the scan identifies no filesystem, is reported not checked too",
-    "a canary stored encrypted or compressed file by file (in an eCryptfs folder, an encrypted directory of an ext4 or f2fs, a compressed NTFS folder, or a vault a FUSE tool such as gocryptfs, CryFS or EncFS encrypts): this raw plaintext scan cannot match it either. A device with an eCryptfs mount on it, an ext4 or f2fs with the encrypt feature, and an NTFS (or any fuseblk mount) are reported not checked, but an eCryptfs folder not mounted during the scan, and a FUSE tool's vault, are not seen",
+    "a canary stored encrypted or compressed file by file (in an eCryptfs folder, an encrypted directory of an ext4 or f2fs, a compressed NTFS folder, or a vault a FUSE tool such as gocryptfs, CryFS or EncFS encrypts): this raw plaintext scan cannot match it either. A device that holds the folder of an eCryptfs mount (a whole disk too), an ext4 or f2fs with the encrypt feature, and an NTFS (or any fuseblk mount) are reported not checked, but three escape it: an eCryptfs folder not mounted during the scan, every eCryptfs folder in an --offline scan, which reads no mount table, and a FUSE tool's vault",
     "anything outside the decrypted mapping: the encryption header area and other partitions of the same disk",
     "firmware storage (EFI variables, pstore) and RAM",
 ];
@@ -50,7 +51,7 @@ pub struct DeviceScan {
     pub error: Option<String>,
     /// Why a clean scan of this device is not a clean result: its filesystem
     /// compresses contents or is copy-on-write, is NTFS, or encrypts files
-    /// (the encrypt feature, an eCryptfs mount on it), it is an encrypted
+    /// (the encrypt feature, an eCryptfs folder on it), it is an encrypted
     /// container or holds no filesystem the scan identifies, or it ends before
     /// its filesystem, a partition its table lists or the disk its GPT was
     /// written for does, so a leaked canary can hide from a raw plaintext
@@ -93,7 +94,7 @@ impl ScanReport {
 
 /// One device a scan reads, with why a clean scan of it would not be a clean
 /// result (its filesystem compresses contents, is copy-on-write or NTFS, or
-/// has an eCryptfs mount on it) when that is the case.
+/// it holds the folder of an eCryptfs mount) when that is the case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanTarget {
     /// The device or image to read.
@@ -132,18 +133,24 @@ impl ScanTarget {
     /// shows on it: compressed, copy-on-write or NTFS storage, or an eCryptfs
     /// mount stacked on the filesystem, marks it a blind spot. A device the
     /// mount table does not show (an unmounted partition or disk) is
-    /// identified from its raw superblock and partition table instead.
-    pub fn classified(device: PathBuf, mounts: &[MountEntry]) -> Self {
+    /// identified from its raw superblock and partition table instead. Mounted
+    /// or not, a device that holds the folder of an eCryptfs mount some other
+    /// way (a whole disk with that filesystem in a partition, a device below
+    /// it), which `fs` reads from sysfs, is a blind spot too, and so is one of
+    /// which the scan cannot tell whether it does.
+    pub fn classified<F: Filesystem>(fs: &F, device: PathBuf, mounts: &[MountEntry]) -> Self {
         let canonical = device
             .canonicalize()
             .unwrap_or_else(|_| device.to_path_buf());
         let entry = mounts.iter().find(|entry| {
             entry.source == device || entry.source.canonicalize().unwrap_or_default() == canonical
         });
-        let stacked = ecryptfs_lowers(mounts).0;
+        let (lowers, unplaced) = ecryptfs_lowers(mounts);
         Self {
+            blind_spot: entry
+                .and_then(|entry| mount_blind_spot(entry, &lowers))
+                .or_else(|| ecryptfs_blind_spot(fs, &canonical, &lowers, &unplaced)),
             device: canonical,
-            blind_spot: entry.and_then(|entry| mount_blind_spot(entry, &stacked)),
             probe: entry.is_none(),
             fstype: entry.map(|entry| entry.fstype.clone()),
             unread: None,
@@ -165,14 +172,14 @@ fn holding_mount<'a>(mounts: &'a [MountEntry], path: &Path) -> Option<&'a MountE
 }
 
 /// Where the eCryptfs mounts of `mounts` keep their encrypted files: the
-/// device numbers (`major:minor`) of the filesystems their folders lie on, and
-/// the eCryptfs mounts whose folder lies on no mount the table shows.
-fn ecryptfs_lowers(mounts: &[MountEntry]) -> (Vec<&str>, Vec<&MountEntry>) {
+/// mounts whose filesystems their folders lie on, and the eCryptfs mounts
+/// whose folder lies on no mount the table shows.
+fn ecryptfs_lowers(mounts: &[MountEntry]) -> (Vec<&MountEntry>, Vec<&MountEntry>) {
     let mut lowers = Vec::new();
     let mut unplaced = Vec::new();
     for entry in mounts.iter().filter(|entry| entry.fstype == ECRYPTFS) {
         match holding_mount(mounts, &entry.source) {
-            Some(lower) => lowers.push(lower.dev.as_str()),
+            Some(lower) => lowers.push(lower),
             None => unplaced.push(entry),
         }
     }
@@ -181,15 +188,108 @@ fn ecryptfs_lowers(mounts: &[MountEntry]) -> (Vec<&str>, Vec<&MountEntry>) {
 
 /// The blind spot a raw plaintext scan has on the filesystem of `entry`:
 /// the one its type and options show, else an eCryptfs mount stacked on it
-/// when its device number is among `stacked`.
-fn mount_blind_spot(entry: &MountEntry, stacked: &[&str]) -> Option<String> {
+/// when it has the device number of one of `lowers`.
+fn mount_blind_spot(entry: &MountEntry, lowers: &[&MountEntry]) -> Option<String> {
     super::scan_blind_spot(&entry.fstype, &entry.super_opts)
         .or_else(|| {
-            stacked
-                .contains(&entry.dev.as_str())
+            lowers
+                .iter()
+                .any(|lower| lower.dev == entry.dev)
                 .then_some(super::ScanBlindSpot::StackedEncryption)
         })
         .map(|blind| blind.reason().to_string())
+}
+
+/// Why a device named for a scan is not checked when the scan cannot tell
+/// whether it holds the folder of an eCryptfs mount.
+const ECRYPTFS_UNPLACED: &str = "an eCryptfs mount (an encrypted home or Private folder) stores \
+     the files under it encrypted, and the scan cannot tell whether this device holds them: sysfs \
+     shows no block device under their folder (it lies on a tmpfs, an overlay or a network share, \
+     or on no mount the table shows) or none at this path, so this raw plaintext scan cannot \
+     prove the canary absent";
+
+/// Why a clean scan of `device` cannot rule out the eCryptfs mounts whose
+/// folders lie on the filesystems of `lowers` or on no mount (`unplaced`): it
+/// holds one of those folders, read from sysfs through `fs`, or the scan
+/// cannot tell whether it does. `None` when there is no eCryptfs mount, or
+/// each one's folder lies on other devices.
+///
+/// A device holds a folder when it is the block device of the filesystem the
+/// folder lies on, or lies below that device: a whole disk with it in a
+/// partition, the partition below a dm-crypt or LVM mapping, a member of an md
+/// array, the file a loop device reads (named as a regular file) or the device
+/// of the filesystem that holds that file. A folder on a filesystem with no
+/// block device of its own (a tmpfs, an overlay, a network share) or on no
+/// mount at all, and a path sysfs lists no block device for that is no
+/// regular file (a node outside `/dev`, a system without sysfs), leave the
+/// scan unable to tell.
+fn ecryptfs_blind_spot<F: Filesystem>(
+    fs: &F,
+    device: &Path,
+    lowers: &[&MountEntry],
+    unplaced: &[&MountEntry],
+) -> Option<String> {
+    if lowers.is_empty() && unplaced.is_empty() {
+        return None;
+    }
+    let named = named_block_device(fs, device);
+    let regular_file = named.is_none() && fs.is_regular_file(device).unwrap_or(false);
+    let mut unsure = !unplaced.is_empty() || (named.is_none() && !regular_file);
+    for lower in lowers {
+        let Some(layers) =
+            blockdev::device_of_mount(fs, lower).and_then(|top| devices_holding(fs, &top))
+        else {
+            unsure = true;
+            continue;
+        };
+        let holds = layers.iter().any(|layer| match &named {
+            Some(dir) => layer.sysfs == *dir,
+            None => layer
+                .loop_device
+                .as_ref()
+                .is_some_and(|bound| bound.backing.path() == device),
+        });
+        if holds {
+            return Some(super::ScanBlindSpot::StackedEncryption.reason().to_string());
+        }
+    }
+    unsure.then(|| ECRYPTFS_UNPLACED.to_string())
+}
+
+/// The sysfs directory of the block device at `device`, a path under `/dev`;
+/// `None` for any other path, and for one sysfs lists no block device for.
+fn named_block_device<F: Filesystem>(fs: &F, device: &Path) -> Option<PathBuf> {
+    if !device.starts_with("/dev") {
+        return None;
+    }
+    blockdev::resolve_spec(fs, device.to_str()?)
+}
+
+/// The block devices whose raw bytes hold those of the device whose sysfs
+/// directory is `top`: the devices below it ([`blockdev::stack`], through
+/// `slaves/` and below a loop device to the device of the filesystem that
+/// holds its file), and the disk each partition among them lies on, with the
+/// devices below that disk in turn. `None` when they reach
+/// [`blockdev::MAX_STACK_DEVICES`], more than any real stack has, as some may
+/// then be missing.
+fn devices_holding<F: Filesystem>(fs: &F, top: &Path) -> Option<Vec<Layer>> {
+    let mut layers: Vec<Layer> = Vec::new();
+    let mut pending = vec![top.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for layer in blockdev::stack(fs, &dir, LoopFollow::BackingFiles) {
+            if layers.iter().any(|known| known.sysfs == layer.sysfs) {
+                continue;
+            }
+            let disk = layer
+                .partition
+                .as_ref()
+                .filter(|partition| partition.disk.is_some())
+                .and(layer.sysfs.parent());
+            pending.extend(disk.map(Path::to_path_buf));
+            layers.push(layer);
+        }
+    }
+    (layers.len() < blockdev::MAX_STACK_DEVICES).then_some(layers)
 }
 
 /// Add a target under `device`, deduplicated by canonical path, keeping the
@@ -238,7 +338,7 @@ pub fn default_scan_targets(
         .rev()
         .find(|entry| entry.mount_point == hidden_root)
         .map(|entry| entry.dev.clone());
-    let (stacked, unplaced) = ecryptfs_lowers(mounts);
+    let (lowers, unplaced) = ecryptfs_lowers(mounts);
     let mut targets: Vec<ScanTarget> = Vec::new();
     for entry in mounts {
         if READ_ONLY_FORMATS.contains(&entry.fstype.as_str())
@@ -247,7 +347,7 @@ pub fn default_scan_targets(
         {
             continue;
         }
-        let blind_spot = mount_blind_spot(entry, &stacked);
+        let blind_spot = mount_blind_spot(entry, &lowers);
         if entry.source.starts_with("/dev/") {
             push_target(&mut targets, &entry.source, blind_spot, Some(&entry.fstype));
         } else if let Some(blind_spot) = blind_spot
@@ -306,7 +406,7 @@ fn empty(source: &RawSource) -> Option<io::Error> {
 /// token in both encodings, so a clean result cannot come from a broken
 /// matcher. A device that cannot be opened or read, or holds no byte at all, is
 /// reported with its error; the others are still scanned. A target's blind
-/// spot (compressed, copy-on-write or NTFS storage, an eCryptfs mount on it)
+/// spot (compressed, copy-on-write or NTFS storage, an eCryptfs folder on it)
 /// travels onto its result, so a clean scan of such a device reads as "not
 /// checked" rather than clean. A target nothing names is identified from its
 /// raw superblock and partition table first, so an encrypted container,

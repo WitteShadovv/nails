@@ -31,6 +31,8 @@ mod scan;
 mod storage;
 
 #[cfg(test)]
+mod ecryptfs_tests;
+#[cfg(test)]
 mod tests;
 
 pub use plant::{PlantContext, plant};

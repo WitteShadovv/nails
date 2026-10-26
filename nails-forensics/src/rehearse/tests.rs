@@ -11,7 +11,7 @@ use crate::forensic::Encoding;
 use crate::test_support::{Rerun, ScratchTmpfs};
 use std::io::{Seek, SeekFrom, Write};
 
-const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"; // pragma: allowlist secret
+pub(super) const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"; // pragma: allowlist secret
 
 fn state(token: &str) -> RehearsalState {
     RehearsalState {
@@ -291,7 +291,9 @@ fn classified_reads_the_blind_spot_from_the_matching_mount_entry() {
     // The btrfs device matches its own entry: a copy-on-write blind spot lands on
     // it. (Kills `==`->`!=` at the source match and `||`->`&&`: either flip makes
     // this entry stop matching, so the btrfs reason is lost.)
-    let cow = ScanTarget::classified(PathBuf::from("/dev/nails-test-btrfs"), &mounts);
+    // No eCryptfs mount is active, so no sysfs is read.
+    let fs = crate::MockFilesystem::new();
+    let cow = ScanTarget::classified(&fs, PathBuf::from("/dev/nails-test-btrfs"), &mounts);
     assert_eq!(cow.device, PathBuf::from("/dev/nails-test-btrfs"));
     assert!(
         cow.blind_spot
@@ -303,7 +305,7 @@ fn classified_reads_the_blind_spot_from_the_matching_mount_entry() {
     // The ext4 device matches its own entry, not the btrfs one: a clean scan of
     // verbatim storage is conclusive. (A flipped source match would pick the
     // btrfs entry and wrongly mark it a blind spot.)
-    let plain = ScanTarget::classified(PathBuf::from("/dev/nails-test-ext4"), &mounts);
+    let plain = ScanTarget::classified(&fs, PathBuf::from("/dev/nails-test-ext4"), &mounts);
     assert_eq!(plain.device, PathBuf::from("/dev/nails-test-ext4"));
     assert!(plain.blind_spot.is_none(), "{plain:?}");
     // Both are named by the mount table, so the scan does not identify them
@@ -311,7 +313,8 @@ fn classified_reads_the_blind_spot_from_the_matching_mount_entry() {
     assert!(!cow.probe && !plain.probe);
     assert_eq!(cow.fstype.as_deref(), Some("btrfs"));
     assert_eq!(plain.fstype.as_deref(), Some("ext4"));
-    let unmounted = ScanTarget::classified(PathBuf::from("/dev/nails-test-unmounted"), &mounts);
+    let unmounted =
+        ScanTarget::classified(&fs, PathBuf::from("/dev/nails-test-unmounted"), &mounts);
     assert!(
         unmounted.probe && unmounted.blind_spot.is_none() && unmounted.fstype.is_none(),
         "{unmounted:?}"
@@ -348,7 +351,7 @@ fn classified_matches_a_device_to_its_entry_by_canonical_path() {
         super_opts: "rw,ssd,space_cache=v2".to_string(),
     };
 
-    let target = ScanTarget::classified(by_device.clone(), &[entry]);
+    let target = ScanTarget::classified(&crate::MockFilesystem::new(), by_device.clone(), &[entry]);
     // The device is recorded by its canonical node.
     assert_eq!(target.device, real);
     // And matched to the entry through that node, carrying the blind spot. With
@@ -361,142 +364,6 @@ fn classified_matches_a_device_to_its_entry_by_canonical_path() {
             .is_some_and(|reason| reason.contains("copy-on-write")),
         "{target:?}"
     );
-}
-
-/// The options the kernel shows for an eCryptfs mount (with made-up key
-/// signatures).
-const ECRYPTFS_OPTS: &str = "rw,ecryptfs_fnek_sig=bbbbbbbbbbbbbbbb,ecryptfs_sig=aaaaaaaaaaaaaaaa,\
-                             ecryptfs_cipher=aes,ecryptfs_key_bytes=16,ecryptfs_unlink_sigs";
-
-#[test]
-fn an_ecryptfs_mount_marks_the_device_its_folder_lies_on() {
-    // An encrypted home as ecryptfs-utils mounts it: /home/alice/.Private on
-    // the /home filesystem, mounted over /home/alice. The /home device stores
-    // alice's files encrypted; the root device and the hidden volume do not
-    // count, and the eCryptfs mount is no device of its own.
-    let mounts = parse_mountinfo(&format!(
-        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
-         2 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n\
-         3 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
-         4 2 0:50 / /home/alice rw,nosuid,nodev,relatime - ecryptfs /home/alice/.Private \
-         {ECRYPTFS_OPTS}\n"
-    ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
-    assert_eq!(
-        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
-        vec![PathBuf::from("/dev/sda1"), PathBuf::from("/dev/sda2")]
-    );
-    assert_eq!(targets[0].blind_spot, None);
-    assert!(
-        targets[1]
-            .blind_spot
-            .as_deref()
-            .is_some_and(|reason| reason.contains("eCryptfs")),
-        "{targets:?}"
-    );
-    assert!(targets.iter().all(|t| t.unread.is_none()), "{targets:?}");
-
-    // `classified` finds it as well, for a device named with --device.
-    let named = ScanTarget::classified(PathBuf::from("/dev/sda2"), &mounts);
-    assert_eq!(named.blind_spot, targets[1].blind_spot);
-    let root = ScanTarget::classified(PathBuf::from("/dev/sda1"), &mounts);
-    assert_eq!(root.blind_spot, None);
-}
-
-#[test]
-fn an_ecryptfs_folder_lies_on_the_last_mount_of_the_longest_mount_point() {
-    // A second filesystem mounted over /home later hides the first: the
-    // folder lies on the second. One deeper mount point elsewhere (the hidden
-    // volume) does not hold it, nor does the eCryptfs mount on whose mount
-    // point its own folder lies.
-    let mounts = parse_mountinfo(&format!(
-        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
-         2 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n\
-         3 1 8:3 / /home rw,relatime - xfs /dev/sda3 rw\n\
-         4 1 253:0 / /mnt/data/deeper rw,relatime - ext4 /dev/mapper/data rw\n\
-         5 3 0:50 / /home/alice rw,relatime - ecryptfs /home/alice/.Private {ECRYPTFS_OPTS}\n"
-    ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data/deeper"));
-    let blind = |device: &str| {
-        targets
-            .iter()
-            .find(|t| t.device.as_path() == Path::new(device))
-            .unwrap_or_else(|| panic!("{device} is a target: {targets:?}"))
-            .blind_spot
-            .clone()
-    };
-    assert_eq!(blind("/dev/sda1"), None);
-    assert_eq!(blind("/dev/sda2"), None);
-    assert!(
-        blind("/dev/sda3").is_some_and(|reason| reason.contains("eCryptfs")),
-        "{targets:?}"
-    );
-}
-
-#[test]
-fn an_ecryptfs_folder_on_the_hidden_volume_marks_no_decoy_device() {
-    let mounts = parse_mountinfo(&format!(
-        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
-         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
-         3 2 0:50 / /mnt/data/vault rw,relatime - ecryptfs /mnt/data/.vault {ECRYPTFS_OPTS}\n"
-    ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
-    assert_eq!(
-        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
-        vec![PathBuf::from("/dev/sda1")]
-    );
-    assert_eq!(targets[0].blind_spot, None);
-}
-
-#[test]
-fn an_ecryptfs_folder_on_no_raw_device_is_listed_unread_and_not_checked() {
-    // A folder on a filesystem with no block device of its own (a tmpfs),
-    // and one the mount table names by a relative path, which lies on no
-    // mount point: neither is dropped, each is listed unread with the
-    // eCryptfs blind spot.
-    let mounts = parse_mountinfo(&format!(
-        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
-         2 1 0:60 / /tmp rw - tmpfs tmpfs rw\n\
-         3 2 0:61 / /tmp/private rw - ecryptfs /tmp/.private {ECRYPTFS_OPTS}\n\
-         4 1 0:62 / /srv/vault rw - ecryptfs vault {ECRYPTFS_OPTS}\n\
-         5 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n"
-    ));
-    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
-    assert_eq!(
-        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
-        vec![
-            PathBuf::from("/dev/sda1"),
-            PathBuf::from("tmpfs"),
-            PathBuf::from("vault")
-        ]
-    );
-    assert_eq!(targets[0].blind_spot, None);
-    for target in &targets[1..] {
-        assert!(
-            target
-                .blind_spot
-                .as_deref()
-                .is_some_and(|reason| reason.contains("eCryptfs")),
-            "{target:?}"
-        );
-    }
-    assert!(
-        targets[1]
-            .unread
-            .as_deref()
-            .is_some_and(|why| why.starts_with("a tmpfs mount, which has no block device")),
-        "{targets:?}"
-    );
-    assert!(
-        targets[2]
-            .unread
-            .as_deref()
-            .is_some_and(|why| why.contains("lies on no mount the table shows")),
-        "{targets:?}"
-    );
-
-    let report = scan(TOKEN, &targets[1..], None).unwrap();
-    assert!(report.inconclusive() && report.incomplete(), "{report:?}");
 }
 
 #[test]
@@ -625,8 +492,9 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
             .not_visible
             .iter()
             .any(|line| line.contains(file_level)
-                && line.contains("not mounted during the scan")
-                && line.contains("a FUSE tool's vault, are not seen")),
+                && line.contains("an eCryptfs folder not mounted during the scan")
+                && line.contains("every eCryptfs folder in an --offline scan")
+                && line.ends_with("and a FUSE tool's vault")),
         "{:?}",
         report.not_visible
     );
@@ -765,7 +633,7 @@ fn an_offline_image_on_a_verbatim_filesystem_stays_conclusive() {
 /// The blind spot a scan of the image at `path` finds on its own, from its raw
 /// superblock and partition table; `None` when a clean scan of it is
 /// conclusive.
-fn verdict(path: PathBuf) -> Option<String> {
+pub(super) fn verdict(path: PathBuf) -> Option<String> {
     let report = scan(TOKEN, &[ScanTarget::new(path)], None).unwrap();
     assert!(!report.incomplete(), "{report:?}");
     assert_eq!(report.total_hits(), 0, "{report:?}");
@@ -795,7 +663,7 @@ fn gpt_image(dir: &tempfile::TempDir, parts: &[(u64, u64)]) -> (PathBuf, std::fs
 }
 
 /// An ext4 superblock (from 1 KiB in) for `blocks` blocks of 4 KiB.
-fn ext4_superblock(blocks: u32) -> Vec<u8> {
+pub(super) fn ext4_superblock(blocks: u32) -> Vec<u8> {
     let mut sb = vec![0u8; 0x154];
     sb[0x04..0x08].copy_from_slice(&blocks.to_le_bytes());
     sb[0x18..0x1C].copy_from_slice(&2u32.to_le_bytes());

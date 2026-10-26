@@ -517,9 +517,10 @@ pub struct RehearseScanArgs {
     /// identified from its raw superblock, a whole disk partition by
     /// partition. An encrypted container (scan its unlocked mapping instead),
     /// a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with
-    /// the encrypt feature, a filesystem with an eCryptfs mount on it, or
-    /// storage the scan does not identify is reported not checked rather than
-    /// clean.
+    /// the encrypt feature, a device that holds the folder of an eCryptfs
+    /// mount (the filesystem the folder lies on, a disk with that filesystem
+    /// in a partition, a device below it), or storage the scan does not
+    /// identify is reported not checked rather than clean.
     #[arg(long = "device", value_name = "DEVICE", value_hint = ValueHint::FilePath, conflicts_with = "offline")]
     pub devices: Vec<std::path::PathBuf>,
 
@@ -538,7 +539,8 @@ pub struct RehearseScanArgs {
     /// f2fs, vfat, exFAT or swap image that ends before its filesystem or swap
     /// area does, or a whole-disk image that ends before a partition its table
     /// lists or before the disk its GPT was written for. An empty image is not
-    /// scanned.
+    /// scanned. An offline scan reads no mount table, so it does not see an
+    /// eCryptfs folder: scan a live device with --device instead.
     #[arg(long = "image", value_name = "IMAGE", value_hint = ValueHint::FilePath, requires = "offline")]
     pub images: Vec<std::path::PathBuf>,
 
