@@ -275,7 +275,7 @@ fn store_row(store_path: &str) -> Finding {
     Finding::new(
         Tool::NixDb,
         NIX_DB_PATH,
-        format!("ValidPaths hash=sha256:00 narSize=1 path={store_path}"),
+        format!(r#"ValidPaths hash="sha256:00" narSize=1 path="{store_path}""#),
     )
 }
 
