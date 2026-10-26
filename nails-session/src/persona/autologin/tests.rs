@@ -1183,6 +1183,37 @@ fn lightdm_with_too_many_files_glib_may_refuse_counts_every_account_they_name() 
 }
 
 #[test]
+fn lightdm_reads_as_many_files_glib_may_refuse_as_its_limit_each_way() {
+    // Each file GLib may load or refuse names an account, and so does each
+    // file GLib always loads or always refuses, which do not count toward
+    // the limit. Read each way, every reading ends with the main file's
+    // account, and no other is listed.
+    let fs = MockFilesystem::new();
+    for i in 0..MAX_UNDECIDED_DROP_INS {
+        drop_in(
+            &fs,
+            LIGHTDM_ETC,
+            &format!("{i}-may.conf"),
+            &format!("[Seat:*]\nautologin-user=may{i}\nX[\u{e9}]=1\n"),
+        );
+        drop_in(
+            &fs,
+            LIGHTDM_ETC,
+            &format!("{i}-loads.conf"),
+            &seat(&format!("loads{i}")),
+        );
+    }
+    drop_in(
+        &fs,
+        LIGHTDM_ETC,
+        "refused.conf",
+        &format!("{}broken line\n", seat("refused")),
+    );
+    fs.mock_set_file_content(LIGHTDM_MAIN, &seat("main"));
+    assert_eq!(accounts_of(&fs), names(&["main"]));
+}
+
+#[test]
 fn lightdm_reads_the_value_as_glib_does() {
     let fs = MockFilesystem::new();
     let text = "[Seat:*]\nautologin-user = \\sbob\\t # mine\n";
