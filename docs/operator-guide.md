@@ -810,12 +810,17 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   writes anything; it never falls back to an ordinary mount. Trying the overlay
   loads the kernel's overlay module if it is not loaded yet, as activation
   does.
-- **A kernel warning, when the hidden filesystem lacks a feature.** When the
-  filesystem under the trial overlay lacks something overlayfs wants (such as
-  `upper fs does not support tmpfile`), overlayfs writes a warning to the
-  kernel log, and journald keeps kernel messages like any other. ext4, xfs,
-  btrfs and f2fs made with their default options, the filesystems
-  [backends.md](backends.md) expects to work, lack none of it.
+- **A kernel log line, in two cases.** When the filesystem under the trial
+  overlay lacks something overlayfs wants (such as `upper fs does not support
+  tmpfile`), overlayfs writes a warning to the kernel log, and journald keeps
+  kernel messages like any other. ext4, xfs, btrfs and f2fs made with their
+  default options, the filesystems [backends.md](backends.md) expects to work,
+  lack none of it. And where an administrator has set the overlay module's
+  parameter `nfs_export=Y`, the `index=off` that NAILS pins on each overlay it
+  mounts, the trial overlay included, turns NFS export off for that overlay,
+  and overlayfs logs `overlayfs: disabling nfs_export due to index=off`. This
+  happens only with that parameter set: it is off by default, also in the
+  kernels NixOS, Debian and Ubuntu ship.
 - **Reads on the decoy.** `check` reads the decoy's configuration and state and
   runs some of the decoy's own tools to ask what they report, such as
   `systemctl` for the systemd version. On a decoy root mounted without
