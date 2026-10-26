@@ -66,6 +66,11 @@ pub fn nix_db_findings(contents: &str) -> Result<Vec<Finding>, String> {
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
+            // serde reads a struct from a JSON array as well, its fields in
+            // order, but the dump writes each row as an object.
+            if !line.trim_start().starts_with('{') {
+                return Err(format!("not a row of the dump (not an object): {line}"));
+            }
             let dumped: DumpedRow = serde_json::from_str(line)
                 .map_err(|e| format!("not a row of the dump ({e}): {line}"))?;
             row_finding(&dumped.table, &dumped.row)
@@ -258,9 +263,10 @@ mod tests {
 
     #[test]
     fn every_line_of_the_dump_is_read() {
-        // sqlite3 prints one row a line; a blank line is no row.
+        // sqlite3 prints one row a line; a blank line is no row, and blanks
+        // before a row's object are no part of it.
         let dump = format!(
-            "{}\n\n{}\n",
+            "{}\n\n \t{}\n",
             row(1, "/nix/store/a", 1),
             row(2, "/nix/store/b", 1)
         );
@@ -282,6 +288,10 @@ mod tests {
             "not json",
             // The rows of one table as sqlite3 -json prints them, untagged.
             r#"[{"path":"/nix/store/a"}]"#,
+            // A row as an array of its table and its columns, which serde
+            // reads into the struct of a line.
+            r#"["Refs",{"referrer":7,"reference":3}]"#,
+            r#" ["Refs",{}]"#,
             r#"{"path":"/nix/store/a"}"#,
             r#"{"table":"Refs"}"#,
             r#"{"table":"Refs","row":[7,3]}"#,
