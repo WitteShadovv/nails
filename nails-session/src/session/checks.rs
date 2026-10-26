@@ -14,7 +14,9 @@
 //!   is in the middle of something the switch would cut short (a package or
 //!   firmware update);
 //! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
-//!   safe decision ([`super::policy`]);
+//!   safe decision ([`super::policy`]); it warns when a filesystem is kept from
+//!   the hidden session, and names a boot target a mask keeps from being
+//!   reached;
 //! - `kernel-modules`: no hidden session deleted or replaced the running
 //!   kernel's module tree or its index ([`super::kernel_modules`]); it only
 //!   warns.
@@ -306,8 +308,11 @@ pub fn judge_fstab(decisions: &[Decision]) -> CheckResult {
         .filter(|d| !matches!(d, Decision::Leave { .. }))
         .map(Decision::describe)
         .collect();
-    let masked_mounts = decisions.iter().any(|d| {
-        matches!(d, Decision::Mask { units, .. } if units.iter().any(|u| !u.ends_with(".swap")))
+    let kept_off_mounts = decisions.iter().any(|d| {
+        let units = d
+            .skip()
+            .map_or(d.masked_units(), |skip| skip.units.as_slice());
+        units.iter().any(|u| !u.ends_with(".swap"))
     });
     let summary = if notable.is_empty() {
         "no decoy filesystem besides the root needs handling".to_string()
@@ -317,12 +322,22 @@ pub fn judge_fstab(decisions: &[Decision]) -> CheckResult {
             notable.join("; ")
         )
     };
-    if masked_mounts {
-        CheckResult::Warn(format!(
-            "{summary}. Masked filesystems are not available in the hidden session."
-        ))
-    } else {
+    let mut notes = Vec::new();
+    if kept_off_mounts {
+        notes.push(
+            "Masked and skipped filesystems are not available in the hidden session.".to_string(),
+        );
+    }
+    notes.extend(
+        decisions
+            .iter()
+            .filter_map(Decision::warning)
+            .map(|warning| format!("{warning}.")),
+    );
+    if notes.is_empty() {
         CheckResult::Pass(summary)
+    } else {
+        CheckResult::Warn(format!("{summary}. {}", notes.join(" ")))
     }
 }
 
@@ -367,6 +382,7 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
             &entries,
             &read_mountinfo().unwrap_or_default(),
             &self.hidden_root,
+            &policy::device_present,
         );
         Ok(judge_fstab(&decisions))
     }

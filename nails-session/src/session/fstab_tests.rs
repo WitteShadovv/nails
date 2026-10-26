@@ -99,3 +99,111 @@ fn only_a_missing_fstab_reads_as_empty() {
     let error = read_in_root(root.path()).unwrap_err();
     assert_ne!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
 }
+
+/// What requires an entry's unit at boot, as systemd's fstab generator links
+/// it: the boot target unless `nofail`, nothing for `noauto` without an
+/// automount, the units `x-systemd.required-by=` names in the target's place.
+#[test]
+fn what_requires_an_entry_s_unit_is_read_as_the_generator_links_it() {
+    let required = |line: &str| required_by(&parse_fstab(line)[0]);
+    for (line, expected) in [
+        ("/dev/sdb1 /data ext4 defaults 0 2", Some("local-fs.target")),
+        ("/dev/sdb1 /data ext4 nofail 0 2", None),
+        (
+            "/dev/sdb1 /data ext4 nofail,fail 0 2",
+            Some("local-fs.target"),
+        ),
+        ("/dev/sdb1 /data ext4 noauto 0 2", None),
+        (
+            "/dev/sdb1 /data ext4 noauto,auto 0 2",
+            Some("local-fs.target"),
+        ),
+        (
+            "/dev/sdb1 /data ext4 noauto,x-systemd.automount 0 2",
+            Some("local-fs.target"),
+        ),
+        ("/dev/sdb1 /data ext4 _netdev 0 2", Some("remote-fs.target")),
+        (
+            "server:/export /net nfs4 defaults 0 0",
+            Some("remote-fs.target"),
+        ),
+        ("server:/export /net nfs bg 0 0", None),
+        (
+            "server:/export /net nfs bg,x-systemd.automount 0 0",
+            Some("remote-fs.target"),
+        ),
+        (
+            "/dev/sdb1 /data ext4 x-systemd.wanted-by=a.service 0 2",
+            None,
+        ),
+        (
+            "/dev/sdb1 /data ext4 nofail,x-systemd.required-by=a.service,x-systemd.required-by=b.service 0 2",
+            Some("a.service b.service"),
+        ),
+        ("/dev/vda5 none swap sw 0 0", Some("swap.target")),
+        (
+            "/dev/vda5 none swap sw,_netdev 0 0",
+            Some("remote-fs.target"),
+        ),
+        ("/dev/vda5 none swap sw,nofail 0 0", None),
+        ("/dev/vda5 none swap noauto 0 0", None),
+        // A swap entry has no automount, so noauto keeps it out of the boot.
+        ("/dev/vda5 none swap noauto,x-systemd.automount 0 0", None),
+    ] {
+        assert_eq!(required(line).as_deref(), expected, "{line}");
+    }
+}
+
+/// The device an entry's unit waits for, and the units its fstab line has it
+/// pull in that act on that device or its filesystem, named as the generator
+/// names them.
+#[test]
+fn the_device_and_the_checkers_of_an_entry_are_named_as_the_generator_names_them() {
+    let entry = |line: &str| parse_fstab(line).remove(0);
+    let data = entry("LABEL=My\\040Data /srv/my-data ext4 x-systemd.makefs,x-systemd.growfs 0 2");
+    assert_eq!(
+        waits_for(&data).as_deref(),
+        Some(Path::new("/dev/disk/by-label/My\\x20Data"))
+    );
+    assert_eq!(
+        checkers(&data),
+        [
+            "systemd-fsck@dev-disk-by\\x2dlabel-My\\x5cx20Data.service",
+            "systemd-makefs@dev-disk-by\\x2dlabel-My\\x5cx20Data.service",
+            "systemd-growfs@srv-my\\x2ddata.service",
+        ]
+    );
+    let checked = entry("/dev/sdb1 /srv ext4 x-systemd.pcrfs,x-systemd.validatefs,prjquota 0 0");
+    assert_eq!(
+        checkers(&checked),
+        [
+            "systemd-fsck@dev-sdb1.service",
+            "systemd-pcrfs@srv.service",
+            "systemd-validatefs@srv.service",
+            "systemd-quotacheck@srv.service",
+            "quotaon@srv.service",
+        ]
+    );
+    // A bind, a network share, a swap file and the kernel's own names wait
+    // for no device, and pull in no fsck.
+    for line in [
+        "/srv/src /data none bind 0 0",
+        "/dev/shm/x /data none rbind 0 0",
+        "server:/export /net nfs4 defaults 0 0",
+        "/swapfile none swap sw 0 0",
+        "/dev/root /data ext4 defaults 0 2",
+        "/dev/nfs /data nfs defaults 0 0",
+    ] {
+        let entry = entry(line);
+        assert_eq!(waits_for(&entry), None, "{line}");
+        assert!(
+            checkers(&entry).is_empty(),
+            "{line}: {:?}",
+            checkers(&entry)
+        );
+    }
+    // A swap device's mkswap, and no fsck or filesystem unit.
+    let swap = entry("/dev/vdb2 none swap x-systemd.makefs,x-systemd.growfs 0 0");
+    assert_eq!(checkers(&swap), ["systemd-mkswap@dev-vdb2.service"]);
+    assert!(checkers(&entry("/dev/vdb2 none swap sw 0 0")).is_empty());
+}

@@ -386,7 +386,7 @@ fn decoy_filesystems(root: &Path, mounts: &[MountEntry], hidden_root: &Path) -> 
     let text = nails_teardown::whole_root::nextroot::read_in_root(root, Path::new("/etc/fstab"))
         .unwrap_or_default();
     let entries = fstab::parse_in_root(&text, root);
-    policy::decide_all(&entries, mounts, hidden_root)
+    policy::decide_all(&entries, mounts, hidden_root, &policy::device_present)
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
         .map(policy::Decision::describe)

@@ -152,6 +152,14 @@ pub fn remove_masks(
     removed
 }
 
+/// Remove the masks of `units` from the runtime unit directory under `run`,
+/// as [`remove_masks`] removes the masks a session wrote there: only where a
+/// unit's path is still a link to `/dev/null` and `kept` does not hold it.
+/// Returns whether one went.
+pub fn remove_unit_masks(run: &Path, units: &[String], kept: &Snapshot) -> bool {
+    remove_links(run, RUNTIME_UNIT_DIR, units, valid_unit_name, kept)
+}
+
 /// Remove from `dir` below `run` each of `names` that `valid` accepts, where
 /// it is still a link to `/dev/null` and `kept` does not hold it. Returns
 /// whether one went.
