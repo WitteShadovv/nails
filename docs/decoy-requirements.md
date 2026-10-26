@@ -311,7 +311,12 @@ logind.
   the clock is not synchronized and printing times out. After the way back the
   decoy lists chrony as failed until its next full reboot, which hints that a
   soft-reboot happened. A plain `systemctl soft-reboot` into another root,
-  without NAILS, breaks chrony the same way.
+  without NAILS, breaks chrony the same way. The distribution tests boot Ubuntu
+  26.04 and expect chrony to fail in the hidden session and after the way back,
+  so they show when a newer image fixes it. Their image has no CUPS, so the
+  printing half rests on a check by hand. They also require the warning that
+  `nails check` gives on 26.04 to name chrony and CUPS until each is shown
+  fixed.
 - **Volatile journald**: set `Storage=volatile` under `[Journal]` in
   `/etc/systemd/journald.conf`, or in a drop-in such as
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
