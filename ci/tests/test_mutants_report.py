@@ -20,6 +20,11 @@ UNVIABLE = (
     "nails-base/src/state/file.rs:120:9: replace StateFile::load "
     "-> Result<StateFile> with Ok(Default::default())"
 )
+# Mutants a stopped run listed but never tested.
+NOT_REACHED = (
+    "nails-teardown/src/whole_root/plan.rs:60:9: delete ! in plan",
+    "nails-session/src/session/probe.rs:52:12: replace && with || in probe",
+)
 
 # The build output of a mutation that does not compile.
 COMPILE_ERROR = """*** mutation diff:
@@ -93,6 +98,11 @@ class ReportTest(unittest.TestCase):
             )
         for path, text in (logs or {}).items():
             (self.out / path).write_text(text, encoding="utf-8")
+
+    def write_listed(self, names: list[str]) -> None:
+        """The mutants.json of a run that set out to test ``names``."""
+        listed = [{"name": name, "package": "nails-base"} for name in names]
+        (self.out / "mutants.json").write_text(json.dumps(listed), encoding="utf-8")
 
     def run_main(self, *args: str, summary: Path | None = None) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -264,6 +274,87 @@ class ReportTest(unittest.TestCase):
         )
         self.assertEqual(lines[untested + 4], "```")
         self.assertEqual(lines[unexplained + 4], "```")
+
+    def test_a_finished_run_reached_every_listed_mutant(self) -> None:
+        self.unviable_run(COMPILE_ERROR)
+        self.write_listed([CAUGHT, UNVIABLE])
+        code, out, err = self.run_main("--require-caught")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 caught, 0 missed, 0 timed out, 1 unviable (report", out)
+
+    def test_a_stopped_run_reports_what_it_tested_and_fails(self) -> None:
+        # A shard stopped at its time box: two of its four mutants were tested.
+        self.write_run(
+            {"caught": [CAUGHT], "missed": [MISSED]},
+            [
+                mutant_outcome(CAUGHT, "CaughtMutant", "log/caught.log"),
+                mutant_outcome(MISSED, "MissedMutant", "log/missed.log"),
+            ],
+        )
+        self.write_listed([CAUGHT, NOT_REACHED[0], MISSED, NOT_REACHED[1]])
+        summary = self.out.parent / "summary.md"
+        code, out, err = self.run_main(
+            "--title", "Mutation testing on the diff", summary=summary
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("1 caught, 1 missed, 0 timed out, 0 unviable, 2 not reached", out)
+        self.assertIn(
+            "2 of the 4 mutant(s) the run set out to test were never tested", err
+        )
+        self.assertIn(f"\n  {NOT_REACHED[0]}\n  {NOT_REACHED[1]}\n", err)
+        # The survivor it found still reaches the summary, ahead of the rest.
+        lines = summary.read_text(encoding="utf-8").splitlines()
+        missed = lines.index("### Missed")
+        stopped = lines.index("### Not tested: the run stopped before it reached them")
+        self.assertLess(missed, stopped)
+        self.assertEqual(lines[missed + 3], MISSED)
+        self.assertEqual(lines[stopped + 3 : stopped + 6], [*NOT_REACHED, "```"])
+
+    def test_a_run_stopped_before_its_baseline_reached_no_mutant(self) -> None:
+        # cargo-mutants writes no outcome until the unmutated tree is tested.
+        self.write_run({})
+        self.write_listed([CAUGHT, MISSED])
+        code, out, err = self.run_main("--title", "Mutation testing on the diff")
+        self.assertEqual(code, 1)
+        self.assertNotIn("no mutable code", out)
+        self.assertIn("0 unviable, 2 not reached", out)
+        self.assertIn(
+            "2 of the 2 mutant(s) the run set out to test were never tested", err
+        )
+
+    def test_a_mutant_listed_twice_needs_two_outcomes(self) -> None:
+        self.write_run(
+            {"caught": [CAUGHT]},
+            [mutant_outcome(CAUGHT, "CaughtMutant", "log/caught.log")],
+        )
+        self.write_listed([CAUGHT, CAUGHT])
+        code, out, _err = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("1 not reached", out)
+
+    def test_an_empty_list_is_still_a_run_without_mutants(self) -> None:
+        # A shard that cargo-mutants slices no mutant into lists none.
+        self.write_run({})
+        self.write_listed([])
+        code, out, err = self.run_main("--title", "Mutation testing on the diff")
+        self.assertEqual(code, 0, err)
+        self.assertIn("no mutable code in this run", out)
+
+    def test_a_mutant_list_it_cannot_read_fails_closed(self) -> None:
+        for text, error in (
+            ("[", "mutants.json cannot be read"),
+            ('{"mutants": []}', "mutants.json holds no list of mutants"),
+            ('[{"package": "nails-base"}]', "mutants.json lists a mutant without"),
+        ):
+            with self.subTest(text=text):
+                self.write_run(
+                    {"caught": [CAUGHT]},
+                    [mutant_outcome(CAUGHT, "CaughtMutant", "log/caught.log")],
+                )
+                (self.out / "mutants.json").write_text(text, encoding="utf-8")
+                code, _out, err = self.run_main()
+                self.assertEqual(code, 1)
+                self.assertIn(error, err)
 
     def test_without_a_summary_file_nothing_is_written(self) -> None:
         self.unviable_run(COMPILE_ERROR)

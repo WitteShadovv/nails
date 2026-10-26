@@ -2,10 +2,11 @@
 
 `just mutants` (the weekly sweep) and `just mutants-in-diff` (the pull request
 lane) run this on the mutants.out directory that cargo-mutants leaves: one list
-per outcome (caught.txt, missed.txt, timeout.txt, unviable.txt) and
-outcomes.json, which names the log of every mutant. A mutant that the tests
-missed or that timed out is a finding to triage, not a failed run. Two results
-fail the run:
+per outcome (caught.txt, missed.txt, timeout.txt, unviable.txt), mutants.json,
+which lists every mutant the run set out to test, and outcomes.json, which
+records each mutant it tested and names its log. A mutant that the tests missed
+or that timed out is a finding to triage, not a failed run. Three results fail
+the run:
 
 untested mutants
     cargo-mutants files every mutant whose build fails as unviable, whatever
@@ -16,6 +17,12 @@ untested mutants
     holds rustc's errors instead. A log that cannot be read, or an
     outcomes.json that does not account for every unviable mutant, fails the
     run too: then nothing tells why those builds failed.
+unfinished run
+    cargo-mutants writes mutants.json before it builds anything and records a
+    mutant in outcomes.json once it has tested it. A listed mutant without an
+    outcome was never tested: the run stopped before it got there, as a shard
+    of the pull request lane does when it runs out of its time box. What the
+    run did test is still reported.
 nothing caught
     With --require-caught, a run that caught no mutant fails: its filters
     matched no code, no mutant built, or the tests fail on none, so it proves
@@ -27,9 +34,10 @@ nothing caught
 Usage: python3 -m ci.mutants_report [--title TITLE] [--require-caught] MUTANTS_OUT
 
 The counts go to stdout and, in CI, to the job summary ($GITHUB_STEP_SUMMARY)
-together with every missed, timed-out and untested mutant and every unviable one
-whose build log cannot be read: cargo-mutants flags the missed ones as warning
-annotations, of which GitHub shows only a limited number per step.
+together with every missed, timed-out and untested mutant, every unviable one
+whose build log cannot be read and every one the run never reached:
+cargo-mutants flags the missed ones as warning annotations, of which GitHub
+shows only a limited number per step.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,6 +105,10 @@ class Report:
     untested: list[Untested] = field(default_factory=list)
     # Unviable mutants with no build log to read: nothing shows why.
     unexplained: list[Untested] = field(default_factory=list)
+    # How many mutants mutants.json lists, and those of them that outcomes.json
+    # records no outcome for: the run stopped before it reached them.
+    listed: int = 0
+    not_reached: list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -116,19 +129,72 @@ def _read_list(out: Path, name: str) -> list[str]:
     return [line for line in text.splitlines() if line.strip()]
 
 
-def _unviable_outcomes(out: Path) -> list[dict[str, Any]]:
+def _read_json(out: Path, name: str) -> Any:
     try:
-        data = json.loads((out / "outcomes.json").read_text(encoding="utf-8"))
+        return json.loads((out / name).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise ReportError(f"outcomes.json cannot be read: {error}") from None
+        raise ReportError(f"{name} cannot be read: {error}") from None
+
+
+def _outcomes(out: Path) -> list[dict[str, Any]]:
+    data = _read_json(out, "outcomes.json")
     outcomes = data.get("outcomes") if isinstance(data, dict) else None
     if not isinstance(outcomes, list):
         raise ReportError("outcomes.json has no list of outcomes")
+    return [outcome for outcome in outcomes if isinstance(outcome, dict)]
+
+
+def _unviable_outcomes(out: Path) -> list[dict[str, Any]]:
     return [
-        outcome
-        for outcome in outcomes
-        if isinstance(outcome, dict) and outcome.get("summary") == "Unviable"
+        outcome for outcome in _outcomes(out) if outcome.get("summary") == "Unviable"
     ]
+
+
+def _mutant_name(outcome: dict[str, Any]) -> str | None:
+    """The name of the mutant an outcome records; None for the baseline."""
+    scenario = outcome.get("scenario")
+    mutant = scenario.get("Mutant") if isinstance(scenario, dict) else None
+    name = mutant.get("name") if isinstance(mutant, dict) else None
+    return name if isinstance(name, str) else None
+
+
+def _listed(out: Path) -> list[str]:
+    """The names of the mutants the run set out to test, from mutants.json.
+
+    A run that wrote no mutants.json found no mutant, so it tested none.
+    """
+    if not (out / "mutants.json").exists():
+        return []
+    listed = _read_json(out, "mutants.json")
+    if not isinstance(listed, list):
+        raise ReportError("mutants.json holds no list of mutants")
+    names = []
+    for mutant in listed:
+        name = mutant.get("name") if isinstance(mutant, dict) else None
+        if not isinstance(name, str):
+            raise ReportError("mutants.json lists a mutant without a name")
+        names.append(name)
+    return names
+
+
+def find_not_reached(out: Path, listed: list[str]) -> list[str]:
+    """The ``listed`` mutants that outcomes.json records no outcome for.
+
+    cargo-mutants writes outcomes.json once the unmutated baseline is tested,
+    so a run stopped before that reached none of them.
+    """
+    if not (out / "outcomes.json").exists():
+        return list(listed)
+    tested = Counter(
+        name for name in map(_mutant_name, _outcomes(out)) if name is not None
+    )
+    not_reached = []
+    for name in listed:
+        if tested[name] > 0:
+            tested[name] -= 1
+        else:
+            not_reached.append(name)
+    return not_reached
 
 
 def find_untested(
@@ -142,15 +208,13 @@ def find_untested(
     untested = []
     unexplained = []
     for outcome in outcomes:
-        scenario = outcome.get("scenario")
-        mutant = scenario.get("Mutant") if isinstance(scenario, dict) else None
-        name = mutant.get("name") if isinstance(mutant, dict) else None
+        name = _mutant_name(outcome)
         log_path = outcome.get("log_path")
         if not isinstance(log_path, str) or not log_path:
-            label = name if isinstance(name, str) else "an unviable mutant"
+            label = name if name is not None else "an unviable mutant"
             unexplained.append(Untested(label, "", "its outcome names no build log"))
             continue
-        label = name if isinstance(name, str) else log_path
+        label = name if name is not None else log_path
         try:
             log = (out / log_path).read_text(encoding="utf-8", errors="replace")
         except OSError as error:
@@ -165,7 +229,11 @@ def find_untested(
 
 
 def load(out: Path) -> Report:
-    """Read the outcome lists of a run and check every unviable mutant's log."""
+    """Read the outcome lists of a run and check what they may leave out.
+
+    The build log of every unviable mutant is searched, and the mutants that
+    mutants.json lists are matched against the outcomes the run recorded.
+    """
     report = Report(
         caught=_read_list(out, "caught"),
         missed=_read_list(out, "missed"),
@@ -180,14 +248,21 @@ def load(out: Path) -> Report:
                 f"unviable.txt {len(report.unviable)}"
             )
         report.untested, report.unexplained = find_untested(out, outcomes)
+    listed = _listed(out)
+    report.listed = len(listed)
+    if listed:
+        report.not_reached = find_not_reached(out, listed)
     return report
 
 
 def counts(report: Report) -> str:
-    return (
+    text = (
         f"{len(report.caught)} caught, {len(report.missed)} missed, "
         f"{len(report.timed_out)} timed out, {len(report.unviable)} unviable"
     )
+    if report.not_reached:
+        text += f", {len(report.not_reached)} not reached"
+    return text
 
 
 def format_summary(title: str, report: Report) -> str:
@@ -203,6 +278,7 @@ def format_summary(title: str, report: Report) -> str:
             "Not shown to be unviable: no build log to read",
             [str(item) for item in report.unexplained],
         ),
+        ("Not tested: the run stopped before it reached them", report.not_reached),
     )
     for heading, entries in sections:
         if entries:
@@ -240,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ReportError as error:
         print(f"{args.title}: {args.out}: {error}", file=sys.stderr)
         return 1
-    if report.total == 0 and not args.require_caught:
+    if report.total == 0 and not report.not_reached and not args.require_caught:
         print(f"{args.title}: no mutable code in this run.")
         return 0
 
@@ -266,6 +342,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for item in report.unexplained:
             print(f"  {item}", file=sys.stderr)
+        failed = True
+    if report.not_reached:
+        print(
+            f"{len(report.not_reached)} of the {report.listed} mutant(s) the run "
+            "set out to test were never tested: it stopped before it reached them.",
+            file=sys.stderr,
+        )
+        for name in report.not_reached:
+            print(f"  {name}", file=sys.stderr)
         failed = True
     if args.require_caught and not report.caught:
         print(
