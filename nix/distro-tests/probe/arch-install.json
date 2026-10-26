@@ -1,19 +1,59 @@
 {
   "image": "arch-install",
   "osId": "arch",
+  "enforcing": false,
+  "imageFile": null,
   "recorded": false,
   "facts": {
+    "selinuxMode": null,
     "selinuxBackdoorDomain": null,
+    "selinuxLabels": null,
+    "selinuxPolicyLoads": null,
+    "kernelRelease": null,
+    "moduleDirs": null,
     "mounts": [],
+    "fstab": null,
+    "swaps": [],
+    "mountUnits": [],
+    "generatorUnits": {
+      "/run/systemd/generator": null,
+      "/run/systemd/generator.late": null
+    },
     "tools": {},
+    "services": {
+      "auditd": {
+        "enabled": null,
+        "active": null
+      },
+      "tuned": {
+        "enabled": null,
+        "active": null
+      },
+      "firewalld": {
+        "enabled": null,
+        "active": null
+      },
+      "abrtd": {
+        "enabled": null,
+        "active": null
+      }
+    },
+    "auditdRefuseManualStop": null,
+    "packages": null,
     "journaldVendorConfig": {
       "storage": null,
       "sources": []
     },
     "failedBootUnits": [],
+    "maskedUnits": [],
     "updatedbPrunePaths": [],
     "avcs": [],
     "ninePUnderEnforcing": null,
-    "derivativeOsRelease": {}
+    "derivativeOsRelease": {},
+    "softRebootsCount": null,
+    "failedUnitsAfterSoftReboot": [],
+    "avcsAfterSoftReboot": [],
+    "selinuxLabelsAfterSoftReboot": null,
+    "selinuxPolicyLoadsAfterSoftReboot": null
   }
 }

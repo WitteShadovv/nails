@@ -1,27 +1,32 @@
 # Distribution probe fixtures
 
 A probe boots one distribution's stock cloud image **without NAILS** and records
-the handful of host facts the cross-distribution work needs but cannot yet
-assert, so that each becomes committed test data instead of a guess. The facts
+the host facts the cross-distribution work needs but cannot assert by reading
+code, so that each becomes committed test data instead of a guess. The facts
 are the ones the platform notes leave unverified for the families that are not
 admitted yet (Fedora and Arch): the SELinux domain a backdoor-style service
-lands in, the image's own mount layout, the host tools actually present, the
-vendor journald configuration, the boot-loader units that fail on their own, the
-`updatedb` prune paths, any AVC denials, whether a 9p share works while SELinux
-is enforcing, and the `os-release` values a derivative carries.
+lands in, the labels and policy loads around a soft-reboot, the kernel and its
+module trees, the image's own mount layout and where each mount, swap and
+automount unit comes from, the host tools actually present, the state of the
+services the decoy-posture checks judge, the vendor journald configuration, the
+units that fail on their own, the `updatedb` prune paths, any AVC denials,
+whether a 9p share works while SELinux is enforcing, the `os-release` values a
+derivative carries, and what one plain soft-reboot changes.
 
 These facts need a booted VM, which needs KVM, so they are recorded on a
-KVM-capable host (the build server has none): one JSON file per image key in
-`../images.json`, with `"recorded": false` until the probe has run on it.
+KVM-capable host (the build server has none): one JSON file per probe, with
+`"recorded": false` until the probe has run on it.
 
 ## Files
 
-One file per image the probe will cover, named after its `../images.json` key:
+One file per probe, named after the probe: the `../images.json` key of its
+image, with `-enforcing` added for a Fedora image booted with SELinux enforcing.
 
-- `fedora-44.json`  -- the pinned Fedora 44 cloud image (recorded, booted with
-  SELinux permissive as `../images.json` pins it, and again enforcing for the
-  enforcing-only facts)
-- `fedora-45.json`  -- Fedora 45 once its image is pinned
+- `fedora-44.json` -- the pinned Fedora 44 cloud image, booted with SELinux
+  permissive as `../images.json` pins it (recorded)
+- `fedora-44-enforcing.json` -- the same image booted with SELinux enforcing
+- `fedora-45.json`, `fedora-45-enforcing.json` -- Fedora 45 once its image is
+  pinned
 - `arch-boxes.json` -- the pinned Arch `arch-boxes` image (recorded)
 - `arch-install.json` -- the `archinstall`-built Arch image, once hosted
 
@@ -32,63 +37,128 @@ suite directly.
 
 Each file is an object:
 
-- `image`   -- the `../images.json` key this file records.
-- `osId`    -- the decoy's `/etc/os-release` ID.
+- `image` -- the `../images.json` key of the image the probe booted.
+- `osId` -- the decoy's `/etc/os-release` ID.
+- `enforcing` -- `true` for the probe that left SELinux enforcing, `false`
+  otherwise.
+- `imageFile` -- the name of the pinned image file the facts come from, so that
+  a repin shows which fixtures are older than the pin; `null` until recorded.
 - `recorded` -- `false` until a probe run has filled `facts`; a consumer must
   skip or xfail a fact file whose `recorded` is `false`.
-- `facts`   -- the recorded facts, each `null`/empty until recorded:
+- `facts` -- the recorded facts, in this order. A fact whose query has not run
+  is `null`, or empty for a list or map. The SELinux facts are `null` on an
+  image without SELinux.
+  - `selinuxMode` -- what `getenforce` answers, in lower case (`enforcing`,
+    `permissive` or `disabled`).
   - `selinuxBackdoorDomain` -- the SELinux domain a backdoor-style unit runs in
-    on the stock image (string, or `null` where the image has no SELinux; a
+    on the stock image (the type of the backdoor shell's own context; a
     permissive boot labels processes as an enforcing one does, so it records
     the domain too).
-  - `mounts` -- the image's own mount layout: a list of
-    `{ "target": ..., "fstype": ..., "options": ... }`.
+  - `selinuxLabels` -- the labels of `/`, `/run` and `/run/systemd` at the end
+    of the plain boot (`ls -Zd`): `{ "<path>": "<label>" }`.
+  - `selinuxPolicyLoads` -- the SELinux policy lines of the kernel log at the
+    end of the plain boot (`dmesg`), such as PID 1's "Successfully loaded
+    SELinux policy" (list), without the timestamp and the time the load took.
+  - `kernelRelease` -- the running kernel (`uname -r`).
+  - `moduleDirs` -- the module trees in `/usr/lib/modules` (sorted list).
+  - `mounts` -- the image's own mount layout (`findmnt --real`), sorted by
+    target: a list of `{ "target": ..., "fstype": ..., "options": ... }`.
+  - `fstab` -- the entries of `/etc/fstab` in file order: a list of
+    `{ "source", "target", "fstype", "options", "dump", "pass" }`, with
+    fstab(5)'s default for a missing options, dump or pass field; `null` when
+    the image has no `/etc/fstab`.
+  - `swaps` -- the active swap areas (`swapon --show`): a list of
+    `{ "name", "type", "size", "priority" }`, the size in bytes.
+  - `mountUnits` -- every mount, swap and automount unit systemd knows, in
+    `systemctl list-units --all` order: a list of
+    `{ "unit", "load", "active", "sub", "fragmentPath", "sourcePath" }`.
+    `fragmentPath` is the file the unit was loaded from (one below
+    `/run/systemd/generator` was generated) and `sourcePath` the file it was
+    generated from (`/etc/fstab` for an fstab entry); each is `null` where
+    systemd names none.
+  - `generatorUnits` -- what `/run/systemd/generator` and
+    `/run/systemd/generator.late` hold: `{ "<directory>": [ ... ] }`, each list
+    sorted, `null` for a directory that does not exist.
   - `tools` -- the programs the NAILS sources name, mapped to their absolute
     path on the image (`{ "<tool>": "<path>" }`); an absent tool is omitted.
+  - `services` -- `auditd`, `tuned`, `firewalld` and `abrtd`, each
+    `{ "enabled": ..., "active": ... }` as `systemctl is-enabled` and
+    `systemctl is-active` answer; `not-found` is a unit the image does not
+    have.
+  - `auditdRefuseManualStop` -- whether the auditd unit refuses a manual stop
+    (`systemctl show -p RefuseManualStop`), which a `systemctl stop` or
+    `systemctl mask --now` of it meets; `null` when the unit is not loaded.
+  - `packages` -- on Fedora, `audit`, `tuned`, `firewalld` and `abrt` mapped to
+    the installed name-version-release (`rpm -q`), or `null` for a package that
+    is not installed; `null` on the other families.
   - `journaldVendorConfig` -- the effective vendor `Storage=` and the files that
     set it (`{ "storage": ..., "sources": [ ... ] }`); `sources` is empty when
-    no file sets it and the compiled-in default applies.
-  - `failedBootUnits` -- boot-loader and early units that show as failed on a
-    plain boot of the stock image (list of unit names).
-  - `failedUnitsAfterSoftReboot` -- units that show as failed after one plain
-    `systemctl soft-reboot` of the stock image, with no NAILS involved (list of
-    unit names); every way back is a soft-reboot, so these are the units the
-    way back would have to mask.
+    no file sets it, and `storage` is then the compiled-in default the vendor
+    file documents in its commented-out line.
+  - `failedBootUnits` -- the units that show as failed on a plain boot of the
+    stock image (list of unit names).
+  - `maskedUnits` -- every masked unit (list of unit names). The test harness
+    masks some (the serial getty and SSH units, and on Arch a few more), so
+    neither failed-unit list can show a failure of one of those.
   - `updatedbPrunePaths` -- the `PRUNEPATHS` the image's `updatedb` ships (list).
-  - `avcs` -- AVC denials seen on a plain boot, permissive or enforcing (list of
-    raw AVC lines).
-  - `ninePUnderEnforcing` -- whether a 9p share mounts and reads while SELinux is
-    enforcing, from the enforcing variant (`true`/`false`, or `null` where the
-    image has no SELinux).
+  - `avcs` -- the AVC and USER_AVC denials of the plain boot, from the kernel
+    log and the audit log (`ausearch`), each denial once, as the record from
+    `avc:  denied` on (list). A permissive boot logs the denials an enforcing
+    one would enforce.
+  - `ninePUnderEnforcing` -- whether the harness's 9p share mounted and a file
+    reads through it while SELinux is enforcing (`true`/`false`); `null` unless
+    the probe ran enforcing.
   - `derivativeOsRelease` -- for a derivative, the `ID`, `ID_LIKE` and
-    `VARIANT_ID` its `os-release` carries (`{ ... }`).
+    `VARIANT_ID` its `os-release` carries (`{ ... }`); empty for the family's
+    own image.
+  - `softRebootsCount` -- PID 1's `SoftRebootsCount` after the one plain
+    `systemctl soft-reboot` the probe ends with: `1` when the image
+    soft-rebooted once without a new boot.
+  - `failedUnitsAfterSoftReboot` -- the units that show as failed after that
+    soft-reboot, with no NAILS involved (list of unit names); every way back is
+    a soft-reboot, so these are the units the way back would have to mask.
+  - `avcsAfterSoftReboot` -- the denials logged after those of the plain boot
+    were read: what the soft-reboot and the userspace after it were denied.
+    While auditd is down, from its stop on the way down to its start after the
+    soft-reboot, the kernel log is the only record of a denial, and the units
+    stopping fill that log's rate limit, so the probe lifts the limit before
+    it soft-reboots.
+  - `selinuxLabelsAfterSoftReboot` -- `selinuxLabels`, read after the
+    soft-reboot.
+  - `selinuxPolicyLoadsAfterSoftReboot` -- the policy lines the kernel log
+    gained after those of the plain boot were read: the load of the PID 1 that
+    started after the soft-reboot.
+
+The `/nix/.ro-store` 9p share and the `backdoor.service` and
+`mount-store.service` units belong to the test harness, not to the image, so
+`mounts` and `mountUnits` leave out everything below `/nix`; the domain the
+backdoor unit runs in is exactly what `selinuxBackdoorDomain` records.
 
 ## Regenerating
 
-On a KVM-capable host, build the probe driver of the image (`../probe.nix`, the
-same `nix-vm-test` seam the smoke suite uses) and run it. The driver keeps the
-VM state and its sockets in `XDG_RUNTIME_DIR`, falling back to `TMPDIR`; point
+The queries and the reading of their output into the record are in
+`../py/probe_facts.py`, unit-tested by the `distro-checks` flake check;
+`../probe.nix` builds one host driver per probe (`<probe>-probe`, the same
+`nix-vm-test` seam the smoke suite uses), which runs the queries, soft-reboots
+the image and runs the rest. The driver prints one `=== <label> ===` block per
+query and writes `<probe>.json`, the record, and `<probe>.raw.json`, every
+query's output by label, into the directory `NAILS_PROBE_OUT` names, or the
+one it runs in. A fixture is that record as written: copy `<probe>.json` over
+the file here rather than editing it.
+
+On a KVM-capable host, build the driver and run it. The driver keeps the VM
+state and its sockets in `XDG_RUNTIME_DIR`, falling back to `TMPDIR`; point
 both at a short directory on disk, since a Unix socket path holds at most 107
-bytes and the state is several GB:
+bytes and the state is several GB. Write the JSON outside this folder, so that
+the raw output stays out of it, and copy the record in:
 
 ```bash
 nix build .#e2e-distro.fedora-44-probe -o fedora-44-probe
-mkdir -p /var/tmp/p
-TMPDIR=/var/tmp/p XDG_RUNTIME_DIR=/var/tmp/p ./fedora-44-probe/bin/test-driver
+mkdir -p /var/tmp/p/out
+TMPDIR=/var/tmp/p XDG_RUNTIME_DIR=/var/tmp/p NAILS_PROBE_OUT=/var/tmp/p/out \
+  ./fedora-44-probe/bin/test-driver
+cp /var/tmp/p/out/fedora-44.json nix/distro-tests/probe/
 ```
 
-A Fedora image also has an enforcing variant, `<image>-enforcing-probe`, which
-boots the same image with SELinux enforcing; `ninePUnderEnforcing` and the
-enforcing half of `avcs` come from it.
-
-The driver prints one `=== <fact> ===` block per query. Copy what the blocks
-show into the matching file and set `recorded` to `true`. Keep the key order
-and the schema; a consumer in the platform or session tests reads the file by
-its `image` key. The `/nix/.ro-store` 9p share and the `backdoor.service` and
-`mount-store.service` units belong to the test harness, not to the image, so
-they stay out of `mounts`; the domain the backdoor unit runs in is exactly what
-`selinuxBackdoorDomain` records. The harness also masks some units (the
-`masked-units` block lists them, for example the serial getty and SSH units,
-and on Arch `systemd-boot-update.service`, `systemd-time-wait-sync.service`
-and the keyring units), so `failedBootUnits` cannot show a failure of one of
-those.
+A Fedora image also has the enforcing variant, `<image>-enforcing-probe`, which
+boots the same image with SELinux enforcing.
