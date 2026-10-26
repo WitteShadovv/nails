@@ -19,6 +19,7 @@ from ci.mutants_plan import Plan
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "mutants-in-diff.yml"
+JUSTFILE = REPO_ROOT / "justfile"
 
 # One entry of `cargo mutants --list --json`, as cargo-mutants 27 prints it.
 MUTANT = {
@@ -85,7 +86,7 @@ def slices(mutants: int, shards: int) -> list[int]:
 
 def cargo_mutants_arguments(recipe: str) -> list[str]:
     """The arguments that a justfile recipe passes to `cargo mutants`."""
-    text = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    text = JUSTFILE.read_text(encoding="utf-8")
     found = re.search(
         rf"^{re.escape(recipe)}(?: [^\n]*)?:\n((?:[ \t]+[^\n]*\n|\n)*)", text, re.M
     )
@@ -122,6 +123,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(mutants_plan.capacity(mutants_plan.SHARD_MINUTES), 30)
         self.assertEqual(mutants_plan.capacity(mutants_plan.MAX_SHARD_MINUTES), 66)
         self.assertEqual(mutants_plan.most_mutants(), 792)
+        self.assertEqual(mutants_plan.JOB_MINUTES_PAST_BOX, 5)
 
     def test_capacity_is_the_most_a_time_box_holds(self) -> None:
         for minutes in range(
@@ -176,6 +178,11 @@ class PlanTest(unittest.TestCase):
                 self.assertLessEqual(
                     planned.per_shard, mutants_plan.capacity(planned.minutes)
                 )
+                # The job outlasts the box by the steps around it.
+                self.assertEqual(
+                    planned.job_minutes,
+                    planned.minutes + mutants_plan.JOB_MINUTES_PAST_BOX,
+                )
                 # Every shard cargo-mutants slices off tests something, and
                 # none tests more than the plan sized its time box for.
                 tested = slices(mutants, planned.shards)
@@ -192,15 +199,20 @@ class PlanTest(unittest.TestCase):
                     )
 
     def test_the_matrix_names_each_shard_of_the_plan(self) -> None:
+        # Each shard's time box, and the limit of its job five minutes later.
         self.assertEqual(
             mutants_plan.matrix(Plan(61, 3, 21, 15)),
             {
                 "include": [
-                    {"shard": 0, "shards": 3, "timeout": 15},
-                    {"shard": 1, "shards": 3, "timeout": 15},
-                    {"shard": 2, "shards": 3, "timeout": 15},
+                    {"shard": 0, "shards": 3, "minutes": 15, "timeout": 20},
+                    {"shard": 1, "shards": 3, "minutes": 15, "timeout": 20},
+                    {"shard": 2, "shards": 3, "minutes": 15, "timeout": 20},
                 ]
             },
+        )
+        self.assertEqual(
+            mutants_plan.matrix(Plan(792, 12, 66, 30))["include"][11],
+            {"shard": 11, "shards": 12, "minutes": 30, "timeout": 35},
         )
 
 
@@ -250,7 +262,8 @@ class MainTest(unittest.TestCase):
         include = json.loads(outputs["matrix"])["include"]
         self.assertEqual([entry["shard"] for entry in include], list(range(12)))
         self.assertEqual({entry["shards"] for entry in include}, {12})
-        self.assertEqual({entry["timeout"] for entry in include}, {18})
+        self.assertEqual({entry["minutes"] for entry in include}, {18})
+        self.assertEqual({entry["timeout"] for entry in include}, {23})
         message = (
             "409 mutants in the diff: 12 shards of at most 35, each time-boxed "
             "at 18 minutes."
@@ -336,6 +349,33 @@ class LaneTest(unittest.TestCase):
         # starting on an empty matrix.
         self.assertEqual(planned_outputs("")["shards"], "0")
         self.assertIn("if: needs.plan.outputs.shards != '0'", text)
+
+    def test_each_shard_keeps_to_its_time_box(self) -> None:
+        # The shard job's limit is the one the plan prints for it, and the
+        # mutation step hands the shard's time box to the recipe, which stops
+        # cargo-mutants when it runs out. The step then fails, and the upload
+        # still runs.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        recipe = re.search(
+            r"^mutants-in-diff ([^:]*):$", JUSTFILE.read_text(encoding="utf-8"), re.M
+        )
+        if recipe is None:
+            raise AssertionError("no recipe mutants-in-diff in the justfile")
+        self.assertEqual(
+            recipe.group(1).split(),
+            ["diff", 'shard="0"', 'shards="1"', 'minutes=""'],
+        )
+        self.assertRegex(text, r"\n    timeout-minutes: \$\{\{ matrix\.timeout \}\}\n")
+        self.assertRegex(text, r"\n          MINUTES: \$\{\{ matrix\.minutes \}\}\n")
+        self.assertIn(
+            'run: just mutants-in-diff "$RUNNER_TEMP/pr.diff" "$SHARD" "$SHARDS" '
+            '"$MINUTES"\n',
+            text,
+        )
+        self.assertRegex(
+            text,
+            r"- name: Upload the mutants report\n\s+if: \$\{\{ !cancelled\(\) \}\}\n",
+        )
 
 
 if __name__ == "__main__":
