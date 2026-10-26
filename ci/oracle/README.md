@@ -29,9 +29,10 @@ cited allowlist entry explains it. A difference goes either way: a trace new in
 `after`, a file whose content changed, and a file, record or feature that was in
 `before` and in `control` but is gone from `after`. The verdict is `clean` only
 when every difference it can see is accounted for, the scan proved it is not
-blind (the positive controls, and every analysis channel reporting on every
-image), and it proved it read the image (the canary). What it cannot see is
-listed under [What it does not see](#what-it-does-not-see).
+blind (the positive controls, and every analysis channel but nix_db reporting
+on every image; only a Nix decoy has a store database, so nix_db is held to the
+database instead), and it proved it read the image (the canary). What it cannot
+see is listed under [What it does not see](#what-it-does-not-see).
 
 ## The outputs/ tree it consumes
 
