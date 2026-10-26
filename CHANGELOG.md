@@ -384,6 +384,10 @@ of this changelog for that version becomes the release notes word for word, and
   returns to: the links the session made and the MAC addresses it changed then stay on the decoy
   until power-off, which `deactivate --poweroff` avoids. Under `--json` the warning is in the
   envelope's `warnings`.
+- The `activate --json` schema now ties `ok` to the outcome, as the output always did: a document
+  that is not `ok` carries its error, and a failed activation (data status `failed`) is never
+  `ok`. It accepted both contradictions, so a reader that validated a document could not tell a
+  refused activation read as a success.
 - `nails activate` refuses a state file it is not allowed to read (a permission denied, as an
   SELinux or AppArmor label can cause) as an unknown state, with exit 6, as the 0.3.0-rc.2 notes
   say it refuses an unreadable one. It took such a file for a state it could trust and went on.
