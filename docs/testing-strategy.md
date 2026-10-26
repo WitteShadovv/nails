@@ -189,6 +189,7 @@ and checks more than that nothing panics or hangs:
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
 | `cryptsetup_version` | a decoy's dpkg `status` file, whose lines are also pacman entries and a store path's name | a version read comes from what names cryptsetup and reads back the same; another package's stanza or entry changes nothing |
+| `kernel_config_gzip` | the kernel's own config, `/proc/config.gz`, as a gzip stream, which is also the text of a stream the target writes | a member before the stream adds its text and changes nothing else, so no back-reference leaves its member; a stream that decodes stays within the limit and is refused one byte below it, cut short by a byte or followed by one, and decodes the same when its text is written again in stored blocks; the input written in fixed-Huffman and stored blocks, in two members, decodes back to it |
 | `disk_layout` | the start of a raw disk | partitions and free ranges lie on the disk, in order, apart; what a rehearsal scan reads at the start of each region (its signature, a compressing filesystem's magic, an f2fs's compression feature, the size a superblock records) is read without an error |
 | `raw_token_scan` | a canary token and a sparse disk image | the windowed scan finds what a scan of the whole image in one buffer finds |
 

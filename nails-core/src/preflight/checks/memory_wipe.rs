@@ -34,7 +34,10 @@ use super::kernel_cmdline::{self, BoolSpellings};
 use crate::{Filesystem, Result};
 use std::path::PathBuf;
 
-mod gzip;
+// The gzip reader of `/proc/config.gz`. Public for the fuzz target that drives
+// it only; not part of any interface.
+#[doc(hidden)]
+pub mod gzip;
 mod kernel_config;
 
 use kernel_config::{ConfigSources, KernelConfig};

@@ -12,6 +12,9 @@
 //! one and every member's CRC-32 and length, refuses anything malformed rather
 //! than guess, and caps what it writes, so no input can make it exhaust memory
 //! or loop. The extra field of a header is skipped unread, as zlib skips it.
+//!
+//! The decoder is public for the `kernel_config_gzip` fuzz target only, which
+//! drives it with hostile streams; it is not part of any interface.
 
 /// The most bytes a stream may decode to. A kernel config is a few hundred KiB.
 const MAX_OUTPUT: usize = 16 << 20;
@@ -69,15 +72,15 @@ const FRESERVED: u8 = 0xE0;
 
 /// Why a stream could not be decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Malformed(&'static str);
+pub struct Malformed(&'static str);
 
 /// Decode the gzip stream `data`: one member or several, back to back.
-pub(super) fn decompress(data: &[u8]) -> Result<Vec<u8>, Malformed> {
+pub fn decompress(data: &[u8]) -> Result<Vec<u8>, Malformed> {
     decompress_within(data, MAX_OUTPUT)
 }
 
 /// [`decompress`], refusing a stream that decodes to more than `limit` bytes.
-fn decompress_within(data: &[u8], limit: usize) -> Result<Vec<u8>, Malformed> {
+pub fn decompress_within(data: &[u8], limit: usize) -> Result<Vec<u8>, Malformed> {
     let mut out = Output {
         bytes: Vec::new(),
         limit,
