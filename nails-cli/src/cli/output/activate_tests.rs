@@ -311,3 +311,91 @@ fn an_overlay_only_entry_names_no_hidden_system() {
     let value = envelope_value(&ActivateResult::Entering(&entry), 3.0);
     assert!(value["data"].get("hidden_system").is_none(), "{value}");
 }
+
+/// The test that stands in for the binary when the test binary runs again in a
+/// child process for one case: it calls the shipped human printer, which
+/// writes to the child's real stdout and stderr. Reading them from the parent
+/// needs no redirection of this process's descriptors, which the threaded test
+/// run shares. The `--json` printer needs none of this: [`envelope_value`]
+/// checks the line it prints, and the activate command's own tests read it
+/// from a child.
+const PRINTER_SUBPROCESS_TEST_NAME: &str =
+    "cli::output::activate::tests::subprocess_printer_entrypoint";
+
+/// What the real printer prints for `case`, run in a child process.
+fn printed(case: &str) -> std::process::Output {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            PRINTER_SUBPROCESS_TEST_NAME,
+            "--nocapture",
+            "--quiet",
+        ])
+        .env("NAILS_ACTIVATE_PRINTER_CASE", case)
+        .output()
+        .expect("failed to run the activate printer subprocess")
+}
+
+#[test]
+fn subprocess_printer_entrypoint() {
+    let Ok(case) = std::env::var("NAILS_ACTIVATE_PRINTER_CASE") else {
+        return;
+    };
+    let failed = NailsError::InvalidState("the root is not a mount point".to_string());
+    let entering = entry(vec!["hidden kernel differs".to_string()]);
+    let quiet = OutputSettings {
+        verbosity: nails_core::Verbosity::Quiet,
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    match case.as_str() {
+        "quiet-entering" => print_activate_human(&ActivateResult::Entering(&entering), 3.0, &quiet),
+        "quiet-failed" => print_activate_human(&ActivateResult::Failed(&failed), 0.1, &quiet),
+        other => panic!("unknown activate printer case: {other}"),
+    }
+    crate::cli::output::flush_stdio();
+    crate::cli::chokepoint::exit_process(0);
+}
+
+/// The lines a printer child wrote on `stream`, without the blank lines and
+/// the test harness's own `running 1 test` header.
+fn lines_of(stream: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stream)
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with("running "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The shipped human printer under `--quiet`: the result and its warnings on
+/// stdout, without the details; a failure on stderr only.
+#[test]
+fn the_quiet_human_printer_keeps_the_result_and_the_warnings() {
+    let output = printed("quiet-entering");
+    assert!(output.status.success(), "{output:?}");
+    let out = lines_of(&output.stdout);
+    assert_eq!(out[0], "[PASS] Hidden session prepared in 3.0s", "{out:?}");
+    assert_eq!(out[1], "[WARN] hidden kernel differs", "{out:?}");
+    assert!(
+        out.last()
+            .is_some_and(|line| line.starts_with("Soft-rebooting")),
+        "{out:?}"
+    );
+    assert!(
+        !out.iter()
+            .any(|line| line.contains("Hidden system") || line.contains("/boot")),
+        "{out:?}"
+    );
+    assert!(lines_of(&output.stderr).is_empty(), "{output:?}");
+
+    let output = printed("quiet-failed");
+    assert!(output.status.success(), "{output:?}");
+    assert!(lines_of(&output.stdout).is_empty(), "{output:?}");
+    assert_eq!(
+        lines_of(&output.stderr),
+        vec![
+            "[FAIL] Activation failed: Invalid state: the root is not a mount point".to_string(),
+            "  Nothing was changed: no next root is left behind.".to_string(),
+        ]
+    );
+}
