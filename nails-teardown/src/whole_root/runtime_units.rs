@@ -434,14 +434,10 @@ mod tests {
 
     #[test]
     fn an_entry_there_that_does_not_mask_the_generator_writes_nothing() {
-        use std::os::unix::fs::PermissionsExt;
+        use crate::test_support::write_executable;
         /// Makes an entry at its second path; the first is a directory
         /// outside the generator directory.
         type Make = fn(&Path, &Path);
-        fn executable(path: &Path) {
-            std::fs::write(path, "#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         // PID 1 skips the first three and runs the generator from the next
         // directory, and runs the last two in its place.
         let entries: [(&str, Make); 5] = [
@@ -452,10 +448,12 @@ mod tests {
             ("a file not marked executable", |_, path| {
                 std::fs::write(path, "#!/bin/sh\n").unwrap()
             }),
-            ("an executable", |_, path| executable(path)),
+            ("an executable", |_, path| {
+                write_executable(path, "#!/bin/sh\n", 0o755)
+            }),
             ("a link to an executable", |elsewhere, path| {
                 let target = elsewhere.join("real-generator");
-                executable(&target);
+                write_executable(&target, "#!/bin/sh\n", 0o755);
                 std::os::unix::fs::symlink(&target, path).unwrap()
             }),
         ];
