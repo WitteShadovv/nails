@@ -76,25 +76,39 @@ fn an_old_systemd_is_refused_with_how_the_host_upgrades() {
     );
 }
 
-/// `run` hands the version it reads to `judge`, which judges it on the host
-/// the check was built on: a Debian 12 host is told the Debian upgrade, and a
-/// check built without a host names the platforms NAILS runs on.
+/// `run` judges the version the check was built with on the host it was built
+/// on: a Debian 12 host is told the Debian upgrade, a check built without a
+/// host names the platforms NAILS runs on, and one without a version fails.
 #[test]
-fn the_check_judges_on_the_host_it_was_built_on() {
-    let debian = SystemdVersionCheck::new(Some(host("ID=debian\nVERSION_ID=\"12\"\n")));
-    let old = debian.judge(Some(252));
+fn the_check_judges_its_version_on_its_host() {
+    let run = |check: SystemdVersionCheck| {
+        check
+            .run(&crate::filesystem::MockFilesystem::new())
+            .unwrap()
+    };
+    let debian = || Some(host("ID=debian\nVERSION_ID=\"12\"\n"));
+
+    let old = run(SystemdVersionCheck::new(Some(252), debian()));
     assert!(old.is_fail(), "{old:?}");
-    let remediation = old.remediation().unwrap();
-    assert!(
-        remediation.contains("Upgrade to Debian 13 as its release notes describe"),
-        "{remediation}"
+    assert_eq!(
+        old.remediation(),
+        Some("Upgrade to Debian 13 as its release notes describe, then reboot."),
+        "{old:?}"
     );
 
-    let without = SystemdVersionCheck::new(None).judge(Some(252));
+    let without = run(SystemdVersionCheck::new(Some(252), None));
     assert_eq!(
         without.remediation(),
         Some(upgrade_hint(None).as_str()),
         "{without:?}"
+    );
+
+    assert!(run(SystemdVersionCheck::new(Some(254), debian())).is_pass());
+    let unread = run(SystemdVersionCheck::new(None, debian()));
+    assert!(unread.is_fail(), "{unread:?}");
+    assert!(
+        unread.message().contains("could not read the version"),
+        "{unread:?}"
     );
 }
 

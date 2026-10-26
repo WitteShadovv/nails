@@ -9,7 +9,6 @@
 
 use super::NailsManager;
 use crate::preflight::PreFlightRegistry;
-use crate::session::checks::SystemdVersionCheck;
 use crate::{Config, Filesystem, NailsError, Result, StateFile, SystemState};
 use std::path::PathBuf;
 
@@ -94,11 +93,19 @@ pub struct RegistryInputs {
     /// binary-location check probes for decoy symlinks. `None` (the default
     /// used by unit tests that build inputs directly) probes nothing.
     pub caller_path: Option<std::ffi::OsString>,
-    /// The host detection found (see [`NailsManager::host_profile`]), which the
-    /// platform check reports. `None` (no detection ran or it failed, and the
-    /// default used by unit tests that build inputs directly) leaves that check
-    /// out, as activation then refuses no host either.
+    /// The host detection found (see [`NailsManager::host_profile`]). The
+    /// platform check reports it, and the systemd-version check tells a
+    /// systemd too old how this host's distribution upgrades. `None` (no
+    /// detection ran or it failed, and the default used by unit tests that
+    /// build inputs directly) leaves the platform check out, as activation then
+    /// refuses no host either, and points a systemd too old at the platforms
+    /// NAILS runs on.
     pub host_profile: Option<crate::platform::HostProfile>,
+    /// The running systemd's version (see
+    /// [`running_version`](crate::session::systemd::running_version)), which
+    /// the systemd-version check judges. `None` (it could not be read, and the
+    /// default used by unit tests that build inputs directly) fails that check.
+    pub systemd_version: Option<u32>,
 }
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
@@ -136,6 +143,7 @@ pub fn build_registry<F: Filesystem>(
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
+        SystemdVersionCheck,
     };
 
     let _ = fs;
@@ -174,8 +182,12 @@ pub fn build_registry<F: Filesystem>(
     }
 
     // The hidden root is entered with `systemctl soft-reboot` (systemd 254),
-    // through the two units that implement it.
-    registry.add_check(Box::new(systemd_version_check(inputs)));
+    // through the two units that implement it. A systemd too old is told how
+    // the detected host's distribution upgrades.
+    registry.add_check(Box::new(SystemdVersionCheck::new(
+        inputs.systemd_version,
+        inputs.host_profile.clone(),
+    )));
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
         config_layer.is_some(),
@@ -353,13 +365,6 @@ pub fn build_registry<F: Filesystem>(
     Ok(registry)
 }
 
-/// The `systemd-version` check of a registry built from `inputs`, on the host
-/// detection found: a systemd too old is told how that host's distribution
-/// upgrades.
-fn systemd_version_check(inputs: &RegistryInputs) -> SystemdVersionCheck {
-    SystemdVersionCheck::new(inputs.host_profile.clone())
-}
-
 /// The typed event outcome of a check result, for the progress event stream.
 fn check_outcome(result: &crate::preflight::CheckResult) -> nails_api::CheckOutcome {
     use crate::preflight::CheckResult;
@@ -375,13 +380,13 @@ fn check_outcome(result: &crate::preflight::CheckResult) -> nails_api::CheckOutc
 impl<F: Filesystem> NailsManager<F> {
     /// Build the pre-flight registry for this manager's current inputs.
     ///
-    /// Assembles the [`RegistryInputs`] from `options` and the manager's
-    /// configuration, builder and current state, then delegates to
-    /// [`build_registry`]. Activation runs the result through
-    /// [`run_preflight_checks`](Self::run_preflight_checks); the `nails check`
-    /// command builds the same registry and runs it itself. Routing both through
-    /// this one function, with the options their flags give, is what keeps
-    /// their check lists identical.
+    /// Assembles the [`RegistryInputs`] from `options`, the manager's
+    /// configuration, builder and current state, and the running systemd's
+    /// version, then delegates to [`build_registry`]. Activation runs the
+    /// result through [`run_preflight_checks`](Self::run_preflight_checks);
+    /// the `nails check` command builds the same registry and runs it itself.
+    /// Routing both through this one function, with the options their flags
+    /// give, is what keeps their check lists identical.
     pub fn preflight_registry(&self, options: &PreflightOptions) -> Result<PreFlightRegistry<F>> {
         // The build-target check only reads the flake layout; nothing validates
         // a flake out of band any more.
@@ -404,6 +409,10 @@ impl<F: Filesystem> NailsManager<F> {
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             caller_path: self.runtime_env().path.clone(),
             host_profile: self.host_profile().cloned(),
+            // An unreadable version fails the systemd-version check.
+            systemd_version: crate::session::systemd::running_version(
+                &crate::process::RealProcessRunner,
+            ),
         };
 
         // The host's config layer contributes its own checks; it is `Some` only
