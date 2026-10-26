@@ -241,6 +241,42 @@ fn plain_absolute(path: &Path) -> bool {
             .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
 }
 
+/// The units systemd makes for a mount or a swap, and what pulls them in at
+/// boot: for an fstab entry what systemd's fstab generator makes of its line
+/// ([`Units::of`]), for a unit outside the fstab what the decoy's unit files
+/// say ([`super::mount_units`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Units {
+    /// The `.mount` or `.swap` unit; none for a swap entry that names no
+    /// device or file.
+    pub unit: Option<String>,
+    /// Its automount, if it has one.
+    pub automount: Option<String>,
+    /// What requires the unit, or its automount, at boot
+    /// ([`super::fstab::required_by`]); `None` when nothing does.
+    pub required_by: Option<String>,
+    /// The units it pulls in that act on its device or filesystem
+    /// ([`super::fstab::checkers`]).
+    pub checkers: Vec<String>,
+}
+
+impl Units {
+    /// The units systemd's fstab generator makes for `entry`.
+    pub fn of(entry: &FstabEntry) -> Self {
+        let unit = if entry.is_swap() {
+            swap_unit(&entry.spec)
+        } else {
+            Some(mount_unit(&entry.file))
+        };
+        Self {
+            unit,
+            automount: entry.is_automount().then(|| automount_unit(&entry.file)),
+            required_by: required_by(entry),
+            checkers: checkers(entry),
+        }
+    }
+}
+
 /// Decide one entry. `mounts` is the decoy's live mount table, and `present`
 /// tells whether a device is there now ([`device_present`]).
 pub fn decide(
@@ -249,7 +285,14 @@ pub fn decide(
     hidden_root: &Path,
     present: Present<'_>,
 ) -> Decision {
-    decide_entry(entry, mounts, hidden_root, false, present)
+    decide_entry(
+        entry,
+        &Units::of(entry),
+        mounts,
+        hidden_root,
+        false,
+        present,
+    )
 }
 
 /// Decide an entry of the decoy's fstab at the path the next root resolves
@@ -262,20 +305,39 @@ pub fn decide_redirected(
     hidden_root: &Path,
     present: Present<'_>,
 ) -> Decision {
-    decide_entry(entry, mounts, hidden_root, true, present)
+    decide_entry(entry, &Units::of(entry), mounts, hidden_root, true, present)
 }
 
-/// Keep the units the hidden systemd generates for `entry` from starting:
-/// its mount, and its automount when it has one. They are skipped where a
-/// boot target requires them, unless the device they wait for is not there
-/// now, and masked otherwise (see the module docs).
-fn keep_off(entry: &FstabEntry, reason: &'static str, present: Present<'_>) -> Decision {
+/// Decide a mount or swap that `units` start, outside the fstab: `entry`
+/// holds what its unit files say (the source, the mount point, the type and
+/// the options), and the decision is the one an fstab line with them gets.
+pub fn decide_units(
+    entry: &FstabEntry,
+    units: &Units,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    present: Present<'_>,
+) -> Decision {
+    decide_entry(entry, units, mounts, hidden_root, false, present)
+}
+
+/// Keep `units` of `entry` from starting: its mount, and its automount when
+/// it has one. They are skipped where a boot target requires them, unless
+/// the device they wait for is not there now, and masked otherwise (see the
+/// module docs).
+fn keep_off(
+    entry: &FstabEntry,
+    units: &Units,
+    reason: &'static str,
+    present: Present<'_>,
+) -> Decision {
     let target = entry.file.clone();
-    let mount = mount_unit(&entry.file);
-    let required = required_by(entry);
-    if entry.is_automount() {
-        let automount = automount_unit(&entry.file);
-        if required.is_none() {
+    let mount = units
+        .unit
+        .clone()
+        .unwrap_or_else(|| mount_unit(&entry.file));
+    if let Some(automount) = units.automount.clone() {
+        if units.required_by.is_none() {
             return Decision::Mask {
                 target,
                 units: vec![mount, automount],
@@ -296,24 +358,24 @@ fn keep_off(entry: &FstabEntry, reason: &'static str, present: Present<'_>) -> D
             reason,
         };
     }
-    gate(target, vec![mount], entry, required, reason, present)
+    gate(target, vec![mount], entry, units, reason, present)
 }
 
-/// The decision for `units` of `entry` that must not start: a skip when
-/// `required` names what requires them and the device they wait for, if any,
-/// is there now; a mask otherwise.
+/// The decision for `kept` of `entry` that must not start: a skip when
+/// something requires them ([`Units::required_by`]) and the device they wait
+/// for, if any, is there now; a mask otherwise.
 fn gate(
     target: PathBuf,
-    units: Vec<String>,
+    kept: Vec<String>,
     entry: &FstabEntry,
-    required: Option<String>,
+    units: &Units,
     reason: &'static str,
     present: Present<'_>,
 ) -> Decision {
-    let Some(required) = required else {
+    let Some(required) = units.required_by.clone() else {
         return Decision::Mask {
             target,
-            units,
+            units: kept,
             reason,
             unreached: None,
         };
@@ -321,7 +383,7 @@ fn gate(
     match waits_for(entry) {
         Some(device) if !present(&device) => Decision::Mask {
             target,
-            units,
+            units: kept,
             reason,
             unreached: Some(Unreached {
                 target: required,
@@ -331,8 +393,8 @@ fn gate(
         device => Decision::Skip {
             target,
             skip: Skip {
-                units,
-                pulled: checkers(entry),
+                units: kept,
+                pulled: units.checkers.clone(),
                 device,
             },
             masked: Vec::new(),
@@ -343,6 +405,7 @@ fn gate(
 
 fn decide_entry(
     entry: &FstabEntry,
+    units: &Units,
     mounts: &[MountEntry],
     hidden_root: &Path,
     redirected: bool,
@@ -350,7 +413,7 @@ fn decide_entry(
 ) -> Decision {
     let target = entry.file.clone();
     if entry.is_swap() {
-        let Some(unit) = swap_unit(&entry.spec) else {
+        let Some(unit) = units.unit.clone() else {
             return Decision::Leave {
                 target,
                 reason: "a swap entry without a device",
@@ -360,7 +423,7 @@ fn decide_entry(
             PathBuf::from(&entry.spec),
             vec![unit],
             entry,
-            required_by(entry),
+            units,
             "swap would take hidden RAM onto a decoy disk",
             present,
         );
@@ -387,6 +450,7 @@ fn decide_entry(
         if redirected {
             return keep_off(
                 entry,
+                units,
                 "a link leads it into the hidden volume, where the hidden session would mount \
                  a decoy filesystem read-write",
                 present,
@@ -410,6 +474,7 @@ fn decide_entry(
     if entry.is_network() {
         return keep_off(
             entry,
+            units,
             "the hidden session would write to the server",
             present,
         );
@@ -431,7 +496,7 @@ fn decide_entry(
                 reason: "an overlay with its upper in RAM",
             }
         } else {
-            keep_off(entry, "an overlay with its upper on a disk", present)
+            keep_off(entry, units, "an overlay with its upper on a disk", present)
         };
     }
     match mounted_at(mounts, &target) {
@@ -445,6 +510,7 @@ fn decide_entry(
         },
         None => keep_off(
             entry,
+            units,
             "not mounted now; the hidden session would mount it read-write",
             present,
         ),
