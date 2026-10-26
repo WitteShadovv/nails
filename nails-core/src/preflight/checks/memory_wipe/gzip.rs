@@ -8,9 +8,10 @@
 //! build compresses it: `gzip -n -9`, RFC 1952 framing around RFC 1951 DEFLATE
 //! data. No gzip crate is in NAILS's dependency tree, and running the decoy's
 //! own `gzip` would stamp that binary's access time, so this is a small decoder
-//! after Mark Adler's `puff.c`. It checks every member's CRC-32 and length,
-//! refuses anything malformed rather than guess, and caps what it writes, so no
-//! input can make it exhaust memory or loop.
+//! after Mark Adler's `puff.c`. It checks the header's CRC when a header carries
+//! one and every member's CRC-32 and length, refuses anything malformed rather
+//! than guess, and caps what it writes, so no input can make it exhaust memory
+//! or loop. The extra field of a header is skipped unread, as zlib skips it.
 
 /// The most bytes a stream may decode to. A kernel config is a few hundred KiB.
 const MAX_OUTPUT: usize = 16 << 20;
@@ -148,6 +149,13 @@ fn member<'a>(data: &'a [u8], out: &mut Output) -> Result<&'a [u8], Malformed> {
         }
     }
     if flags & FHCRC != 0 {
+        let crc = data
+            .get(pos..pos.saturating_add(2))
+            .ok_or(Malformed("truncated header"))?;
+        // The two low bytes of the CRC-32 of the header up to them.
+        if crc32(&data[..pos]).to_le_bytes()[..2] != *crc {
+            return Err(Malformed("the header checksum does not match"));
+        }
         pos += 2;
     }
 

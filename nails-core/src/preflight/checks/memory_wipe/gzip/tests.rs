@@ -271,6 +271,28 @@ fn reads_past_an_extra_field_without_a_name() {
 }
 
 #[test]
+fn refuses_a_header_whose_checksum_does_not_match() {
+    // FLAGGED's header CRC follows the zero that ends its comment and covers
+    // every header byte before it, so a bit changed in the CRC or in the
+    // comment is refused, as zlib refuses it ("header crc mismatch").
+    let crc_at = FLAGGED
+        .windows(10)
+        .position(|window| window == b"a comment\0")
+        .unwrap()
+        + 10;
+    assert_eq!(FLAGGED[crc_at..crc_at + 2], [0xE2, 0xB1]);
+    for at in [crc_at, crc_at + 1, crc_at - 2] {
+        let mut stream = FLAGGED.to_vec();
+        stream[at] ^= 0x01;
+        assert_eq!(
+            decode(&stream),
+            Err(Malformed("the header checksum does not match")),
+            "byte {at}"
+        );
+    }
+}
+
+#[test]
 fn decodes_the_blocks_around_a_sync_flush() {
     // The empty stored block: a length of 0 and its complement.
     assert!(
