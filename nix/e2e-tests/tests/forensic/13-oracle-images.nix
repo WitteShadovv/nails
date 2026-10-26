@@ -102,6 +102,27 @@ in
         )
         machine.succeed("sync")
 
+    def wait_for_settled_lease():
+        # dhcpcd.wait = "background" (vm-config.nix) lets multi-user.target
+        # come up before dhcpcd has leased eth0, and every boot leases it anew
+        # several seconds in: dhcpcd writes /var/lib/dhcpcd/eth0.lease, with a
+        # new random transaction id each time, and its hook then puts the
+        # lease's name server into /etc/resolv.conf, which the boot first
+        # writes without one. Two images taken on either side of that hold a
+        # different resolv.conf, or a lease only one boot wrote, and read as
+        # residue. So a boot is imaged only once the dhcpcd it runs has
+        # written its lease and resolv.conf names the server: every image then
+        # holds the same resolv.conf, and the lease, which every boot rewrites,
+        # is noise the control run shows. The QEMU user-mode network hands out
+        # the same 10.0.2.15 and 10.0.2.3 every boot, so the addresses
+        # bulk_extractor carves match across images too.
+        machine.wait_until_succeeds(
+            "started=$(systemctl show --timestamp=unix -P ActiveEnterTimestamp"
+            " dhcpcd.service | tr -d @)"
+            " && [ \"$(stat -c %Y /var/lib/dhcpcd/eth0.lease)\" -ge \"$started\" ]"
+            " && grep -q '^nameserver ' /etc/resolv.conf"
+        )
+
     def write_and_delete_session_token():
         # Inside the hidden session: write the token to a file in the upper,
         # sync it to disk and delete the file. Its bytes stay in the hidden
@@ -132,38 +153,19 @@ in
         # as forensic/06 does.
         machine.succeed("mkdir -p /mnt/data")
         plant_oracle_canary()
-        # dhcpcd.wait = "background" (vm-config.nix) lets multi-user.target come
-        # up before dhcpcd has leased eth0, so /var/lib/dhcpcd/eth0.lease -- and
-        # the 10.0.2.x lease addresses bulk_extractor carves from it -- would
-        # land only on `after` (long enough for the background lease to finish)
-        # and not on the briefer before/control, surfacing as false residue.
-        # Hold for the lease so it is present on all three images. The QEMU
-        # user-mode network hands out the same 10.0.2.15 every boot, so the
-        # carved addresses match across images too.
-        machine.wait_until_succeeds("test -s /var/lib/dhcpcd/eth0.lease")
+        wait_for_settled_lease()
         before_raw = disk_forensics.snapshot(machine, "baseline", retain=True)
         print(f"retained before.raw from {before_raw}")
 
     with subtest("control run: a plain reboot with no hidden session"):
         # The workflow below spans the boot after the control snapshot and the
         # activate/deactivate soft-reboots, so the control is one plain reboot;
-        # whatever it changes is boot noise the oracle subtracts.
-        #
-        # Every boot leases eth0 anew, several seconds in, and each DHCP
-        # exchange writes the lease file again with a new random transaction
-        # id, so a plain reboot rewrites the file. The lease an earlier boot
-        # left passes a test for the file at once, and this boot is imaged
-        # seconds after it starts, so control would keep the baseline's lease,
-        # while the boot that runs the session can last long enough to lease
-        # before activate and leave a new one on `after`: false residue. Wait
-        # for this boot's own lease, so control shows the rewrite a reboot
-        # makes and the oracle subtracts it as boot noise.
-        lease = "/var/lib/dhcpcd/eth0.lease"
-        earlier_lease = machine.succeed(f"stat -c %y {lease}").strip()
+        # whatever it changes is boot noise the oracle subtracts. The lease file
+        # an earlier boot left is already there, so wait for this boot's own.
         machine.shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
-        machine.wait_until_succeeds(f"test \"$(stat -c %y {lease})\" != '{earlier_lease}'")
+        wait_for_settled_lease()
         control_raw = disk_forensics.snapshot(machine, "control", retain=True)
         print(f"retained control.raw from {control_raw}")
 
@@ -201,6 +203,9 @@ in
         machine.fail("test -e /dev/mapper/data")
 
     with subtest("image the powered-off decoy as the oracle's after image"):
+        # The way back starts the decoy's dhcpcd again, which leases eth0 anew
+        # as a boot does; image the decoy once it has, as before and control.
+        wait_for_settled_lease()
         after_raw = disk_forensics.snapshot(machine, "post", restart=False, retain=True)
         print(f"retained after.raw from {after_raw}")
 
