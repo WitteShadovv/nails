@@ -137,9 +137,9 @@ in
         # the 10.0.2.x lease addresses bulk_extractor carves from it -- would
         # land only on `after` (long enough for the background lease to finish)
         # and not on the briefer before/control, surfacing as false residue.
-        # Hold for the lease so it is present identically on all three images and
-        # subtracts away. The QEMU user-mode network hands out the same 10.0.2.15
-        # every boot, so the carved addresses match across images too.
+        # Hold for the lease so it is present on all three images. The QEMU
+        # user-mode network hands out the same 10.0.2.15 every boot, so the
+        # carved addresses match across images too.
         machine.wait_until_succeeds("test -s /var/lib/dhcpcd/eth0.lease")
         before_raw = disk_forensics.snapshot(machine, "baseline", retain=True)
         print(f"retained before.raw from {before_raw}")
@@ -148,13 +148,22 @@ in
         # The workflow below spans the boot after the control snapshot and the
         # activate/deactivate soft-reboots, so the control is one plain reboot;
         # whatever it changes is boot noise the oracle subtracts.
+        #
+        # Every boot leases eth0 anew, several seconds in, and each DHCP
+        # exchange writes the lease file again with a new random transaction
+        # id, so a plain reboot rewrites the file. The lease an earlier boot
+        # left passes a test for the file at once, and this boot is imaged
+        # seconds after it starts, so control would keep the baseline's lease,
+        # while the boot that runs the session can last long enough to lease
+        # before activate and leave a new one on `after`: false residue. Wait
+        # for this boot's own lease, so control shows the rewrite a reboot
+        # makes and the oracle subtracts it as boot noise.
+        lease = "/var/lib/dhcpcd/eth0.lease"
+        earlier_lease = machine.succeed(f"stat -c %y {lease}").strip()
         machine.shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
-        # The control reboot re-leases eth0; hold for the lease to be rewritten
-        # before imaging, the same background-lease wait as the baseline, so
-        # control carries the same eth0.lease (and 10.0.2.x) as before/after.
-        machine.wait_until_succeeds("test -s /var/lib/dhcpcd/eth0.lease")
+        machine.wait_until_succeeds(f"test \"$(stat -c %y {lease})\" != '{earlier_lease}'")
         control_raw = disk_forensics.snapshot(machine, "control", retain=True)
         print(f"retained control.raw from {control_raw}")
 
