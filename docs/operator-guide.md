@@ -1179,8 +1179,10 @@ with "run `nails recover`". Run it. Residue: whatever the build wrote stays in t
 upper on the hidden volume; the decoy is untouched. Ctrl+C during activation
 rolls the entry back by itself.
 
-**Deactivation refuses or fails** in the hidden session. Use `nails emergency`.
-If the way back cannot be prepared, emergency powers off instead.
+**Deactivation refuses or fails** in the hidden session. Use `nails emergency`:
+with the session plan it returns to the decoy where it can prepare the way back
+and powers off where it cannot. Without the plan a plain `emergency` does
+nothing (next paragraph): use `nails emergency --poweroff` there.
 
 **The session plan is gone** (`nails status` reports the hidden root without a
 way back: the plan in `/run/overlay-runtime` is missing, unreadable, or was
