@@ -529,6 +529,18 @@ of this changelog for that version becomes the release notes word for word, and
   Qt 5 and whole on Qt 6, and GLib judges a language tag beyond ASCII by its own Unicode tables. Only
   regular files are read: a FIFO, socket or device in one of these places is skipped, where `check`,
   the warning and activation could hang reading it.
+- In the `fresh-home` persona, activation no longer follows a symbolic link in the upper when it
+  makes the operator's home. Where a hidden session had replaced `/home`, or a directory below it on
+  the way to the home, with a link, absolute (to `/var/home`, say) or relative, that leads out of
+  the upper, the next activation could make the home, with its mode, owner and opaque attribute,
+  wherever the link led, which can be the decoy disk. Each directory on the way is now opened in the
+  one above it without following a link and made there when it is missing, and a link, or anything
+  else that is not a directory, on the way refuses the activation, which makes nothing and names
+  it: delete the link from the upper on the hidden volume and activate again. A home already in
+  place is kept as it is, as before. A new home now takes its opaque attribute first, and it is
+  removed again when its mode or owner cannot be set either: a home whose mode or owner failed was
+  left without the attribute, and every later activation kept it, with the decoy home showing
+  through.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

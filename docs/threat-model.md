@@ -193,6 +193,12 @@ upper changes.
   instead, so the decoy home is not visible; see
   [Persona modes](configuration.md#persona-modes) and the
   [operator guide](operator-guide.md#shared-decoy-account-and-persona-modes).
+  Activation makes that home directly in the upper, before the overlay is
+  mounted, so it looks up and makes each directory on the way inside the
+  upper without following a symbolic link: a link a hidden session left
+  there in place of `/home` or a directory below it, absolute or relative,
+  could otherwise lead the new home, its mode, owner and opaque attribute
+  onto the decoy disk. Such a link refuses the activation.
   A separate hidden account does not exist yet.
 - **Inherited system and user units.** Every decoy system service the decoy
   enables starts again in the hidden session (unless a hidden NixOS
