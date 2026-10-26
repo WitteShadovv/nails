@@ -809,6 +809,45 @@ class JournaldTest(unittest.TestCase):
         split = "# /a.conf\n[Journal]\n# /b.conf\nStorage=volatile\n"
         self.assertEqual(pf.journald_settings(split), (None, []))
 
+    def test_a_section_header_journald_refuses_ends_the_reading(self) -> None:
+        # journald keeps what it read before such a header and reads nothing
+        # after it, in that file or a later one.
+        main = "/etc/systemd/journald.conf"
+        later = "/etc/systemd/journald.conf.d/60-auto.conf"
+
+        def config(header: str) -> str:
+            return (
+                f"# {main}\n[Journal]\nStorage=persistent\n"
+                f"# {self.DROP_IN}\n[Journal]\nStorage=volatile\n"
+                f"{header}\nStorage=none\n"
+                f"# {later}\n[Journal]\nStorage=auto\n"
+            )
+
+        for header in (
+            "[Journal",
+            # journald has no trailing comments.
+            "[Journal] # a comment",
+            "[",
+            "[Jour\tnal]",
+            "[Jour\x01nal]",
+            "[Jour\x7fnal]",
+            '[Jour"nal]',
+            "[Jour'nal]",
+            "[Jour\\nal]",
+        ):
+            with self.subTest(header=header):
+                self.assertEqual(
+                    pf.journald_settings(config(header)),
+                    ("volatile", [main, self.DROP_IN]),
+                )
+        # A header journald takes only selects a section.
+        for header in ("[Journal]", "[Other]", "[]", "[Jour nal]"):
+            with self.subTest(header=header):
+                self.assertEqual(
+                    pf.journald_settings(config(header)),
+                    ("auto", [main, self.DROP_IN, later]),
+                )
+
     def test_the_credential_decides_from_256_when_no_file_sets_storage(self) -> None:
         for version, credential, expected in (
             ("systemd 256 (256)", "volatile", "volatile"),
