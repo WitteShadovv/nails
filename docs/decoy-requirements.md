@@ -20,7 +20,9 @@ The decoy also has to be one the session can enter and leave:
   documents it: Debian by its release notes, Ubuntu with `do-release-upgrade`,
   Fedora with `dnf system-upgrade`, Arch, EndeavourOS, CachyOS and Manjaro
   with a full `pacman -Syu`, and NixOS by moving the decoy's nixpkgs to a
-  current release.
+  current release. Nobara, Ultramarine and a Debian derivative NAILS runs on
+  are pointed at a release built on a tested one, upgraded as each documents.
+  Any other host is shown the platforms NAILS supports.
   A later Debian or Ubuntu release runs with a warning that NAILS has not been
   tested on it (`platform`). A NixOS decoy on a nixpkgs that does not install
   the two units needs the module `nails check` prints (and so does a hidden
