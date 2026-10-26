@@ -26,7 +26,10 @@
 //!   filesystem has (a block size it never uses, say);
 //! - a filesystem or swap area (ext4, xfs, f2fs, vfat, exFAT, swap), a
 //!   partition, or the disk a GPT was written for, that runs past the end of
-//!   the source, as on an image whose copy stopped early;
+//!   the source, as on an image whose copy stopped early, even inside the
+//!   superblock, before the feature flags of an ext4 or f2fs;
+//! - an ext4 or f2fs superblock the source ends inside, before its feature
+//!   flags, that records no more than the source holds;
 //! - first blocks that cannot be read.
 //!
 //! A source with a partition table (a whole disk) is classified partition by
@@ -79,6 +82,16 @@ fn unreadable(err: &io::Error) -> String {
     format!("its first blocks could not be read ({err}), so its storage was not identified")
 }
 
+/// Why a filesystem is not checked when the source ends inside its
+/// superblock, before its feature flags, and the superblock does not show it
+/// cut short.
+fn flags_cut_off(fstype: &str) -> String {
+    format!(
+        "the source ends inside the {fstype} superblock here, before its feature flags, so the \
+         scan cannot tell whether the filesystem stores file contents verbatim"
+    )
+}
+
 /// Why the scan of a cut-short filesystem or swap area is not checked.
 fn truncated(fstype: &str, recorded: u64, available: u64) -> String {
     let what = match fstype {
@@ -121,15 +134,10 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
     // A filesystem that can compress wins over whatever else the region's
     // first blocks show: a stale signature of another format must never make
     // it read as verbatim, nor stand in for it when it is verbatim. An f2fs
-    // compresses only when made with the compression feature, so its
-    // superblock decides.
+    // compresses only when made with the compression feature, so `plain`
+    // reads its superblock for that.
     if let Some(fstype) = layout::compressing_format_at(source, start)? {
-        let blind = if fstype == "f2fs" {
-            super::f2fs_image_blind_spot(layout::f2fs_compression(source, start)?)
-        } else {
-            super::scan_blind_spot(fstype, "")
-        };
-        return match blind {
+        return match super::scan_blind_spot(fstype, "") {
             Some(blind) => Ok(Region::Hidden(blind.reason().to_string())),
             None => plain(source, start, end, fstype),
         };
@@ -147,8 +155,10 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
 }
 
 /// A filesystem of `fstype` at `start` whose format stores file contents
-/// verbatim: verbatim when its superblock records a size such a filesystem
-/// can have and no encrypt feature, and the region to `end` holds all of it.
+/// verbatim unless its superblock's feature flags say otherwise: verbatim
+/// when its superblock records a size such a filesystem can have, its flags
+/// show neither an f2fs's compression nor the encrypt feature, and the region
+/// to `end` holds all of it.
 fn plain(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<Region> {
     let recorded = layout::recorded_size(source, start, fstype)?;
     // A magic over a superblock that records what no such filesystem has (a
@@ -157,17 +167,31 @@ fn plain(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<R
     if recorded == RecordedSize::Implausible {
         return Ok(Region::Unidentified);
     }
-    // Encryption comes first: a whole copy of such a filesystem is no more
+    // The flags, where the source holds them. A feature that hides file
+    // contents comes first: a whole copy of such a filesystem is no more
     // readable than a cut one.
-    if layout::encryption_feature(source, start, fstype)? {
+    let compression = match fstype {
+        "f2fs" => layout::f2fs_compression(source, start)?,
+        _ => Some(false),
+    };
+    let encryption = layout::encryption_feature(source, start, fstype)?;
+    if let Some(blind) = compression.and_then(super::f2fs_image_blind_spot) {
+        return Ok(Region::Hidden(blind.reason().to_string()));
+    }
+    if encryption == Some(true) {
         return Ok(Region::Hidden(
             ScanBlindSpot::EncryptionCapable.reason().to_string(),
         ));
     }
+    let available = end - start;
     Ok(match recorded {
-        RecordedSize::Bytes(recorded) if recorded > end - start => {
-            Region::Hidden(truncated(fstype, recorded, end - start))
+        RecordedSize::Bytes(recorded) if recorded > available => {
+            Region::Hidden(truncated(fstype, recorded, available))
         }
+        // Flags past the end of the source, on a filesystem whose superblock
+        // records no more than the source holds: the superblock contradicts
+        // itself, and nothing shows what the filesystem stores verbatim.
+        _ if compression.is_none() || encryption.is_none() => Region::Hidden(flags_cut_off(fstype)),
         _ => Region::Verbatim,
     })
 }
@@ -175,8 +199,8 @@ fn plain(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<R
 /// Why a clean scan of a device the mount table shows as `fstype` is not a
 /// clean result beyond what its type and options tell: an ext2/3/4 or f2fs
 /// whose superblock carries the encrypt feature, which no mount option shows,
-/// or one whose superblock cannot be read. `None` for any other type, whose
-/// mount says all the scan knows of it.
+/// or one whose superblock cannot be read or ends before its flags. `None` for
+/// any other type, whose mount says all the scan knows of it.
 pub(super) fn mounted_blind_spot(source: &RawSource, fstype: &str) -> Option<String> {
     let format = match fstype {
         "ext2" | "ext3" | "ext4" => "ext2/3/4",
@@ -184,7 +208,10 @@ pub(super) fn mounted_blind_spot(source: &RawSource, fstype: &str) -> Option<Str
         _ => return None,
     };
     match layout::encryption_feature(source, 0, format) {
-        Ok(encrypting) => encrypting.then(|| ScanBlindSpot::EncryptionCapable.reason().to_string()),
+        Ok(Some(encrypting)) => {
+            encrypting.then(|| ScanBlindSpot::EncryptionCapable.reason().to_string())
+        }
+        Ok(None) => Some(flags_cut_off(format)),
         Err(err) => Some(unreadable(&err)),
     }
 }

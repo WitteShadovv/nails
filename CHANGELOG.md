@@ -307,7 +307,8 @@ of this changelog for that version becomes the release notes word for word, and
   records, as it does for ext4, xfs and f2fs, so an image that ends before its filesystem or swap
   area does is known to be incomplete. A boot sector or swap header that records what no such
   filesystem has (a sector size the kernel does not take, no sector at all, a swap header of
-  another version) counts as storage the scan does not identify.
+  another version) counts as storage the scan does not identify. An ext4 or f2fs image cut inside
+  its superblock, before its feature flags, is reported as cut short too.
 - `nails rehearse scan` reports file-level encryption and NTFS as "not checked" (exit 9) where it
   reported a clean pass (exit 0): a raw plaintext scan cannot read what a filesystem stores
   encrypted or compressed file by file. That covers NTFS, which can compress the files of a folder
