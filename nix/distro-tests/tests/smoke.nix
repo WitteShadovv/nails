@@ -173,9 +173,10 @@ distroVm.buildVmTest {
         )
     )
 
-    # Units that would only fail in the hidden root (writes to the read-only
-    # boot filesystems, a remount or resize of the root overlay), masked there
-    # where the decoy has them, as session::hidden_masks::UNITS lists them.
+    # Units whose job the hidden root does not need and which fail there or
+    # do nothing (writes to the read-only boot filesystems, a remount or resize
+    # of the root overlay), masked there where the decoy has them, as
+    # session::hidden_masks::UNITS lists them.
     hidden_masked_units = (
         "systemd-boot-random-seed.service",
         "grub-common.service",
@@ -555,8 +556,8 @@ distroVm.buildVmTest {
         if blk_availability:
             assert_guarded_blk_availability("the first session")
         assert_quiet_kernel_log("the first session")
-        # The units that would only fail in the hidden root are masked there
-        # where the decoy has them, and so is the GPT auto-generator.
+        # The units the hidden root does not need are masked there where the
+        # decoy has them, and so is the GPT auto-generator.
         for unit, state in load_states(hidden_masked_units).items():
             if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden root: {state}"

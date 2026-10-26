@@ -15,13 +15,15 @@
 #      keep a PID file in /run start again although the kill left their hidden
 #      copies' files behind: avahi-daemon (with resolvconf, which signals it)
 #      and a probe that, like avahi, refuses to start while its file is there.
-#      The boot-loader units are masked in the hidden session only, and the
-#      kernel log names no session drop-in and no failed unmount of the hidden
-#      volume. On either side of each switch, every line of libmount's utab
-#      that libmount joins to a mount names the mount it was written for: by
-#      its mount ID, a live mount with the line's source and root at the
-#      line's target (an initrd's target seen from the root it switched to);
-#      without an ID, a live mount at its target with its source and root.
+#      The units the hidden root does not need (the boot-loader and
+#      root-filesystem units) and systemd's GPT auto-generator are masked in
+#      the hidden session only, and the kernel log names no session drop-in
+#      and no failed unmount of the hidden volume. On either side of each
+#      switch, every line of libmount's utab that libmount joins to a mount
+#      names the mount it was written for: by its mount ID, a live mount with
+#      the line's source and root at the line's target (an initrd's target
+#      seen from the root it switched to); without an ID, a live mount at its
+#      target with its source and root.
 #      The kernel reuses the IDs of the mounts a switch leaves behind, and a
 #      stale x-initrd.mount line would take a reused or a new mount out of the
 #      shutdown order. A stale line without an ID for /run/wrappers, added on

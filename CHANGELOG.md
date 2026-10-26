@@ -216,7 +216,8 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
-- Units that only fail in the hidden root are masked there, as the boot-loader units already were.
+- Units that fail in the hidden root and have no job there are masked there, as the boot-loader
+  units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
   overlay refuses the decoy root's fstab options, and so did `systemd-growfs-root.service`, which
   cannot grow it. On Ubuntu 26.04, GRUB's boot-record unit is `grub2-common.service`, which failed
