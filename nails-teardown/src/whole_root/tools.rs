@@ -60,14 +60,15 @@ fn system_dirs_for(system: Option<&Path>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// `name` where [`find`] will find it once `/run/current-system` names
-/// `system`: the last step of the way back repoints that link to the decoy's
-/// NixOS system before it runs a tool, so the hidden session can check before
-/// the switch that the step will find what it needs.
-pub fn find_for_system(system: Option<&Path>, name: &str) -> Option<PathBuf> {
+/// `name` where [`find`] will find it in the tree at `root` (`/`, but in
+/// tests) once `/run/current-system` names `system`: the last step of the way
+/// back repoints that link to the decoy's NixOS system before it runs a tool,
+/// so the hidden session can check before the switch that the step will find
+/// what it needs.
+pub fn find_for_system(root: &Path, system: Option<&Path>, name: &str) -> Option<PathBuf> {
     system_dirs_for(system)
         .into_iter()
-        .map(|dir| dir.join(name))
+        .map(|dir| root.join(dir.strip_prefix("/").unwrap_or(&dir)).join(name))
         .find(|p| p.is_file())
 }
 
@@ -436,17 +437,41 @@ mod tests {
         );
     }
 
+    /// Put an empty file at `path` below `root`.
+    fn put(root: &Path, path: &str) -> PathBuf {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        file
+    }
+
+    /// The lookup reads the tree at its root: there, a tool is found in the
+    /// repointed system's `sw/bin` and in the other system directories, never
+    /// in the system the link names before the repoint.
     #[test]
     fn a_tool_in_the_repointed_system_is_found_there() {
-        let dir = tempfile::tempdir().unwrap();
-        let name = "no-such-tool-outside-this-system";
-        assert_eq!(find_for_system(Some(dir.path()), name), None);
-        std::fs::create_dir_all(dir.path().join("sw/bin")).unwrap();
-        std::fs::write(dir.path().join("sw/bin").join(name), "").unwrap();
-        assert_eq!(
-            find_for_system(Some(dir.path()), name),
-            Some(dir.path().join("sw/bin").join(name))
-        );
-        assert_eq!(find_for_system(None, name), None);
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let decoy = Path::new("/nix/store/aaa-nixos-system-decoy");
+        assert_eq!(find_for_system(root, Some(decoy), "ip"), None);
+        put(root, "run/current-system/sw/bin/ip");
+        assert_eq!(find_for_system(root, Some(decoy), "ip"), None);
+        let in_decoy = put(root, "nix/store/aaa-nixos-system-decoy/sw/bin/ip");
+        assert_eq!(find_for_system(root, Some(decoy), "ip"), Some(in_decoy));
+    }
+
+    /// Without a system the directories are searched as they are, below the
+    /// root and in their order.
+    #[test]
+    fn a_tool_in_a_system_directory_below_the_root_is_found() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        assert_eq!(find_for_system(root, None, "ip"), None);
+        let in_sbin = put(root, "sbin/ip");
+        assert_eq!(find_for_system(root, None, "ip"), Some(in_sbin));
+        let in_usr_bin = put(root, "usr/bin/ip");
+        assert_eq!(find_for_system(root, None, "ip"), Some(in_usr_bin));
+        let in_current = put(root, "run/current-system/sw/bin/ip");
+        assert_eq!(find_for_system(root, None, "ip"), Some(in_current));
     }
 }

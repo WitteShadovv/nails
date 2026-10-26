@@ -14,7 +14,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use nails_core::NailsError;
-use nails_core::app::deactivate::Prepared;
+use nails_core::app::deactivate::{Prepared, ReadyDeactivation};
 use nails_core::output::Mark;
 use nails_core::session::{LeaveReport, LeaveTo};
 
@@ -51,11 +51,26 @@ pub fn execute(
 }
 
 /// Go on from what [`prepare`](nails_core::app::deactivate::prepare) found:
-/// report a refusal before anything is asked, else confirm, lock and leave.
+/// report a refusal before anything is asked, else warn, confirm, lock and
+/// leave.
 fn deactivate_prepared(
     settings: &OutputSettings,
     args: &DeactivateArgs,
     prepared: Prepared,
+) -> ExitStatus {
+    deactivate_prepared_with(settings, args, prepared, |ready, to, warnings| {
+        lock_and_leave(settings, ready, to, warnings)
+    })
+}
+
+/// [`deactivate_prepared`], going on once the operator has confirmed with
+/// `go_on`, which takes the ready deactivation, where it leaves to and the
+/// warnings given before the question: [`lock_and_leave`], but in tests.
+fn deactivate_prepared_with(
+    settings: &OutputSettings,
+    args: &DeactivateArgs,
+    prepared: Prepared,
+    go_on: impl FnOnce(ReadyDeactivation, LeaveTo, Vec<String>) -> ExitStatus,
 ) -> ExitStatus {
     use nails_core::next_step::{NextStep as Step, sudo_line};
     let json = settings.is_json();
@@ -134,11 +149,22 @@ fn deactivate_prepared(
         return status;
     }
 
-    // Only the handle the lock step hands out leaves; it holds the lock until
-    // it is dropped, once the outcome is reported.
+    go_on(*ready, to, warnings)
+}
+
+/// Take the lock step's handle, the only one that leaves, and leave `to` with
+/// it, reporting the outcome with the `warnings` given before the question.
+/// The handle holds the lock until it is dropped, once the outcome is
+/// reported.
+fn lock_and_leave(
+    settings: &OutputSettings,
+    ready: ReadyDeactivation,
+    to: LeaveTo,
+    warnings: Vec<String>,
+) -> ExitStatus {
     let mut locked = match ready.lock() {
         Ok(locked) => locked,
-        Err(error) => return super::report_lock_error(error, "deactivate", json),
+        Err(error) => return super::report_lock_error(error, "deactivate", settings.is_json()),
     };
     leave_and_report(settings, to, warnings, |to| locked.leave(to))
 }

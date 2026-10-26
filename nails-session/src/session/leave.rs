@@ -21,7 +21,7 @@ use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::Plan;
 use nails_teardown::whole_root::{disk_guard, ret, tools};
 use rustix::mount::UnmountFlags;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Enqueues a systemd target: tests replace it.
 pub trait TargetHost {
@@ -147,12 +147,13 @@ fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Vec<PathBuf> {
 /// Whether the last step of the way back will find `tool`, such as `ip`
 /// (iproute2), which it runs to delete the links the session made and set
 /// each device's recorded MAC address back. The step runs in the hidden root
-/// once every hidden unit has stopped, and on NixOS only after it repointed
-/// `/run/current-system` to the decoy's system: it looks in the system
-/// directories as they resolve then ([`tools::find_for_system`]). It cannot
-/// report anything itself, so the hidden session checks before the switch.
-pub fn way_back_finds(plan: &Plan, tool: &str) -> bool {
-    tools::find_for_system(plan.decoy.system.as_deref(), tool).is_some()
+/// (`root`: `/`, but in tests) once every hidden unit has stopped, and on
+/// NixOS only after it repointed `/run/current-system` to the decoy's system:
+/// it looks in the system directories as they resolve then
+/// ([`tools::find_for_system`]). It cannot report anything itself, so the
+/// hidden session checks before the switch.
+pub fn way_back_finds(root: &Path, plan: &Plan, tool: &str) -> bool {
+    tools::find_for_system(root, plan.decoy.system.as_deref(), tool).is_some()
 }
 
 /// Prepare the way back and enqueue the soft-reboot (or power off).
@@ -255,24 +256,36 @@ mod tests {
         assert!(LeaveReport::default().left_open().is_empty());
     }
 
+    /// Put an empty file at `path` below `root`.
+    fn put(root: &Path, path: &str) {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "").unwrap();
+    }
+
     /// On NixOS the step looks in the decoy's system it repoints to, never in
     /// the hidden system the link names during the session.
     #[test]
     fn the_way_back_looks_for_a_tool_in_the_decoy_system_it_returns_to() {
-        let dir = tempfile::tempdir().unwrap();
-        let decoy = dir.path().join("decoy-system");
-        let hidden = dir.path().join("hidden-system");
-        for system in [&decoy, &hidden] {
-            std::fs::create_dir_all(system.join("sw/bin")).unwrap();
-        }
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
         let mut plan = plan();
-        plan.decoy.system = Some(decoy.clone());
-        plan.hidden.system = Some(hidden.clone());
-        // A name no system directory of the host holds.
-        let tool = "way-back-test-tool";
-        std::fs::write(hidden.join("sw/bin").join(tool), "").unwrap();
-        assert!(!way_back_finds(&plan, tool));
-        std::fs::write(decoy.join("sw/bin").join(tool), "").unwrap();
-        assert!(way_back_finds(&plan, tool));
+        plan.decoy.system = Some(PathBuf::from("/nix/store/aaa-nixos-system-decoy"));
+        plan.hidden.system = Some(PathBuf::from("/nix/store/bbb-nixos-system-hidden"));
+        put(root, "nix/store/bbb-nixos-system-hidden/sw/bin/ip");
+        put(root, "run/current-system/sw/bin/ip");
+        assert!(!way_back_finds(root, &plan, "ip"));
+        put(root, "nix/store/aaa-nixos-system-decoy/sw/bin/ip");
+        assert!(way_back_finds(root, &plan, "ip"));
+    }
+
+    /// Elsewhere the step looks in the hidden root's system directories.
+    #[test]
+    fn the_way_back_looks_for_a_tool_in_the_system_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        assert!(!way_back_finds(root, &plan(), "ip"));
+        put(root, "usr/sbin/ip");
+        assert!(way_back_finds(root, &plan(), "ip"));
     }
 }

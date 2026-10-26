@@ -18,7 +18,7 @@
 //! printed. A machine-readable result waits for the commit, so it reports the
 //! outcome.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nails_teardown::whole_root::plan::Plan;
 
@@ -59,6 +59,9 @@ pub struct ReadyDeactivation {
     manager: NailsManager<RealFilesystem>,
     /// The session plan the probe read, which the way back returns with.
     plan: Box<Plan>,
+    /// The root the way back's last step runs in (`/`, but in tests), where
+    /// [`warnings`](Self::warnings) looks for the tools that step runs.
+    root: PathBuf,
 }
 
 impl ReadyDeactivation {
@@ -81,7 +84,7 @@ impl ReadyDeactivation {
         way_back_warnings(
             to,
             &self.plan,
-            crate::session::leave::way_back_finds(&self.plan, "ip"),
+            crate::session::leave::way_back_finds(&self.root, &self.plan, "ip"),
         )
     }
 
@@ -101,6 +104,24 @@ impl ReadyDeactivation {
             ready: self,
             _lock: lock,
         })
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ReadyDeactivation {
+    /// A deactivation of the hidden session `plan` describes, for tests of a
+    /// front end: its hidden volume and state file where `config` names them,
+    /// and the way back's last step running in the tree at `root` instead of
+    /// `/`. Outside tests only [`prepare`] hands one out, and only in a hidden
+    /// root with its plan. The lock step is the real one, and the handle it
+    /// hands out leaves only from a hidden root the live probe finds.
+    pub fn for_test(config: crate::Config, plan: Plan, root: &Path) -> Self {
+        let state_path = config.state_file_path.clone();
+        Self {
+            manager: NailsManager::new(RealFilesystem, config, state_path),
+            plan: Box::new(plan),
+            root: root.to_path_buf(),
+        }
     }
 }
 
@@ -143,7 +164,11 @@ pub fn prepare(env: &RuntimeEnv, config_override: Option<&Path>) -> Prepared {
 /// only the hidden root with its plan has a way back to take.
 fn prepared(manager: NailsManager<RealFilesystem>, view: SessionView) -> Prepared {
     match view {
-        SessionView::Hidden(plan) => Prepared::Ready(Box::new(ReadyDeactivation { manager, plan })),
+        SessionView::Hidden(plan) => Prepared::Ready(Box::new(ReadyDeactivation {
+            manager,
+            plan,
+            root: PathBuf::from("/"),
+        })),
         SessionView::HiddenWithoutPlan(why) => Prepared::WayBackUnknown(why),
         SessionView::Entering(_) | SessionView::Interrupted { .. } | SessionView::Decoy => {
             Prepared::NotHidden
@@ -188,13 +213,15 @@ mod tests {
         NailsManager::new(RealFilesystem, config, state_path)
     }
 
-    /// A [`ReadyDeactivation`] whose hidden volume and state file are under
-    /// `dir`. The live probe still reads the real machine, which is never a
-    /// hidden NAILS overlay root during the tests, so its view is the decoy.
+    /// A [`ReadyDeactivation`] whose hidden volume, state file and root of the
+    /// way back's last step are under `dir`. The live probe still reads the
+    /// real machine, which is never a hidden NAILS overlay root during the
+    /// tests, so its view is the decoy.
     fn ready_at(dir: &Path) -> ReadyDeactivation {
         ReadyDeactivation {
             manager: manager_at(dir),
             plan: plan(),
+            root: dir.to_path_buf(),
         }
     }
 
@@ -325,16 +352,38 @@ mod tests {
         );
     }
 
-    /// The prepared deactivation asks the real lookup: a return to a decoy
-    /// system that holds `ip` warns of nothing, and a power-off never does.
+    /// Put an empty file at `path` below `root`.
+    fn put(root: &Path, path: &str) {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "").unwrap();
+    }
+
+    /// The prepared deactivation looks for `ip` where the return's last step
+    /// will, in the root that step runs in: in the hidden root's system
+    /// directories, and on NixOS first in the decoy's system that step
+    /// repoints `/run/current-system` to, never in the hidden system the link
+    /// names until then. Where it finds none, a return is warned of; where it
+    /// finds one, or for a power-off, nothing is.
     #[test]
-    fn the_warnings_follow_where_the_return_finds_ip() {
-        let dir = tempfile::tempdir().unwrap();
-        let system = dir.path().join("decoy-system");
-        std::fs::create_dir_all(system.join("sw/bin")).unwrap();
-        std::fs::write(system.join("sw/bin/ip"), "").unwrap();
-        let mut ready = ready_at(dir.path());
-        ready.plan.decoy.system = Some(system);
+    fn the_warnings_follow_where_the_return_looks_for_ip() {
+        let fhs = tempfile::tempdir().unwrap();
+        let ready = ready_at(fhs.path());
+        let warned = way_back_warnings(LeaveTo::Decoy, &ready.plan, false);
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert_eq!(ready.warnings(LeaveTo::Decoy), warned);
+        assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
+        put(fhs.path(), "usr/bin/ip");
+        assert!(ready.warnings(LeaveTo::Decoy).is_empty());
+
+        let nixos = tempfile::tempdir().unwrap();
+        let mut ready = ready_at(nixos.path());
+        ready.plan.decoy.system = Some("/nix/store/aaa-nixos-system-decoy".into());
+        put(nixos.path(), "run/current-system/sw/bin/ip");
+        let warned = way_back_warnings(LeaveTo::Decoy, &ready.plan, false);
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert_eq!(ready.warnings(LeaveTo::Decoy), warned);
+        put(nixos.path(), "nix/store/aaa-nixos-system-decoy/sw/bin/ip");
         assert!(ready.warnings(LeaveTo::Decoy).is_empty());
         assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
     }
