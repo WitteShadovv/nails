@@ -3,12 +3,14 @@
 
 //! Check command handler.
 //!
-//! A strictly read-only readiness check. It loads the configuration, then calls
-//! the [`readiness`](nails_core::app::readiness) operation, which builds the same
-//! pre-flight registry activation would run, runs it without staging or mutating
-//! anything, and gathers the effective configuration, the overlay targets, how
-//! the session would be handled and which NixOS profile would be built.
-//! `activate --dry-run` is a thin alias for this command, so the two always agree.
+//! A readiness check that leaves nothing behind. It loads the configuration,
+//! then calls the [`readiness`](nails_core::app::readiness) operation, which
+//! builds the same pre-flight registry activation would run, runs it without
+//! staging anything (its only writes are the probes on the hidden volume, which
+//! remove what they write), and gathers the effective configuration, the
+//! overlay targets, how the session would be handled and which NixOS profile
+//! would be built. `activate --dry-run` is a thin alias for this command, so
+//! the two always agree.
 //!
 //! A root the attach gate refuses is reported first, on stderr and in the words
 //! `init` and `activate` use, before any check runs and also when the checks

@@ -22,8 +22,9 @@ use std::path::PathBuf;
 pub struct PreflightOptions {
     /// Skip the config-layer and build-target checks (overlay-only activation).
     pub overlay_only: bool,
-    /// Assemble a registry that only inspects the system: no check creates a
-    /// directory or changes permissions. On by default, and both `nails check`
+    /// Assemble a registry that leaves the hidden volume's layout as it is: no
+    /// check creates a directory that stays (the probes remove theirs) or
+    /// changes permissions. On by default, and both `nails check`
     /// and activation keep it on: a refused activation leaves nothing on the
     /// hidden volume, and the entry creates the layout itself once every check
     /// passed. Activation's [`NailsManager::run_preflight_checks`] turns it on
@@ -117,12 +118,15 @@ pub struct RegistryInputs {
 /// without a layer (FHS / Debian) never runs config checks that would fail with
 /// NixOS-specific guidance.
 ///
-/// This is the one place the activation set of checks is defined. The registry
-/// it returns is read-only to run: every check only inspects the filesystem, so
-/// the same registry backs both activation and the `nails check`
-/// command. Staging of the hidden NixOS layout happens in the activation path
-/// (see [`crate::stage_hidden_nixos_config`]) before these checks run, never
-/// inside a check.
+/// This is the one place the activation set of checks is defined. Running the
+/// registry it returns leaves nothing behind: every check only inspects the
+/// system, except three probes that write on the hidden volume and remove what
+/// they wrote (`symlink-support`, `upper-fs-capability`, whose trial overlay is
+/// mounted detached, outside every mount table, and `storage-readiness`), so the
+/// same registry backs both activation and the `nails check` command. Staging of
+/// the hidden NixOS layout happens in the activation path (see
+/// [`crate::stage_hidden_nixos_config`]) before these checks run, never inside a
+/// check.
 ///
 /// # Errors
 ///

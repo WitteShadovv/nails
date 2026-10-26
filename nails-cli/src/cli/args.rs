@@ -178,7 +178,7 @@ pub enum Commands {
     Verify(VerifyArgs),
     /// Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
     Rehearse(RehearseArgs),
-    /// Check readiness to activate without making any changes
+    /// Check readiness to activate, leaving no file or mount behind
     Check(CheckArgs),
     /// Initialize NAILS directory structure on a hidden volume
     Init(InitArgs),

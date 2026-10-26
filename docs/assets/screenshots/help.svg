@@ -21,7 +21,7 @@
 <tspan x="16" y="237">  status       Show the session, security posture and hidden volume</tspan>
 <tspan x="16" y="255">  verify       Check for known NAILS traces (evidence, not proof)</tspan>
 <tspan x="16" y="273">  rehearse     Rehearse: plant a canary in a hidden session, then scan the raw decoy for it</tspan>
-<tspan x="16" y="291">  check        Check readiness to activate without making any changes</tspan>
+<tspan x="16" y="291">  check        Check readiness to activate, leaving no file or mount behind</tspan>
 <tspan x="16" y="309">  init         Initialize NAILS directory structure on a hidden volume</tspan>
 <tspan x="16" y="327">  config       Inspect and check the configuration file (nails.toml)</tspan>
 <tspan x="16" y="345">  completions  Print a shell completion script on stdout (for `source &lt;(...)`)</tspan>

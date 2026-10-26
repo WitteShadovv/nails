@@ -14,7 +14,7 @@ Commands:
   status       Show the session, security posture and hidden volume
   verify       Check for known NAILS traces (evidence, not proof)
   rehearse     Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
-  check        Check readiness to activate without making any changes
+  check        Check readiness to activate, leaving no file or mount behind
   init         Initialize NAILS directory structure on a hidden volume
   config       Inspect and check the configuration file (nails.toml)
   completions  Print a shell completion script on stdout (for `source <(...)`)
