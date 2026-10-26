@@ -24,6 +24,7 @@ use nails_teardown::whole_root::plan::Plan;
 
 use super::lock::LockError;
 use crate::hidden_root::Allow;
+use crate::session::leave::NetworkTool;
 use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView};
 use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv, StateLock};
 
@@ -79,13 +80,16 @@ impl ReadyDeactivation {
     /// session can tell before the switch, one sentence each, for the front
     /// end to show before it asks: its last step, which cannot report, finds
     /// no `ip` to delete the session's virtual links and policy-routing rules
-    /// and set the MAC addresses back with. None for a power-off, after which
-    /// the decoy starts afresh.
+    /// and set the MAC addresses back with, no `nft` to delete the session's
+    /// nftables tables with, or, where a link is a Wi-Fi interface, no `iw` to
+    /// delete the Wi-Fi interfaces the session added on the decoy's radios
+    /// with ([`way_back_lacks`](crate::session::leave::way_back_lacks)). None
+    /// for a power-off, after which the decoy starts afresh.
     pub fn warnings(&self, to: LeaveTo) -> Vec<String> {
         way_back_warnings(
             to,
             &self.plan,
-            crate::session::leave::way_back_finds(&self.root, &self.plan, "ip"),
+            &crate::session::leave::way_back_lacks(&self.root, self.plan.decoy.system.as_deref()),
         )
     }
 
@@ -177,11 +181,11 @@ fn prepared(manager: NailsManager<RealFilesystem>, view: SessionView) -> Prepare
     }
 }
 
-/// The warnings for leaving `to` with `plan`, given whether the last step of
-/// the way back finds `ip`.
-fn way_back_warnings(to: LeaveTo, plan: &Plan, finds_ip: bool) -> Vec<String> {
+/// The warnings for leaving `to` with `plan`, one for each network tool the
+/// last step of the way back `lacks`.
+fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<String> {
     use crate::next_step::{NextStep, sudo_line};
-    if to == LeaveTo::Poweroff || finds_ip {
+    if to == LeaveTo::Poweroff {
         return Vec::new();
     }
     let place = if plan.decoy.system.is_some() {
@@ -189,12 +193,34 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, finds_ip: bool) -> Vec<String> {
     } else {
         "in the hidden session's system directories"
     };
-    vec![format!(
-        "The return finds no `ip` (iproute2) {place}, so the virtual links the session made, the \
-         MAC addresses it changed and the policy-routing rules it added stay on the decoy until \
-         power-off. `{}` leaves none of them.",
-        sudo_line(NextStep::DeactivatePoweroff)
-    )]
+    let poweroff = sudo_line(NextStep::DeactivatePoweroff);
+    lacks
+        .iter()
+        .map(|tool| {
+            let (tool, stays) = match tool {
+                NetworkTool::Ip => (
+                    "`ip` (iproute2)",
+                    "the virtual links the session made, the MAC addresses it changed and the \
+                     policy-routing rules it added stay on the decoy until power-off",
+                ),
+                NetworkTool::Nft => (
+                    "`nft` (nftables)",
+                    "the nftables tables the session added stay on the decoy until power-off (a \
+                     VPN app's table that blocks all traffic outside its tunnel keeps the decoy \
+                     offline)",
+                ),
+                NetworkTool::Iw => (
+                    "`iw`",
+                    "the Wi-Fi interfaces the session added on the decoy's radios (monitor or \
+                     access point interfaces) stay on the decoy until power-off",
+                ),
+            };
+            format!(
+                "The return finds no {tool} {place}, so {stays}. `{poweroff}` leaves none of \
+                 them."
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -325,32 +351,50 @@ mod tests {
         }));
     }
 
-    /// A return whose last step finds no `ip` is announced before the switch,
-    /// with the power-off that leaves nothing behind; a power-off, or a return
-    /// that finds it, has nothing to announce.
+    /// Each network tool a return's last step finds no copy of is announced
+    /// before the switch, in the order the tools are named, with what stays
+    /// on the decoy without it and the power-off that leaves nothing behind;
+    /// a power-off, or a return that finds them all, has nothing to announce.
     #[test]
-    fn a_return_that_finds_no_ip_is_announced_before_the_switch() {
+    fn each_network_tool_a_return_lacks_is_announced_before_the_switch() {
         use crate::next_step::{NextStep, sudo_line};
+        let poweroff = sudo_line(NextStep::DeactivatePoweroff);
         let fhs = plan();
         assert_eq!(
-            way_back_warnings(LeaveTo::Decoy, &fhs, false),
-            [format!(
-                "The return finds no `ip` (iproute2) in the hidden session's system \
-                 directories, so the virtual links the session made, the MAC addresses it \
-                 changed and the policy-routing rules it added stay on the decoy until \
-                 power-off. `{}` leaves none of them.",
-                sudo_line(NextStep::DeactivatePoweroff)
-            )]
+            way_back_warnings(LeaveTo::Decoy, &fhs, &NetworkTool::ALL),
+            [
+                format!(
+                    "The return finds no `ip` (iproute2) in the hidden session's system \
+                     directories, so the virtual links the session made, the MAC addresses it \
+                     changed and the policy-routing rules it added stay on the decoy until \
+                     power-off. `{poweroff}` leaves none of them."
+                ),
+                format!(
+                    "The return finds no `nft` (nftables) in the hidden session's system \
+                     directories, so the nftables tables the session added stay on the decoy \
+                     until power-off (a VPN app's table that blocks all traffic outside its \
+                     tunnel keeps the decoy offline). `{poweroff}` leaves none of them."
+                ),
+                format!(
+                    "The return finds no `iw` in the hidden session's system directories, so the \
+                     Wi-Fi interfaces the session added on the decoy's radios (monitor or access \
+                     point interfaces) stay on the decoy until power-off. `{poweroff}` leaves \
+                     none of them."
+                ),
+            ]
         );
-        assert!(way_back_warnings(LeaveTo::Decoy, &fhs, true).is_empty());
-        assert!(way_back_warnings(LeaveTo::Poweroff, &fhs, false).is_empty());
+        assert!(way_back_warnings(LeaveTo::Decoy, &fhs, &[]).is_empty());
+        assert!(way_back_warnings(LeaveTo::Poweroff, &fhs, &NetworkTool::ALL).is_empty());
 
         let mut nixos = plan();
         nixos.decoy.system = Some("/nix/store/aaa-nixos-system-decoy".into());
-        let warnings = way_back_warnings(LeaveTo::Decoy, &nixos, false);
+        let warnings = way_back_warnings(LeaveTo::Decoy, &nixos, &[NetworkTool::Nft]);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
-            warnings[0].contains("in the decoy's NixOS system or the hidden session's"),
+            warnings[0].starts_with(
+                "The return finds no `nft` (nftables) in the decoy's NixOS system or the hidden \
+                 session's system directories, so"
+            ),
             "{warnings:?}"
         );
     }
@@ -362,31 +406,55 @@ mod tests {
         std::fs::write(file, "").unwrap();
     }
 
-    /// The prepared deactivation looks for `ip` where the return's last step
-    /// will, in the root that step runs in: in the hidden root's system
-    /// directories, and on NixOS first in the decoy's system that step
-    /// repoints `/run/current-system` to, never in the hidden system the link
-    /// names until then. Where it finds none, a return is warned of; where it
-    /// finds one, or for a power-off, nothing is.
+    /// List a Wi-Fi interface of radio `phy0` below the tree's
+    /// `/sys/class/net`, as the kernel lists one.
+    fn put_wifi_link(root: &Path) {
+        let link = root.join("sys/class/net/wlan0");
+        std::fs::create_dir_all(link.join("device")).unwrap();
+        std::fs::write(link.join("ifindex"), "3\n").unwrap();
+        std::os::unix::fs::symlink("../../ieee80211/phy0", link.join("phy80211")).unwrap();
+    }
+
+    /// The prepared deactivation looks for the network tools where the
+    /// return's last step will, in the root that step runs in: in the hidden
+    /// root's system directories, and on NixOS first in the decoy's system
+    /// that step repoints `/run/current-system` to, never in the hidden system
+    /// the link names until then; `iw` only where a link is a Wi-Fi interface.
+    /// Each it finds no copy of is warned of; once it finds them all, or for a
+    /// power-off, nothing is.
     #[test]
-    fn the_warnings_follow_where_the_return_looks_for_ip() {
+    fn the_warnings_follow_where_the_return_looks_for_its_network_tools() {
+        use NetworkTool::{Ip, Iw, Nft};
         let fhs = tempfile::tempdir().unwrap();
         let ready = ready_at(fhs.path());
-        let warned = way_back_warnings(LeaveTo::Decoy, &ready.plan, false);
-        assert_eq!(warned.len(), 1, "{warned:?}");
-        assert_eq!(ready.warnings(LeaveTo::Decoy), warned);
+        let warned = |lacks: &[NetworkTool]| way_back_warnings(LeaveTo::Decoy, &ready.plan, lacks);
+        assert_eq!(ready.warnings(LeaveTo::Decoy), warned(&[Ip, Nft]));
         assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
         put(fhs.path(), "usr/bin/ip");
+        assert_eq!(ready.warnings(LeaveTo::Decoy), warned(&[Nft]));
+        put(fhs.path(), "usr/sbin/nft");
+        assert!(ready.warnings(LeaveTo::Decoy).is_empty());
+        put_wifi_link(fhs.path());
+        assert_eq!(ready.warnings(LeaveTo::Decoy), warned(&[Iw]));
+        put(fhs.path(), "sbin/iw");
         assert!(ready.warnings(LeaveTo::Decoy).is_empty());
 
         let nixos = tempfile::tempdir().unwrap();
         let mut ready = ready_at(nixos.path());
         ready.plan.decoy.system = Some("/nix/store/aaa-nixos-system-decoy".into());
-        put(nixos.path(), "run/current-system/sw/bin/ip");
-        let warned = way_back_warnings(LeaveTo::Decoy, &ready.plan, false);
-        assert_eq!(warned.len(), 1, "{warned:?}");
+        put_wifi_link(nixos.path());
+        for tool in ["ip", "nft", "iw"] {
+            put(nixos.path(), &format!("run/current-system/sw/bin/{tool}"));
+        }
+        let warned = way_back_warnings(LeaveTo::Decoy, &ready.plan, &NetworkTool::ALL);
+        assert_eq!(warned.len(), 3, "{warned:?}");
         assert_eq!(ready.warnings(LeaveTo::Decoy), warned);
-        put(nixos.path(), "nix/store/aaa-nixos-system-decoy/sw/bin/ip");
+        for tool in ["ip", "nft", "iw"] {
+            put(
+                nixos.path(),
+                &format!("nix/store/aaa-nixos-system-decoy/sw/bin/{tool}"),
+            );
+        }
         assert!(ready.warnings(LeaveTo::Decoy).is_empty());
         assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
     }

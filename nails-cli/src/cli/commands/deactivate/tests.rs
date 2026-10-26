@@ -70,25 +70,30 @@ fn subprocess_deactivate_entrypoint() {
         yes: true,
         poweroff: false,
     };
-    if let Some((settings, args, ip)) = match case.as_str() {
-        "human-ready-without-ip" => Some((ascii, yes, false)),
-        "human-ready-with-ip" => Some((ascii, yes, true)),
-        "json-ready-without-ip" => Some((json(), yes, false)),
-        "json-ready-with-ip" => Some((json(), yes, true)),
+    // Which of the network tools the way back's last step runs on a machine
+    // without Wi-Fi are where it looks.
+    let (all, only_nft): (&[&str], &[&str]) = (&["ip", "nft"], &["nft"]);
+    if let Some((settings, args, tools)) = match case.as_str() {
+        "human-ready-without-ip" => Some((ascii, yes, only_nft)),
+        "human-ready-without-tools" => Some((ascii, yes, &[][..])),
+        "human-ready-with-tools" => Some((ascii, yes, all)),
+        "json-ready-without-ip" => Some((json(), yes, only_nft)),
+        "json-ready-without-tools" => Some((json(), yes, &[][..])),
+        "json-ready-with-tools" => Some((json(), yes, all)),
         "json-ready-poweroff" => Some((
             json(),
             DeactivateArgs {
                 yes: true,
                 poweroff: true,
             },
-            false,
+            &[][..],
         )),
-        "json-ready-unconfirmed" => Some((json(), DeactivateArgs::default(), false)),
+        "json-ready-unconfirmed" => Some((json(), DeactivateArgs::default(), &[][..])),
         _ => None,
     } {
         let root = tempfile::tempdir().unwrap();
-        if ip {
-            put(root.path(), "usr/bin/ip");
+        for tool in tools {
+            put(root.path(), &format!("usr/bin/{tool}"));
         }
         // A stand-in for the lock step and the way back: what the operator
         // reads up to the switch.
@@ -142,7 +147,7 @@ fn put(root: &Path, path: &str) {
 
 /// A deactivation ready to leave a hidden session whose decoy runs no NixOS,
 /// with its hidden volume, its state file and the root the way back's last
-/// step runs in, where it looks for `ip`, all below `root`.
+/// step runs in, where it looks for its network tools, all below `root`.
 fn ready_at(root: &Path) -> ReadyDeactivation {
     use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
     let plan = serde_json::json!({
@@ -176,6 +181,19 @@ fn no_ip_warning() -> String {
     )
 }
 
+/// What a person reads before the question when the way back's last step
+/// finds no `nft` in a hidden root whose decoy runs no NixOS.
+fn no_nft_warning() -> String {
+    use nails_core::next_step::{NextStep, sudo_line};
+    format!(
+        "The return finds no `nft` (nftables) in the hidden session's system directories, so the \
+         nftables tables the session added stay on the decoy until power-off (a VPN app's table \
+         that blocks all traffic outside its tunnel keeps the decoy offline). `{}` leaves none \
+         of them.",
+        sudo_line(NextStep::DeactivatePoweroff)
+    )
+}
+
 /// The lines a person reads of a return to the decoy, up to the switch.
 const RETURN_LINES: [&str; 3] = [
     "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
@@ -185,21 +203,25 @@ const RETURN_LINES: [&str; 3] = [
 ];
 
 /// A person reads that the return leaves the session's network state on the
-/// decoy where its last step finds no `ip`, on the question's stream before
-/// the lines of the return; where it finds `ip` there is nothing to read.
+/// decoy where its last step finds no `ip`, or no `nft`, one line each on
+/// the question's stream before the lines of the return; where it finds both
+/// there is nothing to read.
 #[test]
-fn a_person_reads_the_ip_warning_before_the_return() {
+fn a_person_reads_the_network_tool_warnings_before_the_return() {
     for (case, warned) in [
-        ("human-ready-without-ip", true),
-        ("human-ready-with-ip", false),
+        ("human-ready-without-ip", vec![no_ip_warning()]),
+        (
+            "human-ready-without-tools",
+            vec![no_ip_warning(), no_nft_warning()],
+        ),
+        ("human-ready-with-tools", Vec::new()),
     ] {
         let output = run_subprocess(case);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let expected = if warned {
-            vec![format!("[WARN] {}", no_ip_warning())]
-        } else {
-            Vec::new()
-        };
+        let expected: Vec<String> = warned
+            .iter()
+            .map(|warning| format!("[WARN] {warning}"))
+            .collect();
         assert_eq!(stderr.lines().collect::<Vec<_>>(), expected, "{case}");
         assert_eq!(stdout_lines(&output), RETURN_LINES, "{case}: {output:?}");
         assert_eq!(output.status.code(), Some(0), "{case}: {output:?}");
@@ -207,18 +229,23 @@ fn a_person_reads_the_ip_warning_before_the_return() {
 }
 
 /// Under `--json` nothing is written before the question: the one envelope
-/// carries the warning in `warnings` where the return finds no `ip`, and has
-/// no `warnings` where it finds it or for a power-off, after which the decoy
-/// starts afresh.
+/// carries the warnings in `warnings` where the return finds no `ip` or no
+/// `nft`, and has no `warnings` where it finds both or for a power-off,
+/// after which the decoy starts afresh.
 #[test]
-fn the_envelope_carries_the_ip_warning() {
+fn the_envelope_carries_the_network_tool_warnings() {
     for (case, status, warnings) in [
         (
             "json-ready-without-ip",
             "return_requested",
             Some(serde_json::json!([no_ip_warning()])),
         ),
-        ("json-ready-with-ip", "return_requested", None),
+        (
+            "json-ready-without-tools",
+            "return_requested",
+            Some(serde_json::json!([no_ip_warning(), no_nft_warning()])),
+        ),
+        ("json-ready-with-tools", "return_requested", None),
         ("json-ready-poweroff", "poweroff_requested", None),
     ] {
         let output = run_subprocess(case);
