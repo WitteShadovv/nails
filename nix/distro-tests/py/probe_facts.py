@@ -466,13 +466,22 @@ def parse_tools(text: str | None) -> dict[str, str]:
     return tools
 
 
-def _unit_state(answer: str) -> str | None:
-    """One ``systemctl is-enabled`` or ``is-active`` answer. A unit that does
-    not exist is ``not-found``, whether systemctl says so or fails on it."""
+def _unit_state(service: str, answer: str) -> str | None:
+    """One ``systemctl is-enabled`` or ``is-active`` answer for ``service``.
+
+    A unit the image does not have is ``not-found``, as systemctl names it, or
+    as an older systemctl fails on its unit file. Any other answer is kept as
+    printed, so that a query that failed (no bus, say) reads as its error and
+    never as a unit that is not there.
+    """
     answer = answer.strip()
     if not answer:
         return None
-    if "No such file or directory" in answer:
+    missing = (
+        f"Failed to get unit file state for {service}.service: "
+        "No such file or directory"
+    )
+    if answer == missing:
         return "not-found"
     return answer
 
@@ -488,7 +497,7 @@ def parse_services(text: str | None) -> dict[str, dict[str, str | None]]:
         if match is None or match.group(1) not in states:
             continue
         key = "enabled" if match.group(2) == "is-enabled" else "active"
-        states[match.group(1)][key] = _unit_state(match.group(3))
+        states[match.group(1)][key] = _unit_state(match.group(1), match.group(3))
     return states
 
 
@@ -503,13 +512,24 @@ def refuse_manual_stop(text: str | None) -> bool | None:
 
 def parse_rpm(text: str | None) -> dict[str, str | None]:
     """Each of :data:`RPM_PACKAGES` mapped to its installed name-version-release
-    (``rpm -q``), or None when it is not installed."""
-    found: dict[str, str | None] = {name: None for name in RPM_PACKAGES}
-    for line in _lines(text):
+    (``rpm -q``), or None when rpm answers that it is not installed.
+
+    A package rpm gives neither answer for holds what the query printed (an
+    error, such as a missing rpm), so that a query that failed never reads as
+    a package that is absent. Empty when the query has not run.
+    """
+    lines = _lines(text)
+    if not lines:
+        return {}
+    found: dict[str, str | None] = {}
+    for line in lines:
         for name in RPM_PACKAGES:
             if re.fullmatch(re.escape(name) + r"-\d\S*", line):
                 found[name] = line
-    return found
+            elif line == f"package {name} is not installed":
+                found.setdefault(name, None)
+    printed = "\n".join(lines)
+    return {name: found.get(name, printed) for name in RPM_PACKAGES}
 
 
 def parse_journald(text: str | None) -> dict[str, Any]:

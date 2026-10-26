@@ -39,12 +39,7 @@
       }
     },
     "auditdRefuseManualStop": null,
-    "packages": {
-      "audit": null,
-      "tuned": null,
-      "firewalld": null,
-      "abrt": null
-    },
+    "packages": {},
     "journaldVendorConfig": {
       "storage": null,
       "sources": []
