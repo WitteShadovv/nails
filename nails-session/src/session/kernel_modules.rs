@@ -22,9 +22,16 @@
 //! - an opaque directory there (`trusted.overlay.opaque=y`, which the kernel
 //!   sets on a directory a session deleted and made again): below it the
 //!   decoy's tree no longer shows through, and only the upper's copy counts;
-//! - `modules.dep`, through which the loader finds a module by name: deleted
-//!   (a whiteout), replaced by something other than a file, or rebuilt by a
-//!   hidden session before the decoy last rebuilt its own.
+//! - the release's index: `modules.dep` or `modules.dep.bin` deleted (a
+//!   whiteout) or replaced by something other than a file, or `modules.dep`
+//!   rebuilt by a hidden session before the decoy last rebuilt its own.
+//!
+//! `modprobe` finds a module by name through `modules.dep.bin`, the binary
+//! form of `modules.dep`, so either one deleted or replaced counts. `depmod`
+//! writes the two together with the release's other index files (and Arch
+//! Linux's kernel hook deletes them together), so `modules.dep` stands for
+//! them all where one file has to: whether the upper holds an index of its
+//! own, and how old it is.
 //!
 //! An index a hidden session wrote no earlier than the decoy's (a `depmod`
 //! once it installed a module) passes with a note: it covers the decoy's
@@ -57,10 +64,16 @@ mod read;
 
 pub use read::{TrustedXattrs, read_decoy, read_upper, running_release};
 
-/// The index the module loader finds a module through by its name.
+/// The index `depmod` writes of a release's modules, in text form; it stands
+/// for every index file `depmod` writes with it.
 const INDEX: &str = "modules.dep";
 
-/// One step on the way to a release's module index, from the root down.
+/// The binary form of [`INDEX`], through which `modprobe` finds a module by
+/// name.
+const BINARY_INDEX: &str = "modules.dep.bin";
+
+/// One path the judge reads below a root, from the root down: the
+/// directories on the way to a release's modules, then its index files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     /// `usr`.
@@ -73,20 +86,16 @@ pub enum Step {
     Release,
     /// `usr/lib/modules/<release>/modules.dep`, their index.
     Index,
+    /// `usr/lib/modules/<release>/modules.dep.bin`, the index's binary form.
+    BinaryIndex,
 }
 
 impl Step {
-    /// Every step, in the order a lookup takes them.
-    pub const ALL: [Step; 5] = [
-        Step::Usr,
-        Step::UsrLib,
-        Step::ModuleDir,
-        Step::Release,
-        Step::Index,
-    ];
-
-    /// The directories on the way, every step but the index.
+    /// The directories on the way, in the order a lookup takes them.
     pub const DIRS: [Step; 4] = [Step::Usr, Step::UsrLib, Step::ModuleDir, Step::Release];
+
+    /// The index files in the release's directory.
+    pub const INDEXES: [Step; 2] = [Step::Index, Step::BinaryIndex];
 
     /// The step's path below a root, for the kernel `release`.
     pub fn path(self, release: &OsStr) -> PathBuf {
@@ -97,6 +106,7 @@ impl Step {
             Step::ModuleDir => modules.to_path_buf(),
             Step::Release => modules.join(release),
             Step::Index => modules.join(release).join(INDEX),
+            Step::BinaryIndex => modules.join(release).join(BINARY_INDEX),
         }
     }
 }
@@ -170,10 +180,11 @@ pub enum Hiding {
     OwnCopy,
     /// As [`OwnCopy`](Hiding::OwnCopy), but the copy has no index.
     CopyWithoutIndex,
-    /// The index is a whiteout.
-    IndexDeleted,
-    /// The index is something other than a file.
-    IndexReplaced,
+    /// The index file at the step given, [`Step::Index`] or
+    /// [`Step::BinaryIndex`], is a whiteout.
+    IndexDeleted(Step),
+    /// The index file at the step given is something other than a file.
+    IndexReplaced(Step),
     /// The upper's own index is older than the decoy's.
     StaleIndex,
 }
@@ -203,8 +214,10 @@ pub enum Verdict {
 }
 
 /// Judge what the upper holds on the way to the running kernel's index
-/// (`upper`, one entry per [`Step`] from [`Step::Usr`] down, ending at the
-/// first entry that is not a directory) against the decoy's side.
+/// against the decoy's side. `upper` has one entry per step of
+/// [`Step::DIRS`], then of [`Step::INDEXES`], and ends early at the first
+/// directory step that holds no directory; an entry it lacks counts as
+/// [`Held::Nothing`].
 ///
 /// The decoy's side decides first: what a hidden session changed cannot hide
 /// a tree the decoy does not have.
@@ -254,40 +267,44 @@ fn walk(decoy_index: Option<SystemTime>, upper: &[Held]) -> Verdict {
             Held::Unreadable(why) => return Verdict::Unknown(Doubt::Other(why.clone())),
         }
     }
-    index(held(Step::DIRS.len()), cut, doubt, decoy_index)
+    let dirs = Step::DIRS.len();
+    index(held(dirs), held(dirs + 1), cut, doubt, decoy_index)
 }
 
-/// The index's part of [`walk`], once every directory on the way is one.
+/// The index's part of [`walk`], once every directory on the way is one:
+/// `text` and `binary` are what the upper holds at [`Step::Index`] and
+/// [`Step::BinaryIndex`]. Either one deleted or replaced hides the modules;
+/// whether the upper has an index of its own, and how old it is, `text`
+/// tells.
 fn index(
-    held: &Held,
+    text: &Held,
+    binary: &Held,
     cut: Option<Step>,
     doubt: Option<Doubt>,
     decoy_index: Option<SystemTime>,
 ) -> Verdict {
     let at = cut.unwrap_or(Step::Release);
-    match held {
-        Held::Whiteout => Verdict::Hidden {
-            at,
-            how: Hiding::IndexDeleted,
-        },
-        Held::Dir(_) | Held::Other => Verdict::Hidden {
-            at,
-            how: Hiding::IndexReplaced,
-        },
-        Held::Unreadable(why) => Verdict::Unknown(Doubt::Other(why.clone())),
-        Held::Nothing => unless_cut(cut, doubt, Hiding::CopyWithoutIndex, Verdict::Intact),
-        Held::File(rebuilt) => {
-            let own = if decoy_index.is_some_and(|decoy| decoy > *rebuilt) {
-                Verdict::Hidden {
-                    at: Step::Release,
-                    how: Hiding::StaleIndex,
-                }
-            } else {
-                Verdict::OwnIndex
-            };
-            unless_cut(cut, doubt, Hiding::OwnCopy, own)
-        }
+    for (file, held) in [(Step::Index, text), (Step::BinaryIndex, binary)] {
+        let how = match held {
+            Held::Whiteout => Hiding::IndexDeleted(file),
+            Held::Dir(_) | Held::Other => Hiding::IndexReplaced(file),
+            Held::Unreadable(why) => return Verdict::Unknown(Doubt::Other(why.clone())),
+            Held::Nothing | Held::File(_) => continue,
+        };
+        return Verdict::Hidden { at, how };
     }
+    let Held::File(rebuilt) = text else {
+        return unless_cut(cut, doubt, Hiding::CopyWithoutIndex, Verdict::Intact);
+    };
+    let own = if decoy_index.is_some_and(|decoy| decoy > *rebuilt) {
+        Verdict::Hidden {
+            at: Step::Release,
+            how: Hiding::StaleIndex,
+        }
+    } else {
+        Verdict::OwnIndex
+    };
+    unless_cut(cut, doubt, Hiding::OwnCopy, own)
 }
 
 /// `otherwise`, unless an opaque directory cut the decoy off (`how` at it)
@@ -371,8 +388,8 @@ impl KernelModulesCheck {
                 "no hidden session deleted or replaced the running kernel's modules ({tree})"
             )),
             Verdict::OwnIndex => CheckResult::Pass(format!(
-                "no hidden session deleted or replaced the running kernel's modules ({tree}); \
-                 hidden sessions find them through an index ({INDEX}) a hidden session wrote"
+                "no hidden session deleted or replaced the running kernel's modules ({tree}), \
+                 and their index ({INDEX}) is one a hidden session wrote"
             )),
             Verdict::NoModuleDir => {
                 CheckResult::Pass("the decoy keeps no kernel modules in /usr/lib/modules".into())
@@ -406,7 +423,6 @@ impl KernelModulesCheck {
     /// What the hidden sessions' change `how` at `at` did.
     fn hidden(&self, at: Step, how: Hiding) -> String {
         let tree = self.path(Step::Release);
-        let index = self.path(Step::Index);
         let place = self.path(at);
         let whole = at == Step::Release;
         match how {
@@ -449,19 +465,22 @@ impl KernelModulesCheck {
                  of {tree}, the running kernel's modules, has no index ({INDEX}), so hidden \
                  sessions cannot load them"
             ),
-            Hiding::IndexDeleted => format!(
-                "a hidden session deleted {index}, the index of the running kernel's modules, so \
+            Hiding::IndexDeleted(file) => format!(
+                "a hidden session deleted {}, the index of the running kernel's modules, so \
                  hidden sessions cannot load them (a kernel package update in a hidden session \
-                 can do this)"
+                 can do this)",
+                self.path(file)
             ),
-            Hiding::IndexReplaced => format!(
-                "a hidden session replaced {index}, the index of the running kernel's modules, \
-                 with something other than a file, so hidden sessions may not load them"
+            Hiding::IndexReplaced(file) => format!(
+                "a hidden session replaced {}, the index of the running kernel's modules, with \
+                 something other than a file, so hidden sessions may not load them",
+                self.path(file)
             ),
             Hiding::StaleIndex => format!(
-                "hidden sessions find the running kernel's modules through an index ({index}) a \
-                 hidden session wrote before the decoy last rebuilt its own, so modules the decoy \
-                 added since may not load there"
+                "the index of the running kernel's modules ({}) is one a hidden session wrote \
+                 before the decoy last rebuilt its own, so modules the decoy added since may not \
+                 load in hidden sessions",
+                self.path(Step::Index)
             ),
         }
     }

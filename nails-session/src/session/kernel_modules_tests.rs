@@ -36,6 +36,12 @@ fn hidden(at: Step, how: Hiding) -> Verdict {
     Verdict::Hidden { at, how }
 }
 
+/// What the upper holds for a release directory merged with the decoy's: the
+/// four directories on the way, then the `text` and `binary` index files.
+fn merged(text: Held, binary: Held) -> [Held; 6] {
+    [MERGED, MERGED, MERGED, MERGED, text, binary]
+}
+
 #[test]
 fn the_decoys_side_decides_first() {
     // A whiteout cannot hide what the decoy does not have: a NixOS decoy keeps
@@ -156,21 +162,71 @@ fn a_deleted_or_replaced_index_is_found_in_a_merged_tree() {
     // A kernel update that could not delete the directory itself (a module
     // some other package left there) still deletes the index.
     assert_eq!(
-        judge(&decoy, &[MERGED, MERGED, MERGED, MERGED, Held::Whiteout]),
-        hidden(Step::Release, Hiding::IndexDeleted)
+        judge(&decoy, &merged(Held::Whiteout, Held::Whiteout)),
+        hidden(Step::Release, Hiding::IndexDeleted(Step::Index))
     );
     assert_eq!(
         judge(&decoy, &[MERGED, MERGED, MERGED, MERGED, Held::Other]),
-        hidden(Step::Release, Hiding::IndexReplaced)
+        hidden(Step::Release, Hiding::IndexReplaced(Step::Index))
     );
     assert_eq!(
         judge(&decoy, &[MERGED, MERGED, MERGED, MERGED, MERGED]),
-        hidden(Step::Release, Hiding::IndexReplaced)
+        hidden(Step::Release, Hiding::IndexReplaced(Step::Index))
     );
     // In a copy below an opaque directory, the copy goes as a whole.
     assert_eq!(
         judge(&decoy, &[MERGED, MERGED, OPAQUE, MERGED, Held::Whiteout]),
-        hidden(Step::ModuleDir, Hiding::IndexDeleted)
+        hidden(Step::ModuleDir, Hiding::IndexDeleted(Step::Index))
+    );
+}
+
+#[test]
+fn the_binary_index_modprobe_reads_counts_on_its_own() {
+    let decoy = decoy_at(10);
+    // `modprobe` finds a module by name through the binary form alone.
+    assert_eq!(
+        judge(&decoy, &merged(Held::Nothing, Held::Whiteout)),
+        hidden(Step::Release, Hiding::IndexDeleted(Step::BinaryIndex))
+    );
+    assert_eq!(
+        judge(&decoy, &merged(Held::File(at(20)), Held::Other)),
+        hidden(Step::Release, Hiding::IndexReplaced(Step::BinaryIndex))
+    );
+    assert_eq!(
+        judge(&decoy, &merged(Held::Nothing, MERGED)),
+        hidden(Step::Release, Hiding::IndexReplaced(Step::BinaryIndex))
+    );
+    assert_eq!(
+        judge(
+            &decoy,
+            &merged(Held::Nothing, Held::Unreadable("no".into()))
+        ),
+        Verdict::Unknown(Doubt::Other("no".into()))
+    );
+    // Below an opaque directory, the copy goes as a whole.
+    assert_eq!(
+        judge(
+            &decoy,
+            &[
+                MERGED,
+                MERGED,
+                MERGED,
+                OPAQUE,
+                Held::File(at(20)),
+                Held::Whiteout
+            ]
+        ),
+        hidden(Step::Release, Hiding::IndexDeleted(Step::BinaryIndex))
+    );
+    // Whether the upper has an index of its own, and how old it is, the text
+    // form tells.
+    assert_eq!(
+        judge(&decoy, &merged(Held::Nothing, Held::File(at(5)))),
+        Verdict::Intact
+    );
+    assert_eq!(
+        judge(&decoy, &merged(Held::File(at(20)), Held::File(at(5)))),
+        Verdict::OwnIndex
     );
 }
 
@@ -219,7 +275,7 @@ fn an_unknown_opacity_is_a_doubt_unless_something_below_settles_it() {
             &decoy,
             &[doubt(), doubt(), doubt(), doubt(), Held::Whiteout]
         ),
-        hidden(Step::Release, Hiding::IndexDeleted)
+        hidden(Step::Release, Hiding::IndexDeleted(Step::Index))
     );
     // A known opaque directory above settles it.
     assert_eq!(
@@ -341,24 +397,39 @@ fn the_upper_reader_stops_at_the_first_entry_that_is_no_directory() {
     let tree = mkdir(upper.path(), &format!("usr/lib/modules/{RELEASE}"));
     assert_eq!(
         read(TrustedXattrs::Visible),
-        vec![MERGED, MERGED, MERGED, MERGED, Held::Nothing]
+        merged(Held::Nothing, Held::Nothing)
     );
     assert_eq!(
         read(TrustedXattrs::Invisible),
-        vec![doubt(), doubt(), doubt(), doubt(), Held::Nothing]
+        vec![
+            doubt(),
+            doubt(),
+            doubt(),
+            doubt(),
+            Held::Nothing,
+            Held::Nothing
+        ]
     );
 
+    // Past the directories it reads both index files.
     std::fs::write(tree.join("modules.dep"), "").unwrap();
     set_modified(&tree.join("modules.dep"), 2_000);
+    std::fs::write(tree.join("modules.dep.bin"), "").unwrap();
+    set_modified(&tree.join("modules.dep.bin"), 3_000);
     assert_eq!(
         read(TrustedXattrs::Visible),
-        vec![MERGED, MERGED, MERGED, MERGED, Held::File(at(2_000))]
+        merged(Held::File(at(2_000)), Held::File(at(3_000)))
     );
 
-    // A directory where the index belongs is no index.
+    // A directory where an index file belongs is no index.
     std::fs::remove_file(tree.join("modules.dep")).unwrap();
     mkdir(&tree, "modules.dep");
-    assert_eq!(read(TrustedXattrs::Visible)[4], Held::Other);
+    std::fs::remove_file(tree.join("modules.dep.bin")).unwrap();
+    mkdir(&tree, "modules.dep.bin");
+    assert_eq!(
+        read(TrustedXattrs::Visible),
+        merged(Held::Other, Held::Other)
+    );
 
     // A link on the way ends the walk there.
     std::fs::remove_dir_all(upper.path().join("usr/lib")).unwrap();
@@ -407,6 +478,16 @@ fn the_upper_reader_sees_a_whiteout() {
     assert_eq!(
         read_upper(upper.path(), &release(), TrustedXattrs::Visible),
         vec![MERGED, MERGED, MERGED, Held::Whiteout]
+    );
+
+    // Of each index file, too.
+    std::fs::remove_file(modules.join(RELEASE)).unwrap();
+    let tree = mkdir(&modules, RELEASE);
+    assert!(whiteout(&tree.join("modules.dep")));
+    assert!(whiteout(&tree.join("modules.dep.bin")));
+    assert_eq!(
+        read_upper(upper.path(), &release(), TrustedXattrs::Visible),
+        merged(Held::Whiteout, Held::Whiteout)
     );
 }
 
@@ -692,7 +773,7 @@ fn an_index_a_session_wrote_passes_unless_the_decoy_rebuilt_its_own_since() {
     assert!(
         newer
             .message()
-            .contains("an index (modules.dep) a hidden session wrote"),
+            .contains("their index (modules.dep) is one a hidden session wrote"),
         "{newer:?}"
     );
 
@@ -780,18 +861,30 @@ fn every_hiding_has_its_own_message_and_a_fix() {
         ),
         (
             Step::Release,
-            Hiding::IndexDeleted,
+            Hiding::IndexDeleted(Step::Index),
             format!("deleted {tree}/modules.dep, the index"),
         ),
         (
             Step::Release,
-            Hiding::IndexReplaced,
+            Hiding::IndexDeleted(Step::BinaryIndex),
+            format!("deleted {tree}/modules.dep.bin, the index"),
+        ),
+        (
+            Step::Release,
+            Hiding::IndexReplaced(Step::Index),
             format!("replaced {tree}/modules.dep, the index"),
         ),
         (
             Step::Release,
+            Hiding::IndexReplaced(Step::BinaryIndex),
+            format!("replaced {tree}/modules.dep.bin, the index"),
+        ),
+        (
+            Step::Release,
             Hiding::StaleIndex,
-            format!("({tree}/modules.dep) a hidden session wrote before the decoy last rebuilt"),
+            format!(
+                "({tree}/modules.dep) is one a hidden session wrote before the decoy last rebuilt"
+            ),
         ),
     ];
     let mut messages = std::collections::BTreeSet::new();

@@ -18,6 +18,7 @@ use std::path::Path;
 
 const RELEASE: &str = "6.17.1-arch1-1";
 const INDEX_TEXT: &str = "kernel/fs/ext4.ko:\n";
+const INDEX_BINARY: &str = "binary index";
 
 /// `usr/lib/modules/<release>` and its index, below a root.
 fn tree() -> String {
@@ -28,12 +29,19 @@ fn index() -> String {
     format!("{}/modules.dep", tree())
 }
 
-/// A decoy root with the running kernel's modules and their index.
+/// The index's binary form, the one `modprobe` reads.
+fn binary_index() -> String {
+    format!("{}/modules.dep.bin", tree())
+}
+
+/// A decoy root with the running kernel's modules and both forms of their
+/// index.
 fn decoy() -> ScratchTmpfs {
     let decoy = ScratchTmpfs::new("");
     let fs = decoy.mkdir(&format!("{}/kernel/fs", tree()));
     std::fs::write(fs.join("ext4.ko"), "module").unwrap();
     std::fs::write(decoy.path().join(index()), INDEX_TEXT).unwrap();
+    std::fs::write(decoy.path().join(binary_index()), INDEX_BINARY).unwrap();
     decoy
 }
 
@@ -84,9 +92,10 @@ fn is_whiteout(path: &Path) -> bool {
 }
 
 /// What a kernel update's hook does to the running kernel's index, done
-/// through the root overlay: the kernel keeps the deletion as a whiteout, the
-/// row names it with the `discard` of the whole tree, and that discard brings
-/// the decoy's index back into the next root.
+/// through the root overlay: it deletes both forms, the kernel keeps each
+/// deletion as a whiteout, the row names the text form with the `discard` of
+/// the whole tree, and that discard brings the decoy's index back into the
+/// next root.
 #[test]
 fn a_deleted_index_is_the_whiteout_the_row_names_and_its_discard_brings_it_back() {
     let _ = Rerun::new(test_path!(
@@ -101,10 +110,14 @@ fn a_deleted_index_is_the_whiteout_the_row_names_and_its_discard_brings_it_back(
             KernelModulesCheck::new(decoy.path().to_path_buf(), upper.clone(), RELEASE.into());
 
         in_next_root(decoy.path(), hidden.path(), |next| {
-            std::fs::remove_file(next.join(index())).unwrap();
-            assert!(!next.join(index()).exists());
+            for file in [index(), binary_index()] {
+                std::fs::remove_file(next.join(&file)).unwrap();
+                assert!(!next.join(&file).exists());
+            }
         });
-        assert!(is_whiteout(&upper.join(index())), "the kernel's whiteout");
+        for file in [index(), binary_index()] {
+            assert!(is_whiteout(&upper.join(&file)), "the kernel's whiteout");
+        }
         assert_eq!(
             std::fs::read_to_string(decoy.path().join(index())).unwrap(),
             INDEX_TEXT,
@@ -119,7 +132,7 @@ fn a_deleted_index_is_the_whiteout_the_row_names_and_its_discard_brings_it_back(
         assert!(
             result
                 .message()
-                .starts_with(&format!("a hidden session deleted {shown}/modules.dep")),
+                .starts_with(&format!("a hidden session deleted {shown}/modules.dep, ")),
             "{result:?}"
         );
         let line = sudo_line_for(NextStep::Discard, &shown);
@@ -133,6 +146,10 @@ fn a_deleted_index_is_the_whiteout_the_row_names_and_its_discard_brings_it_back(
             assert_eq!(
                 std::fs::read_to_string(next.join(index())).unwrap(),
                 INDEX_TEXT
+            );
+            assert_eq!(
+                std::fs::read_to_string(next.join(binary_index())).unwrap(),
+                INDEX_BINARY
             );
         });
         // Only the copied-up directories above it are left, merged.

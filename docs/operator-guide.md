@@ -1016,17 +1016,18 @@ seconds or minutes.
   not loaded yet does not work there. Update the kernel on the decoy instead.
   The `kernel-modules` check warns, and never refuses, when a hidden session
   deleted or replaced that tree, a directory above it or its index
-  (`modules.dep`), made one of those directories anew so the decoy's copy no
-  longer shows through, or wrote its own index before the decoy last rebuilt
-  its own; and when the decoy itself lacks the tree, as after a kernel update
-  without a reboot. Its fix: update the decoy's kernel and reboot the decoy
-  into it, or `discard` the path it names; for an outdated index, `sudo depmod
-  <release>` in a hidden session rebuilds it. An index a hidden session wrote
-  no earlier than the decoy's (a `depmod` after installing a module) passes with
-  a note, and a decoy without `/usr/lib/modules`, such as NixOS, keeps its
-  modules elsewhere and passes. Only root can see whether a directory was made
-  anew, so an unprivileged `nails check` that needs to know says it cannot
-  tell and names the `sudo` line.
+  (`modules.dep`, or `modules.dep.bin`, the form `modprobe` reads), made one
+  of those directories anew so the decoy's copy no longer shows through, or
+  wrote its own index before the decoy last rebuilt its own; and when the
+  decoy itself lacks the tree, as after a kernel update without a reboot. Its
+  fix: update the decoy's kernel and reboot the decoy into it, or `discard`
+  the path it names; for an outdated index, `sudo depmod <release>` in a
+  hidden session rebuilds it. An index a hidden session wrote no earlier than
+  the decoy's (a `depmod` after installing a module) passes with a note, and a
+  decoy without `/usr/lib/modules`, such as NixOS, keeps its modules elsewhere
+  and passes. Only root can see whether a directory was made anew, so an
+  unprivileged `nails check` that needs to know says it cannot tell and names
+  the `sudo` line.
 - To drop a path's hidden copy so the decoy's own files show through again, run
   `discard` **on the decoy**, with the hidden volume mounted:
   `sudo /mnt/data/nails discard /etc/nixos` (it lists what it deletes and
