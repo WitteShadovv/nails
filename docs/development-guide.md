@@ -73,11 +73,12 @@ only once `pkgs.nftables` is in `environment.systemPackages` (or
 `networking.nftables.enable` is set). Where the kernel does not load the
 dummy module on demand, run `sudo modprobe dummy` first.
 
-Two tests need real root: the whiteout and opaque-directory test and the test
-of the whole upper-filesystem probe in `privileged_mounts.rs` need `trusted.*`
-xattrs, which a user namespace cannot set. They are `#[ignore]`d and CI runs
-them in the dedicated `privileged-mounts` job of `ci.yml` on every PR, which
-`gate` aggregates.
+Three tests in `privileged_mounts.rs` need real root, since they need
+`trusted.*` xattrs, which a user namespace cannot set: the whiteout and
+opaque-directory test, the test of the `kernel-modules` check against the
+kernel's own whiteouts and opaque directories, and the test of the whole
+upper-filesystem probe. They are `#[ignore]`d and CI runs them in the dedicated
+`privileged-mounts` job of `ci.yml` on every PR, which `gate` aggregates.
 
 The whole-root session's mechanics have a rootless real-kernel tier of their
 own, `nails-core/tests/whole_root_kernel.rs`. Each test re-runs itself in a
@@ -130,10 +131,10 @@ stable toolchain; the seed it prints reproduces a failing order with
 RUSTC_BOOTSTRAP=1 cargo test --workspace -- -Z unstable-options --shuffle
 ```
 
-## Running the root-only mount test
+## Running the root-only mount tests
 
-The whiteout test mounts and unmounts real filesystems with `trusted.*` xattrs,
-so it needs `CAP_SYS_ADMIN` in the initial user namespace. It is run inside a
+The three root-only tests mount real filesystems and need `trusted.*` xattrs,
+so they need `CAP_SYS_ADMIN` in the initial user namespace. They run inside a
 private mount namespace, which keeps every mount invisible to
 the host and discards all of them when the process exits — a failing test cannot
 leave a mount behind on your machine.

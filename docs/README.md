@@ -40,7 +40,7 @@ Read these before relying on NAILS, in roughly this order.
 | Document | What it covers |
 |---|---|
 | [Contributing](../CONTRIBUTING.md) | Setup, the test tiers in brief, conventions, sign-off. |
-| [Development guide](development-guide.md) | The crate layering, the test tiers in detail, tests and the process environment, the root-only test. |
+| [Development guide](development-guide.md) | The crate layering, the test tiers in detail, tests and the process environment, the root-only tests. |
 | [Testing strategy](testing-strategy.md) | Which test tier covers what, and the mock policy. |
 | [VM test suite](../nix/e2e-tests/README.md) | The NixOS VM tests: running, writing and sharding them, and the Debian and Ubuntu tests. |
 | [CI and release automation](ci.md) | Every workflow and job, the gate, the caches, the release workflow. |
