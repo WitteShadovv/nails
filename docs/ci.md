@@ -9,7 +9,7 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 | Tier | Runs | Budget | Scope |
 |---|---|---|---|
 | 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
-| 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count fuzz-targets test`: the whole offline Rust gate without coverage or Nix. |
+| 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count fuzz-targets test`: formatting, clippy, file sizes, the fuzz-target wiring and the test suite, offline. Not the doctests, the shuffle sweep, the lock and module checks or coverage, which `just ci-rust` adds, nor Nix. |
 | 3. PR gate | Every pull request to `main` or `next`, and every push to either | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
 | 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing, the weekly CodeQL analysis and the OpenSSF Scorecard analysis. A release runs on its tag. |
 
@@ -49,7 +49,7 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 | Job | Runs when | What it does |
 |---|---|---|
 | `changes` | always | `python3 -m ci.changes` decides which filters the change matches (`rust`, `testdata`, `fuzz`, `side`, `deps`, `nix`, `workflows`, `docs`, `sbom`). The path rules live in `ci/changes.py` and nowhere else. |
-| `lint` | `rust`, `fuzz` or `side` | Fails on a `Cargo.lock` or a `fuzz/Cargo.lock` that does not match the manifests (`cargo metadata --locked`), then `just fmt-check` (the workspace, the fuzz crate and the side workspaces), `just lint` (clippy with `--locked -D warnings` over the workspace and the side workspaces, which also enforces the [lint policy](#lint-policy)), `just line-count` (the crate directories and the side workspaces), `just fuzz-targets` (every fuzz target wired, past the scaffold's stub and seeded; see [testing-strategy.md](testing-strategy.md#fuzzing)) and the orphan module check, which covers every crate directory (`nails-*/`) and every crate of the side workspaces `setup/` and `gui/`. |
+| `lint` | `rust`, `fuzz` or `side` | `just lock-check` fails on a `Cargo.lock` or a `fuzz/Cargo.lock` that does not match the manifests (`cargo metadata --locked`), then `just fmt-check` (the workspace, the fuzz crate and the side workspaces), `just lint` (clippy with `--locked -D warnings` over the workspace and the side workspaces, which also enforces the [lint policy](#lint-policy)), `just line-count` (the crate directories and the side workspaces), `just fuzz-targets` (every fuzz target wired, past the scaffold's stub and seeded; see [testing-strategy.md](testing-strategy.md#fuzzing)) and `just orphan-modules`, the orphan module check, which covers every crate directory (`nails-*/`) and every crate of the side workspaces `setup/` and `gui/`. |
 | `rust` | `rust` or `testdata` | `just coverage` (cargo-llvm-cov over nextest with the `ci` profile) and `just doctest`. The production-code line-coverage threshold is defined once, in `.config/coverage.toml`, and the figure goes to the job summary. The tests run against a private `TMPDIR` that must be empty afterwards. The job installs `nftables` and loads the `dummy` and `nf_tables` modules for the network way-back tests, clears `kernel.apparmor_restrict_unprivileged_userns` and sets `NAILS_REQUIRE_USERNS=1`, so the real-kernel tests (see [testing-strategy.md](testing-strategy.md)) run in their user + mount namespace and cannot skip (only a test that needs something no CI runner has, such as a delegated cgroup or a NixOS `/bin/sh`, may skip, through `skip_host`). |
 | `shuffle` | `rust` | `just shuffle`: the unit tests of every workspace crate, threaded and shuffled over twenty seeds, so an order-dependent leak through the shared process environment fails the gate. nextest isolates each test in its own process and cannot catch this, hence libtest here; the weekly `stress` job in `scheduled.yml` covers the same ground more heavily. |
 | `side-tests` | `rust` or `side` | `just side-tests`: the tests of the side workspaces, `setup/` and `gui/`. Each is a Cargo workspace of its own that the `rust` job does not reach; `lint` checks their formatting and clippy. The `gui/` tests run under cargo-llvm-cov (`just coverage gui`), which fails the job below the `gui/` floor (see **Coverage thresholds** below), and the report is kept as the `gui-coverage-report` artifact. They run with nextest's default profile, since only the root workspace has a `.config/nextest.toml` with the `ci` profile. The `rust` filter holds the toolchain pin, the cargo config and the justfile, which decide how these tests run too. |
@@ -317,10 +317,12 @@ The `justfile` is the single source of these commands; `just --list` shows them 
 
 ```bash
 just check        # formatting, clippy, file sizes and the tests (the pre-push gate)
-just ci-rust      # everything the ci.yml Rust jobs run, including coverage
+just ci-rust      # the lint, rust, shuffle and side-tests jobs, with three shuffle seeds
 just coverage     # line coverage; the threshold is defined only in .config/coverage.toml
 just coverage gui # the same for gui/, against gui/.config/coverage.toml
 just line-count   # the Rust file size check alone
+just lock-check   # Cargo.lock and fuzz/Cargo.lock match the manifests
+just orphan-modules # every Rust source file is declared as a module
 just deny         # dependency policy over the shipped graph
 just deny-full    # the full-graph policy scan scheduled.yml runs weekly
 just nix-lint     # nixfmt, deadnix and statix over the tracked Nix files
