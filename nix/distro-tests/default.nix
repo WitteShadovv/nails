@@ -28,7 +28,7 @@ let
   scenarioName = name: "${name}-smoke";
 
   tests = lib.mapAttrs' (
-    name: entry: lib.nameValuePair (scenarioName name) (makeSmoke entry)
+    name: entry: lib.nameValuePair (scenarioName name) (makeSmoke name entry)
   ) enabledImages;
 
   # The login- and boot-record regression scenarios, keyed "<distro>-records".
