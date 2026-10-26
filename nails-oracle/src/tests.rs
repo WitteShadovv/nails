@@ -280,8 +280,8 @@ fn store_row(store_path: &str) -> Finding {
 }
 
 /// The clean world with the Nix store database on every image: the file holds
-/// another digest on each, as every boot rewrites it, and its one row
-/// registers the decoy's own store path on each.
+/// another digest on each, as each start of the oracle's decoy VMs rewrites
+/// it, and its one row registers the decoy's own store path on each.
 fn scans_with_store_database() -> Scans {
     let mut scans = clean_scans();
     for (image, digest) in [
@@ -469,7 +469,7 @@ fn a_record_the_session_removed_is_residue() {
     assert_eq!(decide(&scans, &clean_policy()).status, Status::Clean);
 }
 
-// --- the Nix store database, which every boot rewrites --------------------
+// --- the Nix store database, which the oracle's decoys rewrite at a start --
 
 #[test]
 fn a_store_path_the_session_registered_is_residue_though_a_reboot_rewrites_the_database() {

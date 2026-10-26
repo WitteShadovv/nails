@@ -37,8 +37,9 @@ pub enum Tool {
     Plaso,
     /// The rows of the Nix store database the restore carve recovered
     /// (`/nix/var/nix/db/db.sqlite`), read with `sqlite3`: a store path the
-    /// database registers. Every boot rewrites the database file, so the
-    /// restore channel can only call it noise; its rows say what changed.
+    /// database registers. The oracle's decoy VMs rewrite the database file
+    /// at every start, so the restore channel can only call it noise; its
+    /// rows say what changed.
     NixDb,
 }
 

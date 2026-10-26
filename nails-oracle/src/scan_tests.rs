@@ -773,9 +773,10 @@ fn the_rows_of_a_restored_nix_store_database_are_read() {
 
 #[test]
 fn a_restored_nix_store_database_and_its_rows_go_together() {
-    // A database without its rows would leave the one file every boot
-    // rewrites unread; rows without the database are not this carve's; rows
-    // that are not sqlite3's are not the dump. Each stops the scan.
+    // A database without its rows would leave the file unread, its digest
+    // being noise on the oracle's decoys; rows without the database are not
+    // this carve's; rows that are not sqlite3's are not the dump. Each stops
+    // the scan.
     let dir = TmpDir::new();
     let root = dir.path().join("restore").join("after");
     let dump = dir.path().join("nix_db").join("after.json");
@@ -803,9 +804,9 @@ fn a_restored_nix_store_database_and_its_rows_go_together() {
 
 /// Write a complete outputs tree for the three images, every channel
 /// reporting, with the Nix store database restored on each: its file holds
-/// another digest on every image, as every boot rewrites it, and its rows are
-/// `rows` plus, for `after`, `after_rows`. Returns the CLI arguments that
-/// render its verdict.
+/// another digest on every image, as each start of the oracle's decoy VMs
+/// rewrites it, and its rows are `rows` plus, for `after`, `after_rows`.
+/// Returns the CLI arguments that render its verdict.
 fn store_database_world(dir: &Path, rows: &[&str], after_rows: &[&str]) -> Vec<String> {
     let outputs = dir.join("outputs");
     for label in ImageLabel::ALL {

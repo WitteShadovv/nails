@@ -20,7 +20,8 @@
 //! ending in a NUL), so the restore channel compares what a file holds, not
 //! only that it exists. Before it empties a restored Nix store database, it
 //! dumps the database's rows into `nix_db/<label>.json` (`sqlite3 -json`; see
-//! [`crate::nix_db`]), since every boot rewrites that file.
+//! [`crate::nix_db`]), since the oracle's decoy VMs rewrite that file at every
+//! start.
 //!
 //! These parsers are lenient with output they cannot parse (an unparseable
 //! line is skipped) and with a tool that did not run (a missing subtree yields
@@ -208,10 +209,10 @@ pub fn parse_digest_manifest(contents: &[u8]) -> Result<BTreeMap<String, String>
 /// Read the rows of the Nix store database the restored tree at `root` holds,
 /// from the dump `run-scan.sh` wrote of it (see [`crate::nix_db`]). The dump is
 /// there exactly when the tree holds the database as a file: a database
-/// without its rows would leave unread the one file every boot rewrites, and
-/// rows of a database the tree lacks are not this carve's, so either is an
-/// error. A tree with no database, a decoy that is not a Nix system or a carve
-/// that did not run, yields nothing.
+/// without its rows would leave the file unread, its digest being noise on
+/// the oracle's decoys, and rows of a database the tree lacks are not this
+/// carve's, so either is an error. A tree with no database, a decoy that is
+/// not a Nix system or a carve that did not run, yields nothing.
 fn scan_nix_db(root: &Path, dump: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()> {
     let db = root.join(NIX_DB_PATH.trim_start_matches('/'));
     let holds_db = present(&db)? && fs::symlink_metadata(&db).map_err(|e| at(&db, e))?.is_file();

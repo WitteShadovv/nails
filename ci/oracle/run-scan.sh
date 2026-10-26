@@ -331,11 +331,12 @@ carve_restore() {
 }
 
 # --- The Nix store database's rows. -----------------------------------------
-# A Nix decoy registers its store paths at every start, which rewrites pages of
-# the store database, so its digest differs on every image and the verdict can
-# only call the file noise. Its rows do not change with a boot: dump them, so
-# that a store path the session registered or removed is a change of its own
-# (the verdict's nix_db channel; see ci/oracle/README.md).
+# The oracle's decoy VMs register their store paths at every start (the QEMU
+# test module's register-nix-paths), which rewrites pages of the store
+# database, so its digest differs on every image and the verdict can only call
+# the file noise. Its rows do not change with such a start: dump them, so that
+# a store path the session registered or removed is a change of its own (the
+# verdict's nix_db channel; see ci/oracle/README.md).
 nix_db=/nix/var/nix/db/db.sqlite
 
 # dump_nix_db <restored-tree> <dest>: write the ValidPaths rows of the store
