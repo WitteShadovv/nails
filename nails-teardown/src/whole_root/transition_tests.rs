@@ -1009,6 +1009,36 @@ fn the_way_back_gives_the_decoy_back_its_kernel_paths_and_units() {
     }
 }
 
+/// A way back whose snapshot of `/run` is gone still removes the session's
+/// masks of every kind. The scrub then keeps whatever it cannot judge, the
+/// masks among it, and the decoy would start with its units and generators
+/// masked.
+#[test]
+fn a_way_back_without_its_snapshot_still_removes_the_masks() {
+    let world = World::new();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    plan.boot_masks = vec!["systemd-remount-fs.service".to_string()];
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let masks = masked_after_snapshot(&world, &plan);
+    // Something in the hidden session deleted the snapshot.
+    fs::remove_file(world.runtime().join(SNAPSHOT_NAME)).unwrap();
+
+    let outcome = run(&world.env(true, 1_000));
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+
+    for mask in masks {
+        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+    }
+    assert_eq!(
+        fs::read_to_string(world.run().join("decoy-state")).unwrap(),
+        "keep",
+        "the decoy's own state stays"
+    );
+}
+
 #[test]
 fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
     let world = World::new();

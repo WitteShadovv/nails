@@ -22,11 +22,11 @@
 //!   ([`crate::whole_root::run_records`]), and record the entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
-//!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
-//!   put the decoy's records back and, once the hidden units have stopped,
-//!   put the decoy's network state back ([`crate::whole_root::network`]),
-//!   give the decoy's `utab` lines back to the decoy mounts the way back
-//!   restored and write the kmsg cursor last.
+//!   the rule, the drop-ins and the masks, scrub `/run`
+//!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
+//!   the hidden units have stopped, put the decoy's network state back
+//!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
+//!   the decoy mounts the way back restored and write the kmsg cursor last.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -478,7 +478,20 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     disk_guard::release(&env.runtime_dir);
     // By name: the scrub keeps a drop-in directory the decoy already had,
     // and never looks inside it.
-    remove_dropin(&env.run, snapshot.as_ref().unwrap_or(&Snapshot::default()));
+    let no_snapshot = Snapshot::default();
+    let kept = snapshot.as_ref().unwrap_or(&no_snapshot);
+    remove_dropin(&env.run, kept);
+    // The masks go by name as well: the scrub removes them with the rest of
+    // the session's /run, but keeps them all when the snapshot is gone, and
+    // the decoy would start with its swap, its other disks, the units the
+    // hidden root does not need and its generators masked.
+    runtime_units::remove_masks(
+        &env.run,
+        &plan.masks,
+        &plan.boot_masks,
+        &plan.generator_masks,
+        kept,
+    );
     let runtime_rel = env
         .runtime_dir
         .strip_prefix(&env.run)
