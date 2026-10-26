@@ -330,6 +330,27 @@ fn overlay_params_are_the_mount_data_one_option_each() {
 }
 
 #[test]
+fn every_pinned_option_reaches_the_probe_and_the_mount_word_for_word() {
+    // The probe and the real mount both take the pinned options from the
+    // pairs overlay_params splits out of the constant. An option they could
+    // not carry, such as a bare flag without a value, would drop out of both
+    // at once, so the pairs after the three layers must give the constant
+    // back exactly, and the mount data must end with it.
+    let (lower, upper, work) = (Path::new("/lower"), Path::new("/upper"), Path::new("/work"));
+    let params = overlay_params(lower, upper, work).unwrap();
+    let pinned: Vec<String> = params[3..]
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    assert_eq!(pinned.join(","), OVERLAY_FEATURE_OPTIONS);
+    let data = overlay_data(lower, upper, work).unwrap();
+    assert!(
+        data.ends_with(&format!(",{OVERLAY_FEATURE_OPTIONS}")),
+        "{data}"
+    );
+}
+
+#[test]
 fn overlay_params_refuse_an_unescapable_layer() {
     let err = overlay_params(
         Path::new("/lower"),

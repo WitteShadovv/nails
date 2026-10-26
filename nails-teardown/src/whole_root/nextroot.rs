@@ -303,6 +303,10 @@ pub fn overlay_params(
         ("upperdir", overlay_path(upper)?),
         ("workdir", overlay_path(work)?),
     ];
+    // Every pinned option is a key and a value, as `fsconfig(2)` takes a
+    // string; a bare flag would need a call of its own and is not split out
+    // here. A test holds these pairs to the constant word for word, so an
+    // option without a value fails it rather than going missing.
     params.extend(
         OVERLAY_FEATURE_OPTIONS
             .split(',')
