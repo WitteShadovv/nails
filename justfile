@@ -61,9 +61,9 @@ fuzz cases="100000":
 # Run one cargo-fuzz target of fuzz/ (`just fuzz-run mountinfo 600`) built as
 # CI builds it: release, with debug assertions, overflow checks and the address
 # sanitizer. The pinned stable compiler accepts cargo-fuzz's sanitizer flag under
-# RUSTC_BOOTSTRAP, as in `shuffle`. It starts from the target's seeds and
-# dictionary; new inputs collect in fuzz/corpus/, a crash in fuzz/artifacts/. An
-# input that runs longer than 25 seconds is a hang, as in CI.
+# RUSTC_BOOTSTRAP. It starts from the target's seeds and dictionary; new inputs
+# collect in fuzz/corpus/, a crash in fuzz/artifacts/. An input that runs longer
+# than 25 seconds is a hang, as in CI.
 fuzz-run target seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -158,15 +158,20 @@ side-tests: (coverage "gui")
 # shared process environment (they inject a RuntimeEnv instead), and a leak
 # through any remaining shared state surfaces only under a threaded, shuffled
 # run; nextest isolates each test in its own process and would hide it. Hence
-# libtest, not nextest, and `--lib`, where most unit tests live. The `--shuffle-seed` flag is unstable, so the pinned stable
-# compiler is told to accept it with RUSTC_BOOTSTRAP rather than adding a
-# nightly toolchain.
+# libtest, not nextest, and `--lib`, where most unit tests live. The
+# `--shuffle-seed` flag is unstable, so the stable test harness is told to
+# accept it with RUSTC_BOOTSTRAP rather than adding a nightly toolchain. A
+# cargo runner sets it for the test binaries alone: the build scripts of
+# proc-macro2 and others look for nightly features when it is set, so a build
+# that saw it would rebuild them and every crate above them, here and again in
+# the next build without it, such as `just test`.
 shuffle seeds="20":
     #!/usr/bin/env bash
     set -euo pipefail
+    runner="target.'cfg(all())'.runner = ['env', 'RUSTC_BOOTSTRAP=1']"
     for seed in $(seq 1 {{ seeds }}); do
         echo "shuffle seed $seed"
-        RUSTC_BOOTSTRAP=1 cargo test --workspace --all-features --locked --lib \
+        cargo test --config "$runner" --workspace --all-features --locked --lib \
             -- -Z unstable-options --shuffle-seed "$seed"
     done
 
