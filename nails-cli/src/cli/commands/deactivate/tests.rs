@@ -6,8 +6,9 @@ use crate::cli::args::DeactivateArgs;
 use crate::cli::output::test_support::{envelope, stdout_lines};
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::NailsError;
-use nails_core::app::deactivate::Prepared;
+use nails_core::app::deactivate::{Prepared, ReadyDeactivation};
 use nails_core::session::{LeaveReport, LeaveTo};
+use std::path::Path;
 
 fn json() -> OutputSettings {
     OutputSettings {
@@ -65,6 +66,47 @@ fn subprocess_deactivate_entrypoint() {
         );
         crate::cli::chokepoint::exit_process(status.code());
     }
+    let yes = DeactivateArgs {
+        yes: true,
+        poweroff: false,
+    };
+    if let Some((settings, args, ip)) = match case.as_str() {
+        "human-ready-without-ip" => Some((ascii, yes, false)),
+        "human-ready-with-ip" => Some((ascii, yes, true)),
+        "json-ready-without-ip" => Some((json(), yes, false)),
+        "json-ready-with-ip" => Some((json(), yes, true)),
+        "json-ready-poweroff" => Some((
+            json(),
+            DeactivateArgs {
+                yes: true,
+                poweroff: true,
+            },
+            false,
+        )),
+        "json-ready-unconfirmed" => Some((json(), DeactivateArgs::default(), false)),
+        _ => None,
+    } {
+        let root = tempfile::tempdir().unwrap();
+        if ip {
+            put(root.path(), "usr/bin/ip");
+        }
+        // A stand-in for the lock step and the way back: what the operator
+        // reads up to the switch.
+        let status = super::deactivate_prepared_with(
+            &settings,
+            &args,
+            Prepared::Ready(Box::new(ready_at(root.path()))),
+            |_ready, to, warnings| {
+                super::leave_and_report(&settings, to, warnings, |_| {
+                    crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+                    Ok(LeaveReport::default())
+                })
+            },
+        );
+        // The exit runs no destructor: remove the scratch tree first.
+        drop(root);
+        crate::cli::chokepoint::exit_process(status.code());
+    }
     let (settings, to, outcome) = match case.as_str() {
         "json-enqueued" => (json(), LeaveTo::Poweroff, Ok(LeaveReport::default())),
         "json-refused" => (json(), LeaveTo::Decoy, Err(refused())),
@@ -90,6 +132,140 @@ fn subprocess_deactivate_entrypoint() {
 /// A warning given before the question.
 const EARLIER_WARNING: &str = "The return finds no `ip` (iproute2) in the hidden session's system \
                                directories";
+
+/// Put an empty file at `path` below `root`.
+fn put(root: &Path, path: &str) {
+    let file = root.join(path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, "").unwrap();
+}
+
+/// A deactivation ready to leave a hidden session whose decoy runs no NixOS,
+/// with its hidden volume, its state file and the root the way back's last
+/// step runs in, where it looks for `ip`, all below `root`.
+fn ready_at(root: &Path) -> ReadyDeactivation {
+    use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
+    let plan = serde_json::json!({
+        "version": PLAN_VERSION,
+        "hidden_root": "/mnt/data",
+        "upper": "/mnt/data/root/upper",
+        "work": "/mnt/data/root/work",
+        "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+        "decoy": {"init": "/sbin/init"},
+        "hidden": {"init": "/sbin/init"},
+    });
+    let config = nails_core::Config {
+        hidden_volume_root: root.to_path_buf(),
+        state_file_path: root.join("state.json"),
+        log_path: root.join("logs"),
+        ..nails_core::Config::test_default()
+    };
+    let plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
+    ReadyDeactivation::for_test(config, plan, root)
+}
+
+/// What a person reads before the question when the way back's last step
+/// finds no `ip` in a hidden root whose decoy runs no NixOS.
+fn no_ip_warning() -> String {
+    use nails_core::next_step::{NextStep, sudo_line};
+    format!(
+        "The return finds no `ip` (iproute2) in the hidden session's system directories, so the \
+         links the session made and the MAC addresses it changed stay on the decoy until \
+         power-off. `{}` leaves none of them.",
+        sudo_line(NextStep::DeactivatePoweroff)
+    )
+}
+
+/// The lines a person reads of a return to the decoy, up to the switch.
+const RETURN_LINES: [&str; 3] = [
+    "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
+    "  The decoy starts at its own login screen in a few seconds (a display manager set to log \
+     an account in automatically logs it in again, as at boot).",
+    ENQUEUED,
+];
+
+/// A person reads that the return leaves the session's network state on the
+/// decoy where its last step finds no `ip`, on the question's stream before
+/// the lines of the return; where it finds `ip` there is nothing to read.
+#[test]
+fn a_person_reads_the_ip_warning_before_the_return() {
+    for (case, warned) in [
+        ("human-ready-without-ip", true),
+        ("human-ready-with-ip", false),
+    ] {
+        let output = run_subprocess(case);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let expected = if warned {
+            vec![format!("[WARN] {}", no_ip_warning())]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(stderr.lines().collect::<Vec<_>>(), expected, "{case}");
+        assert_eq!(stdout_lines(&output), RETURN_LINES, "{case}: {output:?}");
+        assert_eq!(output.status.code(), Some(0), "{case}: {output:?}");
+    }
+}
+
+/// Under `--json` nothing is written before the question: the one envelope
+/// carries the warning in `warnings` where the return finds no `ip`, and has
+/// no `warnings` where it finds it or for a power-off, after which the decoy
+/// starts afresh.
+#[test]
+fn the_envelope_carries_the_ip_warning() {
+    for (case, status, warnings) in [
+        (
+            "json-ready-without-ip",
+            "return_requested",
+            Some(serde_json::json!([no_ip_warning()])),
+        ),
+        ("json-ready-with-ip", "return_requested", None),
+        ("json-ready-poweroff", "poweroff_requested", None),
+    ] {
+        let output = run_subprocess(case);
+        assert!(output.stderr.is_empty(), "{case}: {output:?}");
+        let lines = stdout_lines(&output);
+        assert_eq!(
+            lines.len(),
+            2,
+            "the stand-in's line, one envelope: {output:?}"
+        );
+        assert_eq!(lines[0], ENQUEUED, "{case}: {output:?}");
+        let value = envelope("deactivate", &lines[1]);
+        assert_eq!(value["ok"], true, "{case}: {value}");
+        assert_eq!(value["data"]["status"], status, "{case}: {value}");
+        assert_eq!(
+            value["data"].get("warnings"),
+            warnings.as_ref(),
+            "{case}: {value}"
+        );
+        assert_eq!(output.status.code(), Some(0), "{case}: {output:?}");
+    }
+}
+
+/// Without `-y` off a terminal a ready deactivation is refused before it
+/// warns, asks or leaves: the one envelope is `needs_confirmation`, exit 2.
+#[test]
+fn an_unconfirmed_deactivation_off_a_terminal_is_refused_before_anything() {
+    let output = run_subprocess("json-ready-unconfirmed");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let lines = stdout_lines(&output);
+    assert_eq!(lines.len(), 1, "one envelope: {output:?}");
+    let value = envelope("deactivate", &lines[0]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "needs_confirmation", "{value}");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+}
+
+/// Past the question the real lock step runs, and its attach gate refuses a
+/// hidden root that is no mount point, as `activate` refuses it: exit 4,
+/// with nothing written there and nothing left.
+#[test]
+fn the_lock_step_refuses_a_hidden_root_that_is_no_mount_point() {
+    let root = tempfile::tempdir().unwrap();
+    let status = super::lock_and_leave(&json(), ready_at(root.path()), LeaveTo::Decoy, Vec::new());
+    assert_eq!(status, ExitStatus::PreflightRefused);
+    assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+}
 
 /// A way back that marked one backend device to close and not the other.
 fn left_open() -> LeaveReport {
@@ -218,16 +394,7 @@ fn an_enqueued_way_back_is_one_envelope_printed_after_it() {
 fn a_person_reads_the_result_before_the_way_back() {
     for (case, code) in [("human-enqueued", 0), ("human-refused", 1)] {
         let output = run_subprocess(case);
-        assert_eq!(
-            stdout_lines(&output),
-            [
-                "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
-                "  The decoy starts at its own login screen in a few seconds (a display manager \
-                 set to log an account in automatically logs it in again, as at boot).",
-                ENQUEUED,
-            ],
-            "{case}: {output:?}"
-        );
+        assert_eq!(stdout_lines(&output), RETURN_LINES, "{case}: {output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(
             stderr.contains("error: systemctl could not enqueue soft-reboot.target"),
