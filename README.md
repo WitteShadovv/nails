@@ -533,7 +533,7 @@ The binary lives on the hidden volume, so every invocation uses its full path.
 | Command | Where | Purpose |
 |---|---|---|
 | `init <PATH>` | decoy | Lay out a mounted hidden volume |
-| `check` | decoy | Report readiness to activate, changing nothing |
+| `check` | decoy | Report readiness to activate, leaving no file or mount behind |
 | `activate` | decoy | Soft-reboot into the hidden session |
 | `deactivate` | hidden session | Soft-reboot back to the plain decoy (`--poweroff` to power off) |
 | `emergency` | either | Kill the hidden session at once and return (or power off); on the decoy, remove an interrupted activation |

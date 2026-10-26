@@ -455,7 +455,7 @@ pub fn next_steps(base: &Path) -> Vec<String> {
             config = config.display()
         ),
         format!(
-            "check readiness without changing anything: {}",
+            "check readiness, leaving no file or mount behind: {}",
             sudo_line_with(&binary, NextStep::Check)
         ),
         format!(

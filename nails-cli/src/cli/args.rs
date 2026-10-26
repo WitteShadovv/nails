@@ -247,7 +247,7 @@ WHAT HAPPENS:
 EXAMPLES:
   nails activate                      Enter the hidden session
   nails activate --overlay-only       Enter with the decoy's own system (NixOS)
-  nails activate --dry-run            Preview without changing anything")]
+  nails activate --dry-run            Preview, leaving no file or mount behind")]
 pub struct ActivateArgs {
     /// Proceed without the confirmation prompt
     ///
@@ -267,7 +267,7 @@ pub struct ActivateArgs {
     )]
     pub nixos_flake: Option<String>,
 
-    /// Preview activation steps without making changes
+    /// Preview activation steps, leaving no file or mount behind
     #[arg(long)]
     pub dry_run: bool,
 
