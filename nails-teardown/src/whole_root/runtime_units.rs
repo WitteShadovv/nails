@@ -9,8 +9,8 @@
 //! entry the transition installs the hidden session's own units (the backend
 //! watcher, the sleep guard), masks the decoy units the hidden systemd must
 //! never start (decoy swap, decoy filesystems it would mount read-write) and
-//! the generators it must never run. They live only in `/run` and the return
-//! scrub removes them, so the decoy's PID 1 never sees them.
+//! the generators it must never run. They live only in `/run` and the way
+//! back removes them, so the decoy's PID 1 never sees them.
 //!
 //! Unit and generator names are validated: a plain file name with a known
 //! unit suffix, or one ending in `-generator`, so a plan can never make the
@@ -117,17 +117,17 @@ pub fn mask_units_best_effort(run: &Path, units: &[String]) -> Vec<PathBuf> {
 /// unit directory, `boot_masks` from the control directory and
 /// `generator_masks` from the generator directory, each only where it is
 /// still a link to `/dev/null` and `kept` (the `/run` snapshot the entry
-/// took) does not hold it, so a mask the decoy had before stays. The control
-/// and generator directories go too when the decoy had none and they are
-/// empty now.
+/// took, empty when it is gone) does not hold it, so a mask the decoy had
+/// before stays. The control and generator directories go too when the decoy
+/// had none and they are empty now.
 ///
-/// The return scrub removes them with the rest of the session's `/run`; this
-/// is for the decoy side: an entry rolled back, a next root disarmed, or an
-/// emergency on the decoy after a switch that never happened. Without it the
-/// decoy would keep its swap, its other disks, its boot-loader units or its
-/// generators masked until the next boot. Returns whether a mask went: PID 1
-/// keeps a unit masked, and the units a masked generator would make missing,
-/// until its next reload.
+/// The way back calls this before its scrub, which keeps them all when the
+/// snapshot is gone, and so does the decoy side: an entry rolled back, a next
+/// root disarmed, or an emergency on the decoy after a switch that never
+/// happened. Without it the decoy would keep its swap, its other disks, its
+/// boot-loader units or its generators masked until the next boot. Returns
+/// whether a mask went: PID 1 keeps a unit masked, and the units a masked
+/// generator would make missing, until its next reload.
 pub fn remove_masks(
     run: &Path,
     masks: &[String],
