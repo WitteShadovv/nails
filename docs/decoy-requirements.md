@@ -54,6 +54,26 @@ The decoy also has to be one the session can enter and leave:
   where the way back does, never in `PATH`: in `/run/current-system/sw/bin`
   (on NixOS, the decoy's system), `/usr/bin`, `/bin`, `/usr/sbin` and
   `/sbin`.
+- **SELinux labels on the hidden volume**, where the host may run SELinux:
+  where `/sys/fs/selinux` exists, where `/etc/selinux/config` sets `SELINUX=`
+  or `SELINUXTYPE=` (whatever the value, `SELINUX=disabled` included), and
+  where NAILS cannot detect the host. The hidden `/`, the root of each decoy
+  filesystem the session overlays (a separate `/home`, say) and the
+  directories on the way to your home are directories NAILS makes on the
+  hidden volume. A policy sees a directory without a label as `unlabeled_t`,
+  which confined services may not even look up, so at every activation NAILS
+  gives each of them the SELinux label of the decoy directory it stands for.
+  It reads the decoy's labels without changing anything on the decoy, not even
+  an access time, and writes them onto the hidden volume before the overlays
+  are mounted. A label it cannot copy refuses the activation, which is undone:
+  the hidden volume's filesystem must store `security.selinux` attributes, as
+  ext4, xfs and btrfs do, the decoy's directories must carry labels, and in
+  the `fresh-home` persona your account needs a home on the decoy. A host
+  that does not use SELinux but keeps such an `/etc/selinux/config` is
+  refused for this reason, since its directories carry no labels: comment out
+  both keys in that file. `nails check` does not test any of this yet.
+  Elsewhere a label is copied only where the decoy has one, and the hidden
+  root is made as before.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The

@@ -20,6 +20,10 @@ of this changelog for that version becomes the release notes word for word, and
   run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
   `config/nails.toml` next to it), delete the key if it is reported, and pass
   `--allow-persistent-decoy` on the activations that need the override.
+- A host that does not run SELinux but keeps an `/etc/selinux/config` that sets `SELINUX=` or
+  `SELINUXTYPE=` (`SELINUX=disabled` included) now needs SELinux labels on the decoy's directories,
+  as a host that runs SELinux does, and its activation is refused while they carry none. Comment
+  out both keys in that file before you activate with the new binary (see Changed).
 
 ### Added
 
@@ -226,6 +230,19 @@ of this changelog for that version becomes the release notes word for word, and
   what it would delete and confirms first; its `--json` envelope now reports the command and its
   error code as `discard`.
 - The `doctor` alias for `check` is removed. Run `check`.
+- Activation gives the directories it makes on the hidden volume the SELinux labels of the decoy
+  directories they stand for: the root of each overlay's upper, which becomes the hidden `/` or the
+  root of an overlaid decoy filesystem such as a separate `/home`, and the directories on the way to
+  the operator's home. Without them a host that runs SELinux sees the hidden `/` as `unlabeled_t`,
+  which confined services may not even look up. The labels are read from the decoy without changing
+  anything there, not even an access time, and written onto the hidden volume before the overlays
+  are mounted. Where `/sys/fs/selinux` exists, `/etc/selinux/config` sets `SELINUX=` or
+  `SELINUXTYPE=`, or the host cannot be detected, a label that cannot be copied refuses the
+  activation and undoes it: a hidden volume whose filesystem stores no labels, a decoy directory
+  without one, a policy that denies the relabel, or, in the fresh-home persona, an operator without
+  a home on the decoy. Elsewhere a label is copied only where the decoy has one, so a decoy without
+  labels gets the hidden root it got before. `nails check` does not test this yet; see
+  docs/decoy-requirements.md.
 
 ### Fixed
 
