@@ -48,10 +48,12 @@ of this changelog for that version becomes the release notes word for word, and
   twice, or listed without the files a hidden session deleted; rpm's database is judged by its size
   and modification time only. The fix names the package manager's commands to run in a hidden
   session, and a hidden session that deleted or replaced the database itself draws the `discard`
-  that brings the decoy's back. It never refuses. The decoy's database is read only as root, with
-  `O_NOATIME`, so an unprivileged `nails check` that would need to read it says it cannot tell. The
-  Argon2id advice reads the installed cryptsetup through the same dpkg and pacman readers, which now
-  take dpkg's field names in any case, as dpkg does.
+  that brings the decoy's back. Activation shows the warning before it asks to log you out (unless
+  `-y` skips the question), lists it again among the warnings of its result (exit 9), and reports it
+  to a window's event stream as an `advisory` event. It never refuses. The decoy's database is read
+  only as root, with `O_NOATIME`, so an unprivileged `nails check` that would need to read it says
+  it cannot tell. The Argon2id advice reads the installed cryptsetup through the same dpkg and
+  pacman readers, which now take dpkg's field names in any case, as dpkg does.
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
   derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the installed
   cryptsetup version. No released cryptsetup opens such a volume, and nothing outside the encrypted

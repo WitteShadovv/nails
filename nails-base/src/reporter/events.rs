@@ -117,6 +117,14 @@ impl<S: EventSink> Reporter for EventReporter<S> {
         });
     }
 
+    fn advisory(&mut self, name: &str, message: &str, fix: Option<&str>) {
+        self.sink.emit(Event::Advisory {
+            name: name.to_string(),
+            message: message.trim().to_string(),
+            fix: fix.map(|fix| fix.trim().to_string()),
+        });
+    }
+
     fn finish(&mut self, success: bool) {
         self.sink.emit(Event::Finished { success });
     }
@@ -218,6 +226,31 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn advisories_reach_the_stream_with_their_fix() {
+        let events = capture(|| {
+            progress::advisory("package-drift", "out of date\n", Some(" update it "));
+            progress::advisory("package-drift", "could not tell", None);
+        });
+        assert_eq!(
+            events,
+            vec![
+                Event::Advisory {
+                    name: "package-drift".to_string(),
+                    message: "out of date".to_string(),
+                    fix: Some("update it".to_string()),
+                },
+                Event::Advisory {
+                    name: "package-drift".to_string(),
+                    message: "could not tell".to_string(),
+                    fix: None,
+                },
+            ]
+        );
+        // With no reporter installed there is nowhere to send one.
+        progress::advisory("package-drift", "nobody listens", None);
     }
 
     #[test]

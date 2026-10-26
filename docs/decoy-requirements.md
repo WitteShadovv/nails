@@ -202,7 +202,8 @@ itself: from then on hidden sessions keep a record of their own of what is
 installed, which a later update of the decoy does not reach (dpkg's and rpm's
 whole record, pacman's entries of the packages they changed). The
 `package-drift` check warns, and never refuses, when that record no longer
-follows the decoy's. [Package changes in hidden
+follows the decoy's, and activation shows the warning before it asks to log
+you out. [Package changes in hidden
 sessions](operator-guide.md#package-changes-in-hidden-sessions) says what
 drifts for dpkg, pacman and rpm, and how to bring hidden sessions back in line.
 

@@ -954,6 +954,116 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
     });
 }
 
+/// A decoy below `decoy` whose dpkg record has libc6 2.41-13, and hidden
+/// sessions on `hidden` whose copy of it still has 2.41-12.
+fn drifted_debian(decoy: &Path, hidden: &Path) {
+    let status = |version: &str| {
+        format!(
+            "Package: libc6\nStatus: install ok installed\nArchitecture: amd64\n\
+             Version: {version}\n"
+        )
+    };
+    std::fs::create_dir_all(decoy.join("var/lib/dpkg")).unwrap();
+    std::fs::write(decoy.join("var/lib/dpkg/status"), status("2.41-13")).unwrap();
+    let copy = hidden.join("root/upper/var/lib/dpkg");
+    std::fs::create_dir_all(&copy).unwrap();
+    std::fs::write(copy.join("status"), status("2.41-12")).unwrap();
+}
+
+/// The advisories a front end asks for before its confirmation reach a
+/// watching event stream as they are read.
+#[test]
+fn the_advisories_before_an_entry_reach_the_event_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let machine = machine(dir.path(), DECOY_TABLE);
+    drifted_debian(&machine.paths.root, &hidden);
+    let m = manager(&hidden);
+
+    let sink = crate::reporter::CollectingSink::new();
+    let advisories = {
+        let reporter = crate::reporter::EventReporter::new(sink.clone());
+        let _scope =
+            crate::reporter::progress::install(crate::reporter::progress::shared(reporter));
+        m.entry_advisories_on(&machine, &EnterOptions::default())
+    };
+    assert_eq!(advisories.len(), 1, "{advisories:?}");
+    let advisory = &advisories[0];
+    assert_eq!(advisory.name, "package-drift");
+    assert!(
+        advisory
+            .message
+            .contains("libc6 (2.41-13 on the decoy, 2.41-12 in hidden sessions)"),
+        "{advisory:?}"
+    );
+    assert_eq!(
+        sink.events(),
+        vec![nails_api::Event::Advisory {
+            name: advisory.name.to_string(),
+            message: advisory.message.clone(),
+            fix: advisory.fix.clone(),
+        }]
+    );
+
+    // A copy that follows the decoy's record raises none.
+    std::fs::remove_file(hidden.join("root/upper/var/lib/dpkg/status")).unwrap();
+    assert!(
+        m.entry_advisories_on(&machine, &EnterOptions::default())
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_entry_lists_the_package_drift_among_its_warnings() {
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_lists_the_package_drift_among_its_warnings
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        drifted_debian(decoy.path(), hidden.path());
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.set_host_profile(FakePlatform::fhs().host_profile());
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+        let EnterOutcome::Prepared { entry, .. } = outcome else {
+            panic!("expected a prepared entry, got {outcome:?}");
+        };
+        // The result lists the drift with its fix on a line of its own, so
+        // `activate` exits 9 (a success with warnings).
+        assert!(
+            entry.warnings.iter().any(|warning| {
+                warning.starts_with("the decoy installed, updated or removed 1 package")
+                    && warning.contains("\nIn a hidden session, run `sudo apt-get update`")
+            }),
+            "{:?}",
+            entry.warnings
+        );
+
+        let target = FakeTarget {
+            refuse: true,
+            ..FakeTarget::default()
+        };
+        assert!(m.trigger_entry_on(&machine, &target, &host).is_err());
+    });
+}
+
 #[test]
 fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
     let _ = Rerun::new(crate::test_path!(
