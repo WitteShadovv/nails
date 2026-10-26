@@ -123,6 +123,8 @@ class SelectTest(unittest.TestCase):
             "setup/nails-setup/data/eff_large_wordlist.txt",
             "setup/Cargo.lock",
             "gui/nails-gui/src/main.rs",
+            "gui/nails-gui/tests/placeholder.rs",
+            "gui/.config/coverage.toml",
             "gui/supply-chain/config.toml",
             "gui/supply-chain/imports.lock",
         ):

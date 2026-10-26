@@ -1,9 +1,10 @@
 # Task runner shared by local development and CI; `just` lists the recipes.
 # The tools come from the flake dev shell (`nix develop`). Every cargo call
 # passes `--locked` so a stale Cargo.lock fails here exactly as it does in CI.
-# The line-coverage floor lives in `.config/coverage.toml` and nowhere else: the
-# `coverage` recipe reads the number from there, CI calls `just coverage`, and
-# local runs reach the same number through `ci-rust`.
+# The line-coverage floor lives in `.config/coverage.toml` and nowhere else, and
+# that of the gui/ workspace in gui/.config/coverage.toml: the `coverage` recipe
+# reads the number from there, CI calls `just coverage` and `just side-tests`,
+# and local runs reach the same numbers through `ci-rust`.
 
 [private]
 default:
@@ -49,7 +50,7 @@ line-count:
 test:
     cargo nextest run --workspace --all-features --locked --no-fail-fast
     cargo nextest run --manifest-path setup/Cargo.toml --all-features --locked --no-fail-fast
-    cargo nextest run --manifest-path gui/Cargo.toml --all-features --locked --no-fail-fast --no-tests=pass
+    cargo nextest run --manifest-path gui/Cargo.toml --all-features --locked --no-fail-fast
 
 # Long property-based run of the parser tests (the `fuzz_` proptests): the
 # same properties `test` runs with the default case count, here with `cases`
@@ -144,17 +145,14 @@ new-fuzz-target name:
 doctest:
     cargo test --doc --workspace --all-features --locked
 
-# Run the tests of the side workspaces alone: setup/, and gui/ once it exists,
-# each a workspace of its own whose tests `test` runs too. CI's side-tests job
-# runs this. Only the root workspace has a .config/nextest.toml, so these runs
-# name nextest's default profile, also where NEXTEST_PROFILE selects `ci`.
-side-tests:
-    #!/usr/bin/env bash
-    set -euo pipefail
+# Run the tests of the side workspaces alone, each a workspace of its own whose
+# tests `test` runs too: those of setup/, and those of gui/ under line coverage,
+# held to the floor in gui/.config/coverage.toml (`coverage gui`). CI's
+# side-tests job runs this. Only the root workspace has a .config/nextest.toml,
+# so these runs name nextest's default profile, also where NEXTEST_PROFILE
+# selects `ci`.
+side-tests: (coverage "gui")
     cargo nextest run --manifest-path setup/Cargo.toml --profile default --all-features --locked --no-fail-fast
-    if [ -f gui/Cargo.toml ]; then
-        cargo nextest run --manifest-path gui/Cargo.toml --profile default --all-features --locked --no-fail-fast --no-tests=pass
-    fi
 
 # Prove the unit tests do not depend on execution order. No test mutates the
 # shared process environment (they inject a RuntimeEnv instead), and a leak
@@ -173,23 +171,40 @@ shuffle seeds="20":
     done
 
 # Line coverage over nextest, measuring production code only; fails below the
-# floor in .config/coverage.toml.
-coverage:
+# floor in the measured workspace's .config/coverage.toml. `just coverage`
+# measures the root workspace against .config/coverage.toml, `just coverage
+# gui` the gui/ workspace against gui/.config/coverage.toml.
+coverage workspace=".":
     #!/usr/bin/env bash
     set -euo pipefail
+    # The floor, the profile data and the reports are the measured workspace's,
+    # and the messages name it from the repository root.
+    cd '{{ workspace }}'
+    name='{{ if workspace == "." { "" } else { workspace + "/" } }}'
     # The single source of truth for the floor: read it here and nowhere else.
     threshold=$(sed -n 's/^[[:space:]]*line_threshold[[:space:]]*=[[:space:]]*//p' \
         .config/coverage.toml | tr -d ' "')
     if [ -z "$threshold" ]; then
-        echo "No line_threshold in .config/coverage.toml" >&2
+        echo "No line_threshold in ${name}.config/coverage.toml" >&2
         exit 1
     fi
+    # Only the root workspace has a .config/nextest.toml; another one runs
+    # nextest's default profile, also where NEXTEST_PROFILE selects `ci`.
+    if [ ! -f .config/nextest.toml ]; then
+        export NEXTEST_PROFILE=default
+    fi
     # Test infrastructure never ships, so it must not count toward the figure:
-    # the in-memory filesystem mock, the shared test fixtures and the platform
-    # test doubles, plus every test file (inline `tests.rs`, `*_tests.rs`, the
-    # `tests/` integration trees and the benches). Keeping them out of the
-    # report is what makes this number production-only.
-    ignore='(/tests/|/tests\.rs$|_tests\.rs$|/mock/|/test_support|/fake\.rs$|/contract\.rs$|/config/testing\.rs$|/benches/)'
+    # every test file (inline `tests.rs`, `*_tests.rs`, the `tests/`
+    # integration trees and the benches) and, in the root workspace, the
+    # in-memory filesystem mock, the shared test fixtures and the platform test
+    # doubles. Keeping them out of the report is what makes this number
+    # production-only; the names of the root's test doubles are left out only
+    # there, so a production file of another workspace that bears one counts.
+    ignore='/tests/|/tests\.rs$|_tests\.rs$|/benches/'
+    if [ '{{ workspace }}' = . ]; then
+        ignore+='|/mock/|/test_support|/fake\.rs$|/contract\.rs$|/config/testing\.rs$'
+    fi
+    ignore="($ignore)"
     # Every report lands under target/coverage, so nothing is written outside
     # the build directory. In CI the percentage also goes to the job summary.
     out=target/coverage
@@ -205,16 +220,17 @@ coverage:
     # piping thousands of per-file matches into `head` kills grep with SIGPIPE,
     # which pipefail turns into a failed recipe.
     rate=$(grep -m1 -oP '<coverage [^>]*line-rate="\K[0-9.]+' "$out/cobertura.xml") || {
-        echo "No line-rate in $out/cobertura.xml" >&2
+        echo "No line-rate in ${name}$out/cobertura.xml" >&2
         exit 1
     }
     pct=$(awk "BEGIN { printf \"%.2f\", ${rate} * 100 }")
-    echo "Line coverage: ${pct}% (threshold ${threshold}%)"
+    summary="Line coverage${name:+ of $name}: ${pct}% (threshold ${threshold}%)"
+    echo "$summary"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        echo "Line coverage: ${pct}% (threshold ${threshold}%)" >> "$GITHUB_STEP_SUMMARY"
+        echo "$summary" >> "$GITHUB_STEP_SUMMARY"
     fi
     awk "BEGIN { exit !(${pct} >= ${threshold}) }" || {
-        echo "Coverage ${pct}% is below the ${threshold}% threshold" >&2
+        echo "Coverage ${pct}% is below the ${threshold}% threshold${name:+ of $name}" >&2
         exit 1
     }
 
