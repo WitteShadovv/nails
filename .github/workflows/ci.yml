@@ -6,7 +6,7 @@ name: CI
 # Pushes to main run every job and report a red run through report-status.
 # Pull requests into and pushes to `next`, the integration branch, run the
 # same way.
-# The commands live in the justfile, so `just ci-rust` reproduces the Rust
+# The commands live in the justfile, and `just ci-rust` runs most of the Rust
 # jobs locally; the E2E suite has its own workflow and required check.
 
 on:
@@ -103,15 +103,11 @@ jobs:
           fallback: none
 
       # A manifest change (a version bump, a new dependency) without the
-      # matching Cargo.lock update fails here, before anything is built.
-      - name: Check that Cargo.lock is current
-        run: cargo metadata --locked --format-version 1 > /dev/null
-
-      # The fuzz crate is a workspace of its own, whose lock a version bump
-      # or a new dependency of a crate makes stale too; `just fuzz-lock`
-      # rewrites it from Cargo.lock.
-      - name: Check that fuzz/Cargo.lock is current
-        run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+      # matching Cargo.lock update fails here, before anything is built. So
+      # does a fuzz/Cargo.lock that such a change leaves stale: the fuzz crate
+      # is a workspace of its own, and `just fuzz-lock` rewrites its lock.
+      - name: Check that Cargo.lock and fuzz/Cargo.lock are current
+        run: just lock-check
 
       - name: Check formatting
         run: just fmt-check
@@ -128,7 +124,7 @@ jobs:
         run: just fuzz-targets
 
       - name: Check for orphan (undeclared) modules
-        run: ./scripts/check-orphan-modules.sh
+        run: just orphan-modules
 
   # The tests of the workspace under coverage, and its doctests. It is the one
   # job the testdata filter runs: the files outside the crates that the tests

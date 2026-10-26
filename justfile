@@ -45,6 +45,20 @@ lint:
 line-count:
     ./scripts/check-line-count.sh
 
+# Every Rust source file of the crates and the side workspaces is declared as a
+# module: a file that is not compiles for nobody and escapes clippy and the
+# tests unseen.
+orphan-modules:
+    ./scripts/check-orphan-modules.sh
+
+# Fail on a Cargo.lock or fuzz/Cargo.lock that does not match the manifests,
+# before anything is built. No other check builds the fuzz crate, a workspace
+# of its own, so none of them would see its lock go stale; `just fuzz-lock`
+# rewrites it.
+lock-check:
+    cargo metadata --locked --format-version 1 > /dev/null
+    cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+
 # Run the unit and integration suite through nextest; the setup and gui crates
 # too.
 test:
@@ -256,8 +270,13 @@ kernel-tests:
 # test suite.
 check: fmt-check lint line-count fuzz-targets test
 
-# Everything the ci.yml Rust jobs run, for reproducing the gate locally.
-ci-rust: fmt-check lint line-count fuzz-targets coverage doctest side-tests
+# The commands of the ci.yml jobs lint, rust, shuffle and side-tests, for
+# reproducing them locally, with three shuffle seeds where CI runs twenty. Left
+# out are the privileged-mounts job, whose tests need root, and what the jobs
+# set around the commands: CI fails a real-kernel test that would skip, as
+# `just kernel-tests` does, and a test run that leaves a file in TMPDIR. The
+# deps and gui-vet jobs run `just deny` and `just vet gui`.
+ci-rust: lock-check fmt-check lint line-count fuzz-targets orphan-modules coverage doctest side-tests (shuffle "3")
 
 # --- Dependency policy ---
 
