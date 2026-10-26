@@ -8,10 +8,12 @@
 //! backend for closing, records the state inactive and enqueues the soft-reboot.
 //! A front end confirms with the operator and shows a person the result before
 //! the switch (the soft-reboot stops its terminal), so the operation is split:
-//! [`prepare`] builds the manager and refuses outside a hidden session, and
-//! [`ReadyDeactivation::leave`] commits the way back once the front end has
-//! confirmed, taken the state lock and, for a person, printed. A
-//! machine-readable result waits for the commit, so it reports the outcome.
+//! [`prepare`] builds the manager and refuses, before anything is asked, outside
+//! a hidden session and in a hidden root whose session plan cannot be read,
+//! where the way back is unknown; [`ReadyDeactivation::leave`] commits the way
+//! back once the front end has confirmed, taken the state lock and, for a
+//! person, printed. A machine-readable result waits for the commit, so it
+//! reports the outcome.
 
 use std::path::Path;
 
@@ -22,6 +24,11 @@ use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv};
 pub enum Prepared {
     /// Not in a hidden session, so there is nothing to deactivate.
     NotHidden,
+    /// In the hidden root, but its session plan in `/run` cannot be read, so
+    /// the way back is unknown: refused before anything is asked or done.
+    /// Carries why the plan cannot be read. Only a power-off ends such a
+    /// session: a plain emergency finds no plan either, and does nothing.
+    WayBackUnknown(String),
     /// In a hidden session: ready to confirm, lock and leave.
     Ready(Box<ReadyDeactivation>),
 }
@@ -57,16 +64,26 @@ impl ReadyDeactivation {
 
 /// Prepare a deactivation: load the configuration (never refusing, since a
 /// broken config must not block the way back), build the manager and check that
-/// a hidden session is running.
+/// a hidden session with a way back is running.
 pub fn prepare(env: &RuntimeEnv, config_override: Option<&Path>) -> Prepared {
     let config = super::config::load_config_or_defaults(config_override).into_config();
     let state_path = config.state_file_path.clone();
     let manager =
         NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
-    if !manager.session_view().is_hidden() {
-        return Prepared::NotHidden;
+    let view = manager.session_view();
+    prepared(manager, view)
+}
+
+/// What a deactivation can do where the probe found the machine (`view`):
+/// only the hidden root with its plan has a way back to take.
+fn prepared(manager: NailsManager<RealFilesystem>, view: SessionView) -> Prepared {
+    match view {
+        SessionView::Hidden(_) => Prepared::Ready(Box::new(ReadyDeactivation { manager })),
+        SessionView::HiddenWithoutPlan(why) => Prepared::WayBackUnknown(why),
+        SessionView::Entering(_) | SessionView::Interrupted { .. } | SessionView::Decoy => {
+            Prepared::NotHidden
+        }
     }
-    Prepared::Ready(Box::new(ReadyDeactivation { manager }))
 }
 
 #[cfg(test)]
@@ -74,10 +91,8 @@ mod tests {
     use super::*;
     use crate::{Config, NailsManager, RealFilesystem, RuntimeEnv};
 
-    /// A [`ReadyDeactivation`] whose hidden volume and state file are under
-    /// `dir`. The live probe still reads the real machine, which is never a
-    /// hidden NAILS overlay root during the tests, so its view is the decoy.
-    fn ready_at(dir: &Path) -> ReadyDeactivation {
+    /// A manager whose hidden volume and state file are under `dir`.
+    fn manager_at(dir: &Path) -> NailsManager<RealFilesystem> {
         let hidden = dir.to_path_buf();
         let config = Config {
             hidden_volume_root: hidden.clone(),
@@ -86,8 +101,31 @@ mod tests {
             ..Config::test_default()
         };
         let state_path = config.state_file_path.clone();
-        let manager = NailsManager::new(RealFilesystem, config, state_path);
-        ReadyDeactivation { manager }
+        NailsManager::new(RealFilesystem, config, state_path)
+    }
+
+    /// A [`ReadyDeactivation`] whose hidden volume and state file are under
+    /// `dir`. The live probe still reads the real machine, which is never a
+    /// hidden NAILS overlay root during the tests, so its view is the decoy.
+    fn ready_at(dir: &Path) -> ReadyDeactivation {
+        ReadyDeactivation {
+            manager: manager_at(dir),
+        }
+    }
+
+    /// A session plan for the probe's view of the hidden root.
+    fn plan() -> Box<nails_teardown::whole_root::plan::Plan> {
+        use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
+        let json = serde_json::json!({
+            "version": PLAN_VERSION,
+            "hidden_root": "/mnt/data",
+            "upper": "/mnt/data/root/upper",
+            "work": "/mnt/data/root/work",
+            "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+            "decoy": {"init": "/sbin/init"},
+            "hidden": {"init": "/sbin/init"},
+        });
+        Box::new(Plan::from_json(&json.to_string()).expect("a minimal plan"))
     }
 
     #[test]
@@ -112,5 +150,39 @@ mod tests {
             matches!(prepare(&env, None), Prepared::NotHidden),
             "a non-hidden machine must prepare NotHidden"
         );
+    }
+
+    /// A hidden root whose plan cannot be read has no way back: it is refused
+    /// with the probe's reason before anything is asked, never handed out as
+    /// a deactivation that confirms, prints and only then fails.
+    #[test]
+    fn a_hidden_root_without_its_plan_is_refused_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let why = "no session plan in /run (upper /mnt/data/root/upper)";
+        match prepared(
+            manager_at(dir.path()),
+            SessionView::HiddenWithoutPlan(why.to_string()),
+        ) {
+            Prepared::WayBackUnknown(reason) => assert_eq!(reason, why),
+            Prepared::NotHidden => panic!("refused as not hidden"),
+            Prepared::Ready(_) => panic!("handed out a deactivation without a way back"),
+        }
+    }
+
+    /// Only the hidden root with its plan is ready to leave; the decoy, an
+    /// entry under way and an interrupted one have no session to end.
+    #[test]
+    fn only_the_hidden_root_with_its_plan_is_ready_to_leave() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = |view| matches!(prepared(manager_at(dir.path()), view), Prepared::Ready(_));
+        let not_hidden =
+            |view| matches!(prepared(manager_at(dir.path()), view), Prepared::NotHidden);
+        assert!(ready(SessionView::Hidden(plan())));
+        assert!(not_hidden(SessionView::Decoy));
+        assert!(not_hidden(SessionView::Entering(plan())));
+        assert!(not_hidden(SessionView::Interrupted {
+            plan: Some(plan()),
+            nextroot_mounted: true,
+        }));
     }
 }

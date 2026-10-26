@@ -52,10 +52,16 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
             format!("unmount failed: {}: {reason}", path.display()),
         )
         .with_hint("check if the overlay is in use and retry"),
+        // A plain emergency returns to the decoy only where it can prepare the
+        // return, as this way back could not: otherwise it powers off.
         NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone())
             .with_hint(format!(
-                "`{}` kills the hidden session and returns, or powers off with --poweroff",
-                nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Emergency)
+                "`{}` ends the session now: it returns to the decoy where it can prepare the \
+                 return and powers off where it cannot; `{}` always powers off",
+                nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Emergency),
+                nails_core::next_step::sudo_line(
+                    nails_core::next_step::NextStep::EmergencyPoweroff
+                )
             ))
             .with_next(NextStep::new("emergency")),
         other => ErrorBody::new("deactivation_failed", other.to_string())

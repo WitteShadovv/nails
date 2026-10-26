@@ -6,6 +6,7 @@ use crate::cli::args::DeactivateArgs;
 use crate::cli::output::test_support::{envelope, stdout_lines};
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::NailsError;
+use nails_core::app::deactivate::Prepared;
 use nails_core::session::{LeaveReport, LeaveTo};
 
 fn json() -> OutputSettings {
@@ -32,6 +33,9 @@ fn run_subprocess(case: &str) -> std::process::Output {
         .expect("failed to run deactivate subprocess test")
 }
 
+/// Why the probe found no way back in a hidden root without its plan.
+const WITHOUT_PLAN: &str = "no session plan in /run (upper /mnt/data/root/upper)";
+
 /// The error the way back returns when systemd refuses the soft-reboot.
 fn refused() -> NailsError {
     NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
@@ -48,6 +52,19 @@ fn subprocess_deactivate_entrypoint() {
         ascii: true,
         ..OutputSettings::default()
     };
+    if let Some(settings) = match case.as_str() {
+        "json-without-way-back" => Some(json()),
+        "human-without-way-back" => Some(ascii),
+        _ => None,
+    } {
+        // No -y: a prompt would refuse off a terminal with exit 2 first.
+        let status = super::deactivate_prepared(
+            &settings,
+            &DeactivateArgs::default(),
+            Prepared::WayBackUnknown(WITHOUT_PLAN.to_string()),
+        );
+        crate::cli::chokepoint::exit_process(status.code());
+    }
     let (settings, to, outcome) = match case.as_str() {
         "json-enqueued" => (json(), LeaveTo::Poweroff, Ok(LeaveReport::default())),
         "json-refused" => (json(), LeaveTo::Decoy, Err(refused())),
@@ -123,6 +140,51 @@ fn a_person_reads_the_result_before_the_way_back() {
         );
         assert_eq!(output.status.code(), Some(code), "{case}: {output:?}");
     }
+}
+
+/// In a hidden root without its plan there is no way back: under `--json`
+/// the one envelope is the refusal, before any prompt, with the power-off as
+/// the next step (a plain emergency finds no plan and does nothing).
+#[test]
+fn without_a_way_back_the_refusal_is_the_one_envelope() {
+    let output = run_subprocess("json-without-way-back");
+    let lines = stdout_lines(&output);
+    assert_eq!(lines.len(), 1, "one envelope: {output:?}");
+    let value = envelope("deactivate", &lines[0]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "invalid_state", "{value}");
+    assert_eq!(
+        value["error"]["next"]["command"], "emergency --poweroff",
+        "{value}"
+    );
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(WITHOUT_PLAN)),
+        "{value}"
+    );
+    assert!(value.get("data").is_none(), "{value}");
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
+}
+
+/// A person is told before anything is asked or printed as done: no prompt,
+/// no line that says the session is ending, only the error with the power-off.
+#[test]
+fn without_a_way_back_a_person_gets_the_refusal_and_no_prompt() {
+    use nails_core::next_step::{NextStep, sudo_line};
+    let output = run_subprocess("human-without-way-back");
+    assert!(stdout_lines(&output).is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "error: in the hidden root without a way back: {WITHOUT_PLAN}\n  Power off to end \
+             the session: `{}`",
+            sudo_line(NextStep::EmergencyPoweroff)
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Continue?"), "{stderr}");
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
 }
 
 #[test]
