@@ -382,7 +382,8 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     }
     // Without its masks the hidden systemd would swap onto, or mount read-write,
     // a decoy disk: never enter without them, nor without the generator masks,
-    // which keep it from mounting partitions the decoy's fstab does not list.
+    // which keep it from mounting the partitions the GPT auto-generator would
+    // find, or swapping onto them.
     let masked = runtime_units::mask_units(&env.run, &plan.masks)
         .map_err(|e| format!("could not mask decoy units: {e}"))
         .and_then(|_| {
