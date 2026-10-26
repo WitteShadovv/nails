@@ -81,15 +81,18 @@ normalizes to findings keyed by `(tool, path, field)`:
   sequence stays raised.
 - bulk_extractor — `path` is the feature type (`email`, `url`, ...); `field` is
   the feature value. This channel reads the whole image, free space included,
-  so it still sees a deleted-but-not-overwritten trace. Its carvers save whole
-  objects, named by the offset they were found at, so those are keyed by their
-  content instead: a carved login record (`utmp_carved`) by the fields it
-  records with its time and session left out, and any other carved object by
-  its content hash. Two outputs stay out of the verdict: `sqlite_carved`,
-  because the oracle's decoy VMs rewrite their Nix store database file at
-  every start and the images hold live and stale, partly overwritten copies
-  of it that no clean boot reproduces (the live database is read by its rows
-  instead), and `duplicates`, which lists repeated blocks by their offsets.
+  so it still sees a deleted but not yet overwritten trace, though only by the
+  features it records in it: deleted content that holds none is not seen
+  (`deleted_content` under [What it does not see](#what-it-does-not-see)).
+  Its carvers save whole objects, named by the offset they were found at, so
+  those are keyed by their content instead: a carved login record
+  (`utmp_carved`) by the fields it records with its time and session left
+  out, and any other carved object by its content hash. Two outputs stay out
+  of the verdict: `sqlite_carved`, because the oracle's decoy VMs rewrite
+  their Nix store database file at every start and the images hold live and
+  stale, partly overwritten copies of it that no clean boot reproduces (the
+  live database is read by its rows instead), and `duplicates`, which lists
+  repeated blocks by their offsets.
 - plaso — `path` is the event's source path; `field` is the event's data type,
   then, for a record, every field that says what it records (`name=value`).
   The record's timestamps, its offset, the file's inode and hash, and plaso's
@@ -175,6 +178,12 @@ class with its `kind`, and a clean summary line ends with the same classes
   stays the same.
 - `process_id_range`: a process id in the same power-of-two range as the one a
   fresh boot gives that process.
+- `deleted_content`: what lies outside the live tree, a file the session
+  deleted or what free space holds, unless it carries a feature bulk_extractor
+  records: a value (an e-mail address, a URL, a domain, ...) or an object one
+  of its carvers saves. The restore channel carves only the live tree, and
+  bulk_extractor reports the features it finds in free space, not the bytes
+  around them.
 - `skipped_carvers`: a database carved from free space (`sqlite_carved`, named
   in `feature_types`), unless its content carries an e-mail address, a URL or
   a domain the value recorders find.
@@ -272,9 +281,11 @@ widen into a blanket residue exemption.
   do not, so a value the baseline already holds can never stand in for the
   planted one. A control missing, or already in the baseline, makes the scan
   blind and fails the run — never `clean`. A run with no positive control also
-  fails: it cannot prove it sees residue at all. (This proves the channel that
-  reads free space sees a string planted there, the class a leaked-then-deleted
-  trace falls in, not that a format-aware parser understood a record.)
+  fails: it cannot prove it sees residue at all. (This proves that the channel
+  that reads free space sees an e-mail address planted there, as it would one
+  a leaked-then-deleted trace holds. It proves neither that a format-aware
+  parser understood a record nor that deleted content without such a feature
+  is seen.)
 - The **canary** is a reserved address planted on every image at an
   otherwise-uncovered path. Finding it proves the scan read the image's
   contents. The scan may rotate it per run (`ORACLE_SEED`) and pins whatever it

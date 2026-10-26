@@ -28,8 +28,10 @@ pub enum Tool {
     BtrfsRestore,
     /// `bulk_extractor`: a feature (an e-mail address, a URL, ...) or a
     /// login record carved from anywhere in the image, including free space
-    /// and stale extents — the channel that still sees a
-    /// deleted-but-not-overwritten trace.
+    /// and stale extents. It is the channel that still sees a deleted but not
+    /// yet overwritten trace, though only by the features it records in it:
+    /// deleted content without one is not seen
+    /// ([`Unseen::DeletedContent`](crate::Unseen::DeletedContent)).
     BulkExtractor,
     /// `plaso` / `log2timeline`: a timeline event parsed from a log or record,
     /// the format-aware channel that reads the *content* of a record rather

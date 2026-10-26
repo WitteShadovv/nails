@@ -6,12 +6,13 @@
 //!
 //! Most classes follow from how the channels key a finding and are the same on
 //! every run: no key holds a time, a file is keyed by its content and not its
-//! metadata, a process id by its power-of-two range, and some carvers' objects
-//! are left out. One class is this run's own: a file a plain reboot rewrites
-//! too is subtracted as noise whatever `after` holds there, so a session's
-//! write to it reads the same as the reboot's, unless a channel reads the
-//! file's records (plaso the login records of `wtmp`, the scan the rows of the
-//! Nix store database). The verdict lists those files by path.
+//! metadata, a process id by its power-of-two range, content outside the live
+//! tree by the features bulk_extractor records in it, and some carvers'
+//! objects are left out. One class is this run's own: a file a plain reboot
+//! rewrites too is subtracted as noise whatever `after` holds there, so a
+//! session's write to it reads the same as the reboot's, unless a channel
+//! reads the file's records (plaso the login records of `wtmp`, the scan the
+//! rows of the Nix store database). The verdict lists those files by path.
 
 use crate::carved::SKIPPED_CARVERS;
 use crate::model::{Finding, Scans, Tool};
@@ -32,6 +33,13 @@ pub enum Unseen {
     /// A process id in the same power-of-two range as the one a fresh boot
     /// gives that process: a record keeps a process id as its range.
     ProcessIdRange,
+    /// Content outside the live tree, a file the session deleted or what free
+    /// space holds, unless it carries a feature bulk_extractor records: a
+    /// value (an e-mail address, a URL, a domain, ...) or an object one of its
+    /// carvers saves. The restore channel carves only the live tree, and
+    /// bulk_extractor reports the features it finds in free space, not the
+    /// bytes around them.
+    DeletedContent,
     /// What these bulk_extractor carvers reconstruct, a database carved from
     /// free space, unless its content carries an e-mail address, a URL or a
     /// domain the value recorders find.
@@ -58,6 +66,9 @@ impl Unseen {
             Unseen::Timestamps => Some("timestamps".to_string()),
             Unseen::Metadata => Some("file metadata".to_string()),
             Unseen::ProcessIdRange => Some("process ids within one power-of-two range".to_string()),
+            Unseen::DeletedContent => {
+                Some("deleted content without a recorded feature".to_string())
+            }
             Unseen::SkippedCarvers { feature_types } => {
                 (!feature_types.is_empty()).then(|| feature_types.join(", "))
             }
@@ -85,6 +96,7 @@ pub(crate) fn classes(scans: &Scans, rewritten: &[&str]) -> Vec<Unseen> {
         Unseen::Timestamps,
         Unseen::Metadata,
         Unseen::ProcessIdRange,
+        Unseen::DeletedContent,
         Unseen::SkippedCarvers {
             feature_types: SKIPPED_CARVERS.iter().map(|t| (*t).to_string()).collect(),
         },
