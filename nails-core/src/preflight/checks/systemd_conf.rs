@@ -509,6 +509,16 @@ mod tests {
         );
     }
 
+    /// A run of line ends ends a single line only while no kind repeats in it
+    /// and no NUL has come first: `\r\n` ends one line, while `\n\n`, and a NUL
+    /// followed by another end, end two, the second of them empty.
+    #[test]
+    fn a_line_end_that_repeats_or_follows_a_nul_ends_another_line() {
+        assert_eq!(read_lines("a\r\nb"), ["a", "b"]);
+        assert_eq!(read_lines("a\n\nb"), ["a", "", "b"]);
+        assert_eq!(read_lines("a\0\nb"), ["a", "", "b"]);
+    }
+
     #[test]
     fn only_the_named_section_counts() {
         let (out, ok) = parse(
@@ -580,6 +590,7 @@ mod tests {
             "[Journal]\nStorage=persistent\n",
         );
         assert_eq!(values(root, "Storage"), vec!["persistent"]);
+        assert!(config_present(&RealFilesystem, root, "journald.conf"));
 
         write(
             root,
@@ -923,6 +934,24 @@ mod tests {
             atime(&path),
             before,
             "the byte fallback must open the decoy with O_NOATIME"
+        );
+    }
+
+    /// Only a file the filesystem read as invalid UTF-8 is read again, byte by
+    /// byte, from the disk. Any other failure is the filesystem's answer: a
+    /// configuration file that the in-memory test double does not hold reads
+    /// as missing even where the disk has a file at that path, so a check run
+    /// against the double never reads the host's own configuration.
+    #[test]
+    fn only_invalid_utf8_sends_the_read_to_the_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("journald.conf");
+        fs::write(&path, "[Journal]\nStorage=persistent\n").unwrap();
+
+        assert_eq!(read_config_text(&crate::MockFilesystem::new(), &path), None);
+        assert_eq!(
+            read_config_text(&RealFilesystem, &path).as_deref(),
+            Some("[Journal]\nStorage=persistent\n")
         );
     }
 }
