@@ -9,15 +9,16 @@
 //! It compares three images of one host — `before` the session, a clean
 //! `control` boot cycle, and `after` the session — by what the restore carve
 //! (`btrfs restore` or `debugfs rdump`), `bulk_extractor` and `plaso` recover
-//! from each: the files with what they hold, the records in them and the
-//! features carved from anywhere on the disk. A difference in `after`, a trace
-//! new in it, changed in it or gone from it, is a leak unless the clean control
-//! cycle shows the same change (scan noise) or a cited allowlist entry
-//! explains it. Three self-checks keep a clean verdict honest: planted
-//! positive controls must be detected (or the scan is blind), a coverage
-//! canary must be detected (or the scan did not read the image), and every
-//! analysis channel must report on every image (or the scan could not look
-//! through it).
+//! from each: the files with what they hold, the records in them, the rows of
+//! the Nix store database and the features carved from anywhere on the disk.
+//! A difference in `after`, a trace new in it, changed in it or gone from it,
+//! is a leak unless the clean control cycle shows the same change (scan noise)
+//! or a cited allowlist entry explains it. Three self-checks keep a clean
+//! verdict honest: planted positive controls must be detected (or the scan is
+//! blind), a coverage canary must be detected (or the scan did not read the
+//! image), and every analysis channel must report on every image (or the scan
+//! could not look through it). The verdict also names what it cannot see
+//! ([`unseen`]), so a clean one claims no more than its keys tell apart.
 //!
 //! The decision lives in [`verdict::scan_verdict`], a pure function unit-tested
 //! over synthetic findings. The [`scan`] parsers that feed it are lenient with
@@ -36,9 +37,11 @@
 pub mod carved;
 pub mod catalog;
 pub mod model;
+pub mod nix_db;
 pub mod plaso;
 mod residue;
 pub mod scan;
+pub mod unseen;
 pub mod verdict;
 
 #[cfg(test)]
@@ -52,6 +55,7 @@ pub use model::{
     AllowEntry, Allowlist, Canary, Change, Controls, Finding, ImageLabel, OraclePolicy,
     PositiveControl, Scans, Tool,
 };
+pub use unseen::Unseen;
 pub use verdict::{
     ControlResult, Counts, Explained, Failure, Status, Verdict, scan_verdict, verdict as decide,
 };
@@ -69,11 +73,14 @@ usage: nails-oracle <outputs-dir> [--allowlist FILE] [--controls FILE]
 
 Render a pass/fail forensic verdict over one scan's outputs/ tree.
 
-  <outputs-dir>     the scan's outputs/ directory (restore/, bulk_extractor/, plaso/)
+  <outputs-dir>     the scan's outputs/ directory (restore/, bulk_extractor/, plaso/,
+                    and nix_db/ when a restored tree holds the Nix store database)
   --allowlist FILE  cited allowlist JSON (default: ci/oracle/allowlist.json)
   --controls FILE   positive-control + canary JSON (default: ci/oracle/controls.json)
 
-Prints the verdict as JSON to stdout and a one-line summary to stderr.
+Prints the verdict as JSON to stdout and a one-line summary to stderr. The JSON
+lists the classes of change the verdict cannot see (unseen), and a clean summary
+ends with them.
 Exit codes: 0 clean, 1 fail (residue / blind or missing channel / canary / bad allowlist),
 2 usage or I/O error (an entry of the outputs tree it cannot read included).";
 

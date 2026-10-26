@@ -9,6 +9,7 @@
 //! ```text
 //! outputs/restore/<label>/...            restored file tree (btrfs restore, debugfs rdump)
 //! outputs/restore/<label>.sha256         a SHA-256 of every restored file
+//! outputs/nix_db/<label>.json            the ValidPaths rows of the restored Nix store database
 //! outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 //! outputs/bulk_extractor/<label>/*_carved/...  the objects its carvers saved
 //! outputs/plaso/<label>.jsonl            plaso timeline, one JSON event a line
@@ -17,7 +18,9 @@
 //! `run-scan.sh` hashes each restored file before it empties it to save disk,
 //! into `<label>.sha256` (`sha256sum --zero`: `<hex>  ./<path>`, each record
 //! ending in a NUL), so the restore channel compares what a file holds, not
-//! only that it exists.
+//! only that it exists. Before it empties a restored Nix store database, it
+//! dumps the database's rows into `nix_db/<label>.json` (`sqlite3 -json`; see
+//! [`crate::nix_db`]), since every boot rewrites that file.
 //!
 //! These parsers are lenient with output they cannot parse (an unparseable
 //! line is skipped) and with a tool that did not run (a missing subtree yields
@@ -25,16 +28,18 @@
 //! a channel that yields no finding for an image fails the run in
 //! [`crate::verdict::scan_verdict`]. What they never pass over is output they
 //! cannot read, a directory or an entry they lack the rights to, a restored
-//! file without its digest or a carved record that is not one: any of those is
-//! an I/O error and stops the run, since skipping it would hide whatever it
-//! held. Rigor lives in [`crate::verdict`], which is tested over synthetic
-//! findings, not over these files. The pure per-format helpers
-//! ([`bulk_extractor_findings`], [`parse_digest_manifest`],
-//! [`crate::plaso::plaso_finding`], [`crate::carved::utmp_record_key`]) are
-//! unit-tested without touching the filesystem.
+//! file without its digest, a carved record that is not one, or a restored Nix
+//! store database without its rows: any of those is an I/O error and stops the
+//! run, since skipping it would hide whatever it held. Rigor lives in
+//! [`crate::verdict`], which is tested over synthetic findings, not over these
+//! files. The pure per-format helpers ([`bulk_extractor_findings`],
+//! [`parse_digest_manifest`], [`crate::plaso::plaso_finding`],
+//! [`crate::carved::utmp_record_key`], [`crate::nix_db::nix_db_findings`])
+//! are unit-tested without touching the filesystem.
 
 use crate::carved::{self, Recorder};
 use crate::model::{Finding, ImageLabel, Scans, Tool};
+use crate::nix_db::{NIX_DB_PATH, nix_db_findings};
 use crate::plaso::{is_journal_file, plaso_finding};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -58,7 +63,7 @@ pub fn scan_all(outputs: &Path) -> io::Result<Scans> {
     })
 }
 
-/// Normalize one image's findings across all three tools.
+/// Normalize one image's findings across every tool.
 fn scan_image(outputs: &Path, label: ImageLabel) -> io::Result<BTreeSet<Finding>> {
     let mut findings = BTreeSet::new();
     let name = label.dir_name();
@@ -66,6 +71,11 @@ fn scan_image(outputs: &Path, label: ImageLabel) -> io::Result<BTreeSet<Finding>
     scan_restore(
         &restore.join(name),
         &restore.join(format!("{name}.sha256")),
+        &mut findings,
+    )?;
+    scan_nix_db(
+        &restore.join(name),
+        &outputs.join("nix_db").join(format!("{name}.json")),
         &mut findings,
     )?;
     scan_bulk_extractor(&outputs.join("bulk_extractor").join(name), &mut findings)?;
@@ -193,6 +203,37 @@ pub fn parse_digest_manifest(contents: &[u8]) -> Result<BTreeMap<String, String>
         }
     }
     Ok(digests)
+}
+
+/// Read the rows of the Nix store database the restored tree at `root` holds,
+/// from the dump `run-scan.sh` wrote of it (see [`crate::nix_db`]). The dump is
+/// there exactly when the tree holds the database as a file: a database
+/// without its rows would leave unread the one file every boot rewrites, and
+/// rows of a database the tree lacks are not this carve's, so either is an
+/// error. A tree with no database, a decoy that is not a Nix system or a carve
+/// that did not run, yields nothing.
+fn scan_nix_db(root: &Path, dump: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()> {
+    let db = root.join(NIX_DB_PATH.trim_start_matches('/'));
+    let holds_db = present(&db)? && fs::symlink_metadata(&db).map_err(|e| at(&db, e))?.is_file();
+    match (holds_db, present(dump)?) {
+        (false, false) => Ok(()),
+        (true, false) => Err(invalid(format!(
+            "{} holds the Nix store database {NIX_DB_PATH}, but its rows, {}, are missing",
+            root.display(),
+            dump.display()
+        ))),
+        (false, true) => Err(invalid(format!(
+            "{}: rows of a Nix store database {} does not hold",
+            dump.display(),
+            root.display()
+        ))),
+        (true, true) => {
+            let rows = nix_db_findings(&read_text(dump)?)
+                .map_err(|message| invalid(format!("{}: {message}", dump.display())))?;
+            out.extend(rows);
+            Ok(())
+        }
+    }
 }
 
 /// Map a file under the restore root to the absolute on-image path it stands

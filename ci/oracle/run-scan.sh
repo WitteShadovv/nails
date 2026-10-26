@@ -8,11 +8,12 @@
 #
 # Streaming, so peak disk is one image's worth and not the sum of all three: for
 # each label in turn it builds that one image, runs the restore carve (then
-# records a SHA-256 of every recovered file and empties it, so the verdict
-# compares what each file held without the contents taking up disk),
-# bulk_extractor and plaso over it, and deletes the image and the bulky plaso
-# store before moving to the next label. The small per-tool outputs for
-# finished labels stay; nothing bulky accumulates.
+# records a SHA-256 of every recovered file, dumps the rows of a recovered Nix
+# store database, and empties every file, so the verdict compares what each
+# file held without the contents taking up disk), bulk_extractor and plaso over
+# it, and deletes the image and the bulky plaso store before moving to the next
+# label. The small per-tool outputs for finished labels stay; nothing bulky
+# accumulates.
 #
 # A scan that could not look never passes: a carve that recovers nothing or
 # reports an error stops the run, a plaso timeline with no event for the
@@ -45,8 +46,9 @@
 # git + the bulk_extractor build chain, and docker (for the pinned plaso
 # container; without it the verdict fails on the missing plaso channel);
 # pre-built-image mode also needs sleuthkit (mmls) and e2fsprogs (debugfs) plus
-# util-linux (blkid, losetup). The verdict binary is found at $ORACLE_BIN, or
-# target/release/nails-oracle under the repository root. No KVM.
+# util-linux (blkid, losetup), and an image that holds a Nix store database
+# needs sqlite3 to read its rows. The verdict binary is found at $ORACLE_BIN,
+# or target/release/nails-oracle under the repository root. No KVM.
 set -euo pipefail
 
 # --- Pins (verbatim from the image-analysis feasibility probe). -------------
@@ -73,7 +75,7 @@ build="$work/build"
 # Pre-create the per-tool output parents, but never the bulk_extractor per-label
 # subdirectory: bulk_extractor creates its own output directory and refuses a
 # non-empty one.
-mkdir -p "$images" "$outputs/restore" "$outputs/bulk_extractor" "$outputs/plaso" "$build"
+mkdir -p "$images" "$outputs/restore" "$outputs/nix_db" "$outputs/bulk_extractor" "$outputs/plaso" "$build"
 
 [ "$(id -u)" -eq 0 ] || { echo "run-scan: must run as root (loop mounts)" >&2; exit 1; }
 for t in git make btrfs mkfs.btrfs truncate find sort xargs sha256sum; do
@@ -326,6 +328,35 @@ carve_restore() {
   esac
 }
 
+# --- The Nix store database's rows. -----------------------------------------
+# A Nix decoy registers its store paths at every start, which rewrites pages of
+# the store database, so its digest differs on every image and the verdict can
+# only call the file noise. Its rows do not change with a boot: dump them, so
+# that a store path the session registered or removed is a change of its own
+# (the verdict's nix_db channel; see ci/oracle/README.md).
+nix_db=/nix/var/nix/db/db.sqlite
+
+# dump_nix_db <restored-tree> <dest>: write the ValidPaths rows of the store
+# database in the restored tree to <dest> as sqlite3 -json prints them (nothing
+# at all for no rows). sqlite3 reads a copy, with the write-ahead log beside it
+# so rows not yet checkpointed into the database are read too, and never the
+# restored files themselves, which are already hashed. A database it cannot
+# read stops the run: its rows are the only view of that file.
+dump_nix_db() {
+  local tree=$1 dest=$2 copy="$work/nix-db"
+  command -v sqlite3 >/dev/null \
+    || { echo "run-scan: $tree holds the Nix store database $nix_db, and reading its rows needs sqlite3; failing closed" >&2; exit 1; }
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp "$tree$nix_db" "$copy/db.sqlite"
+  if [ -f "$tree$nix_db-wal" ]; then cp "$tree$nix_db-wal" "$copy/db.sqlite-wal"; fi
+  if ! sqlite3 -bail -json "$copy/db.sqlite" 'SELECT * FROM ValidPaths ORDER BY path' >"$dest"; then
+    echo "run-scan: sqlite3 could not read the rows of the Nix store database in $tree; failing closed" >&2
+    exit 1
+  fi
+  rm -rf "$copy"
+}
+
 # --- Positive-control injection (real-image mode only). ---------------------
 # Before scanning the 'after' image, copy after.raw to a sparse WORKING COPY and
 # write each positive-control sentinel into its own zero-filled free block of
@@ -424,6 +455,13 @@ for label in "${LABELS[@]}"; do
     xargs -0 -r sha256sum --zero --) >"$dest.sha256"; then
     echo "run-scan: could not hash the files the restore carve of $img recovered; failing closed" >&2
     exit 1
+  fi
+  # The rows of the store database go to outputs/nix_db/<label>.json, exactly
+  # when the tree holds the database as a file; nails-oracle stops on one
+  # without the other.
+  rm -f "$outputs/nix_db/$label.json"
+  if [ -f "$dest$nix_db" ] && [ ! -L "$dest$nix_db" ]; then
+    dump_nix_db "$dest" "$outputs/nix_db/$label.json"
   fi
   find "$dest" -type f -exec truncate -s 0 {} +
 

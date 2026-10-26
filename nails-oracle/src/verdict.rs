@@ -28,8 +28,11 @@
 //! The run is [`Status::Clean`] only when all six hold. [`verdict`] decides the
 //! first five over the findings alone, so a test world needs only the findings
 //! its rule weighs; [`scan_verdict`] adds the sixth and is the decision the CLI
-//! renders. Everything here is a pure function of its inputs, so the whole
-//! engine is unit-tested in `crate::tests` over synthetic findings.
+//! renders. Every verdict also names the classes of change it cannot see (see
+//! [`crate::unseen`]), and a clean summary line ends with them, so a clean
+//! verdict never claims more than its keys tell apart. Everything here is a
+//! pure function of its inputs, so the whole engine is unit-tested in
+//! `crate::tests` over synthetic findings.
 
 use crate::catalog::Catalog;
 use crate::model::{
@@ -37,6 +40,7 @@ use crate::model::{
     Scans, Tool,
 };
 use crate::residue::compute_residue;
+use crate::unseen::{self, Unseen};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -204,6 +208,9 @@ pub struct Verdict {
     pub positive_controls: Vec<ControlResult>,
     /// Whether the coverage canary was detected.
     pub canary_detected: bool,
+    /// The classes of change this verdict cannot see, the files of this run a
+    /// plain reboot rewrites among them: what a clean verdict does not cover.
+    pub unseen: Vec<Unseen>,
 }
 
 impl Verdict {
@@ -560,12 +567,23 @@ fn check_canary(after: &BTreeSet<Finding>, canary: &Canary) -> (bool, Option<Fai
     (false, Some(failure))
 }
 
-/// Render the one-line human summary.
-fn summarize(status: Status, blind: bool, counts: &Counts, failures: usize) -> String {
+/// Render the one-line human summary. A clean line ends with what the verdict
+/// cannot see.
+fn summarize(
+    status: Status,
+    blind: bool,
+    counts: &Counts,
+    failures: usize,
+    unseen: &[Unseen],
+) -> String {
     if status == Status::Clean {
         return format!(
-            "CLEAN: {} residue ({} noise subtracted, {} cited, {} self-check)",
-            counts.residue, counts.noise_subtracted, counts.explained, counts.self_checks
+            "CLEAN: {} residue ({} noise subtracted, {} cited, {} self-check){}",
+            counts.residue,
+            counts.noise_subtracted,
+            counts.explained,
+            counts.self_checks,
+            unseen::summary_suffix(unseen)
         );
     }
     let marker = if blind { " (BLIND)" } else { "" };
@@ -585,6 +603,7 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
     failures.extend(self_check_failures);
 
     let residue = compute_residue(scans);
+    let unseen = unseen::classes(scans, &residue.rewritten);
     let (explained, unexplained, self_checks) =
         partition_residue(&residue.items, &valid, &checks, catalog);
     let (control_results, control_failures, blind) =
@@ -615,7 +634,7 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
         explained: explained.len(),
         unexplained: unexplained_count,
     };
-    let summary = summarize(status, blind, &counts, failures.len());
+    let summary = summarize(status, blind, &counts, failures.len(), &unseen);
     Verdict {
         status,
         blind,
@@ -625,16 +644,18 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
         explained,
         positive_controls: control_results,
         canary_detected,
+        unseen,
     }
 }
 
-/// One failure per analysis channel that reported no finding for an image,
-/// image by image in [`ImageLabel::ALL`] order, then channel by channel.
+/// One failure per required analysis channel that reported no finding for an
+/// image, image by image in [`ImageLabel::ALL`] order, then channel by
+/// channel.
 fn missing_channels(scans: &Scans) -> Vec<Failure> {
     let mut failures = Vec::new();
     for label in ImageLabel::ALL {
         let findings = scans.image(label);
-        for tool in Tool::ALL {
+        for tool in Tool::REQUIRED {
             if !findings.iter().any(|f| f.tool == tool) {
                 failures.push(Failure::ChannelMissing {
                     tool,
@@ -647,15 +668,18 @@ fn missing_channels(scans: &Scans) -> Vec<Failure> {
 }
 
 /// Decide the verdict for a real scan: [`verdict`], and the run also fails,
-/// blind, for every analysis channel that reported nothing for an image. Every
-/// channel finds something on a real image (the restore channel the tree, plaso
-/// a file's timestamps, bulk_extractor the canary), so a silent one did not
-/// run, failed, or read nothing, and the scan could not look. A channel that
-/// reports did not necessarily read the image, though: plaso still dates an
-/// image whose file system it cannot open, as one opaque file at the same path
-/// on every image. So `ci/oracle/run-scan.sh` keeps a plaso timeline only when
-/// it has an event for the canary's file, and drops the channel otherwise,
-/// which this rule then fails. This is the decision the CLI renders.
+/// blind, for every required analysis channel ([`Tool::REQUIRED`]) that
+/// reported nothing for an image. Every such channel finds something on a real
+/// image (the restore channel the tree, plaso a file's timestamps,
+/// bulk_extractor the canary), so a silent one did not run, failed, or read
+/// nothing, and the scan could not look. The Nix store database's rows are
+/// held to their database instead: the scan stops when the restore carve holds
+/// it and they are missing. A channel that reports did not necessarily read
+/// the image, though: plaso still dates an image whose file system it cannot
+/// open, as one opaque file at the same path on every image. So
+/// `ci/oracle/run-scan.sh` keeps a plaso timeline only when it has an event
+/// for the canary's file, and drops the channel otherwise, which this rule
+/// then fails. This is the decision the CLI renders.
 pub fn scan_verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdict {
     let mut decided = verdict(scans, policy, catalog);
     let missing = missing_channels(scans);
@@ -668,6 +692,7 @@ pub fn scan_verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> 
             decided.blind,
             &decided.counts,
             decided.failures.len(),
+            &decided.unseen,
         );
     }
     decided

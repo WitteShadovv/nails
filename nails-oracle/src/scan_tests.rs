@@ -703,6 +703,187 @@ fn the_cli_fails_a_scan_whose_plaso_channel_was_dropped() {
     assert!(err.contains("after.sha256"), "{err}");
 }
 
+// --- the Nix store database's rows -------------------------------------------
+
+/// One `ValidPaths` row as `sqlite3 -json` prints it, registering
+/// `store_path`.
+fn store_row_json(id: u32, store_path: &str) -> String {
+    format!(
+        r#"{{"id":{id},"path":"{store_path}","hash":"sha256:00","registrationTime":{id},"deriver":null,"narSize":1,"ultimate":null,"sigs":null,"ca":null}}"#
+    )
+}
+
+/// Restore `db_bytes` as the Nix store database of the tree at `root`, and
+/// write `rows` as its dump at `dump` unless it is `None`.
+fn restore_store_database(root: &Path, db_bytes: &[u8], dump: &Path, rows: Option<&[&str]>) {
+    let db = root.join(NIX_DB_PATH.trim_start_matches('/'));
+    fs::create_dir_all(db.parent().expect("parent")).expect("db dir");
+    fs::write(&db, db_bytes).expect("db file");
+    if let Some(rows) = rows {
+        fs::create_dir_all(dump.parent().expect("parent")).expect("dump dir");
+        let rows: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, path)| store_row_json(u32::try_from(i).expect("few rows"), path))
+            .collect();
+        fs::write(dump, format!("[{}]\n", rows.join(",\n"))).expect("dump");
+    }
+}
+
+/// The finding of the row that registers `store_path`.
+fn store_row(store_path: &str) -> Finding {
+    Finding::new(
+        Tool::NixDb,
+        NIX_DB_PATH,
+        format!("ValidPaths hash=sha256:00 narSize=1 path={store_path}"),
+    )
+}
+
+#[test]
+fn the_rows_of_a_restored_nix_store_database_are_read() {
+    // The rows `run-scan.sh` dumped are findings of their own channel, next to
+    // the database file's restore entry.
+    let dir = TmpDir::new();
+    let outputs = dir.path().join("outputs");
+    build_before_outputs(&outputs);
+    let root = outputs.join("restore").join("before");
+    let dump = outputs.join("nix_db").join("before.json");
+    restore_store_database(
+        &root,
+        b"SQLite format 3",
+        &dump,
+        Some(&["/nix/store/a-decoy", "/nix/store/b-decoy"]),
+    );
+    write_manifest(&root);
+
+    let found = scan_image(&outputs, ImageLabel::Before).expect("scans");
+    assert!(
+        found.contains(&store_row("/nix/store/a-decoy")),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&store_row("/nix/store/b-decoy")),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&restored_file(NIX_DB_PATH, b"SQLite format 3")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_restored_nix_store_database_and_its_rows_go_together() {
+    // A database without its rows would leave the one file every boot
+    // rewrites unread; rows without the database are not this carve's; rows
+    // that are not sqlite3's are not the dump. Each stops the scan.
+    let dir = TmpDir::new();
+    let root = dir.path().join("restore").join("after");
+    let dump = dir.path().join("nix_db").join("after.json");
+    fs::create_dir_all(&root).expect("restore dir");
+    let mut out = BTreeSet::new();
+    scan_nix_db(&root, &dump, &mut out).expect("no database, no rows: nothing to read");
+    assert!(out.is_empty());
+
+    restore_store_database(&root, b"db", &dump, None);
+    let err = scan_nix_db(&root, &dump, &mut out).expect_err("a database without its rows");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("after.json"), "{err}");
+
+    fs::create_dir_all(dump.parent().expect("parent")).expect("dump dir");
+    fs::write(&dump, "not the rows").expect("dump");
+    let err = scan_nix_db(&root, &dump, &mut out).expect_err("rows that are not sqlite3's");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+    fs::remove_file(root.join(NIX_DB_PATH.trim_start_matches('/'))).expect("remove");
+    fs::write(&dump, "").expect("dump");
+    let err = scan_nix_db(&root, &dump, &mut out).expect_err("rows without a database");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(out.is_empty());
+}
+
+/// Write a complete outputs tree for the three images, every channel
+/// reporting, with the Nix store database restored on each: its file holds
+/// another digest on every image, as every boot rewrites it, and its rows are
+/// `rows` plus, for `after`, `after_rows`. Returns the CLI arguments that
+/// render its verdict.
+fn store_database_world(dir: &Path, rows: &[&str], after_rows: &[&str]) -> Vec<String> {
+    let outputs = dir.join("outputs");
+    for label in ImageLabel::ALL {
+        let name = label.dir_name();
+        let root = outputs.join("restore").join(name);
+        fs::create_dir_all(root.join("etc")).expect("restore dir");
+        fs::write(root.join("etc").join("hostname"), b"").expect("restore file");
+        let mut registered = rows.to_vec();
+        if label == ImageLabel::After {
+            registered.extend(after_rows);
+        }
+        restore_store_database(
+            &root,
+            name.as_bytes(),
+            &outputs.join("nix_db").join(format!("{name}.json")),
+            Some(&registered),
+        );
+        write_manifest(&root);
+        let be = outputs.join("bulk_extractor").join(name);
+        fs::create_dir_all(&be).expect("bulk_extractor dir");
+        let mut emails = String::from("4096\tcanary@oracle.example\tctx\n");
+        if label == ImageLabel::After {
+            emails.push_str("8192\tplanted@oracle.example\tctx\n");
+        }
+        fs::write(be.join("email.txt"), emails).expect("feature file");
+        let plaso = outputs.join("plaso");
+        fs::create_dir_all(&plaso).expect("plaso dir");
+        fs::write(
+            plaso.join(format!("{name}.jsonl")),
+            "{\"path\":\"/etc/hostname\",\"data_type\":\"fs:stat\"}\n",
+        )
+        .expect("plaso file");
+    }
+    let allowlist = dir.join("allowlist.json");
+    fs::write(&allowlist, r#"{"entries":[]}"#).expect("allowlist file");
+    let controls = dir.join("controls.json");
+    fs::write(
+        &controls,
+        r#"{
+          "positive_controls": [{"name": "planted", "tool": "bulk_extractor",
+                                 "path": "email", "field": "planted@oracle.example"}],
+          "canary": {"tool": "bulk_extractor", "path": "email",
+                     "field": "canary@oracle.example"}
+        }"#,
+    )
+    .expect("controls file");
+    vec![
+        outputs.display().to_string(),
+        "--allowlist".to_string(),
+        allowlist.display().to_string(),
+        "--controls".to_string(),
+        controls.display().to_string(),
+    ]
+}
+
+#[test]
+fn the_cli_fails_a_store_path_registered_in_the_database_every_boot_rewrites() {
+    // The database file differs on every image, so its restore entry is
+    // noise whatever after holds; a store path the session registered is a
+    // row only after has, and fails the run.
+    let decoy = ["/nix/store/a-decoy-system"];
+    let dir = TmpDir::new();
+    let args = store_database_world(dir.path(), &decoy, &[]);
+    assert_eq!(
+        crate::run_inner(&args),
+        Ok(0),
+        "the decoy's own rows: clean"
+    );
+
+    let dir = TmpDir::new();
+    let args = store_database_world(dir.path(), &decoy, &["/nix/store/b-hidden-package"]);
+    assert_eq!(
+        crate::run_inner(&args),
+        Ok(1),
+        "a row new in after: residue"
+    );
+}
+
 #[test]
 fn load_allowlist_parses_a_file_and_errors_on_a_missing_one() {
     // load_allowlist must actually read and deserialize the file, and must

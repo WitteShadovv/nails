@@ -10,9 +10,12 @@
 //! channel holds one entry per path ([`Tool::one_entry_per_path`]), so it is
 //! compared path by path: a path whose entry `after` holds differently is
 //! residue when `before` and the control cycle agree on it, and noise when the
-//! control cycle changed it too, a file a plain reboot rewrites. The records and
-//! features of the other channels have no such slot: each one is its own trace,
-//! subtracted only by the same record or value in the control cycle.
+//! control cycle changed it too, a file a plain reboot rewrites. Such a path is
+//! kept apart when `after` holds there what neither of the others does: the
+//! verdict could not judge that content and names the path as unseen (see
+//! [`crate::unseen`]). The records and features of the other channels have no
+//! such slot: each one is its own trace, subtracted only by the same record or
+//! value in the control cycle.
 
 use crate::model::{Change, Finding, Scans, Tool};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +28,10 @@ pub(crate) struct Residue<'a> {
     pub noise_subtracted: usize,
     /// The residue, each finding with how it changed, in a fixed order.
     pub items: Vec<(&'a Finding, Change)>,
+    /// The restore paths subtracted as noise although `after` holds there what
+    /// neither `before` nor the control cycle does, in path order: files a
+    /// plain reboot rewrites, whose content in `after` nothing explains.
+    pub rewritten: Vec<&'a str>,
 }
 
 /// Compute the residue of `scans`.
@@ -33,6 +40,7 @@ pub(crate) fn compute_residue(scans: &Scans) -> Residue<'_> {
         candidate: 0,
         noise_subtracted: 0,
         items: Vec::new(),
+        rewritten: Vec::new(),
     };
     records_residue(scans, &mut residue);
     entries_residue(scans, &mut residue);
@@ -86,7 +94,8 @@ fn entries(set: &BTreeSet<Finding>) -> BTreeMap<(Tool, &str), BTreeSet<&Finding>
 /// Compare the one-entry-per-path channels path by path. A path that differs
 /// counts once, as noise when the control cycle changed it too, and otherwise
 /// as residue: the value new in `after` (added at a path `before` lacked, or
-/// changed), or the value `after` lost.
+/// changed), or the value `after` lost. A noise path where `after` matches
+/// neither `before` nor the control cycle is also recorded as rewritten.
 fn entries_residue<'a>(scans: &'a Scans, residue: &mut Residue<'a>) {
     let none = BTreeSet::new();
     let before = entries(&scans.before);
@@ -106,6 +115,9 @@ fn entries_residue<'a>(scans: &'a Scans, residue: &mut Residue<'a>) {
         }
         if b != c {
             residue.noise_subtracted += 1;
+            if a != c {
+                residue.rewritten.push(path.1);
+            }
             continue;
         }
         let new: Vec<&Finding> = a.difference(b).copied().collect();

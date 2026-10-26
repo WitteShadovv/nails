@@ -24,7 +24,10 @@
 //!   missing or already in the baseline, the canary not detected) and is
 //!   clean exactly when there are none; and
 //! - (d) a world built to be clean comes out clean, and the same world with
-//!   one uncoverable finding new in `after` fails with exactly that leak.
+//!   one uncoverable finding new in `after` fails with exactly that leak; and
+//! - (e) the files a reboot rewrites that the verdict names as unseen are the
+//!   restore paths whose `after` values neither `before` nor the control
+//!   cycle holds while those two differ, unless a record of the file is read.
 //!
 //! A random policy nearly always fails on something, so (d) is the property
 //! that exercises a clean verdict and the rule that a single leak fails it.
@@ -34,6 +37,7 @@ use crate::model::{
     AllowEntry, Allowlist, Canary, Change, Controls, Finding, OraclePolicy, PositiveControl, Scans,
     Tool,
 };
+use crate::unseen::Unseen;
 use crate::verdict::{self, ControlResult, Counts, Failure, Status, Verdict};
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -262,16 +266,18 @@ fn leak_pool() -> Vec<Finding> {
 }
 
 /// The findings the random images draw from: a baseline file, a noise file,
-/// two contents of one file, a finding each valid entry reaches, the planted
-/// self-checks and the leaks. Small, so three images drawn from it overlap and
-/// carried baselines, subtracted noise, changes, removals and surviving
-/// residue all occur.
+/// two contents of one file and of a file whose records plaso reads, a finding
+/// each valid entry reaches, the planted self-checks and the leaks. Small, so
+/// three images drawn from it overlap and carried baselines, subtracted
+/// noise, changes, removals and surviving residue all occur.
 fn finding_pool() -> Vec<Finding> {
     let mut pool = vec![
         restore("/etc/hostname"),
         restore("/var/log/lastlog"),
         restore_holding("/etc/shadow", "sha256:11"),
         restore_holding("/etc/shadow", "sha256:22"),
+        restore_holding("/var/log/wtmp", "sha256:11"),
+        restore_holding("/var/log/wtmp", "sha256:22"),
         restore(CLOCK),
         restore_holding(CLOCK, "sha256:cc"),
         restore(STAMP),
@@ -398,6 +404,40 @@ fn residue_of(scans: &Scans) -> (BTreeSet<(Finding, Change)>, usize) {
         }
     }
     (residue, noise)
+}
+
+/// The restore paths the verdict must name as files a reboot rewrites, in path
+/// order: `before` and the control cycle hold different values there and
+/// `after` holds values neither does, and no image carries a record read out
+/// of the file (a plaso event other than its `fs:` ones, or a database row).
+fn rewritten_of(scans: &Scans) -> Vec<String> {
+    let read: BTreeSet<&str> = [&scans.before, &scans.control, &scans.after]
+        .into_iter()
+        .flatten()
+        .filter(|f| match f.tool {
+            Tool::Plaso => !f.field.starts_with("fs:"),
+            Tool::NixDb => true,
+            Tool::BtrfsRestore | Tool::BulkExtractor => false,
+        })
+        .map(|f| f.path.as_str())
+        .collect();
+    let (b, c, a) = (
+        restore_values(&scans.before),
+        restore_values(&scans.control),
+        restore_values(&scans.after),
+    );
+    let none = BTreeSet::new();
+    let paths: BTreeSet<&String> = b.keys().chain(c.keys()).chain(a.keys()).collect();
+    paths
+        .into_iter()
+        .filter(|path| {
+            let vb = b.get(*path).unwrap_or(&none);
+            let vc = c.get(*path).unwrap_or(&none);
+            let va = a.get(*path).unwrap_or(&none);
+            vb != vc && va != vb && va != vc && !read.contains(path.as_str())
+        })
+        .cloned()
+        .collect()
 }
 
 /// The verdict one run must get.
@@ -805,6 +845,22 @@ proptest! {
         prop_assert_eq!(&v.positive_controls, &want.control_results);
         prop_assert_eq!(v.blind, want.blind);
         prop_assert_eq!(v.canary_detected, want.canary_detected);
+    }
+
+    /// (e) The verdict names as unseen exactly the files a reboot rewrites
+    /// whose `after` content it could not judge and whose records no channel
+    /// reads, worked out here from the images.
+    #[test]
+    fn the_files_a_reboot_rewrites_are_named_as_unseen(
+        scans in scans_strategy(),
+        policy in policy_strategy(),
+    ) {
+        let v = decide(&scans, &policy);
+        let named = v.unseen.iter().find_map(|class| match class {
+            Unseen::RebootRewritten { paths } => Some(paths.clone()),
+            _ => None,
+        });
+        prop_assert_eq!(named, Some(rewritten_of(&scans)));
     }
 
     /// (d) A world built to be clean comes out clean, with the expected counts,

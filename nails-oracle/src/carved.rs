@@ -36,19 +36,27 @@ pub enum Recorder {
     /// and on the oracle's decoy images the Nix store database changes on every
     /// boot, so `after` holds live and stale, partly overwritten copies of it
     /// whose bytes no clean boot reproduces: keyed by hash they never subtract,
-    /// and a database has no record layout this scan parses. A database the
-    /// session leaves is still seen by its path and digest when it is a live
-    /// file, and by the value recorders (its URLs, e-mail addresses and
-    /// domains) wherever it sits. `duplicates` lists blocks that repeat by
-    /// their offsets, which say where data sits, not what it is.
+    /// and a carved database has no record layout this scan parses. A database
+    /// the session leaves is still seen by its path and digest when it is a
+    /// live file, the live Nix store database by its rows (see
+    /// [`crate::nix_db`]), and any database by the value recorders (its URLs,
+    /// e-mail addresses and domains) wherever it sits; the verdict names the
+    /// rest as unseen ([`SKIPPED_CARVERS`]). `duplicates` lists blocks that
+    /// repeat by their offsets, which say where data sits, not what it is.
     Skipped,
 }
+
+/// The carvers whose objects the verdict leaves out (see
+/// [`Recorder::Skipped`]): what they reconstruct is a class of trace the
+/// verdict cannot see, so it names them.
+pub const SKIPPED_CARVERS: [&str; 1] = ["sqlite_carved"];
 
 /// The way the scan reads the feature file of `feature_type`.
 pub fn recorder(feature_type: &str) -> Recorder {
     match feature_type {
         "utmp_carved" => Recorder::LoginRecords,
-        "sqlite_carved" | "duplicates" => Recorder::Skipped,
+        "duplicates" => Recorder::Skipped,
+        skipped if SKIPPED_CARVERS.contains(&skipped) => Recorder::Skipped,
         other if other.ends_with("_carved") => Recorder::CarvedObjects,
         _ => Recorder::Values,
     }
