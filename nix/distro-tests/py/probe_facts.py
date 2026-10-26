@@ -79,6 +79,8 @@ STORAGE_VALUES = ("persistent", "volatile", "none", "auto")
 # default, auto before systemd 259 and persistent from 259 on, unless the
 # vendor file documents another one in a commented-out Storage= (a
 # distribution that kept auto). A comment in any other file counts for nothing.
+# A systemd whose version cannot be read gets persistent, whatever the
+# credential and the vendor file say: NAILS fails closed to it.
 STORAGE_CREDENTIAL = "/run/credentials/systemd-journald.service/journal.storage"
 STORAGE_CREDENTIAL_SINCE = 256
 VENDOR_JOURNALD_CONF = "/usr/lib/systemd/journald.conf"
@@ -652,6 +654,18 @@ def vendor_hint(text: str | None) -> str | None:
     return hint
 
 
+def built_in_default(major: int | None, hint: str | None) -> str:
+    """journald's built-in ``Storage=`` default under systemd ``major``, as
+    nails-core's ``built_in_default`` reads it: ``auto`` before 259, and from
+    259 the :func:`vendor_hint`, or ``persistent``. A version that cannot be
+    read gets ``persistent``, which NAILS fails closed to."""
+    if major is None:
+        return "persistent"
+    if major < PERSISTENT_DEFAULT_SINCE:
+        return "auto"
+    return hint or "persistent"
+
+
 def parse_journald(
     config: str | None,
     vendor: str | None,
@@ -664,22 +678,22 @@ def parse_journald(
     A configuration file that sets it decides (:func:`journald_settings`).
     Failing that, from systemd 256 on, the ``journal.storage`` credential
     journald received, when its whole content is a value journald takes, kept
-    as read in ``credential``. Failing that, the built-in default of the
-    ``systemctl --version`` line ``version``: ``auto`` before 259, and from 259
-    the :func:`vendor_hint`, or ``persistent``. ``storage`` is None when no
-    file sets it and the version is unknown.
+    as read in ``credential``. Failing that, the :func:`built_in_default` of
+    the ``systemctl --version`` line ``version``. Without a version neither the
+    credential nor the hint counts and ``storage`` is ``persistent``, the value
+    NAILS fails closed to. ``storage`` is None only when the configuration
+    query did not run.
     """
     storage, sources = journald_settings(config)
     received = credential or None
     hint = vendor_hint(vendor)
     major = systemd_major(version)
-    if storage is None and major is not None:
-        if major >= STORAGE_CREDENTIAL_SINCE and received in STORAGE_VALUES:
+    if storage is None and config is not None:
+        reads_credential = major is not None and major >= STORAGE_CREDENTIAL_SINCE
+        if reads_credential and received in STORAGE_VALUES:
             storage = received
-        elif major < PERSISTENT_DEFAULT_SINCE:
-            storage = "auto"
         else:
-            storage = hint or "persistent"
+            storage = built_in_default(major, hint)
     return {
         "storage": storage,
         "sources": sources,
