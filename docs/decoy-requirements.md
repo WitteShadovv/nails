@@ -532,9 +532,20 @@ decision in place inside the next root:
 | --- | --- |
 | `/boot`, `/boot/efi`, `/efi` (ESP, boot partitions), and filesystems mounted read-only | read-only bind |
 | other mounted local filesystems (a separate `/home`, `/var`, `/srv`), mounted VM host shares and overlays | overlay, upper at `<hidden>/root/mounts/<unit name>/upper` |
-| swap | masked: never activated |
-| local filesystems not mounted now but mounted at boot, network filesystems, overlay entries not mounted now with an upper on a disk | masked: not available in the hidden session |
+| swap | kept off: never activated |
+| local filesystems not mounted now but mounted at boot, network filesystems, overlay entries not mounted now with an upper on a disk | kept unmounted: not available in the hidden session |
 | tmpfs and kernel filesystems, `noauto` entries, the hidden volume | left alone |
+
+A unit kept off is masked in `/run`, or skipped where a boot target requires it
+(an entry without `nofail`): a mask there would leave `local-fs.target`,
+`remote-fs.target` or `swap.target` unreached in the hidden session, and with
+it every unit only that target pulls in. A skipped unit, and the fsck, makefs
+and other units its line has it pull in, gets a runtime drop-in whose start
+condition never holds. A skipped mount still waits for its device, so an entry
+whose device is not there when you activate is masked, and `check` and
+`activate` warn that the target will not be reached: attach the device, or give
+the entry `nofail` (see
+[What the session covers](configuration.md#what-the-session-covers)).
 
 systemd's GPT auto-generator mounts the partitions it finds by their type on
 the root filesystem's disk (`/home`, `/srv`, `/var`, the ESP) and turns on a
@@ -827,7 +838,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `session-nixos-hidden-system` |
-| [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, and masks swap, unmounted disks and systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch. | `soft-reboot-mechanics` |
+| [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, keeps swap and unmounted disks off (masked, or skipped where a boot target requires them, so that the target is still reached) and masks systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch. | `soft-reboot-mechanics` |
 | [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) (`session-disk-mounts`) | a USB drive udisks automounts, a decoy partition the policy masked mounted by hand, a Windows partition | all | none: the disk is mounted after activation | none: verify cannot tell what a session wrote to another disk | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | `session-disk-mounts` |
 | [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes the runtime journal and logind's session state whole, and whatever else the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry; it puts the decoy's name-server records below /run/resolvconf back, gives the decoy's utab lines back to the mounts it restores, under their new mount IDs, and never touches sockets or /run/udev. | `session-lifecycle`, `session-emergency`, `session-dns-records` |
 | [An interrupted entry's runtime files in /run](threat-model.md#residual-channels) (`interrupted-entry`) | an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in | all | `session-state` (refuses) | `session-leftovers` | The transition drop-in is installed before the next root is populated, so an unarmed entry is disarmed by any soft-reboot; `nails recover` removes the leftovers. | `session-interrupted-entry` |

@@ -23,7 +23,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
-struct FakeHost {
+pub(crate) struct FakeHost {
     reloads: Cell<u32>,
     /// The next root to look at on the first reload.
     nextroot: Option<PathBuf>,
@@ -35,6 +35,18 @@ struct FakeHost {
     helpers: Vec<PathBuf>,
     /// The decoy's process numbers, as the entry reads them.
     pids: fresh_pids::Record,
+    /// The devices that are there; no other is, whatever the test host has.
+    pub(crate) devices: Vec<PathBuf>,
+}
+
+impl FakeHost {
+    /// A host on which `devices`, and no other device, are there.
+    pub(crate) fn with_devices(devices: Vec<PathBuf>) -> Self {
+        Self {
+            devices,
+            ..Self::default()
+        }
+    }
 }
 
 impl EntryHost for FakeHost {
@@ -81,10 +93,13 @@ impl EntryHost for FakeHost {
     fn pid_record(&self) -> fresh_pids::Record {
         self.pids.clone()
     }
+    fn device_present(&self, device: &Path) -> bool {
+        self.devices.iter().any(|known| known == device)
+    }
 }
 
-struct World {
-    decoy: ScratchTmpfs,
+pub(crate) struct World {
+    pub(crate) decoy: ScratchTmpfs,
     _esp: ScratchTmpfs,
     _home: ScratchTmpfs,
     hidden: ScratchTmpfs,
@@ -93,8 +108,10 @@ struct World {
 
 impl World {
     /// A decoy root with its ESP at /boot and a separate /home, both
-    /// listed in its fstab with a swap partition and an unmounted disk.
-    fn new() -> Self {
+    /// listed in its fstab with a swap partition and an unmounted disk, which
+    /// no boot target requires (`nofail`): the mask of their units warns of
+    /// no target left unreached, whichever devices are there.
+    pub(crate) fn new() -> Self {
         let decoy = ScratchTmpfs::new("");
         for dir in [
             "etc",
@@ -115,8 +132,8 @@ impl World {
             "/dev/vda2 / ext4 defaults 0 1\n\
              /dev/vda1 /boot vfat umask=0077 0 2\n\
              /dev/vda3 /home ext4 defaults 0 2\n\
-             /dev/vda4 none swap sw 0 0\n\
-             /dev/vdc1 /srv/data ext4 defaults 0 2\n",
+             /dev/vda4 none swap sw,nofail 0 0\n\
+             /dev/vdc1 /srv/data ext4 defaults,nofail 0 2\n",
         )
         .unwrap();
         write_executable(
@@ -161,13 +178,13 @@ impl World {
             run,
         }
     }
-    fn paths(&self) -> Paths {
+    pub(crate) fn paths(&self) -> Paths {
         Paths {
             root: self.decoy.path().to_path_buf(),
             run: self.run.path().to_path_buf(),
         }
     }
-    fn inputs(&self) -> EntryInputs<'_> {
+    pub(crate) fn inputs(&self) -> EntryInputs<'_> {
         EntryInputs {
             hidden_root: self.hidden.path(),
             decoy_root: DecoyRoot {
@@ -457,12 +474,13 @@ fn a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_reported() {
 }
 
 #[test]
-fn the_automount_of_a_filesystem_the_entry_binds_read_only_is_masked() {
+fn the_automount_of_a_filesystem_the_entry_binds_read_only_is_skipped() {
     // The ESP behind an automount: the session binds it read-only at /boot,
     // where the hidden systemd's automount would fail and take
-    // local-fs.target down with it.
+    // local-fs.target down with it. The target requires the automount, so it
+    // is skipped rather than masked, which would leave the target unreached.
     let _ = Rerun::new(test_path!(
-        the_automount_of_a_filesystem_the_entry_binds_read_only_is_masked
+        the_automount_of_a_filesystem_the_entry_binds_read_only_is_skipped
     ))
     .in_user_mount_ns()
     .run(|| {
@@ -478,8 +496,11 @@ fn the_automount_of_a_filesystem_the_entry_binds_read_only_is_masked() {
         let entry =
             entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
 
+        let skipped: Vec<&String> = entry.plan.skips.iter().flat_map(|s| &s.units).collect();
+        assert_eq!(skipped, ["boot.automount"], "{:?}", entry.plan.skips);
+        assert!(entry.plan.skips[0].device.is_none() && entry.plan.skips[0].pulled.is_empty());
         assert!(
-            entry.plan.masks.contains(&"boot.automount".to_string()),
+            !entry.plan.masks.contains(&"boot.automount".to_string()),
             "{:?}",
             entry.plan.masks
         );
@@ -496,13 +517,13 @@ fn the_automount_of_a_filesystem_the_entry_binds_read_only_is_masked() {
 }
 
 #[test]
-fn the_automount_of_a_symlinked_mount_point_is_masked_at_its_real_path() {
+fn the_automount_of_a_symlinked_mount_point_is_skipped_at_its_real_path() {
     // The decoy keeps /data at var/data and mounts the filesystem there; its
     // fstab names /data behind an automount. The session overlays /var/data,
     // so the automount the hidden systemd generates for that path, the one
-    // that would fail on the taken mount point, must be the one masked.
+    // that would fail on the taken mount point, must be the one skipped.
     let _ = Rerun::new(test_path!(
-        the_automount_of_a_symlinked_mount_point_is_masked_at_its_real_path
+        the_automount_of_a_symlinked_mount_point_is_skipped_at_its_real_path
     ))
     .in_user_mount_ns()
     .run(|| {
@@ -532,12 +553,16 @@ fn the_automount_of_a_symlinked_mount_point_is_masked_at_its_real_path() {
             "{:?}",
             entry.plan.policy_mounts
         );
-        let masks = &entry.plan.masks;
+        let skipped: Vec<&String> = entry.plan.skips.iter().flat_map(|s| &s.units).collect();
         assert!(
-            masks.contains(&"var-data.automount".to_string()),
-            "{masks:?}"
+            skipped.contains(&&"var-data.automount".to_string()),
+            "{skipped:?}"
         );
-        assert!(!masks.contains(&"data.automount".to_string()), "{masks:?}");
+        assert!(
+            !skipped.contains(&&"data.automount".to_string()),
+            "{skipped:?}"
+        );
+        assert!(!entry.plan.masks.iter().any(|m| m.ends_with(".automount")));
         entry::rollback(&paths);
     });
 }

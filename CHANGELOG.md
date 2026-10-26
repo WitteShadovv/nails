@@ -382,6 +382,20 @@ of this changelog for that version becomes the release notes word for word, and
   refuses while an interrupted activation's soft-reboot may still come, and `emergency` on the
   decoy drops it, or powers off at once where it may still come. `emergency` in the hidden session
   still enqueues its soft-reboot directly, without waiting for anything.
+- A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
+  keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
+  fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
+  automount of a filesystem it binds or overlays), and systemd silently drops the start of a target
+  that requires a masked unit, and with it every unit only that target pulls in: on Debian 13, a
+  session entered with the ESP unmounted ran without `local-fs.target`. Such a unit is now skipped
+  instead: a runtime drop-in gives it a start condition that never holds, so the hidden systemd
+  starts it, finds the condition unmet and reaches the target, and the decoy disk stays unmounted.
+  The fsck, makefs, mkswap, growfs and quota units its fstab line pulls in would start on the decoy
+  disk before that condition is tested, so they are skipped with it. A skipped mount still waits for
+  its device, so an entry whose device is not there at activation is masked as before, and `nails
+  check` and `nails activate` warn that the hidden session will not reach its target (attach the
+  device, or give the entry `nofail`); a device gone by the switch has its units masked then.
+  Entries with `nofail` stay masked. `verify` reports a skip drop-in left on the decoy.
 - An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
   reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
   left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and

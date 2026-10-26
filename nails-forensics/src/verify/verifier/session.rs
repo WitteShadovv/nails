@@ -12,6 +12,7 @@ use nails_teardown::mountinfo::{MountEntry, parse_mountinfo, parse_overlay_opts,
 use nails_teardown::whole_root::disk_guard::{RULE_DIR, RULE_NAME};
 use nails_teardown::whole_root::nextroot::NEXTROOT;
 use nails_teardown::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
+use nails_teardown::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT};
 use nails_teardown::whole_root::transition::{
     DROPIN_DIR, DROPIN_NAME, STOP_GUARD_NAME, runtime_guards, stop_guard_dir,
 };
@@ -225,11 +226,55 @@ impl<F: Filesystem> Verifier<F> {
     /// hidden root does not need, and in `/run/systemd/system-generators`,
     /// where it masks the GPT auto-generator. A mask may also be the
     /// administrator's own (`systemctl mask --runtime`, or a link of their
-    /// own), so it only warns.
+    /// own), so it only warns. Also the session's skip drop-ins in
+    /// `/run/systemd/system`, which only the session writes.
     fn leftover_run_units(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for dir in [RUN_UNIT_DIR, RUN_CONTROL_DIR, RUN_GENERATOR_DIR] {
             findings.extend(self.leftover_units_in(Path::new(dir))?);
+        }
+        findings.extend(self.leftover_skips()?);
+        Ok(findings)
+    }
+
+    /// The skip drop-ins the entry writes for the units a boot target
+    /// requires ([`SKIP_TEXT`]): a decoy unit with one left is skipped
+    /// whenever it is started, until the next boot. The session's other
+    /// runtime drop-ins share the file name, so a drop-in counts when its
+    /// text is the skip's.
+    fn leftover_skips(&self) -> Result<Vec<Finding>> {
+        let dir = Path::new(RUN_UNIT_DIR);
+        if !self.filesystem.is_directory(dir)? {
+            return Ok(Vec::new());
+        }
+        let mut findings = Vec::new();
+        for path in self.filesystem.list_directory(dir).unwrap_or_default() {
+            let Some(unit) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".d"))
+            else {
+                continue;
+            };
+            let dropin = path.join(SKIP_DROPIN_NAME);
+            if self
+                .filesystem
+                .read_file_content(&dropin)
+                .is_ok_and(|text| text == SKIP_TEXT)
+            {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "session",
+                        format!(
+                            "the session's skip drop-in {} is left: {unit} is skipped whenever \
+                             it starts, until the next boot",
+                            dropin.display()
+                        ),
+                    )
+                    .with_fix_guidance(recover_fix()),
+                );
+            }
         }
         Ok(findings)
     }
