@@ -223,6 +223,10 @@ of this changelog for that version becomes the release notes word for word, and
   in every hidden session entered with `/boot` mounted (`grub-editenv` cannot write the read-only
   `grubenv`); it is now masked like `grub-common.service` on Debian and Ubuntu 24.04. The masks
   hold in the hidden session only, and the decoy runs the units as before.
+- The way back removes the session's runtime masks by name, as it removes its drop-ins. When the
+  snapshot of `/run` the entry takes was gone by the way back, the scrub kept them, and the decoy
+  started again with its swap, its unmounted disks and its boot-loader units masked until its next
+  boot.
 - `nails rehearse scan` reports more storage it cannot vouch for as "not checked" (exit 9) where it
   used to report a clean pass (exit 0). An offline image or an unmounted `--device` that is an
   encrypted container (LUKS or BitLocker) is reported "not checked" with the advice to scan its
