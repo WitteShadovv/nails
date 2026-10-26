@@ -11,8 +11,9 @@
 //! the plain decoy root; `emergency` kills all of userspace first. The
 //! mechanics shared with the panic path live in `nails_teardown::whole_root`;
 //! this module adds what needs the configuration and the host: the fstab
-//! policy and the hidden root's other masks, the hidden NixOS toplevel, the
-//! pre-flight checks and the probes.
+//! policy, the decoy's mount and swap units outside its fstab and the hidden
+//! root's other masks, the hidden NixOS toplevel, the pre-flight checks and
+//! the probes.
 
 pub mod checks;
 pub mod entry;
@@ -22,6 +23,7 @@ pub mod kernel_modules;
 pub mod labels;
 pub mod layout;
 pub mod leave;
+pub mod mount_units;
 pub mod network_state;
 pub mod nixos;
 pub mod persona;

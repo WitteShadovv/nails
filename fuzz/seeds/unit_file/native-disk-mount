@@ -1,0 +1,14 @@
+[Unit]
+Description=Scratch space
+Requires=systemd-fsck@dev-disk-by\x2did-virtio\x2dscratch.service
+After=systemd-fsck@dev-disk-by\x2did-virtio\x2dscratch.service
+Before=local-fs.target
+
+[Mount]
+What=/dev/disk/by-id/virtio-scratch
+Where=/srv/scratch
+Type=ext4
+Options=noatime,nodev
+
+[Install]
+RequiredBy=local-fs.target

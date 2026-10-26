@@ -10,10 +10,11 @@
 //!   back;
 //! - `session-state`: neither in the hidden root already nor with leftovers of
 //!   an interrupted entry;
-//! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
-//!   safe decision ([`super::policy`]); it warns when a filesystem is kept from
-//!   the hidden session, and names a boot target a mask keeps from being
-//!   reached;
+//! - `fstab-policy`: every decoy filesystem the hidden systemd would mount, by
+//!   an fstab line or by a unit outside the fstab, has a safe decision
+//!   ([`super::policy`], [`super::mount_units`]); it warns when a filesystem
+//!   is kept from the hidden session, and names a boot target a mask keeps
+//!   from being reached;
 //! - `kernel-modules`: no hidden session deleted or replaced the running
 //!   kernel's module tree or its index ([`super::kernel_modules`]); it only
 //!   warns.
@@ -24,6 +25,7 @@
 
 use super::fstab::{parse_in_root, read_in_root as read_fstab};
 use super::layout::Paths;
+use super::mount_units;
 use super::policy::{self, Decision};
 use super::probe::{self, SessionView};
 use super::systemd::{self, MIN_SYSTEMD};
@@ -288,6 +290,21 @@ pub fn judge_fstab(decisions: &[Decision]) -> CheckResult {
     }
 }
 
+/// The decisions for the decoy's mount, swap and automount units outside its
+/// fstab ([`mount_units`]), read in the decoy root at `root` and its `/run`,
+/// as activation decides them.
+pub fn decoy_units(root: &Path, mounts: &[MountEntry], hidden_root: &Path) -> Vec<Decision> {
+    let run = root.join("run");
+    let dirs = mount_units::UnitDirs { root, run: &run };
+    mount_units::decide(
+        dirs,
+        &mount_units::read(dirs),
+        mounts,
+        hidden_root,
+        &policy::device_present,
+    )
+}
+
 /// `fstab-policy`.
 #[derive(Debug)]
 pub struct FstabPolicyCheck {
@@ -325,12 +342,14 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
         };
         // Resolved in the decoy root, as activation decides them first.
         let entries = parse_in_root(&text, &self.root);
-        let decisions = policy::decide_all(
+        let mounts = read_mountinfo().unwrap_or_default();
+        let mut decisions = policy::decide_all(
             &entries,
-            &read_mountinfo().unwrap_or_default(),
+            &mounts,
             &self.hidden_root,
             &policy::device_present,
         );
+        decisions.extend(decoy_units(&self.root, &mounts, &self.hidden_root));
         Ok(judge_fstab(&decisions))
     }
 }

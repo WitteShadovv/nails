@@ -24,7 +24,10 @@
 //!    next root's store, its closure copied onto the hidden volume so a decoy
 //!    garbage collection cannot break it ([`super::store`]), and activated
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
-//!    generation's own fstab for what the decoy's did not cover;
+//!    generation's own fstab for what the decoy's did not cover; then the
+//!    mount, swap and automount units outside the fstabs that the targets of
+//!    the next root and of `/run` pull in, decided as fstab lines
+//!    ([`super::mount_units`]);
 //! 7. the masks and skips the entry transition writes at the switch: the
 //!    fstab policy's (a skip for a unit a boot target requires, see
 //!    [`super::policy`]), the units the hidden root does not need and the
@@ -48,6 +51,7 @@
 use super::fstab::FstabEntry;
 use super::hidden_masks;
 use super::layout::{Layout, Paths};
+use super::mount_units::{self, UnitDirs};
 use super::network_state;
 use super::nixos;
 use super::policy::{self, Decision};
@@ -638,10 +642,15 @@ fn build(
         plan.hidden.init = fhs_init(&nextroot);
     }
     activation_step(ActivationPhase::MaskUnits, building);
-    let kept_off = policy::runtime_units(&decided.fstab, &decided.decisions);
-    plan.masks = kept_off.masks;
-    plan.skips = kept_off.skips;
-    warnings.extend(decided.decisions.iter().filter_map(Decision::warning));
+    warnings.extend(keep_units_off(
+        paths,
+        &layout,
+        &mut plan,
+        &mut decided,
+        &decoy_mounts,
+        inputs.hidden_root,
+        &present,
+    )?);
     plan.boot_masks = hidden_masks::units(&nextroot, &plan.masks);
     plan.generator_masks = hidden_masks::generators();
     if let Some(operator) = &inputs.operator {
@@ -681,6 +690,40 @@ fn build(
         decisions: decided.decisions,
         warnings,
     })
+}
+
+/// Decide the mount, swap and automount units outside the fstabs, as the
+/// hidden systemd will find them in the next root (on NixOS the hidden
+/// generation's) and in `/run` ([`mount_units`]), put in place what those
+/// decisions call for, and record in `plan` what the hidden session keeps
+/// from starting ([`policy::runtime_units`]), each skip with the units it
+/// pulls in that act on its device. Returns the warnings of every decision.
+fn keep_units_off(
+    paths: &Paths,
+    layout: &Layout,
+    plan: &mut Plan,
+    decided: &mut Decided,
+    decoy_mounts: &[MountEntry],
+    hidden_root: &Path,
+    present: policy::Present<'_>,
+) -> Result<Vec<String>> {
+    let nextroot = paths.nextroot();
+    let dirs = UnitDirs {
+        root: &nextroot,
+        run: &paths.run,
+    };
+    let native = mount_units::read(dirs);
+    let more = mount_units::decide(dirs, &native, decoy_mounts, hidden_root, present);
+    decided.add(paths, layout, plan, Vec::new(), more, hidden_root)?;
+    let kept_off = policy::runtime_units(&decided.fstab, &decided.decisions);
+    plan.masks = kept_off.masks;
+    plan.skips = kept_off.skips;
+    mount_units::pull_in(dirs, &mut plan.skips);
+    Ok(decided
+        .decisions
+        .iter()
+        .filter_map(Decision::warning)
+        .collect())
 }
 
 /// Refuse a hidden NixOS build when the hidden volume holding `upper` has less

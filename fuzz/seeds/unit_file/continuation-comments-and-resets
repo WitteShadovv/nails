@@ -1,0 +1,12 @@
+[Unit]
+Wants=a.service \
+# a comment inside the continuation
+  b.service ;not a comment
+; a comment
+[Mount]
+What=tmpfs
+Type=tmpfs
+Type=
+Options=mode=1777,%%strictatime
+[X-Own]
+What=/dev/sda

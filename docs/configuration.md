@@ -161,6 +161,28 @@ session will not reach its target; attach the device, or give the entry
 `nofail`. A device that is gone by the switch has its units masked then.
 An entry with `nofail` is masked: its target only wants it.
 
+The hidden systemd also starts the mount, swap and automount units a target
+pulls in outside the fstab: a mount unit installed for a target (NixOS's
+`systemd.mounts`, a unit linked in `/etc/systemd/system/local-fs.target.wants`),
+a mount the kernel command line names (`systemd.mount-extra=`), zram-generator's
+swap, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
+`.swap` and `.automount` unit linked in a target's `.wants` or `.requires`
+directory of the hidden root's unit directories and of `/run`, except those the
+fstab generator made from the fstab, with its own drop-ins, and gives each the
+decision an fstab line with its source, type and options would get: a
+filesystem the decoy has mounted now is bound read-only or overlaid, one not
+mounted now is kept unmounted, skipped where it is linked in a target's
+`.requires` directory, and RAM and kernel filesystems (such as `tmp.mount`) are
+left to the hidden systemd. A zram swap is left to the hidden systemd too: it
+keeps its pages in RAM, unless its zram device has a backing device, which the
+`swap` check refuses while it is active; NAILS does not read zram-generator's
+configuration. The automount of a filesystem put in place is kept off. A unit
+the decoy masks is left alone, and one whose unit files cannot be read, or that
+names its source by a specifier, is masked. The GPT auto-generator does not
+run in the hidden session, but the ESP it mounted in the decoy (at `/efi` on
+Arch Linux) is bound read-only into the hidden root, as an fstab line for
+`/efi` would be.
+
 An entry behind an automount (`x-systemd.automount`, often the ESP) that is
 bound read-only or overlaid keeps its automount off as well: the hidden
 systemd would find the mount point taken and fail the automount, and with it
@@ -169,7 +191,7 @@ automount is skipped where `local-fs.target` requires it and masked where the
 entry has `nofail`. Masks and skips are runtime files in `/run`, gone with the
 session. systemd's GPT auto-generator, which would mount partitions the fstab
 does not list, is masked the same way. `nails check` prints the decision for
-every entry (the `fstab-policy` check). A decoy partition you mount by hand
+every entry and every unit outside the fstab (the `fstab-policy` check). A decoy partition you mount by hand
 inside the hidden session is outside this policy and is written directly.
 
 A mount point the fstab names through a symlink (a `/home` that links to

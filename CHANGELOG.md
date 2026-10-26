@@ -225,6 +225,18 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- The session decides the decoy's mount, swap and automount units outside the fstab as it decides
+  fstab lines. A disk the decoy mounts through a unit of its own (NixOS's `systemd.mounts`, a
+  `.mount` unit enabled for `local-fs.target` or `multi-user.target`, a mount the kernel command
+  line names with `systemd.mount-extra=`) was mounted read-write by the hidden systemd, a swap unit
+  of its own swapped onto its disk, and the ESP the GPT auto-generator mounts at `/efi` (Arch Linux)
+  was missing from the hidden session. Activation now reads every `.mount`, `.swap` and `.automount`
+  unit linked in a target's `.wants` or `.requires` directory of the hidden root and of `/run`, with
+  its own drop-ins, except those the fstab generator made from the fstab: a filesystem the decoy has
+  mounted now is bound read-only or overlaid, one not mounted now is skipped or masked, RAM and
+  kernel filesystems and a zram swap are left to the hidden systemd, and the automount of a
+  filesystem put in place is kept off. A unit whose files cannot be read, or that names its source
+  by a specifier, is masked. `nails check` lists the decisions with the fstab's.
 - A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
   keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
   fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
