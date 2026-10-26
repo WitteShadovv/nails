@@ -212,6 +212,67 @@
         };
       });
 
+      # The gui/ workspace is a Cargo workspace of its own and builds from its
+      # own manifest and lock. Only what cargo reads is in its source, so a
+      # change to its cargo-deny policy, its supply-chain records or its
+      # coverage floor rebuilds nothing.
+      guiSourceFiles = lib.fileset.toSource {
+        root = ./gui;
+        fileset = lib.fileset.unions [
+          ./gui/Cargo.toml
+          ./gui/Cargo.lock
+          ./gui/nails-gui
+        ];
+      };
+      guiManifest = builtins.fromTOML (builtins.readFile ./gui/Cargo.toml);
+
+      # A graphical interface loads the desktop's windowing libraries at run
+      # time, and a static musl binary cannot load a shared library, so the GUI
+      # is built for the host's glibc target. The pinned compiler comes without
+      # rust-src, whose store path would end up in std's panic locations.
+      rustToolchainGui = pkgs.rust-bin.stable.${rustChannel}.minimal;
+      rustPlatformGui = pkgs.makeRustPlatform {
+        cargo = rustToolchainGui;
+        rustc = rustToolchainGui;
+      };
+
+      # The gui/ workspace's binary. It is a placeholder that prints its version
+      # and that the interface is not built yet; it draws no window and is not
+      # part of the release.
+      nails-gui = rustPlatformGui.buildRustPackage {
+        pname = "nails-gui";
+        version = guiManifest.workspace.package.version;
+
+        src = guiSourceFiles;
+        cargoLock.lockFile = ./gui/Cargo.lock;
+
+        strictDeps = true;
+
+        # As for nails: a Cargo.lock that does not match the manifests fails
+        # the build instead of being rewritten silently.
+        cargoBuildFlags = [
+          "--locked"
+          "--package"
+          "nails-gui"
+          "--bin"
+          "nails-gui"
+        ];
+
+        # The binary must not name the toolchain that built it.
+        disallowedReferences = [ rustToolchainGui ];
+
+        # The tests run in CI's side-tests job, under coverage.
+        doCheck = false;
+
+        meta = {
+          description = "Placeholder binary of the graphical interface for nails, which is not built yet";
+          inherit (guiManifest.workspace.package) homepage;
+          license = lib.getLicenseFromSpdxId guiManifest.workspace.package.license;
+          mainProgram = "nails-gui";
+          platforms = [ system ];
+        };
+      };
+
       nails-release =
         pkgs.runCommand "nails-release-${workspaceVersion}"
           {
@@ -298,7 +359,12 @@
     in
     {
       packages.${system} = {
-        inherit nails nails-e2e nails-release;
+        inherit
+          nails
+          nails-e2e
+          nails-release
+          nails-gui
+          ;
         default = nails;
       };
 

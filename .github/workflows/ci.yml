@@ -427,11 +427,13 @@ jobs:
           BIN: ${{ steps.build.outputs.bin }}
         run: sudo unshare --mount --propagation private "$BIN" --ignored --test-threads=1
 
-  # The canonical release derivation and a smoke test of its archive.
+  # The canonical release derivation and a smoke test of its archive, then the
+  # flake package of the gui/ workspace and a run of its binary. The side filter
+  # holds gui/, which the release does not build from.
   nix-build:
     name: nix-build
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.nix == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.nix == 'true' || needs.changes.outputs.side == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
 
@@ -460,6 +462,13 @@ jobs:
           test -f "$dir/README.md"
           "$dir/nails" --version
           cd result && sha256sum --check --strict checksums.txt
+
+      - name: Build the gui/ package
+        run: nix build -L .#nails-gui -o result-gui --option accept-flake-config false
+
+      # The binary is a placeholder that prints its version and exits.
+      - name: Smoke-test the gui/ binary
+        run: result-gui/bin/nails-gui
 
   # The CI tooling tests and the cheap flake checks: nixfmt, statix, deadnix,
   # shellcheck, actionlint, zizmor, the ci/ Python lints and the E2E shard
