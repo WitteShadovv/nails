@@ -1659,3 +1659,36 @@ fn a_runtime_mask_left_on_the_decoy_only_warns() {
         "{findings:?}"
     );
 }
+
+#[test]
+fn a_generator_mask_left_on_the_decoy_only_warns() {
+    let (fs, verifier) = overlay_verifier("");
+    // The GPT auto-generator's mask in the runtime generator directory, where
+    // the entry writes it, beside a generator of the administrator's own,
+    // which is no mask.
+    let dir = std::path::Path::new("/run/systemd/system-generators");
+    fs.mock_set_path_exists(dir.to_str().unwrap(), true);
+    fs.mock_set_path_type(dir.to_str().unwrap(), PathKind::Dir);
+    let mask = dir.join("systemd-gpt-auto-generator");
+    let own = dir.join("local-generator");
+    fs.mock_set_directory_contents(dir, vec![mask.clone(), own.clone()]);
+    crate::Filesystem::create_symlink(&fs, std::path::Path::new("/dev/null"), &mask).unwrap();
+    fs.mock_set_is_symlink(mask.to_str().unwrap(), true);
+    fs.mock_set_path_exists(own.to_str().unwrap(), true);
+    let result = verifier.run(false).unwrap();
+    let findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "session")
+        .collect();
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].severity, Severity::Warn);
+    assert!(
+        findings[0].message.contains(
+            "systemd-gpt-auto-generator is masked at runtime \
+             (/run/systemd/system-generators/systemd-gpt-auto-generator)"
+        ),
+        "{findings:?}"
+    );
+    assert!(findings[0].fix_guidance.is_some());
+}

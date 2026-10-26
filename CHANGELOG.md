@@ -396,7 +396,8 @@ of this changelog for that version becomes the release notes word for word, and
   overlay it finds no disk, so the mask is a defence in depth for a decoy where it would: one whose
   separate `/usr` is mounted read-only. The hidden root gets that `/usr` as a read-only bind, and
   with `/` on no disk the generator takes the disk of `/usr`. The mask is written at the switch and
-  lives in `/run` for the session alone; a switch whose masks cannot be written is refused.
+  lives in `/run` for the session alone; a switch whose masks cannot be written is refused, and
+  `nails verify` warns about a mask left on the decoy.
 - On Debian 13 the way back now has the decoy's wtmpdb boot writer record the decoy's start as an
   ordinary `reboot`, stamped with the time of the switch. The 0.3.0-rc.3 notes said the way back
   already kept the writer from recording `soft-reboot`; that was wrong. Kept from the system bus,
