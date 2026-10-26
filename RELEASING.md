@@ -28,8 +28,10 @@ drafts the GitHub release. Publishing the draft is the only manual step after th
    fails when `check` or `activate` prints a warning) and copy the `check`, `activate` and
    `status --json` output of that one run, unedited, below the `---` line of `check.txt`,
    `activate.txt` and `status-json.txt`. Replace the output in `help.txt` with what `nails -h`
-   prints from a build of the branch. Update the dates in the captions, run
-   `scripts/render-terminal-svg.py --all docs/assets/screenshots`, and commit the captures with
+   prints from a build of the branch. In each caption, update the date and name the run: the
+   `nix build` command for a local run, or the run's ID (the number in its URL,
+   `actions/runs/<ID>`) for one on GitHub's hosted runners. Run
+   `scripts/render-terminal-svg.py --all docs/assets/screenshots` and commit the captures with
    their SVGs. [docs/assets/README.md](docs/assets/README.md) has the details.
 3. **Write the changelog.** In `CHANGELOG.md`, rename `## [Unreleased]` to
    `## [X.Y.Z] - YYYY-MM-DD` and open a new, empty `## [Unreleased]` above it. That section

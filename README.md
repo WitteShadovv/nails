@@ -363,6 +363,11 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
 Captured from the `session-readme-captures` NixOS VM test, on a decoy set up as
 [docs/decoy-requirements.md](docs/decoy-requirements.md) recommends; see
 [docs/assets/README.md](docs/assets/README.md) for how each screenshot is made.
+The test VM also has an emulated IOMMU that remaps DMA, so `dma-protection`
+passes there. With Linux 5.14 or newer, it warns on a machine whose IOMMU does
+not remap the DMA of every device; the
+[operator guide](docs/operator-guide.md#cold-boot-and-running-memory-attacks)
+says how to turn the IOMMU on.
 
 </details>
 
