@@ -165,13 +165,15 @@ jobs:
           matrix=$(python3 -m ci.e2e distro-plan "${distros[@]}" --suite "$SUITE" --max-jobs "$MAX_JOBS")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           heading="Distro E2E plan"
+          columns="| Distribution | Shard | Scenarios | Timeout (min) |"
           if [ "$SUITE" = probe ]; then
             heading="Distro E2E probe plan"
+            columns="| Probe | Shard | Driver | Timeout (min) |"
           fi
           {
             echo "## $heading"
             echo
-            echo "| Distribution | Shard | Scenarios | Timeout (min) |"
+            echo "$columns"
             echo "|---|---|---|---:|"
             jq -r '.include[] | "| \(.distro) | \(.index)/\(.count) | \(.tests | map("`" + . + "`") | join(" ")) | \(.timeout) |"' <<< "$matrix"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -310,4 +312,8 @@ jobs:
               echo "::warning::One or more distro smoke scenarios failed."
             fi
           fi
-          echo "Distro smoke tier finished."
+          if [ "$SUITE" = probe ]; then
+            echo "Distro probes finished."
+          else
+            echo "Distro smoke tier finished."
+          fi
