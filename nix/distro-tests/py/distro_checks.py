@@ -199,6 +199,40 @@ def boot_mounts(mounts: Iterable[str]) -> list[str]:
     return [target for target in BOOT_FILESYSTEMS if target in present]
 
 
+# The units a mount pulls in that act on its device or filesystem, by the
+# prefix of their name: the instances of systemd's templates, which the
+# session skips with a skipped mount (``nails_session::session::fstab::checkers``).
+DEVICE_UNIT_TEMPLATES = (
+    "systemd-fsck@",
+    "systemd-makefs@",
+    "systemd-mkswap@",
+    "systemd-growfs@",
+    "systemd-pcrfs@",
+    "systemd-validatefs@",
+    "systemd-quotacheck@",
+    "quotaon@",
+)
+
+
+def device_units(dependencies: str) -> list[str]:
+    """The units in ``dependencies`` that act on a mount's device.
+
+    ``dependencies`` is what ``systemctl show -P Requires`` and ``-P Wants``
+    print for the mount: unit names separated by spaces, one property per
+    line, and a name that holds a backslash (an escaped device path) in
+    double quotes with the backslash doubled, so the names are split as a
+    shell splits them. A skipped mount still starts these before its
+    condition is tested, so the session skips them with it; the scenario
+    checks that none of them ran.
+    """
+    units: list[str] = []
+    for unit in shlex.split(dependencies):
+        if unit.endswith(".service") and unit.startswith(DEVICE_UNIT_TEMPLATES):
+            if unit not in units:
+                units.append(unit)
+    return units
+
+
 def overlay_option_violations(options: str) -> list[str]:
     """How an overlay's options break the feature-option pins.
 
