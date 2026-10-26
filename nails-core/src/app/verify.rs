@@ -35,13 +35,14 @@ pub struct VerifyOptions {
 ///
 /// Reads the state file status for the report (missing, present with its
 /// recorded state, or an error), builds the verifier and runs it. An error
-/// means the verification itself could not run. An offline scan without the
-/// root of its image is refused, never run as a scan of the live host.
+/// means the verification itself could not run. Options that do not go
+/// together are refused, never dropped: an offline scan without the root of
+/// its image, which would run as a scan of the live host, and an image root
+/// or the examiner's view without an offline scan, or the examiner's disk
+/// without the examiner's view, which would be ignored.
 pub fn verify(env: &RuntimeEnv, config: Config, options: &VerifyOptions) -> Result<VerifyResult> {
-    if options.offline && options.root.is_none() {
-        return Err(crate::NailsError::InvalidArgument(
-            "an offline scan needs the root of the mounted decoy image".to_string(),
-        ));
+    if let Some(reason) = refused_combination(options) {
+        return Err(crate::NailsError::InvalidArgument(reason.to_string()));
     }
     let state_path = config.state_file_path.clone();
     let (state, state_file_status) = if !state_path.exists() {
@@ -87,6 +88,21 @@ pub fn verify(env: &RuntimeEnv, config: Config, options: &VerifyOptions) -> Resu
         }
     }
     verifier.run(options.deep)
+}
+
+/// Why `options` cannot run as given, if they cannot.
+fn refused_combination(options: &VerifyOptions) -> Option<&'static str> {
+    if options.offline && options.root.is_none() {
+        Some("an offline scan needs the root of the mounted decoy image")
+    } else if !options.offline && options.root.is_some() {
+        Some("the root of a mounted decoy image is scanned only offline")
+    } else if !options.offline && options.examiner {
+        Some("the examiner's view runs only over an offline scan")
+    } else if !options.examiner && options.disk.is_some() {
+        Some("the disk behind the image is read only for the examiner's view")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -188,6 +204,60 @@ mod tests {
                 if message.contains("root of the mounted decoy image")),
             "{error:?}"
         );
+    }
+
+    /// An image root, the examiner's view or its disk outside the scan they
+    /// belong to is refused, never dropped: the live host's verdict would be
+    /// shown as the image's.
+    #[test]
+    fn options_that_belong_to_an_offline_scan_are_refused_without_it() {
+        let root = tempfile::tempdir().unwrap();
+        let image = Some(root.path().to_path_buf());
+        let disk = Some(root.path().join("decoy.img"));
+        for (options, reason) in [
+            (
+                VerifyOptions {
+                    root: image.clone(),
+                    ..VerifyOptions::default()
+                },
+                "scanned only offline",
+            ),
+            (
+                VerifyOptions {
+                    examiner: true,
+                    ..VerifyOptions::default()
+                },
+                "runs only over an offline scan",
+            ),
+            (
+                VerifyOptions {
+                    disk: disk.clone(),
+                    ..offline_options(root.path())
+                },
+                "only for the examiner's view",
+            ),
+        ] {
+            let error = verify(
+                &RuntimeEnv::default(),
+                config_rooted_at(root.path()),
+                &options,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, crate::NailsError::InvalidArgument(message)
+                    if message.contains(reason)),
+                "{options:?}: {error:?}"
+            );
+        }
+        // The combinations that go together run.
+        assert_eq!(refused_combination(&VerifyOptions::default()), None);
+        assert_eq!(refused_combination(&offline_options(root.path())), None);
+        let examined = VerifyOptions {
+            examiner: true,
+            disk,
+            ..offline_options(root.path())
+        };
+        assert_eq!(refused_combination(&examined), None);
     }
 
     #[test]
