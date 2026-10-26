@@ -24,6 +24,11 @@ AWKS = sorted(
 )
 
 
+# The side workspaces the script counts besides the crate directories; it
+# refuses a tree that lacks one, so every scratch tree has them.
+SIDE_WORKSPACES = ("setup", "gui")
+
+
 def code(lines: int) -> str:
     return "".join(f"let x{i} = {i};\n" for i in range(lines))
 
@@ -31,6 +36,8 @@ def code(lines: int) -> str:
 class CheckLineCountTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for workspace in SIDE_WORKSPACES:
+            (self.root / workspace).mkdir()
 
     def write(self, relative: str, text: str) -> None:
         path = self.root / relative
@@ -111,11 +118,36 @@ class CheckLineCountTest(unittest.TestCase):
 
     def test_build_output_and_other_directories_are_ignored(self) -> None:
         self.write("nails-core/target/debug/build/generated.rs", code(900))
+        self.write("gui/target/debug/build/generated.rs", code(900))
         self.write("vendor/big.rs", code(900))
         self.write("nails-core/src/lib.rs", code(1))
         result = self.run_check()
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
+
+    def test_side_workspaces_are_counted_like_the_crates(self) -> None:
+        self.write("nails-core/src/lib.rs", code(1))
+        self.write("setup/nails-setup/src/large.rs", code(851))
+        self.write("gui/nails-gui/src/medium.rs", code(501))
+        self.write("gui/nails-gui/tests/window.rs", code(1501))
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout,
+            "warning: gui/nails-gui/src/medium.rs: 501 code lines (over 500)\n"
+            "warning: gui/nails-gui/tests/window.rs: 1501 code lines (over 1500)\n"
+            "error: setup/nails-setup/src/large.rs: 851 code lines (limit 850)\n",
+        )
+
+    def test_missing_side_workspace_fails(self) -> None:
+        self.write("nails-core/src/lib.rs", code(1))
+        for workspace in SIDE_WORKSPACES:
+            with self.subTest(workspace=workspace):
+                (self.root / workspace).rmdir()
+                result = self.run_check()
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"error: no {workspace}/ directory", result.stderr)
+                (self.root / workspace).mkdir()
 
     def test_every_awk_agrees(self) -> None:
         self.write("nails-core/src/medium.rs", code(600))
