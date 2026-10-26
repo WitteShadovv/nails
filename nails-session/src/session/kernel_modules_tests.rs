@@ -456,16 +456,23 @@ fn the_opaque_marker_is_exactly_one_byte_y() {
         read::marker(Err(Errno::NODATA), rel, TrustedXattrs::Invisible),
         Opacity::Unknown(Doubt::NeedsRoot)
     );
-    let Opacity::Unknown(Doubt::Other(reason)) = visible(Err(Errno::ACCESS)) else {
-        panic!("a refused read is a doubt");
-    };
-    assert!(
-        reason.starts_with(
-            "whether a hidden session replaced /usr/lib/modules with a new directory cannot be \
-             read ("
-        ),
-        "{reason}"
-    );
+    // A refused read, EACCES or EPERM, is a doubt and never a pass, whatever
+    // the process sees.
+    for refused in [Errno::ACCESS, Errno::PERM] {
+        for xattrs in [TrustedXattrs::Visible, TrustedXattrs::Invisible] {
+            let opacity = read::marker(Err(refused), rel, xattrs);
+            let Opacity::Unknown(Doubt::Other(reason)) = opacity else {
+                panic!("{refused:?} {xattrs:?}: a refused read is a doubt, not {opacity:?}");
+            };
+            assert!(
+                reason.starts_with(
+                    "whether a hidden session replaced /usr/lib/modules with a new directory \
+                     cannot be read ("
+                ),
+                "{reason}"
+            );
+        }
+    }
 }
 
 #[test]
