@@ -20,7 +20,8 @@ enum MissingCapability {
     TrustedXattr,
     /// `readdir` reports `DT_UNKNOWN`, so overlayfs cannot read directory types.
     DirEntryType,
-    /// A throwaway overlay mount over the scratch directory failed.
+    /// The throwaway trial overlay, with its layers in the scratch directory,
+    /// could not be mounted or used.
     TrialOverlay,
 }
 
@@ -110,7 +111,9 @@ fn classify(missing: MissingCapability, fstype: Option<&str>) -> CheckResult {
         MissingCapability::DirEntryType => {
             "the upper directory does not report file types from readdir (d_type is DT_UNKNOWN)"
         }
-        MissingCapability::TrialOverlay => "a throwaway overlay mount over the hidden root failed",
+        MissingCapability::TrialOverlay => {
+            "a throwaway overlay with its layers on the hidden root could not be mounted or used"
+        }
     };
 
     let detected = match fstype {
@@ -141,17 +144,18 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        // The probe creates and mounts a scratch directory *on the hidden root*,
-        // so it must never run against a root that is not a positively attached
-        // volume: a probe on an unmounted mount point would drop a `.probe-*`
-        // directory onto the decoy disk, the exact forensic leak the attach gate
-        // exists to prevent. The registry already short-circuits this check once
-        // the `hidden-volume` check, which asks the same attach gate, fails.
-        // Asking the gate here too keeps the probe safe however this check is
-        // run. A root the operator accepted with `--allow-decoy-storage` is not
-        // probed either: the gate without the override refuses it. The
-        // hidden-volume check owns the operator message, so an unattached root
-        // is a silent skip, not a second failure.
+        // The probe creates a scratch directory *on the hidden root* and builds
+        // its trial overlay from layers inside it, so it must never run against
+        // a root that is not a positively attached volume: a probe on an
+        // unmounted mount point would drop a `.probe-*` directory onto the decoy
+        // disk, the exact forensic leak the attach gate exists to prevent. The
+        // registry already short-circuits this check once the `hidden-volume`
+        // check, which asks the same attach gate, fails. Asking the gate here
+        // too keeps the probe safe however this check is run. A root the
+        // operator accepted with `--allow-decoy-storage` is not probed either:
+        // the gate without the override refuses it. The hidden-volume check
+        // owns the operator message, so an unattached root is a silent skip,
+        // not a second failure.
         match crate::hidden_root::HiddenRoot::verify_attached(fs, &self.hidden_volume_root, false)?
         {
             crate::hidden_root::AttachState::Attached => {}

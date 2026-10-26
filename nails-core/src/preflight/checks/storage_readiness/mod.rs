@@ -68,9 +68,12 @@ const REQUIRED_DIRS: &[&str] = &[
 pub struct StorageReadinessCheck {
     hidden_volume_root: PathBuf,
     overlays: Vec<OverlayDirs>,
-    /// When set, the check only inspects the layout: it never creates a missing
-    /// directory or changes permissions, and reports what activation would create
-    /// as a warning instead. Used by the read-only `nails check` command.
+    /// When set, the check leaves the layout as it is: it never creates a
+    /// missing directory or changes permissions, and reports what activation
+    /// would create as a warning instead. Its write probe still makes and
+    /// removes `.nails_write_test` in the upper and work directories that
+    /// exist. `nails check` and activation both set it; the entry creates the
+    /// layout itself once every check passed.
     read_only: bool,
 }
 

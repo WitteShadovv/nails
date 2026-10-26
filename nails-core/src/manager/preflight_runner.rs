@@ -63,9 +63,9 @@ impl Default for PreflightOptions {
 /// The runtime facts the shared pre-flight registry is assembled from.
 ///
 /// Both activation (through [`NailsManager::preflight_registry`]) and the
-/// read-only `nails check` command build their registry from a value of this
-/// type, so the two can never drift: the set of checks is a pure function of
-/// these inputs and the configuration.
+/// `nails check` command build their registry from a value of this type, so
+/// the two can never drift: the set of checks is a pure function of these
+/// inputs and the configuration.
 #[derive(Debug, Clone)]
 pub struct RegistryInputs {
     /// The caller's choices.
@@ -120,13 +120,13 @@ pub struct RegistryInputs {
 ///
 /// This is the one place the activation set of checks is defined. Running the
 /// registry it returns leaves nothing behind: every check only inspects the
-/// system, except three probes that write on the hidden volume and remove what
-/// they wrote (`symlink-support`, `upper-fs-capability`, whose trial overlay is
-/// mounted detached, outside every mount table, and `storage-readiness`), so the
-/// same registry backs both activation and the `nails check` command. Staging of
-/// the hidden NixOS layout happens in the activation path (see
-/// [`crate::stage_hidden_nixos_config`]) before these checks run, never inside a
-/// check.
+/// system, except four whose probes write on the hidden volume and remove what
+/// they wrote (`hidden-volume`, `symlink-support`, `upper-fs-capability`, whose
+/// trial overlay is mounted detached, outside every mount table, and
+/// `storage-readiness`), so the same registry backs both activation and the
+/// `nails check` command. Staging of the hidden NixOS layout happens in the
+/// activation path (see [`crate::stage_hidden_nixos_config`]) before these
+/// checks run, never inside a check.
 ///
 /// # Errors
 ///
