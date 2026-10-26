@@ -170,8 +170,8 @@ fn no_ip_warning() -> String {
     use nails_core::next_step::{NextStep, sudo_line};
     format!(
         "The return finds no `ip` (iproute2) in the hidden session's system directories, so the \
-         links the session made and the MAC addresses it changed stay on the decoy until \
-         power-off. `{}` leaves none of them.",
+         virtual links the session made, the MAC addresses it changed and the policy-routing \
+         rules it added stay on the decoy until power-off. `{}` leaves none of them.",
         sudo_line(NextStep::DeactivatePoweroff)
     )
 }

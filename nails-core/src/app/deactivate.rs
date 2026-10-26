@@ -78,8 +78,9 @@ impl ReadyDeactivation {
     /// What the return to the decoy will not put back, as far as the hidden
     /// session can tell before the switch, one sentence each, for the front
     /// end to show before it asks: its last step, which cannot report, finds
-    /// no `ip` to delete the session's links and set the MAC addresses back
-    /// with. None for a power-off, after which the decoy starts afresh.
+    /// no `ip` to delete the session's virtual links and policy-routing rules
+    /// and set the MAC addresses back with. None for a power-off, after which
+    /// the decoy starts afresh.
     pub fn warnings(&self, to: LeaveTo) -> Vec<String> {
         way_back_warnings(
             to,
@@ -189,8 +190,9 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, finds_ip: bool) -> Vec<String> {
         "in the hidden session's system directories"
     };
     vec![format!(
-        "The return finds no `ip` (iproute2) {place}, so the links the session made and the \
-         MAC addresses it changed stay on the decoy until power-off. `{}` leaves none of them.",
+        "The return finds no `ip` (iproute2) {place}, so the virtual links the session made, the \
+         MAC addresses it changed and the policy-routing rules it added stay on the decoy until \
+         power-off. `{}` leaves none of them.",
         sudo_line(NextStep::DeactivatePoweroff)
     )]
 }
@@ -334,8 +336,9 @@ mod tests {
             way_back_warnings(LeaveTo::Decoy, &fhs, false),
             [format!(
                 "The return finds no `ip` (iproute2) in the hidden session's system \
-                 directories, so the links the session made and the MAC addresses it changed \
-                 stay on the decoy until power-off. `{}` leaves none of them.",
+                 directories, so the virtual links the session made, the MAC addresses it \
+                 changed and the policy-routing rules it added stay on the decoy until \
+                 power-off. `{}` leaves none of them.",
                 sudo_line(NextStep::DeactivatePoweroff)
             )]
         );

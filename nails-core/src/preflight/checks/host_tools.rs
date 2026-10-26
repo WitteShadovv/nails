@@ -47,7 +47,8 @@ struct RequiredTool {
 /// `systemctl` enqueues the soft-reboot and power actions and reads unit and
 /// version state; `loginctl` resolves the operator's login session. Both ship in
 /// the `systemd` package on every family. Every way back runs `ip` (iproute2)
-/// to delete the links a session made and set hardware addresses back.
+/// to delete the links and policy-routing rules a session added and set
+/// hardware addresses back.
 const COMMON_TOOLS: &[RequiredTool] = &[
     RequiredTool {
         tool: "systemctl",
