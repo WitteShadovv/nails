@@ -4,8 +4,9 @@
 # Coverage-guided fuzz targets (cargo-fuzz, libFuzzer) for the parsers that
 # read text and data NAILS does not control: the kernel's and libmount's mount
 # tables, the kernel's compressed config, a decoy's fstab, crypttab, os-release,
-# package databases, systemd, display-manager and NixOS configuration, udev's
-# records, and raw disks.
+# package databases, the rows of its Nix store database the forensic oracle
+# reads, systemd, display-manager and NixOS configuration, udev's records, and
+# raw disks.
 # docs/testing-strategy.md says how to run a target; .clusterfuzzlite/ builds
 # them for CI.
 #
@@ -30,9 +31,12 @@ rustix = { version = "1", features = ["fs"] }
 nails-base = { path = "../nails-base", features = ["test-support"] }
 nails-core = { path = "../nails-core" }
 nails-forensics = { path = "../nails-forensics" }
+nails-oracle = { path = "../nails-oracle" }
 nails-platform = { path = "../nails-platform" }
 nails-session = { path = "../nails-session" }
 nails-teardown = { path = "../nails-teardown" }
+# The model of a Nix store database row the nix_db target reads a dump with.
+serde_json = "1.0"
 
 # The lint policy of the workspace (Cargo.toml's [workspace.lints]), which a
 # workspace of its own does not inherit: no unsafe code.
@@ -122,6 +126,13 @@ bench = false
 [[bin]]
 name = "autologin"
 path = "fuzz_targets/autologin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nix_db"
+path = "fuzz_targets/nix_db.rs"
 test = false
 doc = false
 bench = false

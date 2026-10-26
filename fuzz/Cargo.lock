@@ -635,10 +635,21 @@ dependencies = [
  "nails-base",
  "nails-core",
  "nails-forensics",
+ "nails-oracle",
  "nails-platform",
  "nails-session",
  "nails-teardown",
  "rustix",
+ "serde_json",
+]
+
+[[package]]
+name = "nails-oracle"
+version = "0.3.0-rc.3"
+dependencies = [
+ "nails-forensics",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

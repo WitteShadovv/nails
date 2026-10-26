@@ -1,0 +1,1 @@
+{"table":"ValidPaths","row":{"id":1,"path":"/nix/store/x","hash":"h","sigs":"key:abc","deriver":"/nix/store/x.drv","ultimate":1,"ca":"text:sha256:1"}}
