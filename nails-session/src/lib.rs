@@ -52,6 +52,10 @@ pub use persona::{
     EntryStatus, InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona,
 };
 
+// For the tests of code that must never open a FIFO.
+#[cfg(test)]
+mod test_fifo;
+
 #[cfg(test)]
 mod tests {
     #[test]
