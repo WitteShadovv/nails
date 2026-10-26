@@ -176,7 +176,8 @@ fn a_btrfs_subvolume_with_a_comma_in_its_path_is_refused() {
 }
 
 /// A minimal `EntryInputs` for the helpers that do not build a system:
-/// no builder, no operator, the persona at its default.
+/// no builder, no operator, the persona at its default, and a host whose facts
+/// report no SELinux.
 fn minimal_inputs<'a>(
     hidden_root: &'a Path,
     binary: &'a Path,
@@ -197,6 +198,7 @@ fn minimal_inputs<'a>(
         backend: Vec::new(),
         persona: Default::default(),
         operator: None,
+        labels: Labels::BestEffort,
         rebuild_space_mb: 0,
         read_only_disks: false,
         accepted_decoy_storage: None,
@@ -359,4 +361,171 @@ fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
             "mnt-data-media.automount"
         ]
     );
+}
+
+/// Where the host facts report SELinux.
+const REQUIRED: Labels = Labels::Required(crate::session::labels::Reason::SelinuxReported);
+
+/// `alice`, with the uid and gid of whoever runs the tests and her home at
+/// `home`.
+fn alice(home: &str) -> crate::target_user::TargetUser {
+    crate::target_user::TargetUser::for_test(
+        rustix::process::getuid().as_raw(),
+        rustix::process::getgid().as_raw(),
+        "alice",
+        home,
+        "/bin/sh",
+    )
+}
+
+/// The status change time of `path`, which any attribute written moves.
+fn ctime(path: &Path) -> (i64, i64) {
+    let meta = std::fs::symlink_metadata(path).unwrap();
+    (meta.ctime(), meta.ctime_nsec())
+}
+
+/// Long enough for a write to move a time, on a kernel whose timestamps are
+/// coarse.
+fn tick() {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+}
+
+/// A decoy root under `dir` without the operator's home, and the layout of a
+/// hidden volume next to it.
+fn home_world(dir: &Path) -> (Paths, Layout) {
+    let paths = Paths {
+        root: dir.join("root"),
+        run: dir.join("run"),
+    };
+    std::fs::create_dir_all(&paths.root).unwrap();
+    (paths, Layout::new(&dir.join("hidden")))
+}
+
+#[test]
+fn where_the_labels_are_required_a_link_in_place_of_an_upper_refuses_the_entry() {
+    // Real calls, on any host: whether the decoy directory has a label to copy
+    // or not, nothing reaches the root of the overlay that would be mounted
+    // there, which comes from the link's target.
+    let dir = tempfile::tempdir().unwrap();
+    let decoy = dir.path().join("decoy");
+    let elsewhere = dir.path().join("elsewhere");
+    for made in [&decoy, &elsewhere] {
+        std::fs::create_dir(made).unwrap();
+    }
+    let upper = dir.path().join("upper");
+    std::os::unix::fs::symlink(&elsewhere, &upper).unwrap();
+    let work = dir.path().join("work");
+
+    let error = make_layer(&upper, &work, &decoy, REQUIRED).unwrap_err();
+    assert!(matches!(error, NailsError::InvalidState(_)), "{error:?}");
+    let text = error.to_string();
+    assert!(
+        text.contains(&format!(
+            ", so {} must carry the SELinux label of {}, but ",
+            upper.display(),
+            decoy.display()
+        )),
+        "{text}"
+    );
+    // A host whose facts report no SELinux makes the layer as before.
+    make_layer(&upper, &work, &decoy, Labels::BestEffort).unwrap();
+    assert!(work.is_dir());
+}
+
+#[test]
+fn the_way_to_the_home_starts_at_the_upper_of_the_filesystem_it_lives_on() {
+    let paths = Paths {
+        root: PathBuf::from("/decoy"),
+        run: PathBuf::from("/scratch-run"),
+    };
+    let layout = Layout::new(Path::new("/mnt/data"));
+    let mounts = parse_mountinfo(
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
+         2 1 8:3 / /home rw - ext4 /dev/vda3 rw\n",
+    );
+    let way = HomeWay::of(&paths, &layout, &mounts, &alice("/home/alice"));
+    assert_eq!(way.decoy, Path::new("/decoy/home"));
+    assert_eq!(way.upper, Path::new("/mnt/data/root/mounts/home/upper"));
+    assert_eq!(way.rest, Path::new("alice"));
+    // A home on the decoy root is below the root upper.
+    let way = HomeWay::of(&paths, &layout, &mounts[..1], &alice("/home/alice"));
+    assert_eq!(way.decoy, Path::new("/decoy"));
+    assert_eq!(way.upper, Path::new("/mnt/data/root/upper"));
+    assert_eq!(way.rest, Path::new("home/alice"));
+}
+
+#[test]
+fn a_fresh_home_entry_that_requires_the_labels_is_refused_where_the_decoy_has_none() {
+    // Real calls, on any host: the decoy has no home for alice, so there is
+    // no label for the home an earlier entry made, nor for its parent.
+    let dir = tempfile::tempdir().unwrap();
+    let (paths, layout) = home_world(dir.path());
+    // That earlier entry made the home (the opaque mark on it needs
+    // CAP_SYS_ADMIN, which no test has).
+    let upper_home = layout.upper().join("home/alice");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    let mut inputs = minimal_inputs(layout.hidden_root(), Path::new("/proc/self/exe"), None);
+    inputs.persona.mode = crate::config::PersonaMode::FreshHome;
+    inputs.operator = Some(alice("/home/alice"));
+    inputs.labels = REQUIRED;
+    let before = (ctime(&layout.upper().join("home")), ctime(&upper_home));
+    tick();
+
+    let text = persona_home(&paths, &inputs, &layout, &[])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        text.ends_with(&format!(
+            "but {} does not exist",
+            paths.root.join("home").display()
+        )),
+        "{text}"
+    );
+    // Without SELinux facts the entry goes on and writes nothing on the way.
+    inputs.labels = Labels::BestEffort;
+    persona_home(&paths, &inputs, &layout, &[]).unwrap();
+    assert_eq!(
+        (ctime(&layout.upper().join("home")), ctime(&upper_home)),
+        before
+    );
+}
+
+#[test]
+fn a_shared_home_entry_walks_only_as_far_as_the_upper_holds_the_way_to_the_home() {
+    // Real calls, on any host.
+    let dir = tempfile::tempdir().unwrap();
+    let (paths, layout) = home_world(dir.path());
+    let mut inputs = minimal_inputs(layout.hidden_root(), Path::new("/proc/self/exe"), None);
+    assert_eq!(inputs.persona.mode, crate::config::PersonaMode::SharedHome);
+    inputs.labels = REQUIRED;
+    // An entry without an operator walks nothing.
+    std::fs::create_dir_all(layout.upper().join("home/alice")).unwrap();
+    persona_home(&paths, &inputs, &layout, &[]).unwrap();
+
+    // The first entry, before the upper exists: nothing to walk.
+    inputs.operator = Some(alice("/home/alice"));
+    std::fs::remove_dir_all(layout.hidden_root()).unwrap();
+    persona_home(&paths, &inputs, &layout, &[]).unwrap();
+    assert!(!layout.hidden_root().exists(), "the walk made something");
+
+    // What a refused fresh-home entry left for an operator the decoy has no
+    // home for: refused where the labels are required, left as it is
+    // without SELinux facts.
+    let upper_home = layout.upper().join("home/alice");
+    std::fs::create_dir_all(&upper_home).unwrap();
+    let before = ctime(&upper_home);
+    tick();
+    let text = persona_home(&paths, &inputs, &layout, &[])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        text.ends_with(&format!(
+            "but {} does not exist",
+            paths.root.join("home").display()
+        )),
+        "{text}"
+    );
+    inputs.labels = Labels::BestEffort;
+    persona_home(&paths, &inputs, &layout, &[]).unwrap();
+    assert_eq!(ctime(&upper_home), before);
 }

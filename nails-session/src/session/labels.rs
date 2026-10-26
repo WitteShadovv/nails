@@ -40,11 +40,12 @@
 //!
 //! # Where the copies go
 //!
-//! Nothing calls these yet. The entry is to make one [`Labels`] with
+//! The activation makes one [`Labels`] with
 //! `Labels::for_host(manager.host_profile())`, so a detection that failed
-//! counts as SELinux, carry it in [`EntryInputs`](super::entry::EntryInputs),
-//! and copy at three places, each before the overlay over that upper is
-//! mounted (an upper must not change under a mounted overlay):
+//! counts as SELinux, and carries it in
+//! [`EntryInputs::labels`](super::entry::EntryInputs::labels). The entry
+//! copies at three places, each before the overlay over that upper is mounted
+//! (an upper must not change under a mounted overlay):
 //!
 //! - **the root upper**: `make_layer` in [`super::entry`], after
 //!   `match_attributes(upper, like)`, as `copy_label(like, upper, labels)`.
@@ -56,10 +57,9 @@
 //!   filesystem ([`Paths::decoy`](super::Paths::decoy) of its mount point) for
 //!   the upper of [`Layout::mount_layers`](super::Layout::mount_layers), before
 //!   that filesystem's overlay is mounted;
-//! - **the home and its parents**: where `build` in [`super::entry`] calls
-//!   `fresh_home` for the fresh-home persona, at every entry that knows the
-//!   operator, whatever the persona mode. The home is found as `fresh_home`
-//!   finds it: the upper root is [`Layout::upper`](super::Layout::upper) for a
+//! - **the home and its parents**: `persona_home` in [`super::entry`], at every
+//!   entry that knows the operator, whatever the persona mode. The home is
+//!   found as `fresh_home` finds it: the upper root is [`Layout::upper`](super::Layout::upper) for a
 //!   home on the decoy root, else the upper of [`Layout::mount_layers`](super::Layout::mount_layers)
 //!   of the decoy filesystem `mount` it lives on, and `rest` is the home below
 //!   `mount`. In the fresh-home persona the call is in `fresh_home`, right
@@ -94,11 +94,11 @@
 //! it is when its decoy counterpart does not exist or has no label, or a
 //! filesystem stores no labels, and the walk stops at a link or a file in place
 //! of a directory; with [`Labels::Required`] every directory gets the label or
-//! the entry is refused. The wiring needs an entry test for this: an entry
-//! refused at the copy for a parent of the home, then a later entry, with the
-//! home in place, that labels that parent or is refused again, never one that
-//! goes on without the label, in the fresh-home persona and with the persona
-//! set to shared-home after the refusal.
+//! the entry is refused. The entry tests of the kernel tier hold the entry to
+//! this: an entry refused at the copy for a parent of the home, then a later
+//! entry, with the home in place, labels that parent or is refused again and
+//! never goes on without the label, in the fresh-home persona and with the
+//! persona set to shared-home after the refusal.
 //!
 //! The shared-home walk is for what a refused fresh-home entry leaves in the
 //! upper. An entry refused at its walk (the decoy has no home for the operator,

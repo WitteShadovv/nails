@@ -1005,6 +1005,147 @@ fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
     });
 }
 
+/// The SELinux label stored on `path` itself, or the kernel's error.
+fn selinux_label(path: &Path) -> std::result::Result<Vec<u8>, rustix::io::Errno> {
+    let mut value = vec![0; 4096];
+    let len = rustix::fs::lgetxattr(path, crate::session::labels::LABEL_XATTR, &mut value[..])?;
+    value.truncate(len);
+    Ok(value)
+}
+
+/// [`fhs_decoy`], whose directories carry no SELinux label. Skips on a host
+/// whose kernel labels every file itself (SELinux active): the label copy
+/// under a loaded policy needs a VM.
+fn unlabelled_fhs_decoy() -> ScratchTmpfs {
+    let decoy = fhs_decoy();
+    match selinux_label(decoy.path()) {
+        Err(rustix::io::Errno::NODATA) => decoy,
+        Ok(_) => crate::test_support::skip_host(
+            "the kernel labels new files on this host: SELinux is active, and the label copy \
+             under a loaded policy needs a VM",
+        ),
+        Err(errno) => panic!("the SELinux label of a fresh tmpfs: {errno}"),
+    }
+}
+
+#[test]
+fn an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone() {
+    // Where the host facts report SELinux, and where there are no facts to rule
+    // it out, the root of the upper must take the decoy root's label, and this
+    // decoy root has none.
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let mut selinux = FakePlatform::fhs().host_profile();
+        selinux.selinux = Some(crate::platform::SelinuxStatus {
+            enforce: Some(crate::platform::SelinuxMode::Enforcing),
+            config_mode: Some("enforcing".to_string()),
+            config_policy: Some("targeted".to_string()),
+        });
+        for (profile, why) in [
+            (Some(selinux), "the host facts report SELinux"),
+            (None, "the host could not be detected and may run SELinux"),
+        ] {
+            let mut m = manager(hidden.path());
+            if let Some(profile) = profile {
+                m.set_host_profile(profile);
+            }
+            let host = FakeEntryHost::default();
+
+            let error = m
+                .enter_session_no_preflight_on(&machine, &options, &host)
+                .unwrap_err();
+
+            let text = error.to_string();
+            assert!(text.contains(why), "{text}");
+            assert!(
+                text.ends_with(&format!(
+                    "must carry the SELinux label of {0}, but {0} has no label",
+                    decoy.path().display()
+                )),
+                "{text}"
+            );
+            // Nothing of the entry is left, and nothing was recorded.
+            let mounts = read_mountinfo().unwrap();
+            assert!(
+                mounts
+                    .iter()
+                    .all(|e| !e.mount_point.starts_with(machine.paths.nextroot())),
+                "the next root is detached"
+            );
+            assert!(!machine.paths.runtime().exists());
+            assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+            assert!(!hidden.path().join("state.json").exists());
+        }
+    });
+}
+
+#[test]
+fn an_entry_on_a_host_whose_facts_report_no_selinux_writes_no_label() {
+    // The decoy's directories carry no label, as on a host without SELinux:
+    // the hidden root is made as it was before the label copy.
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_on_a_host_whose_facts_report_no_selinux_writes_no_label
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        let profile = FakePlatform::fhs().host_profile();
+        assert_eq!(profile.selinux, None);
+        m.set_host_profile(profile);
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+
+        assert!(
+            matches!(outcome, EnterOutcome::Prepared { .. }),
+            "{outcome:?}"
+        );
+        let upper = crate::session::Layout::new(hidden.path()).upper();
+        for dir in [upper, machine.paths.nextroot()] {
+            assert_eq!(
+                selinux_label(&dir),
+                Err(rustix::io::Errno::NODATA),
+                "{}",
+                dir.display()
+            );
+        }
+        entry::rollback(&machine.paths);
+    });
+}
+
 #[test]
 fn the_plan_records_only_what_the_override_alone_accepted() {
     use crate::filesystem::MockFilesystem;

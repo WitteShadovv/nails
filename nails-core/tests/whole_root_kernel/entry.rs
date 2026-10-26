@@ -6,6 +6,7 @@
 //! policy, the drop-in, and the transition that consumes it.
 
 use nails_core::session::entry::{self, EntryHost, EntryInputs};
+use nails_core::session::labels::Labels;
 use nails_core::session::layout::Paths;
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host, write_executable};
@@ -177,6 +178,7 @@ impl World {
             backend: vec!["data".into()],
             persona: Default::default(),
             operator: None,
+            labels: Labels::BestEffort,
             rebuild_space_mb: 0,
             read_only_disks: false,
             accepted_decoy_storage: None,
@@ -1569,3 +1571,6 @@ fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
         assert!(nextroot::is_noexec(&paths.run).unwrap());
     });
 }
+
+#[path = "entry_labels.rs"]
+mod labels;
