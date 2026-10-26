@@ -90,6 +90,9 @@ pub mod fstab;
 // The stack of block devices under a filesystem, read from sysfs.
 pub mod blockdev;
 
+// What a system's package database (dpkg, pacman, rpm) says is installed.
+pub mod packages;
+
 // Test-runtime guards for host interaction. Public for the other NAILS crates
 // only; not part of any interface.
 #[doc(hidden)]

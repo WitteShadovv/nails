@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: dpkg status fields, package states, the white space
+# and line ends dpkg's stanza parser tells apart, and dpkg info file names.
+"Package: "
+"Architecture: "
+"Version: "
+"Status: install ok "
+"Status: deinstall ok "
+"Description: "
+"Conffiles:"
+"not-installed"
+"config-files"
+"half-installed"
+"unpacked"
+"half-configured"
+"triggers-awaited"
+"triggers-pending"
+"installed"
+"\x0a\x0a"
+"\x0a "
+"\x0a\x09"
+"\x0d\x0a"
+"\x0b"
+"\x0c"
+"\x1a"
+":"
+" :"
+"-"
+".list"
+":amd64"
