@@ -1096,7 +1096,8 @@ fn summary_renders_the_clean_and_fail_lines() {
     assert_eq!(
         clean.summary,
         "CLEAN: 2 residue (1 noise subtracted, 1 cited, 1 self-check); not seen: timestamps, \
-         file metadata, process ids within one power-of-two range, sqlite_carved"
+         file metadata, process ids within one power-of-two range, deleted content without a \
+         recorded feature, sqlite_carved"
     );
 
     let mut scans = clean_scans();
@@ -1451,6 +1452,7 @@ fn every_verdict_names_the_classes_it_cannot_see() {
             Unseen::Timestamps,
             Unseen::Metadata,
             Unseen::ProcessIdRange,
+            Unseen::DeletedContent,
             Unseen::SkippedCarvers {
                 feature_types: vec!["sqlite_carved".into()],
             },
@@ -1464,6 +1466,7 @@ fn every_verdict_names_the_classes_it_cannot_see() {
             {"kind": "timestamps"},
             {"kind": "metadata"},
             {"kind": "process_id_range"},
+            {"kind": "deleted_content"},
             {"kind": "skipped_carvers", "feature_types": ["sqlite_carved"]},
             {"kind": "reboot_rewritten", "paths": []},
         ])
@@ -1543,7 +1546,7 @@ fn a_failing_summary_names_no_unseen_class() {
     let v = decide(&scans, &clean_policy());
     assert_eq!(v.status, Status::Fail);
     assert!(!v.summary.contains("not seen"), "{}", v.summary);
-    assert_eq!(v.unseen.len(), 5);
+    assert_eq!(v.unseen.len(), 6);
 }
 
 // --- a real scan must hear from every channel on every image -----------------
