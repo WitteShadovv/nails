@@ -1,60 +1,84 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Keys for the rows of the Nix store database, so that a store path the
-//! database registers subtracts across the three images exactly when its row
-//! does.
+//! Keys for the rows of the Nix store database, so that what the database
+//! holds subtracts across the three images exactly when its row does.
 //!
-//! The oracle's decoys register their store paths at every start of the
-//! service manager, and each registration rewrites pages of the database
-//! file, so the file's digest differs on every image and the restore channel
-//! can only call it noise: a store path a session registered there would go
-//! unseen. Its rows do not change with a boot. `run-scan.sh` therefore dumps
-//! the `ValidPaths` table of each restored database with `sqlite3 -json`
-//! before it empties the file, and each row is keyed by what it registers.
-//! The row id and the registration time are left out, so the same path
-//! registered again at another time is the same finding. Every other column is
-//! kept, so a path the session registered or removed, or one registered again
-//! with another hash, deriver, size, signature or content address, is a
-//! change.
+//! The oracle's decoy VMs register their store paths at every start (the QEMU
+//! test module's `register-nix-paths`), and each registration rewrites pages
+//! of the database file, so the file's digest differs on every image and the
+//! restore channel can only call it noise: a store path a session registered
+//! there would go unseen. Its rows do not change with such a start.
+//! `run-scan.sh` therefore dumps every row of each restored database before it
+//! empties the file, one JSON object a line (`{"table": ..., "row": {...}}`):
+//! the rows of each of its tables and of its schema (`sqlite_master`). Among
+//! them are `ValidPaths`, one row per registered store path, `Refs`, the
+//! references between those paths by their `ValidPaths` ids, and
+//! `sqlite_sequence`, which keeps the highest id `ValidPaths` ever gave out, so
+//! a store path the session registered and collected again leaves it raised.
+//!
+//! Each row is keyed by its table and every column but those that only order,
+//! date or place it ([`NOT_CONTENT`]). Every other column is kept, so a path
+//! the session registered or removed, or one registered again with another
+//! hash, deriver, size, signature or content address, is a change, and so is a
+//! reference, a raised sequence or a schema entry the session changed. The
+//! rows are what the database holds; what its unused space still holds of rows
+//! it deleted is not read.
 
 use crate::model::{Finding, Tool};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 /// Where the Nix store database sits on an image.
 pub const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
 
-/// The table the scan reads: one row per store path the database registers.
-pub const TABLE: &str = "ValidPaths";
+/// The table with one row per store path the database registers.
+const VALID_PATHS: &str = "ValidPaths";
 
-/// The columns that place or date a row rather than say what it registers:
-/// the row id, which follows the order of registration, and the registration
-/// time.
-const NOT_CONTENT: &[&str] = &["id", "registrationTime"];
+/// The columns, by table, that only order, date or place a row rather than
+/// say what it holds: a `ValidPaths` row's id, which follows the order of
+/// registration, and its registration time, and the page a schema entry's tree
+/// starts at, which says where in the file it sits.
+const NOT_CONTENT: &[(&str, &str)] = &[
+    (VALID_PATHS, "id"),
+    (VALID_PATHS, "registrationTime"),
+    ("sqlite_master", "rootpage"),
+];
 
-/// Parse the rows `sqlite3 -json` printed for `SELECT * FROM ValidPaths` into
-/// findings, or say why the output is not that. sqlite3 prints nothing at all
-/// for a table with no rows, so empty output is no rows. Pure, so it is
-/// unit-tested directly.
-pub fn nix_db_findings(contents: &str) -> Result<Vec<Finding>, String> {
-    if contents.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let rows: Vec<Map<String, Value>> = serde_json::from_str(contents)
-        .map_err(|e| format!("not the rows sqlite3 -json prints: {e}"))?;
-    rows.iter().map(row_finding).collect()
+/// One line of the dump: a row of `table`, column by column.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DumpedRow {
+    table: String,
+    row: Map<String, Value>,
 }
 
-/// The finding of one row: the table name, then every column but
-/// [`NOT_CONTENT`] as `name=value` in name order, with a NULL left out. A row
-/// that names no store path is not a `ValidPaths` row.
-fn row_finding(row: &Map<String, Value>) -> Result<Finding, String> {
+/// Parse the dump `run-scan.sh` wrote of a store database, one row a line,
+/// into findings, or say why a line is not such a row. A database without a
+/// single row, not even a schema entry, dumps nothing. Pure, so it is
+/// unit-tested directly.
+pub fn nix_db_findings(contents: &str) -> Result<Vec<Finding>, String> {
+    contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let dumped: DumpedRow = serde_json::from_str(line)
+                .map_err(|e| format!("not a row of the dump ({e}): {line}"))?;
+            row_finding(&dumped.table, &dumped.row)
+        })
+        .collect()
+}
+
+/// The finding of one row: the table's name, then every column but
+/// [`NOT_CONTENT`] as `name=value` in name order, with a NULL left out. A
+/// `ValidPaths` row that names no store path is not one.
+fn row_finding(table: &str, row: &Map<String, Value>) -> Result<Finding, String> {
     let names_a_path =
         matches!(row.get("path"), Some(Value::String(path)) if path.starts_with('/'));
-    if !names_a_path {
+    if table == VALID_PATHS && !names_a_path {
         return Err(format!(
-            "a row with no store path: {}",
+            "a {VALID_PATHS} row with no store path: {}",
             Value::Object(row.clone())
         ));
     }
@@ -62,7 +86,7 @@ fn row_finding(row: &Map<String, Value>) -> Result<Finding, String> {
     // sqlite3 printed them in.
     let mut columns: BTreeMap<&str, String> = BTreeMap::new();
     for (name, value) in row {
-        if NOT_CONTENT.contains(&name.as_str()) {
+        if NOT_CONTENT.contains(&(table, name.as_str())) {
             continue;
         }
         let text = match value {
@@ -72,7 +96,7 @@ fn row_finding(row: &Map<String, Value>) -> Result<Finding, String> {
         };
         columns.insert(name, text);
     }
-    let mut field = TABLE.to_string();
+    let mut field = table.to_string();
     for (name, text) in columns {
         field.push(' ');
         field.push_str(name);
@@ -86,20 +110,29 @@ fn row_finding(row: &Map<String, Value>) -> Result<Finding, String> {
 mod tests {
     use super::*;
 
-    /// One `ValidPaths` row as `sqlite3 -json` prints it, for `path`
-    /// registered at `time` with the row id `id`.
+    /// The dump line of one `ValidPaths` row, for `path` registered at `time`
+    /// with the row id `id`.
     fn row(id: u32, path: &str, time: u64) -> String {
         format!(
-            r#"{{"id":{id},"path":"{path}","hash":"sha256:00ab","registrationTime":{time},"deriver":null,"narSize":1216,"ultimate":null,"sigs":null,"ca":null}}"#
+            r#"{{"table":"ValidPaths","row":{{"id":{id},"path":"{path}","hash":"sha256:00ab","registrationTime":{time},"deriver":null,"narSize":1216,"ultimate":null,"sigs":null,"ca":null}}}}"#
         )
+    }
+
+    /// The fields of the findings `dump` parses into.
+    fn fields(dump: &str) -> Vec<String> {
+        nix_db_findings(dump)
+            .expect("rows")
+            .into_iter()
+            .map(|f| f.field)
+            .collect()
     }
 
     const HIDDEN: &str = "/nix/store/0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hidden-package";
 
     #[test]
-    fn a_row_is_keyed_by_what_it_registers() {
+    fn a_store_path_row_is_keyed_by_what_it_registers() {
         let findings =
-            nix_db_findings(&format!("[{}]\n", row(7, HIDDEN, 1_792_857_436))).expect("one row");
+            nix_db_findings(&format!("{}\n", row(7, HIDDEN, 1_792_857_436))).expect("one row");
         assert_eq!(
             findings,
             [Finding::new(
@@ -114,62 +147,106 @@ mod tests {
     fn the_row_id_and_registration_time_are_left_out() {
         // The same path registered again later, under another row id, is the
         // same finding: a boot that registers its closure anew changes neither.
-        let first = nix_db_findings(&format!("[{}]", row(1, HIDDEN, 100))).expect("row");
-        let again = nix_db_findings(&format!("[{}]", row(42, HIDDEN, 999))).expect("row");
-        assert_eq!(first, again);
+        assert_eq!(fields(&row(1, HIDDEN, 100)), fields(&row(42, HIDDEN, 999)));
     }
 
     #[test]
     fn every_other_column_is_kept() {
         // A path registered with another signature or deriver is another row.
-        let signed = r#"[{"id":1,"path":"/nix/store/x","hash":"h","sigs":"key:abc","deriver":"/nix/store/x.drv","ultimate":1,"ca":"text:sha256:1"}]"#;
-        let [finding] = nix_db_findings(signed)
-            .expect("row")
-            .try_into()
-            .expect("one");
+        let signed = r#"{"table":"ValidPaths","row":{"id":1,"path":"/nix/store/x","hash":"h","sigs":"key:abc","deriver":"/nix/store/x.drv","ultimate":1,"ca":"text:sha256:1"}}"#;
         assert_eq!(
-            finding.field,
-            "ValidPaths ca=text:sha256:1 deriver=/nix/store/x.drv hash=h path=/nix/store/x \
-             sigs=key:abc ultimate=1"
+            fields(signed),
+            [
+                "ValidPaths ca=text:sha256:1 deriver=/nix/store/x.drv hash=h path=/nix/store/x \
+              sigs=key:abc ultimate=1"
+            ]
         );
     }
 
     #[test]
-    fn every_row_of_the_dump_is_read() {
-        // sqlite3 -json prints one row a line inside one array.
+    fn every_table_and_the_schema_are_read() {
+        // The references, the outputs, the sequence and the schema are rows of
+        // their own, each keyed by its table; a column a table has that
+        // ValidPaths leaves out (an id) is kept there.
+        let dump = [
+            r#"{"table":"Refs","row":{"referrer":7,"reference":3}}"#,
+            r#"{"table":"DerivationOutputs","row":{"drv":7,"id":"out","path":"/nix/store/o"}}"#,
+            r#"{"table":"sqlite_sequence","row":{"name":"ValidPaths","seq":576}}"#,
+            r#"{"table":"SchemaMigrations","row":{"migration":"20220326"}}"#,
+            r#"{"table":"sqlite_master","row":{"type":"table","name":"Refs","tbl_name":"Refs","rootpage":4,"sql":"CREATE TABLE Refs (\n referrer integer)"}}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            fields(&dump),
+            [
+                "Refs reference=3 referrer=7",
+                "DerivationOutputs drv=7 id=out path=/nix/store/o",
+                "sqlite_sequence name=ValidPaths seq=576",
+                "SchemaMigrations migration=20220326",
+                "sqlite_master name=Refs sql=CREATE TABLE Refs (\n referrer integer) tbl_name=Refs \
+                 type=table",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sequence_raised_by_a_path_registered_and_collected_again_is_another_row() {
+        let sequence = |seq: u32| {
+            format!(r#"{{"table":"sqlite_sequence","row":{{"name":"ValidPaths","seq":{seq}}}}}"#)
+        };
+        assert_ne!(fields(&sequence(576)), fields(&sequence(577)));
+    }
+
+    #[test]
+    fn the_page_a_schema_entry_starts_at_is_left_out() {
+        // A database rebuilt page by page holds the same schema at other pages.
+        let entry = |rootpage: u32| {
+            format!(
+                r#"{{"table":"sqlite_master","row":{{"type":"index","name":"IndexReferrer","tbl_name":"Refs","rootpage":{rootpage},"sql":"CREATE INDEX IndexReferrer on Refs(referrer)"}}}}"#
+            )
+        };
+        assert_eq!(fields(&entry(5)), fields(&entry(9)));
+    }
+
+    #[test]
+    fn every_line_of_the_dump_is_read() {
+        // sqlite3 prints one row a line; a blank line is no row.
         let dump = format!(
-            "[{},\n{}]\n",
+            "{}\n\n{}\n",
             row(1, "/nix/store/a", 1),
             row(2, "/nix/store/b", 1)
         );
-        let paths: Vec<String> = nix_db_findings(&dump)
-            .expect("rows")
-            .into_iter()
-            .map(|f| f.field)
-            .collect();
+        let paths = fields(&dump);
         assert_eq!(paths.len(), 2);
         assert!(paths[0].ends_with("path=/nix/store/a"), "{paths:?}");
         assert!(paths[1].ends_with("path=/nix/store/b"), "{paths:?}");
     }
 
     #[test]
-    fn an_empty_dump_is_a_table_with_no_rows() {
+    fn an_empty_dump_is_a_database_with_no_rows() {
         assert_eq!(nix_db_findings(""), Ok(Vec::new()));
         assert_eq!(nix_db_findings("\n"), Ok(Vec::new()));
-        assert_eq!(nix_db_findings("[]"), Ok(Vec::new()));
     }
 
     #[test]
     fn a_dump_that_is_not_the_rows_is_refused() {
         for broken in [
             "not json",
+            // The rows of one table as sqlite3 -json prints them, untagged.
+            r#"[{"path":"/nix/store/a"}]"#,
             r#"{"path":"/nix/store/a"}"#,
-            r#"[["/nix/store/a"]]"#,
-            r#"[{"id":1,"hash":"h"}]"#,
-            r#"[{"id":1,"path":null}]"#,
-            r#"[{"id":1,"path":"relative"}]"#,
+            r#"{"table":"Refs"}"#,
+            r#"{"table":"Refs","row":[7,3]}"#,
+            r#"{"table":7,"row":{}}"#,
+            r#"{"table":"Refs","row":{},"rows":1}"#,
+            r#"{"table":"ValidPaths","row":{"id":1,"hash":"h"}}"#,
+            r#"{"table":"ValidPaths","row":{"id":1,"path":null}}"#,
+            r#"{"table":"ValidPaths","row":{"id":1,"path":"relative"}}"#,
         ] {
             assert!(nix_db_findings(broken).is_err(), "{broken}");
         }
+        // One bad line fails the whole dump.
+        let mixed = format!("{}\nnot json\n", row(1, HIDDEN, 1));
+        assert!(nix_db_findings(&mixed).is_err());
     }
 }

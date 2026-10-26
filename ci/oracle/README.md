@@ -40,7 +40,7 @@ The scan writes one subtree per tool, per image label:
 ```
 outputs/restore/<label>/...            restored file tree, each file emptied
 outputs/restore/<label>.sha256         a SHA-256 of every restored file
-outputs/nix_db/<label>.json            the rows of the restored Nix store database
+outputs/nix_db/<label>.jsonl           every row of the restored Nix store database, one per line
 outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 outputs/bulk_extractor/<label>/*_carved/...  the objects its carvers saved
 outputs/plaso/<label>.jsonl            plaso timeline, one JSON event per line
@@ -49,11 +49,12 @@ outputs/plaso/<label>.jsonl            plaso timeline, one JSON event per line
 `<label>` is `before`, `control` or `after`. `run-scan.sh` hashes every restored
 file (`sha256sum --zero`, run inside the tree) before it empties the file to
 save disk. Before it empties a restored Nix store database
-(`/nix/var/nix/db/db.sqlite`), it dumps the database's `ValidPaths` rows with
-`sqlite3 -json`, reading a copy with the write-ahead log beside it. The plaso
-store is exported to JSON lines (for example `psort -o json_line`) so the
-verdict tool can read it without a plaso runtime. Each tool normalizes to
-findings keyed by `(tool, path, field)`:
+(`/nix/var/nix/db/db.sqlite`), it dumps every row of each of the database's
+tables and of its schema, one JSON object per line
+(`{"table": ..., "row": {...}}`), reading a copy with the write-ahead log
+beside it. The plaso store is exported to JSON lines (for example `psort -o
+json_line`) so the verdict tool can read it without a plaso runtime. Each tool
+normalizes to findings keyed by `(tool, path, field)`:
 
 - restore — `path` is the recovered entry's absolute on-image path; `field` is
   its kind and content: `sha256:<digest>` for a file, `dir` for a directory,
@@ -63,14 +64,20 @@ findings keyed by `(tool, path, field)`:
   are left to plaso, which compares them by content; the directories that hold
   them are still reported.
 - nix_db — `path` is the store database's on-image path; `field` is one of its
-  `ValidPaths` rows: `ValidPaths`, then every column but the row id and the
-  registration time as `name=value` in name order, a NULL left out. The
-  oracle's decoy VMs register their store paths at every start (the QEMU test
-  module's `register-nix-paths`), which rewrites the database file, so the
-  restore channel can only call it noise. Its rows do not change with such a
-  start, so a store path the session registered or removed, or registered
-  again with another hash, size, deriver or signature, is a change of its
-  own.
+  rows: the table's name, then its columns as `name=value` in name order, a
+  NULL left out. Every table is read, the schema (`sqlite_master`) too:
+  `ValidPaths`, one row per registered store path, `Refs`, the references
+  between those paths by their `ValidPaths` ids, `DerivationOutputs`, and
+  `sqlite_sequence`, the highest id `ValidPaths` ever gave out. Left out are
+  the columns that only order, date or place a row: a `ValidPaths` row's id
+  and registration time, and the page a schema entry starts at (`rootpage`).
+  The oracle's decoy VMs register their store paths at every start (the QEMU
+  test module's `register-nix-paths`), which rewrites the database file, so
+  the restore channel can only call it noise. Its rows do not change with
+  such a start, so a store path the session registered or removed, or
+  registered again with another hash, size, deriver or signature, is a change
+  of its own, and so is a store path it registered and collected again: the
+  sequence stays raised.
 - bulk_extractor — `path` is the feature type (`email`, `url`, ...); `field` is
   the feature value. This channel reads the whole image, free space included,
   so it still sees a deleted-but-not-overwritten trace. Its carvers save whole
@@ -173,7 +180,9 @@ class with its `kind`, and a clean summary line ends with the same classes
 - `reboot_rewritten`: a file a plain reboot rewrites too. The control cycle
   marks its path as noise, so a session's write to it is seen only where a
   channel reads the file's records: the login records of `wtmp`, through
-  plaso and bulk_extractor's carver, and the rows of the Nix store database.
+  plaso and bulk_extractor's carver, and the rows and schema of the Nix store
+  database, though not what the database's unused space keeps of rows it
+  deleted.
   `paths` lists this run's other such files where `after` holds what neither
   `before` nor `control` does (on the real images,
   `/var/lib/systemd/random-seed` among them).

@@ -334,26 +334,46 @@ carve_restore() {
 # The oracle's decoy VMs register their store paths at every start (the QEMU
 # test module's register-nix-paths), which rewrites pages of the store
 # database, so its digest differs on every image and the verdict can only call
-# the file noise. Its rows do not change with such a start: dump them, so that
-# a store path the session registered or removed is a change of its own (the
-# verdict's nix_db channel; see ci/oracle/README.md).
+# the file noise. Its rows do not change with such a start: dump every one of
+# them, so that a store path the session registered or removed, a reference or
+# the raised sequence of a path it registered and collected again is a change
+# of its own (the verdict's nix_db channel; see ci/oracle/README.md).
 nix_db=/nix/var/nix/db/db.sqlite
 
-# dump_nix_db <restored-tree> <dest>: write the ValidPaths rows of the store
-# database in the restored tree to <dest> as sqlite3 -json prints them (nothing
-# at all for no rows). sqlite3 reads a copy, with the write-ahead log beside it
-# so rows not yet checkpointed into the database are read too, and never the
-# restored files themselves, which are already hashed. A database it cannot
-# read stops the run: its rows are the only view of that file.
+# The SQL that writes, for the schema (sqlite_master) and for each table of a
+# database, one query that prints every row of it as one JSON object a line:
+# {"table": <its name>, "row": {<column>: <value>, ...}}. sqlite3 writes them
+# from the schema itself, so a table a Nix version adds is read as well, and
+# json_object names every column, so a row reads the same whatever order its
+# columns come in. A name is quoted with its quotes doubled.
+nix_db_queries=$(cat <<'SQL'
+SELECT 'SELECT json_object(''table'', ' || quote(t.name) || ', ''row'', json_object('
+       || group_concat(quote(c.name) || ', "' || replace(c.name, '"', '""') || '"', ', ')
+       || ')) FROM "' || replace(t.name, '"', '""') || '";'
+FROM (SELECT 'sqlite_master' AS name
+      UNION ALL SELECT name FROM sqlite_master WHERE type = 'table') AS t
+JOIN pragma_table_info(t.name) AS c
+GROUP BY t.name
+ORDER BY t.name;
+SQL
+)
+
+# dump_nix_db <restored-tree> <dest>: write every row of the store database in
+# the restored tree to <dest>, one JSON object a line (see nix_db_queries).
+# sqlite3 reads a copy, with the write-ahead log beside it so rows not yet
+# checkpointed into the database are read too, and never the restored files
+# themselves, which are already hashed. A database it cannot read stops the
+# run: its rows are the only view of that file.
 dump_nix_db() {
-  local tree=$1 dest=$2 copy="$work/nix-db"
+  local tree=$1 dest=$2 copy="$work/nix-db" queries
   command -v sqlite3 >/dev/null \
     || { echo "run-scan: $tree holds the Nix store database $nix_db, and reading its rows needs sqlite3; failing closed" >&2; exit 1; }
   rm -rf "$copy"
   mkdir -p "$copy"
   cp "$tree$nix_db" "$copy/db.sqlite"
   if [ -f "$tree$nix_db-wal" ]; then cp "$tree$nix_db-wal" "$copy/db.sqlite-wal"; fi
-  if ! sqlite3 -bail -json "$copy/db.sqlite" 'SELECT * FROM ValidPaths ORDER BY path' >"$dest"; then
+  if ! queries=$(sqlite3 -bail "$copy/db.sqlite" "$nix_db_queries") \
+    || ! sqlite3 -bail "$copy/db.sqlite" "$queries" >"$dest"; then
     echo "run-scan: sqlite3 could not read the rows of the Nix store database in $tree; failing closed" >&2
     exit 1
   fi
@@ -459,12 +479,12 @@ for label in "${LABELS[@]}"; do
     echo "run-scan: could not hash the files the restore carve of $img recovered; failing closed" >&2
     exit 1
   fi
-  # The rows of the store database go to outputs/nix_db/<label>.json, exactly
+  # The rows of the store database go to outputs/nix_db/<label>.jsonl, exactly
   # when the tree holds the database as a file; nails-oracle stops on one
   # without the other.
-  rm -f "$outputs/nix_db/$label.json"
+  rm -f "$outputs/nix_db/$label.jsonl"
   if [ -f "$dest$nix_db" ] && [ ! -L "$dest$nix_db" ]; then
-    dump_nix_db "$dest" "$outputs/nix_db/$label.json"
+    dump_nix_db "$dest" "$outputs/nix_db/$label.jsonl"
   fi
   find "$dest" -type f -exec truncate -s 0 {} +
 

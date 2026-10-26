@@ -9,7 +9,7 @@
 //! ```text
 //! outputs/restore/<label>/...            restored file tree (btrfs restore, debugfs rdump)
 //! outputs/restore/<label>.sha256         a SHA-256 of every restored file
-//! outputs/nix_db/<label>.json            the ValidPaths rows of the restored Nix store database
+//! outputs/nix_db/<label>.jsonl           every row of the restored Nix store database, one a line
 //! outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 //! outputs/bulk_extractor/<label>/*_carved/...  the objects its carvers saved
 //! outputs/plaso/<label>.jsonl            plaso timeline, one JSON event a line
@@ -19,9 +19,9 @@
 //! into `<label>.sha256` (`sha256sum --zero`: `<hex>  ./<path>`, each record
 //! ending in a NUL), so the restore channel compares what a file holds, not
 //! only that it exists. Before it empties a restored Nix store database, it
-//! dumps the database's rows into `nix_db/<label>.json` (`sqlite3 -json`; see
-//! [`crate::nix_db`]), since the oracle's decoy VMs rewrite that file at every
-//! start.
+//! dumps every row of the database, its schema included, into
+//! `nix_db/<label>.jsonl` (see [`crate::nix_db`]), since the oracle's decoy VMs
+//! rewrite that file at every start.
 //!
 //! These parsers are lenient with output they cannot parse (an unparseable
 //! line is skipped) and with a tool that did not run (a missing subtree yields
@@ -30,13 +30,14 @@
 //! [`crate::verdict::scan_verdict`]. What they never pass over is output they
 //! cannot read, a directory or an entry they lack the rights to, a restored
 //! file without its digest, a carved record that is not one, or a restored Nix
-//! store database without its rows: any of those is an I/O error and stops the
-//! run, since skipping it would hide whatever it held. Rigor lives in
-//! [`crate::verdict`], which is tested over synthetic findings, not over these
-//! files. The pure per-format helpers ([`bulk_extractor_findings`],
-//! [`parse_digest_manifest`], [`crate::plaso::plaso_finding`],
-//! [`crate::carved::utmp_record_key`], [`crate::nix_db::nix_db_findings`])
-//! are unit-tested without touching the filesystem.
+//! store database without its rows or with a row that is not one: any of those
+//! is an I/O error and stops the run, since skipping it would hide whatever it
+//! held. Rigor lives in [`crate::verdict`], which is tested over synthetic
+//! findings, not over these files. The pure per-format helpers
+//! ([`bulk_extractor_findings`], [`parse_digest_manifest`],
+//! [`crate::plaso::plaso_finding`], [`crate::carved::utmp_record_key`],
+//! [`crate::nix_db::nix_db_findings`]) are unit-tested without touching the
+//! filesystem.
 
 use crate::carved::{self, Recorder};
 use crate::model::{Finding, ImageLabel, Scans, Tool};
@@ -76,7 +77,7 @@ fn scan_image(outputs: &Path, label: ImageLabel) -> io::Result<BTreeSet<Finding>
     )?;
     scan_nix_db(
         &restore.join(name),
-        &outputs.join("nix_db").join(format!("{name}.json")),
+        &outputs.join("nix_db").join(format!("{name}.jsonl")),
         &mut findings,
     )?;
     scan_bulk_extractor(&outputs.join("bulk_extractor").join(name), &mut findings)?;
