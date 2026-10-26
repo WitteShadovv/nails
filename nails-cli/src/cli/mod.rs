@@ -96,9 +96,8 @@ pub fn execute_command(
     // Before dispatching a mutating command, install the signal handlers so an
     // interrupt rolls back cleanly instead of killing the process mid-teardown,
     // and bias the process away from the OOM killer. Both are process-wide and
-    // best-effort; the commands that keep nothing they write keep the default
-    // behaviour, except that under --json a signal ends them with the one
-    // cancel envelope.
+    // best-effort; every other command keeps the default behaviour, except
+    // that under --json a signal ends it with the one cancel envelope.
     if command_is_mutating(&cli.command) {
         nails_core::cancel::install_handlers();
         lower_oom_score();
