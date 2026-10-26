@@ -53,6 +53,36 @@ fn permission_denied_and_invalid_state_map_to_their_own_codes() {
     assert_eq!(state.code, "invalid_state");
 }
 
+/// A way back that failed is not one a plain emergency takes for sure: the
+/// hint says it powers off where it cannot prepare the return, and names the
+/// power-off that always ends the session.
+#[test]
+fn an_invalid_state_names_both_ways_an_emergency_ends_the_session() {
+    use nails_core::next_step::{NextStep, sudo_line};
+    let body = deactivate_error_body(&NailsError::InvalidState(
+        "could not mount the decoy root: /dev/vda2: EBUSY".into(),
+    ));
+    assert_eq!(body.code, "invalid_state");
+    let lines: Vec<&str> = body.message.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "could not mount the decoy root: /dev/vda2: EBUSY",
+            format!(
+                "`{}` ends the session now: it returns to the decoy where it can prepare the \
+                 return and powers off where it cannot; `{}` always powers off",
+                sudo_line(NextStep::Emergency),
+                sudo_line(NextStep::EmergencyPoweroff)
+            )
+            .as_str(),
+        ]
+    );
+    assert_eq!(
+        body.next.map(|next| next.command).as_deref(),
+        Some("emergency")
+    );
+}
+
 #[test]
 fn other_errors_map_to_a_generic_deactivation_failure() {
     let body = deactivate_error_body(&NailsError::io(

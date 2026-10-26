@@ -33,7 +33,8 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 ///
 /// - [`ExitStatus::Ok`] once the soft-reboot (or power-off) was enqueued
 /// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
-/// - [`ExitStatus::InvalidState`] outside a hidden session
+/// - [`ExitStatus::InvalidState`] outside a hidden session, and in a hidden root
+///   whose session plan cannot be read, before it asks anything
 /// - [`ExitStatus::Cancelled`] when the operator declines at the prompt or
 ///   presses Ctrl+C there
 /// - [`ExitStatus::Failed`] when the way back fails
@@ -43,9 +44,21 @@ pub fn execute(
     args: &DeactivateArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
+    let prepared = nails_core::app::deactivate::prepare(env, config_override);
+    deactivate_prepared(settings, args, prepared)
+}
+
+/// Go on from what [`prepare`](nails_core::app::deactivate::prepare) found:
+/// report a refusal before anything is asked, else confirm, lock and leave.
+fn deactivate_prepared(
+    settings: &OutputSettings,
+    args: &DeactivateArgs,
+    prepared: Prepared,
+) -> ExitStatus {
+    use nails_core::next_step::{NextStep as Step, sudo_line};
     let json = settings.is_json();
 
-    let ready = match nails_core::app::deactivate::prepare(env, config_override) {
+    let ready = match prepared {
         Prepared::Ready(ready) => ready,
         Prepared::NotHidden => {
             return report_error(
@@ -58,9 +71,29 @@ pub fn execute(
                 )
                 .with_hint(format!(
                     "an interrupted activation is cleaned up with `{}`",
-                    nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Recover)
+                    sudo_line(Step::Recover)
                 ))
-                .with_next(NextStep::new("recover")),
+                .with_next(NextStep::new(Step::Recover.command())),
+            );
+        }
+        // Refused before the prompt, the lock and the lines a person reads
+        // before the switch: there is no way back to take, and a plain
+        // emergency, which finds no plan either, would do nothing.
+        Prepared::WayBackUnknown(why) => {
+            return report_error(
+                json,
+                "deactivate",
+                ExitStatus::InvalidState,
+                ErrorBody::new(
+                    "invalid_state",
+                    format!("in the hidden root without a way back: {why}"),
+                )
+                .with_hint(format!(
+                    "Power off to end the session: `{}` (a plain emergency finds no session \
+                     plan either, and does nothing)",
+                    sudo_line(Step::EmergencyPoweroff)
+                ))
+                .with_next(NextStep::new(Step::EmergencyPoweroff.command())),
             );
         }
     };

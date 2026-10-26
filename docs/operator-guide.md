@@ -1174,6 +1174,13 @@ rolls the entry back by itself.
 **Deactivation refuses or fails** in the hidden session. Use `nails emergency`.
 If the way back cannot be prepared, emergency powers off instead.
 
+**The session plan is gone** (`nails status` reports the hidden root without a
+way back: the plan in `/run/overlay-runtime` is missing, unreadable, or was
+written by another NAILS version). Nothing knows how to return to the decoy
+then: `deactivate` refuses before it asks anything, with exit 6, and a plain
+`emergency` finds no plan either and does nothing. Power off:
+`nails emergency --poweroff`, which needs no plan.
+
 **The switch is refused** (the soft-reboot comes back to the root it left).
 Right before PID 1 switches, NAILS checks the other root's init the way PID 1
 will (and, entering, masks the decoy units the hidden system must not start).
