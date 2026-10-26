@@ -13,9 +13,9 @@ it covers. A diff that holds no mutant runs no shard either.
 Usage: python3 -m ci.mutants_plan LIST
 
 LIST is what `cargo mutants --list --json` printed, or - for stdin. Prints
-``name=value`` lines in the format of $GITHUB_OUTPUT (``mutants``, ``shards``
-and the shard ``matrix``) and explains the plan on stderr and, in CI, in the job
-summary ($GITHUB_STEP_SUMMARY).
+``name=value`` lines in the format of $GITHUB_OUTPUT (``shards`` and the shard
+``matrix``, which the workflow reads) and explains the plan, with the count of
+mutants, on stderr and, in CI, in the job summary ($GITHUB_STEP_SUMMARY).
 """
 
 from __future__ import annotations
@@ -213,7 +213,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     planned = plan(mutants)
-    print(f"mutants={planned.mutants}")
     print(f"shards={planned.shards}")
     print("matrix=" + json.dumps(matrix(planned), separators=(",", ":")))
     message = describe(planned)
