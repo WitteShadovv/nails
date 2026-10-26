@@ -190,9 +190,11 @@ the code never branches on "is this NixOS?" directly.
      instead. The hidden configuration is whatever the upper's `/etc` holds.
      (A Debian 12 host is refused by the support table; its systemd could not
      soft-reboot either.) The support table also lists
-     the releases NAILS targets. Its automated VM tests cover Debian 13 and
-     Ubuntu 24.04; Ubuntu 26.04 is a supported target checked by hand, with an
-     automated image still to be added. Any other release it admits carries a
+     the releases NAILS targets. Its automated VM tests cover Debian 13,
+     Ubuntu 24.04 and Ubuntu 26.04. Ubuntu 26.04 carries a warning for a known
+     upstream issue. The tests expect its chrony half, a failed chrony in the
+     hidden session and after the way back; its printing (CUPS) half is checked
+     by hand, as their image has no CUPS. Any other release it admits carries a
      warning in its `HostProfile`, which `init` and the `platform` pre-flight
      check report.
    - `UnsupportedPlatform` — refuses every other host with a typed error:

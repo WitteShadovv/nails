@@ -40,13 +40,24 @@
     "rootfs": "ext4",
     "enforcing": false,
     "memory": 2048,
-    "enabled": false,
+    "enabled": true,
     "upstreamUntil": null,
     "prepare": "nix-vm-test",
     "source": {
       "kind": "nix-vm-test",
       "distro": "ubuntu",
       "image": "26_04"
+    },
+    "knownFailedUnits": {
+      "hiddenSession": {
+        "chrony.service": "Could not send notification to $NOTIFY_SOCKET"
+      },
+      "afterReturn": {
+        "chrony.service": "Could not send notification to $NOTIFY_SOCKET"
+      },
+      "notInImage": [
+        "cups.service"
+      ]
     }
   },
   "ubuntu-26.10": {

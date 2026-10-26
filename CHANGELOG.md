@@ -155,6 +155,10 @@ of this changelog for that version becomes the release notes word for word, and
   and after the way back the decoy lists chrony as failed until its next full reboot, which hints a
   soft-reboot happened. 26.04 remains a tested release; reboot the decoy fully after a session to
   clear it. The fault is upstream, not in NAILS.
+- Ubuntu 26.04 joins the automated distribution tests, beside Debian 13 and Ubuntu 24.04. They
+  expect chrony's known upstream failure in the hidden session and after the way back, so they show
+  when Ubuntu fixes it. Printing (CUPS), which their image does not install, is still checked by
+  hand.
 - A host that boots from a sealed composefs image is now refused even when it does not set
   `/run/ostree-booted`, recognised by its kernel command line or the composefs runtime directory.
   NAILS cannot overlay an immutable system.
