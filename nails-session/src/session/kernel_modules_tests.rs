@@ -665,7 +665,16 @@ fn an_untouched_tree_passes() {
     let upper = tempfile::tempdir().unwrap();
     let result = check(root.path(), upper.path()).result(TrustedXattrs::Invisible);
     assert!(result.is_pass(), "{result:?}");
-    assert!(result.message().contains(&tree()), "{result:?}");
+    // It claims no more than the check judged: the module files in the tree
+    // go unread.
+    assert_eq!(
+        result.message(),
+        format!(
+            "no hidden session deleted or replaced the running kernel's module tree or its \
+             index ({})",
+            tree()
+        )
+    );
     // The upper of a first entry does not exist yet.
     let result =
         check(root.path(), &upper.path().join("root/upper")).result(TrustedXattrs::Invisible);
@@ -770,11 +779,13 @@ fn an_index_a_session_wrote_passes_unless_the_decoy_rebuilt_its_own_since() {
     set_modified(&own_index, 6_000);
     let newer = check(root.path(), upper.path()).result(TrustedXattrs::Visible);
     assert!(newer.is_pass(), "{newer:?}");
-    assert!(
-        newer
-            .message()
-            .contains("their index (modules.dep) is one a hidden session wrote"),
-        "{newer:?}"
+    assert_eq!(
+        newer.message(),
+        format!(
+            "no hidden session deleted or replaced the running kernel's module tree ({}), and \
+             its index (modules.dep) is one a hidden session wrote",
+            tree()
+        )
     );
 
     set_modified(&own_index, 4_000);

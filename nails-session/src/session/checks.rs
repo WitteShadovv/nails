@@ -13,7 +13,8 @@
 //! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
 //!   safe decision ([`super::policy`]);
 //! - `kernel-modules`: no hidden session deleted or replaced the running
-//!   kernel's modules ([`super::kernel_modules`]); it only warns.
+//!   kernel's module tree or its index ([`super::kernel_modules`]); it only
+//!   warns.
 //!
 //! Each check judges through a pure function, which the tests exercise
 //! directly. `systemd-version` judges the version it is built with; the others
