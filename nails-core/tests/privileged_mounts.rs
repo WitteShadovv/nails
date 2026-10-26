@@ -686,6 +686,15 @@ fn the_kernel_modules_check_reads_the_kernels_own_whiteouts_and_opaque_directori
             .contains("with a new directory without /usr/lib/modules/6.17.1-arch1-1"),
         "{privileged:?}"
     );
+    // The new module directory hides every kernel's tree, so the fix is its
+    // discard alone, never a kernel update.
+    assert!(
+        privileged.message().ends_with(
+            "A kernel update on the decoy would not bring its modules back, since the change \
+             hides them for every kernel."
+        ),
+        "{privileged:?}"
+    );
 
     root.teardown();
 }

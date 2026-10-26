@@ -209,3 +209,88 @@ fn a_whiteout_of_the_release_hides_it_from_the_next_root_until_discarded() {
         assert!(check.result(TrustedXattrs::Visible).is_pass());
     });
 }
+
+/// A whiteout above the release directory, here of `/usr/lib/modules` as a
+/// hidden `rm -rf /usr/lib/modules` leaves it, hides every kernel's modules
+/// from the next root, a release the decoy installs later included: the row
+/// offers no kernel update for either release, and the `discard` it names
+/// brings both trees back.
+#[test]
+fn a_whiteout_above_the_release_hides_a_new_kernels_tree_too_until_discarded() {
+    let _ = Rerun::new(test_path!(
+        a_whiteout_above_the_release_hides_a_new_kernels_tree_too_until_discarded
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        use nix::sys::stat::{Mode, SFlag, mknod};
+        let decoy = decoy();
+        let hidden = hidden();
+        let upper = hidden.path().join("root/upper");
+        std::fs::create_dir_all(upper.join("usr/lib")).unwrap();
+        mknod(
+            &upper.join("usr/lib/modules"),
+            SFlag::S_IFCHR,
+            Mode::from_bits_truncate(0o600),
+            0,
+        )
+        .expect("a whiteout");
+        // The decoy's kernel updated to a new release since.
+        let new_release = "6.18.0-arch1-1";
+        let new_index = format!("usr/lib/modules/{new_release}/modules.dep");
+        decoy.mkdir(&format!("usr/lib/modules/{new_release}/kernel"));
+        std::fs::write(decoy.path().join(&new_index), INDEX_TEXT).unwrap();
+
+        in_next_root(decoy.path(), hidden.path(), |next| {
+            assert!(next.join("usr/lib").is_dir());
+            assert!(
+                !next.join("usr/lib/modules").exists(),
+                "every tree is hidden"
+            );
+        });
+        let shown = "/usr/lib/modules";
+        let line = sudo_line_for(NextStep::Discard, shown);
+        let check = |release: &str| {
+            KernelModulesCheck::new(decoy.path().to_path_buf(), upper.clone(), release.into())
+        };
+        for release in [RELEASE, new_release] {
+            let result = check(release).result(TrustedXattrs::of_this_process());
+            assert!(result.is_warn(), "{result:?}");
+            let text = result.message();
+            assert!(
+                text.starts_with(&format!(
+                    "a hidden session deleted {shown}, and with it {shown}/{release}, "
+                )),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("\nBring the decoy's {shown} back with `{line}`")),
+                "{text}"
+            );
+            assert!(
+                text.ends_with(
+                    "A kernel update on the decoy would not bring its modules back, since the \
+                     change hides them for every kernel."
+                ),
+                "{text}"
+            );
+        }
+
+        assert_eq!(
+            discard(hidden.path(), shown),
+            vec![upper.join("usr/lib/modules")]
+        );
+        in_next_root(decoy.path(), hidden.path(), |next| {
+            assert_eq!(
+                std::fs::read_to_string(next.join(index())).unwrap(),
+                INDEX_TEXT
+            );
+            assert_eq!(
+                std::fs::read_to_string(next.join(&new_index)).unwrap(),
+                INDEX_TEXT
+            );
+        });
+        for release in [RELEASE, new_release] {
+            assert!(check(release).result(TrustedXattrs::Visible).is_pass());
+        }
+    });
+}
