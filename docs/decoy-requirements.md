@@ -208,6 +208,11 @@ volatile can count as persistent. Run them with sudo.
   `LOG_INPUT:`/`LOG_OUTPUT:` command tags, stored under `iolog_dir`) records
   whole terminal sessions, keystrokes and output included. Both write to the
   decoy disk, outside the journal.
+- **sssd** — sssd in use on the decoy: one of its units or daemons running,
+  the socket of its Kerberos ticket cache in place, or one of its state files
+  under `/var/lib/sss`. NAILS is not tested on a decoy joined to a domain,
+  whose domain controller records the hidden session's logins; see
+  [Decoys joined to a domain](#decoys-joined-to-a-domain).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
@@ -545,6 +550,42 @@ the upper without following a symbolic link. A hidden session that replaced
 wherever the link leads, which can be the decoy disk. While such a link
 stands there, activation is refused and makes nothing (see
 [Persona modes](configuration.md#persona-modes)).
+
+## Decoys joined to a domain
+
+A decoy joined to a domain (Active Directory or FreeIPA, through sssd) checks
+logins and account lookups with the domain controller. The controller keeps
+its own records of them, with their times: the hidden session's logins reach it
+as the decoy's do, and nothing NAILS does on this computer reaches those
+records. sssd also keeps caches of the domain's accounts and credentials under
+`/var/lib/sss` and logs under `/var/log/sssd`. In the hidden session these
+writes land in the upper on the hidden volume. The decoy's own sssd, stopped
+before the switch and started again after the way back, logs both under
+`/var/log/sssd` on the decoy disk by default, as at any shutdown and boot.
+
+NAILS is not tested on decoys joined to a domain, and no VM test runs a domain
+controller. `nails check` and activation warn (`decoy-persistence`) while sssd
+is in use on the decoy:
+
+- one of its service units is active, or one of its daemons runs (`sssd`, or
+  a responder or back end named `sssd_<name>`);
+- the socket of its Kerberos ticket cache, `/run/.heim_org.h5l.kcm-socket`
+  (`sssd-kcm.socket`), is in place. A stopped socket leaves the file there
+  until the next boot, and the warning with it;
+- `/var/lib/sss` holds one of the files sssd writes when it runs: its
+  configuration databases, the memory caches of its accounts, the database of
+  its Kerberos ticket cache or the sockets of its responders. Only root can see
+  some of them, so run `nails check` with sudo to see them all.
+
+The probes read file metadata and `/proc`, `/run` and `/sys`, never a file or
+a directory listing on the decoy disk, so no access time there changes. Fedora
+44 Cloud enables `sssd-kcm.socket` by default, so a decoy made from it warns
+even when it is not joined to a domain.
+
+Use a decoy that is not joined to a domain. Where nothing on the decoy needs
+sssd, disable it: `sudo systemctl disable --now sssd.service sssd-kcm.socket`.
+On Fedora this also turns off the Kerberos ticket cache that `kinit` uses by
+default.
 
 ## Session-time records
 

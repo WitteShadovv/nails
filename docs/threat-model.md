@@ -89,6 +89,11 @@ NAILS does not defend against:
 - **remote-service records**: anything a server, cloud service or peer device
   holds about what the hidden session did (accounts, sync state, mail, messages,
   access logs);
+- **decoys joined to a domain** (Active Directory or FreeIPA, through sssd):
+  the domain controller keeps its own records of the hidden session's logins
+  and account lookups, out of NAILS's reach, and NAILS is not tested on such
+  decoys. `nails check` and activation warn while sssd is in use on the decoy
+  (see [Decoys joined to a domain](decoy-requirements.md#decoys-joined-to-a-domain));
 - correlation through the network identifiers the hidden session shares with
   the decoy (see the next section);
 - operator mistakes such as skipping deactivation or leaving the backend

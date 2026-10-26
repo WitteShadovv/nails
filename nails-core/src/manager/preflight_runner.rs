@@ -317,8 +317,9 @@ pub fn build_registry<F: Filesystem>(
     // the decoy disk) unless the operator allows the risk for this run with
     // --allow-persistent-decoy. Lower-severity findings (atime, a disk
     // core_pattern, a systemd-coredump that keeps cores, pstore records, sudo
-    // logging, maintenance timers) are always warnings. The check performs no
-    // writes, and its maintenance-timer sub-check applies only on a NixOS host.
+    // logging, sssd in use, maintenance timers) are always warnings. The check
+    // performs no writes, and its maintenance-timer sub-check applies only on a
+    // NixOS host.
     registry.add_check(Box::new(DecoyPersistenceCheck::new(
         inputs.options.allow_persistent_decoy,
         config_layer.is_some(),

@@ -87,6 +87,13 @@ of this changelog for that version becomes the release notes word for word, and
   A marker a session deleted (a whiteout in the upper) does not count. For a marker in the upper,
   which neither the decoy's updater nor an `rm` on the decoy reaches, the refusal names the
   `discard` command that deletes it, with `--allow-decoy-storage` when the run was given it.
+- `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
+  tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
+  the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists
+  such decoys as out of scope. The warning names what shows sssd: an active unit or a running
+  daemon, the socket of its Kerberos ticket cache (`sssd-kcm.socket`, which Fedora 44 Cloud enables
+  by default, so a decoy made from it warns), or a file sssd writes under `/var/lib/sss` when it
+  runs. On the decoy disk the probes read only file metadata, so no access time there changes.
 - `nails discard` takes `--allow-decoy-storage`, as `init`, `activate` and `check` do, for a hidden
   root that this computer's own storage seems to hold. Without it, discard refused such a root even
   when activation had accepted it, so nothing could be discarded there.

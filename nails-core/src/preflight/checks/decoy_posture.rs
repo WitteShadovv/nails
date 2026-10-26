@@ -42,7 +42,11 @@
 //! - sudo logging in sudoers (`logfile=`, I/O logging with `log_input`,
 //!   `log_output` and friends, `iolog_dir=`), which records the activation
 //!   command or whole terminal sessions on the decoy disk (see
-//!   [`sudo_logging`]).
+//!   [`sudo_logging`]),
+//! - sssd in use on the decoy, the service through which a decoy joins a
+//!   domain: NAILS is not tested on a decoy joined to a domain, whose domain
+//!   controller records the hidden session's logins out of NAILS's reach (see
+//!   [`sssd`]).
 //!
 //! # No writes
 //!
@@ -59,6 +63,7 @@ use std::path::{Path, PathBuf};
 
 mod coredump;
 mod loggers;
+mod sssd;
 mod sudo_logging;
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
@@ -240,7 +245,7 @@ impl DecoyPersistenceCheck {
     }
 
     /// Collect the warning-level findings (atime, crash channels, sudo logging,
-    /// timers).
+    /// sssd, timers).
     fn warnings<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Vec<String> {
         let mut out = Vec::new();
 
@@ -261,6 +266,7 @@ impl DecoyPersistenceCheck {
 
         out.extend(Self::crash_posture(fs, root, is_nixos));
         out.extend(sudo_logging::decoy_sudo_findings(fs, root));
+        out.extend(sssd::sssd_finding(fs, root));
 
         if is_nixos
             && fs
