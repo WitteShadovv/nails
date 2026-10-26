@@ -29,6 +29,22 @@
 //! Fedora 44 Cloud enables `sssd-kcm.socket` by default, so a decoy made from
 //! it warns even when it is not joined to a domain.
 //!
+//! The warning's advice turns sssd off: `systemctl disable --now` of
+//! `sssd.service`, and of `sssd-kcm.socket` where that unit exists, stops
+//! every unit in [`UNITS`], since each responder is bound to `sssd.service`
+//! and `sssd-kcm.service` requires its socket. They are two commands because
+//! systemd before 257 refuses a `disable` that names a unit it does not have
+//! and leaves every unit as it was, while Debian and Ubuntu install
+//! `sssd-kcm.socket` only with the `sssd-kcm` package. On NixOS the
+//! configuration owns the units and `systemctl disable` cannot change them, so
+//! the advice names the `services.sssd` options instead. sssd leaves the
+//! socket file and its state files behind when it stops, and they keep the
+//! warning, so the advice also names each one found with the `rm` that
+//! deletes it. That is safe once sssd is stopped: sssd makes each of them
+//! again when it starts, its configuration databases from `sssd.conf`, and
+//! only the Kerberos tickets its ticket cache kept are lost, which nothing
+//! reaches while `sssd-kcm` is off.
+//!
 //! Every probe reads metadata, or files under `/proc`, `/run` and `/sys`;
 //! nothing on the decoy disk is opened or listed, so no access time there
 //! changes. A symlink in the last place of a path is never followed, which
@@ -81,8 +97,8 @@ const STATE_FILES: &[&str] = &[
 ];
 
 /// The warning for sssd in use on the decoy under `root`, or `None` when
-/// nothing shows it.
-pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
+/// nothing shows it. `is_nixos` picks how its advice turns sssd off.
+pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Option<String> {
     let signs = signs(fs, root);
     if signs.is_empty() {
         return None;
@@ -92,9 +108,10 @@ pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String>
          domain (Active Directory, FreeIPA): the domain controller records the hidden \
          session's logins and the account lookups sssd makes for it, out of NAILS's reach, \
          and sssd keeps caches under /var/lib/sss and logs under /var/log/sssd. Use a decoy \
-         that is not joined to a domain, and where nothing on it needs sssd, disable it \
-         (systemctl disable --now sssd.service sssd-kcm.socket)",
-        signs.join(", ")
+         that is not joined to a domain, and where nothing on it needs sssd, {}{}",
+        signs.join(", "),
+        turn_off(is_nixos),
+        delete(&left_behind(fs, root)),
     ))
 }
 
@@ -129,6 +146,43 @@ fn signs<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
         signs.push(format!("/{file} holds its state"));
     }
     signs
+}
+
+/// The files sssd leaves behind when it stops, as paths on the decoy under
+/// `root`: the socket of its ticket cache and every one of its state files
+/// there. Each keeps the warning after sssd is off.
+fn left_behind<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+    std::iter::once(&KCM_SOCKET)
+        .chain(STATE_FILES)
+        .filter(|file| present(fs, &root.join(file)))
+        .map(|file| format!("/{file}"))
+        .collect()
+}
+
+/// How the advice turns sssd off: on NixOS through its options, since the
+/// configuration owns the units there, and elsewhere with one `systemctl
+/// disable --now` for each unit (see the module docs).
+fn turn_off(is_nixos: bool) -> &'static str {
+    if is_nixos {
+        "turn it off (set services.sssd.enable and services.sssd.kcm to false, then run \
+         nixos-rebuild switch)"
+    } else {
+        "disable it (systemctl disable --now sssd.service, and systemctl disable --now \
+         sssd-kcm.socket where that unit exists)"
+    }
+}
+
+/// The rest of the advice: delete the files sssd left behind (`left`), which
+/// would keep the warning after it is off. Empty when there are none.
+fn delete(left: &[String]) -> String {
+    if left.is_empty() {
+        return String::new();
+    }
+    format!(
+        ", then delete the files it leaves behind, which keep this warning (rm {}): sssd \
+         makes each again when it starts",
+        left.join(" ")
+    )
 }
 
 /// Whether a process name is sssd's: the monitor, or a responder or back end.

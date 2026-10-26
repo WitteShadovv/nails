@@ -20,10 +20,30 @@ fn run_process(fs: &MockFilesystem, comm: &str, cmdline: &str) {
     fs.mock_add_file("/proc/731/cmdline", cmdline);
 }
 
-/// The finding for the decoy at `/` on `fs`.
+/// The finding for the decoy at `/` on `fs`, outside NixOS.
 fn finding(fs: &MockFilesystem) -> Option<String> {
-    sssd_finding(fs, Path::new("/"))
+    sssd_finding(fs, Path::new("/"), false)
 }
+
+/// The finding for the decoy at `/` on `fs`, on NixOS.
+fn finding_on_nixos(fs: &MockFilesystem) -> Option<String> {
+    sssd_finding(fs, Path::new("/"), true)
+}
+
+/// The paths the `rm` in the advice of `message` deletes; none without one.
+fn deleted_by_advice(message: &str) -> Vec<String> {
+    message
+        .split_once("(rm ")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(paths, _)| paths.split(' ').map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// The advice outside NixOS, with nothing left to delete: one command for
+/// each unit, so a missing `sssd-kcm.socket` does not stop the other.
+const DISABLE: &str = "where nothing on it needs sssd, disable it (systemctl disable --now \
+                       sssd.service, and systemctl disable --now sssd-kcm.socket where that \
+                       unit exists)";
 
 #[test]
 fn a_decoy_without_sssd_has_no_finding() {
@@ -49,11 +69,39 @@ fn every_active_sssd_unit_warns_by_name() {
             message.contains("the domain controller records the hidden session's logins"),
             "{message}"
         );
-        assert!(
-            message.contains("systemctl disable --now sssd.service sssd-kcm.socket"),
-            "{message}"
-        );
+        // A unit stops with the advice and leaves nothing to delete.
+        assert!(message.ends_with(DISABLE), "{message}");
+        assert!(deleted_by_advice(&message).is_empty(), "{message}");
+        assert!(!message.contains("services.sssd"), "{message}");
     }
+}
+
+#[test]
+fn on_nixos_the_advice_turns_sssd_off_through_its_options() {
+    // The configuration owns the units there, so systemctl cannot disable them.
+    let fs = MockFilesystem::new();
+    set_unit_active(&fs, "sssd.service");
+    let message = finding_on_nixos(&fs).expect("must warn");
+    assert!(
+        message.ends_with(
+            "where nothing on it needs sssd, turn it off (set services.sssd.enable and \
+             services.sssd.kcm to false, then run nixos-rebuild switch)"
+        ),
+        "{message}"
+    );
+    assert!(!message.contains("systemctl"), "{message}");
+
+    // What sssd leaves behind is deleted on NixOS as elsewhere.
+    fs.mock_set_path_type("/var/lib/sss/db/config.ldb", PathKind::File);
+    let message = finding_on_nixos(&fs).expect("must warn");
+    assert!(
+        message.ends_with(
+            "then run nixos-rebuild switch), then delete the files it leaves behind, which \
+             keep this warning (rm /var/lib/sss/db/config.ldb): sssd makes each again when \
+             it starts"
+        ),
+        "{message}"
+    );
 }
 
 #[test]
@@ -142,6 +190,14 @@ fn the_ticket_cache_socket_alone_warns_as_on_fedora() {
         "{message}"
     );
     assert!(!message.contains("is active"), "{message}");
+    // Stopping the socket leaves its file, so the advice deletes it.
+    assert!(
+        message.ends_with(&format!(
+            "{DISABLE}, then delete the files it leaves behind, which keep this warning \
+             (rm /run/.heim_org.h5l.kcm-socket): sssd makes each again when it starts"
+        )),
+        "{message}"
+    );
 }
 
 #[test]
@@ -156,6 +212,7 @@ fn each_state_file_warns_by_its_path() {
             )),
             "{message}"
         );
+        assert_eq!(deleted_by_advice(&message), [format!("/{file}")]);
     }
 }
 
@@ -188,6 +245,7 @@ fn a_dangling_symlink_counts_as_there() {
         message.contains("(/var/lib/sss/mc/passwd holds its state)"),
         "{message}"
     );
+    assert_eq!(deleted_by_advice(&message), ["/var/lib/sss/mc/passwd"]);
 }
 
 #[test]
@@ -208,8 +266,17 @@ fn every_sign_is_named_in_one_finding() {
         ),
         "{message}"
     );
-    // One state file is enough to show it: the first found is named.
-    assert!(!message.contains("secrets.ldb"), "{message}");
+    // One state file is enough to show it, so the phrase names the first
+    // found; the advice deletes every file left, the socket's included.
+    assert_eq!(
+        deleted_by_advice(&message),
+        [
+            "/run/.heim_org.h5l.kcm-socket",
+            "/var/lib/sss/db/config.ldb",
+            "/var/lib/sss/secrets/secrets.ldb",
+        ]
+    );
+    assert_eq!(message.matches("secrets.ldb").count(), 1, "{message}");
 }
 
 #[test]
@@ -245,6 +312,16 @@ fn the_decoy_persistence_check_warns_and_never_refuses_for_sssd() {
     assert!(!DecoyPersistenceCheck::decoy_is_persistent(&fs));
     assert_eq!(fs.mock_ops().len(), before, "the probe writes nothing");
     assert!(fs.mock_written_paths().is_empty());
+
+    // On NixOS the check hands the advice its options.
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("turn it off (set services.sssd.enable and services.sssd.kcm to false"),
+        "{result:?}"
+    );
 }
 
 /// Backdate the access time of `path` itself, a symlink included, well behind
@@ -318,7 +395,7 @@ fn the_probes_leave_the_decoy_access_times_alone() {
     }
     let before: Vec<_> = watched.iter().map(|path| atime(path)).collect();
 
-    let message = sssd_finding(&RealFilesystem, root).expect("the decoy shows sssd");
+    let message = sssd_finding(&RealFilesystem, root, false).expect("the decoy shows sssd");
     assert!(
         message.contains("/var/lib/sss/db/config.ldb holds its state"),
         "{message}"
@@ -333,7 +410,7 @@ fn the_probes_leave_the_decoy_access_times_alone() {
 
     // With the database gone, the link is what shows the state, still unread.
     std::fs::remove_file(state.join("db/config.ldb")).unwrap();
-    let message = sssd_finding(&RealFilesystem, root).expect("the link shows sssd");
+    let message = sssd_finding(&RealFilesystem, root, false).expect("the link shows sssd");
     assert!(
         message.contains("/var/lib/sss/mc/passwd holds its state"),
         "{message}"
@@ -344,4 +421,66 @@ fn the_probes_leave_the_decoy_access_times_alone() {
         "the link is not followed"
     );
     assert_eq!(atime(&state.join("mc/cache")), before[4]);
+}
+
+#[test]
+fn following_the_advice_clears_the_warning() {
+    // A decoy where sssd runs and has written every file the check knows.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let cgroup = root.join("sys/fs/cgroup/system.slice/sssd.service");
+    std::fs::create_dir_all(&cgroup).unwrap();
+    std::fs::write(cgroup.join("cgroup.events"), "populated 1\nfrozen 0\n").unwrap();
+    for dir in [
+        "run",
+        "var/lib/sss/db",
+        "var/lib/sss/mc",
+        "var/lib/sss/secrets",
+        "var/lib/sss/pipes/private",
+    ] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    for file in std::iter::once(&KCM_SOCKET).chain(STATE_FILES) {
+        std::fs::write(root.join(file), b"").unwrap();
+    }
+    let message = sssd_finding(&RealFilesystem, root, false).expect("sssd runs");
+    assert!(message.contains("(sssd.service is active, "), "{message}");
+
+    // `systemctl disable --now`: the unit stops, and every file stays.
+    std::fs::write(cgroup.join("cgroup.events"), "populated 0\nfrozen 0\n").unwrap();
+    let message = sssd_finding(&RealFilesystem, root, false).expect("its files keep the warning");
+    assert!(!message.contains("is active"), "{message}");
+    let deleted = deleted_by_advice(&message);
+    assert_eq!(deleted.len(), 1 + STATE_FILES.len(), "{message}");
+
+    // The `rm` the advice names clears it, and the directories its package
+    // installs stay.
+    for path in &deleted {
+        std::fs::remove_file(root.join(path.trim_start_matches('/'))).unwrap();
+    }
+    assert_eq!(sssd_finding(&RealFilesystem, root, false), None);
+    assert!(root.join("var/lib/sss/pipes/private").is_dir());
+}
+
+#[test]
+fn the_docs_delete_every_file_the_warning_names() {
+    // docs/decoy-requirements.md gives one `rm` for every decoy, which must
+    // clear the warning as the warning's own advice does.
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/decoy-requirements.md");
+    let docs = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let section = docs
+        .split_once("\n## Decoys joined to a domain\n")
+        .and_then(|(_, rest)| rest.split("\n## ").next())
+        .expect("the section on decoys joined to a domain");
+    let command = section
+        .split_once("sudo rm -f ")
+        .and_then(|(_, rest)| rest.split_once("\n```"))
+        .map(|(command, _)| command.replace("\\\n", " "))
+        .expect("the rm in that section");
+    let named: Vec<&str> = command.split_whitespace().collect();
+    let left: Vec<String> = std::iter::once(&KCM_SOCKET)
+        .chain(STATE_FILES)
+        .map(|file| format!("/{file}"))
+        .collect();
+    assert_eq!(named, left, "{command}");
 }

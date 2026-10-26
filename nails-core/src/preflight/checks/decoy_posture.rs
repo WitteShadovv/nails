@@ -266,7 +266,7 @@ impl DecoyPersistenceCheck {
 
         out.extend(Self::crash_posture(fs, root, is_nixos));
         out.extend(sudo_logging::decoy_sudo_findings(fs, root));
-        out.extend(sssd::sssd_finding(fs, root));
+        out.extend(sssd::sssd_finding(fs, root, is_nixos));
 
         if is_nixos
             && fs
