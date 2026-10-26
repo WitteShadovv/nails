@@ -26,8 +26,8 @@
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
 //!    generation's own fstab for what the decoy's did not cover;
 //! 7. the masks the entry transition writes at the switch: the fstab
-//!    policy's, the units that would only fail in the hidden root and the
-//!    generators the hidden systemd must never run ([`super::hidden_masks`]);
+//!    policy's, the units the hidden root does not need and the generators
+//!    the hidden systemd must never run ([`super::hidden_masks`]);
 //! 8. the decoy filesystems the way back needs carried onto the hidden volume,
 //!    and the decoy's mounts recorded for the way back to make again
 //!    ([`super::way_back`]); `/run` bound in and everything below the next

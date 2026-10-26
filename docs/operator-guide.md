@@ -216,8 +216,8 @@ Keep all of it `root`-owned on the hidden volume.
      are masked in `/run`, so the hidden systemd never activates them.
 
    Whatever the fstab says, the hidden session also masks
-   `systemd-remount-fs.service` and `systemd-growfs-root.service`, which would
-   only fail there: the root filesystem they remount and grow is the root
+   `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail
+   there or do nothing: the root filesystem they remount and grow is the root
    overlay in the hidden session. It masks systemd's GPT auto-generator as
    well, so systemd mounts no partition the fstab does not list. The full
    table is in [configuration.md](configuration.md#what-the-session-covers).
@@ -1149,9 +1149,11 @@ If the activation built a hidden NixOS system, or its switch failed, power
 off instead. `nails recover` also writes back the kernel's module loader,
 hotplug helper and firmware path, which the hidden system's activation
 pointed at its store (the decoy then loads no module and no firmware), and
-removes the session's masks in `/run/systemd/system` and
-`/run/systemd/system.control`, which keep the decoy's swap and boot-loader
-units masked. By hand, only a power-off does.
+removes the session's masks in `/run/systemd/system`,
+`/run/systemd/system.control` and `/run/systemd/system-generators`, which
+keep the decoy's swap, its boot-loader units and the other units the hidden
+root does not need masked, and systemd's GPT auto-generator from running. By
+hand, only a power-off does.
 
 **Do not edit or delete `state.json` by hand** — `recover` resets it once the
 hidden volume is back.

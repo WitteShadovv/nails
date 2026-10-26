@@ -480,10 +480,11 @@ soft-reboots with `py/nails_e2e/session.py`:
 - `session-emergency`: the activation command typed on a decoy tty never reaches
   its history, emergency from a hidden login shell, the decoy's avahi-daemon
   and a service with a PID file in `/run` starting again after the emergency
-  killed their hidden copies, the boot-loader units masked in the hidden
-  session only, the decoy's mounts and `utab` lines back as before the entry
-  after the emergency's way back, `--poweroff`, and the next cold boot on the
-  plain decoy with the backend closed;
+  killed their hidden copies, the units the hidden root does not need (the
+  boot-loader and root-filesystem units) and systemd's GPT auto-generator
+  masked in the hidden session only, the decoy's mounts and `utab` lines back
+  as before the entry after the emergency's way back, `--poweroff`, and the
+  next cold boot on the plain decoy with the backend closed;
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
   `recover`, Ctrl+C during the build, and emergency during an entry;
@@ -594,10 +595,13 @@ runs a decoy service that keeps a PID file in `/run`; cancels an activation
 with SIGINT while it runs its checks (exit 130, nothing left behind);
 activates, soft-rebooting into the whole-root overlay and writing canaries,
 including under `/usr`, that must land in the upper; asserts the ESP is
-read-only in the hidden root and the boot-loader units masked there; runs
-`emergency`, which soft-reboots back to the plain decoy, where the PID-file
-service starts again; asserts the kernel log names no session drop-in and no
-failed unmount of the hidden volume; runs a second session
+read-only in the hidden root, the units the hidden root does not need (the
+boot-loader and root-filesystem units) masked there where the decoy has them
+and needed by no decoy unit, and systemd's GPT auto-generator masked in each
+hidden session and unmasked after each way back; runs `emergency`, which
+soft-reboots back to the plain decoy, where the PID-file service starts again;
+asserts the kernel log names no session drop-in and no failed unmount of the
+hidden volume; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
 `blk-availability.service` runs, so that nothing carried below the hidden
 volume keeps the unit's stop from unmounting it; rehearses on that session

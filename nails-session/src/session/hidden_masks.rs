@@ -3,14 +3,14 @@
 
 //! What the hidden root keeps masked, whatever the decoy's fstab says.
 //!
-//! Some units of the decoy would only fail in the hidden root, where `/` is
-//! the root overlay and the boot filesystems are bound read-only, and none of
-//! them has a job there ([`UNITS`]). The entry masks those the hidden root
-//! has, at the switch and in the hidden root alone, best effort and apart
-//! from the fstab policy's masks ([`super::policy`]), without which the entry
-//! must not happen. The masks go into `/run/systemd/system.control`, which
-//! ranks above `/etc/systemd/system`, where NixOS links every unit. The decoy
-//! runs the units at its own start, as it always does.
+//! Some units of the decoy fail in the hidden root, where `/` is the root
+//! overlay and the boot filesystems are bound read-only, or do nothing there,
+//! and none of them has a job there ([`UNITS`]). The entry masks those the
+//! hidden root has, at the switch and in the hidden root alone, best effort
+//! and apart from the fstab policy's masks ([`super::policy`]), without which
+//! the entry must not happen. The masks go into `/run/systemd/system.control`,
+//! which ranks above `/etc/systemd/system`, where NixOS links every unit. The
+//! decoy runs the units at its own start, as it always does.
 //!
 //! The [`GENERATORS`] are masked at the switch as well, in
 //! `/run/systemd/system-generators`, ahead of every other generator
@@ -18,14 +18,13 @@
 //! masks, the switch is refused when one cannot be written, or when the decoy
 //! has an entry of that name there that does not mask the generator.
 //!
-//! All of them live in `/run` only: the return scrub removes them with the
-//! rest of the session's `/run`, and the decoy side removes them when a switch
-//! never happened.
+//! All of them live in `/run` only: the way back removes them, as the decoy
+//! side does when a switch never happened.
 
 use std::path::Path;
 
-/// Units of the decoy that would only fail in the hidden root and whose job
-/// it does not need:
+/// Units of the decoy whose job the hidden root does not need, and which fail
+/// there or do nothing:
 ///
 /// | Unit | What it does at every start | In the hidden root |
 /// | --- | --- | --- |

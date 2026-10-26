@@ -72,7 +72,7 @@
           }
         },
         "masked_units": {
-          "description": "The decoy units masked in the hidden root: swap, decoy filesystems it does not mount, and the boot-loader units.",
+          "description": "The decoy units masked in the hidden root: swap, decoy filesystems it does not mount, and the units that fail or do nothing there (the boot-loader units, systemd-remount-fs.service, systemd-growfs-root.service). The generator masks are not listed.",
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },

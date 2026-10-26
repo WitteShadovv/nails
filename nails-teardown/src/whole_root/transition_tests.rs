@@ -944,9 +944,9 @@ fn modprobe_now(world: &World) -> String {
 }
 
 /// The entry's snapshot of `/run`, then the masks the entry transition
-/// writes: the decoy units in the runtime unit directory, the units that would
-/// only fail in the hidden root in the control directory, the generators in
-/// the generator directory.
+/// writes: the decoy units in the runtime unit directory, the units the hidden
+/// root does not need in the control directory, the generators in the
+/// generator directory.
 fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
     fs::write(
         world.runtime().join(SNAPSHOT_NAME),
