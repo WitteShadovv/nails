@@ -848,6 +848,23 @@ class JournaldTest(unittest.TestCase):
                     ("auto", [main, self.DROP_IN, later]),
                 )
 
+    def test_a_file_that_sets_storage_twice_is_one_source(self) -> None:
+        main = "/etc/systemd/journald.conf"
+        config = (
+            f"# {main}\n[Journal]\nStorage=auto\n"
+            f"# {self.DROP_IN}\n[Journal]\nStorage=persistent\nStorage=volatile\n"
+        )
+        self.assertEqual(
+            pf.journald_settings(config), ("volatile", [main, self.DROP_IN])
+        )
+
+    def test_only_the_storage_key_itself_sets_or_documents_storage(self) -> None:
+        for key in ("XStorage", "StorageX", "storage"):
+            with self.subTest(key=key):
+                config = f"# {self.DROP_IN}\n[Journal]\n{key}=volatile\n"
+                self.assertEqual(pf.journald_settings(config), (None, []))
+                self.assertIsNone(pf.vendor_hint(f"[Journal]\n#{key}=volatile\n"))
+
     def test_the_credential_decides_from_256_when_no_file_sets_storage(self) -> None:
         for version, credential, expected in (
             ("systemd 256 (256)", "volatile", "volatile"),
