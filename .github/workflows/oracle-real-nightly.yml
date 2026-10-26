@@ -149,22 +149,22 @@ jobs:
 
       # The tools of the ci/oracle/oracle-nightly.yml template. sleuthkit (mmls)
       # and e2fsprogs (debugfs) carve the ext4 restore channel from the real decoy
-      # roots, and sqlite3 reads the rows of their Nix store database; the rest
-      # is the pinned bulk_extractor build chain. Docker is preinstalled for the
-      # pinned plaso container.
+      # roots, sqlite3 reads the rows of their Nix store database, and jq reads
+      # the verdict; the rest is the pinned bulk_extractor build chain. Docker is
+      # preinstalled for the pinned plaso container.
       - name: Install analysis tools
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            btrfs-progs sleuthkit e2fsprogs sqlite3 \
+            btrfs-progs sleuthkit e2fsprogs jq sqlite3 \
             git autoconf automake build-essential libtool pkg-config flex \
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev
 
       # run-scan.sh in ORACLE_IMAGES_DIR mode carves the real raws, injects the
       # positive-control sentinels into a throwaway copy of after.raw, renders
-      # the nails-oracle verdict and exits non-zero on anything but clean. It
-      # needs root for the loop mounts.
+      # the nails-oracle verdict and exits non-zero unless the verdict tool
+      # exits 0 and verdict.json says clean. It needs root for the loop mounts.
       - name: Scan the real images and render the verdict
         run: |
           sudo env \

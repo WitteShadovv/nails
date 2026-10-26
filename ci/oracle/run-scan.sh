@@ -20,7 +20,8 @@
 # canary's file drops the plaso channel (plaso still dates an image whose file
 # system it cannot open, as one opaque file), and nails-oracle fails a run in
 # which any channel reported nothing for an image (channel_missing), so a
-# dropped plaso channel fails it too.
+# dropped plaso channel fails it too. The run passes only when nails-oracle
+# exits 0 and the verdict.json it wrote says clean.
 #
 # plaso reads every image through one fixed in-container path (/data/disk.img),
 # so the source path in its timeline is identical across the three images and
@@ -43,12 +44,13 @@
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
 #
 # Needs root (loop mounts, and reading the decoy's root-only files), btrfs-progs,
-# git + the bulk_extractor build chain, and docker (for the pinned plaso
-# container; without it the verdict fails on the missing plaso channel);
-# pre-built-image mode also needs sleuthkit (mmls) and e2fsprogs (debugfs) plus
-# util-linux (blkid, losetup), and an image that holds a Nix store database
-# needs sqlite3 to read its rows. The verdict binary is found at $ORACLE_BIN,
-# or target/release/nails-oracle under the repository root. No KVM.
+# git + the bulk_extractor build chain, jq (to read the verdict), and docker
+# (for the pinned plaso container; without it the verdict fails on the missing
+# plaso channel); pre-built-image mode also needs sleuthkit (mmls) and
+# e2fsprogs (debugfs) plus util-linux (blkid, losetup), and an image that holds
+# a Nix store database needs sqlite3 to read its rows. The verdict binary is
+# found at $ORACLE_BIN, or target/release/nails-oracle under the repository
+# root. No KVM.
 set -euo pipefail
 
 # --- Pins (verbatim from the image-analysis feasibility probe). -------------
@@ -78,7 +80,7 @@ build="$work/build"
 mkdir -p "$images" "$outputs/restore" "$outputs/nix_db" "$outputs/bulk_extractor" "$outputs/plaso" "$build"
 
 [ "$(id -u)" -eq 0 ] || { echo "run-scan: must run as root (loop mounts)" >&2; exit 1; }
-for t in git make btrfs mkfs.btrfs truncate find sort xargs sha256sum; do
+for t in git make btrfs mkfs.btrfs truncate find sort xargs sha256sum jq; do
   command -v "$t" >/dev/null || { echo "run-scan: missing required tool: $t" >&2; exit 1; }
 done
 have_docker=1
@@ -510,4 +512,10 @@ status=0
 "$bin" "$outputs" --allowlist "$allowlist" --controls "$controls_used" \
   >"$work/verdict.json" || status=$?
 cat "$work/verdict.json" || true
+# The exit status alone does not pass a run: the verdict it wrote must say
+# clean too, so a binary that exits 0 on anything else still fails here.
+if [ "$status" -eq 0 ] && ! jq -e '.status == "clean"' "$work/verdict.json" >/dev/null; then
+  echo "run-scan: nails-oracle exited 0, but $work/verdict.json does not say clean; failing closed" >&2
+  status=1
+fi
 exit "$status"

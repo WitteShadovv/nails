@@ -289,9 +289,10 @@ nails-oracle <outputs-dir> [--allowlist FILE] [--controls FILE]
 It prints the verdict as JSON to stdout and a one-line summary to stderr; a
 clean summary ends with what the verdict cannot see. Exit codes: `0` clean,
 `1` fail (residue, a blind scan or a missing channel, canary or a bad
-allowlist), `2` usage or I/O error. Run it as a user who can read the whole
-outputs tree: the carved trees keep the decoy's root-only modes (`/root`,
-`/etc/credstore`), so that is normally root. An entry it cannot read, a
-restored file without its digest, a carved record it cannot read as one, or a
-restored store database without its rows stops it with exit `2` rather than
-being skipped.
+allowlist), `2` usage or I/O error. `run-scan.sh` passes a run only when the
+tool exits `0` and the `verdict.json` it wrote says `"status": "clean"`. Run it
+as a user who can read the whole outputs tree: the carved trees keep the
+decoy's root-only modes (`/root`, `/etc/credstore`), so that is normally root.
+An entry it cannot read, a restored file without its digest, a carved record
+it cannot read as one, or a restored store database without its rows stops it
+with exit `2` rather than being skipped.
