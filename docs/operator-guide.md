@@ -180,6 +180,8 @@ Keep all of it `root`-owned on the hidden volume.
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
    session and no leftovers of an interrupted one), `fstab-policy`,
+   `kernel-modules` (no hidden session deleted the running kernel's modules;
+   it only warns, see [below](#copy-up-cost-and-shadowed-decoy-updates)),
    `hidden-volume`, `upper-fs-capability`,
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
    decoy's `/etc/nixos` names the hidden volume's device, mount point or the
@@ -1005,6 +1007,26 @@ seconds or minutes.
   after a decoy rebuild or package upgrade. Store paths the decoy garbage-collects
   do not break the hidden NixOS system: its closure is kept on the hidden volume
   (see "The hidden NixOS system").
+- **A kernel update in the hidden session deletes the running kernel's
+  modules.** Every hidden session runs on the decoy's kernel and loads its
+  modules from `/usr/lib/modules/<release>`. A kernel package update inside the
+  session (on Arch Linux, a `pacman -Syu` that brings a new `linux`) deletes
+  that tree in the upper, so every later session starts without modules for the
+  kernel it runs on: a USB stick, a filesystem or a network card whose driver is
+  not loaded yet does not work there. Update the kernel on the decoy instead.
+  The `kernel-modules` check warns, and never refuses, when a hidden session
+  deleted or replaced that tree, a directory above it or its index
+  (`modules.dep`), made one of those directories anew so the decoy's copy no
+  longer shows through, or wrote its own index before the decoy last rebuilt
+  its own; and when the decoy itself lacks the tree, as after a kernel update
+  without a reboot. Its fix: update the decoy's kernel and reboot the decoy
+  into it, or `discard` the path it names; for an outdated index, `sudo depmod
+  <release>` in a hidden session rebuilds it. An index a hidden session wrote
+  no earlier than the decoy's (a `depmod` after installing a module) passes with
+  a note, and a decoy without `/usr/lib/modules`, such as NixOS, keeps its
+  modules elsewhere and passes. Only root can see whether a directory was made
+  anew, so an unprivileged `nails check` that needs to know says it cannot
+  tell and names the `sudo` line.
 - To drop a path's hidden copy so the decoy's own files show through again, run
   `discard` **on the decoy**, with the hidden volume mounted:
   `sudo /mnt/data/nails discard /etc/nixos` (it lists what it deletes and

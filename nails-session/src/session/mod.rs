@@ -16,6 +16,7 @@
 pub mod checks;
 pub mod entry;
 pub mod fstab;
+pub mod kernel_modules;
 pub mod labels;
 pub mod layout;
 pub mod leave;

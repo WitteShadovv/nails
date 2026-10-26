@@ -12,8 +12,8 @@
 //! itself is exercised and asserted. `just kernel-tests` turns a host without
 //! user namespaces from a skip into a failure.
 //!
-//! The whiteout and opaque-directory test needs `trusted.*` xattrs, which a
-//! user namespace cannot set, so it alone stays `#[ignore]`d and runs as real
+//! The two whiteout and opaque-directory tests need `trusted.*` xattrs, which a
+//! user namespace cannot set, so they alone stay `#[ignore]`d and run as real
 //! root in the privileged-mounts CI job:
 //!
 //! ```sh
@@ -575,6 +575,117 @@ fn whiteout_and_opaque_hide_lower_entries_without_deleting_them() {
     // The whole lower tree is intact after the session.
     assert_eq!(read(&lower.join("visible.txt")), "from lower");
     assert_eq!(read(&lower.join("shadowed/inner.txt")), "lower inner");
+
+    root.teardown();
+}
+
+/// What a kernel update in a hidden session leaves in the upper, made by the
+/// kernel through the root overlay a real entry mounts, with the `trusted.*`
+/// opaque markers only real root can write, read the way the `kernel-modules`
+/// pre-flight check reads it: the release deleted, made again without its
+/// index and with it, and the whole module directory made again without the
+/// release. Without `CAP_SYS_ADMIN` the kernel reports every marker missing,
+/// and the check says it cannot tell rather than passing.
+#[test]
+#[ignore = "root only: opaque directories need trusted.* xattrs"]
+fn the_kernel_modules_check_reads_the_kernels_own_whiteouts_and_opaque_directories() {
+    use nails_core::session::kernel_modules::{
+        Doubt, Held, Hiding, KernelModulesCheck, Opacity, Step, TrustedXattrs, Verdict, judge,
+        read_decoy, read_upper,
+    };
+    use rustix::thread::{CapabilitySet, capabilities, set_capabilities};
+    use std::ffi::OsStr;
+
+    let root = TmpfsRoot::new();
+    let decoy = root.path("decoy");
+    let upper = root.path("hidden/upper");
+    let work = root.path("hidden/work");
+    let next = root.path("next");
+    for dir in [&upper, &work, &next] {
+        mkdir(dir);
+    }
+    let release = OsStr::new("6.17.1-arch1-1");
+    let tree = Path::new("usr/lib/modules").join(release);
+    mkdir(&decoy.join(&tree).join("kernel/fs"));
+    write(&decoy.join(&tree).join("kernel/fs/ext4.ko"), "module");
+    write(
+        &decoy.join(&tree).join("modules.dep"),
+        "kernel/fs/ext4.ko:\n",
+    );
+    let before = fingerprint(&decoy);
+    assert_eq!(TrustedXattrs::of_this_process(), TrustedXattrs::Visible);
+    let verdict = || {
+        judge(
+            &read_decoy(&decoy, release),
+            &read_upper(&upper, release, TrustedXattrs::Visible),
+        )
+    };
+    let hidden = |at, how| Verdict::Hidden { at, how };
+
+    nails_teardown::whole_root::nextroot::overlay_over(
+        &decoy,
+        &root.path("lower"),
+        &upper,
+        &work,
+        &next,
+    )
+    .expect("the root overlay");
+    assert_eq!(verdict(), Verdict::Intact);
+
+    // A kernel update deletes the release's files, then its directory.
+    std::fs::remove_dir_all(next.join(&tree)).expect("delete the release");
+    assert_eq!(verdict(), hidden(Step::Release, Hiding::Deleted));
+
+    // Installed again, the release directory is new and opaque.
+    mkdir(&next.join(&tree).join("kernel"));
+    assert_eq!(verdict(), hidden(Step::Release, Hiding::CopyWithoutIndex));
+    write(
+        &next.join(&tree).join("modules.dep"),
+        "kernel/fs/ext4.ko:\n",
+    );
+    assert_eq!(verdict(), hidden(Step::Release, Hiding::OwnCopy));
+
+    // The whole module directory deleted, then made again for another
+    // kernel only.
+    std::fs::remove_dir_all(next.join("usr/lib/modules")).expect("delete the modules");
+    mkdir(&next.join("usr/lib/modules/6.18.0-arch1-1"));
+    assert_eq!(verdict(), hidden(Step::ModuleDir, Hiding::Covered));
+
+    Mounts
+        .unmount(&next, false)
+        .expect("unmount the root overlay");
+    assert_eq!(fingerprint(&decoy), before, "the decoy changed");
+
+    // Capabilities are per thread: drop CAP_SYS_ADMIN from this test's
+    // thread alone, and take it back before the teardown needs it.
+    let sets = capabilities(None).expect("read the capabilities");
+    let mut without_admin = sets;
+    without_admin.effective.remove(CapabilitySet::SYS_ADMIN);
+    set_capabilities(None, without_admin).expect("drop CAP_SYS_ADMIN");
+    let invisible = TrustedXattrs::of_this_process();
+    let held = read_upper(&upper, release, TrustedXattrs::Invisible);
+    let check = KernelModulesCheck::new(decoy.clone(), upper.clone(), release.to_os_string());
+    let unprivileged = check.result(invisible);
+    set_capabilities(None, sets).expect("take CAP_SYS_ADMIN back");
+
+    assert_eq!(invisible, TrustedXattrs::Invisible);
+    assert_eq!(
+        held[2],
+        Held::Dir(Opacity::Unknown(Doubt::NeedsRoot)),
+        "the opaque module directory reads as a doubt: {held:?}"
+    );
+    assert!(unprivileged.is_warn(), "{unprivileged:?}");
+    assert!(
+        unprivileged.message().contains("only root can see"),
+        "{unprivileged:?}"
+    );
+    let privileged = check.result(TrustedXattrs::of_this_process());
+    assert!(
+        privileged
+            .message()
+            .contains("with a new directory without /usr/lib/modules/6.17.1-arch1-1"),
+        "{privileged:?}"
+    );
 
     root.teardown();
 }

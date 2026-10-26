@@ -321,6 +321,19 @@ pub fn build_registry<F: Filesystem>(
             .allowing_decoy_storage(inputs.options.allow_decoy_storage),
     ));
 
+    // Warns (never fails) when no hidden session can load the running kernel's
+    // modules: a kernel update in an earlier session deleted or replaced them in
+    // the upper, or the decoy itself lacks them. The `discard` its fix names
+    // takes --allow-decoy-storage when the run does. Read-only.
+    registry.add_check(Box::new(
+        crate::session::checks::KernelModulesCheck::new(
+            paths.root.clone(),
+            layout.upper(),
+            crate::session::kernel_modules::running_release(),
+        )
+        .allowing_decoy_storage(inputs.options.allow_decoy_storage),
+    ));
+
     // Warns (never fails) about the residue channels the catalog probes by path
     // (LVM metadata archives, udisks2 state, session-time stamps): each finding
     // names the catalog row, its mitigation and its doc section. Read-only.
