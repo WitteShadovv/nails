@@ -8,7 +8,9 @@
 //! points at NAILS or at a model line that can be checked against that
 //! source.
 
+pub mod alpm;
 pub mod display_managers;
+pub mod dpkg;
 pub mod gkeyfile;
 pub mod image;
 pub mod kconfig;

@@ -1,0 +1,25 @@
+Package: libc6
+Status: install ok installed
+Priority: optional
+Section: libs
+Architecture: amd64
+Multi-Arch: same
+Source: glibc
+Version: 2.41-11
+Description: GNU C Library: Shared libraries
+
+Package: torbrowser-launcher
+Status: install ok installed
+Priority: optional
+Section: contrib/web
+Architecture: amd64
+Version: 0.3.7-3
+Description: helps download and run the Tor Browser Bundle
+
+Package: rsyslog
+Status: install ok installed
+Priority: optional
+Section: admin
+Architecture: amd64
+Version: 8.2504.0-1
+Description: reliable system and kernel logging daemon

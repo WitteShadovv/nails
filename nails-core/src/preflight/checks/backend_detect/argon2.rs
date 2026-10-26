@@ -31,10 +31,10 @@
 //! to, whose name carries the version (resolving the link reads no file, and
 //! its links lie in `/run` and in the store, which NixOS mounts read-only), or
 //! the package database, dpkg's `status` or pacman's `local` directory, read
-//! with `O_NOATIME`. The kernel grants `O_NOATIME` on a file the caller does
-//! not own only to root, so a check that is not running as root skips the
-//! advice rather than read the database the plain way and stamp its access
-//! time. A host whose version none of these names (rpm's database, which is
+//! with `O_NOATIME` ([`crate::packages`]). The kernel grants `O_NOATIME` on a
+//! file the caller does not own only to root, so a check that is not running
+//! as root skips the advice rather than read the database the plain way and
+//! stamp its access time. A host whose version none of these names (rpm's database, which is
 //! not a format read here, or a cryptsetup built by hand) skips it as well.
 //!
 //! # Keeping it current
@@ -46,6 +46,7 @@
 //! until both are updated together, which is the prompt to refresh this advice
 //! and the dated note.
 
+use crate::packages::{dpkg, pacman};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
 use std::fmt;
@@ -61,28 +62,12 @@ const NIXOS_PROFILE_CRYPTSETUP: &str = "run/current-system/sw/bin/cryptsetup";
 /// The Nix store, relative to the root.
 const NIX_STORE: &str = "nix/store";
 
-/// dpkg's record of every package (Debian, Ubuntu), relative to the root.
-const DPKG_STATUS: &str = "var/lib/dpkg/status";
-
 /// The Debian package that ships the `cryptsetup` binary.
 const DPKG_PACKAGE: &str = "cryptsetup-bin";
-
-/// pacman's database of installed packages (Arch), relative to the root: one
-/// `<name>-<version>-<release>` directory each.
-const PACMAN_LOCAL: &str = "var/lib/pacman/local";
 
 /// The name of the cryptsetup package in the Nix store and in pacman's
 /// database.
 const PACKAGE: &str = "cryptsetup";
-
-/// The dpkg package states in which a package's files are on disk.
-const DPKG_FILES_PRESENT: &[&str] = &[
-    "installed",
-    "triggers-pending",
-    "triggers-awaited",
-    "half-configured",
-    "unpacked",
-];
 
 /// Why the advice is skipped on a check that is not running as root.
 const UNPRIVILEGED_SKIP: &str = "Skipping the VeraCrypt Argon2id advice: only a check running as \
@@ -238,11 +223,8 @@ pub fn installed_cryptsetup_version<F: Filesystem>(
     root: &Path,
 ) -> Option<CryptsetupVersion> {
     nix_profile_version(fs, root)
-        .or_else(|| {
-            let status = fs.read_file_bytes(&root.join(DPKG_STATUS)).ok()?;
-            dpkg_version(&String::from_utf8_lossy(&status))
-        })
-        .or_else(|| pacman_version(fs, root))
+        .or_else(|| dpkg_version(&dpkg::read_status(fs, root).ok()??))
+        .or_else(|| pacman_version(&pacman::read_local(fs, root).ok()??))
 }
 
 /// The version in the name of the store path the NixOS system profile's
@@ -256,8 +238,8 @@ fn nix_profile_version<F: Filesystem>(fs: &F, root: &Path) -> Option<CryptsetupV
 }
 
 /// The version of a `cryptsetup-<version>[-<suffix>]` package name, as the Nix
-/// store and pacman write it; `None` for another package's name, such as
-/// `cryptsetup-nuke-password-1.0-1`.
+/// store writes it in a store path's name; `None` for another package's name,
+/// such as `cryptsetup-nuke-password-1.0-1`.
 fn package_version(name: &str) -> Option<CryptsetupVersion> {
     let version = name.strip_prefix(PACKAGE)?.strip_prefix('-')?;
     if !version.starts_with(|c: char| c.is_ascii_digit()) {
@@ -272,35 +254,22 @@ fn without_epoch(version: &str) -> &str {
     version.split_once(':').map_or(version, |(_, rest)| rest)
 }
 
-/// The version of [`DPKG_PACKAGE`] that dpkg's `status` file records with its
-/// files on disk; `None` when it records none.
-fn dpkg_version(status: &str) -> Option<CryptsetupVersion> {
-    status.split("\n\n").find_map(|stanza| {
-        let field = |name: &str| {
-            stanza.lines().find_map(|line| {
-                line.strip_prefix(name)
-                    .and_then(|rest| rest.strip_prefix(':'))
-                    .map(str::trim)
-            })
-        };
-        let present = field("Status")
-            .and_then(|status| status.split_whitespace().next_back())
-            .is_some_and(|state| DPKG_FILES_PRESENT.contains(&state));
-        if field("Package") != Some(DPKG_PACKAGE) || !present {
-            return None;
-        }
-        parse_cryptsetup_version(without_epoch(field("Version")?))
-    })
+/// The version of [`DPKG_PACKAGE`] among the `packages` dpkg's `status` file
+/// records, the first with its files on disk; `None` when it records none.
+fn dpkg_version(packages: &[dpkg::Package]) -> Option<CryptsetupVersion> {
+    packages
+        .iter()
+        .filter(|package| package.name == DPKG_PACKAGE && package.files_present())
+        .find_map(|package| parse_cryptsetup_version(without_epoch(package.version.as_deref()?)))
 }
 
-/// The version in the name of pacman's database entry for cryptsetup
-/// (`cryptsetup-2.8.1-1`).
-fn pacman_version<F: Filesystem>(fs: &F, root: &Path) -> Option<CryptsetupVersion> {
-    fs.list_directory(&root.join(PACMAN_LOCAL))
-        .ok()?
+/// The version of cryptsetup among the `packages` of pacman's database
+/// (the entry `cryptsetup-2.8.1-1`).
+fn pacman_version(packages: &[pacman::Package]) -> Option<CryptsetupVersion> {
+    packages
         .iter()
-        .filter_map(|entry| entry.file_name()?.to_str())
-        .find_map(package_version)
+        .filter(|package| package.name == PACKAGE)
+        .find_map(|package| parse_cryptsetup_version(without_epoch(&package.version)))
 }
 
 /// Pre-flight advice (never a failure) about cryptsetup's Argon2id limitation,

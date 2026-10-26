@@ -213,13 +213,15 @@ and checks more than that nothing panics or hangs:
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
 | `cryptsetup_version` | a decoy's dpkg `status` file, whose lines are also pacman entries and a store path's name | a version read comes from what names cryptsetup and reads back the same; another package's stanza or entry changes nothing |
 | `nix_db` | the dump `run-scan.sh` writes of a decoy's Nix store database for the forensic oracle, one JSON row a line, then after a NUL the rows a session adds | the oracle reads exactly the lines a model of the row reads, one finding each, and reads each row the same under other ids, times and pages; two rows give one finding exactly when the model holds them the same; the verdict fails on exactly the added rows `before` holds none like, as added, and as removed when the session takes them away |
+| `dpkg_status` | dpkg's `status` file, whose lines are also names of files in dpkg's `info` directory | where dpkg's stanza parser accepts a file that ends in a newline, the packages read are the stanzas dpkg reads, less those where a field NAILS keeps runs over two lines; a stanza after the file changes nothing before it; the packages written back read the same; an `info` file's owner is its name up to the last dot |
+| `pacman_local` | the entries of pacman's local database | each entry splits into the name and version libalpm gives it; a package's entry name is its entry; a listing gives the packages of the entries in their order |
 | `kernel_config_gzip` | the kernel's own config, `/proc/config.gz`, as a gzip stream, which is also the text of a stream the target writes | a member before the stream adds its text and changes nothing else, so no back-reference leaves its member; a stream that decodes stays within the limit and is refused one byte below it, cut short by a byte or followed by one, and decodes the same when its text is written again in stored blocks; the input written in fixed-Huffman and stored blocks, in two members, decodes back to it |
 | `disk_layout` | the start of a raw disk | partitions and free ranges lie on the disk, in order, apart; what a rehearsal scan reads at the start of each region (its signature, a compressing filesystem's magic, an f2fs's compression feature, the size a superblock records) is read without an error |
 | `raw_token_scan` | a canary token and a sparse disk image | the windowed scan finds what a scan of the whole image in one buffer finds |
 
-What systemd, libmount, GLib, GDM, LightDM, SDDM and KConfig do, where a
-target compares NAILS with them, is modelled in `fuzz/src/`, each model
-written from the C or C++ function it follows.
+What systemd, libmount, GLib, GDM, LightDM, SDDM, KConfig, dpkg and libalpm
+do, where a target compares NAILS with them, is modelled in `fuzz/src/`, each
+model written from the C or C++ function it follows.
 Each target starts from its seed corpus in `fuzz/seeds/<target>/`, inputs
 taken from the fixtures and tests, with a dictionary in `fuzz/dicts/`. The
 proptests in `nails-core/src/fuzz/` (`just fuzz`) cover some of the same

@@ -137,6 +137,20 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "dpkg_status"
+path = "fuzz_targets/dpkg_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pacman_local"
+path = "fuzz_targets/pacman_local.rs"
+test = false
+doc = false
+bench = false
+
 # Line numbers in a crash's stack trace.
 [profile.release]
 debug = 1

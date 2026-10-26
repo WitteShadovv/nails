@@ -49,8 +49,8 @@ nails_base::unit_test_mode!();
 pub(crate) use nails_base::runtime_safety;
 pub use nails_base::{
     artifacts, blockdev, cancel, catalog, constants, crypttab, error, filesystem, fstab,
-    hidden_root, logging, naming, next_step, notification, output, process, reporter, runtime_env,
-    state, target_user, timing, verbosity,
+    hidden_root, logging, naming, next_step, notification, output, packages, process, reporter,
+    runtime_env, state, target_user, timing, verbosity,
 };
 
 // Configuration module: the base crate's, plus the manager-building test

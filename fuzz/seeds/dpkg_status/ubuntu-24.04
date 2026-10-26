@@ -1,0 +1,48 @@
+Package: snapd
+Status: install ok installed
+Priority: optional
+Section: devel
+Installed-Size: 115316
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Architecture: amd64
+Version: 2.68.5+ubuntu24.04
+Replaces: snap-confine (<< 2.23), snapd-xdg-open (<= 0.0.0), ubuntu-core-launcher (<< 2.22), ubuntu-snappy (<< 1.9), ubuntu-snappy-cli (<< 1.9)
+Depends: adduser, apparmor (>= 2.10.95-0ubuntu2.2), ca-certificates, openssh-client, squashfs-tools, systemd, udev, gnupg1 | gnupg, default-dbus-system-bus | dbus-system-bus, libc6 (>= 2.38), libcap2 (>= 1:2.10), libfuse3-3 (>= 3.2.3), liblzma5 (>= 5.1.1alpha+20120614), liblzo2-2 (>= 2.02), libseccomp2 (>= 2.4.1), libselinux1 (>= 3.1~), libudev1 (>= 183), zlib1g (>= 1:1.2.0)
+Conffiles:
+ /etc/apparmor.d/usr.lib.snapd.snap-confine.real 1a5d1d1fda1f8bbd3c2fe1ec5d6b2a3c
+ /etc/profile.d/apps-bin-path.sh 7b0d6c1e8a1b9d5c4e3f2a1b0c9d8e7f
+Description: Daemon and tooling that enable snap packages
+ Install, configure, refresh and remove snap packages. Snaps are
+ 'universal' packages that work across many different Linux systems,
+ enabling secure distribution of the latest apps and utilities for
+ cloud, servers, desktops and the internet of things.
+Homepage: https://github.com/snapcore/snapd
+
+Package: libssl3t64
+Status: install ok installed
+Priority: important
+Section: libs
+Installed-Size: 6824
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Architecture: amd64
+Multi-Arch: same
+Source: openssl
+Version: 3.0.13-0ubuntu3.6
+Replaces: libssl3
+Provides: libssl3 (= 3.0.13-0ubuntu3.6)
+Depends: libc6 (>= 2.34), zlib1g (>= 1:1.1.4)
+Breaks: libssl3 (<< 3.0.13-0ubuntu3.6)
+Description: Secure Sockets Layer toolkit - shared libraries
+ This package is part of the OpenSSL project's implementation of the SSL
+ and TLS cryptographic protocols for secure communication over the
+ Internet.
+Homepage: https://www.openssl.org/
+Original-Maintainer: Debian OpenSSL Team <pkg-openssl-devel@alioth-lists.debian.net>
+
+Package: kdump-tools
+Status: install ok installed
+Priority: optional
+Section: devel
+Architecture: amd64
+Version: 1:1.10.3ubuntu1
+Description: scripts and tools for automating kdump
