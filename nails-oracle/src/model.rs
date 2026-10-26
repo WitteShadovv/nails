@@ -35,12 +35,19 @@ pub enum Tool {
     /// the format-aware channel that reads the *content* of a record rather
     /// than just its presence.
     Plaso,
+    /// The rows of the Nix store database the restore carve recovered
+    /// (`/nix/var/nix/db/db.sqlite`), read with `sqlite3`: a store path the
+    /// database registers. Every boot rewrites the database file, so the
+    /// restore channel can only call it noise; its rows say what changed.
+    NixDb,
 }
 
 impl Tool {
-    /// Every analysis channel. A real scan must hear from each of them on every
-    /// image (see [`crate::verdict::scan_verdict`]).
-    pub const ALL: [Tool; 3] = [Tool::BtrfsRestore, Tool::BulkExtractor, Tool::Plaso];
+    /// The analysis channels a real scan must hear from on every image (see
+    /// [`crate::verdict::scan_verdict`]). [`Tool::NixDb`] is not among them:
+    /// an image has a Nix store database only on a Nix decoy, and the scan
+    /// stops when the restore carve holds one but its rows are missing.
+    pub const REQUIRED: [Tool; 3] = [Tool::BtrfsRestore, Tool::BulkExtractor, Tool::Plaso];
 
     /// Whether the channel reports one entry per path on an image, so that a
     /// path holds one value that a later image can replace: the restore
@@ -48,7 +55,8 @@ impl Tool {
     /// different value there is a change of that entry, and a path whose value
     /// the control cycle changed too is one a plain reboot rewrites. The other
     /// channels report many findings under one path (the records of a file,
-    /// the values of a feature type), each its own trace.
+    /// the rows of a database, the values of a feature type), each its own
+    /// trace.
     pub fn one_entry_per_path(self) -> bool {
         matches!(self, Tool::BtrfsRestore)
     }
@@ -85,6 +93,9 @@ pub enum Change {
 /// - [`Tool::Plaso`]: `path` is the event's source path, or `journal` for a
 ///   systemd-journal line; `field` is the event's data type, followed for a
 ///   record by the content fields that say what it records.
+/// - [`Tool::NixDb`]: `path` is the database's on-image path; `field` is one
+///   of its `ValidPaths` rows, the table name followed by the columns that say
+///   what the row registers.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Finding {
     /// The tool that surfaced it.
@@ -297,6 +308,21 @@ mod tests {
         assert!(Tool::BtrfsRestore.one_entry_per_path());
         assert!(!Tool::BulkExtractor.one_entry_per_path());
         assert!(!Tool::Plaso.one_entry_per_path());
+        assert!(!Tool::NixDb.one_entry_per_path());
+    }
+
+    #[test]
+    fn the_nix_db_channel_is_not_required_on_every_image() {
+        // A decoy that is not a Nix system has no store database, so its rows
+        // cannot be required of every image the way the other channels are.
+        assert_eq!(
+            Tool::REQUIRED,
+            [Tool::BtrfsRestore, Tool::BulkExtractor, Tool::Plaso]
+        );
+        assert_eq!(
+            serde_json::to_value(Tool::NixDb).expect("serializes"),
+            "nix_db"
+        );
     }
 
     #[test]

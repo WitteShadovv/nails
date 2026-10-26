@@ -40,6 +40,7 @@ The scan writes one subtree per tool, per image label:
 ```
 outputs/restore/<label>/...            restored file tree, each file emptied
 outputs/restore/<label>.sha256         a SHA-256 of every restored file
+outputs/nix_db/<label>.json            the rows of the restored Nix store database
 outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 outputs/bulk_extractor/<label>/*_carved/...  the objects its carvers saved
 outputs/plaso/<label>.jsonl            plaso timeline, one JSON event per line
@@ -47,9 +48,12 @@ outputs/plaso/<label>.jsonl            plaso timeline, one JSON event per line
 
 `<label>` is `before`, `control` or `after`. `run-scan.sh` hashes every restored
 file (`sha256sum --zero`, run inside the tree) before it empties the file to
-save disk. The plaso store is exported to JSON lines (for example `psort -o
-json_line`) so the verdict tool can read it without a plaso runtime. Each tool
-normalizes to findings keyed by `(tool, path, field)`:
+save disk. Before it empties a restored Nix store database
+(`/nix/var/nix/db/db.sqlite`), it dumps the database's `ValidPaths` rows with
+`sqlite3 -json`, reading a copy with the write-ahead log beside it. The plaso
+store is exported to JSON lines (for example `psort -o json_line`) so the
+verdict tool can read it without a plaso runtime. Each tool normalizes to
+findings keyed by `(tool, path, field)`:
 
 - restore — `path` is the recovered entry's absolute on-image path; `field` is
   its kind and content: `sha256:<digest>` for a file, `dir` for a directory,
@@ -58,6 +62,14 @@ normalizes to findings keyed by `(tool, path, field)`:
   a trace in its own right. The rotating journal files under `/var/log/journal`
   are left to plaso, which compares them by content; the directories that hold
   them are still reported.
+- nix_db — `path` is the store database's on-image path; `field` is one of its
+  `ValidPaths` rows: `ValidPaths`, then every column but the row id and the
+  registration time as `name=value` in name order, a NULL left out. A Nix
+  decoy registers its store paths at every start, which rewrites the database
+  file, so the restore channel can only call it noise. Its rows do not change
+  with a boot, so a store path the session registered or removed, or
+  registered again with another hash, size, deriver or signature, is a change
+  of its own.
 - bulk_extractor — `path` is the feature type (`email`, `url`, ...); `field` is
   the feature value. This channel reads the whole image, free space included,
   so it still sees a deleted-but-not-overwritten trace. Its carvers save whole
@@ -65,10 +77,10 @@ normalizes to findings keyed by `(tool, path, field)`:
   content instead: a carved login record (`utmp_carved`) by the fields it
   records with its time and session left out, and any other carved object by
   its content hash. Two outputs stay out of the verdict: `sqlite_carved`,
-  because the decoy images' Nix store database changes on every boot and the
-  images hold live and stale, partly overwritten copies of it that no clean
-  boot reproduces, and `duplicates`, which lists repeated blocks by their
-  offsets.
+  because every boot rewrites the decoy images' Nix store database file and
+  the images hold live and stale, partly overwritten copies of it that no
+  clean boot reproduces (the live database is read by its rows instead), and
+  `duplicates`, which lists repeated blocks by their offsets.
 - plaso — `path` is the event's source path; `field` is the event's data type,
   then, for a record, every field that says what it records (`name=value`).
   The record's timestamps, its offset, the file's inode and hash, and plaso's
@@ -84,13 +96,19 @@ normalizes to findings keyed by `(tool, path, field)`:
 The restore channel holds one entry per path, so it is compared path by path:
 a path whose entry `after` holds differently is residue when `before` and
 `control` agree on it, and noise when `control` changed it too (a file every
-boot rewrites, like `/var/lib/systemd/random-seed`). Records and features are
-compared one by one: a login record appended to `wtmp`, which every boot
-appends to, subtracts only against the same record in `control`.
+boot rewrites, like `/var/lib/systemd/random-seed`). Records, rows and features
+are compared one by one: a login record appended to `wtmp`, which every boot
+appends to, subtracts only against the same record in `control`, and so does
+a row of the store database.
 
-Every channel must report at least one finding on every image. A channel that
-reported nothing for an image (its tool was missing, failed, timed out or read
-nothing) fails the run as `channel_missing` and marks it blind, never `clean`.
+Every channel but nix_db must report at least one finding on every image. A
+channel that reported nothing for an image (its tool was missing, failed,
+timed out or read nothing) fails the run as `channel_missing` and marks it
+blind, never `clean`. Only a Nix decoy has a store database, so the nix_db
+channel is held to the database instead: a restored tree that holds the
+database without its rows, or rows without the database, stops the verdict
+tool (exit `2`), and `run-scan.sh` stops when `sqlite3` is missing or cannot
+read the database.
 No channel stands in for another: the restore channel leaves the journal files
 to plaso, and every shipped self-check is a bulk_extractor finding.
 `run-scan.sh` drops the plaso channel whole when docker is missing, its pinned
@@ -137,21 +155,27 @@ next to the root included. Scan the root filesystem's own image instead.
 
 ### What it does not see
 
-The verdict accounts for every difference its keys can tell apart, and no more:
+The verdict accounts for every difference its keys can tell apart, and no
+more. It names what it cannot see under `unseen` in the verdict, one entry per
+class with its `kind`, and a clean summary line ends with the same classes
+(`; not seen: ...`):
 
-- Timestamps. No key holds a time, so a file the session only read or touched
-  reads as unchanged.
-- File metadata (mode, owner, extended attributes) of a file whose content
+- `timestamps`: no key holds a time, so a file the session only read or
+  touched reads as unchanged.
+- `metadata`: the mode, owner and extended attributes of a file whose content
   stays the same.
-- A change to a file a plain reboot rewrites too. The control cycle marks the
-  path as noise, so a session's write to such a file (the Nix store database
-  on the decoy images, `wtmp` as a whole file) is seen only where a channel
-  reads the file's records: the login records of `wtmp`, through plaso and
-  bulk_extractor's carver.
-- A process id in the same power-of-two range as the one a fresh boot gives
-  that process.
-- A database carved from free space (`sqlite_carved`), unless its content
-  carries an e-mail address, a URL or a domain the value recorders find.
+- `process_id_range`: a process id in the same power-of-two range as the one a
+  fresh boot gives that process.
+- `skipped_carvers`: a database carved from free space (`sqlite_carved`, named
+  in `feature_types`), unless its content carries an e-mail address, a URL or
+  a domain the value recorders find.
+- `reboot_rewritten`: a file a plain reboot rewrites too. The control cycle
+  marks its path as noise, so a session's write to it is seen only where a
+  channel reads the file's records: the login records of `wtmp`, through
+  plaso and bulk_extractor's carver, and the rows of the Nix store database.
+  `paths` lists this run's other such files where `after` holds what neither
+  `before` nor `control` does (on the real images,
+  `/var/lib/systemd/random-seed` among them).
 
 ## allowlist.json — the citation rule
 
@@ -262,10 +286,12 @@ would fail on them as unexplained residue.
 nails-oracle <outputs-dir> [--allowlist FILE] [--controls FILE]
 ```
 
-It prints the verdict as JSON to stdout and a one-line summary to stderr. Exit
-codes: `0` clean, `1` fail (residue, a blind scan or a missing channel, canary
-or a bad allowlist), `2` usage or I/O error. Run it as a user who can read the
-whole outputs tree: the carved trees keep the decoy's root-only modes
-(`/root`, `/etc/credstore`), so that is normally root. An entry it cannot read,
-a restored file without its digest, or a carved record it cannot read as one
-stops it with exit `2` rather than being skipped.
+It prints the verdict as JSON to stdout and a one-line summary to stderr; a
+clean summary ends with what the verdict cannot see. Exit codes: `0` clean,
+`1` fail (residue, a blind scan or a missing channel, canary or a bad
+allowlist), `2` usage or I/O error. Run it as a user who can read the whole
+outputs tree: the carved trees keep the decoy's root-only modes (`/root`,
+`/etc/credstore`), so that is normally root. An entry it cannot read, a
+restored file without its digest, a carved record it cannot read as one, or a
+restored store database without its rows stops it with exit `2` rather than
+being skipped.

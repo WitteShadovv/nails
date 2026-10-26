@@ -9,13 +9,16 @@
 //! rejected wholesale, uncitable or non-residual allowlist, a blind-fail on a
 //! missing positive control or one the baseline already carries, a fail on a
 //! missing canary, a blind-fail on a channel that reported nothing for an
-//! image, and that control noise is actually subtracted.
+//! image, that control noise is actually subtracted, and that every verdict
+//! names what it cannot see.
 
 use crate::catalog::{Catalog, CatalogRow};
 use crate::model::{
     AllowEntry, Allowlist, Canary, Change, Controls, Finding, OraclePolicy, PositiveControl, Scans,
     Tool,
 };
+use crate::nix_db::NIX_DB_PATH;
+use crate::unseen::Unseen;
 use crate::verdict::{self, Failure, Status, Verdict, breadth_reason, path_covers};
 use std::collections::BTreeSet;
 
@@ -256,6 +259,42 @@ fn invalid_canary(v: &Verdict) -> bool {
         .any(|f| matches!(f, Failure::InvalidCanary { .. }))
 }
 
+/// The files a reboot rewrites that the verdict names as unseen.
+fn reboot_rewritten(v: &Verdict) -> Vec<&str> {
+    v.unseen
+        .iter()
+        .find_map(|class| match class {
+            Unseen::RebootRewritten { paths } => Some(paths.iter().map(String::as_str).collect()),
+            _ => None,
+        })
+        .expect("every verdict names the files a reboot rewrites")
+}
+
+/// A `ValidPaths` row of the Nix store database registering `store_path`.
+fn store_row(store_path: &str) -> Finding {
+    Finding::new(
+        Tool::NixDb,
+        NIX_DB_PATH,
+        format!("ValidPaths hash=sha256:00 narSize=1 path={store_path}"),
+    )
+}
+
+/// The clean world with the Nix store database on every image: the file holds
+/// another digest on each, as every boot rewrites it, and its one row
+/// registers the decoy's own store path on each.
+fn scans_with_store_database() -> Scans {
+    let mut scans = clean_scans();
+    for (image, digest) in [
+        (&mut scans.before, "sha256:11"),
+        (&mut scans.control, "sha256:22"),
+        (&mut scans.after, "sha256:33"),
+    ] {
+        image.insert(restore_holding(NIX_DB_PATH, digest));
+        image.insert(store_row("/nix/store/aaaa-decoy-system"));
+    }
+    scans
+}
+
 // --- the clean baseline -----------------------------------------------------
 
 #[test]
@@ -354,9 +393,11 @@ fn a_file_the_session_rewrote_in_place_is_a_change() {
 fn a_file_a_plain_reboot_rewrites_too_is_noise() {
     // random-seed differs on every image: the control cycle shows a reboot
     // rewrites it, so after's new digest is noise, as is after holding the
-    // control cycle's digest.
-    for after_digest in ["sha256:33", "sha256:22"] {
-        let seed = |digest: &str| restore_holding("/var/lib/systemd/random-seed", digest);
+    // control cycle's digest. Only the new digest is content the verdict could
+    // not judge, so only then does it name the file as unseen.
+    let seed_path = "/var/lib/systemd/random-seed";
+    for (after_digest, unseen) in [("sha256:33", vec![seed_path]), ("sha256:22", vec![])] {
+        let seed = |digest: &str| restore_holding(seed_path, digest);
         let mut scans = clean_scans();
         scans.before.insert(seed("sha256:11"));
         scans.control.insert(seed("sha256:22"));
@@ -364,6 +405,7 @@ fn a_file_a_plain_reboot_rewrites_too_is_noise() {
         let v = decide(&scans, &clean_policy());
         assert_eq!(v.status, Status::Clean, "{after_digest}: {:?}", v.failures);
         assert_eq!(v.counts.noise_subtracted, 2, "{after_digest}");
+        assert_eq!(reboot_rewritten(&v), unseen, "{after_digest}");
     }
 }
 
@@ -425,6 +467,62 @@ fn a_record_the_session_removed_is_residue() {
     let mut scans = clean_scans();
     scans.before.insert(record);
     assert_eq!(decide(&scans, &clean_policy()).status, Status::Clean);
+}
+
+// --- the Nix store database, which every boot rewrites --------------------
+
+#[test]
+fn a_store_path_the_session_registered_is_residue_though_a_reboot_rewrites_the_database() {
+    // The database file holds another digest on every image, so the restore
+    // channel subtracts its change as noise; its rows are compared one by
+    // one, and a row new in after alone is residue.
+    let mut scans = scans_with_store_database();
+    let clean = decide(&scans, &clean_policy());
+    assert_eq!(clean.status, Status::Clean, "{:?}", clean.failures);
+
+    let hidden = store_row("/nix/store/bbbb-hidden-package");
+    scans.after.insert(hidden.clone());
+    let v = decide(&scans, &clean_policy());
+    assert_eq!(v.status, Status::Fail);
+    assert_eq!(
+        unexplained_at(&v, NIX_DB_PATH),
+        [(Change::Added, hidden.field.clone())]
+    );
+    assert!(
+        v.failures.contains(&Failure::UnexplainedResidue {
+            change: Change::Added,
+            tool: Tool::NixDb,
+            path: NIX_DB_PATH.into(),
+            field: hidden.field,
+        }),
+        "{:?}",
+        v.failures
+    );
+}
+
+#[test]
+fn a_store_path_a_plain_reboot_registers_too_is_noise() {
+    let mut scans = scans_with_store_database();
+    let booted = store_row("/nix/store/cccc-registered-at-boot");
+    scans.control.insert(booted.clone());
+    scans.after.insert(booted);
+    let v = decide(&scans, &clean_policy());
+    assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
+    // The rewritten file and the row the control cycle registered as well.
+    assert_eq!(v.counts.noise_subtracted, 3);
+}
+
+#[test]
+fn a_store_path_the_session_removed_is_residue() {
+    let mut scans = scans_with_store_database();
+    let decoy = store_row("/nix/store/aaaa-decoy-system");
+    scans.after.remove(&decoy);
+    let v = decide(&scans, &clean_policy());
+    assert_eq!(v.status, Status::Fail);
+    assert_eq!(
+        unexplained_at(&v, NIX_DB_PATH),
+        [(Change::Removed, decoy.field)]
+    );
 }
 
 #[test]
@@ -991,12 +1089,14 @@ fn exit_code_is_zero_only_when_clean() {
 #[test]
 fn summary_renders_the_clean_and_fail_lines() {
     // The one-line summary is a human-facing contract: a clean run names its
-    // reconciled residue counts, a failing run is marked FAIL with the
-    // unexplained count. This pins the branch and the rendered content.
+    // reconciled residue counts and what it cannot see, a failing run is
+    // marked FAIL with the unexplained count. This pins the branch and the
+    // rendered content.
     let clean = decide(&clean_scans(), &clean_policy());
     assert_eq!(
         clean.summary,
-        "CLEAN: 2 residue (1 noise subtracted, 1 cited, 1 self-check)"
+        "CLEAN: 2 residue (1 noise subtracted, 1 cited, 1 self-check); not seen: timestamps, \
+         file metadata, process ids within one power-of-two range, sqlite_carved"
     );
 
     let mut scans = clean_scans();
@@ -1340,6 +1440,112 @@ fn a_configured_but_rejected_control_fails_rather_than_passing_clean() {
     );
 }
 
+// --- what the verdict cannot see ---------------------------------------------
+
+#[test]
+fn every_verdict_names_the_classes_it_cannot_see() {
+    let v = decide(&clean_scans(), &clean_policy());
+    assert_eq!(
+        v.unseen,
+        [
+            Unseen::Timestamps,
+            Unseen::Metadata,
+            Unseen::ProcessIdRange,
+            Unseen::SkippedCarvers {
+                feature_types: vec!["sqlite_carved".into()],
+            },
+            Unseen::RebootRewritten { paths: vec![] },
+        ]
+    );
+    let json = serde_json::to_value(&v).expect("serializes");
+    assert_eq!(
+        json["unseen"],
+        serde_json::json!([
+            {"kind": "timestamps"},
+            {"kind": "metadata"},
+            {"kind": "process_id_range"},
+            {"kind": "skipped_carvers", "feature_types": ["sqlite_carved"]},
+            {"kind": "reboot_rewritten", "paths": []},
+        ])
+    );
+}
+
+#[test]
+fn a_file_a_reboot_rewrites_is_unseen_unless_a_channel_reads_its_records() {
+    // Four files hold another digest on every image. The verdict cannot judge
+    // what after holds in random-seed or in the database's shared-memory
+    // index, so it names them; plaso reads the login records of wtmp and the
+    // scan the rows of the store database, so those are compared record by
+    // record instead. plaso's own stat of random-seed reads no record of it.
+    let rewritten = [
+        "/var/lib/systemd/random-seed",
+        "/nix/var/nix/db/db.sqlite-shm",
+        "/var/log/wtmp",
+        NIX_DB_PATH,
+    ];
+    let mut scans = clean_scans();
+    for (image, digest) in [
+        (&mut scans.before, "sha256:11"),
+        (&mut scans.control, "sha256:22"),
+        (&mut scans.after, "sha256:33"),
+    ] {
+        for path in rewritten {
+            image.insert(restore_holding(path, digest));
+        }
+        image.insert(Finding::new(
+            Tool::Plaso,
+            "/var/lib/systemd/random-seed",
+            "fs:stat",
+        ));
+    }
+    scans.before.insert(Finding::new(
+        Tool::Plaso,
+        "/var/log/wtmp",
+        "linux:utmp:event login_type=2",
+    ));
+    scans
+        .control
+        .insert(store_row("/nix/store/aaaa-decoy-system"));
+    let v = decide(&scans, &clean_policy());
+    assert_eq!(
+        reboot_rewritten(&v),
+        [
+            "/nix/var/nix/db/db.sqlite-shm",
+            "/var/lib/systemd/random-seed"
+        ]
+    );
+    assert!(
+        v.summary
+            .ends_with(", sqlite_carved, 2 files a reboot rewrites"),
+        "{}",
+        v.summary
+    );
+
+    // One such file is named in the singular.
+    for image in [&mut scans.before, &mut scans.control, &mut scans.after] {
+        image.retain(|f| f.path != "/nix/var/nix/db/db.sqlite-shm");
+    }
+    let v = decide(&scans, &clean_policy());
+    assert!(
+        v.summary
+            .ends_with(", sqlite_carved, 1 file a reboot rewrites"),
+        "{}",
+        v.summary
+    );
+}
+
+#[test]
+fn a_failing_summary_names_no_unseen_class() {
+    // A failing run is already not clean; its line says why, and the classes
+    // stay in the verdict's own list.
+    let mut scans = clean_scans();
+    scans.after.insert(restore("/home/user/secret.txt"));
+    let v = decide(&scans, &clean_policy());
+    assert_eq!(v.status, Status::Fail);
+    assert!(!v.summary.contains("not seen"), "{}", v.summary);
+    assert_eq!(v.unseen.len(), 5);
+}
+
 // --- a real scan must hear from every channel on every image -----------------
 
 /// The shipped self-check shape: a bulk_extractor e-mail sentinel planted on
@@ -1466,7 +1672,7 @@ fn a_channel_silent_on_one_image_fails_for_that_image() {
 fn every_channel_is_required_on_every_image() {
     // Each channel, silent on one image, fails the run on its own; a
     // finding of another channel never stands in for it.
-    for tool in Tool::ALL {
+    for tool in Tool::REQUIRED {
         for image in ["before", "control", "after"] {
             let scans = without(complete_scans(), tool, &[image]);
             let v = decide_scan(&scans, &complete_policy());

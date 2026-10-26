@@ -71,12 +71,19 @@ pub fn plaso_finding(line: &str) -> Option<Finding> {
     if is_journal_file(path) {
         return None;
     }
-    let field = if data_type.starts_with("fs:") {
+    let field = if is_file_event(&data_type) {
         data_type
     } else {
         record_key(&data_type, &value)
     };
     Some(Finding::new(Tool::Plaso, path, field))
+}
+
+/// Whether a plaso key is a file-system event (`fs:stat` and the other `fs:`
+/// types), which plaso reports for every file it sees, rather than a record
+/// it read out of the file.
+pub(crate) fn is_file_event(key: &str) -> bool {
+    key.starts_with("fs:")
 }
 
 /// The key of a record event: its data type, then every field that says what
