@@ -11,17 +11,21 @@
 //! [`prepare`] builds the manager and refuses, before anything is asked, outside
 //! a hidden session and in a hidden root whose session plan cannot be read,
 //! where the way back is unknown; [`ReadyDeactivation::warnings`] names what
-//! the return will not put back, for the front end to show before it asks; and
-//! [`ReadyDeactivation::leave`] commits the way back once the front end has
-//! confirmed, taken the state lock and, for a person, printed. A
-//! machine-readable result waits for the commit, so it reports the outcome.
+//! the return will not put back, for the front end to show before it asks;
+//! [`ReadyDeactivation::lock`] takes the exclusive state lock once the front
+//! end has confirmed; and [`LockedDeactivation::leave`], on the only handle
+//! that leaves, commits the way back once the front end has, for a person,
+//! printed. A machine-readable result waits for the commit, so it reports the
+//! outcome.
 
 use std::path::Path;
 
 use nails_teardown::whole_root::plan::Plan;
 
+use super::lock::LockError;
+use crate::hidden_root::Allow;
 use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView};
-use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv};
+use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv, StateLock};
 
 /// The result of preparing a deactivation.
 pub enum Prepared {
@@ -36,7 +40,21 @@ pub enum Prepared {
     Ready(Box<ReadyDeactivation>),
 }
 
-/// A deactivation whose preconditions hold, ready to commit.
+/// A deactivation whose preconditions hold, ready to lock. It cannot leave:
+/// only the [`LockedDeactivation`] its [`lock`](Self::lock) step hands out
+/// can.
+///
+/// ```compile_fail
+/// fn leave_unlocked(ready: nails_core::app::deactivate::ReadyDeactivation) {
+///     let _ = ready.leave(nails_core::session::LeaveTo::Decoy);
+/// }
+/// ```
+///
+/// ```
+/// fn leave_locked(locked: &mut nails_core::app::deactivate::LockedDeactivation) {
+///     let _ = locked.leave(nails_core::session::LeaveTo::Decoy);
+/// }
+/// ```
 pub struct ReadyDeactivation {
     manager: NailsManager<RealFilesystem>,
     /// The session plan the probe read, which the way back returns with.
@@ -44,13 +62,13 @@ pub struct ReadyDeactivation {
 }
 
 impl ReadyDeactivation {
-    /// The hidden volume root, for taking the state lock.
-    pub fn hidden_root(&self) -> &Path {
+    /// The hidden volume root, which the state lock is taken on.
+    fn hidden_root(&self) -> &Path {
         &self.manager.config().hidden_volume_root
     }
 
-    /// The state file path, for taking the state lock.
-    pub fn state_path(&self) -> &Path {
+    /// The state file path, beside which the state lock lies.
+    fn state_path(&self) -> &Path {
         &self.manager.config().state_file_path
     }
 
@@ -67,16 +85,45 @@ impl ReadyDeactivation {
         )
     }
 
+    /// Take the exclusive state lock on the hidden volume. Hands out the only
+    /// handle that leaves, which holds the lock until it is dropped.
+    pub fn lock(self) -> Result<LockedDeactivation, LockError> {
+        self.lock_with(super::lock::acquire_mutating)
+    }
+
+    /// [`lock`](Self::lock), taking the lock with `acquire`.
+    fn lock_with(
+        self,
+        acquire: impl FnOnce(&Path, Allow, &Path) -> Result<StateLock, LockError>,
+    ) -> Result<LockedDeactivation, LockError> {
+        let lock = acquire(self.hidden_root(), Allow::Nothing, self.state_path())?;
+        Ok(LockedDeactivation {
+            ready: self,
+            _lock: lock,
+        })
+    }
+}
+
+/// A deactivation that holds the exclusive state lock: the only handle that
+/// leaves. The lock is released when it is dropped.
+pub struct LockedDeactivation {
+    ready: ReadyDeactivation,
+    /// Held for its `Drop`, which releases the lock.
+    _lock: StateLock,
+}
+
+impl LockedDeactivation {
     /// Commit the way back: enqueue the soft-reboot (or the power-off). A
     /// caller that shows a person the result prints it first, because this
     /// stops the terminal; a machine-readable result waits for the outcome.
-    pub fn leave(mut self, to: LeaveTo) -> Result<LeaveReport, NailsError> {
-        let view = self.manager.session_view();
+    pub fn leave(&mut self, to: LeaveTo) -> Result<LeaveReport, NailsError> {
+        let manager = &mut self.ready.manager;
+        let view = manager.session_view();
         let host = RealTargetHost::for_plan(match &view {
             SessionView::Hidden(plan) => Some(&**plan),
             _ => None,
         });
-        self.manager.leave_session(to, &host)
+        manager.leave_session(to, &host)
     }
 }
 
@@ -166,17 +213,42 @@ mod tests {
         Box::new(Plan::from_json(&json.to_string()).expect("a minimal plan"))
     }
 
+    /// The locked handle of `ready`, taking the lock beside its state file
+    /// without the attach gate (the scratch directory is no mount point).
+    fn locked(ready: ReadyDeactivation) -> LockedDeactivation {
+        ready
+            .lock_with(crate::app::lock::acquire_unattached)
+            .unwrap_or_else(|error| panic!("the lock step refused: {error:?}"))
+    }
+
     #[test]
     fn leaving_outside_a_hidden_session_refuses_instead_of_reporting_success() {
         // `leave` commits the real way back. Off the hidden root the live
         // view is the decoy, so it must surface the refusal rather than
         // quietly return an empty success report.
         let dir = tempfile::tempdir().unwrap();
-        let err = ready_at(dir.path()).leave(LeaveTo::Decoy).unwrap_err();
+        let err = locked(ready_at(dir.path()))
+            .leave(LeaveTo::Decoy)
+            .unwrap_err();
         assert!(
             matches!(&err, NailsError::InvalidState(msg) if msg.contains("not in a hidden session")),
             "expected a refusal, got {err:?}"
         );
+    }
+
+    /// The handle that leaves holds the state lock for as long as it lives,
+    /// and the real lock step runs the attach gate first.
+    #[test]
+    fn the_lock_step_holds_the_lock_for_the_handle_that_leaves() {
+        let dir = tempfile::tempdir().unwrap();
+        let locked = locked(ready_at(dir.path()));
+        assert!(crate::StateLock::try_acquire(dir.path()).is_err());
+        drop(locked);
+        assert!(crate::StateLock::try_acquire(dir.path()).is_ok());
+        assert!(matches!(
+            ready_at(dir.path()).lock(),
+            Err(LockError::Refused(_))
+        ));
     }
 
     #[test]

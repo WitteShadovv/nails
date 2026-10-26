@@ -22,7 +22,7 @@ use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
 
-use nails_core::app::activate::{self, ActivateOptions, Prepared, ReadyActivation};
+use nails_core::app::activate::{self, ActivateOptions, LockedActivation, Prepared};
 use nails_core::hidden_root::Refusal;
 use nails_core::manager::EnterOutcome;
 use nails_core::session::Entry;
@@ -33,8 +33,8 @@ use std::time::Instant;
 /// Write the pre-mount residue baseline through the facade and report where it
 /// went: a debug line under `--json`, the summary on stdout otherwise. The scan
 /// and the write are the facade's; this only reports the result.
-fn write_baseline(settings: &OutputSettings, ready: &ReadyActivation, json: bool) {
-    if let Some(baseline) = ready.write_residue_baseline() {
+fn write_baseline(settings: &OutputSettings, locked: &LockedActivation, json: bool) {
+    if let Some(baseline) = locked.write_residue_baseline() {
         if json {
             tracing::debug!(
                 path = %baseline.path.display(),
@@ -140,7 +140,7 @@ fn activate_options(args: &ActivateArgs) -> ActivateOptions {
 /// [`ExitStatus::Usage`] without confirmation off a terminal,
 /// [`ExitStatus::InvalidState`] when the state file cannot be trusted,
 /// [`ExitStatus::Config`] for a bad configuration and [`ExitStatus::Failed`]
-/// otherwise.
+/// otherwise (`state_locked` when another operation holds the state lock).
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
@@ -175,7 +175,7 @@ pub fn execute(
     }
 
     let options = activate_options(args);
-    let mut ready = match activate::prepare(env, config, settings.verbosity, &options) {
+    let ready = match activate::prepare(env, config, settings.verbosity, &options) {
         Prepared::AlreadyActive => {
             print_result(settings, &ActivateResult::AlreadyActive, 0.0);
             return ExitStatus::Ok;
@@ -204,31 +204,13 @@ pub fn execute(
         crate::cli::output::eprintln_tolerating_broken_pipe(&format!("warning: {warning}"));
     }
 
-    let _state_lock = match super::acquire_state_lock_or_report(
-        ready.hidden_root(),
-        ready.allow(),
-        ready.state_path(),
-        "activate",
-        json,
-    ) {
-        Ok(lock) => lock,
-        Err(status) => return status,
+    // The lock step takes the state lock and, holding it, refuses a state
+    // file it cannot trust; the handle it hands out holds the lock until it
+    // is dropped, after the commit.
+    let mut locked = match ready.lock() {
+        Ok(locked) => locked,
+        Err(error) => return super::report_lock_error(error, "activate", json),
     };
-    if !ready.is_state_trusted() {
-        return report_error(
-            json,
-            "activate",
-            ExitStatus::InvalidState,
-            ErrorBody::new(
-                "invalid_state",
-                format!(
-                    "refusing to activate: the state file is corrupt or unreadable, so the \
-                     current state is unknown. Run `{}` and recover the hidden volume first.",
-                    nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Verify)
-                ),
-            ),
-        );
-    }
 
     // Shown under -q too: every opt-in protection keeps its default without
     // the file, which a scripted `-y -q` activation must not hide.
@@ -236,7 +218,7 @@ pub fn execute(
         crate::cli::output::eprintln_tolerating_broken_pipe(&notice);
     }
     if !args.yes
-        && let Some(status) = stop_status(confirm_logout(settings, ready.accepted()))
+        && let Some(status) = stop_status(confirm_logout(settings, locked.accepted()))
     {
         return report_cancelled(settings, status);
     }
@@ -246,7 +228,7 @@ pub fn execute(
     if nails_core::cancel::is_cancelled() {
         return report_cancelled(settings, ExitStatus::Cancelled);
     }
-    write_baseline(settings, &ready, json);
+    write_baseline(settings, &locked, json);
     if nails_core::cancel::is_cancelled() {
         return report_cancelled(settings, ExitStatus::Cancelled);
     }
@@ -255,11 +237,11 @@ pub fn execute(
     // no progress line on stdout; a window watches progress on its own channel.
     if !json && settings.verbosity >= Verbosity::Normal {
         crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(
-            ready.builds_hidden_system(),
+            locked.builds_hidden_system(),
         ));
     }
     let start = Instant::now();
-    let result = ready.enter();
+    let result = locked.enter();
     let duration = start.elapsed().as_secs_f64();
 
     let (entry, elapsed) = match result {
@@ -283,9 +265,9 @@ pub fn execute(
     // time reported is the one the state file records, which `status` shows
     // as well.
     let status = commit_and_report(settings, &entry, elapsed.as_secs_f64(), || {
-        ready.commit(&entry)
+        locked.commit(&entry)
     });
-    drop(_state_lock);
+    drop(locked);
     status
 }
 

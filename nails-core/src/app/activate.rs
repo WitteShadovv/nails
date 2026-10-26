@@ -8,33 +8,35 @@
 //! soft-reboot that stops every decoy program and starts the hidden userspace.
 //! A front end confirms with the operator and shows a person the result before
 //! the switch (which stops its terminal; a machine-readable result waits for
-//! the commit), so the operation is split: [`prepare`] builds the manager and
-//! runs the gates that read only (already-active, the platform gate, the attach
-//! gate) without writing to the hidden volume, [`ReadyActivation::enter`]
-//! stages the entry, and [`ReadyActivation::commit`] kills the decoy's shells
-//! and enqueues the soft-reboot. The attach gate decides before anything is
-//! written.
+//! the commit), so the operation is split into steps, each handing out the
+//! value the next one needs:
 //!
-//! The state lock and the trusted-state check are the front end's, between
-//! `prepare` and `enter`: it takes the exclusive lock
-//! ([`acquire_mutating`](super::lock::acquire_mutating) with
-//! [`ReadyActivation::allow`]), refuses while holding it when
-//! [`ReadyActivation::is_state_trusted`] is false, and keeps the lock until
-//! the commit. Neither `enter` nor `commit` takes the lock or makes the check,
-//! so a front end that skips them activates over a state file it cannot trust
-//! and can race another operation over the mounts and the state file.
+//! 1. [`prepare`] builds the manager and runs the gates that read only
+//!    (already-active, the platform gate, the attach gate) without writing to
+//!    the hidden volume; the attach gate decides before anything is written.
+//! 2. [`ReadyActivation::lock`] takes the exclusive state lock and, holding
+//!    it, refuses a state file it cannot trust ([`LockError`]). It hands out
+//!    the [`LockedActivation`], which holds the lock until it is dropped.
+//! 3. [`LockedActivation::enter`] stages the entry, and
+//!    [`LockedActivation::commit`] kills the decoy's shells and enqueues the
+//!    soft-reboot.
+//!
+//! Only the locked handle enters and commits, so no front end can activate
+//! without the lock or over a state file it cannot trust. The confirmation and
+//! the cancel checks between the steps are the front end's.
 
 use std::path::Path;
 
 use nails_teardown::shells::kill_all_interactive_shells;
 
-use crate::hidden_root::{Assessment, Refusal};
+use super::lock::LockError;
+use crate::hidden_root::{Allow, Assessment, Refusal};
 use crate::manager::{EnterOptions, EnterOutcome};
 use crate::session::{Entry, RealEntryHost, RealTargetHost};
 use crate::verbosity::Verbosity;
 use crate::{
     Config, NailsError, NailsManager, RealFilesystem, Result, RuntimeEnv, StateFileStatus,
-    Verifier, VerifyResult, write_activation_residue_report,
+    StateLock, Verifier, VerifyResult, write_activation_residue_report,
 };
 
 /// What `activate` should do.
@@ -90,10 +92,21 @@ pub struct Baseline {
     pub path: std::path::PathBuf,
 }
 
-/// An activation whose gates have passed, ready to confirm and enter. The state
-/// lock and the trusted-state check are the caller's (see the module docs): take
-/// the lock, then ask [`is_state_trusted`](Self::is_state_trusted), before
-/// [`enter`](Self::enter).
+/// An activation whose read-only gates have passed, ready to lock. It cannot
+/// enter: only the [`LockedActivation`] its [`lock`](Self::lock) step hands
+/// out can, once the lock is held and the recorded state trusted.
+///
+/// ```compile_fail
+/// fn enter_unlocked(ready: &mut nails_core::app::activate::ReadyActivation) {
+///     let _ = ready.enter();
+/// }
+/// ```
+///
+/// ```
+/// fn enter_locked(locked: &mut nails_core::app::activate::LockedActivation) {
+///     let _ = locked.enter();
+/// }
+/// ```
 pub struct ReadyActivation {
     manager: NailsManager<RealFilesystem>,
     options: EnterOptions,
@@ -102,18 +115,18 @@ pub struct ReadyActivation {
 }
 
 impl ReadyActivation {
-    /// The hidden volume root, for taking the state lock.
-    pub fn hidden_root(&self) -> &Path {
+    /// The hidden volume root, which the state lock is taken on.
+    fn hidden_root(&self) -> &Path {
         &self.manager.config().hidden_volume_root
     }
 
-    /// The state file path, for taking the state lock.
-    pub fn state_path(&self) -> &Path {
+    /// The state file path, beside which the state lock lies.
+    fn state_path(&self) -> &Path {
         &self.manager.config().state_file_path
     }
 
     /// What the operator accepted, for the lock's allowance.
-    pub fn allow(&self) -> crate::hidden_root::Allow {
+    fn allow(&self) -> Allow {
         self.options.allow()
     }
 
@@ -133,13 +146,57 @@ impl ReadyActivation {
     /// file means the current state is unknown, so activation must refuse; a
     /// state file this process is not allowed to read, or to look up, is
     /// unreadable too.
-    pub fn is_state_trusted(&self) -> bool {
+    fn is_state_trusted(&self) -> bool {
         trusted(&self.manager.current_state_with_outcome())
+    }
+
+    /// Take the exclusive state lock, created only on the hidden volume or the
+    /// root the operator accepted, and, holding it, refuse a state file that
+    /// cannot be trusted ([`LockError::UntrustedState`]): a corrupt or
+    /// unreadable one leaves the current state unknown. Hands out the only
+    /// handle that enters and commits, which holds the lock until it is
+    /// dropped.
+    pub fn lock(self) -> std::result::Result<LockedActivation, LockError> {
+        self.lock_with(super::lock::acquire_mutating)
+    }
+
+    /// [`lock`](Self::lock), taking the lock with `acquire`.
+    fn lock_with(
+        self,
+        acquire: impl FnOnce(&Path, Allow, &Path) -> std::result::Result<StateLock, LockError>,
+    ) -> std::result::Result<LockedActivation, LockError> {
+        let lock = acquire(self.hidden_root(), self.allow(), self.state_path())?;
+        // Checked under the lock, so no other operation changes the state
+        // between the check and the entry.
+        if !self.is_state_trusted() {
+            return Err(LockError::UntrustedState);
+        }
+        Ok(LockedActivation {
+            ready: self,
+            _lock: lock,
+        })
+    }
+}
+
+/// An activation that holds the exclusive state lock over a state it trusts:
+/// the only handle that stages the entry and commits it. The lock is released
+/// when it is dropped.
+pub struct LockedActivation {
+    ready: ReadyActivation,
+    /// Held for its `Drop`, which releases the lock.
+    _lock: StateLock,
+}
+
+impl LockedActivation {
+    /// The refusal the operator overrode with `--allow-decoy-storage`, repeated
+    /// at the confirmation prompt.
+    pub fn accepted(&self) -> Option<&Refusal> {
+        self.ready.accepted()
     }
 
     /// Whether this activation builds a hidden NixOS system (for the progress line).
     pub fn builds_hidden_system(&self) -> bool {
-        self.manager.builds_hidden_system(&self.options)
+        self.ready.manager.builds_hidden_system(&self.ready.options)
     }
 
     /// Scan the decoy for residue and write a pre-mount baseline report, before
@@ -147,7 +204,7 @@ impl ReadyActivation {
     /// and `None` is returned, because the baseline is a convenience for later
     /// comparison, not a precondition for activating.
     pub fn write_residue_baseline(&self) -> Option<Baseline> {
-        let config = self.manager.config().clone();
+        let config = self.ready.manager.config().clone();
         let hidden_root = config.hidden_volume_root.clone();
         if hidden_root.as_os_str().is_empty() {
             return None;
@@ -158,7 +215,7 @@ impl ReadyActivation {
         // and backing device are not residue.
         let verifier =
             Verifier::with_config(RealFilesystem, config, None, StateFileStatus::NotChecked)
-                .with_runtime_env(self.manager.runtime_env())
+                .with_runtime_env(self.ready.manager.runtime_env())
                 .scoped_to_decoy();
         let result = match verifier.run(false) {
             Ok(result) => result,
@@ -186,7 +243,8 @@ impl ReadyActivation {
     /// Stage the entry: the pre-flight checks, the hidden system and the armed
     /// overlay. Nothing is enqueued yet.
     pub fn enter(&mut self) -> Result<EnterOutcome> {
-        self.manager.enter_session(&self.options, &RealEntryHost)
+        let ready = &mut self.ready;
+        ready.manager.enter_session(&ready.options, &RealEntryHost)
     }
 
     /// The point of no return: kill the decoy's interactive shells (so none
@@ -199,7 +257,7 @@ impl ReadyActivation {
         // the activation command never reaches a history file on the decoy disk.
         kill_all_interactive_shells(&[]);
         let host = RealTargetHost::for_plan(Some(&entry.plan));
-        self.manager.trigger_entry(&host, &RealEntryHost)
+        self.ready.manager.trigger_entry(&host, &RealEntryHost)
     }
 }
 
@@ -221,9 +279,8 @@ fn trusted(load: &Result<(crate::SystemState, crate::LoadOutcome)>) -> bool {
 /// the attach gate, all before anything is written to the hidden volume.
 ///
 /// `config` is the effective configuration (overrides already applied) and
-/// `verbosity` the resolved output verbosity. The caller then takes the state
-/// lock, checks [`ReadyActivation::is_state_trusted`], confirms with the operator
-/// and enters.
+/// `verbosity` the resolved output verbosity. The caller then takes the lock
+/// step ([`ReadyActivation::lock`]), confirms with the operator and enters.
 pub fn prepare(
     env: &RuntimeEnv,
     config: Config,
@@ -533,9 +590,9 @@ mod tests {
         manager.set_nixos_builder(NixOSBuilder::new_legacy(PathBuf::from(
             "/etc/nixos/configuration.nix",
         )));
-        let ready = ready(manager, EnterOptions::default(), None, None);
+        let locked = locked(ready(manager, EnterOptions::default(), None, None));
         assert!(
-            ready.builds_hidden_system(),
+            locked.builds_hidden_system(),
             "a configured NixOS target builds a hidden system"
         );
     }
@@ -555,10 +612,74 @@ mod tests {
             overlay_only: true,
             ..Default::default()
         };
-        let ready = ready(manager, options, None, None);
+        let locked = locked(ready(manager, options, None, None));
         assert!(
-            !ready.builds_hidden_system(),
+            !locked.builds_hidden_system(),
             "overlay-only builds no hidden system"
         );
+    }
+
+    /// The lock step of `ready`, taking the lock beside its state file without
+    /// the attach gate (the scratch directory is no mount point).
+    fn lock(ready: ReadyActivation) -> std::result::Result<LockedActivation, LockError> {
+        ready.lock_with(crate::app::lock::acquire_unattached)
+    }
+
+    /// The locked handle of `ready`, whose state is trusted.
+    fn locked(ready: ReadyActivation) -> LockedActivation {
+        lock(ready).unwrap_or_else(|error| panic!("the lock step refused: {error:?}"))
+    }
+
+    /// Whether another operation could take the state lock in `dir` now.
+    fn lock_is_free(dir: &Path) -> bool {
+        crate::StateLock::try_acquire(dir).is_ok()
+    }
+
+    /// The lock step hands out the handle that enters, holding the lock for as
+    /// long as the handle lives: no other operation takes it meanwhile.
+    #[test]
+    fn the_lock_step_holds_the_lock_for_the_handle_that_enters() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = ready(manager_at(dir.path()), EnterOptions::default(), None, None);
+        let locked = locked(ready);
+        assert!(!lock_is_free(dir.path()), "the handle holds the lock");
+        drop(locked);
+        assert!(lock_is_free(dir.path()), "dropping the handle releases it");
+    }
+
+    /// A state file that cannot be trusted is refused under the lock, and no
+    /// handle that could enter is handed out; the lock is released again.
+    #[test]
+    fn the_lock_step_refuses_a_state_it_cannot_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("state.json"), b"this is not json").unwrap();
+        let ready = ready(manager_at(dir.path()), EnterOptions::default(), None, None);
+        assert!(matches!(lock(ready), Err(LockError::UntrustedState)));
+        assert!(lock_is_free(dir.path()), "a refusal keeps no lock");
+    }
+
+    /// A lock another operation holds is reported, and nothing is checked or
+    /// handed out without it.
+    #[test]
+    fn the_lock_step_reports_a_lock_another_operation_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let _held = crate::StateLock::try_acquire(dir.path()).unwrap();
+        let ready = ready(manager_at(dir.path()), EnterOptions::default(), None, None);
+        assert!(matches!(
+            lock(ready),
+            Err(LockError::Unavailable(
+                NailsError::OperationInProgress { .. }
+            ))
+        ));
+    }
+
+    /// The real lock step runs the attach gate first: a root it refuses (a
+    /// scratch directory is no mount point) takes no lock at all.
+    #[test]
+    fn the_lock_step_refuses_a_root_the_attach_gate_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = ready(manager_at(dir.path()), EnterOptions::default(), None, None);
+        assert!(matches!(ready.lock(), Err(LockError::Refused(_))));
+        assert!(!crate::StateLock::lock_path(dir.path()).exists());
     }
 }

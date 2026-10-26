@@ -117,33 +117,45 @@ pub(crate) fn load_config_or_report(
     })
 }
 
-/// Take the exclusive state lock for an ordinary mutating command, or report.
+/// Report why an operation's lock step handed out no handle, and return the
+/// status to exit with.
 ///
-/// The gate and the acquisition live in [`nails_core::app::lock`]; this renders
-/// the two refusals. A root the attach gate refuses is reported with the gate's
-/// text and code (exit 4), as `activate` reports it; a lock held by another
-/// operation is a `state_locked` failure (exit 1). The returned guard must be
-/// kept alive for the whole operation; dropping it (on exit) releases the lock.
-#[must_use = "the returned guard releases the lock when dropped"]
-pub(crate) fn acquire_state_lock_or_report(
-    hidden_root: &Path,
-    allow: nails_core::hidden_root::Allow,
-    state_file_path: &Path,
+/// The gate, the acquisition and the trusted-state check live in the
+/// operation's lock step ([`nails_core::app::lock`]); this renders their
+/// refusals. A root the attach gate refuses is reported with the gate's text
+/// and code (exit 4), as `activate` reports it; a lock held by another
+/// operation is a `state_locked` failure (exit 1); a state file an activation
+/// cannot trust is `invalid_state` (exit 6).
+pub(crate) fn report_lock_error(
+    error: nails_core::app::lock::LockError,
     command: &'static str,
     json: bool,
-) -> Result<nails_core::StateLock, ExitStatus> {
-    use nails_core::app::lock::LockOutcome;
-    match nails_core::app::lock::acquire_mutating(hidden_root, allow, state_file_path) {
-        LockOutcome::Acquired(lock) => Ok(lock),
-        LockOutcome::Refused(refusal) => Err(crate::cli::output::refusal::report_refusal(
-            json, command, &refusal,
-        )),
-        LockOutcome::Error(error) => Err(report_error(
+) -> ExitStatus {
+    use nails_core::app::lock::LockError;
+    use nails_core::next_step::{NextStep, sudo_line};
+    match error {
+        LockError::Refused(refusal) => {
+            crate::cli::output::refusal::report_refusal(json, command, &refusal)
+        }
+        LockError::Unavailable(error) => report_error(
             json,
             command,
             ExitStatus::Failed,
             ErrorBody::new("state_locked", error.to_string()),
-        )),
+        ),
+        LockError::UntrustedState => report_error(
+            json,
+            command,
+            ExitStatus::InvalidState,
+            ErrorBody::new(
+                "invalid_state",
+                format!(
+                    "refusing to {command}: the state file is corrupt or unreadable, so the \
+                     current state is unknown. Run `{}` and recover the hidden volume first.",
+                    sudo_line(NextStep::Verify)
+                ),
+            ),
+        ),
     }
 }
 
@@ -152,6 +164,30 @@ mod tests {
     use super::sudo_line;
     use nails_core::NailsError;
     use std::path::Path;
+
+    /// Each reason a lock step hands out no handle keeps the exit it had
+    /// when the front end took the lock and made the check itself.
+    #[test]
+    fn each_lock_error_keeps_its_exit() {
+        use super::report_lock_error;
+        use crate::cli::output::ExitStatus;
+        use nails_core::app::lock::LockError;
+        use nails_core::hidden_root::{Refusal, RefusalKind};
+        let refused = LockError::Refused(Box::new(Refusal::new(
+            RefusalKind::SameDeviceAsRoot,
+            Path::new("/mnt/data"),
+        )));
+        let held = LockError::Unavailable(NailsError::OperationInProgress { pid: 42 });
+        assert_eq!(
+            report_lock_error(refused, "discard", true),
+            ExitStatus::PreflightRefused
+        );
+        assert_eq!(report_lock_error(held, "discard", true), ExitStatus::Failed);
+        assert_eq!(
+            report_lock_error(LockError::UntrustedState, "activate", true),
+            ExitStatus::InvalidState
+        );
+    }
 
     fn unreadable(kind: std::io::ErrorKind) -> NailsError {
         NailsError::io("/mnt/data/config/nails.toml", std::io::Error::from(kind))

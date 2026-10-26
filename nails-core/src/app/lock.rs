@@ -7,8 +7,11 @@
 //! A concurrent `nails` operation holds this lock, so a second one fails fast
 //! rather than racing it. The lock lies next to the state file and is created
 //! only on the volume mounted at `hidden_root` (or on the root the operator
-//! accepted). A front end renders the refusal and the lock error; the gate and
-//! the acquisition are here.
+//! accepted). The operations that write under it take it in their own lock
+//! step, which hands out the only handle that runs their writing steps
+//! ([`activate`](super::activate), [`deactivate`](super::deactivate),
+//! [`discard_upper`](super::discard_upper)); a front end renders a
+//! [`LockError`]. The gate and the acquisition are here.
 
 use std::path::Path;
 
@@ -23,38 +26,53 @@ pub fn state_lock_dir(state_file_path: &Path) -> &Path {
     state_file_path.parent().unwrap_or_else(|| Path::new("."))
 }
 
-/// The outcome of taking the exclusive state lock for an ordinary mutating
-/// command.
-pub enum LockOutcome {
-    /// The lock was taken; keep the guard alive for the whole operation.
-    Acquired(StateLock),
+/// Why an operation's lock step handed out no handle.
+#[derive(Debug)]
+pub enum LockError {
     /// The attach gate refused the root: nothing was written. The front end
     /// renders the refusal (exit `PreflightRefused`).
-    Refused(Refusal),
-    /// The directory could not be attached or the lock could not be taken (a
-    /// concurrent operation holds it). The front end reports it (exit `Failed`).
-    Error(NailsError),
+    Refused(Box<Refusal>),
+    /// The directory could not be attached, or the lock could not be taken: a
+    /// concurrent operation holds it. The front end reports it (exit `Failed`).
+    Unavailable(NailsError),
+    /// Taken under the lock: the state file is corrupt or unreadable, so the
+    /// current state is unknown. Only an activation checks it; the front end
+    /// reports it (exit `InvalidState`). The lock is released again.
+    UntrustedState,
 }
 
 /// Take the exclusive state lock for an ordinary mutating command.
 ///
 /// The lock is created only on the volume mounted at `hidden_root`, or on the
 /// root the operator accepted with `allow`. A root the attach gate refuses is
-/// returned as [`LockOutcome::Refused`] with the gate's text and code; the
+/// returned as [`LockError::Refused`] with the gate's text and code; the
 /// returned guard (on success) must be kept alive for the whole operation.
-pub fn acquire_mutating(hidden_root: &Path, allow: Allow, state_file_path: &Path) -> LockOutcome {
+pub(crate) fn acquire_mutating(
+    hidden_root: &Path,
+    allow: Allow,
+    state_file_path: &Path,
+) -> Result<StateLock, LockError> {
     if let Ok(Assessment::Refused(refusal)) =
         HiddenRoot::assess_allowing(&RealFilesystem, hidden_root, allow)
     {
-        return LockOutcome::Refused(refusal);
+        return Err(LockError::Refused(Box::new(refusal)));
     }
     let dir = state_lock_dir(state_file_path);
-    match ensure_state_dir_attached_allowing(&RealFilesystem, hidden_root, dir, allow)
+    ensure_state_dir_attached_allowing(&RealFilesystem, hidden_root, dir, allow)
         .and_then(|()| StateLock::try_acquire(dir))
-    {
-        Ok(lock) => LockOutcome::Acquired(lock),
-        Err(error) => LockOutcome::Error(error),
-    }
+        .map_err(LockError::Unavailable)
+}
+
+/// For the lock steps' tests: take the lock beside `state_file_path` as
+/// [`acquire_mutating`] does, without the attach gate, which refuses the
+/// test's scratch directory (it is not a mount point).
+#[cfg(test)]
+pub(crate) fn acquire_unattached(
+    _hidden_root: &Path,
+    _allow: Allow,
+    state_file_path: &Path,
+) -> Result<StateLock, LockError> {
+    StateLock::try_acquire(state_lock_dir(state_file_path)).map_err(LockError::Unavailable)
 }
 
 /// Take the state lock for emergency teardown, proceeding without it on timeout.
@@ -88,6 +106,35 @@ pub fn acquire_for_emergency(hidden_root: &Path, state_file_path: &Path) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A root the attach gate refuses (a scratch directory is no mount point)
+    /// is the gate's refusal, before any lock file is created.
+    #[test]
+    fn a_root_the_attach_gate_refuses_takes_no_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state.json");
+        match acquire_mutating(dir.path(), Allow::Nothing, &state) {
+            Err(LockError::Refused(_)) => {}
+            Err(other) => panic!("expected the gate's refusal, got {other:?}"),
+            Ok(_) => panic!("took the lock on a root the gate refuses"),
+        }
+        assert!(!StateLock::lock_path(dir.path()).exists());
+    }
+
+    /// A lock another operation holds is reported as unavailable, never
+    /// taken twice.
+    #[test]
+    fn a_held_lock_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state.json");
+        let _held = StateLock::try_acquire(dir.path()).unwrap();
+        assert!(matches!(
+            acquire_unattached(dir.path(), Allow::Nothing, &state),
+            Err(LockError::Unavailable(
+                NailsError::OperationInProgress { .. }
+            ))
+        ));
+    }
 
     #[test]
     fn acquire_for_emergency_takes_the_lock_when_the_volume_is_attached_and_free() {
