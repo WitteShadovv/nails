@@ -705,28 +705,38 @@ fn the_cli_fails_a_scan_whose_plaso_channel_was_dropped() {
 
 // --- the Nix store database's rows -------------------------------------------
 
-/// One `ValidPaths` row as `sqlite3 -json` prints it, registering
-/// `store_path`.
-fn store_row_json(id: u32, store_path: &str) -> String {
-    format!(
-        r#"{{"id":{id},"path":"{store_path}","hash":"sha256:00","registrationTime":{id},"deriver":null,"narSize":1,"ultimate":null,"sigs":null,"ca":null}}"#
-    )
+/// The dump `run-scan.sh` writes of a store database that registers
+/// `store_paths` and whose `ValidPaths` ids have reached `sequence`, one row a
+/// line: a schema entry, then for each path its row and a reference to itself,
+/// then the sequence.
+fn store_dump(store_paths: &[&str], sequence: usize) -> String {
+    let mut lines = vec![
+        r#"{"table":"sqlite_master","row":{"type":"table","name":"ValidPaths","tbl_name":"ValidPaths","rootpage":2,"sql":"CREATE TABLE ValidPaths (id integer primary key, path text)"}}"#
+            .to_string(),
+    ];
+    for (id, path) in (1..).zip(store_paths) {
+        lines.push(format!(
+            r#"{{"table":"ValidPaths","row":{{"id":{id},"path":"{path}","hash":"sha256:00","registrationTime":{id},"deriver":null,"narSize":1,"ultimate":null,"sigs":null,"ca":null}}}}"#
+        ));
+        lines.push(format!(
+            r#"{{"table":"Refs","row":{{"referrer":{id},"reference":{id}}}}}"#
+        ));
+    }
+    lines.push(format!(
+        r#"{{"table":"sqlite_sequence","row":{{"name":"ValidPaths","seq":{sequence}}}}}"#
+    ));
+    lines.join("\n") + "\n"
 }
 
 /// Restore `db_bytes` as the Nix store database of the tree at `root`, and
-/// write `rows` as its dump at `dump` unless it is `None`.
-fn restore_store_database(root: &Path, db_bytes: &[u8], dump: &Path, rows: Option<&[&str]>) {
+/// write `dumped` as its dump at `dump` unless it is `None`.
+fn restore_store_database(root: &Path, db_bytes: &[u8], dump: &Path, dumped: Option<&str>) {
     let db = root.join(NIX_DB_PATH.trim_start_matches('/'));
     fs::create_dir_all(db.parent().expect("parent")).expect("db dir");
     fs::write(&db, db_bytes).expect("db file");
-    if let Some(rows) = rows {
+    if let Some(dumped) = dumped {
         fs::create_dir_all(dump.parent().expect("parent")).expect("dump dir");
-        let rows: Vec<String> = rows
-            .iter()
-            .enumerate()
-            .map(|(i, path)| store_row_json(u32::try_from(i).expect("few rows"), path))
-            .collect();
-        fs::write(dump, format!("[{}]\n", rows.join(",\n"))).expect("dump");
+        fs::write(dump, dumped).expect("dump");
     }
 }
 
@@ -741,45 +751,43 @@ fn store_row(store_path: &str) -> Finding {
 
 #[test]
 fn the_rows_of_a_restored_nix_store_database_are_read() {
-    // The rows `run-scan.sh` dumped are findings of their own channel, next to
-    // the database file's restore entry.
+    // Every row `run-scan.sh` dumped, of each table and of the schema, is a
+    // finding of its own channel, next to the database file's restore entry.
     let dir = TmpDir::new();
     let outputs = dir.path().join("outputs");
     build_before_outputs(&outputs);
     let root = outputs.join("restore").join("before");
-    let dump = outputs.join("nix_db").join("before.json");
-    restore_store_database(
-        &root,
-        b"SQLite format 3",
-        &dump,
-        Some(&["/nix/store/a-decoy", "/nix/store/b-decoy"]),
-    );
+    let dump = outputs.join("nix_db").join("before.jsonl");
+    let dumped = store_dump(&["/nix/store/a-decoy", "/nix/store/b-decoy"], 2);
+    restore_store_database(&root, b"SQLite format 3", &dump, Some(&dumped));
     write_manifest(&root);
 
     let found = scan_image(&outputs, ImageLabel::Before).expect("scans");
-    assert!(
-        found.contains(&store_row("/nix/store/a-decoy")),
-        "{found:?}"
-    );
-    assert!(
-        found.contains(&store_row("/nix/store/b-decoy")),
-        "{found:?}"
-    );
-    assert!(
-        found.contains(&restored_file(NIX_DB_PATH, b"SQLite format 3")),
-        "{found:?}"
-    );
+    let row = |field: &str| Finding::new(Tool::NixDb, NIX_DB_PATH, field);
+    for expected in [
+        store_row("/nix/store/a-decoy"),
+        store_row("/nix/store/b-decoy"),
+        row("Refs reference=2 referrer=2"),
+        row("sqlite_sequence name=ValidPaths seq=2"),
+        row(
+            "sqlite_master name=ValidPaths sql=CREATE TABLE ValidPaths (id integer primary key, \
+             path text) tbl_name=ValidPaths type=table",
+        ),
+        restored_file(NIX_DB_PATH, b"SQLite format 3"),
+    ] {
+        assert!(found.contains(&expected), "{expected:?} in {found:?}");
+    }
 }
 
 #[test]
 fn a_restored_nix_store_database_and_its_rows_go_together() {
     // A database without its rows would leave the file unread, its digest
     // being noise on the oracle's decoys; rows without the database are not
-    // this carve's; rows that are not sqlite3's are not the dump. Each stops
-    // the scan.
+    // this carve's; rows that are not the dump's are not read. Each stops the
+    // scan.
     let dir = TmpDir::new();
     let root = dir.path().join("restore").join("after");
-    let dump = dir.path().join("nix_db").join("after.json");
+    let dump = dir.path().join("nix_db").join("after.jsonl");
     fs::create_dir_all(&root).expect("restore dir");
     let mut out = BTreeSet::new();
     scan_nix_db(&root, &dump, &mut out).expect("no database, no rows: nothing to read");
@@ -788,11 +796,11 @@ fn a_restored_nix_store_database_and_its_rows_go_together() {
     restore_store_database(&root, b"db", &dump, None);
     let err = scan_nix_db(&root, &dump, &mut out).expect_err("a database without its rows");
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-    assert!(err.to_string().contains("after.json"), "{err}");
+    assert!(err.to_string().contains("after.jsonl"), "{err}");
 
     fs::create_dir_all(dump.parent().expect("parent")).expect("dump dir");
     fs::write(&dump, "not the rows").expect("dump");
-    let err = scan_nix_db(&root, &dump, &mut out).expect_err("rows that are not sqlite3's");
+    let err = scan_nix_db(&root, &dump, &mut out).expect_err("rows that are not the dump's");
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 
     fs::remove_file(root.join(NIX_DB_PATH.trim_start_matches('/'))).expect("remove");
@@ -805,24 +813,26 @@ fn a_restored_nix_store_database_and_its_rows_go_together() {
 /// Write a complete outputs tree for the three images, every channel
 /// reporting, with the Nix store database restored on each: its file holds
 /// another digest on every image, as each start of the oracle's decoy VMs
-/// rewrites it, and its rows are `rows` plus, for `after`, `after_rows`.
-/// Returns the CLI arguments that render its verdict.
-fn store_database_world(dir: &Path, rows: &[&str], after_rows: &[&str]) -> Vec<String> {
+/// rewrites it, and `dumped` is its dump on `before` and the control cycle,
+/// `after_dumped` on `after`. Returns the CLI arguments that render its
+/// verdict.
+fn store_database_world(dir: &Path, dumped: &str, after_dumped: &str) -> Vec<String> {
     let outputs = dir.join("outputs");
     for label in ImageLabel::ALL {
         let name = label.dir_name();
         let root = outputs.join("restore").join(name);
         fs::create_dir_all(root.join("etc")).expect("restore dir");
         fs::write(root.join("etc").join("hostname"), b"").expect("restore file");
-        let mut registered = rows.to_vec();
-        if label == ImageLabel::After {
-            registered.extend(after_rows);
-        }
+        let image_dumped = if label == ImageLabel::After {
+            after_dumped
+        } else {
+            dumped
+        };
         restore_store_database(
             &root,
             name.as_bytes(),
-            &outputs.join("nix_db").join(format!("{name}.json")),
-            Some(&registered),
+            &outputs.join("nix_db").join(format!("{name}.jsonl")),
+            Some(image_dumped),
         );
         write_manifest(&root);
         let be = outputs.join("bulk_extractor").join(name);
@@ -863,13 +873,13 @@ fn store_database_world(dir: &Path, rows: &[&str], after_rows: &[&str]) -> Vec<S
 }
 
 #[test]
-fn the_cli_fails_a_store_path_registered_in_the_database_every_boot_rewrites() {
+fn the_cli_fails_a_store_path_registered_in_the_database_a_reboot_rewrites() {
     // The database file differs on every image, so its restore entry is
     // noise whatever after holds; a store path the session registered is a
     // row only after has, and fails the run.
-    let decoy = ["/nix/store/a-decoy-system"];
+    let decoy = store_dump(&["/nix/store/a-decoy-system"], 1);
     let dir = TmpDir::new();
-    let args = store_database_world(dir.path(), &decoy, &[]);
+    let args = store_database_world(dir.path(), &decoy, &decoy);
     assert_eq!(
         crate::run_inner(&args),
         Ok(0),
@@ -877,12 +887,27 @@ fn the_cli_fails_a_store_path_registered_in_the_database_every_boot_rewrites() {
     );
 
     let dir = TmpDir::new();
-    let args = store_database_world(dir.path(), &decoy, &["/nix/store/b-hidden-package"]);
+    let hidden = store_dump(
+        &["/nix/store/a-decoy-system", "/nix/store/b-hidden-package"],
+        2,
+    );
+    let args = store_database_world(dir.path(), &decoy, &hidden);
     assert_eq!(
         crate::run_inner(&args),
         Ok(1),
         "a row new in after: residue"
     );
+}
+
+#[test]
+fn the_cli_fails_a_store_path_registered_and_collected_again() {
+    // The session registered a store path and collected it again: the database
+    // registers the decoy's own paths once more, but the sequence of their ids
+    // stays raised, a row only after has.
+    let decoy = ["/nix/store/a-decoy-system"];
+    let dir = TmpDir::new();
+    let args = store_database_world(dir.path(), &store_dump(&decoy, 1), &store_dump(&decoy, 2));
+    assert_eq!(crate::run_inner(&args), Ok(1));
 }
 
 #[test]

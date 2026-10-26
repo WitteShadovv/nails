@@ -36,10 +36,11 @@ pub enum Tool {
     /// than just its presence.
     Plaso,
     /// The rows of the Nix store database the restore carve recovered
-    /// (`/nix/var/nix/db/db.sqlite`), read with `sqlite3`: a store path the
-    /// database registers. The oracle's decoy VMs rewrite the database file
-    /// at every start, so the restore channel can only call it noise; its
-    /// rows say what changed.
+    /// (`/nix/var/nix/db/db.sqlite`), read with `sqlite3`: every row of each
+    /// of its tables and of its schema, a store path the database registers
+    /// among them. The oracle's decoy VMs rewrite the database file at every
+    /// start, so the restore channel can only call it noise; its rows say
+    /// what changed.
     NixDb,
 }
 
@@ -95,8 +96,8 @@ pub enum Change {
 ///   systemd-journal line; `field` is the event's data type, followed for a
 ///   record by the content fields that say what it records.
 /// - [`Tool::NixDb`]: `path` is the database's on-image path; `field` is one
-///   of its `ValidPaths` rows, the table name followed by the columns that say
-///   what the row registers.
+///   of its rows, the table's name followed by the columns that say what the
+///   row holds.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Finding {
     /// The tool that surfaced it.
