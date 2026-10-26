@@ -560,5 +560,275 @@ class ScanOffsetTest(unittest.TestCase):
         self.assertEqual(dc.scan_offset(before, after, "/d"), 0)
 
 
+# The Ubuntu 26.04 caveat, as nails-platform/src/platform/family.rs words it.
+CAVEAT_2604 = (
+    "Ubuntu 26.04 is tested, but a known upstream issue affects it: after the"
+    " switch into the hidden session, AppArmor blocks chrony (time sync) and CUPS"
+    " (printing) from reaching systemd and the journal, so the clock does not sync"
+    " and printing times out. After the way back the decoy lists chrony as failed"
+    " until its next full reboot, which hints a soft-reboot happened; reboot the"
+    " decoy fully after a session to clear it. The fault is upstream, not in NAILS,"
+    " and remains until Ubuntu fixes it."
+)
+
+NOTIFY_LINE = "Could not send notification to $NOTIFY_SOCKET"
+
+# The Ubuntu 26.04 entry's knownFailedUnits in images.json.
+KNOWN_2604 = {
+    "hiddenSession": {"chrony.service": NOTIFY_LINE},
+    "afterReturn": {"chrony.service": NOTIFY_LINE},
+    "notInImage": ["cups.service"],
+}
+
+EMPTY_TABLE: dict[str, object] = {
+    "hiddenSession": {},
+    "afterReturn": {},
+    "notInImage": [],
+}
+
+
+class ParseFailedUnitsTest(unittest.TestCase):
+    def test_the_first_field_of_each_line(self) -> None:
+        # Ubuntu 26.04's first hidden session before GRUB's boot-record unit
+        # was masked there, as systemd 259 lists it.
+        out = (
+            "chrony.service       loaded failed failed chrony, an NTP client/server\n"
+            "grub2-common.service loaded failed failed"
+            " Record successful boot for GRUB\n"
+        )
+        self.assertEqual(
+            dc.parse_failed_units(out), {"chrony.service", "grub2-common.service"}
+        )
+
+    def test_no_failed_unit_prints_nothing(self) -> None:
+        self.assertEqual(dc.parse_failed_units(""), set())
+        self.assertEqual(dc.parse_failed_units("\n  \n"), set())
+
+    def test_a_status_circle_is_not_a_unit(self) -> None:
+        out = (
+            "\u25cf chrony.service loaded failed failed chrony\n"
+            "* cups.service loaded failed failed CUPS Scheduler\n"
+        )
+        self.assertEqual(dc.parse_failed_units(out), {"chrony.service", "cups.service"})
+
+
+class FailedUnitMismatchTest(unittest.TestCase):
+    def test_unexpected_and_missing_each_sorted(self) -> None:
+        observed = {"z.service", "chrony.service", "a.mount"}
+        expected = {
+            "chrony.service": NOTIFY_LINE,
+            "cups.service": "x",
+            "b.service": "y",
+        }
+        self.assertEqual(
+            dc.failed_unit_mismatch(observed, expected),
+            (["a.mount", "z.service"], ["b.service", "cups.service"]),
+        )
+
+    def test_exactly_the_expected_units(self) -> None:
+        self.assertEqual(
+            dc.failed_unit_mismatch({"chrony.service"}, KNOWN_2604["hiddenSession"]),
+            ([], []),
+        )
+        self.assertEqual(dc.failed_unit_mismatch(set(), {}), ([], []))
+
+
+class UnitsNotNamedTest(unittest.TestCase):
+    def test_the_stem_without_the_type_suffix(self) -> None:
+        self.assertEqual(dc.unit_stem("chrony.service"), "chrony")
+        self.assertEqual(dc.unit_stem("run-blk.mount"), "run-blk")
+        self.assertEqual(dc.unit_stem("getty@tty1.service"), "getty@tty1")
+        self.assertEqual(dc.unit_stem("no-suffix"), "no-suffix")
+
+    def test_the_caveat_names_chrony_and_cups_in_any_case(self) -> None:
+        self.assertEqual(
+            dc.units_not_named(CAVEAT_2604, ["chrony.service", "cups.service"]), []
+        )
+
+    def test_the_units_it_does_not_name_in_their_order(self) -> None:
+        self.assertEqual(
+            dc.units_not_named(
+                CAVEAT_2604, ["cups-browsed.service", "chrony.service", "avahi.socket"]
+            ),
+            ["cups-browsed.service", "avahi.socket"],
+        )
+
+
+class MessagesSinceTest(unittest.TestCase):
+    @staticmethod
+    def journal(*entries: tuple[str, str]) -> str:
+        return "\n".join(
+            json.dumps({"__MONOTONIC_TIMESTAMP": stamp, "MESSAGE": message})
+            for stamp, message in entries
+        )
+
+    def test_what_the_unit_logged_from_its_latest_start_on(self) -> None:
+        # chrony's start on the decoy, its stop at the switch, and its failed
+        # start in the hidden session, as Ubuntu 26.04 logs them.
+        text = self.journal(
+            ("10245501", "Starting chrony.service - chrony, an NTP client/server..."),
+            ("23627604", "chrony.service: Deactivated successfully."),
+            ("27399638", "Starting chrony.service - chrony, an NTP client/server..."),
+            ("27897456", f"Fatal error : {NOTIFY_LINE}"),
+            ("27924618", "chrony.service: Failed with result 'exit-code'."),
+        )
+        self.assertEqual(
+            dc.messages_since(text, 27399638),
+            [
+                "Starting chrony.service - chrony, an NTP client/server...",
+                f"Fatal error : {NOTIFY_LINE}",
+                "chrony.service: Failed with result 'exit-code'.",
+            ],
+        )
+        self.assertEqual(dc.messages_since(text, 27924619), [])
+
+    def test_an_entry_without_a_time_is_left_out(self) -> None:
+        text = json.dumps({"MESSAGE": "no time"}) + "\n"
+        self.assertEqual(dc.messages_since(text, 0), [])
+
+
+class KnownFailureMessagesTest(unittest.TestCase):
+    def test_a_gone_failure_asks_to_narrow_the_table_then_the_warning(self) -> None:
+        message = dc.known_failure_gone(
+            "chrony.service",
+            "in the first hidden session",
+            "ubuntu-26.04",
+            "hiddenSession",
+            ["cups.service"],
+        )
+        self.assertTrue(
+            message.startswith(
+                "chrony.service no longer fails in the first hidden session on"
+                " ubuntu-26.04. The known upstream failure is gone there, probably"
+                " fixed in a newer image. Remove it from"
+                " knownFailedUnits.hiddenSession in nix/distro-tests/images.json."
+                " The release's warning (the caveat in"
+                " nails-platform/src/platform/family.rs and"
+                " docs/decoy-requirements.md) also covers what this image does not"
+                " install: cups.service."
+            ),
+            message,
+        )
+        self.assertTrue(
+            message.endswith("Remove the warning only when all of it is shown fixed."),
+            message,
+        )
+
+    def test_with_nothing_out_of_sight_the_warning_is_narrowed_at_once(self) -> None:
+        message = dc.known_failure_gone("a.service", "after x", "n", "afterReturn", [])
+        self.assertTrue(
+            message.endswith(
+                "Then narrow the release's warning (the caveat"
+                " in nails-platform/src/platform/family.rs and"
+                " docs/decoy-requirements.md)."
+            ),
+            message,
+        )
+        self.assertNotIn("does not install", message)
+
+    def test_the_known_line_is_found_in_any_message(self) -> None:
+        messages = ["Starting chrony.service...", f"Fatal error : {NOTIFY_LINE}"]
+        self.assertIsNone(
+            dc.failure_not_known("chrony.service", "w", "n", NOTIFY_LINE, messages)
+        )
+
+    def test_another_failure_names_what_was_logged(self) -> None:
+        problem = dc.failure_not_known(
+            "chrony.service",
+            "on the decoy after deactivate",
+            "ubuntu-26.04",
+            NOTIFY_LINE,
+            ["Fatal error : Could not open command socket"],
+        )
+        assert problem is not None
+        self.assertIn("so it fails in another way", problem)
+        self.assertTrue(
+            problem.endswith("It logged:\nFatal error : Could not open command socket"),
+            problem,
+        )
+        problem = dc.failure_not_known("a.service", "w", "n", NOTIFY_LINE, [])
+        assert problem is not None
+        self.assertTrue(problem.endswith("It logged:\nnothing"), problem)
+
+    def test_a_unit_now_in_the_image(self) -> None:
+        self.assertIn(
+            "cups.service is now in the ubuntu-26.04 image, so this test can observe"
+            " it. Move it from notInImage",
+            dc.now_in_image("cups.service", "ubuntu-26.04"),
+        )
+
+    def test_unexpected_failures_are_named(self) -> None:
+        self.assertTrue(
+            dc.unexpected_failures(
+                "in the second hidden session",
+                "ubuntu-24.04",
+                ["a.service", "b.service"],
+            ).startswith(
+                "units failed in the second hidden session that knownFailedUnits does"
+                " not expect on ubuntu-24.04: a.service, b.service."
+            )
+        )
+
+
+class PlatformRowProblemTest(unittest.TestCase):
+    @staticmethod
+    def row(status: str, message: str) -> dict[str, str]:
+        return {"name": "platform", "status": status, "message": message}
+
+    def test_the_caveat_covers_the_listed_units(self) -> None:
+        self.assertEqual(
+            dc.listed_units(KNOWN_2604), ["chrony.service", "cups.service"]
+        )
+        self.assertIsNone(
+            dc.platform_row_problem(
+                self.row("warn", CAVEAT_2604), KNOWN_2604, "ubuntu-26.04"
+            )
+        )
+
+    def test_a_row_that_passes_or_is_missing_does_not(self) -> None:
+        for row, it_is in (
+            (self.row("pass", "Ubuntu 26.04"), "pass: 'Ubuntu 26.04'"),
+            (None, "missing: ''"),
+        ):
+            with self.subTest(row=row):
+                self.assertEqual(
+                    dc.platform_row_problem(row, KNOWN_2604, "ubuntu-26.04"),
+                    "the platform row on ubuntu-26.04 must warn and name"
+                    " chrony.service, cups.service while knownFailedUnits lists"
+                    f" them, but it is {it_is}. Keep that part of the caveat until"
+                    " the unit is shown fixed and removed from the table.",
+                )
+
+    def test_a_warning_that_drops_a_listed_unit_does_not(self) -> None:
+        narrowed = CAVEAT_2604.replace(" and CUPS (printing)", "")
+        problem = dc.platform_row_problem(
+            self.row("warn", narrowed), KNOWN_2604, "ubuntu-26.04"
+        )
+        assert problem is not None
+        self.assertTrue(
+            problem.startswith(
+                "the platform row on ubuntu-26.04 must warn and name cups.service while"
+            ),
+            problem,
+        )
+
+    def test_a_warning_broader_than_the_table_is_fine(self) -> None:
+        # chrony fixed upstream and out of the table, CUPS still unseen: the
+        # caveat may still name both.
+        known = {"hiddenSession": {}, "afterReturn": {}, "notInImage": ["cups.service"]}
+        self.assertIsNone(
+            dc.platform_row_problem(self.row("warn", CAVEAT_2604), known, "n")
+        )
+
+    def test_an_empty_table_asks_nothing_of_the_row(self) -> None:
+        for row in (
+            self.row("pass", "Ubuntu 24.04"),
+            self.row("warn", "Ubuntu 26.10 is not a release NAILS has been tested on"),
+            None,
+        ):
+            with self.subTest(row=row):
+                self.assertIsNone(dc.platform_row_problem(row, EMPTY_TABLE, "n"))
+
+
 if __name__ == "__main__":
     unittest.main()

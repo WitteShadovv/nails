@@ -19,7 +19,11 @@
 # in the same boot, the hidden root opened again and a scan of the raw decoy
 # devices that runs and finds nothing. On systemd 255 (Ubuntu 24.04), which
 # reports no soft-reboot count, only the session's entry time tells the two
-# apart.
+# apart. Where the image table lists what the image is known to fail
+# (`knownFailedUnits`), the units failed on the decoy before the first switch,
+# in each hidden session and after each way back must be exactly the listed
+# ones, each failed with its known line, and the `platform` row of `check`
+# must warn about every unit listed; without a list they are only printed.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -60,8 +64,15 @@ let
     target = "/run/tools";
   };
 in
-# `entry` is one value from images.nix.
-entry:
+# `name` and `entry` are one name and value of images.nix.
+name: entry:
+let
+  # What the image is known to fail, or null, as a file the driver reads: a
+  # line in it passes through neither Nix nor a shell.
+  knownFailedUnits = pkgs.writeText "known-failed-units.json" (
+    builtins.toJSON (entry.knownFailedUnits or null)
+  );
+in
 distroVm.buildVmTest {
   inherit entry;
 
@@ -96,6 +107,15 @@ distroVm.buildVmTest {
     # The decoy's /etc/os-release ID, from the image-table entry. The scenario
     # is otherwise distribution-agnostic; this names the decoy in the log.
     os_id = "${entry.osId}"
+
+    # The entry's name in images.json, and the units its image is known to
+    # fail there (knownFailedUnits), or None to only print the failed units.
+    image_name = "${name}"
+    with open("${knownFailedUnits}") as handle:
+        known_failed = json.load(handle)
+    # Known failures that no longer happen, collected over the run and
+    # asserted at its end, so one run names every phase where one is gone.
+    gone_failures: list[str] = []
 
     ${diskForensics.pythonSetup}
 
@@ -340,10 +360,55 @@ distroVm.buildVmTest {
             assert rc != 0, f"{where}: {gpt_auto_mask} is left: {target!r}"
 
 
-    def failed_units(where):
-        # The units failed now, for the log. Never fails.
-        _, out = vm.execute("timeout 30 systemctl --failed --no-pager", check_return=False)
-        print(f"=== failed units: {where} ===\n{out.rstrip()}")
+    def check_failed_units(where, phase=None):
+        # The units failed now. With a list, exactly the ones it names for
+        # `phase` (none before the first switch), each failed with its known
+        # line; a listed one that no longer fails is collected for the end.
+        # Without one, they are only printed.
+        failed = distro_checks.parse_failed_units(
+            vm.succeed(
+                "timeout 30 systemctl list-units --state=failed --all --plain "
+                + "--no-legend --no-pager"
+            )
+        )
+        print(f"=== failed units {where}: {', '.join(sorted(failed)) or 'none'} ===")
+        if known_failed is None:
+            return
+        expected = known_failed[phase] if phase else {}
+        unexpected, missing = distro_checks.failed_unit_mismatch(failed, expected)
+        for unit in unexpected:
+            _, out = vm.execute(
+                f"timeout 30 systemctl status --no-pager -l -n 30 {shlex.quote(unit)}",
+                check_return=False,
+            )
+            print(out.rstrip())
+        assert not unexpected, distro_checks.unexpected_failures(
+            where, image_name, unexpected
+        )
+        for unit in missing:
+            gone = distro_checks.known_failure_gone(
+                unit, where, image_name, phase, known_failed["notInImage"]
+            )
+            print(gone)
+            gone_failures.append(gone)
+        for unit in sorted(failed.intersection(expected)):
+            # What the unit logged since its latest start: the failed start
+            # must have logged the known line, so that another failure of the
+            # same unit does not pass for the known one.
+            quoted = shlex.quote(unit)
+            since = int(
+                vm.succeed(f"systemctl show -P InactiveExitTimestampMonotonic {quoted}")
+            )
+            assert since > 0, f"{unit} failed {where} without a start time"
+            messages = distro_checks.messages_since(
+                vm.succeed(f"timeout 30 journalctl -q -b -u {quoted} -o json --no-pager"),
+                since,
+            )
+            print(f"--- {unit} since its start {where}:\n" + "\n".join(messages))
+            problem = distro_checks.failure_not_known(
+                unit, where, image_name, expected[unit], messages
+            )
+            assert problem is None, problem
 
 
     def assert_quiet_kernel_log(where):
@@ -474,6 +539,17 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
+    with subtest("the platform row warns about every unit the image is known to fail"):
+        # One way only: while the list names a unit, the row warns and names
+        # it. The row never has to pass, so a warning broader than the list,
+        # or one given for another reason, is fine.
+        report = json.loads(vm.succeed(f"{nails_cmd} check --overlay-only --json"))
+        row = next((r for r in report["data"]["checks"] if r["name"] == "platform"), None)
+        print(f"platform row on {image_name}: {row}")
+        if known_failed is not None:
+            problem = distro_checks.platform_row_problem(row, known_failed, image_name)
+            assert problem is None, problem
+
     with subtest("blk-availability.service runs on the decoy as lvm2 ships it"):
         # The image's own unit where lvm2 is installed (Ubuntu). Debian's
         # generic cloud image has dmsetup without lvm2: it gets the unit as
@@ -517,6 +593,19 @@ distroVm.buildVmTest {
         )
         assert_gpt_auto_masked("the decoy", masked=False)
 
+    with subtest("the decoy's failed units before the first switch"):
+        # None where the image table lists what the image is known to fail.
+        # Read before the Ctrl+C below, whose cancelled activation fails a
+        # unit of its own.
+        check_failed_units("on the decoy before the first switch")
+        # The units the release's warning names that the image does not
+        # install are still not in it, so the warning still covers what this
+        # run cannot see.
+        for unit in (known_failed or {}).get("notInImage", []):
+            state = vm.succeed(f"systemctl show -P LoadState {shlex.quote(unit)}").strip()
+            print(f"{unit} on the decoy: {state}")
+            assert state == "not-found", distro_checks.now_in_image(unit, image_name)
+
     with subtest("Ctrl+C during the pre-flight checks cancels the activation"):
         # A CPU quota stretches the activation, so the interrupt reaches it
         # while it runs its checks; no child process of it dies with the
@@ -553,6 +642,7 @@ distroVm.buildVmTest {
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
         session.assert_hidden_root(vm)
+        check_failed_units("in the first hidden session", "hiddenSession")
         if blk_availability:
             assert_guarded_blk_availability("the first session")
         assert_quiet_kernel_log("the first session")
@@ -634,6 +724,7 @@ distroVm.buildVmTest {
         follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
         pid1_health("after emergency")
         session.assert_decoy_root(vm)
+        check_failed_units("on the decoy after the emergency", "afterReturn")
         vm.fail("mountpoint -q /mnt/data")
         for tree in canary_trees:
             vm.fail(f"test -e /{tree}/nails-canary-{tree}")
@@ -667,13 +758,13 @@ distroVm.buildVmTest {
                 vm.succeed(f"umount {target}")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
+        check_failed_units("in the second hidden session", "hiddenSession")
         vm.succeed("mountpoint -q /mnt/data && test -s /mnt/data/activate-2.log")
         if blk_availability:
             # The unit runs in the hidden session too; its stop stays cleared
             # until the way back has switched.
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
-        failed_units("the second hidden session")
         assert_gpt_auto_masked("the second session", masked=True)
         # The rehearsal's first step, and the refusal of a scan in the
         # planting session.
@@ -689,6 +780,7 @@ distroVm.buildVmTest {
         assert json.loads(out)["error"]["code"] == "same_boot", out
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
+        check_failed_units("on the decoy after deactivate", "afterReturn")
         vm.fail("mountpoint -q /mnt/data")
         vm.fail("test -e /run/overlay-runtime")
         # A LUKS-backed hidden root's mapping closed itself (a loop-backed one
@@ -704,7 +796,6 @@ distroVm.buildVmTest {
             for target in boot_mounts:
                 vm.succeed(f"mountpoint -q {target}")
         probe_report("after deactivate")
-        failed_units("after deactivate")
         assert_gpt_auto_masked("after deactivate", masked=False)
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
@@ -766,5 +857,8 @@ distroVm.buildVmTest {
         assert found == {poison}, (
             f"positive control failed: the scanner did not see the planted token ({found})"
         )
+
+    with subtest("every failure the image is known to show still happens"):
+        assert not gone_failures, "\n\n".join(gone_failures)
   '';
 }
