@@ -230,18 +230,23 @@ of this changelog for that version becomes the release notes word for word, and
   what it would delete and confirms first; its `--json` envelope now reports the command and its
   error code as `discard`.
 - The `doctor` alias for `check` is removed. Run `check`.
-- Activation gives the directories it makes on the hidden volume the SELinux labels of the decoy
-  directories they stand for: the root of each overlay's upper, which becomes the hidden `/` or the
-  root of an overlaid decoy filesystem such as a separate `/home`, and the directories on the way to
-  the operator's home. Without them a host that runs SELinux sees the hidden `/` as `unlabeled_t`,
-  which confined services may not even look up. The labels are read from the decoy without changing
-  anything there, not even an access time, and written onto the hidden volume before the overlays
-  are mounted. Where `/sys/fs/selinux` exists, `/etc/selinux/config` sets `SELINUX=` or
-  `SELINUXTYPE=`, or the host cannot be detected, a label that cannot be copied refuses the
-  activation and undoes it: a hidden volume whose filesystem stores no labels, a decoy directory
-  without one, a policy that denies the relabel, or, in the fresh-home persona, an operator without
-  a home on the decoy. Elsewhere a label is copied only where the decoy has one, so a decoy without
-  labels gets the hidden root it got before. `nails check` does not test this yet; see
+- Activation gives the root of each overlay's upper, which becomes the hidden `/` or the root of an
+  overlaid decoy filesystem such as a separate `/home`, and each directory the upper holds below it
+  on the way to the operator's home the SELinux label of the decoy directory it stands for. Without
+  them a host that runs SELinux sees the hidden `/` as `unlabeled_t`, which confined services may
+  not even look up. The labels are read from the decoy without changing anything there, not even an
+  access time, and each is written onto the hidden volume before the overlay over that upper is
+  mounted. No other directory NAILS makes on the hidden volume takes a label from the decoy, so on
+  such a host each shows as `unlabeled_t` unless the volume was relabelled, among them `root`,
+  `root/mounts/<unit>` and the work directories, which the hidden session sees through the hidden
+  volume's bind, and the hidden `/etc/nixos`, with `/etc` where `init` made it, that
+  `init --hardware-config` makes in the root upper. Where `/sys/fs/selinux` exists,
+  `/etc/selinux/config` sets `SELINUX=` or `SELINUXTYPE=`, or the host cannot be detected, a label
+  that cannot be copied refuses the activation and undoes it: a hidden volume whose filesystem
+  stores no labels, a decoy directory without one, a policy that denies the relabel, or an operator
+  without a home on the decoy, in the fresh-home persona and, once the upper holds a home for them,
+  in the shared-home persona. Elsewhere a label is copied only where the decoy has one, so a decoy
+  without labels gets the hidden root it got before. `nails check` does not test this yet; see
   docs/decoy-requirements.md.
 
 ### Fixed

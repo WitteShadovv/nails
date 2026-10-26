@@ -238,13 +238,20 @@ upper changes.
   the way back still cannot set back keeps the random one, until power-off,
   and nothing reports it: end such a session with `deactivate --poweroff` or
   `emergency --poweroff` when that address must never reach the decoy.
-- **SELinux labels.** On a host that runs SELinux, the hidden root shows the
-  decoy's labels: activation gives each directory it makes on the hidden
-  volume (the root of each upper, which becomes the hidden `/` or the root of
-  an overlaid decoy filesystem, and the directories on the way to the
-  operator's home) the label of the decoy directory it stands for. It only
-  reads the decoy's labels, without changing anything on the decoy, and writes
-  them onto the hidden volume before the overlays are mounted. Where a label
+- **SELinux labels.** On a host that runs SELinux, activation gives two kinds
+  of directory on the hidden volume the label of the decoy directory they
+  stand for: the root of each upper, which becomes the hidden `/` or the root
+  of an overlaid decoy filesystem, and each directory the upper holds below it
+  on the way to the operator's home. It only reads the decoy's labels, without
+  changing anything on the decoy, and writes each one onto the hidden volume
+  before the overlay over that upper is mounted. No other directory NAILS
+  makes on the hidden volume takes a label from the decoy, and on a volume
+  nobody relabelled each of them shows as `unlabeled_t`. Among them are
+  `root`, `root/mounts/<unit>` and the work directories (`root/work`,
+  `root/mounts/<unit>/work`), which the hidden session sees through the hidden
+  volume's bind at its path, and, where `init` was given `--hardware-config`,
+  the hidden `/etc/nixos` it makes in the root upper for the hidden NixOS
+  configuration, with the hidden `/etc` where it made that too. Where a label
   cannot be copied, activation is refused (see the
   [decoy requirements](decoy-requirements.md)).
 - **Remote state, never rolled back.** Deactivation leaves the upper on the

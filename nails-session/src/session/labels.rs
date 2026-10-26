@@ -5,8 +5,8 @@
 //!
 //! An overlay inode takes its SELinux label from the `security.selinux`
 //! attribute of the upper inode, and a file copied up keeps the label of the
-//! decoy file it copies. The directories NAILS itself creates on the hidden
-//! volume are neither: the root of each upper, and the empty home of the
+//! decoy file it copies. The directories NAILS itself creates in the uppers
+//! are neither: the root of each upper, and the empty home of the
 //! fresh-home persona with the parents it needs. On a hidden volume nobody
 //! relabelled they carry no label, or one the kernel derived from their parent
 //! there, so the policy sees the hidden `/` as `unlabeled_t`, and confined
@@ -124,10 +124,17 @@
 //! entry without an operator walks nothing.
 //!
 //! `nextroot` needs no call: it only mounts the uppers prepared here. Every
-//! other directory the entry creates is made through the next root once the
-//! overlays are mounted (the mount points of the fstab policy and of the
-//! carried decoy filesystems, the persona's masks), and the kernel labels it
-//! by the policy, like a file the hidden session creates.
+//! other directory the entry creates in the hidden root is made through the
+//! next root once the overlays are mounted (the mount points of the fstab
+//! policy and of the carried decoy filesystems, the persona's masks), and the
+//! kernel labels it by the policy, like a file the hidden session creates.
+//! The directories the entry makes directly on the hidden volume beside the
+//! uppers take no label from the decoy: `root` itself, `root/mounts` and
+//! `root/mounts/<unit>`, the work directory of every overlay, and `root/cache`
+//! for a hidden NixOS build. They are no part of a merged view, so no overlay
+//! inode takes its label from them, but the hidden session sees them through
+//! the hidden volume's bind at its path, as `unlabeled_t` on a volume nobody
+//! relabelled.
 //!
 //! The hidden NixOS configuration is not covered yet. `init` writes it into
 //! the upper's `/etc/nixos` directly on the hidden volume, on NixOS and on any

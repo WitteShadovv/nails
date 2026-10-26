@@ -16,9 +16,9 @@
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume. Before it is mounted the operator's home
 //!    is made in the fresh-home persona, and in either persona the directories
-//!    on the way to that home take the SELinux labels of the decoy's
-//!    ([`super::labels`]); the root of the upper takes the decoy root's mode,
-//!    owner and label;
+//!    the upper holds on the way to that home take the SELinux labels of the
+//!    decoy's ([`super::labels`]); the root of the upper takes the decoy root's
+//!    mode, owner and label;
 //! 5. the fstab policy on the decoy's fstab ([`super::policy`]): the hidden
 //!    volume bound at its path, boot filesystems read-only, other decoy
 //!    filesystems overlaid (the root of each upper labelled as in step 4), the
@@ -200,9 +200,9 @@ pub struct EntryInputs<'a> {
     /// The operator (from `SUDO_UID`/`SUDO_USER`), whose home the persona
     /// applies to.
     pub operator: Option<crate::target_user::TargetUser>,
-    /// Whether the directories the entry makes on the hidden volume must take
-    /// the SELinux labels of the decoy directories they stand for:
-    /// [`Labels::for_host`] of the detected host.
+    /// Whether the roots of the uppers and the directories on the way to the
+    /// operator's home must take the SELinux labels of the decoy directories
+    /// they stand for: [`Labels::for_host`] of the detected host.
     pub labels: Labels,
     /// The free space a hidden NixOS build needs on the hidden volume, in MB.
     pub rebuild_space_mb: u64,
