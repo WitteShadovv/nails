@@ -36,7 +36,8 @@ const MAX_FILES: usize = 64;
 /// nothing, as in Thai.
 fn sorts_before(a: &[u8], b: &[u8]) -> bool {
     match a.iter().zip(b).position(|(x, y)| x != y) {
-        Some(i) => a[i].is_ascii_digit() && b[i].is_ascii_digit() && a[i] < b[i],
+        // `b` holds a digit there and `a` a lower one.
+        Some(i) => b[i].is_ascii_digit() && (b'0'..b[i]).contains(&a[i]),
         None => {
             let rest = b.get(a.len()..).unwrap_or_default();
             rest.first()
