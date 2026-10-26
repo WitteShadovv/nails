@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/activate.schema.json",
   "title": "NAILS activate --json",
-  "description": "Machine-readable activate envelope (contract version 2): exactly one document on stdout. It reports the outcome: a success is printed only once the soft-reboot is enqueued, so a failure to enqueue it is the one document (the error `soft_reboot`, no data, ok false, exit 1) and never follows a success. The soft-reboot then stops every program of the decoy, the reader included, so a reader stopped first may not read the success. The version-1 progress line stream is gone; a window watches progress on its own channel. A success or a success with warnings carries data and is ok; a cancel is the shared cancel shape (an error with the code `cancelled`, no data); a failed entry keeps its data with ok false. ok is true only when the exit code is 0 or 9. An internal error is the error `internal_error`, exit 1.",
+  "description": "Machine-readable activate envelope (contract version 2): exactly one document on stdout. It reports the outcome: a success is printed only once the soft-reboot is enqueued, so a failure to enqueue it is the one document (the error `soft_reboot`, no data, ok false, exit 1) and never follows a success. The soft-reboot then stops every program of the decoy, the reader included, so a reader stopped first may not read the success. The version-1 progress line stream is gone; a window watches progress on its own channel, where activation also reports each advisory (an `advisory` event) before it asks to log the operator out. A success or a success with warnings carries data and is ok; a cancel is the shared cancel shape (an error with the code `cancelled`, no data); a failed entry keeps its data with ok false. ok is true only when the exit code is 0 or 9. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -36,6 +36,7 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "warnings": {
+          "description": "What the operator should know before using the session: a hidden NixOS system built for another kernel, a decoy mount the way back cannot make again, and the advisories activation reads before it asks to log the operator out, such as hidden sessions' package database no longer following the decoy's (the `package-drift` check), each with its fix on a line of its own. Any warning makes the status `entering_with_warnings` and the exit code 9.",
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },

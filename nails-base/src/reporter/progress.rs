@@ -74,6 +74,13 @@ pub trait Reporter: Send {
     /// checks to the log, and only a surface that watches every check (the
     /// event adapter a window installs) overrides this.
     fn check(&mut self, _name: &str, _outcome: CheckOutcome, _message: &str) {}
+    /// An advisory the operator should read before confirming, with what to
+    /// do about it when there is one thing to do.
+    ///
+    /// The default does nothing, as for [`check`](Self::check): the CLI shows
+    /// the advisories at its own prompt, and only a surface that watches for
+    /// them (the event adapter a window installs) overrides this.
+    fn advisory(&mut self, _name: &str, _message: &str, _fix: Option<&str>) {}
     /// The activation ended: the current step succeeded or failed.
     fn finish(&mut self, success: bool);
 }
@@ -169,6 +176,14 @@ pub fn step(step: Step<'_>) {
 pub fn check(name: &str, outcome: CheckOutcome, message: &str) {
     if let Some(reporter) = active() {
         lock(&reporter).check(name, outcome, message);
+    }
+}
+
+/// Report an advisory to the active reporter. A no-op when none is installed:
+/// the front end that asked for the advisories shows them itself.
+pub fn advisory(name: &str, message: &str, fix: Option<&str>) {
+    if let Some(reporter) = active() {
+        lock(&reporter).advisory(name, message, fix);
     }
 }
 

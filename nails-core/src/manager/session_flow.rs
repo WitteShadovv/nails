@@ -47,6 +47,7 @@ use crate::filesystem::Filesystem;
 use crate::platform::PlatformKind;
 use crate::session::entry::{self, EntryHost, EntryInputs};
 use crate::session::labels::{self, Labels};
+use crate::session::package_drift::{self, Advisory};
 use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
 use chrono::Utc;
@@ -377,6 +378,9 @@ impl<F: Filesystem> NailsManager<F> {
                  where it has them, best effort"
             );
         }
+        // The risks that do not refuse the entry, read before the next root
+        // is mounted: the result lists them with its warnings.
+        let advisories = self.advisories_on(machine, options);
         let inputs = EntryInputs {
             hidden_root: &hidden_root,
             decoy_root,
@@ -396,7 +400,10 @@ impl<F: Filesystem> NailsManager<F> {
             read_only_disks: self.config.session_mounts.read_only,
             accepted_decoy_storage,
         };
-        let prepared = entry::prepare(&machine.paths, &inputs, host)?;
+        let mut prepared = entry::prepare(&machine.paths, &inputs, host)?;
+        prepared
+            .warnings
+            .extend(advisories.iter().map(Advisory::text));
         let elapsed = started.elapsed();
         // The last boundary: once recorded, the caller only enqueues the
         // soft-reboot.
@@ -413,6 +420,43 @@ impl<F: Filesystem> NailsManager<F> {
             entry: Box::new(prepared),
             elapsed,
         })
+    }
+
+    /// What the operator should read before confirming an entry with
+    /// `options`: the risks that do not refuse it, which are whether hidden
+    /// sessions' package database still follows the decoy's
+    /// ([`package_drift`]). Read only, as root. Each is also reported to a
+    /// watching event stream, so a window shows it before its own
+    /// confirmation.
+    pub(crate) fn entry_advisories(&self, options: &EnterOptions) -> Vec<Advisory> {
+        self.entry_advisories_on(&Machine::system(), options)
+    }
+
+    fn entry_advisories_on(&self, machine: &Machine, options: &EnterOptions) -> Vec<Advisory> {
+        let advisories = self.advisories_on(machine, options);
+        for advisory in &advisories {
+            crate::reporter::progress::advisory(
+                advisory.name,
+                &advisory.message,
+                advisory.fix.as_deref(),
+            );
+        }
+        advisories
+    }
+
+    /// The advisories of an entry with `options` on `machine`.
+    fn advisories_on(&self, machine: &Machine, options: &EnterOptions) -> Vec<Advisory> {
+        let mounts = machine.mounts().ok();
+        let layout = crate::session::Layout::new(&self.config.hidden_volume_root);
+        package_drift::advisory(
+            &self.filesystem,
+            &machine.paths.root,
+            &layout,
+            mounts.as_deref(),
+            options.allow_decoy_storage,
+        )
+        .into_iter()
+        .collect()
     }
 
     /// Forget why the last switch was refused, wherever it was kept (the hidden

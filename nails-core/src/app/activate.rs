@@ -36,6 +36,7 @@ use nails_teardown::shells::kill_all_interactive_shells;
 use super::lock::LockError;
 use crate::hidden_root::{Allow, Assessment, Refusal};
 use crate::manager::{EnterOptions, EnterOutcome};
+use crate::session::package_drift::Advisory;
 use crate::session::{Entry, RealEntryHost, RealTargetHost};
 use crate::verbosity::Verbosity;
 use crate::{
@@ -201,6 +202,14 @@ impl LockedActivation {
     /// Whether this activation builds a hidden NixOS system (for the progress line).
     pub fn builds_hidden_system(&self) -> bool {
         self.ready.manager.builds_hidden_system(&self.ready.options)
+    }
+
+    /// What the operator should read before confirming: the risks that do not
+    /// refuse the entry, such as hidden sessions' package database no longer
+    /// following the decoy's. Read only, and reported to a watching event
+    /// stream as well. The entry lists them again among its warnings.
+    pub fn entry_advisories(&self) -> Vec<Advisory> {
+        self.ready.manager.entry_advisories(&self.ready.options)
     }
 
     /// Scan the decoy for residue and write a pre-mount baseline report, before

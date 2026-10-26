@@ -63,6 +63,20 @@ pub enum Event {
         /// The one-line result message.
         message: String,
     },
+    /// Something the operator should read before confirming the operation:
+    /// a risk that does not refuse it, such as hidden sessions' package
+    /// database no longer following the decoy's, with what to do about it.
+    /// An activation reports its advisories before it asks to log the
+    /// operator out.
+    Advisory {
+        /// The stable name of the check that found it (`package-drift`).
+        name: String,
+        /// What it found.
+        message: String,
+        /// What to do about it, when there is one thing to do.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fix: Option<String>,
+    },
     /// The operation ended. An activation ends once its soft-reboot is
     /// enqueued (`success`), or when it failed or was rolled back before that,
     /// a soft-reboot that could not be enqueued included.
@@ -117,6 +131,28 @@ mod tests {
         assert!(json.contains("\"type\":\"check\""));
         assert!(json.contains("\"outcome\":\"fail\""));
         assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+    }
+
+    #[test]
+    fn an_advisory_carries_its_fix_only_when_it_has_one() {
+        let event = Event::Advisory {
+            name: "package-drift".to_string(),
+            message: "hidden sessions' record is out of date".to_string(),
+            fix: Some("update it in a hidden session".to_string()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"advisory\""), "{json}");
+        assert!(json.contains("\"fix\":"), "{json}");
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+
+        let without = Event::Advisory {
+            name: "package-drift".to_string(),
+            message: "could not tell".to_string(),
+            fix: None,
+        };
+        let json = serde_json::to_string(&without).unwrap();
+        assert!(!json.contains("fix"), "{json}");
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), without);
     }
 
     #[test]

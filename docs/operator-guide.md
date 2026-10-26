@@ -1161,12 +1161,14 @@ session changed itself: dpkg writes or deletes a package's files in
 upper show which packages those are. For pacman it names each package listed
 twice or without its files. rpm's database is not read: the check compares its
 size and modification time with those of hidden sessions' copy, so a change on
-the decoy between two changes in hidden sessions goes unseen. Activation runs
-it with the other pre-flight checks. A hidden session that deleted or replaced
-the database itself draws a warning that names the `discard` that brings the
-decoy's back. Only root reads the decoy's database without changing its access
-time, so an unprivileged `nails check` that would need to read it says it
-cannot tell and names the `sudo` line.
+the decoy between two changes in hidden sessions goes unseen. Activation shows
+the same warning before it asks to log you out (unless `-y` skips the
+question), so you can answer no, and again among the warnings of its result,
+which then exits `9`. A hidden session that deleted or replaced the database
+itself draws a warning that names the `discard` that brings the decoy's back.
+Only root reads the decoy's database without changing its access time, so an
+unprivileged `nails check` that would need to read it says it cannot tell and
+names the `sudo` line.
 
 To bring hidden sessions back in line, make the decoy's changes in a hidden
 session too:
