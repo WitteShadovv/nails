@@ -90,14 +90,26 @@ fn read_held(upper: &Path, rel: &Path, step: Step, xattrs: TrustedXattrs) -> Hel
     }
 }
 
-/// Whether the directory `dir` in the upper, the copy of `rel`, is opaque,
-/// read as overlayfs reads it: exactly one byte, `y`.
+/// Whether the directory `dir` in the upper, the copy of `rel`, is opaque.
+/// The marker is read one byte long, as overlayfs reads it.
 fn opacity(dir: &Path, rel: &Path, xattrs: TrustedXattrs) -> Opacity {
-    use rustix::io::Errno;
     let mut value = [0u8; 1];
-    match rustix::fs::lgetxattr(dir, OPAQUE_XATTR, &mut value[..]) {
-        Ok(1) if value[0] == b'y' => Opacity::Opaque,
-        // Another value, or a longer one, which overlayfs does not take.
+    let read = rustix::fs::lgetxattr(dir, OPAQUE_XATTR, &mut value[..]);
+    marker(read.map(|len| &value[..len]), rel, xattrs)
+}
+
+/// The opacity a read of the opaque marker of `rel` gave, the marker's value
+/// or the error, taken as overlayfs takes it: opaque for exactly one byte,
+/// `y`, and for nothing else.
+pub(super) fn marker(
+    read: rustix::io::Result<&[u8]>,
+    rel: &Path,
+    xattrs: TrustedXattrs,
+) -> Opacity {
+    use rustix::io::Errno;
+    match read {
+        Ok(b"y") => Opacity::Opaque,
+        // Another value, or a longer one (too long for one byte).
         Ok(_) | Err(Errno::RANGE) => Opacity::Merged,
         // A filesystem without extended attributes cannot mark one opaque.
         Err(Errno::NOTSUP) => Opacity::Merged,
@@ -194,7 +206,7 @@ pub(super) fn same_mount(a: &Path, b: &Path) -> Option<bool> {
             StatxFlags::MNT_ID,
         )
         .ok()
-        .filter(|stat| stat.stx_mask & StatxFlags::MNT_ID.bits() != 0)
+        .filter(|stat| StatxFlags::from_bits_retain(stat.stx_mask).contains(StatxFlags::MNT_ID))
         .map(|stat| stat.stx_mnt_id)
     };
     Some(mount(a)? == mount(b)?)
