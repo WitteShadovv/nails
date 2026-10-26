@@ -56,6 +56,17 @@ const SYNC_FLUSHED: &[u8] = &[
 /// A bare member header: no flags, no name.
 const HEADER: [u8; 10] = [0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03];
 
+/// The limit the tests decode within: four times the largest fixture's text,
+/// and a sixty-fourth of the 16 MiB a kernel config may decode to. A decoder
+/// that writes without end stops here in milliseconds, so a test that decodes
+/// many streams fails fast instead of writing 16 MiB for each of them.
+const LIMIT: usize = 1 << 18;
+
+/// `stream`, decoded within [`LIMIT`].
+fn decode(stream: &[u8]) -> Result<Vec<u8>, Malformed> {
+    decompress_within(stream, LIMIT)
+}
+
 /// A member of `HEADER` and `body`, with a zeroed trailer.
 fn framed(body: &[u8]) -> Vec<u8> {
     let mut stream = HEADER.to_vec();
@@ -237,14 +248,14 @@ fn decodes_a_config_that_spans_several_blocks() {
 
 #[test]
 fn decodes_stored_fixed_and_empty_members() {
-    assert_eq!(decompress(STORED).unwrap(), b"stored\n");
-    assert_eq!(decompress(FIXED).unwrap(), b"fixed fixed fixed\n");
-    assert_eq!(decompress(EMPTY).unwrap(), b"");
+    assert_eq!(decode(STORED).unwrap(), b"stored\n");
+    assert_eq!(decode(FIXED).unwrap(), b"fixed fixed fixed\n");
+    assert_eq!(decode(EMPTY).unwrap(), b"");
 }
 
 #[test]
 fn reads_past_every_optional_header_field() {
-    assert_eq!(decompress(FLAGGED).unwrap(), b"named\n");
+    assert_eq!(decode(FLAGGED).unwrap(), b"named\n");
 }
 
 #[test]
@@ -256,7 +267,7 @@ fn reads_past_an_extra_field_without_a_name() {
         0x00, 0x24, 0x00,
     ];
     stream.extend_from_slice(&FIXED[HEADER.len()..]);
-    assert_eq!(decompress(&stream).unwrap(), b"fixed fixed fixed\n");
+    assert_eq!(decode(&stream).unwrap(), b"fixed fixed fixed\n");
 }
 
 #[test]
@@ -267,16 +278,13 @@ fn decodes_the_blocks_around_a_sync_flush() {
             .windows(4)
             .any(|window| window == [0x00, 0x00, 0xFF, 0xFF])
     );
-    assert_eq!(
-        decompress(SYNC_FLUSHED).unwrap(),
-        b"CONFIG_A=y\nCONFIG_B=y\n"
-    );
+    assert_eq!(decode(SYNC_FLUSHED).unwrap(), b"CONFIG_A=y\nCONFIG_B=y\n");
 }
 
 #[test]
 fn decodes_a_block_that_defines_the_most_codes() {
     assert_eq!(
-        decompress(&just_a(&most_literals(), &most_distances())).unwrap(),
+        decode(&just_a(&most_literals(), &most_distances())).unwrap(),
         b"A"
     );
 }
@@ -292,7 +300,7 @@ fn refuses_a_block_that_defines_more_codes_than_there_are() {
         just_a(&most_literals(), &[5; 32]),
     ] {
         assert_eq!(
-            decompress(&stream),
+            decode(&stream),
             Err(Malformed("a block defines too many codes"))
         );
     }
@@ -303,14 +311,14 @@ fn accepts_a_lone_one_bit_distance_code() {
     // A block whose copies all reach the same distance may give it a code of
     // one bit and leave the other one-bit pattern unused (RFC 1951, 3.2.7):
     // the one incomplete code a block may hold.
-    assert_eq!(decompress(&a_run(&[1, 0])).unwrap(), b"aaaa");
+    assert_eq!(decode(&a_run(&[1, 0])).unwrap(), b"aaaa");
 }
 
 #[test]
 fn refuses_any_other_incomplete_code() {
     // Two two-bit distance codes leave half the patterns unused.
     assert_eq!(
-        decompress(&a_run(&[2, 2])),
+        decode(&a_run(&[2, 2])),
         Err(Malformed("a code is incomplete"))
     );
 }
@@ -318,7 +326,7 @@ fn refuses_any_other_incomplete_code() {
 #[test]
 fn decodes_members_back_to_back() {
     let stream = [STORED, FIXED, EMPTY].concat();
-    assert_eq!(decompress(&stream).unwrap(), b"stored\nfixed fixed fixed\n");
+    assert_eq!(decode(&stream).unwrap(), b"stored\nfixed fixed fixed\n");
 }
 
 #[test]
@@ -331,7 +339,7 @@ fn refuses_a_back_reference_into_the_member_before() {
     let copy = member_of(&[0x03, 0x02, 0x00], b"\n\n\n");
     for stream in [copy.clone(), [STORED, copy.as_slice()].concat()] {
         assert_eq!(
-            decompress(&stream),
+            decode(&stream),
             Err(Malformed(
                 "a back-reference reaches before the start of its member"
             ))
@@ -361,7 +369,7 @@ fn refuses_a_stream_that_is_not_whole_and_valid() {
         bad.push(("a truncated member", FLAGGED[..len].to_vec()));
     }
     for (what, stream) in bad {
-        assert!(decompress(&stream).is_err(), "{what}: {stream:02X?}");
+        assert!(decode(&stream).is_err(), "{what}: {stream:02X?}");
     }
 }
 
@@ -369,13 +377,13 @@ fn refuses_a_stream_that_is_not_whole_and_valid() {
 fn refuses_malformed_blocks() {
     // BFINAL set and BTYPE 3, which no block has.
     assert_eq!(
-        decompress(&framed(&[0x07])),
+        decode(&framed(&[0x07])),
         Err(Malformed("invalid block type"))
     );
     // A fixed block whose first symbol copies 3 bytes from 1 back, before
     // anything was written.
     assert_eq!(
-        decompress(&framed(&[0x03, 0x02])),
+        decode(&framed(&[0x03, 0x02])),
         Err(Malformed(
             "a back-reference reaches before the start of its member"
         ))
@@ -384,7 +392,7 @@ fn refuses_malformed_blocks() {
     let mut stored = STORED.to_vec();
     stored[13] ^= 0x01;
     assert_eq!(
-        decompress(&stored),
+        decode(&stored),
         Err(Malformed(
             "a stored block's length does not match its complement"
         ))
@@ -413,8 +421,8 @@ proptest::proptest! {
     /// data after a valid header.
     #[test]
     fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..600)) {
-        let _ = decompress(&bytes);
-        let _ = decompress(&framed(&bytes));
+        let _ = decode(&bytes);
+        let _ = decode(&framed(&bytes));
     }
 
     /// A real stream with bytes changed decodes or is refused, never panics.
@@ -426,6 +434,6 @@ proptest::proptest! {
         for (at, value) in changes {
             stream[at] = value;
         }
-        let _ = decompress(&stream);
+        let _ = decode(&stream);
     }
 }
