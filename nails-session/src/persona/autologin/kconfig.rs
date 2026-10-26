@@ -477,11 +477,12 @@ enum Mark {
 fn group_header(line: &[u8]) -> Option<(Vec<u8>, Mark)> {
     let mut name = Vec::new();
     let mut mark = Mark::None;
-    let mut start = 1;
+    // What is left of the line past the `[` that opens the current part.
+    let mut rest = line.strip_prefix(b"[")?;
     loop {
-        let end = start + line.get(start..)?.iter().position(|&byte| byte == b']')?;
-        let part = &line[start..end];
-        if end + 1 == line.len() && part == b"$i" {
+        let end = rest.iter().position(|&byte| byte == b']')?;
+        let (part, after) = (&rest[..end], &rest[end + 1..]);
+        if after.is_empty() && part == b"$i" {
             mark = if name.is_empty() {
                 Mark::File
             } else {
@@ -493,9 +494,10 @@ fn group_header(line: &[u8]) -> Option<(Vec<u8>, Mark)> {
             }
             name.extend_from_slice(&decode(part).0);
         }
-        start = end + 2;
-        if start > line.len() || line[end + 1] != b'[' {
-            return Some((name, mark));
+        // A `[` right after the `]` opens the next part.
+        match after.strip_prefix(b"[") {
+            Some(next) => rest = next,
+            None => return Some((name, mark)),
         }
     }
 }

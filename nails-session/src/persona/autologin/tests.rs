@@ -651,6 +651,8 @@ fn kconfig_ignores_what_follows_a_header_and_keeps_the_group_after_a_broken_one(
         ),
         names(&["b"])
     );
+    // A `[` right after the last `]` opens a part that never closes.
+    assert!(kconfig(&[], Some("[Other]\n[Autologin][\nUser=b\n")).is_empty());
 }
 
 #[test]
