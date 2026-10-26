@@ -321,10 +321,10 @@ pub fn build_registry<F: Filesystem>(
             .allowing_decoy_storage(inputs.options.allow_decoy_storage),
     ));
 
-    // Warns (never fails) when no hidden session can load the running kernel's
-    // modules: a kernel update in an earlier session deleted or replaced them in
-    // the upper, or the decoy itself lacks them. The `discard` its fix names
-    // takes --allow-decoy-storage when the run does. Read-only.
+    // Warns (never fails) when a hidden session deleted or replaced the running
+    // kernel's module tree or its index in the upper (a kernel update in a
+    // hidden session does), or the decoy itself lacks the tree. The `discard`
+    // its fix names takes --allow-decoy-storage when the run does. Read-only.
     registry.add_check(Box::new(
         crate::session::checks::KernelModulesCheck::new(
             paths.root.clone(),

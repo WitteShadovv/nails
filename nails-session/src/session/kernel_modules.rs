@@ -385,11 +385,12 @@ impl KernelModulesCheck {
         let tree = self.path(Step::Release);
         match verdict {
             Verdict::Intact => CheckResult::Pass(format!(
-                "no hidden session deleted or replaced the running kernel's modules ({tree})"
+                "no hidden session deleted or replaced the running kernel's module tree or its \
+                 index ({tree})"
             )),
             Verdict::OwnIndex => CheckResult::Pass(format!(
-                "no hidden session deleted or replaced the running kernel's modules ({tree}), \
-                 and their index ({INDEX}) is one a hidden session wrote"
+                "no hidden session deleted or replaced the running kernel's module tree ({tree}), \
+                 and its index ({INDEX}) is one a hidden session wrote"
             )),
             Verdict::NoModuleDir => {
                 CheckResult::Pass("the decoy keeps no kernel modules in /usr/lib/modules".into())

@@ -180,8 +180,9 @@ Keep all of it `root`-owned on the hidden volume.
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
    session and no leftovers of an interrupted one), `fstab-policy`,
-   `kernel-modules` (no hidden session deleted the running kernel's modules;
-   it only warns, see [below](#copy-up-cost-and-shadowed-decoy-updates)),
+   `kernel-modules` (no hidden session deleted or replaced the running
+   kernel's module tree or its index; it only warns, see
+   [below](#copy-up-cost-and-shadowed-decoy-updates)),
    `hidden-volume`, `upper-fs-capability`,
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
    decoy's `/etc/nixos` names the hidden volume's device, mount point or the
