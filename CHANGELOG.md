@@ -529,6 +529,18 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [0.3.0-rc.3] - 2026-10-20
 
+**Correction, 2026-10-26.** On Debian 13 this release still records the soft-reboot, contrary to
+the first Security entry below. Kept from the system bus, wtmpdb 0.73.0 still names the boot row
+`soft-reboot` once the decoy has been up for five minutes, and before that it dates a `reboot` row
+to the decoy's cold boot, which `wtmpdb last` lists as a crash. On Ubuntu 24.04 this release
+corrects the backdated boot record, but to the time its correcting step runs, which can come after
+the first records of the decoy's own start, and it updates the access time of `/var/log/wtmp` at
+every way back. The fixes, among them a way back that starts the wtmpdb writer in a time namespace,
+are listed under Security in a later section above, together with more corrections to that entry.
+Until you run a release with them, end Debian 13 and Ubuntu 24.04 sessions with
+`nails deactivate --poweroff` (or `nails emergency --poweroff`): a power-off has no way back, so
+none of this happens.
+
 ### Changed
 
 - The release binary is built with Rust 1.99.1; 0.3.0-rc.2 was built with 1.93.0.
