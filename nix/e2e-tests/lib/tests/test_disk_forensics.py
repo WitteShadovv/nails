@@ -558,13 +558,16 @@ _ESP, _ROOT, _SECOND = 2048 * 512, 18432 * 512, 67584 * 512
 
 
 class PartitionOffsetTest(unittest.TestCase):
-    """The root partition is the one ext{2,3,4} filesystem ``blkid`` finds in
-    a whole-disk image; a disk with none or several is refused rather than
-    carved at a guess, since a carve of the wrong filesystem finds nothing."""
+    """The root is the one partition of a whole-disk image that can hold it,
+    and only when that is ext{2,3,4}; a bare image is read whole only when it
+    is ext{2,3,4}. Anything else is refused rather than carved at a guess:
+    debugfs exits 0 on a filesystem it cannot open or a path it does not find,
+    so a carve of the wrong filesystem finds nothing and the scan passes."""
 
-    def _offset(self, mmls: str | None, types: dict[int, str]) -> int:
+    def _offset(self, mmls: str | None, types: dict[int, str], bare: str = "") -> int:
         """``partition_offset`` with ``mmls`` printing ``mmls`` (failing when
-        ``None``) and ``blkid`` finding ``types[start]`` at each start."""
+        ``None``), ``blkid`` finding ``types[start]`` in the partition at each
+        start and ``bare`` in the whole image."""
         self.blkid_calls: list[list[str]] = []
 
         def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -574,10 +577,10 @@ class PartitionOffsetTest(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, mmls, "")
             self.assertEqual(cmd[0], df.BLKID)
             self.blkid_calls.append(cmd)
-            start = int(cmd[cmd.index("-O") + 1])
-            if start not in types:
+            found = types.get(int(cmd[cmd.index("-O") + 1])) if "-O" in cmd else bare
+            if not found:
                 raise subprocess.CalledProcessError(2, cmd)
-            return subprocess.CompletedProcess(cmd, 0, f"{types[start]}\n", "")
+            return subprocess.CompletedProcess(cmd, 0, f"{found}\n", "")
 
         with mock.patch.object(df, "_run", side_effect=run):
             return df.partition_offset("/img/disk.raw")
@@ -604,10 +607,36 @@ class PartitionOffsetTest(unittest.TestCase):
         self.assertIn(f"ext4 at byte {_ROOT}", message)
         self.assertIn(f"ext4 at byte {_SECOND}", message)
 
-    def test_a_disk_with_no_ext_partition_is_refused(self) -> None:
-        for types in ({_ESP: "vfat", _ROOT: "btrfs"}, {}):
-            with self.assertRaises(RuntimeError, msg=str(types)):
+    def test_an_ext4_boot_next_to_a_btrfs_root_is_refused(self) -> None:
+        # Fedora's layout: an ESP, an ext4 /boot and a btrfs root. The one ext
+        # partition is the /boot, and the scans would find nothing in it.
+        types = {_ESP: "vfat", _ROOT: "ext4", _SECOND: "btrfs"}
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(_MMLS_GPT, types)
+        message = str(raised.exception)
+        self.assertIn("more than one partition can hold the root", message)
+        self.assertIn(f"btrfs at byte {_SECOND}", message)
+
+    def test_any_filesystem_or_volume_but_an_esp_or_swap_can_be_the_root(self) -> None:
+        # An ext4 /boot next to a root of any other kind, an encrypted or LVM
+        # volume included, is refused the same way.
+        roots = ("xfs", "f2fs", "bcachefs", "zfs_member", "crypto_LUKS", "LVM2_member")
+        for root in roots:
+            types = {_ESP: "vfat", _ROOT: "ext4", _SECOND: root}
+            with self.assertRaises(RuntimeError, msg=root) as raised:
                 self._offset(_MMLS_GPT, types)
+            self.assertIn(f"{root} at byte {_SECOND}", str(raised.exception))
+
+    def test_a_disk_whose_root_is_not_ext_is_refused(self) -> None:
+        # One partition can hold the root, but the scans carve only ext.
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(_MMLS_GPT, {_ESP: "vfat", _ROOT: "btrfs"})
+        self.assertIn("the root partition holds btrfs", str(raised.exception))
+        # No partition can hold the root, or blkid recognises none.
+        for types in ({_ESP: "vfat", _SECOND: "swap"}, {}):
+            with self.assertRaises(RuntimeError, msg=str(types)) as raised:
+                self._offset(_MMLS_GPT, types)
+            self.assertIn("no partition can hold the root", str(raised.exception))
 
     def test_partition_names_do_not_decide(self) -> None:
         # mmls prints a GPT partition's name, which need not say Linux.
@@ -617,9 +646,21 @@ class PartitionOffsetTest(unittest.TestCase):
         offset = self._offset(named, {_ESP: "vfat", _ROOT: "ext4"})
         self.assertEqual(offset, 18432)
 
-    def test_a_bare_filesystem_is_read_whole(self) -> None:
-        self.assertEqual(self._offset(None, {}), 0)
-        self.assertEqual(self.blkid_calls, [])
+    def test_a_bare_ext_filesystem_is_read_whole(self) -> None:
+        self.assertEqual(self._offset(None, {}, bare="ext4"), 0)
+        # blkid probes the whole image, with no partition window.
+        self.assertEqual(
+            self.blkid_calls,
+            [[df.BLKID, "-p", "-o", "value", "-s", "TYPE", "/img/disk.raw"]],
+        )
+
+    def test_a_bare_filesystem_of_another_kind_is_refused(self) -> None:
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(None, {}, bare="btrfs")
+        self.assertIn("a bare btrfs filesystem", str(raised.exception))
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(None, {})
+        self.assertIn("no filesystem blkid recognises", str(raised.exception))
 
     def test_an_mbr_slot_in_larger_sectors_is_converted(self) -> None:
         mbr = (

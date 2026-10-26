@@ -313,18 +313,29 @@ _MMLS_PARTITION = re.compile(
     r"^\s*\d+:\s+\d+(?::\d+)?\s+(?P<start>\d+)\s+\d+\s+(?P<length>\d+)(?:\s|$)"
 )
 _MMLS_UNITS = re.compile(r"^Units are in (?P<unit>\d+)-byte sectors")
+# The filesystems the scans can carve (``debugfs``).
 _EXT_TYPES = frozenset({"ext2", "ext3", "ext4"})
+# What ``blkid`` finds in a partition that never holds the root filesystem: an
+# EFI system partition and swap. Any other filesystem or volume it finds
+# (btrfs, xfs, f2fs, bcachefs, an encrypted or LVM volume) can be the root.
+_NOT_ROOT_TYPES = frozenset({"vfat", "swap"})
 
 
-def _partition_type(image: str | os.PathLike[str], start: int, size: int) -> str:
-    """The filesystem type ``blkid`` finds in the partition at byte ``start``,
-    or ``""`` when it finds none.
+def _fs_type(
+    image: str | os.PathLike[str], window: tuple[int, int] | None = None
+) -> str:
+    """The filesystem or volume type ``blkid`` finds in the image, or in the
+    ``(start, size)`` byte window of one of its partitions; ``""`` when it finds
+    none.
 
     ``blkid`` honours an offset and a size only in its low-level mode (``-p``),
-    and probes the partition's own superblock there.
+    which probes the superblock itself rather than a cache.
     """
     cmd = [BLKID, "-p", "-o", "value", "-s", "TYPE"]
-    cmd += ["-O", str(start), "-S", str(size), str(image)]
+    if window is not None:
+        start, size = window
+        cmd += ["-O", str(start), "-S", str(size)]
+    cmd.append(str(image))
     try:
         return _run(cmd).stdout.strip()
     except subprocess.CalledProcessError:
@@ -332,22 +343,39 @@ def _partition_type(image: str | os.PathLike[str], start: int, size: int) -> str
 
 
 def partition_offset(image: str | os.PathLike[str]) -> int:
-    """Offset of the image's root filesystem in 512-byte sectors, or 0.
+    """Offset of the image's ext{2,3,4} root filesystem in 512-byte sectors.
+
+    The scans carve the root with ``debugfs``, which reads ext{2,3,4} only and
+    exits 0 both when it cannot open a filesystem and when a path is missing,
+    so a carve of the wrong filesystem finds nothing and the scan passes. This
+    returns an offset only when it is sure of the root, and raises otherwise.
 
     A bare filesystem image, in which ``mmls`` finds no partition table, is read
-    whole. A whole-disk image must hold exactly one ext{2,3,4} partition.
+    whole when ``blkid`` finds ext{2,3,4} in it. A whole-disk image must hold
+    exactly one partition that can be the root, and that one ext{2,3,4}.
     ``mmls`` lists the partitions, but its descriptions are only their GPT names
-    or MBR types, so ``blkid`` probes each partition for the filesystem it
-    holds. With no ext partition there is nothing to carve, and with several (a
-    separate ``/boot`` or ``/home``) the root cannot be told apart safely: either
-    raises, rather than carve another filesystem and find nothing in it.
+    or MBR types, so ``blkid`` probes each one, and every partition it finds a
+    filesystem or volume in counts, except an EFI system partition (``vfat``)
+    and swap. A separate ``/boot`` next to a btrfs, xfs or encrypted root, or a
+    ``/home`` next to the root, cannot be told apart from the root safely, so
+    such a disk raises. A partition in which ``blkid`` finds nothing (a BIOS
+    boot partition, or one encrypted without a header) is not counted.
     """
     try:
         proc = _run([MMLS, str(image)])
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return 0
+        bare = _fs_type(image)
+        if bare in _EXT_TYPES:
+            return 0
+        found = (
+            f"a bare {bare} filesystem" if bare else "no filesystem blkid recognises"
+        )
+        raise RuntimeError(
+            f"{image}: no partition table and {found}; the scans carve only an "
+            "ext2/3/4 root (debugfs)"
+        ) from None
     unit = 512
-    found: list[tuple[str, int]] = []
+    found_types: list[tuple[str, int]] = []
     for line in proc.stdout.splitlines():
         units = _MMLS_UNITS.match(line)
         if units:
@@ -357,18 +385,28 @@ def partition_offset(image: str | os.PathLike[str]) -> int:
         if not match:
             continue
         start = int(match.group("start")) * unit
-        fs_type = _partition_type(image, start, int(match.group("length")) * unit)
+        fs_type = _fs_type(image, (start, int(match.group("length")) * unit))
         if fs_type:
-            found.append((fs_type, start))
-    roots = [start for fs_type, start in found if fs_type in _EXT_TYPES]
-    if len(roots) != 1:
-        listing = ", ".join(f"{fs_type} at byte {start}" for fs_type, start in found)
-        raise RuntimeError(
-            f"{image}: need exactly one ext2/3/4 partition to carve as the root, "
-            f"found {listing or 'no filesystem in any partition'}; scan the root "
+            found_types.append((fs_type, start))
+    roots = [(t, start) for t, start in found_types if t not in _NOT_ROOT_TYPES]
+    if len(roots) == 1 and roots[0][0] in _EXT_TYPES:
+        return roots[0][1] // 512
+    listing = ", ".join(f"{t} at byte {start}" for t, start in found_types)
+    listing = listing or "no filesystem in any partition"
+    if not roots:
+        reason = f"no partition can hold the root ({listing})"
+    elif len(roots) > 1:
+        reason = (
+            f"more than one partition can hold the root ({listing}), and a /boot "
+            "or /home cannot be told apart from it safely; scan the root "
             "filesystem's own image instead"
         )
-    return roots[0] // 512
+    else:
+        reason = (
+            f"the root partition holds {roots[0][0]} ({listing}), and the scans "
+            "carve only an ext2/3/4 root (debugfs)"
+        )
+    raise RuntimeError(f"{image}: {reason}")
 
 
 def run_fls(image: str | os.PathLike[str], offset: int | None = None) -> list[FlsEntry]:
