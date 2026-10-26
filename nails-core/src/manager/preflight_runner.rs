@@ -347,6 +347,19 @@ pub fn build_registry<F: Filesystem>(
         .allowing_decoy_storage(inputs.options.allow_decoy_storage),
     ));
 
+    // Warns (never fails) when hidden sessions' package database no longer
+    // follows the decoy's: the decoy installed, updated or removed packages
+    // their own copy of dpkg's or rpm's record does not know, or pacman would
+    // list a package twice there. It reads the decoy's database only as root,
+    // without changing its access time. Read-only.
+    registry.add_check(Box::new(
+        crate::session::package_drift::PackageDriftCheck::new(
+            paths.root.clone(),
+            hidden_root.clone(),
+        )
+        .allowing_decoy_storage(inputs.options.allow_decoy_storage),
+    ));
+
     // Warns (never fails) about the residue channels the catalog probes by path
     // (LVM metadata archives, udisks2 state, session-time stamps): each finding
     // names the catalog row, its mitigation and its doc section. Read-only.
