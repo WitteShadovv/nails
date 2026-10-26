@@ -25,7 +25,10 @@
 //! the files in, on Qt 5 and Qt 6, in any language, with KConfig before KDE
 //! Frameworks 6.29 and since, however GLib's Unicode tables judge a key:
 //! exactly, or, where a translated KConfig `User` leaves the account to more
-//! than the files tell, at least every one.
+//! than the files tell, at least every one. A failure names the display
+//! manager, which side holds an account the other lacks and where it stands
+//! in that side's sorted list, never the account itself: the input that
+//! fails holds it.
 
 #![no_main]
 
@@ -103,6 +106,41 @@ fn normalized(accounts: impl IntoIterator<Item = String>) -> Vec<String> {
     accounts
 }
 
+/// Fails unless NAILS lists the very accounts the model logs in. Both lists
+/// are sorted, so where they first part, the side with the smaller name, or
+/// the only one left, holds an account the other lacks.
+fn assert_same(reader: &str, listed: &[String], expected: &[String]) {
+    let at = listed
+        .iter()
+        .zip(expected)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let extra = match (listed.get(at), expected.get(at)) {
+        (None, None) => return,
+        (Some(a), Some(b)) => a < b,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+    };
+    if extra {
+        panic!(
+            "{reader}: NAILS lists an account the model does not log in, at index {at} of its list"
+        );
+    }
+    panic!(
+        "{reader}: NAILS leaves out an account the model logs in, at index {at} of the model's list"
+    );
+}
+
+/// Fails unless NAILS lists every account the model logs in; it may list
+/// more.
+fn assert_covers(reader: &str, listed: &[String], expected: &[String]) {
+    if let Some(at) = expected.iter().position(|name| !listed.contains(name)) {
+        panic!(
+            "{reader}: NAILS leaves out an account the model logs in, at index {at} of the model's list"
+        );
+    }
+}
+
 fn gdm(texts: [Option<&str>; 3]) {
     let paths = [
         "/etc/gdm/custom.conf",
@@ -128,7 +166,7 @@ fn gdm(texts: [Option<&str>; 3]) {
             }
         }
     }
-    assert_eq!(listed, normalized(expected), "GDM");
+    assert_same("GDM", &listed, &normalized(expected));
 }
 
 /// The files staged for a Qt display manager, beside the fixed ones, and
@@ -201,7 +239,7 @@ fn sddm(main: &str, local: Option<&str>, vendor: Option<&str>) {
             expected.push(display_managers::sddm_user(&texts, qt));
         }
     }
-    assert_eq!(listed, normalized(expected), "SDDM");
+    assert_same("SDDM", &listed, &normalized(expected));
 }
 
 /// ASCII whitespace off both ends, as `QByteArrayView::trimmed()`.
@@ -272,14 +310,9 @@ fn plasma_login(main: &str, local: Option<&str>, vendor: Option<&str>) {
     }
     let expected = normalized(expected);
     if translated {
-        for account in &expected {
-            assert!(
-                listed.contains(account),
-                "Plasma Login Manager: {account:?} missing from {listed:?}"
-            );
-        }
+        assert_covers("Plasma Login Manager", &listed, &expected);
     } else {
-        assert_eq!(listed, expected, "Plasma Login Manager");
+        assert_same("Plasma Login Manager", &listed, &expected);
     }
 }
 
@@ -299,9 +332,9 @@ fn lightdm(main: &str, local: Option<&str>, vendor: Option<&str>) {
     drop_ins.extend(vendor);
     drop_ins.extend(local);
     let expected = display_managers::lightdm(&drop_ins, Some(main));
-    assert_eq!(
-        listed,
-        normalized(expected.into_iter().flatten()),
-        "LightDM"
+    assert_same(
+        "LightDM",
+        &listed,
+        &normalized(expected.into_iter().flatten()),
     );
 }
