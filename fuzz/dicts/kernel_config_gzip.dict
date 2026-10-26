@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: a gzip member's magic, method and bare header, the
+# empty stored block a sync flush writes, and the lines of a kernel config.
+"\x1f\x8b\x08"
+"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03"
+"\x00\x00\xff\xff"
+"CONFIG_"
+"=y\x0a"
+"=m\x0a"
+"# CONFIG_"
+" is not set\x0a"

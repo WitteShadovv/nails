@@ -3,8 +3,9 @@
 #
 # Coverage-guided fuzz targets (cargo-fuzz, libFuzzer) for the parsers that
 # read text and data NAILS does not control: the kernel's and libmount's mount
-# tables, a decoy's fstab, crypttab, os-release, package databases, systemd
-# configuration and NixOS configuration, udev's records, and raw disks.
+# tables, the kernel's compressed config, a decoy's fstab, crypttab, os-release,
+# package databases, systemd configuration and NixOS configuration, udev's
+# records, and raw disks.
 # docs/testing-strategy.md says how to run a target; .clusterfuzzlite/ builds
 # them for CI.
 #
@@ -107,6 +108,13 @@ bench = false
 [[bin]]
 name = "cryptsetup_version"
 path = "fuzz_targets/cryptsetup_version.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kernel_config_gzip"
+path = "fuzz_targets/kernel_config_gzip.rs"
 test = false
 doc = false
 bench = false

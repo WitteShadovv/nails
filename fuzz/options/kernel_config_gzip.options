@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer options ClusterFuzzLite reads for this target: an input needs room
+# for a kernel config of several blocks, and the stream the target writes of
+# its input needs room for back-references that reach 32 KiB back.
+[libfuzzer]
+max_len = 65536
