@@ -18,6 +18,7 @@ from ci import mutants_plan
 from ci.mutants_plan import Plan
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "mutants-in-diff.yml"
 
 # One entry of `cargo mutants --list --json`, as cargo-mutants 27 prints it.
 MUTANT = {
@@ -46,6 +47,30 @@ MUTANT = {
 def listing(count: int) -> str:
     """What `cargo mutants --list --json` prints for ``count`` mutants."""
     return json.dumps([MUTANT] * count, indent=2)
+
+
+def step_outputs(printed: str) -> dict[str, str]:
+    """The ``name=value`` lines the planner printed for $GITHUB_OUTPUT."""
+    outputs = {}
+    for line in printed.splitlines():
+        name, _, value = line.partition("=")
+        outputs[name] = value
+    return outputs
+
+
+def planned_outputs(text: str) -> dict[str, str]:
+    """The step outputs the planner prints for the listing ``text`` on stdin."""
+    out = io.StringIO()
+    with (
+        mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}),
+        mock.patch("sys.stdin", io.StringIO(text)),
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
+        code = mutants_plan.main(["-"])
+    if code != 0:
+        raise AssertionError(f"the planner exited {code}")
+    return step_outputs(out.getvalue())
 
 
 def slices(mutants: int, shards: int) -> list[int]:
@@ -215,17 +240,12 @@ class MainTest(unittest.TestCase):
             contextlib.redirect_stderr(err),
         ):
             code = mutants_plan.main([str(path)])
-        outputs = {}
-        for line in out.getvalue().splitlines():
-            name, _, value = line.partition("=")
-            outputs[name] = value
-        return code, outputs, err.getvalue()
+        return code, step_outputs(out.getvalue()), err.getvalue()
 
     def test_prints_the_plan_as_step_outputs(self) -> None:
         code, outputs, err = self.run_main(listing(409))
         self.assertEqual(code, 0, err)
-        self.assertEqual(set(outputs), {"mutants", "shards", "matrix"})
-        self.assertEqual(outputs["mutants"], "409")
+        self.assertEqual(set(outputs), {"shards", "matrix"})
         self.assertEqual(outputs["shards"], "12")
         include = json.loads(outputs["matrix"])["include"]
         self.assertEqual([entry["shard"] for entry in include], list(range(12)))
@@ -248,7 +268,6 @@ class MainTest(unittest.TestCase):
     def test_a_diff_without_mutants_plans_no_shard(self) -> None:
         code, outputs, err = self.run_main("")
         self.assertEqual(code, 0, err)
-        self.assertEqual(outputs["mutants"], "0")
         self.assertEqual(outputs["shards"], "0")
         self.assertEqual(json.loads(outputs["matrix"]), {"include": []})
         self.assertIn("no mutable code", self.summary.read_text(encoding="utf-8"))
@@ -256,7 +275,6 @@ class MainTest(unittest.TestCase):
     def test_a_diff_too_large_is_reported_and_passes(self) -> None:
         code, outputs, err = self.run_main(listing(1000))
         self.assertEqual(code, 0, err)
-        self.assertEqual(outputs["mutants"], "1000")
         self.assertEqual(outputs["shards"], "0")
         self.assertEqual(json.loads(outputs["matrix"]), {"include": []})
         self.assertIn("::warning title=Diff too large for mutation testing::", err)
@@ -273,15 +291,7 @@ class MainTest(unittest.TestCase):
                 self.assertIn("mutants.json", err)
 
     def test_reads_the_listing_on_stdin(self) -> None:
-        out = io.StringIO()
-        with (
-            mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": ""}),
-            mock.patch("sys.stdin", io.StringIO(listing(31))),
-            contextlib.redirect_stdout(out),
-            contextlib.redirect_stderr(io.StringIO()),
-        ):
-            self.assertEqual(mutants_plan.main(["-"]), 0)
-        self.assertIn("shards=2\n", out.getvalue())
+        self.assertEqual(planned_outputs(listing(31))["shards"], "2")
 
 
 class LaneTest(unittest.TestCase):
@@ -298,11 +308,34 @@ class LaneTest(unittest.TestCase):
 
     def test_the_plan_and_the_shards_run_the_same_cargo_mutants(self) -> None:
         # Another release may find other mutants or slice the shards otherwise.
-        workflow = REPO_ROOT / ".github" / "workflows" / "mutants-in-diff.yml"
-        text = workflow.read_text(encoding="utf-8")
+        text = WORKFLOW.read_text(encoding="utf-8")
         versions = re.findall(r"cargo-mutants@([^,\s]+)", text)
         self.assertEqual(len(versions), 2, versions)
         self.assertEqual(len(set(versions)), 1, versions)
+
+    def test_the_workflow_reads_what_the_plan_prints(self) -> None:
+        # The plan reaches the shards through the plan job's outputs and the
+        # shard matrix. A name renamed on one side alone would show only as a
+        # red run on GitHub.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        outputs = planned_outputs(listing(31))
+        include = json.loads(outputs["matrix"])["include"]
+        keys = {key for entry in include for key in entry}
+        self.assertRegex(text, r"\bid: plan\n\s+run: just mutants-in-diff-plan ")
+        # The plan job passes on each output of that step under its own name,
+        # and the shard job reads every one of them and every key of the matrix.
+        passed_on = re.findall(
+            r"^\s+(\w+): \$\{\{ steps\.plan\.outputs\.(\w+) \}\}$", text, re.M
+        )
+        self.assertCountEqual(passed_on, [(name, name) for name in outputs])
+        self.assertEqual(
+            set(re.findall(r"\bneeds\.plan\.outputs\.(\w+)", text)), set(outputs)
+        )
+        self.assertEqual(set(re.findall(r"\bmatrix\.(\w+)", text)), keys)
+        # A plan without shards prints 0, which keeps the shard job from
+        # starting on an empty matrix.
+        self.assertEqual(planned_outputs("")["shards"], "0")
+        self.assertIn("if: needs.plan.outputs.shards != '0'", text)
 
 
 if __name__ == "__main__":
