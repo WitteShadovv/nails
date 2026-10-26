@@ -23,6 +23,7 @@ NOT_IN_THE_BINARY = frozenset({"nails-oracle"})
 
 NOTHING = {
     "rust": False,
+    "testdata": False,
     "fuzz": False,
     "side": False,
     "deps": False,
@@ -33,6 +34,7 @@ NOTHING = {
 }
 EVERYTHING = {
     "rust": True,
+    "testdata": True,
     "fuzz": True,
     "side": True,
     "deps": True,
@@ -64,7 +66,14 @@ def e2e_filter() -> re.Pattern[str] | None:
 
 class SelectTest(unittest.TestCase):
     def test_documentation_runs_the_docs_check(self) -> None:
-        paths = ["README.md", "CHANGELOG.md", "ROADMAP.md", "docs/ci.md", "LICENSE"]
+        paths = [
+            "CHANGELOG.md",
+            "ROADMAP.md",
+            "CONTRIBUTING.md",
+            "docs/ci.md",
+            "docs/architecture.md",
+            "LICENSE",
+        ]
         self.assertEqual(changes.select(paths), only("docs"))
 
     def test_no_change_runs_nothing(self) -> None:
@@ -85,6 +94,7 @@ class SelectTest(unittest.TestCase):
             "benches/performance.rs",
             ".cargo/config.toml",
             ".config/nextest.toml",
+            ".config/coverage.toml",
             "rust-toolchain.toml",
             "clippy.toml",
             "justfile",
@@ -104,6 +114,55 @@ class SelectTest(unittest.TestCase):
                 source = changes.select([f"{member}/src/lib.rs"])
                 self.assertEqual(source, only("rust"))
                 self.assertTrue(changes.select([f"{member}/Cargo.toml"])["rust"])
+
+    def test_files_the_rust_tests_read_run_the_rust_job(self) -> None:
+        # The tests read these from outside the crates: a change to one alone
+        # must still run them, or it would pass without the test that checks it.
+        for path in (
+            "copy-lint.toml",
+            "nails.1",
+            "docs/assets/screenshots/help.txt",
+            "docs/schemas/status.schema.json",
+            "docs/schemas/config.schema.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("testdata"))
+        for path in (
+            "README.md",
+            "docs/cli.md",
+            "docs/configuration.md",
+            "docs/decoy-requirements.md",
+            "docs/operator-guide.md",
+            "docs/threat-model.md",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("testdata", "docs"))
+        for path in (
+            "nix/e2e-tests/tests/session/session-lifecycle.nix",
+            "nix/e2e-tests/fixtures/configs/unknown-key.toml",
+            "nix/e2e-tests/fixtures/indicators.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("testdata", "nix"))
+
+    def test_files_no_rust_test_reads_leave_the_rust_job_alone(self) -> None:
+        for path in (
+            "docs/README.md",
+            "docs/ci.md",
+            "docs/schemas.md",
+            "docs/assets/screenshots/help.svg",
+            "docs/assets/screenshots/check.txt",
+            "gui/README.md",
+            "nix/e2e-tests/README.md",
+            "nix/e2e-tests/lib/helper.sh",
+            "nix/e2e-tests/fixtures/forensics/fls-sample.txt",
+            "nix/e2e-tests/fixtures/indicators.json.orig",
+            "fuzz/copy-lint.toml",
+            "nails.1.orig",
+        ):
+            with self.subTest(path=path):
+                selected = changes.select([path])
+                self.assertFalse(selected["rust"] or selected["testdata"])
 
     def test_fuzz_crate_runs_its_own_filter(self) -> None:
         for path in (
@@ -375,6 +434,7 @@ class MainTest(unittest.TestCase):
             self.run_main(),
             [
                 "rust=true",
+                "testdata=true",
                 "fuzz=true",
                 "side=true",
                 "deps=true",
@@ -391,6 +451,7 @@ class MainTest(unittest.TestCase):
                 self.run_main("--base", "HEAD^1"),
                 [
                     "rust=true",
+                    "testdata=true",
                     "fuzz=true",
                     "side=true",
                     "deps=true",
@@ -407,6 +468,7 @@ class MainTest(unittest.TestCase):
                 self.run_main("--base", "HEAD^1"),
                 [
                     "rust=false",
+                    "testdata=false",
                     "fuzz=false",
                     "side=false",
                     "deps=true",
