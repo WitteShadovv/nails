@@ -334,7 +334,7 @@ Step 3, after deactivating: scan the raw decoy devices for the canary
 * `--offline` — Scan disk images or devices given with --image, not this machine's mounts
 * `--image <IMAGE>` — An image or device to scan in --offline mode (repeatable)
 
-   An image of the unlocked decoy filesystem, or of a whole disk, whose partitions are then classified one by one from their raw superblocks. An encrypted container (scan its unlocked mapping instead), a compressing or copy-on-write filesystem, or storage the scan does not identify is reported not checked rather than clean. So is an image cut short: an ext4, xfs or f2fs image that ends before its filesystem does, or a whole-disk image that ends before a partition its table lists or before the disk its GPT was written for. An empty image is not scanned.
+   An image of the unlocked decoy filesystem, or of a whole disk, whose partitions are then classified one by one from their raw superblocks. An encrypted container (scan its unlocked mapping instead), a compressing or copy-on-write filesystem, or storage the scan does not identify is reported not checked rather than clean. So is an image cut short: an ext4, xfs, f2fs, vfat, exFAT or swap image that ends before its filesystem or swap area does, or a whole-disk image that ends before a partition its table lists or before the disk its GPT was written for. An empty image is not scanned.
 * `--token-file <FILE>` — Read the canary token from this file instead of the hidden volume's rehearsal state (--offline only)
 * `--allow-same-boot` — Scan even in the session the canary was planted in (proves little: the session's writes may not have reached the disk yet)
 * `--max-bytes <BYTES>` — Stop each device after this many bytes

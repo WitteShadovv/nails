@@ -18,10 +18,12 @@
 //!   ciphertext: its unlocked mapping is what to scan;
 //! - an LVM physical volume, whose logical volumes the scan does not identify;
 //! - storage on which no filesystem is identified at all (zfs, an encrypted
-//!   volume without a header, raw data), even where an ext4, xfs or f2fs
-//!   magic shows over a block size no such filesystem uses;
-//! - a filesystem, a partition, or the disk a GPT was written for, that runs
-//!   past the end of the source, as on an image whose copy stopped early;
+//!   volume without a header, raw data), even where a filesystem's or swap
+//!   area's magic shows over a superblock that records what no such
+//!   filesystem has (a block size it never uses, say);
+//! - a filesystem or swap area (ext4, xfs, f2fs, vfat, exFAT, swap), a
+//!   partition, or the disk a GPT was written for, that runs past the end of
+//!   the source, as on an image whose copy stopped early;
 //! - first blocks that cannot be read.
 //!
 //! A source with a partition table (a whole disk) is classified partition by
@@ -35,7 +37,7 @@ use std::io;
 /// What a raw plaintext scan can make of one region of a source.
 enum Region {
     /// A filesystem or format the scan reads verbatim (ext4, xfs, an f2fs made
-    /// without the compression feature, vfat, swap).
+    /// without the compression feature, vfat, exFAT, swap).
     Verbatim,
     /// Storage that can hide the canary from the scan, and why.
     Hidden(String),
@@ -68,11 +70,15 @@ fn unreadable(err: &io::Error) -> String {
     format!("its first blocks could not be read ({err}), so its storage was not identified")
 }
 
-/// Why the scan of a cut-short filesystem is not checked.
+/// Why the scan of a cut-short filesystem or swap area is not checked.
 fn truncated(fstype: &str, recorded: u64, available: u64) -> String {
+    let what = match fstype {
+        "swap" => "swap area".to_string(),
+        _ => format!("{fstype} filesystem"),
+    };
     format!(
-        "the {fstype} filesystem here spans {recorded} bytes, but the source holds only \
-         {available} of them, so the rest was never read"
+        "the {what} here spans {recorded} bytes, but the source holds only {available} of \
+         them, so the rest was never read"
     )
 }
 
@@ -138,9 +144,9 @@ fn sized(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<R
         RecordedSize::Bytes(recorded) if recorded > end - start => {
             Region::Hidden(truncated(fstype, recorded, end - start))
         }
-        // An ext4, xfs or f2fs magic over a superblock with a block size no
-        // such filesystem uses matched other bytes by chance, the ciphertext
-        // of a volume without a header among them.
+        // A magic over a superblock that records what no such filesystem has
+        // (a block size it never uses, say) matched other bytes by chance,
+        // the ciphertext of a volume without a header among them.
         RecordedSize::Implausible => Region::Unidentified,
         RecordedSize::Bytes(_) | RecordedSize::Unrecorded => Region::Verbatim,
     })

@@ -722,11 +722,11 @@ fn a_whole_disk_image_is_classified_partition_by_partition() {
 
 #[test]
 fn a_whole_disk_image_of_verbatim_filesystems_stays_conclusive() {
-    use crate::forensic::layout::tests::{mbr_image, put};
+    use crate::forensic::layout::tests::{fat_boot_sector, mbr_image, put};
     let dir = tempfile::tempdir().unwrap();
     let (path, mut file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768), (0x0c, 34816, 32768)]);
     put(&mut file, (1 << 20) + 0x438, &[0x53, 0xEF]);
-    put(&mut file, (17 << 20) + 0x52, b"FAT32   ");
+    put(&mut file, 17 << 20, &fat_boot_sector(512, 0, 32768));
     file.sync_all().unwrap();
 
     assert_eq!(verdict(path), None);
@@ -734,12 +734,12 @@ fn a_whole_disk_image_of_verbatim_filesystems_stays_conclusive() {
 
 #[test]
 fn every_partition_that_can_hide_the_canary_is_named() {
-    use crate::forensic::layout::tests::put;
+    use crate::forensic::layout::tests::{fat_boot_sector, put};
     // A GPT disk as an encrypted install lays it out: an ESP, a LUKS container,
     // and a partition holding no filesystem the scan identifies.
     let dir = tempfile::tempdir().unwrap();
     let (path, mut file) = gpt_image(&dir, &[(2048, 34815), (34816, 67583), (67584, 100_351)]);
-    put(&mut file, (1 << 20) + 0x52, b"FAT32   ");
+    put(&mut file, 1 << 20, &fat_boot_sector(512, 0, 32768));
     put(&mut file, 17 << 20, b"LUKS\xba\xbe\x00\x02");
     file.sync_all().unwrap();
 
@@ -800,6 +800,60 @@ fn an_image_that_ends_before_its_filesystem_is_not_checked() {
 }
 
 #[test]
+fn a_bare_fat_exfat_or_swap_image_cut_short_is_not_checked() {
+    use crate::forensic::layout::tests::{exfat_boot_sector, fat_boot_sector, swap_header};
+    // Each format spanning the whole 64 MiB image is whole; one that records
+    // a sector or a page more was cut short, and the rest of it never read.
+    let dir = tempfile::tempdir().unwrap();
+    let swap = |last_page: u32| swap_header([1, 0, 0, 0], last_page.to_le_bytes());
+    let cases: [(&str, Vec<u8>, Vec<u8>, &str); 3] = [
+        (
+            "vfat",
+            fat_boot_sector(512, 0, 131_072).to_vec(),
+            fat_boot_sector(512, 0, 131_073).to_vec(),
+            "the vfat filesystem here spans 67109376 bytes",
+        ),
+        (
+            "exfat",
+            exfat_boot_sector(9, 131_072).to_vec(),
+            exfat_boot_sector(9, 131_073).to_vec(),
+            "the exfat filesystem here spans 67109376 bytes",
+        ),
+        (
+            "swap",
+            swap(16_383).to_vec(),
+            swap(16_384).to_vec(),
+            "the swap area here spans 67112960 bytes",
+        ),
+    ];
+    for (name, whole, cut, spans) in cases {
+        let whole = image(&dir, &format!("{name}-whole.img"), &[(0, &whole)]);
+        assert_eq!(verdict(whole), None, "{name}");
+        let cut = image(&dir, &format!("{name}-cut.img"), &[(0, &cut)]);
+        let reason = verdict(cut).unwrap_or_else(|| panic!("a cut-short {name} is not clean"));
+        assert!(reason.starts_with(spans), "{name}: {reason}");
+        assert!(reason.contains("only 67108864 of them"), "{name}: {reason}");
+    }
+
+    // A boot sector or swap header that records what none of them has is no
+    // such filesystem: storage the scan does not identify.
+    for (name, bytes) in [
+        ("fat-sector.img", fat_boot_sector(1000, 0, 131_072).to_vec()),
+        (
+            "swap-version.img",
+            swap_header([2, 0, 0, 0], [1; 4]).to_vec(),
+        ),
+    ] {
+        let reason = verdict(image(&dir, name, &[(0, &bytes)]))
+            .unwrap_or_else(|| panic!("{name} is a blind spot"));
+        assert!(
+            reason.contains("identifies no filesystem"),
+            "{name}: {reason}"
+        );
+    }
+}
+
+#[test]
 fn a_partition_its_filesystem_outgrows_is_named() {
     use crate::forensic::layout::tests::{mbr_image, put};
     // The partition is 16 MiB from 1 MiB in, but the ext4 in it records 32
@@ -823,7 +877,7 @@ fn a_partition_its_filesystem_outgrows_is_named() {
 
 #[test]
 fn a_whole_disk_image_cut_short_is_not_checked() {
-    use crate::forensic::layout::tests::{mbr_image, put};
+    use crate::forensic::layout::tests::{fat_boot_sector, mbr_image, put};
     let dir = tempfile::tempdir().unwrap();
     // A GPT disk as an encrypted install lays it out: an ESP from 1 MiB to
     // 17 MiB, then a LUKS container to the end of the 64 MiB disk. A copy
@@ -831,7 +885,7 @@ fn a_whole_disk_image_cut_short_is_not_checked() {
     // none of the container.
     for cut in [10u64 << 20, 17 << 20] {
         let (path, mut file) = gpt_image(&dir, &[(2048, 34815), (34816, 131_038)]);
-        put(&mut file, (1 << 20) + 0x52, b"FAT32   ");
+        put(&mut file, 1 << 20, &fat_boot_sector(512, 0, 32768));
         put(&mut file, 17 << 20, b"LUKS\xba\xbe\x00\x02");
         file.set_len(cut).unwrap();
         file.sync_all().unwrap();
@@ -851,7 +905,8 @@ fn a_whole_disk_image_cut_short_is_not_checked() {
             )),
             "{reason}"
         );
-        // The ESP is named only where the copy cut through it.
+        // The ESP is named only where the copy cut through it: held whole,
+        // its FAT records the size of its partition, and is plain.
         assert_eq!(
             reason.contains(
                 "; partition 1: it runs from byte 1048576 to byte 17825792, but the source holds \
@@ -860,6 +915,7 @@ fn a_whole_disk_image_cut_short_is_not_checked() {
             cut < 17 << 20,
             "{reason}"
         );
+        assert_eq!(reason.contains("partition 1"), cut < 17 << 20, "{reason}");
     }
 
     // An MBR disk, which records no disk size: swap from 1 MiB to 17 MiB, a
