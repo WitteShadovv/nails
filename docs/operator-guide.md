@@ -462,15 +462,20 @@ journal that starts late:
   profile sets one, so it can reach the decoy disk (in a DHCP lease, for
   one). The way back also leaves alone a part of the network state that
   activation could not read in full, rather than take the decoy's for the
-  session's. Before it asks, `deactivate` warns when that step will find no
-  `ip` (iproute2), in the hidden session's system directories or, on NixOS,
-  the decoy's system: the virtual links the session made, the MAC addresses
-  it changed and the policy-routing rules it added then stay. Beyond that,
-  the step runs with no output after the session has ended, so nothing tells
-  you what it left: take a VPN connection down with its own tool
-  (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
-  monitor mode with `airmon-ng stop`, and stop the containers and virtual
-  machines of the session before you deactivate, and end a session with
+  session's.
+
+  Before it asks, `deactivate` warns when the way back's last step will find
+  no `ip` (iproute2), no `nft` (nftables) or, on a machine with a Wi-Fi
+  interface, no `iw`, in the hidden session's system directories or, on
+  NixOS, the decoy's system: without `ip` the virtual links the session
+  made, the MAC addresses it changed and the policy-routing rules it added
+  stay, without `nft` the nftables tables it added, and without `iw` the
+  Wi-Fi interfaces it added on the decoy's radios. Beyond that, the step
+  runs with no output after the session has ended, so nothing tells you what
+  it left: take a VPN connection down with its own tool (`wg-quick down`,
+  `nmcli connection down`, the app's disconnect), end monitor mode with
+  `airmon-ng stop`, and stop the containers and virtual machines of the
+  session before you deactivate, and end a session with
   `deactivate --poweroff` (or `emergency --poweroff`) when none of its
   network state may reach the decoy.
 - on a volatile decoy, a journal that starts at the return. The way back

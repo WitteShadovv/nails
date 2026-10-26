@@ -19,7 +19,7 @@ use crate::error::{NailsError, Result};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::Plan;
-use nails_teardown::whole_root::{disk_guard, ret, tools};
+use nails_teardown::whole_root::{disk_guard, network, ret, tools};
 use rustix::mount::UnmountFlags;
 use std::path::{Path, PathBuf};
 
@@ -144,17 +144,72 @@ fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Vec<PathBuf> {
         .collect()
 }
 
+/// A tool the last step of the way back runs to put the decoy's network state
+/// back ([`network::restore`]). Where the step does not find one, it leaves
+/// that tool's part of the state as the session left it, until power-off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkTool {
+    /// `ip` (iproute2), which deletes the virtual links and the policy-routing
+    /// rules the session added and sets each device's recorded MAC address
+    /// back.
+    Ip,
+    /// `nft` (nftables), which deletes the nftables tables the session added.
+    /// Entry lists the decoy's own tables with it, in the decoy: without that
+    /// list the step cannot tell the session's tables from the decoy's, and
+    /// deletes none.
+    Nft,
+    /// `iw`, which deletes the Wi-Fi interfaces the session added on one of
+    /// the decoy's radios (a monitor or access point interface).
+    Iw,
+}
+
+impl NetworkTool {
+    /// Every one, in the order a report names them.
+    pub const ALL: [Self; 3] = [Self::Ip, Self::Nft, Self::Iw];
+
+    /// The command the step runs, by the name it looks for.
+    pub fn command(self) -> &'static str {
+        match self {
+            Self::Ip => "ip",
+            Self::Nft => "nft",
+            Self::Iw => "iw",
+        }
+    }
+}
+
 /// Whether the last step of the way back will find `tool`, such as `ip`
 /// (iproute2), which it runs to delete the virtual links and the
 /// policy-routing rules the session added and to set each device's recorded
 /// MAC address back. The step runs in the hidden root (`root`: `/`, but in
 /// tests) once every hidden unit has stopped, and on NixOS only after it
-/// repointed `/run/current-system` to the decoy's system: it looks in the
-/// system directories as they resolve then ([`tools::find_for_system`]). It
-/// cannot report anything itself, so the hidden session checks before the
-/// switch.
-pub fn way_back_finds(root: &Path, plan: &Plan, tool: &str) -> bool {
-    tools::find_for_system(root, plan.decoy.system.as_deref(), tool).is_some()
+/// repointed `/run/current-system` to the decoy's system (`decoy_system`, as
+/// the plan records it): it looks in the system directories as they resolve
+/// then ([`tools::find_for_system`]). It cannot report anything itself, so the
+/// hidden session checks before the switch.
+pub fn way_back_finds(root: &Path, decoy_system: Option<&Path>, tool: &str) -> bool {
+    tools::find_for_system(root, decoy_system, tool).is_some()
+}
+
+/// The [network tools](NetworkTool) the last step of the way back runs on this
+/// machine and will not find where it looks ([`way_back_finds`]), in the order
+/// of [`NetworkTool::ALL`]. It runs `iw` only to delete a Wi-Fi interface on
+/// one of the decoy's radios, so `iw` counts only where a link the kernel
+/// lists below the tree's `/sys/class/net` is a Wi-Fi interface, read as entry
+/// reads the links ([`network::observe_links`]).
+///
+/// In the hidden session `decoy_system` is the decoy's system its plan records.
+/// Before a session, in the decoy, it is the system `/run/current-system`
+/// names now, which entry records: the directories are then also those entry
+/// looks for the `nft` in that it lists the decoy's own firewall tables with.
+pub fn way_back_lacks(root: &Path, decoy_system: Option<&Path>) -> Vec<NetworkTool> {
+    let links = root.join(network::SYS_CLASS_NET.trim_start_matches('/'));
+    let wifi = network::observe_links(&links)
+        .is_some_and(|links| links.iter().any(|link| link.phy.is_some()));
+    NetworkTool::ALL
+        .into_iter()
+        .filter(|tool| wifi || *tool != NetworkTool::Iw)
+        .filter(|tool| !way_back_finds(root, decoy_system, tool.command()))
+        .collect()
 }
 
 /// Prepare the way back and enqueue the soft-reboot (or power off).
@@ -264,20 +319,21 @@ mod tests {
         std::fs::write(file, "").unwrap();
     }
 
+    /// The decoy's NixOS system the step repoints `/run/current-system` to.
+    const DECOY_SYSTEM: &str = "/nix/store/aaa-nixos-system-decoy";
+
     /// On NixOS the step looks in the decoy's system it repoints to, never in
     /// the hidden system the link names during the session.
     #[test]
     fn the_way_back_looks_for_a_tool_in_the_decoy_system_it_returns_to() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
-        let mut plan = plan();
-        plan.decoy.system = Some(PathBuf::from("/nix/store/aaa-nixos-system-decoy"));
-        plan.hidden.system = Some(PathBuf::from("/nix/store/bbb-nixos-system-hidden"));
+        let decoy = Some(Path::new(DECOY_SYSTEM));
         put(root, "nix/store/bbb-nixos-system-hidden/sw/bin/ip");
         put(root, "run/current-system/sw/bin/ip");
-        assert!(!way_back_finds(root, &plan, "ip"));
+        assert!(!way_back_finds(root, decoy, "ip"));
         put(root, "nix/store/aaa-nixos-system-decoy/sw/bin/ip");
-        assert!(way_back_finds(root, &plan, "ip"));
+        assert!(way_back_finds(root, decoy, "ip"));
     }
 
     /// Elsewhere the step looks in the hidden root's system directories.
@@ -285,8 +341,83 @@ mod tests {
     fn the_way_back_looks_for_a_tool_in_the_system_directories() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
-        assert!(!way_back_finds(root, &plan(), "ip"));
+        assert!(!way_back_finds(root, None, "ip"));
         put(root, "usr/sbin/ip");
-        assert!(way_back_finds(root, &plan(), "ip"));
+        assert!(way_back_finds(root, None, "ip"));
+    }
+
+    /// Make `name` a link below the tree's `/sys/class/net`, as the kernel
+    /// lists it: a hardware device with a Wi-Fi interface of radio `phy`
+    /// when one is given, else virtual.
+    fn link(root: &Path, name: &str, index: u32, phy: Option<&str>) {
+        let dir = root.join("sys/class/net").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
+        if let Some(phy) = phy {
+            std::fs::create_dir(dir.join("device")).unwrap();
+            std::os::unix::fs::symlink(format!("../../ieee80211/{phy}"), dir.join("phy80211"))
+                .unwrap();
+        }
+    }
+
+    /// `ip` and `nft` count on every machine, `iw` only where a link is a
+    /// Wi-Fi interface; each is lacking until it is where the step looks.
+    #[test]
+    fn the_way_back_lacks_each_network_tool_it_will_not_find() {
+        use NetworkTool::{Ip, Iw, Nft};
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        assert_eq!(way_back_lacks(root, None), [Ip, Nft]);
+        link(root, "lo", 1, None);
+        assert_eq!(way_back_lacks(root, None), [Ip, Nft]);
+        link(root, "wlan0", 3, Some("phy0"));
+        assert_eq!(way_back_lacks(root, None), NetworkTool::ALL);
+        put(root, "usr/sbin/nft");
+        assert_eq!(way_back_lacks(root, None), [Ip, Iw]);
+        put(root, "sbin/iw");
+        assert_eq!(way_back_lacks(root, None), [Ip]);
+        put(root, "bin/ip");
+        assert!(way_back_lacks(root, None).is_empty());
+    }
+
+    /// Links that cannot be read count as no Wi-Fi interface: entry records
+    /// such links as unknown, and the way back then deletes none of them.
+    #[test]
+    fn unreadable_links_need_no_iw() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        link(root, "wlan0", 3, Some("phy0"));
+        std::fs::write(root.join("sys/class/net/wlan0/ifindex"), "three\n").unwrap();
+        assert_eq!(
+            way_back_lacks(root, None),
+            [NetworkTool::Ip, NetworkTool::Nft]
+        );
+    }
+
+    /// On NixOS every tool counts only in the decoy's system: one the hidden
+    /// system or the link it names during the session holds is still lacking.
+    #[test]
+    fn on_nixos_the_way_back_lacks_what_the_decoy_system_does_not_hold() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let decoy = Some(Path::new(DECOY_SYSTEM));
+        link(root, "wlan0", 3, Some("phy0"));
+        for tool in NetworkTool::ALL {
+            let name = tool.command();
+            put(
+                root,
+                &format!("nix/store/bbb-nixos-system-hidden/sw/bin/{name}"),
+            );
+            put(root, &format!("run/current-system/sw/bin/{name}"));
+        }
+        assert_eq!(way_back_lacks(root, decoy), NetworkTool::ALL);
+        put(root, "nix/store/aaa-nixos-system-decoy/sw/bin/ip");
+        assert_eq!(
+            way_back_lacks(root, decoy),
+            [NetworkTool::Nft, NetworkTool::Iw]
+        );
+        put(root, "nix/store/aaa-nixos-system-decoy/sw/bin/nft");
+        put(root, "nix/store/aaa-nixos-system-decoy/sw/bin/iw");
+        assert!(way_back_lacks(root, decoy).is_empty());
     }
 }

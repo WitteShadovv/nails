@@ -380,10 +380,13 @@ of this changelog for that version becomes the release notes word for word, and
   it as `backend_left_open`, `deactivate` with a sentence in its new `warnings`, and
   `emergency --quiet` no longer stays silent about it.
 - `nails deactivate` warns before it asks when the last step of the way back will find no `ip`
-  (iproute2), in the hidden session's system directories or, on NixOS, in the decoy's system it
-  returns to: the virtual links the session made, the MAC addresses it changed and the
-  policy-routing rules it added then stay on the decoy until power-off, which
-  `deactivate --poweroff` avoids. Under `--json` the warning is in the envelope's `warnings`.
+  (iproute2), no `nft` (nftables) or, on a machine with a Wi-Fi interface, no `iw`, in the hidden
+  session's system directories or, on NixOS, in the decoy's system it returns to. Without `ip` the
+  virtual links the session made, the MAC addresses it changed and the policy-routing rules it
+  added stay on the decoy until power-off, without `nft` the nftables tables it added (a VPN app's
+  table that blocks all traffic outside its tunnel keeps the decoy offline), and without `iw` the
+  Wi-Fi interfaces it added on the decoy's radios. `deactivate --poweroff` leaves none of them.
+  Under `--json` each warning is in the envelope's `warnings`.
 - The `activate --json` schema now ties `ok` to the outcome, as the output always did: a document
   that is not `ok` carries its error, and a failed activation (data status `failed`) is never
   `ok`. It accepted both contradictions, so a reader that validated a document could not tell a
