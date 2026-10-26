@@ -22,9 +22,10 @@
 //! The target checks that the accounts NAILS lists for each display manager
 //! are the ones its model (`nails_fuzz::display_managers`,
 //! `nails_fuzz::kconfig`) logs in, in any order the display manager may read
-//! the files in, on Qt 5 and Qt 6, in any language, however GLib's Unicode
-//! tables judge a key: exactly, or, where a translated KConfig `User` leaves
-//! the account to more than the files tell, at least every one.
+//! the files in, on Qt 5 and Qt 6, in any language, with KConfig before KDE
+//! Frameworks 6.29 and since, however GLib's Unicode tables judge a key:
+//! exactly, or, where a translated KConfig `User` leaves the account to more
+//! than the files tell, at least every one.
 
 #![no_main]
 
@@ -34,7 +35,7 @@ use std::path::{Path, PathBuf};
 use libfuzzer_sys::fuzz_target;
 use nails_base::MockFilesystem;
 use nails_fuzz::display_managers::{self, Qt};
-use nails_fuzz::kconfig;
+use nails_fuzz::kconfig::{self, Frameworks};
 use nails_session::persona::{InheritedSource, collect_inherited_persona};
 
 /// The operator NAILS lists for a GDM turned on without naming an account.
@@ -262,9 +263,11 @@ fn plasma_login(main: &str, local: Option<&str>, vendor: Option<&str>) {
         // Up to 6.6, SDDM's reader, on Qt 6.
         expected.push(display_managers::sddm_user(&texts, Qt::Six));
         for locale in &locales {
-            let read = kconfig::read(order, &groups, locale);
-            translated |= read.translated;
-            expected.extend(read.users.into_iter().flatten());
+            for frameworks in [Frameworks::Before6_29, Frameworks::Since6_29] {
+                let read = kconfig::read(order, &groups, locale, frameworks);
+                translated |= read.translated;
+                expected.extend(read.users.into_iter().flatten());
+            }
         }
     }
     let expected = normalized(expected);

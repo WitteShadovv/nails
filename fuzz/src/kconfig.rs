@@ -15,8 +15,26 @@
 //! what NAILS reports. A translation counts only in its own language: a bad
 //! escape in its value counts towards the file's hundred broken lines there,
 //! and one whose name decodes to nothing sets its group's marker there.
+//!
+//! The entry map is that of KDE Frameworks 6.29 and later, or of 6.26 to
+//! 6.28, on which Plasma Login Manager 6.7 also runs ([`Frameworks`]).
 
 use std::collections::BTreeMap;
+
+/// The KDE Frameworks release KConfig comes with, as far as the entry map
+/// goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Frameworks {
+    /// 6.26 to 6.28: `parseConfig()` hands a `[$d]` to `setEntry()` without
+    /// `EntryDefault`, and `setEntry()` inserts nothing for a deleted new
+    /// key and copies a change to the defaults' entry over the other one
+    /// with `insert_or_assign()`.
+    Before6_29,
+    /// 6.29 and later: a `[$d]` in a file of defaults carries
+    /// `EntryDefault`, a deleted new key is inserted, and a change to the
+    /// defaults' entry goes on to the other one through `setEntry()`.
+    Since6_29,
+}
 
 /// What reading gives.
 #[derive(Debug)]
@@ -55,9 +73,10 @@ struct Options {
     localized_country: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct EntryMap {
     map: BTreeMap<Key, Entry>,
+    frameworks: Frameworks,
 }
 
 fn key(group: &str, name: Option<&[u8]>, local: bool, default: bool) -> Key {
@@ -136,12 +155,14 @@ impl EntryMap {
         };
         if new_key {
             if e.deleted {
-                self.map.insert(k, e);
+                if self.frameworks == Frameworks::Since6_29 {
+                    self.map.insert(k, e);
+                }
                 return false;
             }
-            self.map.insert(k.clone(), e);
+            self.map.insert(k.clone(), e.clone());
             if k.default {
-                self.set_entry(group, name, value, without_default);
+                self.pass_on(&k, e, value, without_default);
             }
             return true;
         }
@@ -151,9 +172,9 @@ impl EntryMap {
             return false;
         }
         if current != e {
-            self.map.insert(found, e);
+            self.map.insert(found, e.clone());
             if k.default {
-                self.set_entry(group, name, value, without_default);
+                self.pass_on(&k, e, value, without_default);
             }
             if !o.localized {
                 self.map.remove(&key(group, Some(name), true, false));
@@ -179,6 +200,25 @@ impl EntryMap {
             return changed;
         }
         false
+    }
+
+    /// What `setEntry()` does with the entry `e` it set for the defaults'
+    /// key `k`: since 6.29 it sets the other key through `setEntry()`; up to
+    /// 6.28 it assigns `e` to that key as it is.
+    fn pass_on(&mut self, k: &Key, e: Entry, value: Option<Vec<u8>>, without_default: Options) {
+        let name = k.key.as_deref().expect("an entry's key");
+        match self.frameworks {
+            Frameworks::Since6_29 => {
+                self.set_entry(&k.group, name, value, without_default);
+            }
+            Frameworks::Before6_29 => {
+                let other = Key {
+                    default: false,
+                    ..k.clone()
+                };
+                self.map.insert(other, e);
+            }
+        }
     }
 
     /// `getEntryOption(group, {}, {}, EntryImmutable)`: the group's marker.
@@ -304,14 +344,17 @@ struct Reader<'a> {
 
 /// `KConfigPrivate::parseUserConfigFiles()` over `files` (text, whether it
 /// is the main file), then `readEntry("User")` in each of `groups`.
-pub fn read(files: &[(&str, bool)], groups: &[&str], locale: &str) -> Read {
+pub fn read(files: &[(&str, bool)], groups: &[&str], locale: &str, frameworks: Frameworks) -> Read {
     let locale = locale.as_bytes();
     let language = match locale.iter().position(|&c| c == b'_') {
         Some(i) => &locale[..i],
         None => locale,
     };
     let mut reader = Reader {
-        map: EntryMap::default(),
+        map: EntryMap {
+            map: BTreeMap::new(),
+            frameworks,
+        },
         locale,
         language,
         wanted: groups,
@@ -466,7 +509,7 @@ impl Reader<'_> {
                         b'e' => o.expand = true,
                         b'd' => {
                             o.deleted = true;
-                            o.default = default;
+                            o.default = default && self.map.frameworks == Frameworks::Since6_29;
                             let (name, _) = printable_to_string(&a_key[..start]);
                             self.map.set_entry(group, &name, None, o);
                             return Ok(());
