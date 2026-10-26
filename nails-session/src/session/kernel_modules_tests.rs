@@ -691,7 +691,7 @@ fn a_deleted_tree_warns_with_both_fixes_and_never_names_the_upper() {
         "{text}"
     );
     assert!(
-        text.contains("Update the decoy's kernel and reboot the decoy into it"),
+        text.contains("Update the decoy's kernel to a new release and reboot the decoy into it"),
         "{text}"
     );
     let discard = sudo_line_for(NextStep::Discard, &tree());
@@ -895,24 +895,82 @@ fn every_hiding_has_its_own_message_and_a_fix() {
         assert!(message.contains(&phrase), "{how:?}: {message}");
         assert!(messages.insert(message.to_string()), "{how:?} repeats");
         // The fix deletes the hidden sessions' copy of the step that holds
-        // the change; only a stale index has a fix of its own first, and only
-        // a copy of the decoy's own tree may still load.
-        let place = format!("/{}", at.path(&release()).display());
-        let restore = format!(
-            "bring the decoy's {place} back with `{}`",
-            sudo_line_for(NextStep::Discard, &place)
+        // the change; only a stale index has a fix of its own first, only a
+        // copy of the decoy's own tree may still load, and only a change to
+        // the running kernel's own tree leaves the tree of a new release
+        // alone.
+        let back = format!(
+            "the decoy's {} back with `{}`",
+            place(at),
+            sudo_line_for(NextStep::Discard, &place(at))
         );
         let opening = match how {
-            Hiding::OwnCopy => "If modules fail to load in hidden sessions, ".to_string(),
-            Hiding::StaleIndex => {
-                format!("Rebuild the index in a hidden session with `sudo depmod {RELEASE}`, or ")
+            Hiding::OwnCopy => "If modules fail to load in hidden sessions, bring ".to_string(),
+            Hiding::StaleIndex => format!(
+                "Rebuild the index in a hidden session with `sudo depmod {RELEASE}`, or bring "
+            ),
+            _ if at == Step::Release => {
+                "Update the decoy's kernel to a new release and reboot the decoy into it, or bring "
+                    .to_string()
             }
-            _ => "Update the decoy's kernel and reboot the decoy into it, or ".to_string(),
+            _ => "Bring ".to_string(),
         };
         assert!(
-            fix.starts_with(&format!("{opening}{restore}")),
-            "{how:?}: {fix}"
+            fix.starts_with(&format!("{opening}{back}")),
+            "{at:?} {how:?}: {fix}"
         );
+        let every_kernel = at != Step::Release && how != Hiding::OwnCopy;
+        assert_eq!(
+            fix.ends_with(NO_KERNEL_UPDATE),
+            every_kernel,
+            "{at:?} {how:?}: {fix}"
+        );
+    }
+}
+
+/// The last sentence of the fix for a change above the running kernel's own
+/// tree.
+const NO_KERNEL_UPDATE: &str = "A kernel update on the decoy would not bring its modules back, \
+                                since the change hides them for every kernel.";
+
+/// `step` as hidden sessions see it.
+fn place(step: Step) -> String {
+    format!("/{}", step.path(&release()).display())
+}
+
+/// A whiteout, a file or a new directory above `/usr/lib/modules/<release>`
+/// hides the decoy's modules for every kernel, a new release's included: the
+/// fix offers no kernel update there, only the `discard`.
+#[test]
+fn a_kernel_update_is_offered_only_for_a_change_to_the_running_kernels_own_tree() {
+    let check = check(Path::new("/"), Path::new("/mnt/hidden/root/upper"));
+    let update =
+        "Update the decoy's kernel to a new release and reboot the decoy into it, or bring";
+    for at in Step::DIRS {
+        for how in [
+            Hiding::Deleted,
+            Hiding::Replaced,
+            Hiding::Covered,
+            Hiding::CopyWithoutIndex,
+            Hiding::IndexDeleted(Step::Index),
+            Hiding::IndexDeleted(Step::BinaryIndex),
+            Hiding::IndexReplaced(Step::Index),
+            Hiding::IndexReplaced(Step::BinaryIndex),
+        ] {
+            let fix = check.fix(at, how);
+            let back = format!(
+                "the decoy's {} back with `{}`, which deletes what hidden sessions changed there \
+                 (it lists what it deletes and asks first).",
+                place(at),
+                sudo_line_for(NextStep::Discard, &place(at))
+            );
+            let expected = if at == Step::Release {
+                format!("{update} {back}")
+            } else {
+                format!("Bring {back} {NO_KERNEL_UPDATE}")
+            };
+            assert_eq!(fix, expected, "{at:?} {how:?}");
+        }
     }
 }
 
