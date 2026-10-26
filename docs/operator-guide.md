@@ -1597,7 +1597,9 @@ real hardware:
   proprietary driver, docks and external displays;
 - the way back setting a MAC address back on a USB Ethernet adapter or Wi-Fi
   card whose driver refuses the change while the device is up: taking the
-  device down for it is tested against a simulated driver, not a real one;
+  device down for it is tested in a VM on an emulated NE2000 network card,
+  whose driver refuses the change in the same way, not on such an adapter or
+  card;
 - the way back deleting a Wi-Fi interface the session added on one of the
   decoy's radios (a monitor or access point interface): tested against a
   simulated `iw` and radio, not a real card;

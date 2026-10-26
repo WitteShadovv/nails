@@ -358,7 +358,8 @@ of this changelog for that version becomes the release notes word for word, and
   NetworkManager does, leaves a device that was down as it was, and reads every address back. A device
   whose address it still cannot set back keeps the session's address until power-off, and nothing tells
   you so: end a session that changed a MAC address with `--poweroff` when that address must never reach
-  the decoy.
+  the decoy. A VM test checks the change on an emulated NE2000 network card, whose driver refuses it
+  in the same way, after `deactivate` and after a plain `emergency`.
 - `activate --json` and `deactivate --json` print their one envelope only once the soft-reboot (or
   the power-off) is enqueued, so it reports whether that worked. They printed a success envelope
   before enqueueing it, and a failure to enqueue it followed as a second, error envelope: a script
