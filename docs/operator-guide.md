@@ -986,6 +986,13 @@ checked, never as clean:
   in its superblock; an f2fs made without it stores every file as it is. A zfs
   dataset has no block device of its own to read, so it is listed as not
   scanned and not checked;
+- NTFS, which can compress the files of a folder marked compressed: an `ntfs`
+  or `ntfs3` mount, an NTFS image or unmounted device, and any `fuseblk`
+  mount, the type ntfs-3g mounts NTFS as, which does not name the format;
+- file-level encryption: an ext4 or f2fs with the encrypt feature (fscrypt),
+  which the scan reads from its superblock whether it is mounted or not, and a
+  filesystem with an eCryptfs mount on it (an encrypted home or `Private`
+  folder);
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
@@ -995,6 +1002,14 @@ checked, never as clean:
   f2fs, vfat or exFAT image that ends before its filesystem does, a swap image
   that ends before its swap area does, or a whole-disk image that ends before a
   partition its table lists, or before the disk its GPT was written for.
+
+Two kinds of file-level encryption escape that list, and a device that holds
+them can read as clean: an eCryptfs folder that is not mounted while the scan
+runs, since the scan sees one only through its mount, and a vault a FUSE tool
+encrypts (gocryptfs, CryFS or EncFS, as Plasma Vaults use), which the scan does
+not recognise at all. Log in as the eCryptfs folder's owner, which mounts it,
+before you scan, and do not take a clean scan of a disk that holds such a vault
+as proof.
 
 A mounted device is judged by its mount. A device that is not mounted
 (`--device`) or an image (`--offline --image`) has no mount to judge it by, so

@@ -14,6 +14,9 @@
 //! - a filesystem that can compress file contents (btrfs, bcachefs, an f2fs
 //!   whose superblock carries the compression feature), found by its own
 //!   magic, so a stale signature of another format beside it cannot hide it;
+//! - NTFS, which can compress the files of a folder marked compressed;
+//! - an ext4 or f2fs whose superblock carries the encrypt feature (fscrypt),
+//!   which stores the files of an encrypted directory encrypted;
 //! - an encrypted container (LUKS, BitLocker), of which a raw scan reads only
 //!   ciphertext: its unlocked mapping is what to scan;
 //! - an LVM physical volume, whose logical volumes the scan does not identify;
@@ -29,15 +32,21 @@
 //! A source with a partition table (a whole disk) is classified partition by
 //! partition, and a blind spot on any partition, named by its number, makes
 //! the whole source one.
+//!
+//! A device the mount table names is judged by its mount instead. No mount
+//! option shows the encrypt feature, though, so the scan reads that from the
+//! superblock of a mounted ext4 or f2fs too ([`mounted_blind_spot`]).
 
+use super::ScanBlindSpot;
 use crate::forensic::layout::{self, Partition, RecordedSize, Signature, TableKind};
 use crate::forensic::raw::RawSource;
 use std::io;
 
 /// What a raw plaintext scan can make of one region of a source.
 enum Region {
-    /// A filesystem or format the scan reads verbatim (ext4, xfs, an f2fs made
-    /// without the compression feature, vfat, exFAT, swap).
+    /// A filesystem or format the scan reads verbatim (an ext4 without the
+    /// encrypt feature, an f2fs without it and made without compression, xfs,
+    /// vfat, exFAT, swap).
     Verbatim,
     /// Storage that can hide the canary from the scan, and why.
     Hidden(String),
@@ -122,7 +131,7 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
         };
         return match blind {
             Some(blind) => Ok(Region::Hidden(blind.reason().to_string())),
-            None => sized(source, start, end, fstype),
+            None => plain(source, start, end, fstype),
         };
     }
     Ok(match layout::signature_at(source, start)? {
@@ -131,25 +140,53 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
         Signature::Format("lvm2-pv") => Region::Hidden(VOLUME_GROUP.to_string()),
         Signature::Format(fstype) => match super::scan_blind_spot(fstype, "") {
             Some(blind) => Region::Hidden(blind.reason().to_string()),
-            None => sized(source, start, end, fstype)?,
+            None => plain(source, start, end, fstype)?,
         },
         Signature::Unknown => Region::Unidentified,
     })
 }
 
-/// A filesystem of `fstype` at `start` that a raw plaintext scan reads
-/// verbatim: verbatim when the region to `end` holds all of it.
-fn sized(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<Region> {
-    Ok(match layout::recorded_size(source, start, fstype)? {
+/// A filesystem of `fstype` at `start` whose format stores file contents
+/// verbatim: verbatim when its superblock records a size such a filesystem
+/// can have and no encrypt feature, and the region to `end` holds all of it.
+fn plain(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<Region> {
+    let recorded = layout::recorded_size(source, start, fstype)?;
+    // A magic over a superblock that records what no such filesystem has (a
+    // block size it never uses, say) matched other bytes by chance, the
+    // ciphertext of a volume without a header among them.
+    if recorded == RecordedSize::Implausible {
+        return Ok(Region::Unidentified);
+    }
+    // Encryption comes first: a whole copy of such a filesystem is no more
+    // readable than a cut one.
+    if layout::encryption_feature(source, start, fstype)? {
+        return Ok(Region::Hidden(
+            ScanBlindSpot::EncryptionCapable.reason().to_string(),
+        ));
+    }
+    Ok(match recorded {
         RecordedSize::Bytes(recorded) if recorded > end - start => {
             Region::Hidden(truncated(fstype, recorded, end - start))
         }
-        // A magic over a superblock that records what no such filesystem has
-        // (a block size it never uses, say) matched other bytes by chance,
-        // the ciphertext of a volume without a header among them.
-        RecordedSize::Implausible => Region::Unidentified,
-        RecordedSize::Bytes(_) | RecordedSize::Unrecorded => Region::Verbatim,
+        _ => Region::Verbatim,
     })
+}
+
+/// Why a clean scan of a device the mount table shows as `fstype` is not a
+/// clean result beyond what its type and options tell: an ext2/3/4 or f2fs
+/// whose superblock carries the encrypt feature, which no mount option shows,
+/// or one whose superblock cannot be read. `None` for any other type, whose
+/// mount says all the scan knows of it.
+pub(super) fn mounted_blind_spot(source: &RawSource, fstype: &str) -> Option<String> {
+    let format = match fstype {
+        "ext2" | "ext3" | "ext4" => "ext2/3/4",
+        "f2fs" => "f2fs",
+        _ => return None,
+    };
+    match layout::encryption_feature(source, 0, format) {
+        Ok(encrypting) => encrypting.then(|| ScanBlindSpot::EncryptionCapable.reason().to_string()),
+        Err(err) => Some(unreadable(&err)),
+    }
 }
 
 /// Why a clean scan of `partition` of `source` is not a clean result, or

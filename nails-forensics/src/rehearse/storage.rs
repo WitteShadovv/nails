@@ -5,8 +5,8 @@
 //!
 //! Step three of a rehearsal reads the raw, decrypted decoy block devices and
 //! searches them for the canary token in ASCII and UTF-16LE. That proves the
-//! canary absent only where the filesystem stores file contents verbatim. Three
-//! kinds of storage break that assumption:
+//! canary absent only where the filesystem stores file contents verbatim.
+//! Storage that compresses or encrypts file contents breaks that assumption:
 //!
 //! - **An explicit compress mount option.** btrfs, bcachefs and f2fs can be
 //!   mounted to compress file contents (a `compress` option). A leaked canary is
@@ -26,11 +26,22 @@
 //!   refuses the flag and stores every file verbatim. An image or an unmounted
 //!   device has no mount options, so there the superblock's feature flags
 //!   decide.
+//! - **NTFS.** NTFS can compress the files of a folder marked compressed,
+//!   under Linux's ntfs3 and ntfs-3g as under Windows, invisibly to the mount
+//!   options. ntfs-3g mounts it through FUSE as `fuseblk`, a type that does not
+//!   name the format at all, so every `fuseblk` mount counts as well.
+//! - **File-level encryption.** An ext4 or f2fs with the encrypt feature
+//!   (fscrypt) stores the files of an encrypted directory encrypted, and an
+//!   eCryptfs mount (an encrypted home or Private folder) stores the files
+//!   under it encrypted in a folder of the filesystem below. No mount option
+//!   shows the encrypt feature, so the superblock decides, mounted or not; an
+//!   eCryptfs mount marks the filesystem its folder lies on while it is
+//!   mounted.
 //!
 //! On such a decoy the rehearsal reports the device "not checked" rather than
 //! clean. This module turns a filesystem's type and its per-superblock mount
-//! options, or an f2fs superblock's feature, into that verdict; the scan carries
-//! the reason on every device and the report never reads as clean when one is
+//! options, or a superblock's feature, into that verdict; the scan carries the
+//! reason on every device and the report never reads as clean when one is
 //! present.
 
 /// Why a raw plaintext scan of a filesystem cannot rule the canary out.
@@ -45,6 +56,17 @@ pub enum ScanBlindSpot {
     /// An f2fs read offline whose superblock carries the compression feature,
     /// so it compresses the files flagged for it.
     CompressionCapable,
+    /// NTFS, which can compress the files of a folder marked compressed.
+    Ntfs,
+    /// A FUSE filesystem on a block device (`fuseblk`), whose format its
+    /// mount does not name: ntfs-3g mounts NTFS this way.
+    FuseBlock,
+    /// An ext4 or f2fs whose superblock carries the encrypt feature (fscrypt),
+    /// so it stores the files of an encrypted directory encrypted.
+    EncryptionCapable,
+    /// A filesystem with an eCryptfs mount stacked on it, which stores the
+    /// files under that mount encrypted in a folder of it.
+    StackedEncryption,
 }
 
 impl ScanBlindSpot {
@@ -66,6 +88,27 @@ impl ScanBlindSpot {
                  contents of the files flagged for it, so this raw plaintext scan cannot prove \
                  the canary absent"
             }
+            ScanBlindSpot::Ntfs => {
+                "the decoy is an NTFS filesystem, which can compress the contents of the files \
+                 in a folder marked compressed, so this raw plaintext scan cannot prove the \
+                 canary absent"
+            }
+            ScanBlindSpot::FuseBlock => {
+                "the decoy filesystem is mounted through FUSE (fuseblk, as ntfs-3g mounts NTFS), \
+                 so its mount does not name its format, and NTFS can compress the contents of \
+                 the files in a folder marked compressed: this raw plaintext scan cannot prove \
+                 the canary absent"
+            }
+            ScanBlindSpot::EncryptionCapable => {
+                "the decoy filesystem has the encrypt feature (fscrypt), with which it stores \
+                 the contents of the files in an encrypted directory encrypted, so this raw \
+                 plaintext scan cannot prove the canary absent"
+            }
+            ScanBlindSpot::StackedEncryption => {
+                "an eCryptfs mount (an encrypted home or Private folder) stores the files under it \
+                 encrypted on the decoy filesystem, so this raw plaintext scan cannot prove the \
+                 canary absent"
+            }
         }
     }
 }
@@ -74,6 +117,14 @@ impl ScanBlindSpot {
 /// or subvolume, so a raw plaintext scan is never conclusive on them, whatever
 /// their mount options show.
 const COW_COMPRESSING_FORMATS: &[&str] = &["btrfs", "bcachefs", "zfs"];
+
+/// The names an NTFS goes by: the kernel's drivers mount it as `ntfs` or
+/// `ntfs3`, and a raw boot sector shows it as `ntfs`.
+const NTFS_FORMATS: &[&str] = &["ntfs", "ntfs3"];
+
+/// The type of a FUSE filesystem on a block device, which a subtype can
+/// follow after a dot (`fuseblk.<name>`).
+const FUSE_BLOCK: &str = "fuseblk";
 
 /// Whether a per-superblock option string turns transparent compression on.
 ///
@@ -89,17 +140,23 @@ fn compression_is_on(super_opts: &str) -> bool {
 }
 
 /// The blind spot a raw plaintext scan has on a filesystem of type `fstype`
-/// mounted with per-superblock options `super_opts`, or `None` when a clean scan
-/// of it is conclusive.
+/// mounted with per-superblock options `super_opts`, or `None` when its type
+/// and options show none.
 ///
 /// A copy-on-write, compression-capable filesystem (btrfs, bcachefs, zfs) is
-/// never conclusive: it can compress a file invisibly to the mount options. A
-/// mounted f2fs is a blind spot when its options show compression, which they
-/// always do when the filesystem has the compression feature, and conclusive
-/// otherwise; an f2fs read offline is judged by [`f2fs_image_blind_spot`].
-/// Every other filesystem (ext4, xfs, vfat, …) stores file contents verbatim,
-/// so a clean scan of it is a clean result — an `ext4` `chattr +c` flag, for
-/// one, is recorded but never acted on.
+/// never conclusive: it can compress a file invisibly to the mount options.
+/// Neither is an NTFS (`ntfs`, `ntfs3`), which can compress the files of a
+/// folder marked compressed, nor a `fuseblk` mount, which does not name its
+/// format and is how ntfs-3g mounts NTFS. A mounted f2fs is a blind spot when
+/// its options show compression, which they always do when the filesystem has
+/// the compression feature, and conclusive otherwise; an f2fs read offline is
+/// judged by [`f2fs_image_blind_spot`]. Other filesystems (ext4, xfs, vfat,
+/// exfat, …) store file contents verbatim as far as their type and options
+/// tell: an `ext4` `chattr +c` flag, for one, is recorded but never acted on.
+/// What they do not tell is file-level encryption, which the scan finds
+/// elsewhere: the encrypt feature of an ext4 or f2fs in its superblock
+/// ([`ScanBlindSpot::EncryptionCapable`]), and an eCryptfs mount stacked on a
+/// filesystem in the mount table ([`ScanBlindSpot::StackedEncryption`]).
 pub fn scan_blind_spot(fstype: &str, super_opts: &str) -> Option<ScanBlindSpot> {
     let compressed = compression_is_on(super_opts);
     if COW_COMPRESSING_FORMATS.contains(&fstype) {
@@ -108,6 +165,12 @@ pub fn scan_blind_spot(fstype: &str, super_opts: &str) -> Option<ScanBlindSpot> 
         } else {
             ScanBlindSpot::CopyOnWrite
         });
+    }
+    if NTFS_FORMATS.contains(&fstype) {
+        return Some(ScanBlindSpot::Ntfs);
+    }
+    if fstype.split('.').next() == Some(FUSE_BLOCK) {
+        return Some(ScanBlindSpot::FuseBlock);
     }
     (fstype == "f2fs" && compressed).then_some(ScanBlindSpot::Compressed)
 }
@@ -200,6 +263,54 @@ mod tests {
                 .reason()
                 .contains("compression feature")
         );
+    }
+
+    #[test]
+    fn an_ntfs_or_fuseblk_mount_is_never_conclusive() {
+        // NTFS can compress the files of a folder marked compressed, whatever
+        // the mount options show, under either kernel driver and offline.
+        for fstype in ["ntfs", "ntfs3"] {
+            assert_eq!(
+                scan_blind_spot(fstype, "rw,relatime,uid=0,gid=0,iocharset=utf8"),
+                Some(ScanBlindSpot::Ntfs),
+                "{fstype}"
+            );
+        }
+        // ntfs-3g mounts it through FUSE as fuseblk, which names no format,
+        // with or without a subtype.
+        for fstype in ["fuseblk", "fuseblk.ntfs-3g"] {
+            assert_eq!(
+                scan_blind_spot(fstype, "rw,user_id=0,group_id=0,allow_other,blksize=4096"),
+                Some(ScanBlindSpot::FuseBlock),
+                "{fstype}"
+            );
+        }
+        // A FUSE filesystem that is no block device's (a desktop's document
+        // portal, sshfs) is not one, nor a type that only starts the same.
+        for fstype in ["fuse", "fuse.portal", "fuse.sshfs", "fuseblkx"] {
+            assert_eq!(scan_blind_spot(fstype, "rw"), None, "{fstype}");
+        }
+        assert!(ScanBlindSpot::Ntfs.reason().contains("NTFS"));
+        assert!(ScanBlindSpot::FuseBlock.reason().contains("fuseblk"));
+    }
+
+    #[test]
+    fn file_level_encryption_is_named_in_its_reasons() {
+        assert!(
+            ScanBlindSpot::EncryptionCapable
+                .reason()
+                .contains("encrypt feature (fscrypt)")
+        );
+        assert!(
+            ScanBlindSpot::StackedEncryption
+                .reason()
+                .contains("eCryptfs")
+        );
+        // Neither shows in a type or the mount options: an ext4 or f2fs mount
+        // and an eCryptfs mount carry no blind spot of their own here.
+        for fstype in ["ext4", "f2fs", "ecryptfs"] {
+            assert_eq!(scan_blind_spot(fstype, "rw,relatime"), None, "{fstype}");
+        }
     }
 
     #[test]

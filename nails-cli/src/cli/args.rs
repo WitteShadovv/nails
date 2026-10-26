@@ -512,11 +512,14 @@ pub struct RehearseScanArgs {
     /// Scan this block device instead of the mounted decoy devices (repeatable)
     ///
     /// Name the unlocked decoy filesystem. A mounted device is classified by
-    /// its mount. One that is not mounted is identified from its raw
-    /// superblock, a whole disk partition by partition: an encrypted
-    /// container (scan its unlocked mapping instead), a compressing or
-    /// copy-on-write filesystem, or storage the scan does not identify is
-    /// reported not checked rather than clean.
+    /// its mount, and an ext4 or f2fs also by its superblock, which shows the
+    /// encrypt feature no mount option does. One that is not mounted is
+    /// identified from its raw superblock, a whole disk partition by
+    /// partition. An encrypted container (scan its unlocked mapping instead),
+    /// a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with
+    /// the encrypt feature, a filesystem with an eCryptfs mount on it, or
+    /// storage the scan does not identify is reported not checked rather than
+    /// clean.
     #[arg(long = "device", value_name = "DEVICE", value_hint = ValueHint::FilePath, conflicts_with = "offline")]
     pub devices: Vec<std::path::PathBuf>,
 
@@ -529,12 +532,13 @@ pub struct RehearseScanArgs {
     /// An image of the unlocked decoy filesystem, or of a whole disk, whose
     /// partitions are then classified one by one from their raw superblocks.
     /// An encrypted container (scan its unlocked mapping instead), a
-    /// compressing or copy-on-write filesystem, or storage the scan does not
-    /// identify is reported not checked rather than clean. So is an image cut
-    /// short: an ext4, xfs, f2fs, vfat, exFAT or swap image that ends before
-    /// its filesystem or swap area does, or a whole-disk image that ends
-    /// before a partition its table lists or before the disk its GPT was
-    /// written for. An empty image is not scanned.
+    /// compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with the
+    /// encrypt feature, or storage the scan does not identify is reported not
+    /// checked rather than clean. So is an image cut short: an ext4, xfs,
+    /// f2fs, vfat, exFAT or swap image that ends before its filesystem or swap
+    /// area does, or a whole-disk image that ends before a partition its table
+    /// lists or before the disk its GPT was written for. An empty image is not
+    /// scanned.
     #[arg(long = "image", value_name = "IMAGE", value_hint = ValueHint::FilePath, requires = "offline")]
     pub images: Vec<std::path::PathBuf>,
 
