@@ -259,14 +259,16 @@ deny-full *checks="advisories bans licenses sources":
     cargo deny --locked check {{ checks }}
     cargo deny --manifest-path gui/Cargo.toml --config '{{ gui_deny_config }}' --locked check {{ checks }}
 
-# Audit the dependency graph against the recorded supply-chain reviews
-# (cargo-vet): every third-party crate must be covered by an imported public
-# audit or a recorded exemption under supply-chain/. --locked uses the
-# committed supply-chain/imports.lock, so the result does not drift with an
-# upstream audit update between runs. Advisory only: it runs in its own lane
-# (vet.yml) and never gates a merge.
-vet:
-    cargo vet --locked
+# Audit a workspace's dependency graph against its recorded supply-chain
+# reviews (cargo-vet): every third-party crate must be covered by an imported
+# public audit or a recorded exemption under the workspace's supply-chain/.
+# --locked uses the committed supply-chain/imports.lock, so the result does not
+# drift with an upstream audit update between runs. `just vet` audits the root
+# workspace, advisory only: it runs in its own lane (vet.yml) and never gates a
+# merge. `just vet gui` audits the gui/ workspace against gui/supply-chain/,
+# and the gui-vet job of ci.yml gates the merge on it.
+vet workspace=".":
+    cargo vet --locked --manifest-path '{{ workspace }}/Cargo.toml'
 
 # --- Nix ---
 

@@ -123,6 +123,8 @@ class SelectTest(unittest.TestCase):
             "setup/nails-setup/data/eff_large_wordlist.txt",
             "setup/Cargo.lock",
             "gui/nails-gui/src/main.rs",
+            "gui/supply-chain/config.toml",
+            "gui/supply-chain/imports.lock",
         ):
             with self.subTest(path=path):
                 self.assertEqual(changes.select([path]), only("side"))
