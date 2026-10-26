@@ -498,6 +498,10 @@ soft-reboots with `py/nails_e2e/session.py`:
   session's NetworkManager uses stay off the decoy after the way back: out of
   the openresolv records in `/run`, out of the `/etc/resolv.conf` that the
   decoy's `resolvconf.service` writes at its start, and out of its journal;
+- `session-mac-restore`: a network card whose driver refuses a new MAC address
+  while the card is up (QEMU's emulated NE2000) has its permanent address back,
+  and is up, after the hidden session gave it a random one and ended with
+  `deactivate`, and again with a plain `emergency`;
 - `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
   with its store on the root disk under NixOS's read-only bind, a store path
   bound after it, a read-only bind stacked on an fstab filesystem and its ESP

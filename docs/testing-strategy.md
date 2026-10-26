@@ -106,6 +106,14 @@ run by hand checks that NAILS refuses them, that a refused `activate` changes
 nothing on the hidden root, and that nothing on the decoy's disk filesystems or
 in its journal names the refused run.
 
+The dummy links of `network_way_back_kernel.rs` take a new MAC address while
+they are up, so the way back's retry for a driver that refuses one (it takes
+the device down for the change and brings it up again) is tested in a VM, by
+`session-mac-restore`: on QEMU's emulated NE2000 card, whose driver refuses a
+live change as many USB Ethernet adapters and Wi-Fi cards do, the card has its
+permanent address back, and is up, after `deactivate` and after a plain
+`emergency`.
+
 ### (d) Contract tests: one body, mock and real
 
 `nails-core/tests/filesystem_contract.rs` runs the same contract against both
