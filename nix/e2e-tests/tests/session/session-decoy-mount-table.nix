@@ -7,7 +7,9 @@
 # at /opt/pkg after the store bind, so the way back reaches it on the root
 # filesystem below a mount it made a moment before; and its ESP at /boot
 # behind an automount (x-systemd.automount), which an access mounts. The
-# hidden session has the ESP read-only and the automount masked.
+# hidden session has the ESP read-only and the automount skipped:
+# local-fs.target requires it, and a mask would leave the target unreached
+# without a failure.
 #
 # Before the first entry the test records the decoy's mount table and utab.
 # After the way back every mount outside /run, /boot and the hidden volume is
@@ -157,17 +159,28 @@ in
 
     canonical_activate(CONFIG, "--overlay-only", "activate")
 
-    with subtest("the hidden session keeps the decoy's automount on /boot masked"):
+    with subtest("the hidden session skips the decoy's automount on /boot"):
         # /boot holds the read-only bind of the ESP: a started automount would
-        # find it taken, fail, and take local-fs.target down with it.
-        state = machine.succeed("systemctl show -P LoadState boot.automount").strip()
-        assert state == "masked", state
+        # find it taken, fail, and take local-fs.target down with it. The
+        # target requires the automount, so it is skipped, and the target is
+        # reached.
+        out = machine.succeed(
+            "systemctl show -p LoadState -p ActiveState -p ConditionResult boot.automount"
+        )
+        state = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        assert state == {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "ConditionResult": "no",
+        }, state
         machine.fail("systemctl is-failed --quiet boot.automount")
+        assert machine.succeed("systemctl is-active local-fs.target").strip() == "active"
         machine.fail("touch /boot/.write-probe")
 
     canonical_deactivate(CONFIG, "deactivate")
 
     with subtest("the decoy's start sets up the automount on /boot again"):
+        machine.fail("test -e /run/systemd/system/boot.automount.d")
         machine.succeed("systemctl is-active boot.automount")
         machine.fail("systemctl is-failed --quiet boot.automount")
         mount_boot()

@@ -48,6 +48,28 @@ class EscapePathTest(unittest.TestCase):
         self.assertEqual(dc.escape_path("/é"), "\\xc3\\xa9")
 
 
+class DeviceUnitsTest(unittest.TestCase):
+    def test_the_checkers_of_a_mount_are_picked_once(self) -> None:
+        # As systemctl prints them: a name with a backslash quoted, the
+        # backslash doubled.
+        deps = (
+            '"systemd-fsck@dev-disk-by\\\\x2duuid-0A1B.service" -.mount\n'
+            "systemd-makefs@dev-vdb1.service network-online.target "
+            '"systemd-fsck@dev-disk-by\\\\x2duuid-0A1B.service" backup.service\n'
+        )
+        self.assertEqual(
+            dc.device_units(deps),
+            [
+                "systemd-fsck@dev-disk-by\\x2duuid-0A1B.service",
+                "systemd-makefs@dev-vdb1.service",
+            ],
+        )
+
+    def test_nothing_to_pick(self) -> None:
+        self.assertEqual(dc.device_units(""), [])
+        self.assertEqual(dc.device_units("systemd-fsck@.socket"), [])
+
+
 class CanaryNameTest(unittest.TestCase):
     def test_name(self) -> None:
         self.assertEqual(dc.canary_name("usr"), "nails-canary-usr")
