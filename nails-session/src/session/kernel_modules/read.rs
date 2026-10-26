@@ -49,16 +49,20 @@ impl TrustedXattrs {
 }
 
 /// Read what `upper` holds on the way to `release`'s index, one entry per
-/// [`Step`], stopping after the first that is not a directory.
+/// step of [`Step::DIRS`], stopping after the first that is not a directory,
+/// then, past four directories, one per step of [`Step::INDEXES`].
 pub fn read_upper(upper: &Path, release: &OsStr, xattrs: TrustedXattrs) -> Vec<Held> {
     let mut held = Vec::new();
-    for step in Step::ALL {
+    for step in Step::DIRS {
         let entry = read_held(upper, &step.path(release), step, xattrs);
         let go_on = matches!(entry, Held::Dir(_));
         held.push(entry);
         if !go_on {
-            break;
+            return held;
         }
+    }
+    for step in Step::INDEXES {
+        held.push(read_held(upper, &step.path(release), step, xattrs));
     }
     held
 }
@@ -77,7 +81,7 @@ fn read_held(upper: &Path, rel: &Path, step: Step, xattrs: TrustedXattrs) -> Hel
             let kind = meta.file_type();
             if kind.is_char_device() && meta.rdev() == 0 {
                 Held::Whiteout
-            } else if kind.is_dir() && step != Step::Index {
+            } else if kind.is_dir() && Step::DIRS.contains(&step) {
                 Held::Dir(opacity(&path, rel, xattrs))
             } else if kind.is_file() {
                 // Linux always reports the time; without one the index would
