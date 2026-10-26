@@ -501,6 +501,24 @@ class ServiceTest(unittest.TestCase):
         # A service the query printed nothing for.
         self.assertEqual(states["abrtd"], {"enabled": None, "active": None})
 
+    def test_a_failed_answer_is_kept_as_printed(self) -> None:
+        # Not a unit that is missing: systemctl could not ask at all.
+        error = "Failed to connect to bus: No such file or directory"
+        out = (
+            f"auditd is-enabled: {error}\n"
+            f"auditd is-active: {error}\n"
+            # The older systemctl's answer for another unit is not this one's.
+            "tuned is-enabled: Failed to get unit file state for "
+            "auditd.service: No such file or directory\n"
+        )
+        states = pf.parse_services(out)
+        self.assertEqual(states["auditd"], {"enabled": error, "active": error})
+        self.assertEqual(
+            states["tuned"]["enabled"],
+            "Failed to get unit file state for auditd.service: "
+            "No such file or directory",
+        )
+
     def test_refuse_manual_stop(self) -> None:
         self.assertTrue(
             pf.refuse_manual_stop("LoadState=loaded\nRefuseManualStop=yes\n")
@@ -531,14 +549,33 @@ class ServiceTest(unittest.TestCase):
         )
 
     def test_a_package_named_after_another_is_not_it(self) -> None:
-        self.assertIsNone(pf.parse_rpm("audit-libs-4.1.2-1.fc44.x86_64\n")["audit"])
+        out = "audit-libs-4.1.2-1.fc44.x86_64\npackage audit is not installed\n"
+        self.assertIsNone(pf.parse_rpm(out)["audit"])
+
+    def test_a_failed_rpm_is_kept_as_printed(self) -> None:
+        # No package is absent just because rpm could not be asked.
+        error = "bash: line 1: rpm: command not found"
+        self.assertEqual(
+            pf.parse_rpm(error + "\n"), {name: error for name in pf.RPM_PACKAGES}
+        )
+
+    def test_a_package_rpm_did_not_answer_for_holds_the_output(self) -> None:
+        out = (
+            "audit-4.1.4-1.fc44.x86_64\n"
+            "error: rpmdb: damaged header #42 retrieved -- skipping.\n"
+            "package firewalld is not installed\n"
+            "package abrt is not installed\n"
+        )
+        packages = pf.parse_rpm(out)
+        self.assertEqual(packages["audit"], "audit-4.1.4-1.fc44.x86_64")
+        self.assertEqual(packages["tuned"], out.strip())
+        self.assertIsNone(packages["firewalld"])
+        self.assertIsNone(packages["abrt"])
 
     def test_packages_only_on_fedora(self) -> None:
         self.assertIsNone(pf.facts({}, "arch")["packages"])
-        self.assertEqual(
-            pf.facts({}, "fedora")["packages"],
-            {name: None for name in pf.RPM_PACKAGES},
-        )
+        # A query that has not run reads as no package, not as absent ones.
+        self.assertEqual(pf.facts({}, "fedora")["packages"], {})
 
 
 class ImageFactsTest(unittest.TestCase):
