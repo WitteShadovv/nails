@@ -10,14 +10,20 @@
 //! always a single valid document even when a message contains a newline.
 //!
 //! Version 2 of the contract. `ok` is true only for a success (exit 0) or a
-//! success with a warning (exit 9); every other outcome sets it false, so a
-//! script can branch on one field. The one exception is an internal error (a
-//! panic) after the command printed its envelope: that envelope stays as it
-//! is, since a second one would break the one-document rule, and the process
-//! exits 1. An [`ErrorBody`] carries a stable `code`, the
-//! human `message`, and an optional typed [`NextStep`] the reader renders as a
-//! `Next:` line or a button; free-form guidance lives in the message, not in a
-//! field of its own.
+//! success with a warning (exit 9); every other outcome sets it false. A
+//! success with a warning is not a clean result, though `ok` reads true: a
+//! `rehearse scan` exits 9 when it could not read a device in full (an error,
+//! or the byte limit) or could not check what it read (copy-on-write,
+//! compressed or encrypted storage, or storage it does not identify), so a
+//! reader that keys on `ok` alone takes a scan that proved nothing for a
+//! passed one. A reader tells it apart by the exit code, or in the data by
+//! each device's `error`, `limit_reached` and `blind_spot`. The one exception
+//! to the rule is an internal error (a panic) after the command printed its
+//! envelope: that envelope stays as it is, since a second one would break the
+//! one-document rule, and the process exits 1. An [`ErrorBody`] carries a
+//! stable `code`, the human `message`, and an optional typed [`NextStep`] the
+//! reader renders as a `Next:` line or a button; free-form guidance lives in
+//! the message, not in a field of its own.
 
 use serde::Serialize;
 
@@ -55,6 +61,9 @@ pub struct Envelope<T: Serialize> {
     /// The command that produced the document (`status`, `verify`, …).
     pub command: &'static str,
     /// Whether the command succeeded: true only when the exit code is 0 or 9.
+    /// Exit 9 is a success with a warning, not a clean result (a `rehearse
+    /// scan` that could not read or check every device): the exit code or the
+    /// data tells it from a clean one, never `ok` alone.
     pub ok: bool,
     /// The typed success payload, absent on a pure failure.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,9 +139,11 @@ impl<T: Serialize> Envelope<T> {
 
     /// A result envelope carrying typed `data`, with `ok` taken from the
     /// command's own outcome (true only for exit 0 or 9). A command whose
-    /// result is the data itself — `verify`, `status`, `emergency`, `recover` —
-    /// uses this so a warning or a degraded outcome reads as `ok: false` without
-    /// inventing an error body.
+    /// result is the data itself — `verify`, `status`, `emergency`, `recover`,
+    /// `rehearse` — uses this so a `verify` warning or a degraded outcome reads
+    /// as `ok: false` without inventing an error body, while a success with a
+    /// warning (exit 9: a `rehearse scan` that could not read or check every
+    /// device) reads as `ok: true` and is told apart by its data.
     pub fn outcome(command: &'static str, ok: bool, data: T) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
