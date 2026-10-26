@@ -670,8 +670,10 @@ fn kconfig_decodes_values_as_printable_to_string_does() {
         ("\\x61lice", "alice"),
         ("a\\tb\\nc\\rd\\\\e", "a\tb\nc\rd\\e"),
         ("a\\;b\\,c", "a\\;b\\,c"),
+        ("a\\sb\\;c", "a b\\;c"),
         // A bad hex digit gives `x`; a `\x` too close to the end ends it.
         ("a\\xzzb", "axb"),
+        ("bo\\x62", "bob"),
         ("ab\\x1", "abx"),
         // A `\` at the very end is dropped.
         ("bob\\", "bob"),
@@ -747,8 +749,10 @@ fn kconfig_takes_a_key_that_decodes_to_nothing_for_its_group_marker() {
         ),
         names(&["alice"])
     );
-    // A new key after it in the same file is refused too.
+    // A new key after it in the same file is refused too, also after a
+    // marker translated for no language (`[]`), which every language reads.
     assert!(kconfig(&["[Autologin]\n\\[$i]=x\nUser=alice\n"], None).is_empty());
+    assert!(kconfig(&["[Autologin]\n\\[][$i]=x\nUser=alice\n"], None).is_empty());
     // A marker that is not immutable clears an earlier file's mark, also
     // through a deletion and with the spaces a key may hold before its
     // brackets.
@@ -765,6 +769,21 @@ fn kconfig_takes_a_key_that_decodes_to_nothing_for_its_group_marker() {
             "{clear:?}"
         );
     }
+}
+
+#[test]
+fn kconfig_marks_a_group_again_where_a_drop_in_names_it_with_i() {
+    // `\=x` clears the mark the first drop-in gave [Autologin], so the main
+    // file sets bob; a header of the second drop-in that names the group
+    // with `[$i]` marks it again once that file is read, and the main file
+    // skips the group.
+    let locked = "[Autologin][$i]\nSession=plasma\n";
+    let main = Some("[Autologin]\nUser=bob\n");
+    assert_eq!(
+        kconfig(&[locked, "[Autologin]\n\\=x\n"], main),
+        names(&["bob"])
+    );
+    assert!(kconfig(&[locked, "[Autologin][$i]\n[Autologin]\n\\=x\n"], main).is_empty());
 }
 
 #[test]
@@ -901,6 +920,34 @@ fn kconfig_reads_a_translation_in_its_language_only() {
 }
 
 #[test]
+fn kconfig_reads_the_translations_of_a_language_together() {
+    // Two bad escapes in translations end the main file at its hundredth
+    // broken line only in a language that reads both, where alice stays:
+    // de_DE reads de too, en_US reads en and each tag that starts with C,
+    // and no other language reads a C tag.
+    let broken = "no equals sign\n".repeat(98);
+    for (first, second, together) in [
+        ("de", "de_DE", true),
+        ("en", "Cx", true),
+        ("de", "Cx", false),
+        ("de", "fr", false),
+    ] {
+        let main =
+            format!("[Autologin]\n{broken}Session[{first}]=\\q\nSession[{second}]=\\q\nUser=\n");
+        let expected = if together {
+            names(&["", "alice"])
+        } else {
+            names(&[""])
+        };
+        assert_eq!(
+            kconfig(&["[Autologin]\nUser=alice\n"], Some(&main)),
+            expected,
+            "{first} {second}"
+        );
+    }
+}
+
+#[test]
 fn kconfig_reads_a_file_up_to_its_hundredth_broken_line() {
     let broken = "no equals sign\n".repeat(100);
     assert!(kconfig(&[], Some(&format!("[Autologin]\n{broken}User=a\n"))).is_empty());
@@ -1002,20 +1049,59 @@ fn collation_reads_the_directories_one_after_the_other() {
     assert_eq!(readings.len(), 4);
     assert!(readings.contains(&vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]));
     assert!(readings.contains(&vec![(0, 1), (0, 0), (1, 0), (1, 1), (2, 1), (2, 0)]));
+    assert_eq!(collation::reading_orders(&dirs, 4), Some(readings));
     assert_eq!(collation::reading_orders(&dirs, 3), None);
 }
 
 #[test]
-fn too_many_orders_count_every_account_the_files_name() {
+fn as_many_orders_as_the_limit_are_each_read() {
+    // Six drop-ins no collation orders come in 720 orders, the most that
+    // are read one by one, and each ends with the main file, which turns
+    // autologin off.
+    assert_eq!((1..=6).product::<usize>(), collation::MAX_ORDERS);
     let fs = MockFilesystem::new();
-    for (i, name) in ["a", "b", "c", "d", "e", "f", "g"].iter().enumerate() {
+    for (i, name) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
         let text = format!("[Autologin]\nUser=user{i}\n");
         drop_in(&fs, SDDM_LOCAL, &format!("{name}.conf"), &text);
         drop_in(&fs, PLASMA_LOCAL, &format!("{name}.conf"), &text);
     }
     fs.mock_set_file_content("/etc/sddm.conf", "[Autologin]\nUser=\n");
     fs.mock_set_file_content(PLASMA_MAIN, "[Autologin]\nUser=\n");
-    let expected: Vec<String> = (0..7).map(|i| format!("user{i}")).collect();
+    assert!(accounts_of(&fs).is_empty());
+}
+
+#[test]
+fn too_many_orders_count_every_account_the_files_name() {
+    let fs = MockFilesystem::new();
+    for (i, name) in ["a", "b", "c", "d", "e", "f", "g"].iter().enumerate() {
+        let file = format!("{name}.conf");
+        drop_in(
+            &fs,
+            SDDM_LOCAL,
+            &file,
+            &format!("[Autologin]\nUser=sddm{i}\n"),
+        );
+        // SDDM's parser, which Plasma Login Manager used up to 6.6, keeps the
+        // escape that KConfig decodes.
+        drop_in(
+            &fs,
+            PLASMA_LOCAL,
+            &file,
+            &format!("[Autologin]\nUser=pl\\x61sma{i}\n"),
+        );
+    }
+    fs.mock_set_file_content("/etc/sddm.conf", "[Autologin]\nUser=\n");
+    fs.mock_set_file_content(PLASMA_MAIN, "[Autologin]\nUser=\n");
+    let mut expected: Vec<String> = (0..7)
+        .flat_map(|i| {
+            [
+                format!("sddm{i}"),
+                format!("plasma{i}"),
+                format!("pl\\x61sma{i}"),
+            ]
+        })
+        .collect();
+    expected.sort();
     assert_eq!(accounts_of(&fs), expected);
 }
 
