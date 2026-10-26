@@ -64,9 +64,6 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails discard` takes `--allow-decoy-storage`, as `init`, `activate` and `check` do, for a hidden
   root that this computer's own storage seems to hold. Without it, discard refused such a root even
   when activation had accepted it, so nothing could be discarded there.
-- `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
-  the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
-  unexplained; a later successful switch clears it.
 - `status` reports why and when the last session switch was refused, instead of a refused switch
   going unexplained. When the soft-reboot into the hidden session cannot switch root, the reason is
   kept on the hidden volume, written through the volume's mount in the prepared root and never on
@@ -429,8 +426,15 @@ of this changelog for that version becomes the release notes word for word, and
   part-way, and `nails verify` reports them when their step never ran. They stayed in RAM until
   power-off, with `/run` left executable. The drop-in is written last, after the copy it starts, so
   a way back cut short leaves the writer as the decoy has it, never pointing at a missing file. The
-  threat model now also lists what they show until the next power-off: the one-shot's start in the
-  decoy's journal and both units in `systemctl status`.
+  threat model now also lists what they show: the one-shot's start in the decoy's journal and both
+  units in `systemctl status` until the next power-off, and, on systemd 256 and newer where the
+  service manager shows its status on the console (by default on a decoy booted without `quiet`),
+  the one-shot's start and finish there while the decoy starts. systemd 255 and earlier, as on
+  Ubuntu 24.04, prints neither. A `getty@.service` clears these lines and the scrollback from its
+  virtual console as it starts, before its login prompt. A console no getty clears keeps them, such
+  as the first virtual console where a display manager like GDM takes the getty's place, or a serial
+  console on systemd 257 and newer, whose getty leaves the screen as it is. Plymouth, where it
+  records the console of that start, puts them in `/var/log/boot.log`.
 - `check`, the `inherited-autostart` warning and activation read only the autostart entries that are
   regular files once their links are followed, as systemd's autostart generator does. A FIFO named
   `*.desktop` in `~/.config/autostart`, `/etc/xdg/autostart` or the autostart directory of a NixOS
@@ -531,6 +535,18 @@ of this changelog for that version becomes the release notes word for word, and
   the warning and activation could hang reading it.
 
 ## [0.3.0-rc.3] - 2026-10-20
+
+**Correction, 2026-10-26.** On Debian 13 this release still records the soft-reboot, contrary to
+the first Security entry below. Kept from the system bus, wtmpdb 0.73.0 still names the boot row
+`soft-reboot` once the decoy has been up for five minutes, and before that it dates a `reboot` row
+to the decoy's cold boot, which `wtmpdb last` lists as a crash. On Ubuntu 24.04 this release
+corrects the backdated boot record, but to the time its correcting step runs, which can come after
+the first records of the decoy's own start, and it updates the access time of `/var/log/wtmp` at
+every way back. The fixes, among them a way back that starts the wtmpdb writer in a time namespace,
+are listed under Security in a later section above, together with more corrections to that entry.
+Until you run a release with them, end Debian 13 and Ubuntu 24.04 sessions with
+`nails deactivate --poweroff` (or `nails emergency --poweroff`): a power-off has no way back, so
+none of this happens.
 
 ### Changed
 

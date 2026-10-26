@@ -1,4 +1,5 @@
-# The hidden session's DNS settings and network state never reach the decoy.
+# The hidden session's DNS settings never reach the decoy, and the way back
+# puts back the network state this test's session sets up.
 #
 # On a decoy that keeps its name servers with openresolv (the NixOS default
 # without systemd-resolved), NetworkManager hands every DNS update to

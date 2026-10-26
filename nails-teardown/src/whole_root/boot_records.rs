@@ -44,6 +44,34 @@
 //! journal, and both units still loaded from files that are gone, so
 //! `systemctl status` notes that they changed on disk and shows the writer's
 //! start command and drop-in.
+//!
+//! On systemd 256 and newer, where PID 1 shows its status on the console (by
+//! default on a decoy booted without `quiet`, or with `ShowStatus=yes`), it
+//! also prints the one-shot's start and finish on `/dev/console` while the
+//! decoy starts, for anyone watching the screen: `Starting` and then
+//! `[  OK  ] Finished`, with the unit's name, description or both, as
+//! `StatusUnitFormat=` says. The unit's output going nowhere does not silence
+//! PID 1. systemd 255 and earlier (Ubuntu 24.04) prints neither: it carries
+//! its finish timestamp across a soft-reboot, so once `shutdown.target` has
+//! stopped, before the one-shot starts, it counts itself as running, and a
+//! running manager shows no status.
+//!
+//! Both lines come before systemd's gettys start, as the one-shot runs before
+//! `systemd-user-sessions.service`, which the gettys wait for. A virtual
+//! console keeps them in RAM until they scroll off, its screen is cleared or
+//! the machine powers off. systemd's `getty@.service` clears the screen and
+//! the scrollback of its console as it starts, before its prompt
+//! (`TTYVTDisallocate=yes`), so there the lines last only until the prompt
+//! appears; a console no getty starts on keeps them, such as the first virtual
+//! console where a display manager like GDM takes the getty's place. A console
+//! whose getty leaves the screen as it is (a serial console on systemd 257 or
+//! newer, whose `serial-getty@.service` runs agetty with `--noclear`, or a
+//! virtual console whose `getty@.service` is changed to
+//! `TTYVTDisallocate=no`) keeps them above the prompt until the screen is
+//! cleared. Whatever records a serial console keeps them outside the machine,
+//! after it powers off, and Plymouth, where it records the console of that
+//! start, puts them in `/var/log/boot.log` (the residue catalog's
+//! `plymouth-boot-log` row). A NixOS decoy gets no one-shot.
 
 use crate::noatime;
 use crate::whole_root::boot_writer;
