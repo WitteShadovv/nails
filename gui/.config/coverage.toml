@@ -1,0 +1,13 @@
+# Single source of truth for the line-coverage floor of the gui/ workspace.
+#
+# The `coverage` recipe in the justfile reads `line_threshold` from here when it
+# measures this workspace (`just coverage gui`, which `just side-tests` and so
+# the side-tests job in CI run), and nowhere else. The main workspace's floor
+# is the one in .config/coverage.toml at the repository root.
+#
+# As there, the figure measures production code only: every test file is left
+# out of the report, so it is not inflated by code that never ships.
+#
+# Ratchet this upward as real coverage improves; never lower it to make a red
+# run pass.
+line_threshold = 85.0

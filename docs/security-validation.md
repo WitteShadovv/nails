@@ -168,10 +168,12 @@ cargo nextest run --no-fail-fast --status-level all
 cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml
 ```
 
-CI enforces a single line-coverage floor over production code, defined once in
-`.config/coverage.toml` and read by `just coverage`. The in-memory filesystem
-mock, the shared test fixtures and every test file are excluded, so the figure
-measures only code that ships.
+CI enforces a line-coverage floor over production code, defined once in
+`.config/coverage.toml` and read by `just coverage`; the `gui/` workspace has a
+floor of its own in `gui/.config/coverage.toml`, read by `just coverage gui`.
+Every test file is excluded, and in the main workspace the in-memory filesystem
+mock and the shared test fixtures too, so the figure measures only code that
+ships.
 
 ## Public release behavior
 
