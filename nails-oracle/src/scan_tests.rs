@@ -745,7 +745,7 @@ fn store_row(store_path: &str) -> Finding {
     Finding::new(
         Tool::NixDb,
         NIX_DB_PATH,
-        format!("ValidPaths hash=sha256:00 narSize=1 path={store_path}"),
+        format!(r#"ValidPaths hash="sha256:00" narSize=1 path="{store_path}""#),
     )
 }
 
@@ -768,11 +768,11 @@ fn the_rows_of_a_restored_nix_store_database_are_read() {
         store_row("/nix/store/a-decoy"),
         store_row("/nix/store/b-decoy"),
         row("Refs reference=2 referrer=2"),
-        row("sqlite_sequence name=ValidPaths seq=2"),
-        row(
-            "sqlite_master name=ValidPaths sql=CREATE TABLE ValidPaths (id integer primary key, \
-             path text) tbl_name=ValidPaths type=table",
-        ),
+        row(r#"sqlite_sequence name="ValidPaths" seq=2"#),
+        row(concat!(
+            r#"sqlite_master name="ValidPaths" sql="CREATE TABLE ValidPaths (id integer primary "#,
+            r#"key, path text)" tbl_name="ValidPaths" type="table""#,
+        )),
         restored_file(NIX_DB_PATH, b"SQLite format 3"),
     ] {
         assert!(found.contains(&expected), "{expected:?} in {found:?}");

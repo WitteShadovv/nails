@@ -66,7 +66,11 @@ normalizes to findings keyed by `(tool, path, field)`:
   them are still reported.
 - nix_db — `path` is the store database's on-image path; `field` is one of its
   rows: the table's name, then its columns as `name=value` in name order, a
-  NULL left out. Every table is read, the schema (`sqlite_master`) too:
+  NULL left out, as in `ValidPaths hash="sha256:..." narSize=1216
+  path="/nix/store/..."`. Each value is written as JSON (a string in double
+  quotes), and so is a name that is not a plain identifier, so two rows read
+  alike only when they hold the same. Every table is read, the schema
+  (`sqlite_master`) too:
   `ValidPaths`, one row per registered store path, `Refs`, the references
   between those paths by their `ValidPaths` ids, `DerivationOutputs`, and
   `sqlite_sequence`, the highest id `ValidPaths` ever gave out. Left out are

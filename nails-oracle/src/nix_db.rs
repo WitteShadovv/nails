@@ -21,9 +21,12 @@
 //! date or place it ([`NOT_CONTENT`]). Every other column is kept, so a path
 //! the session registered or removed, or one registered again with another
 //! hash, deriver, size, signature or content address, is a change, and so is a
-//! reference, a raised sequence or a schema entry the session changed. The
-//! rows are what the database holds; what its unused space still holds of rows
-//! it deleted is not read.
+//! reference, a raised sequence or a schema entry the session changed. Each
+//! value is written as JSON, and so is a name that is not a plain identifier,
+//! so two rows read alike only when they hold the same: a value with a blank
+//! and `name=value` in it never reads as two columns, nor a number as its
+//! digits in text. The rows are what the database holds; what its unused
+//! space still holds of rows it deleted is not read.
 
 use crate::model::{Finding, Tool};
 use serde::Deserialize;
@@ -71,8 +74,10 @@ pub fn nix_db_findings(contents: &str) -> Result<Vec<Finding>, String> {
 }
 
 /// The finding of one row: the table's name, then every column but
-/// [`NOT_CONTENT`] as `name=value` in name order, with a NULL left out. A
-/// `ValidPaths` row that names no store path is not one.
+/// [`NOT_CONTENT`] as `name=value` in name order, with a NULL left out. Each
+/// value is written as JSON (a string in double quotes) and each name as
+/// [`written_name`] writes it, so the field reads back as the one row it came
+/// from. A `ValidPaths` row that names no store path is not one.
 fn row_finding(table: &str, row: &Map<String, Value>) -> Result<Finding, String> {
     let names_a_path =
         matches!(row.get("path"), Some(Value::String(path)) if path.starts_with('/'));
@@ -84,26 +89,37 @@ fn row_finding(table: &str, row: &Map<String, Value>) -> Result<Finding, String>
     }
     // Keyed by name, so the columns come out in name order whatever order
     // sqlite3 printed them in.
-    let mut columns: BTreeMap<&str, String> = BTreeMap::new();
+    let mut columns: BTreeMap<&str, &Value> = BTreeMap::new();
     for (name, value) in row {
-        if NOT_CONTENT.contains(&(table, name.as_str())) {
+        if value.is_null() || NOT_CONTENT.contains(&(table, name.as_str())) {
             continue;
         }
-        let text = match value {
-            Value::Null => continue,
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        columns.insert(name, text);
+        columns.insert(name, value);
     }
-    let mut field = table.to_string();
-    for (name, text) in columns {
+    let mut field = written_name(table);
+    for (name, value) in columns {
         field.push(' ');
-        field.push_str(name);
+        field.push_str(&written_name(name));
         field.push('=');
-        field.push_str(&text);
+        field.push_str(&value.to_string());
     }
     Ok(Finding::new(Tool::NixDb, NIX_DB_PATH, field))
+}
+
+/// A table's or a column's name as a row's finding writes it: as it stands
+/// when it is a plain identifier (ASCII letters, digits and underscores), and
+/// as a JSON string otherwise, so that a blank, an `=` or a quote in a name
+/// never reads as where it ends.
+fn written_name(name: &str) -> String {
+    let plain = !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if plain {
+        name.to_string()
+    } else {
+        Value::from(name).to_string()
+    }
 }
 
 #[cfg(test)]
@@ -138,7 +154,7 @@ mod tests {
             [Finding::new(
                 Tool::NixDb,
                 NIX_DB_PATH,
-                format!("ValidPaths hash=sha256:00ab narSize=1216 path={HIDDEN}")
+                format!(r#"ValidPaths hash="sha256:00ab" narSize=1216 path="{HIDDEN}""#)
             )]
         );
     }
@@ -157,8 +173,7 @@ mod tests {
         assert_eq!(
             fields(signed),
             [
-                "ValidPaths ca=text:sha256:1 deriver=/nix/store/x.drv hash=h path=/nix/store/x \
-              sigs=key:abc ultimate=1"
+                r#"ValidPaths ca="text:sha256:1" deriver="/nix/store/x.drv" hash="h" path="/nix/store/x" sigs="key:abc" ultimate=1"#
             ]
         );
     }
@@ -180,12 +195,45 @@ mod tests {
             fields(&dump),
             [
                 "Refs reference=3 referrer=7",
-                "DerivationOutputs drv=7 id=out path=/nix/store/o",
-                "sqlite_sequence name=ValidPaths seq=576",
-                "SchemaMigrations migration=20220326",
-                "sqlite_master name=Refs sql=CREATE TABLE Refs (\n referrer integer) tbl_name=Refs \
-                 type=table",
+                r#"DerivationOutputs drv=7 id="out" path="/nix/store/o""#,
+                r#"sqlite_sequence name="ValidPaths" seq=576"#,
+                r#"SchemaMigrations migration="20220326""#,
+                r#"sqlite_master name="Refs" sql="CREATE TABLE Refs (\n referrer integer)" tbl_name="Refs" type="table""#,
             ]
+        );
+    }
+
+    #[test]
+    fn no_two_rows_that_differ_read_alike() {
+        // Written as they stand, a value holding a blank and `name=value`
+        // read like two columns, a number like its digits in text, and a
+        // blank or an `=` in a name like where the name ends: a row the
+        // session changed that way read as the row it replaced.
+        let pairs = [
+            (
+                r#"{"table":"ValidPaths","row":{"path":"/nix/store/x","hash":"h","sigs":"a ultimate=1","ultimate":null}}"#,
+                r#"{"table":"ValidPaths","row":{"path":"/nix/store/x","hash":"h","sigs":"a","ultimate":1}}"#,
+            ),
+            (
+                r#"{"table":"sqlite_sequence","row":{"name":"ValidPaths","seq":576}}"#,
+                r#"{"table":"sqlite_sequence","row":{"name":"ValidPaths","seq":"576"}}"#,
+            ),
+            (
+                r#"{"table":"Refs referrer=7","row":{"reference":3}}"#,
+                r#"{"table":"Refs","row":{"referrer=7 reference":3}}"#,
+            ),
+            (
+                r#"{"table":"Refs","row":{"a=b":1}}"#,
+                r#"{"table":"Refs","row":{"a":"b=1"}}"#,
+            ),
+        ];
+        for (one, other) in pairs {
+            assert_ne!(fields(one), fields(other), "{one} and {other}");
+        }
+        // A name that is not a plain identifier is written as JSON too.
+        assert_eq!(
+            fields(r#"{"table":"a table","row":{"a column":"x","_plain1":2}}"#),
+            [r#""a table" _plain1=2 "a column"="x""#]
         );
     }
 
@@ -218,8 +266,8 @@ mod tests {
         );
         let paths = fields(&dump);
         assert_eq!(paths.len(), 2);
-        assert!(paths[0].ends_with("path=/nix/store/a"), "{paths:?}");
-        assert!(paths[1].ends_with("path=/nix/store/b"), "{paths:?}");
+        assert!(paths[0].ends_with(r#"path="/nix/store/a""#), "{paths:?}");
+        assert!(paths[1].ends_with(r#"path="/nix/store/b""#), "{paths:?}");
     }
 
     #[test]
