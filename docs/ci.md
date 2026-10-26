@@ -9,7 +9,7 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 | Tier | Runs | Budget | Scope |
 |---|---|---|---|
 | 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
-| 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count fuzz-targets test`: formatting, clippy, file sizes, the fuzz-target wiring and the test suite, offline. Not the doctests, the shuffle sweep, the lock and module checks or coverage, which `just ci-rust` adds, nor Nix. |
+| 2. pre-push / `just check` | On `git push`, and on demand | about 2 min | `just fmt-check lint line-count fuzz-targets test` and `just shuffle 3`: formatting, clippy, file sizes, the fuzz-target wiring, the test suite and the unit tests shuffled over three seeds, offline. Not the doctests, the lock and module checks or coverage, which `just ci-rust` adds, nor the twenty seeds of CI's shuffle job or Nix. |
 | 3. PR gate | Every pull request to `main` or `next`, and every push to either | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
 | 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing, the weekly CodeQL analysis and the OpenSSF Scorecard analysis. A release runs on its tag. |
 
@@ -316,7 +316,7 @@ The pre-overhaul layout had 14 workflows and about 38 jobs; the mapping below sa
 The `justfile` is the single source of these commands; `just --list` shows them all. The `nix develop` shell provides every tool they need and installs the git hooks on first entry.
 
 ```bash
-just check        # formatting, clippy, file sizes and the tests (the pre-push gate)
+just check        # formatting, clippy, file sizes, the tests and three shuffle seeds (the pre-push gate)
 just ci-rust      # the lint, rust, shuffle and side-tests jobs, with three shuffle seeds
 just coverage     # line coverage; the threshold is defined only in .config/coverage.toml
 just coverage gui # the same for gui/, against gui/.config/coverage.toml

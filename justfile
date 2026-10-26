@@ -266,9 +266,9 @@ kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
         -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts) | binary(maintenance_cli) | binary(network_way_back_kernel)'
 
-# The pre-push gate: formatting, lints, file sizes, fuzz-target wiring and the
-# test suite.
-check: fmt-check lint line-count fuzz-targets test
+# The pre-push gate: formatting, lints, file sizes, fuzz-target wiring, the
+# test suite and a three-seed shuffle sweep, which runs the build `test` made.
+check: fmt-check lint line-count fuzz-targets test (shuffle "3")
 
 # The commands of the ci.yml jobs lint, rust, shuffle and side-tests, for
 # reproducing them locally, with three shuffle seeds where CI runs twenty. Left

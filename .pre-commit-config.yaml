@@ -165,10 +165,10 @@ repos:
         pass_filenames: false
         files: ^(gui/)?deny\.toml$
 
-      # Push gate: formatting, clippy, file sizes, the fuzz targets and the full
-      # test suite.
+      # Push gate: formatting, clippy, file sizes, the fuzz targets, the full
+      # test suite and a three-seed shuffle sweep.
       - id: just-check
-        name: just check (fmt, lint, line-count, fuzz-targets, test)
+        name: just check (fmt, lint, line-count, fuzz-targets, test, shuffle)
         entry: just check
         language: system
         pass_filenames: false
