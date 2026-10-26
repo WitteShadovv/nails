@@ -885,11 +885,18 @@ class JournaldTest(unittest.TestCase):
         config = ARCH_JOURNALD + f"# {self.DROP_IN}\n[Journal]\nStorage=auto\n"
         self.assertEqual(self.storage(config, credential="volatile"), "auto")
 
-    def test_without_a_version_only_a_file_decides(self) -> None:
-        self.assertIsNone(self.storage(version=None))
-        self.assertIsNone(self.storage(credential="volatile", version=None))
-        missing = pf.systemd_version("bash: line 1: systemctl: command not found\n")
-        self.assertIsNone(self.storage(version=missing))
+    def test_without_a_version_storage_fails_closed_to_persistent(self) -> None:
+        # NAILS uses neither the credential nor the vendor hint of a systemd
+        # whose version it cannot read, and takes persistent.
+        kept_auto = "[Journal]\n#Storage=auto\n"
+        self.assertEqual(self.storage(version=None), "persistent")
+        self.assertEqual(
+            self.storage(credential="volatile", version=None), "persistent"
+        )
+        self.assertEqual(self.storage(vendor=kept_auto, version=None), "persistent")
+        # A file that sets it still decides.
+        config = ARCH_JOURNALD + f"# {self.DROP_IN}\n[Journal]\nStorage=volatile\n"
+        self.assertEqual(self.storage(config, version=None), "volatile")
 
     def test_facts_hold_the_version_and_the_storage_it_gives(self) -> None:
         facts = pf.facts(
@@ -903,6 +910,27 @@ class JournaldTest(unittest.TestCase):
         )
         self.assertEqual(facts["systemdVersion"], "systemd 259 (259.5-1.fc44)")
         self.assertEqual(facts["journaldVendorConfig"]["storage"], "persistent")
+        # A run that read the configuration but no version records the value
+        # NAILS fails closed to, beside a null systemdVersion.
+        unread = pf.facts(
+            {
+                "systemd-version": "bash: line 1: systemctl: command not found\n",
+                "journald": ARCH_JOURNALD,
+                "journald-vendor": ARCH_JOURNALD_VENDOR,
+                "journald-credential": "volatile",
+            },
+            "arch",
+        )
+        self.assertIsNone(unread["systemdVersion"])
+        self.assertEqual(
+            unread["journaldVendorConfig"],
+            {
+                "storage": "persistent",
+                "sources": [],
+                "credential": "volatile",
+                "vendorHint": None,
+            },
+        )
         # Nothing read, nothing resolved.
         self.assertEqual(
             pf.facts({}, "fedora")["journaldVendorConfig"],
