@@ -108,14 +108,38 @@ impl FstabEntry {
         self.has_option("bind") || self.has_option("rbind")
     }
 
-    /// Mounted only on demand by an automount unit.
-    pub fn is_automount(&self) -> bool {
-        self.has_option("x-systemd.automount")
+    /// Whether the last of the options `yes` and `no` the entry gives is
+    /// `yes`, the way systemd's fstab generator reads a pair such as
+    /// `noauto` and `auto`: `noauto,auto` is `auto`, and an entry with
+    /// neither is `no`.
+    pub fn yes_no_option(&self, yes: &str, no: &str) -> bool {
+        self.options
+            .iter()
+            .rev()
+            .find(|o| *o == yes || *o == no)
+            .is_some_and(|o| o == yes)
     }
 
-    /// Never mounted at boot (and not on demand).
+    /// Mounted only on demand by an automount unit: `x-systemd.automount`, or
+    /// its older spelling `comment=systemd.automount`. systemd makes no
+    /// automount for a swap entry.
+    pub fn is_automount(&self) -> bool {
+        !self.is_swap()
+            && (self.has_option("x-systemd.automount")
+                || self.has_option("comment=systemd.automount"))
+    }
+
+    /// Never mounted at boot (and not on demand): `noauto`, unless a later
+    /// `auto` takes it back or the entry has an automount, which the boot
+    /// sets up whatever `noauto` says.
     pub fn is_noauto(&self) -> bool {
-        self.has_option("noauto") && !self.is_automount()
+        self.yes_no_option("noauto", "auto") && !self.is_automount()
+    }
+
+    /// `nofail`, unless a later `fail` takes it back: the boot then only
+    /// wants the entry's unit, and goes on without it.
+    pub fn is_nofail(&self) -> bool {
+        self.yes_no_option("nofail", "fail")
     }
 
     /// The block device the spec names, as a `/dev` path.
@@ -291,6 +315,34 @@ mod tests {
         assert!(entry("none", "bind").is_bind());
         assert!(!entry("ext4", "noauto,x-systemd.automount").is_noauto());
         assert!(entry("ext4", "noauto,x-systemd.automount").is_automount());
+    }
+
+    /// systemd's fstab generator takes the last of `noauto` and `auto`, and of
+    /// `nofail` and `fail`: an entry that reads `noauto` first and `auto`
+    /// after it is mounted at boot, and read as `noauto` the session left it
+    /// to the hidden systemd, which mounted it read-write.
+    #[test]
+    fn the_last_of_an_option_and_its_opposite_counts() {
+        let entry = |t: &str, o: &str| FstabEntry {
+            spec: "/dev/vdb1".into(),
+            file: "/data".into(),
+            vfstype: t.into(),
+            options: o.split(',').map(str::to_string).collect(),
+        };
+        assert!(!entry("ext4", "noauto,auto").is_noauto());
+        assert!(entry("ext4", "auto,noauto").is_noauto());
+        assert!(!entry("ext4", "defaults").is_noauto());
+        assert!(entry("ext4", "nofail").is_nofail());
+        assert!(!entry("ext4", "nofail,fail").is_nofail());
+        assert!(entry("ext4", "fail,defaults,nofail").is_nofail());
+        assert!(!entry("ext4", "defaults").is_nofail());
+        assert!(!entry("ext4", "nofail=no").is_nofail());
+        // The older spelling of an automount, which systemd still reads; and
+        // none for swap, which systemd never gives one.
+        assert!(entry("ext4", "comment=systemd.automount").is_automount());
+        assert!(!entry("ext4", "comment=systemd.automount,noauto").is_noauto());
+        assert!(!entry("swap", "x-systemd.automount").is_automount());
+        assert!(entry("swap", "noauto,x-systemd.automount").is_noauto());
     }
 
     #[test]
