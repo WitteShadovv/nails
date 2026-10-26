@@ -4,7 +4,7 @@
 //! Real overlay and teardown behaviour against the kernel.
 //!
 //! These tests drive the overlay, bind and tmpfs mounts the session builds
-//! against a real overlayfs. All but one run in the normal test run, each as
+//! against a real overlayfs. All but three run in the normal test run, each as
 //! root of its own unprivileged user + mount namespace (`rootless`, built on
 //! `nails_core::test_support::Rerun`), so every mount is private to the child
 //! and vanishes with it, even after a panic. Each test still builds its own
@@ -12,9 +12,11 @@
 //! itself is exercised and asserted. `just kernel-tests` turns a host without
 //! user namespaces from a skip into a failure.
 //!
-//! The two whiteout and opaque-directory tests need `trusted.*` xattrs, which a
-//! user namespace cannot set, so they alone stay `#[ignore]`d and run as real
-//! root in the privileged-mounts CI job:
+//! Three tests need `trusted.*` xattrs, which a user namespace cannot set, so
+//! they alone stay `#[ignore]`d and run as real root in the privileged-mounts
+//! CI job: the whiteout and opaque-directory test, the test of the
+//! `kernel-modules` check against the kernel's own whiteouts and opaque
+//! directories, and the test of the whole upper-filesystem probe:
 //!
 //! ```sh
 //! cargo test -p nails-core --test privileged_mounts --no-run
@@ -695,6 +697,56 @@ fn the_kernel_modules_check_reads_the_kernels_own_whiteouts_and_opaque_directori
         ),
         "{privileged:?}"
     );
+
+    root.teardown();
+}
+
+// ===========================================================================
+// The upper-filesystem capability probe, whole, as `check` runs it
+// ===========================================================================
+
+/// The `upper-fs-capability` check against a real hidden root, as root: every
+/// step of the probe runs (the `trusted.*` xattr included), it passes, and it
+/// leaves nothing. Its trial overlay is mounted detached, so the mount table
+/// neither lists it nor signals a change at any point, the event systemd
+/// waits for (a `POLLPRI` on `/proc/self/mountinfo`) to record a mount unit.
+#[test]
+#[ignore = "root only: the probe sets a trusted.* xattr"]
+fn the_upper_fs_probe_as_root_passes_and_leaves_nothing() {
+    use nails_core::preflight::{PreFlightCheck, UpperFsCapabilityCheck};
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+    use std::os::fd::AsFd;
+
+    let root = TmpfsRoot::new();
+    let table = std::fs::read_to_string("/proc/self/mountinfo").expect("read mountinfo");
+    let watched = std::fs::File::open("/proc/self/mountinfo").expect("open mountinfo");
+
+    let result = UpperFsCapabilityCheck::new(root.root.clone())
+        .run(&nails_core::RealFilesystem)
+        .expect("the check runs");
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        format!(
+            "Hidden root at {} can host an overlayfs upper layer",
+            root.root.display()
+        )
+    );
+
+    let mut fds = [PollFd::new(watched.as_fd(), PollFlags::POLLPRI)];
+    poll(&mut fds, PollTimeout::ZERO).expect("poll mountinfo");
+    let signalled = fds[0]
+        .revents()
+        .is_some_and(|r| r.intersects(PollFlags::POLLPRI | PollFlags::POLLERR));
+    assert!(!signalled, "the probe changed the mount table");
+    assert_eq!(
+        std::fs::read_to_string("/proc/self/mountinfo").expect("read mountinfo"),
+        table
+    );
+    let left: Vec<_> = std::fs::read_dir(&root.root)
+        .expect("read the hidden root")
+        .collect();
+    assert!(left.is_empty(), "the probe left {left:?}");
 
     root.teardown();
 }

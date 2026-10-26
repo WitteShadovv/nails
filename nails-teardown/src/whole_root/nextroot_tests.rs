@@ -307,6 +307,40 @@ fn overlay_data_pins_the_feature_options_off() {
 }
 
 #[test]
+fn overlay_params_are_the_mount_data_one_option_each() {
+    // The probe hands these pairs to fsconfig(2) one by one, the real mount
+    // joins them into its data string: both pass the kernel the same options.
+    let (lower, upper, work) = (
+        Path::new("/l,ower"),
+        Path::new("/mnt/data/root/upper"),
+        Path::new("/mnt/data/root/work"),
+    );
+    let params = overlay_params(lower, upper, work).unwrap();
+    let expected: Vec<(&str, String)> = vec![
+        ("lowerdir", "/l\\,ower".to_string()),
+        ("upperdir", "/mnt/data/root/upper".to_string()),
+        ("workdir", "/mnt/data/root/work".to_string()),
+        ("index", "off".to_string()),
+        ("metacopy", "off".to_string()),
+        ("redirect_dir", "nofollow".to_string()),
+    ];
+    assert_eq!(params, expected);
+    let joined: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    assert_eq!(joined.join(","), overlay_data(lower, upper, work).unwrap());
+}
+
+#[test]
+fn overlay_params_refuse_an_unescapable_layer() {
+    let err = overlay_params(
+        Path::new("/lower"),
+        Path::new("/up\nper"),
+        Path::new("/work"),
+    )
+    .expect_err("a newline cannot be an overlay option");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+}
+
+#[test]
 fn overlay_data_escapes_awkward_layer_paths() {
     // A layer path with the characters the overlay option field escapes is
     // escaped once, so the pinned options still parse as their own fields.

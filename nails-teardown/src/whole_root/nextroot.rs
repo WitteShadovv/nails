@@ -275,7 +275,7 @@ fn overlay_path(path: &Path) -> io::Result<String> {
     })
 }
 
-/// The overlay feature options NAILS pins on every mount (see [`overlay_data`]).
+/// The overlay feature options NAILS pins on every mount (see [`overlay_params`]).
 ///
 /// `index`, `metacopy` and `redirect_dir` default differently across kernels —
 /// Arch's turns them on — and each lets the overlay diverge from a plain copy-up:
@@ -286,19 +286,40 @@ fn overlay_path(path: &Path) -> io::Result<String> {
 /// the upper.
 pub const OVERLAY_FEATURE_OPTIONS: &str = "index=off,metacopy=off,redirect_dir=nofollow";
 
-/// The `mount(2)` data for a one-lower-layer overlay, with NAILS's pinned
-/// feature options ([`OVERLAY_FEATURE_OPTIONS`]) appended.
+/// The options of a one-lower-layer overlay as key and value pairs: the three
+/// layer paths, escaped for the overlay option parser, then NAILS's pinned
+/// feature options ([`OVERLAY_FEATURE_OPTIONS`]).
 ///
-/// The one place the real mount ([`mount_overlay`]) and the upper-filesystem
-/// capability probe both build the option string, so the two can never pin a
-/// different set.
+/// The one place the real mount ([`mount_overlay`], through [`overlay_data`])
+/// and the upper-filesystem capability probe, which hands each pair to
+/// `fsconfig(2)`, build the options, so the two can never pin a different set.
+pub fn overlay_params(
+    lower: &Path,
+    upper: &Path,
+    work: &Path,
+) -> io::Result<Vec<(&'static str, String)>> {
+    let mut params = vec![
+        ("lowerdir", overlay_path(lower)?),
+        ("upperdir", overlay_path(upper)?),
+        ("workdir", overlay_path(work)?),
+    ];
+    params.extend(
+        OVERLAY_FEATURE_OPTIONS
+            .split(',')
+            .filter_map(|option| option.split_once('='))
+            .map(|(key, value)| (key, value.to_string())),
+    );
+    Ok(params)
+}
+
+/// The `mount(2)` data for a one-lower-layer overlay: [`overlay_params`]
+/// joined into one option string, NAILS's pinned feature options last.
 pub fn overlay_data(lower: &Path, upper: &Path, work: &Path) -> io::Result<String> {
-    Ok(format!(
-        "lowerdir={},upperdir={},workdir={},{OVERLAY_FEATURE_OPTIONS}",
-        overlay_path(lower)?,
-        overlay_path(upper)?,
-        overlay_path(work)?
-    ))
+    Ok(overlay_params(lower, upper, work)?
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(","))
 }
 
 /// Mount an overlay at `target` with one lower layer.
