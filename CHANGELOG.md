@@ -302,6 +302,12 @@ of this changelog for that version becomes the release notes word for word, and
   device (a copy that failed, a loop device with no file behind it) is reported as not scanned with
   exit 9 instead of a clean pass with exit 0, and a scan that left a device unread no longer prints
   the green "not found" headline.
+- `nails rehearse scan` reports a bare vfat, exFAT or swap image cut short as "not checked" (exit 9)
+  where it reported a clean pass (exit 0). It reads the size the boot sector or swap header
+  records, as it does for ext4, xfs and f2fs, so an image that ends before its filesystem or swap
+  area does is known to be incomplete. A boot sector or swap header that records what no such
+  filesystem has (a sector size the kernel does not take, no sector at all, a swap header of
+  another version) counts as storage the scan does not identify.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up

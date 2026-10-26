@@ -310,7 +310,167 @@ fn the_recorded_size_of_ext4_and_xfs_comes_from_the_superblock() {
     for start in [448 << 10, 512 << 10, 576 << 10] {
         assert_eq!(size(start, "xfs"), Implausible, "{start}");
     }
-    assert_eq!(size(0, "vfat"), Unrecorded);
+    // A read-only format keeps no size the scan reads.
+    assert_eq!(size(0, "erofs"), Unrecorded);
+}
+
+/// A FAT boot sector (`mkfs.fat`) of `sector` bytes per sector with the
+/// 16-bit sector count `sectors16` and the 32-bit one `sectors32`, its type
+/// named at 0x52 as on a FAT32.
+pub(crate) fn fat_boot_sector(sector: u16, sectors16: u16, sectors32: u32) -> [u8; 512] {
+    let mut boot = [0u8; 512];
+    boot[3..11].copy_from_slice(b"mkfs.fat");
+    boot[0x0B..0x0D].copy_from_slice(&sector.to_le_bytes());
+    boot[0x13..0x15].copy_from_slice(&sectors16.to_le_bytes());
+    boot[0x20..0x24].copy_from_slice(&sectors32.to_le_bytes());
+    boot[0x52..0x5A].copy_from_slice(b"FAT32   ");
+    boot[510..].copy_from_slice(&[0x55, 0xAA]);
+    boot
+}
+
+/// An NTFS boot sector (`mkntfs`) of `sector` bytes per sector and `sectors`
+/// sectors.
+pub(crate) fn ntfs_boot_sector(sector: u16, sectors: u64) -> [u8; 512] {
+    let mut boot = [0u8; 512];
+    boot[3..11].copy_from_slice(b"NTFS    ");
+    boot[0x0B..0x0D].copy_from_slice(&sector.to_le_bytes());
+    boot[0x28..0x30].copy_from_slice(&sectors.to_le_bytes());
+    boot[510..].copy_from_slice(&[0x55, 0xAA]);
+    boot
+}
+
+/// An exFAT boot sector (`mkfs.exfat`) of `sectors` sectors of 2^`shift`
+/// bytes each.
+pub(crate) fn exfat_boot_sector(shift: u8, sectors: u64) -> [u8; 512] {
+    let mut boot = [0u8; 512];
+    boot[3..11].copy_from_slice(b"EXFAT   ");
+    boot[0x48..0x50].copy_from_slice(&sectors.to_le_bytes());
+    boot[0x6C] = shift;
+    boot[510..].copy_from_slice(&[0x55, 0xAA]);
+    boot
+}
+
+/// The first page of a swap area (`mkswap`): `version` and `last_page` as
+/// the bytes the header holds, and the magic that ends the page.
+pub(crate) fn swap_header(version: [u8; 4], last_page: [u8; 4]) -> [u8; 4096] {
+    let mut page = [0u8; 4096];
+    page[0x400..0x404].copy_from_slice(&version);
+    page[0x404..0x408].copy_from_slice(&last_page);
+    page[0xff6..].copy_from_slice(b"SWAPSPACE2");
+    page
+}
+
+#[test]
+fn the_recorded_size_of_a_fat_ntfs_or_exfat_comes_from_its_boot_sector() {
+    use RecordedSize::{Bytes, Implausible};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("boot.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(1 << 20).unwrap();
+    // A FAT16 counts its sectors in 16 bits, and in 32 where those are zero;
+    // the 32-bit count of a FAT that has a 16-bit one is not read.
+    put(&mut file, 0, &fat_boot_sector(512, 32768, 0));
+    put(&mut file, 16 << 10, &fat_boot_sector(512, 0, 131_072));
+    put(&mut file, 32 << 10, &fat_boot_sector(4096, 1000, 7));
+    put(&mut file, 48 << 10, &fat_boot_sector(1024, 0, 0));
+    // NTFS records one sector less than the volume, its backup boot sector.
+    put(&mut file, 64 << 10, &ntfs_boot_sector(512, 131_071));
+    put(&mut file, 80 << 10, &ntfs_boot_sector(4096, 3));
+    put(&mut file, 96 << 10, &ntfs_boot_sector(512, 0));
+    put(&mut file, 112 << 10, &exfat_boot_sector(9, 131_072));
+    put(&mut file, 128 << 10, &exfat_boot_sector(12, 5));
+    put(&mut file, 144 << 10, &exfat_boot_sector(9, 0));
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+    let size = |start, format| recorded_size(&source, start, format).unwrap();
+
+    assert_eq!(size(0, "vfat"), Bytes(16 << 20));
+    assert_eq!(size(16 << 10, "vfat"), Bytes(64 << 20));
+    assert_eq!(size(32 << 10, "vfat"), Bytes(1000 * 4096));
+    assert_eq!(size(48 << 10, "vfat"), Implausible);
+    assert_eq!(size(64 << 10, "ntfs"), Bytes((64 << 20) - 512));
+    assert_eq!(size(80 << 10, "ntfs"), Bytes(3 * 4096));
+    assert_eq!(size(96 << 10, "ntfs"), Implausible);
+    assert_eq!(size(112 << 10, "exfat"), Bytes(64 << 20));
+    assert_eq!(size(128 << 10, "exfat"), Bytes(5 * 4096));
+    assert_eq!(size(144 << 10, "exfat"), Implausible);
+}
+
+#[test]
+fn a_boot_sector_with_a_sector_no_disk_has_is_implausible() {
+    // A sector is a power of two from 512 bytes to 4 KiB, as the kernel's
+    // FAT, ntfs3 and exFAT drivers take it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("boot.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(1 << 20).unwrap();
+    for (index, sector) in [0u16, 256, 1000, 2048 + 512, 8192].into_iter().enumerate() {
+        let at = (index as u64) << 14;
+        put(&mut file, at, &fat_boot_sector(sector, 100, 0));
+        put(&mut file, at + (8 << 10), &ntfs_boot_sector(sector, 100));
+    }
+    for (index, shift) in [0u8, 8, 13, 64, 255].into_iter().enumerate() {
+        put(
+            &mut file,
+            (512 << 10) + ((index as u64) << 14),
+            &exfat_boot_sector(shift, 100),
+        );
+    }
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+    let size = |start, format| recorded_size(&source, start, format).unwrap();
+
+    for index in 0..5u64 {
+        assert_eq!(size(index << 14, "vfat"), RecordedSize::Implausible);
+        assert_eq!(
+            size((index << 14) + (8 << 10), "ntfs"),
+            RecordedSize::Implausible
+        );
+        assert_eq!(
+            size((512 << 10) + (index << 14), "exfat"),
+            RecordedSize::Implausible
+        );
+    }
+}
+
+#[test]
+fn the_recorded_size_of_a_swap_area_comes_from_its_last_page() {
+    use RecordedSize::{Bytes, Implausible};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("swap.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(1 << 20).unwrap();
+    // mkswap on 64 MiB: version 1, last page 16383.
+    put(
+        &mut file,
+        0,
+        &swap_header([1, 0, 0, 0], 16383u32.to_le_bytes()),
+    );
+    // Made on a big-endian machine.
+    put(
+        &mut file,
+        64 << 10,
+        &swap_header([0, 0, 0, 1], 16383u32.to_be_bytes()),
+    );
+    // A version the kernel does not read, the first one's page map among
+    // them, and an area with no page past its header.
+    put(
+        &mut file,
+        128 << 10,
+        &swap_header([2, 0, 0, 0], [1, 0, 0, 0]),
+    );
+    put(&mut file, 192 << 10, &swap_header([0xFF; 4], [0xFF; 4]));
+    put(&mut file, 256 << 10, &swap_header([1, 0, 0, 0], [0; 4]));
+    put(&mut file, 320 << 10, &swap_header([0, 0, 0, 1], [0; 4]));
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+    let size = |start| recorded_size(&source, start, "swap").unwrap();
+
+    assert_eq!(size(0), Bytes(64 << 20));
+    assert_eq!(size(64 << 10), Bytes(64 << 20));
+    for start in [128 << 10, 192 << 10, 256 << 10, 320 << 10] {
+        assert_eq!(size(start), Implausible, "{start}");
+    }
 }
 
 #[test]
