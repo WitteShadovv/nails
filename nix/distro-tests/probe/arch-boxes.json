@@ -1,9 +1,18 @@
 {
   "image": "arch-boxes",
   "osId": "arch",
+  "enforcing": false,
+  "imageFile": "Arch-Linux-x86_64-basic-20261015.611680.qcow2",
   "recorded": true,
   "facts": {
+    "selinuxMode": null,
     "selinuxBackdoorDomain": null,
+    "selinuxLabels": null,
+    "selinuxPolicyLoads": null,
+    "kernelRelease": "7.2.9-arch1-1",
+    "moduleDirs": [
+      "7.2.9-arch1-1"
+    ],
     "mounts": [
       {
         "target": "/",
@@ -16,6 +25,170 @@
         "options": "rw,nosuid,nodev,noexec,relatime,nosymfollow,fmask=0177,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro"
       }
     ],
+    "fstab": [
+      {
+        "source": "/swap/swapfile",
+        "target": "none",
+        "fstype": "swap",
+        "options": "defaults",
+        "dump": 0,
+        "pass": 0
+      }
+    ],
+    "swaps": [
+      {
+        "name": "/swap/swapfile",
+        "type": "file",
+        "size": 536866816,
+        "priority": -1
+      }
+    ],
+    "mountUnits": [
+      {
+        "unit": "efi.automount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "running",
+        "fragmentPath": "/run/systemd/generator.late/efi.automount",
+        "sourcePath": null
+      },
+      {
+        "unit": "proc-sys-fs-binfmt_misc.automount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "waiting",
+        "fragmentPath": "/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.automount",
+        "sourcePath": null
+      },
+      {
+        "unit": "-.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": null,
+        "sourcePath": null
+      },
+      {
+        "unit": "dev-hugepages.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/dev-hugepages.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "dev-mqueue.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/dev-mqueue.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "efi.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator.late/efi.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "etc-machine\\x2did.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": null,
+        "sourcePath": "/proc/self/mountinfo"
+      },
+      {
+        "unit": "home.mount",
+        "load": "not-found",
+        "active": "inactive",
+        "sub": "dead",
+        "fragmentPath": null,
+        "sourcePath": null
+      },
+      {
+        "unit": "proc-sys-fs-binfmt_misc.mount",
+        "load": "loaded",
+        "active": "inactive",
+        "sub": "dead",
+        "fragmentPath": "/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-fs-fuse-connections.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-fs-fuse-connections.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-config.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-config.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-debug.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-debug.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-tracing.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-tracing.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "tmp.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/tmp.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "var-lib-machines.mount",
+        "load": "loaded",
+        "active": "inactive",
+        "sub": "dead",
+        "fragmentPath": "/usr/lib/systemd/system/var-lib-machines.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "swap-swapfile.swap",
+        "load": "loaded",
+        "active": "active",
+        "sub": "active",
+        "fragmentPath": "/run/systemd/generator/swap-swapfile.swap",
+        "sourcePath": "/etc/fstab"
+      }
+    ],
+    "generatorUnits": {
+      "/run/systemd/generator": [
+        "getty.target.wants",
+        "local-fs.target.wants",
+        "sockets.target.wants",
+        "sshd-unix-local.socket",
+        "sshd-unix-local@.service",
+        "swap-swapfile.swap",
+        "swap.target.requires"
+      ],
+      "/run/systemd/generator.late": [
+        "efi.automount",
+        "efi.mount",
+        "local-fs.target.wants"
+      ]
+    },
     "tools": {
       "systemctl": "/usr/bin/systemctl",
       "loginctl": "/usr/bin/loginctl",
@@ -34,15 +207,51 @@
       "cp": "/usr/bin/cp",
       "chown": "/usr/bin/chown"
     },
+    "services": {
+      "auditd": {
+        "enabled": "disabled",
+        "active": "inactive"
+      },
+      "tuned": {
+        "enabled": "not-found",
+        "active": "inactive"
+      },
+      "firewalld": {
+        "enabled": "not-found",
+        "active": "inactive"
+      },
+      "abrtd": {
+        "enabled": "not-found",
+        "active": "inactive"
+      }
+    },
+    "auditdRefuseManualStop": true,
+    "packages": null,
     "journaldVendorConfig": {
       "storage": "persistent",
       "sources": []
     },
     "failedBootUnits": [],
-    "failedUnitsAfterSoftReboot": [],
+    "maskedUnits": [
+      "archlinux-keyring-wkd-sync.service",
+      "pacman-init.service",
+      "serial-getty@hvc0.service",
+      "serial-getty@ttyS0.service",
+      "sshd.service",
+      "systemd-boot-update.service",
+      "systemd-networkd-wait-online.service",
+      "systemd-time-wait-sync.service",
+      "sshd.socket",
+      "archlinux-keyring-wkd-sync.timer"
+    ],
     "updatedbPrunePaths": [],
     "avcs": [],
     "ninePUnderEnforcing": null,
-    "derivativeOsRelease": {}
+    "derivativeOsRelease": {},
+    "softRebootsCount": 1,
+    "failedUnitsAfterSoftReboot": [],
+    "avcsAfterSoftReboot": [],
+    "selinuxLabelsAfterSoftReboot": null,
+    "selinuxPolicyLoadsAfterSoftReboot": null
   }
 }

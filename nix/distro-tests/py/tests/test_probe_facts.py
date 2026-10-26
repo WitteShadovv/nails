@@ -8,10 +8,15 @@ as a wrong fact in a fixture.
 
 from __future__ import annotations
 
+import json
 import unittest
 from collections.abc import Iterator, Mapping
+from pathlib import Path
 
 import probe_facts as pf
+
+# The committed fixtures, nix/distro-tests/probe.
+FIXTURES = Path(__file__).resolve().parents[2] / "probe"
 
 FEDORA_OS_RELEASE = """\
 NAME="Fedora Linux"
@@ -704,6 +709,45 @@ class RecordTest(unittest.TestCase):
     def test_dumps_ends_with_a_newline(self) -> None:
         text = pf.dumps({"a": [], "b": {}})
         self.assertEqual(text, '{\n  "a": [],\n  "b": {}\n}\n')
+
+
+class FixtureTest(unittest.TestCase):
+    """Every committed fixture is a record the probe could have written."""
+
+    def fixtures(self) -> list[Path]:
+        paths = sorted(FIXTURES.glob("*.json"))
+        self.assertTrue(paths, f"no fixture in {FIXTURES}")
+        return paths
+
+    def test_each_fixture_keeps_the_schema(self) -> None:
+        empty = pf.record({}, image="", os_id="", enforcing=False, image_file=None)
+        for path in self.fixtures():
+            with self.subTest(fixture=path.name):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(list(document), list(empty))
+                self.assertEqual(list(document["facts"]), list(empty["facts"]))
+                self.assertIsInstance(document["enforcing"], bool)
+                self.assertIsInstance(document["recorded"], bool)
+
+    def test_each_fixture_is_named_after_its_probe(self) -> None:
+        for path in self.fixtures():
+            with self.subTest(fixture=path.name):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                name = pf.probe_name(document["image"], document["enforcing"])
+                self.assertEqual(path.name, f"{name}.json")
+
+    def test_each_fixture_is_written_as_the_probe_writes_it(self) -> None:
+        for path in self.fixtures():
+            with self.subTest(fixture=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertEqual(text, pf.dumps(json.loads(text)))
+
+    def test_a_recorded_fixture_names_its_image_file(self) -> None:
+        for path in self.fixtures():
+            with self.subTest(fixture=path.name):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                if document["recorded"]:
+                    self.assertTrue(document["imageFile"])
 
 
 if __name__ == "__main__":

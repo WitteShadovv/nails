@@ -261,10 +261,12 @@ in
   # scenario's listings, change comparison and journal search -- stay correct,
   # linted and typed on every `nix flake check`, not only when a distro VM test
   # runs. The probes load probe_facts the same way, for their queries and for the
-  # reading of their output into the fixture record.
+  # reading of their output into the fixture record, and the committed probe
+  # fixtures are checked against that record.
   distro-checks = lint "distro-checks" {
     files = fs.unions [
       ./distro-tests/py
+      ./distro-tests/probe
       ../pyproject.toml
     ];
     tools = [

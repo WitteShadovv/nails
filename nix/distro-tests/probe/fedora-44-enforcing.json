@@ -1,0 +1,340 @@
+{
+  "image": "fedora-44",
+  "osId": "fedora",
+  "enforcing": true,
+  "imageFile": "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+  "recorded": true,
+  "facts": {
+    "selinuxMode": "enforcing",
+    "selinuxBackdoorDomain": "unconfined_service_t",
+    "selinuxLabels": {
+      "/": "system_u:object_r:root_t:s0",
+      "/run": "system_u:object_r:var_run_t:s0",
+      "/run/systemd": "system_u:object_r:init_var_run_t:s0"
+    },
+    "selinuxPolicyLoads": [
+      "systemd[1]: Successfully loaded SELinux policy."
+    ],
+    "kernelRelease": "6.19.10-300.fc44.x86_64",
+    "moduleDirs": [
+      "6.19.10-300.fc44.x86_64"
+    ],
+    "mounts": [
+      {
+        "target": "/",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=256,subvol=/root"
+      },
+      {
+        "target": "/boot",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=257,subvol=/boot"
+      },
+      {
+        "target": "/boot/efi",
+        "fstype": "vfat",
+        "options": "rw,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=ascii,shortname=winnt,errors=remount-ro"
+      },
+      {
+        "target": "/home",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=258,subvol=/home"
+      },
+      {
+        "target": "/var",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=259,subvol=/var"
+      }
+    ],
+    "fstab": [
+      {
+        "source": "UUID=15c26993-ac30-424a-9c4b-faec4434d234",
+        "target": "/",
+        "fstype": "btrfs",
+        "options": "compress=zstd:1,defaults,subvol=root",
+        "dump": 0,
+        "pass": 1
+      },
+      {
+        "source": "UUID=15c26993-ac30-424a-9c4b-faec4434d234",
+        "target": "/boot",
+        "fstype": "btrfs",
+        "options": "compress=zstd:1,subvol=boot",
+        "dump": 0,
+        "pass": 0
+      },
+      {
+        "source": "UUID=15c26993-ac30-424a-9c4b-faec4434d234",
+        "target": "/home",
+        "fstype": "btrfs",
+        "options": "compress=zstd:1,subvol=home",
+        "dump": 0,
+        "pass": 0
+      },
+      {
+        "source": "UUID=15c26993-ac30-424a-9c4b-faec4434d234",
+        "target": "/var",
+        "fstype": "btrfs",
+        "options": "compress=zstd:1,subvol=var",
+        "dump": 0,
+        "pass": 0
+      },
+      {
+        "source": "UUID=5BCC-12A9",
+        "target": "/boot/efi",
+        "fstype": "vfat",
+        "options": "defaults,umask=0077,shortname=winnt",
+        "dump": 0,
+        "pass": 0
+      }
+    ],
+    "swaps": [
+      {
+        "name": "/dev/zram0",
+        "type": "partition",
+        "size": 2049961984,
+        "priority": 100
+      }
+    ],
+    "mountUnits": [
+      {
+        "unit": "boot.automount",
+        "load": "not-found",
+        "active": "inactive",
+        "sub": "dead",
+        "fragmentPath": null,
+        "sourcePath": null
+      },
+      {
+        "unit": "proc-sys-fs-binfmt_misc.automount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "running",
+        "fragmentPath": "/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.automount",
+        "sourcePath": null
+      },
+      {
+        "unit": "-.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/-.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "boot-efi.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/boot-efi.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "boot.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/boot.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "dev-hugepages.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/dev-hugepages.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "dev-mqueue.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/dev-mqueue.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "home.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/home.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "proc-sys-fs-binfmt_misc.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-fs-fuse-connections.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-fs-fuse-connections.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-config.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-config.mount",
+        "sourcePath": "/proc/self/mountinfo"
+      },
+      {
+        "unit": "sys-kernel-debug.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-debug.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-tracing.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-tracing.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sysroot.mount",
+        "load": "not-found",
+        "active": "inactive",
+        "sub": "dead",
+        "fragmentPath": null,
+        "sourcePath": null
+      },
+      {
+        "unit": "tmp.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/tmp.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "var.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/var.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "dev-disk-by\\x2ddiskseq-4.swap",
+        "load": "loaded",
+        "active": "active",
+        "sub": "active",
+        "fragmentPath": null,
+        "sourcePath": null
+      },
+      {
+        "unit": "dev-zram0.swap",
+        "load": "loaded",
+        "active": "active",
+        "sub": "active",
+        "fragmentPath": "/run/systemd/generator/dev-zram0.swap",
+        "sourcePath": null
+      }
+    ],
+    "generatorUnits": {
+      "/run/systemd/generator": [
+        "-.mount",
+        "boot-efi.mount",
+        "boot.mount",
+        "dev-zram0.swap",
+        "getty.target.wants",
+        "home.mount",
+        "local-fs.target.requires",
+        "local-fs.target.wants",
+        "sockets.target.wants",
+        "sshd-unix-local.socket",
+        "sshd-unix-local@.service",
+        "sshd-vsock.socket",
+        "sshd-vsock@.service",
+        "swap.target.wants",
+        "systemd-zram-setup@zram0.service.d",
+        "var.mount"
+      ],
+      "/run/systemd/generator.late": [
+        "local-fs.target.wants",
+        "systemd-remount-fs.service.d"
+      ]
+    },
+    "tools": {
+      "systemctl": "/usr/bin/systemctl",
+      "loginctl": "/usr/bin/loginctl",
+      "busctl": "/usr/bin/busctl",
+      "journalctl": "/usr/bin/journalctl",
+      "dmsetup": "/usr/bin/dmsetup",
+      "ip": "/usr/bin/ip",
+      "sh": "/usr/bin/sh",
+      "mount": "/usr/bin/mount",
+      "sync": "/usr/bin/sync",
+      "swapoff": "/usr/bin/swapoff",
+      "kill": "/usr/bin/kill",
+      "systemd-run": "/usr/bin/systemd-run",
+      "modprobe": "/usr/bin/modprobe",
+      "cp": "/usr/bin/cp",
+      "chown": "/usr/bin/chown"
+    },
+    "services": {
+      "auditd": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "tuned": {
+        "enabled": "not-found",
+        "active": "inactive"
+      },
+      "firewalld": {
+        "enabled": "not-found",
+        "active": "inactive"
+      },
+      "abrtd": {
+        "enabled": "not-found",
+        "active": "inactive"
+      }
+    },
+    "auditdRefuseManualStop": true,
+    "packages": {
+      "audit": "audit-4.1.4-1.fc44.x86_64",
+      "tuned": null,
+      "firewalld": null,
+      "abrt": null
+    },
+    "journaldVendorConfig": {
+      "storage": "persistent",
+      "sources": []
+    },
+    "failedBootUnits": [],
+    "maskedUnits": [
+      "serial-getty@hvc0.service",
+      "serial-getty@ttyS0.service",
+      "ssh.service",
+      "ssh.socket"
+    ],
+    "updatedbPrunePaths": [],
+    "avcs": [],
+    "ninePUnderEnforcing": true,
+    "derivativeOsRelease": {},
+    "softRebootsCount": 1,
+    "failedUnitsAfterSoftReboot": [],
+    "avcsAfterSoftReboot": [
+      "avc:  denied  { map } for  pid=1 comm=\"systemd\" path=\"/etc/selinux/targeted/policy/policy.35\" dev=\"sda3\" ino=2309 scontext=system_u:system_r:init_t:s0 tcontext=system_u:object_r:semanage_store_t:s0 tclass=file permissive=0"
+    ],
+    "selinuxLabelsAfterSoftReboot": {
+      "/": "system_u:object_r:root_t:s0",
+      "/run": "system_u:object_r:var_run_t:s0",
+      "/run/systemd": "system_u:object_r:init_var_run_t:s0"
+    },
+    "selinuxPolicyLoadsAfterSoftReboot": [
+      "systemd[1]: Failed to load new SELinux policy. Continuing with old policy."
+    ]
+  }
+}

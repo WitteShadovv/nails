@@ -25,6 +25,7 @@ image, with `-enforcing` added for a Fedora image booted with SELinux enforcing.
 - `fedora-44.json` -- the pinned Fedora 44 cloud image, booted with SELinux
   permissive as `../images.json` pins it (recorded)
 - `fedora-44-enforcing.json` -- the same image booted with SELinux enforcing
+  (recorded)
 - `fedora-45.json`, `fedora-45-enforcing.json` -- Fedora 45 once its image is
   pinned
 - `arch-boxes.json` -- the pinned Arch `arch-boxes` image (recorded)
@@ -144,7 +145,9 @@ the image and runs the rest. The driver prints one `=== <label> ===` block per
 query and writes `<probe>.json`, the record, and `<probe>.raw.json`, every
 query's output by label, into the directory `NAILS_PROBE_OUT` names, or the
 one it runs in. A fixture is that record as written: copy `<probe>.json` over
-the file here rather than editing it.
+the file here rather than editing it. The `distro-checks` flake check fails a
+fixture that leaves the schema, is not named after its probe or is not written
+the way the probe writes it.
 
 On a KVM-capable host, build the driver and run it. The driver keeps the VM
 state and its sockets in `XDG_RUNTIME_DIR`, falling back to `TMPDIR`; point
