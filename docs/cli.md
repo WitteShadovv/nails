@@ -127,7 +127,7 @@ WHAT HAPPENS:
 EXAMPLES:
   nails activate                      Enter the hidden session
   nails activate --overlay-only       Enter with the decoy's own system (NixOS)
-  nails activate --dry-run            Preview without changing anything
+  nails activate --dry-run            Preview, leaving no file or mount behind
 
 ###### **Options:**
 
@@ -137,7 +137,7 @@ EXAMPLES:
 * `--nixos-flake <FLAKE_REF>` — NixOS: the hidden configuration as a flake reference <path>#<host>
 
    The hidden system is built from it into the hidden root's store before the soft-reboot. Supports attribute selection after the `#`.
-* `--dry-run` — Preview activation steps without making changes
+* `--dry-run` — Preview activation steps, leaving no file or mount behind
 * `--overlay-only` — NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden /etc and home still apply)
 * `--allow-persistent-decoy` — Allow a persistent decoy posture instead of refusing activation
 

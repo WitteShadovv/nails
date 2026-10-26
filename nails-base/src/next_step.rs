@@ -29,7 +29,7 @@ pub enum NextStep {
     Recover,
     /// `status`: where the machine is and what needs the operator.
     Status,
-    /// `check`: readiness to activate, changing nothing.
+    /// `check`: readiness to activate, leaving no file or mount behind.
     Check,
     /// `verify`: scan for residue.
     Verify,

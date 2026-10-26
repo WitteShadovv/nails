@@ -457,9 +457,10 @@ of this changelog for that version becomes the release notes word for word, and
   line on its disk. The trial overlay is now mounted detached, through the kernel's mount API: no
   mount table lists it, and it is gone when the probe ends or the process dies. Where the kernel
   cannot mount it that way (without root, before Linux 5.2, or in a sandbox that blocks the call),
-  the check fails before it writes anything. The README said that `check` changes nothing; the
-  operator guide now says what it touches: probe files on the hidden volume that it removes again,
-  and no mount.
+  the check fails before it writes anything. The README, the help and the next step `init` prints
+  said that `check` (and `activate --dry-run`) changes nothing; they now say that it leaves no file
+  or mount behind, and the operator guide says what it touches: probe files on the hidden volume
+  that it removes again, the modification times they leave there, and no mount.
 - On Debian 13 the way back now has the decoy's wtmpdb boot writer record the decoy's start as an
   ordinary `reboot`, stamped with the time of the switch. The 0.3.0-rc.3 notes said the way back
   already kept the writer from recording `soft-reboot`; that was wrong. Kept from the system bus,
