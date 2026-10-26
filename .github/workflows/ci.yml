@@ -234,11 +234,11 @@ jobs:
 
   # Order-independence gate for the Rust unit tests. The `rust` job runs the
   # suite through nextest, which isolates each test in its own process and so
-  # cannot see a leak through the shared process environment; this job runs both
-  # crates' unit tests threaded over a sweep of shuffled seeds, where such a
-  # leak fails. The libtest shuffle flag is unstable, so RUSTC_BOOTSTRAP lets the
-  # pinned stable compiler accept it (see the `shuffle` justfile recipe); no
-  # nightly toolchain is added.
+  # cannot see a leak through the shared process environment; this job runs the
+  # unit tests of every workspace crate threaded over a sweep of shuffled seeds,
+  # where such a leak fails. The libtest shuffle flag is unstable, so the test
+  # binaries run with RUSTC_BOOTSTRAP, which lets the stable test harness accept
+  # it (see the `shuffle` justfile recipe); no nightly toolchain is added.
   shuffle:
     name: shuffle
     needs: changes
