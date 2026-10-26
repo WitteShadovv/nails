@@ -10,8 +10,9 @@
 //! included — and `ok` is true only when the exit code is 0 or 9. A small
 //! dependency-free checker covers the JSON Schema subset the fixtures use
 //! (`type` as a string or an array, `required`, `properties`, `items`, `enum`
-//! including `null`, `const`, `oneOf`, `additionalProperties:false`, `minimum`,
-//! `minLength`, and the single `^/` `pattern`).
+//! including `null`, `const`, `oneOf`, `allOf` with `if`/`then`,
+//! `additionalProperties:false`, `minimum`, `minLength`, and the single `^/`
+//! `pattern`).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -55,6 +56,19 @@ fn validate(schema: &Value, instance: &Value, path: &str) -> Result<(), String> 
             ));
         }
         return Ok(());
+    }
+
+    // Every `allOf` branch must hold; a branch's `then` applies when its `if`
+    // holds.
+    if let Some(Value::Array(subschemas)) = schema.get("allOf") {
+        for subschema in subschemas {
+            validate(subschema, instance, path)?;
+        }
+    }
+    if let (Some(condition), Some(then)) = (schema.get("if"), schema.get("then"))
+        && validate(condition, instance, path).is_ok()
+    {
+        validate(then, instance, path)?;
     }
 
     match schema.get("type") {

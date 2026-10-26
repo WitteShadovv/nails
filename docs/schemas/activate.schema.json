@@ -72,5 +72,22 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "description": "A document that is not ok carries its error: a failure its own code, a cancel the code `cancelled`.",
+      "if": { "required": ["ok"], "properties": { "ok": { "const": false } } },
+      "then": { "required": ["error"] }
+    },
+    {
+      "description": "A failed activation is never ok.",
+      "if": {
+        "required": ["data"],
+        "properties": {
+          "data": { "required": ["status"], "properties": { "status": { "const": "failed" } } }
+        }
+      },
+      "then": { "properties": { "ok": { "const": false } } }
+    }
+  ]
 }
