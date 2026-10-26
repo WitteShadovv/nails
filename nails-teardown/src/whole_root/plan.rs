@@ -118,6 +118,32 @@ pub enum PolicyMountKind {
     HiddenVolume,
 }
 
+/// Units of a decoy filesystem or swap that the hidden systemd skips.
+///
+/// A boot target (`local-fs.target`, `remote-fs.target`, `swap.target`)
+/// requires them, so a mask would keep the target from being reached: PID 1
+/// drops the target's start job when it cannot pull in a masked unit, and
+/// with the target every unit only it pulls in. A skipped unit gets its job
+/// and ends it at once, its start condition unmet, and the target is reached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skip {
+    /// The units the target requires: a mount, its automount or a swap.
+    pub units: Vec<String>,
+    /// The units they pull in that act on their device or file (its fsck,
+    /// makefs, growfs or mkswap). PID 1 starts them before it tests the
+    /// condition of the unit that pulls them in, so they are skipped with it.
+    /// Never masked: a masked unit that a unit requires keeps that unit, and
+    /// the target with it, from starting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pulled: Vec<String>,
+    /// The device the units wait for, if any. A skipped unit still waits for
+    /// its device, and one that is not there holds the hidden session up
+    /// until the device timeout and then starts emergency mode: the switch
+    /// masks the units instead when the device is gone by then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<PathBuf>,
+}
+
 /// A decoy filesystem carried into the hidden session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarriedMount {
@@ -281,6 +307,14 @@ pub struct Plan {
     /// from a plan written before they were recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generator_masks: Vec<String>,
+    /// Units the hidden systemd skips instead of never loading them: a boot
+    /// target requires them, and a mask would keep that target from being
+    /// reached. Each gets a runtime drop-in whose start condition never holds
+    /// ([`crate::whole_root::runtime_units::skip_units`]). Like
+    /// [`masks`](Self::masks), the entry must not happen without them. Absent
+    /// from a plan written before they were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skips: Vec<Skip>,
     /// Runtime units installed in `/run` at entry, for the hidden session.
     #[serde(default)]
     pub session_units: Vec<RuntimeUnit>,
@@ -490,6 +524,7 @@ pub(crate) fn sample() -> Plan {
         masks: vec!["dev-vda3.swap".to_string()],
         boot_masks: Vec::new(),
         generator_masks: Vec::new(),
+        skips: Vec::new(),
         session_units: Vec::new(),
         backend: vec!["sample-backend-unmapped".to_string()],
         tools: Tools::default(),
@@ -569,6 +604,40 @@ mod tests {
         let older = sample().to_json();
         assert!(!older.contains("generator_masks"), "{older}");
         assert!(Plan::from_json(&older).unwrap().generator_masks.is_empty());
+    }
+
+    #[test]
+    fn the_skips_are_kept_and_a_plan_without_them_still_loads() {
+        let skipping = Plan {
+            skips: vec![
+                Skip {
+                    units: vec!["srv-data.mount".to_string()],
+                    pulled: vec!["systemd-fsck@dev-vdb1.service".to_string()],
+                    device: Some(PathBuf::from("/dev/vdb1")),
+                },
+                Skip {
+                    units: vec!["boot.automount".to_string()],
+                    pulled: Vec::new(),
+                    device: None,
+                },
+            ],
+            ..sample()
+        };
+        let text = skipping.to_json();
+        assert!(
+            text.contains(
+                "\"skips\":[{\"units\":[\"srv-data.mount\"],\
+                 \"pulled\":[\"systemd-fsck@dev-vdb1.service\"],\"device\":\"/dev/vdb1\"},\
+                 {\"units\":[\"boot.automount\"]}]"
+            ),
+            "{text}"
+        );
+        assert_eq!(Plan::from_json(&text).unwrap(), skipping);
+
+        // A plan written before the field existed has no key at all.
+        let older = sample().to_json();
+        assert!(!older.contains("skips"), "{older}");
+        assert!(Plan::from_json(&older).unwrap().skips.is_empty());
     }
 
     #[test]
