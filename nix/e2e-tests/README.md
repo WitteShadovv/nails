@@ -558,8 +558,8 @@ Add files under `fixtures/configs/` and reference them from tests via `${./../..
 
 The suite above runs on `pkgs.testers.runNixOSTest`, whose driver backdoor only
 exists in NixOS guests, so it cannot catch a regression on another distribution.
-The distribution tier under `nix/distro-tests/` boots real Debian 13 and Ubuntu
-24.04 cloud images on the same NixOS test driver through
+The distribution tier under `nix/distro-tests/` boots real Debian 13, Ubuntu
+24.04 and Ubuntu 26.04 cloud images on the same NixOS test driver through
 [`numtide/nix-vm-test`](https://github.com/numtide/nix-vm-test), so the
 whole-root session, platform detection, the read-only ESP and the
 decoy-persistence preflight are exercised on a non-NixOS host. Debian 12 is not
@@ -633,20 +633,21 @@ mounts the 9p share again after every switch.
 
 ### Known failures
 
-Some images fail a unit that NAILS cannot fix, an upstream issue that the
-`platform` row of `nails check` warns about on that release. An entry's
+Some images fail a unit that NAILS cannot fix. On Ubuntu 26.04, AppArmor blocks
+chrony from reaching systemd and the journal after each switch, an upstream
+issue that the `platform` row of `nails check` warns about. An entry's
 `knownFailedUnits` states what the smoke scenario must find:
 
 ```json
 "knownFailedUnits": {
   "hiddenSession": {
-    "<unit>": "<a line its failed start logs>"
+    "chrony.service": "Could not send notification to $NOTIFY_SOCKET"
   },
   "afterReturn": {
-    "<unit>": "<a line its failed start logs>"
+    "chrony.service": "Could not send notification to $NOTIFY_SOCKET"
   },
   "notInImage": [
-    "<unit>"
+    "cups.service"
   ]
 }
 ```
@@ -654,9 +655,10 @@ Some images fail a unit that NAILS cannot fix, an upstream issue that the
 `hiddenSession` and `afterReturn` map each unit that must be failed in both
 hidden sessions, or on the decoy after both ways back, to a line its failed
 start logs. `notInImage` lists the units the release's warning names that the
-image does not install, so the scenario cannot see them. Ubuntu 24.04 lists
-nothing, so no unit may fail there in any phase. Debian 13 has no list yet: its
-failed units are printed, not checked.
+image does not install, so the scenario cannot see them: the cloud image has no
+CUPS, and the printing half of the Ubuntu 26.04 warning rests on a check by
+hand. Ubuntu 24.04 lists nothing, so no unit may fail there in any phase.
+Debian 13 has no list yet: its failed units are printed, not checked.
 
 The scenario fails when:
 

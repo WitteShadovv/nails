@@ -503,8 +503,8 @@ The forensic claims rest on this configuration:
 That full configuration was evaluated manually, once. The automated E2E
 disk-image checks cover NixOS VMs with a **LUKS2/ext4** hidden backend and, in
 the VeraCrypt backend test, a **VeraCrypt hidden volume** opened with
-`cryptsetup`, plus the Debian 13 and Ubuntu 24.04 smoke runs. Other backends
-and filesystems, and physical hardware (time to the greeter, GPU and Wi-Fi after
-the soft-reboot, TPM-sealed decoy roots, GRUB) are not covered; see
+`cryptsetup`, plus the Debian 13, Ubuntu 24.04 and Ubuntu 26.04 smoke runs.
+Other backends and filesystems, and physical hardware (time to the greeter, GPU
+and Wi-Fi after the soft-reboot, TPM-sealed decoy roots, GRUB) are not covered; see
 [backends.md](backends.md) for the per-backend status. Claims outside this scope
 are unverified.
