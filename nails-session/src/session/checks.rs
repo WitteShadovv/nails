@@ -11,7 +11,9 @@
 //! - `session-state`: neither in the hidden root already nor with leftovers of
 //!   an interrupted entry;
 //! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
-//!   safe decision ([`super::policy`]).
+//!   safe decision ([`super::policy`]);
+//! - `kernel-modules`: no hidden session deleted or replaced the running
+//!   kernel's modules ([`super::kernel_modules`]); it only warns.
 //!
 //! Each check judges through a pure function, which the tests exercise
 //! directly. `systemd-version` judges the version it is built with; the others
@@ -28,6 +30,8 @@ use crate::platform::{HostProfile, upgrade_hint};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use std::path::{Path, PathBuf};
+
+pub use super::kernel_modules::KernelModulesCheck;
 
 /// Judge a systemd version on `host`: one too old fails with how the host's
 /// distribution upgrades to a release that is new enough.

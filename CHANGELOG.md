@@ -23,6 +23,18 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
+  (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
+  `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
+  upper, and every later hidden session starts without modules for the kernel it runs on. The
+  check reads the upper and warns when a hidden session deleted or replaced that tree, a directory
+  above it or its index (`modules.dep`), made one of those directories anew so the decoy's copy no
+  longer shows through, or wrote its own index before the decoy last rebuilt its own, and when the
+  decoy itself lacks the tree. The fix it prints is to update the decoy's kernel and reboot into
+  it, or the `discard` of the path that holds the change, with `--allow-decoy-storage` when the run
+  was given it. Only root can see whether a directory was made anew, so an unprivileged `nails
+  check` that needs to know says it cannot tell instead of passing. A decoy without
+  `/usr/lib/modules`, such as NixOS, passes.
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
   derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the installed
   cryptsetup version. No released cryptsetup opens such a volume, and nothing outside the encrypted

@@ -384,10 +384,10 @@ jobs:
       - name: Audit the gui/ dependency graph
         run: nix shell --inputs-from . nixpkgs#cargo-vet nixpkgs#just --command just vet gui
 
-  # Real overlayfs as real root in a private mount namespace, for the one
-  # #[ignore]'d privileged_mounts test a user namespace cannot run (directory
-  # whiteouts need trusted.* xattrs); the rust job runs the rest rootless. It
-  # is built unprivileged and run as root.
+  # Real overlayfs as real root in a private mount namespace, for the two
+  # #[ignore]'d privileged_mounts tests a user namespace cannot run (directory
+  # whiteouts and opaque directories need trusted.* xattrs); the rust job runs
+  # the rest rootless. It is built unprivileged and run as root.
   privileged-mounts:
     name: privileged-mounts
     needs: changes

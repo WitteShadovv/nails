@@ -50,6 +50,7 @@ fn build_registry_includes_the_shared_checks() {
         "nixos-build-target",
         "binary-location",
         "dma-protection",
+        "kernel-modules",
         "state",
     ] {
         assert!(
