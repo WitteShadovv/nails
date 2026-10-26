@@ -116,7 +116,15 @@ Each file is an object:
     `/usr/lib/systemd/journald.conf` documents in a commented-out line under
     `[Journal]`, `null` without one; a commented-out line in any other file,
     `/etc/systemd/journald.conf` included, counts for nothing. `storage` is
-    `null` when no file sets it and `systemdVersion` is `null`.
+    `null` when no file sets it and `systemdVersion` is `null`. A section
+    header journald refuses (a `[` line that does not end in `]`, or a name
+    with a control character, a quote or a backslash) ends the reading where
+    it ends journald's: no line after it counts, in its file or a later one.
+    The query keeps only each file's `# <path>` line and the lines that hold
+    `[` or `Storage`, so `sources` and `storage` assume plain files: no line
+    continued onto the next, no byte order mark, no line journald stops at
+    because it is not UTF-8, and no comment of the form `# /<path>`, which
+    would read as the start of another file.
   - `failedBootUnits` -- the units that show as failed on a plain boot of the
     stock image (list of unit names).
   - `maskedUnits` -- every masked unit (list of unit names). The test harness

@@ -583,6 +583,18 @@ def _storage_value(assignment: str) -> str | None:
     return None
 
 
+def _section_name(header: str) -> str | None:
+    """The section a ``[...]`` line selects, or None for a header journald
+    refuses: one that does not end in ``]``, or a name with a control
+    character, a quote or a backslash."""
+    if not header.endswith("]"):
+        return None
+    name = header[1:-1]
+    if any(char < " " or char in "\x7f\"'\\" for char in name):
+        return None
+    return name
+
+
 def journald_settings(text: str | None) -> tuple[str | None, list[str]]:
     """The ``Storage=`` journald's configuration files set, or None, and the
     files that assign one, in the order journald reads them.
@@ -590,7 +602,14 @@ def journald_settings(text: str | None) -> tuple[str | None, list[str]]:
     ``systemd-analyze cat-config`` prints each file journald reads after a
     ``# <path>`` line, in that order. Only an assignment under ``[Journal]``
     with a value journald takes counts, and the last one wins; a commented-out
-    line sets nothing.
+    line sets nothing. A section header journald refuses ends the reading
+    where it ends journald's: no line after it counts, in its file or a later
+    one, and what was read before stands. The query keeps only the ``# <path>``
+    lines and the lines with ``[`` or ``Storage``, so the reading assumes plain
+    files: a line continued onto the next one, a byte order mark, or a line
+    journald stops at because it is not UTF-8 is not read as journald reads
+    it, and a comment of the form ``# /<path>`` reads as the start of another
+    file.
     """
     current: str | None = None
     in_journal = False
@@ -602,7 +621,10 @@ def journald_settings(text: str | None) -> tuple[str | None, list[str]]:
             current, in_journal = header.group(1), False
             continue
         if line.startswith("["):
-            in_journal = line == "[Journal]"
+            section = _section_name(line)
+            if section is None:
+                break
+            in_journal = section == "Journal"
             continue
         if not in_journal or line.startswith(("#", ";")):
             continue
