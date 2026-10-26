@@ -390,9 +390,9 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails check` and activation warn when the decoy has no `nft` (nftables), or has a Wi-Fi
   interface and no `iw` (the new `network-tools` check). Activation lists the decoy's own firewall
   tables with `nft`, and the way back deletes the tables a session added with it, and a Wi-Fi
-  interface a session added on one of the decoy's radios with `iw`. Without them the way back left
+  interface a session added on one of the decoy's radios with `iw`. Without them the way back leaves
   those on the decoy until power-off, and nothing said so before the session: a VPN app's table
-  that blocks all traffic outside its tunnel kept the decoy offline, and a stock NixOS decoy has no
+  that blocks all traffic outside its tunnel keeps the decoy offline, and a stock NixOS decoy has no
   `nft`. The warning names the package to install, on NixOS with `networking.nftables.enable` as
   the other way to get `nft`, and looks for the tools where the way back does. It warns and does
   not refuse.
