@@ -36,6 +36,7 @@ fn plan(root: &Path) -> Plan {
         masks: vec!["dev-vda3.swap".into()],
         boot_masks: Vec::new(),
         generator_masks: Vec::new(),
+        skips: Vec::new(),
         session_units: Vec::new(),
         backend: Vec::new(),
         tools: Tools::default(),
