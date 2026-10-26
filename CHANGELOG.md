@@ -426,8 +426,15 @@ of this changelog for that version becomes the release notes word for word, and
   part-way, and `nails verify` reports them when their step never ran. They stayed in RAM until
   power-off, with `/run` left executable. The drop-in is written last, after the copy it starts, so
   a way back cut short leaves the writer as the decoy has it, never pointing at a missing file. The
-  threat model now also lists what they show until the next power-off: the one-shot's start in the
-  decoy's journal and both units in `systemctl status`.
+  threat model now also lists what they show: the one-shot's start in the decoy's journal and both
+  units in `systemctl status` until the next power-off, and, on systemd 256 and newer where the
+  service manager shows its status on the console (by default on a decoy booted without `quiet`),
+  the one-shot's start and finish there while the decoy starts. systemd 255 and earlier, as on
+  Ubuntu 24.04, prints neither. A `getty@.service` clears these lines and the scrollback from its
+  virtual console as it starts, before its login prompt. A console no getty clears keeps them, such
+  as the first virtual console where a display manager like GDM takes the getty's place, or a serial
+  console on systemd 257 and newer, whose getty leaves the screen as it is. Plymouth, where it
+  records the console of that start, puts them in `/var/log/boot.log`.
 - `check`, the `inherited-autostart` warning and activation read only the autostart entries that are
   regular files once their links are followed, as systemd's autostart generator does. A FIFO named
   `*.desktop` in `~/.config/autostart`, `/etc/xdg/autostart` or the autostart directory of a NixOS
