@@ -182,7 +182,9 @@ Keep all of it `root`-owned on the hidden volume.
    session and no leftovers of an interrupted one), `fstab-policy`,
    `kernel-modules` (no hidden session deleted or replaced the running
    kernel's module tree or its index; it only warns, see
-   [below](#copy-up-cost-and-shadowed-decoy-updates)),
+   [below](#copy-up-cost-and-shadowed-decoy-updates)), `package-drift`
+   (hidden sessions' package database still follows the decoy's; it only
+   warns, see [below](#package-changes-in-hidden-sessions)),
    `hidden-volume`, `upper-fs-capability`,
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
    decoy's `/etc/nixos` names the hidden volume's device, mount point or the
@@ -1066,7 +1068,9 @@ step with what you test.
 
 On Debian and Ubuntu, change the hidden system like any other: `apt`, edits in
 `/etc`, `systemctl enable`. Every change lands in the upper and is the hidden
-configuration from then on.
+configuration from then on. A package change also gives hidden sessions a
+record of their own, which a later update of the decoy does not reach: see
+[Package changes in hidden sessions](#package-changes-in-hidden-sessions).
 
 ### Copy-up cost and shadowed decoy updates
 
@@ -1122,6 +1126,69 @@ seconds or minutes.
   confirms first; discarding `/nix` drops the hidden Nix store and warns first).
   For a separately overlaid filesystem it also removes that filesystem's upper.
   It is refused in the hidden session, where the upper is the live root.
+
+### Package changes in hidden sessions
+
+A hidden session can install, update and remove packages with the
+distribution's package manager, and the changes land in the upper like any
+other. The package manager keeps its record of what is installed there too,
+and that record is where hidden sessions and the decoy drift apart:
+
+- **dpkg** (Debian, Ubuntu) writes its whole record, `/var/lib/dpkg/status`,
+  again at every change. The first package a hidden session installs, updates
+  or removes gives hidden sessions a copy of the record of their own, which
+  they keep whatever the decoy does afterwards: after an update of the decoy
+  they run its new files under a record that still lists the old versions,
+  does not know the packages the decoy installed since, and lists the ones it
+  removed. Their `apt` then works from that old record.
+- **pacman** (Arch Linux) keeps one directory per package in
+  `/var/lib/pacman/local`, which the overlay merges: hidden sessions see the
+  decoy's packages with their own changes on top. A package that both a
+  hidden session and the decoy changed is listed twice in hidden sessions, and
+  they keep their own, older files of it over the decoy's; one a hidden
+  session removed and the decoy updated since is listed without its files.
+  After a full update in a hidden session and a later one on the decoy, a
+  hidden session can fail to start.
+- **rpm** (Fedora) keeps a SQLite database, which hidden sessions copy at
+  their first change and keep from then on, as with dpkg.
+
+The `package-drift` check warns, and never refuses, when hidden sessions'
+record no longer follows the decoy's. For dpkg it names each package the decoy
+installed, updated or removed since hidden sessions made their copy of the
+record, with its version on each side, and leaves out the packages a hidden
+session changed itself: dpkg writes or deletes a package's files in
+`/var/lib/dpkg/info` whenever it changes the package, so their copies in the
+upper show which packages those are. For pacman it names each package listed
+twice or without its files. rpm's database is not read: the check compares its
+size and modification time with those of hidden sessions' copy, so a change on
+the decoy between two changes in hidden sessions goes unseen. Activation runs
+it with the other pre-flight checks. A hidden session that deleted or replaced
+the database itself draws a warning that names the `discard` that brings the
+decoy's back. Only root reads the decoy's database without changing its access
+time, so an unprivileged `nails check` that would need to read it says it
+cannot tell and names the `sudo` line.
+
+To bring hidden sessions back in line, make the decoy's changes in a hidden
+session too:
+
+- Debian and Ubuntu: `sudo apt-get update` and `sudo apt-get full-upgrade`,
+  then install there what the decoy installed and remove what it removed;
+- Arch Linux: install the decoy's version of each package the warning names
+  again from the decoy's package cache, `sudo pacman -U
+  /var/cache/pacman/pkg/<name>-<version>-<arch>.pkg.tar.zst`, or remove one a
+  hidden session had removed there again with `sudo pacman -R <name>`. A full
+  `pacman -Syu` in a hidden session also updates the kernel package when a
+  newer one is out, which deletes the running kernel's modules for every later
+  session (see [above](#copy-up-cost-and-shadowed-decoy-updates));
+- Fedora: `sudo dnf upgrade --refresh`, then install there what the decoy
+  installed and remove what it removed.
+
+Update the system on the decoy, and install in hidden sessions only what the
+hidden system needs and the decoy must not have. While no hidden session has
+changed a package, hidden sessions see the decoy's record as it is, updates
+included. With dpkg or rpm, the first package change in a hidden session means
+that every later update of the decoy needs the same update in a hidden
+session.
 
 ### On-screen visibility
 

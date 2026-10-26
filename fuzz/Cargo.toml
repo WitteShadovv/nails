@@ -151,6 +151,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "package_drift"
+path = "fuzz_targets/package_drift.rs"
+test = false
+doc = false
+bench = false
+
 # Line numbers in a crash's stack trace.
 [profile.release]
 debug = 1

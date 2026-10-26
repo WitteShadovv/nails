@@ -194,6 +194,18 @@ The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
 stamps described below. It warns or notes them and never blocks.
 
+## Package updates
+
+Update the system on the decoy. Hidden sessions run the decoy's programs and
+see its updates until a hidden session installs, updates or removes a package
+itself: from then on hidden sessions keep a record of their own of what is
+installed, which a later update of the decoy does not reach (dpkg's and rpm's
+whole record, pacman's entries of the packages they changed). The
+`package-drift` check warns, and never refuses, when that record no longer
+follows the decoy's. [Package changes in hidden
+sessions](operator-guide.md#package-changes-in-hidden-sessions) says what
+drifts for dpkg, pacman and rpm, and how to bring hidden sessions back in line.
+
 ## Suspend and the lid switch
 
 Suspend and hibernate are not a filesystem concern, so they sit outside the

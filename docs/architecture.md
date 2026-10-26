@@ -141,9 +141,10 @@ and the transition step before anything else is initialised.
   configuration, state, the artifact registry, the attach gate (with the
   judge of whether the hidden root lives on the decoy's own storage), logging,
   output, notifications and the pre-flight framework. It also holds the
-  `/etc/fstab` and `/etc/crypttab` parsers, the walk of the block-device
-  stack under a filesystem (read from sysfs) and the list of words that give
-  hidden storage away in a name.
+  `/etc/fstab` and `/etc/crypttab` parsers, the readers of the dpkg, pacman
+  and rpm package databases, the walk of the block-device stack under a
+  filesystem (read from sysfs) and the list of words that give hidden storage
+  away in a name.
 - **`nails-teardown`** holds everything the panic path and the soft-reboot
   transition need, with no configuration and no logging
   (`nails_teardown::whole_root`): the session plan on `/run`, the mount
