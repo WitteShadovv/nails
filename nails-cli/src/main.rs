@@ -11,9 +11,9 @@ use nails::cli::{Cli, Commands, OutputSettings, execute_command};
 
 /// Whether a command may write a log file onto the hidden volume.
 ///
-/// Only the commands that act on an attached hidden volume do. Read-only
-/// commands (`status`, `verify`, `check` and its alias `activate --dry-run`,
-/// `config`, `transition`) and `init` — which
+/// Only the commands that act on an attached hidden volume do. The commands
+/// that keep nothing they write (`status`, `verify`, `check` and its alias
+/// `activate --dry-run`, `config`, `transition`) and `init` — which
 /// runs before the volume holds any NAILS structure — never create a log
 /// directory or file, so running them from the decoy or a download directory
 /// leaves nothing behind there. The attach gate is still the backstop: even a

@@ -114,8 +114,10 @@ pub const CANCEL_INTERRUPTED: Message = Message {
     text: "Interrupted before it finished.",
     note: "The --json error message (code `cancelled`) of a command that a Ctrl+C or a \
            SIGTERM ended before it printed its result: status, verify, check, config, init or \
-           rehearse. The commands that only read changed nothing; init and the rehearse steps \
-           that write may have done part of their work.",
+           rehearse. The commands that only read (status, verify, config and the rehearse status \
+           view) changed nothing. An interrupted check may leave a probe file or directory on the \
+           hidden volume, since its probes remove what they wrote only once they finish; init and \
+           the rehearse steps that write may have done part of their work.",
     placeholders: &[],
     surface: Surface::Json,
 };
