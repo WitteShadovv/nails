@@ -49,10 +49,10 @@ pub const UNITS: &[&str] = &[
 /// already. The fstab policy never decides on those: in the hidden root they
 /// would be mounted read-write, and the swap would take hidden RAM onto a
 /// decoy disk. On the root overlay the generator finds no disk, so the mask is
-/// a defence in depth for the decoys where it would find one all the same:
-/// through `/run/systemd/volatile-root`, which a decoy booted with
-/// `systemd.volatile=` leaves in `/run` for the hidden session, or through a
-/// `/usr` the entry binds read-only from a decoy disk.
+/// a defence in depth for a decoy where it would find one all the same: one
+/// whose separate `/usr` is mounted read-only. The fstab policy binds that
+/// `/usr` read-only into the hidden root, and with `/` on no disk the
+/// generator takes the disk of `/usr`.
 pub const GENERATORS: &[&str] = &["systemd-gpt-auto-generator"];
 
 /// The [`UNITS`] installed in `root`, the next root, without those already in
