@@ -219,7 +219,7 @@ Keep all of it `root`-owned on the hidden volume.
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail
    there or do nothing: the root filesystem they remount and grow is the root
    overlay in the hidden session. It masks systemd's GPT auto-generator as
-   well, so systemd mounts no partition the fstab does not list. The full
+   well, so the generator mounts no partition the fstab does not list. The full
    table is in [configuration.md](configuration.md#what-the-session-covers).
 
    `nails check` lists the decision for each entry.
