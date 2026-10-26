@@ -36,8 +36,6 @@ fn hidden(at: Step, how: Hiding) -> Verdict {
     Verdict::Hidden { at, how }
 }
 
-// --- the judge --------------------------------------------------------------
-
 #[test]
 fn the_decoys_side_decides_first() {
     // A whiteout cannot hide what the decoy does not have: a NixOS decoy keeps
@@ -242,8 +240,6 @@ fn an_unreadable_entry_is_a_doubt() {
     );
 }
 
-// --- the readers -------------------------------------------------------------
-
 /// Make `rel` below `root` a directory.
 fn mkdir(root: &Path, rel: &str) -> PathBuf {
     let path = root.join(rel);
@@ -370,6 +366,37 @@ fn the_upper_reader_stops_at_the_first_entry_that_is_no_directory() {
     assert_eq!(read(TrustedXattrs::Visible), vec![MERGED, Held::Other]);
 }
 
+/// overlayfs reads the marker one byte long and takes `y` alone as opaque;
+/// only root sees it, and anyone else is told it is missing.
+#[test]
+fn the_opaque_marker_is_exactly_one_byte_y() {
+    use rustix::io::Errno;
+    let rel = Path::new("usr/lib/modules");
+    let visible = |read| read::marker(read, rel, TrustedXattrs::Visible);
+    assert_eq!(visible(Ok(b"y")), Opacity::Opaque);
+    // `x` marks a lower directory with whiteouts in files, never an upper's.
+    assert_eq!(visible(Ok(b"x")), Opacity::Merged);
+    assert_eq!(visible(Ok(b"")), Opacity::Merged);
+    // A value longer than the byte overlayfs reads.
+    assert_eq!(visible(Err(Errno::RANGE)), Opacity::Merged);
+    assert_eq!(visible(Err(Errno::NOTSUP)), Opacity::Merged);
+    assert_eq!(visible(Err(Errno::NODATA)), Opacity::Merged);
+    assert_eq!(
+        read::marker(Err(Errno::NODATA), rel, TrustedXattrs::Invisible),
+        Opacity::Unknown(Doubt::NeedsRoot)
+    );
+    let Opacity::Unknown(Doubt::Other(reason)) = visible(Err(Errno::ACCESS)) else {
+        panic!("a refused read is a doubt");
+    };
+    assert!(
+        reason.starts_with(
+            "whether a hidden session replaced /usr/lib/modules with a new directory cannot be \
+             read ("
+        ),
+        "{reason}"
+    );
+}
+
 #[test]
 fn the_upper_reader_sees_a_whiteout() {
     let upper = tempfile::tempdir().unwrap();
@@ -472,13 +499,24 @@ fn the_same_filesystem_holds_a_tree_below_its_root() {
 }
 
 #[test]
+fn the_same_filesystem_test_never_follows_a_final_link() {
+    // /proc is a mount of its own: followed, the link would lead there.
+    let root = tempfile::tempdir().unwrap();
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink("/proc", &link).unwrap();
+    assert_eq!(read::same_mount(root.path(), &link), Some(true));
+    assert_eq!(
+        read::same_mount(root.path(), Path::new("/proc")),
+        Some(false)
+    );
+}
+
+#[test]
 fn a_process_without_root_sees_no_trusted_attributes() {
     if !rustix::process::geteuid().is_root() {
         assert_eq!(TrustedXattrs::of_this_process(), TrustedXattrs::Invisible);
     }
 }
-
-// --- the row -------------------------------------------------------------
 
 /// The check over the decoy `root` with the upper `upper`.
 fn check(root: &Path, upper: &Path) -> KernelModulesCheck {
@@ -696,43 +734,92 @@ fn a_release_that_is_no_plain_name_cannot_be_judged() {
 #[test]
 fn every_hiding_has_its_own_message_and_a_fix() {
     let check = check(Path::new("/"), Path::new("/mnt/hidden/root/upper"));
+    let tree = tree();
+    let modules = format!("{tree}, the running kernel's modules");
     let all = [
-        (Step::Release, Hiding::Deleted, "deleted"),
-        (Step::ModuleDir, Hiding::Deleted, "and with it"),
+        (Step::Release, Hiding::Deleted, format!("deleted {modules}")),
+        (
+            Step::ModuleDir,
+            Hiding::Deleted,
+            format!("deleted /usr/lib/modules, and with it {modules}"),
+        ),
         (
             Step::Release,
             Hiding::Replaced,
-            "something other than a directory",
+            format!("replaced {modules}, with something other than a directory"),
         ),
-        (Step::UsrLib, Hiding::Replaced, "which hides"),
-        (Step::ModuleDir, Hiding::Covered, "without"),
-        (Step::Release, Hiding::OwnCopy, "with a copy of its own"),
-        (Step::UsrLib, Hiding::OwnCopy, "from the copy of"),
-        (Step::Release, Hiding::CopyWithoutIndex, "has no index"),
-        (Step::ModuleDir, Hiding::CopyWithoutIndex, "whose copy"),
+        (
+            Step::UsrLib,
+            Hiding::Replaced,
+            format!("replaced /usr/lib with something other than a directory, which hides {tree}"),
+        ),
+        (
+            Step::ModuleDir,
+            Hiding::Covered,
+            format!("replaced the decoy's /usr/lib/modules with a new directory without {tree}"),
+        ),
+        (
+            Step::Release,
+            Hiding::OwnCopy,
+            format!("replaced the decoy's {modules}, with a copy of its own, and"),
+        ),
+        (
+            Step::UsrLib,
+            Hiding::OwnCopy,
+            "replaced the decoy's /usr/lib with a new directory, and".to_string(),
+        ),
+        (
+            Step::Release,
+            Hiding::CopyWithoutIndex,
+            format!("replaced the decoy's {modules}, with a copy of its own that has no index"),
+        ),
+        (
+            Step::ModuleDir,
+            Hiding::CopyWithoutIndex,
+            "replaced the decoy's /usr/lib/modules with a new directory whose copy".to_string(),
+        ),
         (
             Step::Release,
             Hiding::IndexDeleted,
-            "deleted /usr/lib/modules",
+            format!("deleted {tree}/modules.dep, the index"),
         ),
-        (Step::Release, Hiding::IndexReplaced, "other than a file"),
-        (Step::Release, Hiding::StaleIndex, "last rebuilt its own"),
+        (
+            Step::Release,
+            Hiding::IndexReplaced,
+            format!("replaced {tree}/modules.dep, the index"),
+        ),
+        (
+            Step::Release,
+            Hiding::StaleIndex,
+            format!("({tree}/modules.dep) a hidden session wrote before the decoy last rebuilt"),
+        ),
     ];
     let mut messages = std::collections::BTreeSet::new();
     for (at, how, phrase) in all {
         let result = check.report(&Verdict::Hidden { at, how });
         assert!(result.is_warn(), "{how:?}: {result:?}");
         let (message, fix) = result.message().split_once('\n').unwrap();
-        assert!(message.contains(phrase), "{how:?}: {message}");
-        assert!(message.contains(&tree()), "{how:?}: {message}");
+        assert!(message.contains(&phrase), "{how:?}: {message}");
+        assert!(messages.insert(message.to_string()), "{how:?} repeats");
         // The fix deletes the hidden sessions' copy of the step that holds
-        // the change.
+        // the change; only a stale index has a fix of its own first, and only
+        // a copy of the decoy's own tree may still load.
         let place = format!("/{}", at.path(&release()).display());
+        let restore = format!(
+            "bring the decoy's {place} back with `{}`",
+            sudo_line_for(NextStep::Discard, &place)
+        );
+        let opening = match how {
+            Hiding::OwnCopy => "If modules fail to load in hidden sessions, ".to_string(),
+            Hiding::StaleIndex => {
+                format!("Rebuild the index in a hidden session with `sudo depmod {RELEASE}`, or ")
+            }
+            _ => "Update the decoy's kernel and reboot the decoy into it, or ".to_string(),
+        };
         assert!(
-            fix.contains(&format!("`{}`", sudo_line_for(NextStep::Discard, &place))),
+            fix.starts_with(&format!("{opening}{restore}")),
             "{how:?}: {fix}"
         );
-        assert!(messages.insert(message.to_string()), "{how:?} repeats");
     }
 }
 
