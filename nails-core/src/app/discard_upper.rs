@@ -8,13 +8,16 @@
 //! the layers of a separate decoy filesystem mounted at that path. It refuses in
 //! the hidden session (the upper is the live root there). The plan and the apply
 //! are separate so a front end can list what it will delete and confirm between
-//! the two, under the state lock the front end holds.
+//! the two, both on the handle [`ReadyDiscard::lock`] hands out, which holds the
+//! exclusive state lock.
 
 use std::path::Path;
 
 use serde::Serialize;
 
-use crate::{Config, NailsManager, RealFilesystem, ResetUpperPlan, Result, RuntimeEnv};
+use super::lock::LockError;
+use crate::hidden_root::Allow;
+use crate::{Config, NailsManager, RealFilesystem, ResetUpperPlan, Result, RuntimeEnv, StateLock};
 
 /// The machine-readable payload of a discard.
 #[derive(Debug, Serialize)]
@@ -40,32 +43,73 @@ impl DiscardData {
     }
 }
 
-/// A discard whose configuration is loaded and manager built, ready to plan and
-/// apply under the caller's state lock.
+/// A discard whose configuration is loaded and manager built, ready to lock.
+/// It can neither plan nor apply: only the [`LockedDiscard`] its
+/// [`lock`](Self::lock) step hands out can, so no concurrent activation mounts
+/// the target out from under it.
+///
+/// ```compile_fail
+/// fn apply_unlocked(
+///     ready: &nails_core::app::discard_upper::ReadyDiscard,
+///     plan: &nails_core::ResetUpperPlan,
+/// ) {
+///     let _ = ready.apply(plan);
+/// }
+/// ```
+///
+/// ```
+/// fn apply_locked(
+///     locked: &nails_core::app::discard_upper::LockedDiscard,
+///     plan: &nails_core::ResetUpperPlan,
+/// ) {
+///     let _ = locked.apply(plan);
+/// }
+/// ```
 pub struct ReadyDiscard {
     manager: NailsManager<RealFilesystem>,
 }
 
 impl ReadyDiscard {
-    /// The hidden volume root, for taking the state lock.
-    pub fn hidden_root(&self) -> &Path {
-        &self.manager.config().hidden_volume_root
+    /// Take the exclusive state lock, created only on the hidden volume or, with
+    /// `allow`, on a root the operator accepted. Hands out the only handle that
+    /// plans and applies, which holds the lock until it is dropped.
+    pub fn lock(self, allow: Allow) -> std::result::Result<LockedDiscard, LockError> {
+        self.lock_with(allow, super::lock::acquire_mutating)
     }
 
-    /// The state file path, for taking the state lock.
-    pub fn state_path(&self) -> &Path {
-        &self.manager.config().state_file_path
+    /// [`lock`](Self::lock), taking the lock with `acquire`.
+    fn lock_with(
+        self,
+        allow: Allow,
+        acquire: impl FnOnce(&Path, Allow, &Path) -> std::result::Result<StateLock, LockError>,
+    ) -> std::result::Result<LockedDiscard, LockError> {
+        let config = self.manager.config();
+        let lock = acquire(&config.hidden_volume_root, allow, &config.state_file_path)?;
+        Ok(LockedDiscard {
+            ready: self,
+            _lock: lock,
+        })
     }
+}
 
+/// A discard that holds the exclusive state lock: the only handle that plans
+/// and applies. The lock is released when it is dropped.
+pub struct LockedDiscard {
+    ready: ReadyDiscard,
+    /// Held for its `Drop`, which releases the lock.
+    _lock: StateLock,
+}
+
+impl LockedDiscard {
     /// Plan what removing `target`'s hidden upper would delete. Refuses in the
     /// hidden session with [`NailsError::InvalidState`](crate::NailsError).
     pub fn plan(&self, target: &Path) -> Result<ResetUpperPlan> {
-        self.manager.plan_reset_upper(target)
+        self.ready.manager.plan_reset_upper(target)
     }
 
     /// Apply a plan: delete the hidden upper it names.
     pub fn apply(&self, plan: &ResetUpperPlan) -> Result<()> {
-        self.manager.apply_reset_upper(plan)
+        self.ready.manager.apply_reset_upper(plan)
     }
 }
 
@@ -82,7 +126,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn discard_rooted_at(root: &Path) -> ReadyDiscard {
+    fn ready_rooted_at(root: &Path) -> ReadyDiscard {
         let config = Config {
             hidden_volume_root: root.to_path_buf(),
             state_file_path: root.join("state.json"),
@@ -90,6 +134,47 @@ mod tests {
             ..Config::test_default()
         };
         prepare(&RuntimeEnv::default(), config)
+    }
+
+    /// The locked handle of a discard rooted at `root`, taking the lock beside
+    /// its state file without the attach gate (a scratch directory is no
+    /// mount point).
+    fn discard_rooted_at(root: &Path) -> LockedDiscard {
+        ready_rooted_at(root)
+            .lock_with(Allow::Nothing, crate::app::lock::acquire_unattached)
+            .unwrap_or_else(|error| panic!("the lock step refused: {error:?}"))
+    }
+
+    /// The handle that plans and applies holds the state lock for as long as
+    /// it lives, and the real lock step runs the attach gate first, with the
+    /// allowance it is given.
+    #[test]
+    fn the_lock_step_holds_the_lock_for_the_handle_that_applies() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = discard_rooted_at(root.path());
+        assert!(crate::StateLock::try_acquire(root.path()).is_err());
+        drop(locked);
+        assert!(crate::StateLock::try_acquire(root.path()).is_ok());
+        for allow in [Allow::Nothing, Allow::DecoyStorage] {
+            assert!(matches!(
+                ready_rooted_at(root.path()).lock(allow),
+                Err(LockError::Refused(_))
+            ));
+        }
+    }
+
+    /// The allowance reaches the gate the lock is taken behind.
+    #[test]
+    fn the_lock_step_hands_its_allowance_to_the_gate() {
+        let root = tempfile::tempdir().unwrap();
+        for allow in [Allow::Nothing, Allow::DecoyStorage] {
+            let mut seen = None;
+            let _ = ready_rooted_at(root.path()).lock_with(allow, |_, given, state| {
+                seen = Some(given);
+                crate::app::lock::acquire_unattached(root.path(), given, state)
+            });
+            assert_eq!(seen, Some(allow));
+        }
     }
 
     #[test]

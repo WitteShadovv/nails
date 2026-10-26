@@ -134,18 +134,13 @@ fn deactivate_prepared(
         return status;
     }
 
-    let _state_lock = match super::acquire_state_lock_or_report(
-        ready.hidden_root(),
-        nails_core::hidden_root::Allow::Nothing,
-        ready.state_path(),
-        "deactivate",
-        json,
-    ) {
-        Ok(lock) => lock,
-        Err(status) => return status,
+    // Only the handle the lock step hands out leaves; it holds the lock until
+    // it is dropped, once the outcome is reported.
+    let mut locked = match ready.lock() {
+        Ok(locked) => locked,
+        Err(error) => return super::report_lock_error(error, "deactivate", json),
     };
-
-    leave_and_report(settings, to, warnings, |to| ready.leave(to))
+    leave_and_report(settings, to, warnings, |to| locked.leave(to))
 }
 
 /// Write each of the `warnings` before the question, on `out` (stderr, as

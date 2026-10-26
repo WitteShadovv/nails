@@ -53,20 +53,15 @@ pub fn execute(
     let target = args.target.clone();
     let ready = nails_core::app::discard_upper::prepare(env, loaded.into_config());
 
-    // Hold the exclusive state lock while we plan and delete, so a concurrent
-    // activation cannot mount the target out from under the discard.
-    let _state_lock = match super::acquire_state_lock_or_report(
-        ready.hidden_root(),
-        allow(args),
-        ready.state_path(),
-        "discard",
-        json,
-    ) {
-        Ok(lock) => lock,
-        Err(status) => return status,
+    // Plan and delete on the handle that holds the exclusive state lock, so a
+    // concurrent activation cannot mount the target out from under the
+    // discard.
+    let locked = match ready.lock(allow(args)) {
+        Ok(locked) => locked,
+        Err(error) => return super::report_lock_error(error, "discard", json),
     };
 
-    let plan = match ready.plan(&target) {
+    let plan = match locked.plan(&target) {
         Ok(plan) => plan,
         Err(e) => {
             let status = match e {
@@ -122,7 +117,7 @@ pub fn execute(
         }
     }
 
-    if let Err(e) = ready.apply(&plan) {
+    if let Err(e) = locked.apply(&plan) {
         return report_error(
             json,
             "discard",
