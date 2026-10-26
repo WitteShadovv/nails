@@ -46,6 +46,7 @@ use crate::error::{NailsError, Result};
 use crate::filesystem::Filesystem;
 use crate::platform::PlatformKind;
 use crate::session::entry::{self, EntryHost, EntryInputs};
+use crate::session::labels::Labels;
 use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
 use chrono::Utc;
@@ -380,6 +381,9 @@ impl<F: Filesystem> NailsManager<F> {
             backend,
             persona: self.config.persona.clone(),
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
+            // Fail closed: a host that was not detected has no facts to rule
+            // SELinux out, so it needs the labels as one that reports it does.
+            labels: Labels::for_host(self.host_profile()),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
             accepted_decoy_storage,

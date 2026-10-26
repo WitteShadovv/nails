@@ -14,12 +14,17 @@
 //!    before anything is mounted at `/run/nextroot`: an activation killed
 //!    later leaves an unarmed next root that any soft-reboot disarms;
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
-//!    the upper on the hidden volume;
+//!    the upper on the hidden volume. Before it is mounted the operator's home
+//!    is made in the fresh-home persona, and in either persona the directories
+//!    on the way to that home take the SELinux labels of the decoy's
+//!    ([`super::labels`]); the root of the upper takes the decoy root's mode,
+//!    owner and label;
 //! 5. the fstab policy on the decoy's fstab ([`super::policy`]): the hidden
 //!    volume bound at its path, boot filesystems read-only, other decoy
-//!    filesystems overlaid, the rest masked at entry. This comes before the
-//!    hidden build, because a separate `/nix` (or a VM's store share) must be
-//!    in place before anything reads the next root's store;
+//!    filesystems overlaid (the root of each upper labelled as in step 4), the
+//!    rest masked at entry. This comes before the hidden build, because a
+//!    separate `/nix` (or a VM's store share) must be in place before anything
+//!    reads the next root's store;
 //! 6. on NixOS with a hidden configuration: the hidden toplevel built into the
 //!    next root's store, its closure copied onto the hidden volume so a decoy
 //!    garbage collection cannot break it ([`super::store`]), and activated
@@ -45,6 +50,7 @@
 
 use super::fstab::FstabEntry;
 use super::hidden_masks;
+use super::labels::{Labels, copy_label, copy_labels_along, copy_labels_along_existing};
 use super::layout::{Layout, Paths};
 use super::network_state;
 use super::nixos;
@@ -194,6 +200,10 @@ pub struct EntryInputs<'a> {
     /// The operator (from `SUDO_UID`/`SUDO_USER`), whose home the persona
     /// applies to.
     pub operator: Option<crate::target_user::TargetUser>,
+    /// Whether the directories the entry makes on the hidden volume must take
+    /// the SELinux labels of the decoy directories they stand for:
+    /// [`Labels::for_host`] of the detected host.
+    pub labels: Labels,
     /// The free space a hidden NixOS build needs on the hidden volume, in MB.
     pub rebuild_space_mb: u64,
     /// Keep the disks the session does not use read-only for the session
@@ -301,12 +311,17 @@ fn match_attributes(dir: &Path, like: &Path) -> Result<()> {
     std::os::unix::fs::chown(dir, Some(meta.uid()), Some(meta.gid())).map_err(|e| io(dir, e))
 }
 
-fn make_layer(upper: &Path, work: &Path, like: &Path) -> Result<()> {
+/// The upper and work directories of an overlay over `like`, made before the
+/// overlay is mounted. The root of the upper becomes the overlay's root, so it
+/// takes the mode and owner of `like` and, by `labels`, its SELinux label
+/// ([`copy_label`]); a copy that fails refuses the entry.
+fn make_layer(upper: &Path, work: &Path, like: &Path, labels: Labels) -> Result<()> {
     std::fs::create_dir_all(upper).map_err(|e| io(upper, e))?;
     std::fs::create_dir_all(work).map_err(|e| io(work, e))?;
     std::fs::set_permissions(work, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| io(work, e))?;
-    match_attributes(upper, like)
+    match_attributes(upper, like)?;
+    copy_label(like, upper, labels).map(drop)
 }
 
 /// The init PID 1 will execute in `root` on an FHS host.
@@ -502,10 +517,8 @@ fn build(
 
     activation_step(ActivationPhase::Overlay, building);
     let decoy_mounts = relative_mounts(&mounts, &paths.root);
-    if inputs.persona.mode == crate::config::PersonaMode::FreshHome {
-        fresh_home(paths, inputs, &layout, &decoy_mounts)?;
-    }
-    make_layer(&layout.upper(), &layout.work(), &paths.root)?;
+    persona_home(paths, inputs, &layout, &decoy_mounts)?;
+    make_layer(&layout.upper(), &layout.work(), &paths.root, inputs.labels)?;
     std::fs::create_dir_all(&nextroot).map_err(|e| io(&nextroot, e))?;
     nextroot::overlay_over(
         &paths.root,
@@ -527,7 +540,7 @@ fn build(
         decisions: decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?,
         fstab: decoy_fstab.clone(),
     };
-    plan.policy_mounts = apply_mounts(paths, &layout, &decided.decisions, inputs.hidden_root, &[])?;
+    plan.policy_mounts = apply_mounts(paths, &layout, &decided.decisions, inputs, &[])?;
     // The hidden systemd resolves the same entries in the next root, where the
     // hidden session's own changes to a symlink on a mount point's path can
     // lead elsewhere: an entry that resolves to another mount point there is
@@ -539,14 +552,7 @@ fn build(
         super::fstab::parse_in_root(&decoy_text, &nextroot),
     );
     let more = decide_elsewhere(&elsewhere, &decoy_mounts, inputs.hidden_root)?;
-    decided.add(
-        paths,
-        &layout,
-        &mut plan,
-        elsewhere,
-        more,
-        inputs.hidden_root,
-    )?;
+    decided.add(paths, &layout, &mut plan, elsewhere, more, inputs)?;
     crate::cancel::checkpoint()?;
 
     let mut warnings = Vec::new();
@@ -594,14 +600,7 @@ fn build(
             .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
         let hidden_fstab = super::fstab::parse_in_root(&hidden_text, &nextroot);
         let more = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
-        decided.add(
-            paths,
-            &layout,
-            &mut plan,
-            hidden_fstab,
-            more,
-            inputs.hidden_root,
-        )?;
+        decided.add(paths, &layout, &mut plan, hidden_fstab, more, inputs)?;
     } else if !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
@@ -662,9 +661,36 @@ fn ensure_build_space(upper: &Path, floor_mb: u64) -> Result<()> {
     Ok(())
 }
 
+/// The operator's home in the upper that covers it, before any overlay is
+/// mounted on that upper. The fresh-home persona makes the home there
+/// ([`fresh_home`]). In the shared-home persona the way to the home takes the
+/// decoy's SELinux labels as far as the upper holds it
+/// ([`copy_labels_along_existing`]): a fresh-home entry refused at its labels
+/// leaves the directories it made there, and the overlay shows them in the
+/// hidden root. An entry without an operator has no home to prepare.
+fn persona_home(
+    paths: &Paths,
+    inputs: &EntryInputs<'_>,
+    layout: &Layout,
+    decoy_mounts: &[MountEntry],
+) -> Result<()> {
+    if inputs.persona.mode == crate::config::PersonaMode::FreshHome {
+        return fresh_home(paths, inputs, layout, decoy_mounts);
+    }
+    let Some(operator) = &inputs.operator else {
+        return Ok(());
+    };
+    let way = HomeWay::of(paths, layout, decoy_mounts, operator);
+    copy_labels_along_existing(&way.decoy, &way.upper, &way.rest, inputs.labels)
+}
+
 /// Fresh-home: the operator's home becomes an opaque directory in the upper
 /// that covers it (the root upper, or the upper of the decoy filesystem it
-/// lives on), created at the first entry.
+/// lives on), created at the first entry. At every entry, whether it made the
+/// home now or found it in place, each directory below the root of that upper
+/// down to the home takes the SELinux label of the decoy's
+/// ([`copy_labels_along`]), so one an earlier entry left unlabelled takes it
+/// now.
 fn fresh_home(
     paths: &Paths,
     inputs: &EntryInputs<'_>,
@@ -676,24 +702,55 @@ fn fresh_home(
             "persona mode fresh-home needs the operator (run through sudo)".to_string(),
         )
     })?;
-    // Resolve the home inside the decoy root first, so a `/home` the decoy
-    // keeps at `var/home` places the fresh home at `var/home/<user>` and never
-    // creates a directory where the decoy has a symlink.
-    let home = nextroot::canonical_in_root(&paths.root, operator.passwd_home());
-    let home = home.as_path();
-    let mount = decoy_mounts
-        .iter()
-        .filter(|m| home.starts_with(&m.mount_point))
-        .max_by_key(|m| m.mount_point.components().count())
-        .map_or(Path::new("/"), |m| m.mount_point.as_path());
-    let upper_home = if mount == Path::new("/") {
-        layout.in_upper(home)
-    } else {
-        let rest = home.strip_prefix(mount).unwrap_or(home);
-        layout.mount_layers(mount).0.join(rest)
-    };
-    super::persona::prepare_fresh_home(&upper_home, &paths.decoy(home), operator)?;
-    Ok(())
+    let way = HomeWay::of(paths, layout, decoy_mounts, operator);
+    super::persona::prepare_fresh_home(
+        &way.upper.join(&way.rest),
+        &way.decoy.join(&way.rest),
+        operator,
+    )?;
+    copy_labels_along(&way.decoy, &way.upper, &way.rest, inputs.labels)
+}
+
+/// Where the operator's home lies in the hidden root: below the root upper for
+/// a home on the decoy root, else below the upper of the decoy filesystem it
+/// lives on.
+struct HomeWay {
+    /// The root of the decoy filesystem the home lives on, as this system
+    /// reaches it: the directory the root of `upper` stands for.
+    decoy: PathBuf,
+    /// The upper that covers that filesystem.
+    upper: PathBuf,
+    /// The home below both.
+    rest: PathBuf,
+}
+
+impl HomeWay {
+    /// The way to `operator`'s home. The home is resolved inside the decoy root
+    /// first, so a `/home` the decoy keeps at `var/home` places it at
+    /// `var/home/<user>`, and nothing is made where the decoy has a symlink.
+    fn of(
+        paths: &Paths,
+        layout: &Layout,
+        decoy_mounts: &[MountEntry],
+        operator: &crate::target_user::TargetUser,
+    ) -> Self {
+        let home = nextroot::canonical_in_root(&paths.root, operator.passwd_home());
+        let mount = decoy_mounts
+            .iter()
+            .filter(|m| home.starts_with(&m.mount_point))
+            .max_by_key(|m| m.mount_point.components().count())
+            .map_or(Path::new("/"), |m| m.mount_point.as_path());
+        let upper = if mount == Path::new("/") {
+            layout.upper()
+        } else {
+            layout.mount_layers(mount).0
+        };
+        Self {
+            decoy: paths.decoy(mount),
+            upper,
+            rest: home.strip_prefix(mount).unwrap_or(&home).to_path_buf(),
+        }
+    }
 }
 
 /// Install the transition drop-in and reload the service manager.
@@ -823,14 +880,14 @@ impl Decided {
         plan: &mut Plan,
         entries: Vec<FstabEntry>,
         more: Vec<Decision>,
-        hidden_root: &Path,
+        inputs: &EntryInputs<'_>,
     ) -> Result<()> {
         let done: Vec<PathBuf> = plan
             .policy_mounts
             .iter()
             .map(|m| m.target.clone())
             .collect();
-        let added = apply_mounts(paths, layout, &more, hidden_root, &done)?;
+        let added = apply_mounts(paths, layout, &more, inputs, &done)?;
         plan.policy_mounts.extend(added);
         for decision in more {
             if !self.decisions.contains(&decision) {
@@ -868,13 +925,14 @@ pub(super) fn target_in_nextroot(paths: &Paths, target: &Path) -> Result<PathBuf
 }
 
 /// Put the mounts `decisions` call for in place inside the next root, parents
-/// first, skipping the targets in `done`. The hidden volume is bound unless it
-/// is in `done` already.
+/// first, skipping the targets in `done`. The hidden volume
+/// (`inputs.hidden_root`) is bound unless it is in `done` already, and the
+/// upper of each overlay is labelled by `inputs.labels` ([`make_layer`]).
 fn apply_mounts(
     paths: &Paths,
     layout: &Layout,
     decisions: &[Decision],
-    hidden_root: &Path,
+    inputs: &EntryInputs<'_>,
     done: &[PathBuf],
 ) -> Result<Vec<PolicyMount>> {
     let mut wanted: Vec<PolicyMount> = decisions
@@ -892,7 +950,7 @@ fn apply_mounts(
         })
         .collect();
     wanted.push(PolicyMount {
-        target: hidden_root.to_path_buf(),
+        target: inputs.hidden_root.to_path_buf(),
         kind: PolicyMountKind::HiddenVolume,
     });
     wanted.retain(|m| !done.contains(&m.target));
@@ -911,7 +969,7 @@ fn apply_mounts(
             PolicyMountKind::HiddenVolume => nextroot::bind(&source, &target, false),
             PolicyMountKind::Overlay => {
                 let (upper, work) = layout.mount_layers(&mount.target);
-                make_layer(&upper, &work, &source)?;
+                make_layer(&upper, &work, &source, inputs.labels)?;
                 nextroot::overlay_over(
                     &source,
                     &paths.runtime().join(format!("lower-{index}")),
