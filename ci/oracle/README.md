@@ -64,12 +64,13 @@ findings keyed by `(tool, path, field)`:
   them are still reported.
 - nix_db — `path` is the store database's on-image path; `field` is one of its
   `ValidPaths` rows: `ValidPaths`, then every column but the row id and the
-  registration time as `name=value` in name order, a NULL left out. A Nix
-  decoy registers its store paths at every start, which rewrites the database
-  file, so the restore channel can only call it noise. Its rows do not change
-  with a boot, so a store path the session registered or removed, or
-  registered again with another hash, size, deriver or signature, is a change
-  of its own.
+  registration time as `name=value` in name order, a NULL left out. The
+  oracle's decoy VMs register their store paths at every start (the QEMU test
+  module's `register-nix-paths`), which rewrites the database file, so the
+  restore channel can only call it noise. Its rows do not change with such a
+  start, so a store path the session registered or removed, or registered
+  again with another hash, size, deriver or signature, is a change of its
+  own.
 - bulk_extractor — `path` is the feature type (`email`, `url`, ...); `field` is
   the feature value. This channel reads the whole image, free space included,
   so it still sees a deleted-but-not-overwritten trace. Its carvers save whole
@@ -77,10 +78,10 @@ findings keyed by `(tool, path, field)`:
   content instead: a carved login record (`utmp_carved`) by the fields it
   records with its time and session left out, and any other carved object by
   its content hash. Two outputs stay out of the verdict: `sqlite_carved`,
-  because every boot rewrites the decoy images' Nix store database file and
-  the images hold live and stale, partly overwritten copies of it that no
-  clean boot reproduces (the live database is read by its rows instead), and
-  `duplicates`, which lists repeated blocks by their offsets.
+  because the oracle's decoy VMs rewrite their Nix store database file at
+  every start and the images hold live and stale, partly overwritten copies
+  of it that no clean boot reproduces (the live database is read by its rows
+  instead), and `duplicates`, which lists repeated blocks by their offsets.
 - plaso — `path` is the event's source path; `field` is the event's data type,
   then, for a record, every field that says what it records (`name=value`).
   The record's timestamps, its offset, the file's inode and hash, and plaso's
