@@ -195,6 +195,28 @@ fn an_image_based_fedora_is_pointed_at_the_platforms_not_at_dnf() {
 }
 
 #[test]
+fn a_host_whose_pid_1_is_not_systemd_is_pointed_at_the_platforms() {
+    // systemctl can be installed while another init runs as PID 1, and an
+    // upgrade of the distribution would not make systemd its init. Detection
+    // refuses such a host before it consults the table, as it does one whose
+    // PID 1 it cannot name.
+    let os_release = "ID=debian\nVERSION_ID=\"12\"\n";
+    assert!(hint_for(os_release).contains("Debian 13"));
+
+    for pid1 in [Some("init"), None] {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/os-release", os_release);
+        if let Some(comm) = pid1 {
+            fs.mock_add_file("/proc/1/comm", comm);
+        }
+        let host = detected(&fs);
+        assert_eq!(host.kind, PlatformKind::Unsupported, "{pid1:?}");
+        assert_eq!(host.family, None, "{pid1:?}");
+        assert_eq!(upgrade_hint(Some(&host)), SUPPORTED, "{pid1:?}");
+    }
+}
+
+#[test]
 fn a_rolling_family_has_no_release_to_build_on() {
     assert_eq!(built_on(Family::Arch), None);
     assert_eq!(
