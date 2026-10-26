@@ -402,8 +402,9 @@ the root filesystem's disk (`/home`, `/srv`, `/var`, the ESP) and turns on a
 swap partition, where the fstab does not cover them. The policy never decides
 on those, so the generator is masked in the hidden session. On the root overlay
 it finds no disk; the mask is a defence in depth for a decoy where it would find
-one all the same, such as one booted with `systemd.volatile=`, which leaves the
-root's device in `/run` for the hidden session.
+one all the same: one whose separate `/usr` is mounted read-only. The policy
+binds that `/usr` read-only into the hidden root, and with `/` on no disk the
+generator takes the disk of `/usr`.
 
 A mount that is not in fstab (an automounted USB drive, a disk mounted by hand)
 is not carried into the hidden session at all; the hidden session can mount it
