@@ -474,6 +474,46 @@ fn the_recorded_size_of_a_swap_area_comes_from_its_last_page() {
 }
 
 #[test]
+fn the_encrypt_feature_of_an_ext4_or_f2fs_comes_from_its_superblock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("encrypt.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(1 << 20).unwrap();
+    // The incompatible features of an ext4 at 0x460: mkfs.ext4's defaults
+    // (0x2c2), and with -O encrypt.
+    put(&mut file, 0x460, &0x2C2u32.to_le_bytes());
+    put(&mut file, (64 << 10) + 0x460, &0x1_22C2u32.to_le_bytes());
+    // The features of an f2fs at 0xC84: none, encrypt, and compression and
+    // extra_attr without encrypt.
+    put(&mut file, (128 << 10) + 0xC84, &0u32.to_le_bytes());
+    put(&mut file, (192 << 10) + 0xC84, &1u32.to_le_bytes());
+    put(&mut file, (256 << 10) + 0xC84, &0x2008u32.to_le_bytes());
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+    let encrypting = |start, format| encryption_feature(&source, start, format).unwrap();
+
+    assert!(!encrypting(0, "ext2/3/4"));
+    assert!(encrypting(64 << 10, "ext2/3/4"));
+    assert!(!encrypting(128 << 10, "f2fs"));
+    assert!(encrypting(192 << 10, "f2fs"));
+    assert!(!encrypting(256 << 10, "f2fs"));
+    // Each format's flags are its own: the f2fs flag is no ext4 flag.
+    assert!(!encrypting(192 << 10, "ext2/3/4"));
+    assert!(!encrypting(64 << 10, "f2fs"));
+    // No other format has the feature, whatever its bytes there.
+    put(&mut file, 0xC84, &[0xFF; 4]);
+    put(&mut file, 0x460, &[0xFF; 4]);
+    file.sync_all().unwrap();
+    let source = RawSource::open(&path).unwrap();
+    assert!(!encryption_feature(&source, 0, "xfs").unwrap());
+    assert!(!encryption_feature(&source, 0, "vfat").unwrap());
+    // A superblock the source ends inside, before its flags, counts as one
+    // with the feature.
+    assert!(encryption_feature(&source, (1 << 20) - 0x400, "ext2/3/4").unwrap());
+    assert!(encryption_feature(&source, (1 << 20) - 0x800, "f2fs").unwrap());
+}
+
+#[test]
 fn the_size_and_compression_of_an_f2fs_come_from_its_superblock() {
     use RecordedSize::{Bytes, Implausible};
     let dir = tempfile::tempdir().unwrap();

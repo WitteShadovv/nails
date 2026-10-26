@@ -308,6 +308,14 @@ of this changelog for that version becomes the release notes word for word, and
   area does is known to be incomplete. A boot sector or swap header that records what no such
   filesystem has (a sector size the kernel does not take, no sector at all, a swap header of
   another version) counts as storage the scan does not identify.
+- `nails rehearse scan` reports file-level encryption and NTFS as "not checked" (exit 9) where it
+  reported a clean pass (exit 0): a raw plaintext scan cannot read what a filesystem stores
+  encrypted or compressed file by file. That covers NTFS, which can compress the files of a folder
+  marked compressed, whether an `ntfs` or `ntfs3` mount, any `fuseblk` mount (the type ntfs-3g
+  mounts NTFS as) or an NTFS image; an ext4 or f2fs with the encrypt feature (fscrypt), which the
+  scan reads from the superblock of a mounted device too; and a filesystem with an eCryptfs mount
+  on it (an encrypted home or Private folder), which the scan sees only while that folder is
+  mounted.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up
