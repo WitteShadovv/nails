@@ -19,6 +19,7 @@
     "moduleDirs": [
       "6.19.10-300.fc44.x86_64"
     ],
+    "systemdVersion": "systemd 259 (259.5-1.fc44)",
     "mounts": [
       {
         "target": "/",
@@ -311,7 +312,9 @@
     },
     "journaldVendorConfig": {
       "storage": "persistent",
-      "sources": []
+      "sources": [],
+      "credential": null,
+      "vendorHint": "persistent"
     },
     "failedBootUnits": [],
     "maskedUnits": [

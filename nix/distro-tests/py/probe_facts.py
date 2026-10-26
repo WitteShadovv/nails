@@ -69,6 +69,21 @@ GENERATOR_DIRS = {
     "/run/systemd/generator.late": "generator-late",
 }
 
+# The Storage= values journald takes, matched exactly; it ignores any other
+# value, an empty one included.
+STORAGE_VALUES = ("persistent", "volatile", "none", "auto")
+
+# What journald's Storage= follows from when no configuration file sets it, as
+# nails-core's journald_storage.rs resolves it: the journal.storage credential
+# journald received, which it reads from systemd 256 on, and else the built-in
+# default, auto before systemd 259 and persistent from 259 on, unless the
+# vendor file documents another one in a commented-out Storage= (a
+# distribution that kept auto). A comment in any other file counts for nothing.
+STORAGE_CREDENTIAL = "/run/credentials/systemd-journald.service/journal.storage"
+STORAGE_CREDENTIAL_SINCE = 256
+VENDOR_JOURNALD_CONF = "/usr/lib/systemd/journald.conf"
+PERSISTENT_DEFAULT_SINCE = 259
+
 # Every mount, swap and automount unit systemd knows, whatever its state.
 _MOUNT_UNITS = (
     "systemctl list-units --all --type=mount,swap,automount "
@@ -147,6 +162,7 @@ def cold_boot_queries(os_id: str) -> list[Query]:
         ("backdoor", _BACKDOOR),
         ("kernel", "uname -r"),
         ("modules", "ls -1 /usr/lib/modules"),
+        ("systemd-version", "systemctl --version | head -n1"),
         ("mounts", "findmnt --real -rn -o TARGET,FSTYPE,OPTIONS"),
         ("fstab", "cat /etc/fstab"),
         ("swaps", "swapon --show=NAME,TYPE,SIZE,PRIO --noheadings --raw --bytes"),
@@ -168,13 +184,19 @@ def cold_boot_queries(os_id: str) -> list[Query]:
     if os_id == "fedora":
         queries.append(("rpm", "rpm -q " + " ".join(RPM_PACKAGES)))
     queries += [
-        # The effective configuration with the file each part comes from, and
-        # where the journal is actually written.
+        # The files journald reads, each after its `# <path>` line, with their
+        # section headers and Storage= lines, commented-out ones too, and where
+        # the journal is actually written.
         (
             "journald",
             "systemd-analyze cat-config systemd/journald.conf "
-            "| grep -E '^# /|Storage'; ls -d /var/log/journal /run/log/journal",
+            "| grep -E '^# /|\\[|Storage'; ls -d /var/log/journal /run/log/journal",
         ),
+        # The vendor file on its own, since cat-config shows it only while no
+        # main file in /etc, /run or /usr/local/lib takes its place.
+        ("journald-vendor", f"grep -E '\\[|Storage' {VENDOR_JOURNALD_CONF}"),
+        # The credential journald received, byte for byte.
+        ("journald-credential", f"cat {STORAGE_CREDENTIAL} 2>/dev/null"),
         ("failed-units", _FAILED_UNITS),
         # Every masked unit: the test harness masks some, and a unit it masks
         # can never show up as failed.
@@ -229,8 +251,8 @@ _RELEASE = re.compile(r"\d+\.\d+\S*")
 _SERVICE_LINE = re.compile(r"(\S+) (is-enabled|is-active):\s*(.*)")
 _PRUNEPATHS = re.compile(r'PRUNEPATHS\s*=\s*"([^"]*)"')
 _HEADER = re.compile(r"# (/\S+)")
-_STORAGE = re.compile(r"Storage\s*=\s*(\S*)")
-_DOCUMENTED_STORAGE = re.compile(r"#\s*Storage\s*=\s*(\S*)")
+# The first line of ``systemctl --version``: systemd 259 (259.5-1.fc44).
+_SYSTEMD_VERSION = re.compile(r"systemd (\d+)\b.*")
 
 
 def _lines(text: str | None) -> list[str]:
@@ -536,36 +558,112 @@ def parse_rpm(text: str | None) -> dict[str, str | None]:
     return {name: found.get(name, printed) for name in RPM_PACKAGES}
 
 
-def parse_journald(text: str | None) -> dict[str, Any]:
-    """The effective ``Storage=`` and the files that set it.
+def systemd_version(text: str | None) -> str | None:
+    """The line ``systemctl --version`` prints first, such as ``systemd 259
+    (259.5-1.fc44)``, or None when the query printed no version."""
+    lines = _lines(text)
+    if lines and _SYSTEMD_VERSION.fullmatch(lines[0]):
+        return lines[0]
+    return None
 
-    ``systemd-analyze cat-config`` prints each file after a ``# <path>`` line.
-    The last ``Storage=`` that is set wins; when no file sets it, the value the
-    vendor file documents in its commented-out line is the compiled-in default,
-    and ``sources`` is empty.
+
+def systemd_major(version: str | None) -> int | None:
+    """The major version a :func:`systemd_version` line names, or None."""
+    match = _SYSTEMD_VERSION.fullmatch(version or "")
+    return int(match.group(1)) if match else None
+
+
+def _storage_value(assignment: str) -> str | None:
+    """The value of a ``Storage=`` assignment (key and value stripped), when it
+    is one journald takes."""
+    key, sep, value = assignment.partition("=")
+    value = value.strip()
+    if sep and key.strip() == "Storage" and value in STORAGE_VALUES:
+        return value
+    return None
+
+
+def journald_settings(text: str | None) -> tuple[str | None, list[str]]:
+    """The ``Storage=`` journald's configuration files set, or None, and the
+    files that assign one, in the order journald reads them.
+
+    ``systemd-analyze cat-config`` prints each file journald reads after a
+    ``# <path>`` line, in that order. Only an assignment under ``[Journal]``
+    with a value journald takes counts, and the last one wins; a commented-out
+    line sets nothing.
     """
     current: str | None = None
-    set_by: list[tuple[str | None, str]] = []
-    documented: str | None = None
+    in_journal = False
+    storage: str | None = None
+    sources: list[str] = []
     for line in _lines(text):
         header = _HEADER.fullmatch(line)
         if header:
-            current = header.group(1)
+            current, in_journal = header.group(1), False
             continue
-        setting = _STORAGE.fullmatch(line)
-        if setting:
-            set_by.append((current, setting.group(1)))
+        if line.startswith("["):
+            in_journal = line == "[Journal]"
             continue
-        comment = _DOCUMENTED_STORAGE.fullmatch(line)
-        if comment and documented is None:
-            documented = comment.group(1)
-    if set_by:
-        sources: list[str] = []
-        for source, _ in set_by:
-            if source is not None and source not in sources:
-                sources.append(source)
-        return {"storage": set_by[-1][1], "sources": sources}
-    return {"storage": documented, "sources": []}
+        if not in_journal or line.startswith(("#", ";")):
+            continue
+        value = _storage_value(line)
+        if value is None:
+            continue
+        storage = value
+        if current is not None and current not in sources:
+            sources.append(current)
+    return storage, sources
+
+
+def vendor_hint(text: str | None) -> str | None:
+    """The ``Storage=`` the vendor ``journald.conf`` documents in a
+    commented-out line under ``[Journal]``, the last one if several do, or
+    None when it documents none (or the file is not there)."""
+    in_journal = False
+    hint: str | None = None
+    for line in (text or "").splitlines():
+        line = line.lstrip(" \t")
+        if line.startswith("["):
+            in_journal = line == "[Journal]"
+        elif in_journal and line.startswith(("#", ";")):
+            hint = _storage_value(line[1:]) or hint
+    return hint
+
+
+def parse_journald(
+    config: str | None,
+    vendor: str | None,
+    credential: str | None,
+    version: str | None,
+) -> dict[str, Any]:
+    """The ``Storage=`` journald runs with, resolved in the order NAILS
+    resolves it, and what it follows from.
+
+    A configuration file that sets it decides (:func:`journald_settings`).
+    Failing that, from systemd 256 on, the ``journal.storage`` credential
+    journald received, when its whole content is a value journald takes, kept
+    as read in ``credential``. Failing that, the built-in default of the
+    ``systemctl --version`` line ``version``: ``auto`` before 259, and from 259
+    the :func:`vendor_hint`, or ``persistent``. ``storage`` is None when no
+    file sets it and the version is unknown.
+    """
+    storage, sources = journald_settings(config)
+    received = credential or None
+    hint = vendor_hint(vendor)
+    major = systemd_major(version)
+    if storage is None and major is not None:
+        if major >= STORAGE_CREDENTIAL_SINCE and received in STORAGE_VALUES:
+            storage = received
+        elif major < PERSISTENT_DEFAULT_SINCE:
+            storage = "auto"
+        else:
+            storage = hint or "persistent"
+    return {
+        "storage": storage,
+        "sources": sources,
+        "credential": received,
+        "vendorHint": hint,
+    }
 
 
 def unit_names(text: str | None) -> list[str]:
@@ -651,6 +749,7 @@ def facts(blocks: Mapping[str, str], os_id: str) -> dict[str, Any]:
     seen_avcs = set(cold_avcs)
     seen_loads = {line for line, _ in cold_loads}
     nine_p = nine_p_reads(blocks.get("ninep"))
+    version = systemd_version(blocks.get("systemd-version"))
 
     def when_selinux(value: Any) -> Any:
         return value if has_selinux else None
@@ -662,6 +761,7 @@ def facts(blocks: Mapping[str, str], os_id: str) -> dict[str, Any]:
         "selinuxPolicyLoads": when_selinux([message for _, message in cold_loads]),
         "kernelRelease": next(iter(_lines(blocks.get("kernel"))), None),
         "moduleDirs": _listing(blocks.get("modules")),
+        "systemdVersion": version,
         "mounts": parse_mounts(blocks.get("mounts")),
         "fstab": parse_fstab(blocks.get("fstab")),
         "swaps": parse_swaps(blocks.get("swaps")),
@@ -676,7 +776,12 @@ def facts(blocks: Mapping[str, str], os_id: str) -> dict[str, Any]:
         "services": parse_services(blocks.get("services")),
         "auditdRefuseManualStop": refuse_manual_stop(blocks.get("auditd-unit")),
         "packages": parse_rpm(blocks.get("rpm")) if os_id == "fedora" else None,
-        "journaldVendorConfig": parse_journald(blocks.get("journald")),
+        "journaldVendorConfig": parse_journald(
+            blocks.get("journald"),
+            blocks.get("journald-vendor"),
+            blocks.get("journald-credential"),
+            version,
+        ),
         "failedBootUnits": unit_names(blocks.get("failed-units")),
         "maskedUnits": unit_names(blocks.get("masked-units")),
         "updatedbPrunePaths": prune_paths(blocks.get("updatedb-prune")),
