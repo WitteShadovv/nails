@@ -1,10 +1,10 @@
 title: nails activate (NixOS VM, decoy side)
 command: sudo /mnt/data/nails activate -y --overlay-only
-caption: Real output captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures), 2026-10-16, standard output and standard error together, as the test records them. -y skips the confirmation prompt. The soft-reboot follows the last line.
+caption: Real output captured from the session-readme-captures NixOS VM test in run ID 40383365802 of the E2E workflow on GitHub's hosted runners, 2026-10-26, standard output and standard error together, as the test records them. -y skips the confirmation prompt. The soft-reboot follows the last line.
 ---
-Pre-activation decoy residue baseline: no known residue -> /mnt/data/reports/activation-residue-2026-10-16T07-09-08-355362622-00-00.json
+Pre-activation decoy residue baseline: no known residue -> /mnt/data/reports/activation-residue-2026-10-26T19-05-49-602864190-00-00.json
 Preparing the hidden session (pre-flight, next root)...
-[PASS] Hidden session prepared in 0.4s
+[PASS] Hidden session prepared in 0.8s
   /nix/.ro-store: overlaid
   /nix/store: overlaid
   /tmp/shared: overlaid

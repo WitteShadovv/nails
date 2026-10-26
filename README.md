@@ -358,7 +358,7 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
 <details>
 <summary><b>What <code>nails check</code> prints</b></summary>
 
-<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
+<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS, among them the platform row that names the detected release, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
 
 Captured from the `session-readme-captures` NixOS VM test, on a decoy set up as
 [docs/decoy-requirements.md](docs/decoy-requirements.md) recommends; see
@@ -390,12 +390,12 @@ flowchart LR
 
 Both transitions log you out. Save your work first.
 
-<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, Hidden session prepared in 0.4s with no pre-flight warning, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
+<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, Hidden session prepared in 0.8s with no pre-flight warning, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
 
 <details>
 <summary><b>What <code>nails status --json</code> reports in the hidden session</b></summary>
 
-<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: place hidden, attention null, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
+<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: place hidden, attention null, the hidden system path, the overlaid mounts, the masked boot-loader and root-filesystem units, and the last activation's duration" width="820">
 
 `place` says where the machine is (`decoy`, `hidden` or `activating`, or
 `unknown`, next to an error, when reading the state file was refused, so no

@@ -1,6 +1,6 @@
 title: nails check (NixOS VM, decoy side)
 command: sudo /mnt/data/nails check --overlay-only
-caption: Real output captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures), 2026-10-16, on a test VM set up as docs/decoy-requirements.md recommends, with nails run from the hidden volume through sudo. --overlay-only skips the hidden NixOS build; /nix/.ro-store, /tmp/shared and /tmp/xchg are the test VM's own mounts.
+caption: Real output captured from the session-readme-captures NixOS VM test in run ID 40383365802 of the E2E workflow on GitHub's hosted runners, 2026-10-26, on a test VM set up as docs/decoy-requirements.md recommends, with nails run from the hidden volume through sudo. dma-protection passes because the test VM also has QEMU's emulated Intel IOMMU, turned on with intel_iommu=on; with Linux 5.14 or newer, it warns on a machine whose IOMMU does not remap the DMA of every device (see docs/operator-guide.md). --overlay-only skips the hidden NixOS build; /nix/.ro-store, /tmp/shared and /tmp/xchg are the test VM's own mounts.
 ---
 =======================================
   NAILS Readiness Check
@@ -10,22 +10,28 @@ Pre-flight checks:
   [PASS] hidden-volume: Hidden volume mounted at /mnt/data
   [PASS] backend-entries: No fstab or crypttab entry opens or mounts the volume at /mnt/data
   [PASS] session-state: on the plain decoy root
+  [PASS] platform: NixOS 26.11
   [PASS] systemd-version: systemd 261 supports soft-reboot
   [PASS] soft-reboot-units: soft-reboot.target and systemd-soft-reboot.service are installed
   [PASS] decoy-root: the decoy root (ext4 on /dev/vda) can be mounted again for the way back
   [PASS] fstab-policy: decoy filesystems in the hidden root: /nix/.ro-store: overlaid; /nix/store: overlaid; /tmp/shared: overlaid; /tmp/xchg: overlaid
   [PASS] mount-namespace: Running in PID 1's mount namespace with shared root propagation
-  [PASS] host-tools: All 9 required host tools are present
+  [PASS] host-tools: All 5 required host tools are present
+  [PASS] network-tools: The way back finds nft, and iw where a link is a Wi-Fi interface
   [PASS] symlink-support: Filesystem at /mnt/data supports symbolic links
   [PASS] upper-fs-capability: Hidden root at /mnt/data can host an overlayfs upper layer
   [PASS] backend-detect: Hidden root backend: ext4 on LUKS mapping dm-0 on block device vdb; no backend-specific hazards detected
+  [PASS] cryptsetup-argon2id: If you use VeraCrypt: the installed cryptsetup 2.8.8 cannot open a volume whose header key is derived with Argon2id (the "Argon2" entry in VeraCrypt 1.26.29 and newer), and nothing outside the encrypted header shows which algorithm it used. Make both the outer and the hidden VeraCrypt volume with PBKDF2: keep VeraCrypt's default key-derivation function, or pick any entry other than Argon2. See docs/backends.md.
   [PASS] storage-readiness: Hidden storage ready: all directories accessible
   [PASS] suspicious-nails-reference: The 2 .nix files under /etc/nixos name nothing of the hidden environment
   [PASS] swap: no swap can leak memory to persistent storage (RAM-only zram is permitted)
-  [PASS] memory-wipe: Kernel command line does not set init_on_free=1: unless the kernel enables it by default, pages freed by the hidden session keep their contents in RAM until reused. Recommended: add init_on_free=1 to the decoy kernel command line
+  [PASS] memory-wipe: The decoy kernel zeroes freed memory (init_on_free), so pages the hidden session frees do not linger in RAM.
+  [PASS] dma-protection: The IOMMU is remapping DMA (an active IOMMU is present and the command line does not put it in passthrough), so a DMA-capable device cannot freely read system RAM. A machine left powered on and unlocked is still not safe against seizure — the live working set stays plaintext in RAM while the volume is mounted; power off before handing it over.
   [PASS] sleep-policy: host will not suspend an active session (HandleLidSwitch=lock, IdleAction=ignore)
   [PASS] decoy-persistence: decoy keeps no durable trace of the hidden session
-  [PASS] residue-catalog: no warned residue channel is live (4 catalog probes); noted: timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)
+  [PASS] pending-offline-update: no pending offline update is staged on the decoy
+  [PASS] kernel-modules: the decoy keeps no kernel modules in /usr/lib/modules
+  [PASS] residue-catalog: no warned residue channel is live (6 catalog probes); noted: timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)
   [PASS] space: 1.8 GB available (3.7x minimum required)
   [PASS] binary-location: Running binary lives under the hidden volume root (/mnt/data)
   [PASS] inherited-autostart: No inherited decoy item needs review (4 desktop and distribution components not counted)
@@ -57,4 +63,4 @@ Inherited decoy state:
   [PASS] nothing to review
   [INFO] 4 components of the desktop or distribution not listed (--json lists every entry)
 
-[PASS] Ready to activate  (24 passed, 0 warnings, 0 failed)
+[PASS] Ready to activate  (30 passed, 0 warnings, 0 failed)
