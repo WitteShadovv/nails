@@ -39,6 +39,7 @@ from pathlib import Path
 QEMU_IMG = os.environ.get("NAILS_QEMU_IMG", "qemu-img")
 FLS = os.environ.get("NAILS_FLS", "fls")
 MMLS = os.environ.get("NAILS_MMLS", "mmls")
+BLKID = os.environ.get("NAILS_BLKID", "blkid")
 ICAT = os.environ.get("NAILS_ICAT", "icat")
 DEBUGFS = os.environ.get("NAILS_DEBUGFS", "debugfs")
 JOURNALCTL = os.environ.get("NAILS_JOURNALCTL", "journalctl")
@@ -305,36 +306,69 @@ def snapshot(
     return raw
 
 
-_MMLS_LINUX = re.compile(
-    r"^\s*\d+:\s+\S+\s+(?P<start>\d+)\s+\d+\s+\d+\s+(?P<desc>.+?)\s*$"
+# A partition row of ``mmls`` output: its slot column holds a partition number
+# (``000`` in a GPT, ``000:001`` in an MBR), where a meta entry or an
+# unallocated gap holds a word or dashes.
+_MMLS_PARTITION = re.compile(
+    r"^\s*\d+:\s+\d+(?::\d+)?\s+(?P<start>\d+)\s+\d+\s+(?P<length>\d+)(?:\s|$)"
 )
+_MMLS_UNITS = re.compile(r"^Units are in (?P<unit>\d+)-byte sectors")
+_EXT_TYPES = frozenset({"ext2", "ext3", "ext4"})
+
+
+def _partition_type(image: str | os.PathLike[str], start: int, size: int) -> str:
+    """The filesystem type ``blkid`` finds in the partition at byte ``start``,
+    or ``""`` when it finds none.
+
+    ``blkid`` honours an offset and a size only in its low-level mode (``-p``),
+    and probes the partition's own superblock there.
+    """
+    cmd = [BLKID, "-p", "-o", "value", "-s", "TYPE"]
+    cmd += ["-O", str(start), "-S", str(size), str(image)]
+    try:
+        return _run(cmd).stdout.strip()
+    except subprocess.CalledProcessError:
+        return ""
 
 
 def partition_offset(image: str | os.PathLike[str]) -> int:
-    """Sector offset of the largest Linux filesystem partition, or 0.
+    """Offset of the image's root filesystem in 512-byte sectors, or 0.
 
-    The root image is a whole GPT disk (ESP plus root), so ``fls`` needs the
-    partition start in sectors. ``mmls`` lists them; the Linux data partition is
-    the one to carve. A single-filesystem image with no partition table yields 0.
+    A bare filesystem image, in which ``mmls`` finds no partition table, is read
+    whole. A whole-disk image must hold exactly one ext{2,3,4} partition.
+    ``mmls`` lists the partitions, but its descriptions are only their GPT names
+    or MBR types, so ``blkid`` probes each partition for the filesystem it
+    holds. With no ext partition there is nothing to carve, and with several (a
+    separate ``/boot`` or ``/home``) the root cannot be told apart safely: either
+    raises, rather than carve another filesystem and find nothing in it.
     """
     try:
         proc = _run([MMLS, str(image)])
     except (subprocess.CalledProcessError, FileNotFoundError):
         return 0
-    best_offset = 0
-    best_start = -1
+    unit = 512
+    found: list[tuple[str, int]] = []
     for line in proc.stdout.splitlines():
-        match = _MMLS_LINUX.match(line)
+        units = _MMLS_UNITS.match(line)
+        if units:
+            unit = int(units.group("unit"))
+            continue
+        match = _MMLS_PARTITION.match(line)
         if not match:
             continue
-        desc = match.group("desc").lower()
-        if "linux" not in desc and "ext" not in desc:
-            continue
-        start = int(match.group("start"))
-        if start > best_start:
-            best_start = start
-            best_offset = start
-    return best_offset
+        start = int(match.group("start")) * unit
+        fs_type = _partition_type(image, start, int(match.group("length")) * unit)
+        if fs_type:
+            found.append((fs_type, start))
+    roots = [start for fs_type, start in found if fs_type in _EXT_TYPES]
+    if len(roots) != 1:
+        listing = ", ".join(f"{fs_type} at byte {start}" for fs_type, start in found)
+        raise RuntimeError(
+            f"{image}: need exactly one ext2/3/4 partition to carve as the root, "
+            f"found {listing or 'no filesystem in any partition'}; scan the root "
+            "filesystem's own image instead"
+        )
+    return roots[0] // 512
 
 
 def run_fls(image: str | os.PathLike[str], offset: int | None = None) -> list[FlsEntry]:

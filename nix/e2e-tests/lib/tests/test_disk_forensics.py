@@ -14,6 +14,7 @@ import json
 import os
 import random
 import re
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -535,6 +536,104 @@ class RdumpTest(unittest.TestCase):
         self.assertEqual(
             argv[1:3], ["-R", f'rdump "/var/log/journal" "{tmp}/a b""c"']
         )
+
+
+# mmls output for a GPT disk: an ESP, then two partitions of the Linux type.
+_MMLS_GPT = """GUID Partition Table (EFI)
+Offset Sector: 0
+Units are in 512-byte sectors
+
+      Slot      Start        End          Length       Description
+000:  Meta      0000000000   0000000000   0000000001   Safety Table
+001:  -------   0000000000   0000002047   0000002048   Unallocated
+002:  Meta      0000000001   0000000001   0000000001   GPT Header
+003:  Meta      0000000002   0000000033   0000000032   Partition Table
+004:  000       0000002048   0000018431   0000016384   EFI System
+005:  001       0000018432   0000067583   0000049152   Linux filesystem
+006:  002       0000067584   0000131038   0000063455   Linux filesystem
+007:  -------   0000131039   0000131071   0000000033   Unallocated
+"""
+# The byte offsets of the three partitions above.
+_ESP, _ROOT, _SECOND = 2048 * 512, 18432 * 512, 67584 * 512
+
+
+class PartitionOffsetTest(unittest.TestCase):
+    """The root partition is the one ext{2,3,4} filesystem ``blkid`` finds in
+    a whole-disk image; a disk with none or several is refused rather than
+    carved at a guess, since a carve of the wrong filesystem finds nothing."""
+
+    def _offset(self, mmls: str | None, types: dict[int, str]) -> int:
+        """``partition_offset`` with ``mmls`` printing ``mmls`` (failing when
+        ``None``) and ``blkid`` finding ``types[start]`` at each start."""
+        self.blkid_calls: list[list[str]] = []
+
+        def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cmd[0] == df.MMLS:
+                if mmls is None:
+                    raise subprocess.CalledProcessError(1, cmd)
+                return subprocess.CompletedProcess(cmd, 0, mmls, "")
+            self.assertEqual(cmd[0], df.BLKID)
+            self.blkid_calls.append(cmd)
+            start = int(cmd[cmd.index("-O") + 1])
+            if start not in types:
+                raise subprocess.CalledProcessError(2, cmd)
+            return subprocess.CompletedProcess(cmd, 0, f"{types[start]}\n", "")
+
+        with mock.patch.object(df, "_run", side_effect=run):
+            return df.partition_offset("/img/disk.raw")
+
+    def test_the_one_ext_partition_is_the_root(self) -> None:
+        offset = self._offset(_MMLS_GPT, {_ESP: "vfat", _ROOT: "ext4", _SECOND: "swap"})
+        self.assertEqual(offset, 18432)
+        # Every partition is probed in its own window, in its low-level mode.
+        self.assertEqual(len(self.blkid_calls), 3)
+        for cmd in self.blkid_calls:
+            self.assertIn("-p", cmd)
+        self.assertEqual(
+            self.blkid_calls[1][-5:],
+            ["-O", str(_ROOT), "-S", str(49152 * 512), "/img/disk.raw"],
+        )
+
+    def test_a_second_linux_partition_after_the_root_is_refused(self) -> None:
+        # A root followed by a /home: the root cannot be told apart, so no
+        # guess (the greatest start would be the /home) is carved.
+        types = {_ESP: "vfat", _ROOT: "ext4", _SECOND: "ext4"}
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(_MMLS_GPT, types)
+        message = str(raised.exception)
+        self.assertIn(f"ext4 at byte {_ROOT}", message)
+        self.assertIn(f"ext4 at byte {_SECOND}", message)
+
+    def test_a_disk_with_no_ext_partition_is_refused(self) -> None:
+        for types in ({_ESP: "vfat", _ROOT: "btrfs"}, {}):
+            with self.assertRaises(RuntimeError, msg=str(types)):
+                self._offset(_MMLS_GPT, types)
+
+    def test_partition_names_do_not_decide(self) -> None:
+        # mmls prints a GPT partition's name, which need not say Linux.
+        named = _MMLS_GPT.replace("Linux filesystem", "nixos", 1).replace(
+            "Linux filesystem", "data", 1
+        )
+        offset = self._offset(named, {_ESP: "vfat", _ROOT: "ext4"})
+        self.assertEqual(offset, 18432)
+
+    def test_a_bare_filesystem_is_read_whole(self) -> None:
+        self.assertEqual(self._offset(None, {}), 0)
+        self.assertEqual(self.blkid_calls, [])
+
+    def test_an_mbr_slot_in_larger_sectors_is_converted(self) -> None:
+        mbr = (
+            "DOS Partition Table\n"
+            "Offset Sector: 0\n"
+            "Units are in 4096-byte sectors\n\n"
+            "      Slot      Start        End          Length       Description\n"
+            "000:  Meta      0000000000   0000000000   0000000001   Primary Table\n"
+            "001:  -------   0000000000   0000000255   0000000256   Unallocated\n"
+            "002:  000:000   0000000256   0000008191   0000007936   Linux (0x83)\n"
+        )
+        offset = self._offset(mbr, {256 * 4096: "ext4"})
+        self.assertEqual(offset, 256 * 4096 // 512)
+        self.assertEqual(self.blkid_calls[0][-2], str(7936 * 4096))
 
 
 class CopySparseTest(unittest.TestCase):
