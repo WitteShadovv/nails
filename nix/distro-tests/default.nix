@@ -38,10 +38,12 @@ let
 
   # Fact-capture probes for the families not admitted yet, keyed "<name>-probe".
   # Like the records tests they are host drivers, run by hand on a KVM machine,
-  # so they stay out of the metadata and the CI planner never sees them.
-  probes = lib.mapAttrs' (name: drv: lib.nameValuePair "${name}-probe" drv) (
-    import ./probe.nix { inherit pkgs nix-vm-test; }
-  );
+  # so the smoke planner never sees them. The metadata lists the ones whose
+  # image is pinned, for a dispatch of distro-e2e.yml that runs the probes
+  # instead of the smokes.
+  probeSet = import ./probe.nix { inherit pkgs nix-vm-test; };
+  probeName = name: "${name}-probe";
+  probes = lib.mapAttrs' (name: drv: lib.nameValuePair (probeName name) drv) probeSet.drivers;
 
   # The refusal of those same families, keyed "<name>-refusal": host drivers
   # too, kept out of the metadata like the probes.
@@ -52,7 +54,13 @@ let
   metadata = {
     inherit distros;
     scenarios = lib.listToAttrs (map (name: lib.nameValuePair name [ (scenarioName name) ]) distros);
-    timeouts = lib.listToAttrs (map (name: lib.nameValuePair (scenarioName name) smokeTimeout) distros);
+    timeouts =
+      lib.listToAttrs (map (name: lib.nameValuePair (scenarioName name) smokeTimeout) distros)
+      // lib.listToAttrs (
+        map (name: lib.nameValuePair (probeName name) probeSet.timeout) probeSet.runnable
+      );
+    # Probe name -> its attribute, for every probe a run can boot.
+    probes = lib.genAttrs probeSet.runnable probeName;
   };
 
   # Every entry reduced to the derivation path of a minimal VM test, so the

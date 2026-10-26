@@ -149,9 +149,12 @@ def _command_plan(args: argparse.Namespace) -> int:
 
 def _command_distro_plan(args: argparse.Namespace) -> int:
     metadata = distro.load_distro_metadata()
-    matrix = distro.plan_distro_matrix(
-        metadata, args.distros, max_jobs=args.max_jobs
-    )
+    if args.suite == "probe":
+        matrix = distro.plan_probe_matrix(metadata, args.distros)
+    else:
+        matrix = distro.plan_distro_matrix(
+            metadata, args.distros, max_jobs=args.max_jobs
+        )
     print(json.dumps(matrix))
     return 0
 
@@ -377,13 +380,25 @@ def build_parser() -> argparse.ArgumentParser:
     distro_cmd.add_argument(
         "distros",
         nargs="*",
-        help="distributions to run, or all of them when none are named",
+        help=(
+            "distributions to run (probes with --suite probe), or all of them "
+            "when none are named"
+        ),
+    )
+    distro_cmd.add_argument(
+        "--suite",
+        choices=("smoke", "probe"),
+        default="smoke",
+        help=(
+            "plan the smoke scenarios, or the fact probes of the images not "
+            "admitted yet, one job each"
+        ),
     )
     distro_cmd.add_argument(
         "--max-jobs",
         type=_positive_int,
         default=distro.MAX_DISTRO_JOBS,
-        help="upper bound on parallel distro jobs (distros x shards)",
+        help="upper bound on parallel distro jobs (distros x shards; smoke only)",
     )
     distro_cmd.set_defaults(handler=_command_distro_plan)
 
