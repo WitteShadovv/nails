@@ -146,10 +146,11 @@ An entry behind an automount (`x-systemd.automount`, often the ESP) that is
 bound read-only or overlaid keeps its automount masked: the hidden systemd
 would find the mount point taken and fail the automount, and with it
 `local-fs.target`, which would start the hidden session in emergency mode.
-Masks are runtime masks in `/run`, gone with the session. `nails check` prints
-the decision for every entry (the `fstab-policy` check). A decoy partition you
-mount by hand inside the hidden session is outside this policy and is written
-directly.
+Masks are runtime masks in `/run`, gone with the session. systemd's GPT
+auto-generator, which would mount partitions the fstab does not list, is masked
+the same way. `nails check` prints the decision for every entry (the
+`fstab-policy` check). A decoy partition you mount by hand inside the hidden
+session is outside this policy and is written directly.
 
 A mount point the fstab names through a symlink (a `/home` that links to
 `var/home`) is decided, mounted and masked at its real path, the way systemd

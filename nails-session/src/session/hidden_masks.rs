@@ -12,8 +12,13 @@
 //! ranks above `/etc/systemd/system`, where NixOS links every unit. The decoy
 //! runs the units at its own start, as it always does.
 //!
-//! The masks live in `/run` only: the return scrub removes them with the rest
-//! of the session's `/run`, and the decoy side removes them when a switch
+//! The [`GENERATORS`] are masked at the switch as well, in
+//! `/run/systemd/system-generators`, ahead of every other generator
+//! directory. Those masks are not best effort: as for the fstab policy's
+//! masks, the switch is refused when one cannot be written.
+//!
+//! All of them live in `/run` only: the return scrub removes them with the
+//! rest of the session's `/run`, and the decoy side removes them when a switch
 //! never happened.
 
 use std::path::Path;
@@ -36,6 +41,20 @@ pub const UNITS: &[&str] = &[
     "systemd-growfs-root.service",
 ];
 
+/// Generators the hidden systemd must never run.
+///
+/// `systemd-gpt-auto-generator` mounts the partitions it finds by their GPT
+/// type on the disk of the root filesystem (`/home`, `/srv`, `/var`, the ESP)
+/// and turns on a swap partition, where the fstab does not cover them
+/// already. The fstab policy never decides on those: in the hidden root they
+/// would be mounted read-write, and the swap would take hidden RAM onto a
+/// decoy disk. On the root overlay the generator finds no disk, so the mask is
+/// a defence in depth for the decoys where it would find one all the same:
+/// through `/run/systemd/volatile-root`, which a decoy booted with
+/// `systemd.volatile=` leaves in `/run` for the hidden session, or through a
+/// `/usr` the entry binds read-only from a decoy disk.
+pub const GENERATORS: &[&str] = &["systemd-gpt-auto-generator"];
+
 /// The [`UNITS`] installed in `root`, the next root, without those already in
 /// `masked` (the fstab policy's masks, which are written apart).
 pub fn units(root: &Path, masked: &[String]) -> Vec<String> {
@@ -45,10 +64,17 @@ pub fn units(root: &Path, masked: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The [`GENERATORS`], each whether or not the next root has it: a generator
+/// can be installed in a directory of the init's own (the systemd package's,
+/// on NixOS), and a mask of one that is not installed changes nothing.
+pub fn generators() -> Vec<String> {
+    GENERATORS.iter().map(|name| (*name).to_string()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nails_teardown::whole_root::runtime_units::valid_unit_name;
+    use nails_teardown::whole_root::runtime_units::{valid_generator_name, valid_unit_name};
 
     /// A root with `units` installed in `dir`.
     fn root_with(dir: &str, units: &[&str]) -> tempfile::TempDir {
@@ -64,6 +90,9 @@ mod tests {
     fn every_name_is_one_the_switch_writes() {
         for unit in UNITS {
             assert!(valid_unit_name(unit), "{unit}");
+        }
+        for generator in GENERATORS {
+            assert!(valid_generator_name(generator), "{generator}");
         }
     }
 

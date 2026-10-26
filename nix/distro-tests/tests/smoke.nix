@@ -184,6 +184,9 @@ distroVm.buildVmTest {
         "systemd-remount-fs.service",
         "systemd-growfs-root.service",
     )
+    # The generator every hidden root masks, so it never mounts a decoy
+    # partition the fstab does not list.
+    gpt_auto_mask = "/run/systemd/system-generators/systemd-gpt-auto-generator"
 
 
     def write_config():
@@ -322,6 +325,18 @@ distroVm.buildVmTest {
                 if value
             }
             assert not needed, f"{unit} is masked in the hidden root, but {needed} need it"
+
+
+    def assert_gpt_auto_masked(where, masked):
+        # Masked in every hidden root; gone with the session's /run on the way
+        # back.
+        rc, target = vm.execute(f"readlink {gpt_auto_mask}")
+        if masked:
+            assert rc == 0 and target.strip() == "/dev/null", (
+                f"{where}: {gpt_auto_mask} -> {target!r}"
+            )
+        else:
+            assert rc != 0, f"{where}: {gpt_auto_mask} is left: {target!r}"
 
 
     def failed_units(where):
@@ -499,6 +514,7 @@ distroVm.buildVmTest {
         assert_nothing_requires(
             [unit for unit, state in decoy_masked_units.items() if state != "not-found"]
         )
+        assert_gpt_auto_masked("the decoy", masked=False)
 
     with subtest("Ctrl+C during the pre-flight checks cancels the activation"):
         # A CPU quota stretches the activation, so the interrupt reaches it
@@ -540,10 +556,11 @@ distroVm.buildVmTest {
             assert_guarded_blk_availability("the first session")
         assert_quiet_kernel_log("the first session")
         # The units that would only fail in the hidden root are masked there
-        # where the decoy has them.
+        # where the decoy has them, and so is the GPT auto-generator.
         for unit, state in load_states(hidden_masked_units).items():
             if decoy_masked_units[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden root: {state}"
+        assert_gpt_auto_masked("the first session", masked=True)
         vm.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
         probe_report("the first hidden session")
         # The hidden volume is still at its path, with the binary's log and
@@ -627,6 +644,7 @@ distroVm.buildVmTest {
         assert load_states(hidden_masked_units) == decoy_masked_units, (
             "the decoy's own units again"
         )
+        assert_gpt_auto_masked("after the emergency", masked=False)
         assert_quiet_kernel_log("after the emergency")
 
     with subtest("a second session ends with deactivate"):
@@ -655,6 +673,7 @@ distroVm.buildVmTest {
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
         failed_units("the second hidden session")
+        assert_gpt_auto_masked("the second session", masked=True)
         # The rehearsal's first step, and the refusal of a scan in the
         # planting session.
         rc, out, err = rehearse("plant --user root")
@@ -685,6 +704,7 @@ distroVm.buildVmTest {
                 vm.succeed(f"mountpoint -q {target}")
         probe_report("after deactivate")
         failed_units("after deactivate")
+        assert_gpt_auto_masked("after deactivate", masked=False)
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
 

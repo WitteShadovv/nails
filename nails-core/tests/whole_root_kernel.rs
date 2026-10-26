@@ -115,6 +115,7 @@ mod kernel_tests {
                 // Decoy swap, and an automount the policy masks.
                 masks: vec!["dev-vdb1.swap".to_string(), "boot.automount".to_string()],
                 boot_masks: Vec::new(),
+                generator_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
                 tools: Tools::default(),
@@ -280,6 +281,42 @@ mod kernel_tests {
                 assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
             }
             nextroot::detach_tree(&world.nextroot());
+        });
+    }
+
+    #[test]
+    fn a_generator_mask_is_never_written_onto_a_filesystem_the_scrub_skips() {
+        // The way back's scrub stays on the filesystem of /run: a generator
+        // directory that is a mount of its own would keep the mask past the
+        // session, so the entry transition refuses to write it there.
+        let _ = Rerun::new(test_path!(
+            a_generator_mask_is_never_written_onto_a_filesystem_the_scrub_skips
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use nails_teardown::whole_root::runtime_units;
+            let run = ScratchTmpfs::new("");
+            let generators = run.path().join(runtime_units::GENERATOR_DIR);
+            std::fs::create_dir_all(&generators).unwrap();
+            let other = ScratchTmpfs::new("");
+            nix::mount::mount(
+                Some(other.path()),
+                &generators,
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .unwrap();
+            let gpt = ["systemd-gpt-auto-generator".to_string()];
+            assert!(runtime_units::mask_generators(run.path(), &gpt).is_err());
+            assert!(std::fs::read_dir(other.path()).unwrap().next().is_none());
+
+            // On the filesystem of /run the mask is written.
+            nix::mount::umount(&generators).unwrap();
+            assert_eq!(
+                runtime_units::mask_generators(run.path(), &gpt).unwrap(),
+                [generators.join("systemd-gpt-auto-generator")]
+            );
         });
     }
 

@@ -140,6 +140,7 @@ mod tests {
             policy_mounts: Vec::new(),
             masks: Vec::new(),
             boot_masks: Vec::new(),
+            generator_masks: Vec::new(),
             session_units: Vec::new(),
             backend: Vec::new(),
             tools: nails_teardown::whole_root::plan::Tools::default(),

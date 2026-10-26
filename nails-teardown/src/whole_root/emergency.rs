@@ -333,7 +333,13 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) -> bool {
         let _ = ret::close_backend_deferred(plan);
         let kept = Snapshot::load(&host.runtime_dir.join(SNAPSHOT_NAME)).unwrap_or_default();
         let dropins = transition::remove_dropin(&host.run, &kept);
-        let masks = runtime_units::remove_masks(&host.run, &plan.masks, &plan.boot_masks, &kept);
+        let masks = runtime_units::remove_masks(
+            &host.run,
+            &plan.masks,
+            &plan.boot_masks,
+            &plan.generator_masks,
+            &kept,
+        );
         kernel_helpers::restore(&plan.kernel_settings);
         nextroot::remove_runtime_dir(&host.runtime_dir);
         dropins || masks

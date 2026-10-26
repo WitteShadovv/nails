@@ -272,6 +272,12 @@ pub struct Plan {
     /// [`masks`](Self::masks), without which the entry must not happen.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boot_masks: Vec<String>,
+    /// Generators masked in `/run` at entry, so the hidden systemd never runs
+    /// them: they would mount what the fstab policy never decided on. Like
+    /// [`masks`](Self::masks), the entry must not happen without them. Absent
+    /// from a plan written before they were recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generator_masks: Vec<String>,
     /// Runtime units installed in `/run` at entry, for the hidden session.
     #[serde(default)]
     pub session_units: Vec<RuntimeUnit>,
@@ -470,6 +476,7 @@ pub(crate) fn sample() -> Plan {
         }],
         masks: vec!["dev-vda3.swap".to_string()],
         boot_masks: Vec::new(),
+        generator_masks: Vec::new(),
         session_units: Vec::new(),
         backend: vec!["sample-backend-unmapped".to_string()],
         tools: Tools::default(),
@@ -529,6 +536,25 @@ mod tests {
             Plan::from_json(&plain).unwrap().accepted_decoy_storage,
             None
         );
+    }
+
+    #[test]
+    fn the_generator_masks_are_kept_and_a_plan_without_them_still_loads() {
+        let masked = Plan {
+            generator_masks: vec!["systemd-gpt-auto-generator".to_string()],
+            ..sample()
+        };
+        let text = masked.to_json();
+        assert!(
+            text.contains("\"generator_masks\":[\"systemd-gpt-auto-generator\"]"),
+            "{text}"
+        );
+        assert_eq!(Plan::from_json(&text).unwrap(), masked);
+
+        // A plan written before the field existed has no key at all.
+        let older = sample().to_json();
+        assert!(!older.contains("generator_masks"), "{older}");
+        assert!(Plan::from_json(&older).unwrap().generator_masks.is_empty());
     }
 
     #[test]

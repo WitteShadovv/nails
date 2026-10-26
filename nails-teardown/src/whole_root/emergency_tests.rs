@@ -113,7 +113,7 @@ fn a_way_back_that_cannot_be_armed_powers_off_instead() {
 
 /// A scratch decoy `/run` as an activation interrupted after its entry
 /// transition, or a switch that failed, leaves it: the session's masks of
-/// both kinds, the transition drop-in and the hidden kernel paths, with a
+/// every kind, the transition drop-in and the hidden kernel paths, with a
 /// `systemctl` that records its calls. The decoy side acts on it for real.
 struct Interrupted {
     dir: tempfile::TempDir,
@@ -149,6 +149,7 @@ impl Interrupted {
         plan.tools.systemctl = Some(systemctl);
         transition::install_dropin(&host.run, Path::new("/x")).unwrap();
         plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+        plan.generator_masks = vec!["systemd-gpt-auto-generator".to_string()];
         plan.kernel_settings = kernel_helpers::read(&[modprobe.to_str().unwrap()]);
         std::fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
         let mut masks = runtime_units::mask_units(&host.run, &plan.masks).unwrap();
@@ -156,7 +157,8 @@ impl Interrupted {
             &host.run,
             &plan.boot_masks,
         ));
-        assert_eq!(masks.len(), 2);
+        masks.extend(runtime_units::mask_generators(&host.run, &plan.generator_masks).unwrap());
+        assert_eq!(masks.len(), 3);
         Self {
             dir,
             host,
@@ -171,7 +173,7 @@ impl Interrupted {
     fn clean_up(&self, requested: Finish, dispatched: Option<Finish>) -> HotReport {
         let mut report = HotReport::new(Side::Decoy, requested);
         let unloaded = decoy(&self.plan, &self.host, &mut report);
-        assert!(unloaded, "a drop-in and two masks were removed");
+        assert!(unloaded, "a drop-in and three masks were removed");
         report.dispatched = dispatched;
         settle(&self.plan, &self.host, unloaded, &mut report);
         report
