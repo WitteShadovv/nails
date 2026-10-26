@@ -34,7 +34,7 @@
           ]
         },
         "warnings": {
-          "description": "What the return does not put back, one sentence each, as a person reads them: the network state the session set where its last step finds no `ip`, and each backend device in `backend_left_open`. Absent when there is nothing to say; a power-off has none.",
+          "description": "What the return does not put back, one sentence each, as a person reads them: where its last step finds no `ip` (iproute2), the virtual links the session made, the MAC addresses it changed and the policy-routing rules it added; and each backend device in `backend_left_open`. Absent when there is nothing to say; a power-off has none.",
           "type": "array",
           "items": {
             "type": "string",

@@ -145,13 +145,14 @@ fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Vec<PathBuf> {
 }
 
 /// Whether the last step of the way back will find `tool`, such as `ip`
-/// (iproute2), which it runs to delete the links the session made and set
-/// each device's recorded MAC address back. The step runs in the hidden root
-/// (`root`: `/`, but in tests) once every hidden unit has stopped, and on
-/// NixOS only after it repointed `/run/current-system` to the decoy's system:
-/// it looks in the system directories as they resolve then
-/// ([`tools::find_for_system`]). It cannot report anything itself, so the
-/// hidden session checks before the switch.
+/// (iproute2), which it runs to delete the virtual links and the
+/// policy-routing rules the session added and to set each device's recorded
+/// MAC address back. The step runs in the hidden root (`root`: `/`, but in
+/// tests) once every hidden unit has stopped, and on NixOS only after it
+/// repointed `/run/current-system` to the decoy's system: it looks in the
+/// system directories as they resolve then ([`tools::find_for_system`]). It
+/// cannot report anything itself, so the hidden session checks before the
+/// switch.
 pub fn way_back_finds(root: &Path, plan: &Plan, tool: &str) -> bool {
     tools::find_for_system(root, plan.decoy.system.as_deref(), tool).is_some()
 }

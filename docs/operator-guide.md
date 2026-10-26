@@ -464,9 +464,10 @@ journal that starts late:
   activation could not read in full, rather than take the decoy's for the
   session's. Before it asks, `deactivate` warns when that step will find no
   `ip` (iproute2), in the hidden session's system directories or, on NixOS,
-  the decoy's system. Beyond that, the step runs with no output after the
-  session has ended, so nothing tells you what it left: take a VPN connection
-  down with its own tool
+  the decoy's system: the virtual links the session made, the MAC addresses
+  it changed and the policy-routing rules it added then stay. Beyond that,
+  the step runs with no output after the session has ended, so nothing tells
+  you what it left: take a VPN connection down with its own tool
   (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
   monitor mode with `airmon-ng stop`, and stop the containers and virtual
   machines of the session before you deactivate, and end a session with

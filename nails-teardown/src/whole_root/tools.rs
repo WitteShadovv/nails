@@ -4,8 +4,9 @@
 //! The child processes the transitions run, each bounded by a deadline:
 //! `systemctl` to enqueue the soft-reboot or a power action, `dmsetup` to
 //! mark the hidden backend for deferred removal, and `ip`, for the way back's
-//! [`network`](super::network) restore, to delete the links a session made and
-//! reset each device's hardware address to the one recorded at entry.
+//! [`network`](super::network) restore, to delete the links and the
+//! policy-routing rules a session added and reset each device's hardware
+//! address to the one recorded at entry.
 //!
 //! Every tool runs by absolute path (recorded at activation, or one of a fixed
 //! list of system locations), with a cleared environment and no output, so a
