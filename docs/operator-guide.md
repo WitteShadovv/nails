@@ -776,20 +776,31 @@ session's records (see "What a soft-reboot leaves" under
 
 `nails check` (and `activate --dry-run`, which is the same command) writes no
 log file, no state file and nothing in `/run`, and it leaves no file and no
-mount behind. Activation runs the same checks first, so it touches the same
-things before it writes anything of its own. In detail:
+mount behind. Activation runs the same checks and touches the same things with
+them. On NixOS, unless it runs with `--overlay-only`, it first stages the
+hidden configuration on the hidden volume, just before the checks: it
+writes the hidden module in `config/nixos/`, and the link to it and the hidden
+hardware configuration in `root/upper/etc/nixos/`, where they are missing.
+`check` stages nothing. In detail:
 
-- **Probes on the hidden volume.** Three checks try what the session needs and
-  remove what they wrote before they finish. `symlink-support` makes the link
-  `.nails_symlink_probe` in the hidden root. `upper-fs-capability` makes the
-  directory `.probe-<pid>-<time>` in the hidden root, sets and removes a
-  `trusted.*` extended attribute on it, and tries a small overlay whose layers
-  are inside it. `storage-readiness` makes the file `.nails_write_test` in
-  `root/upper` and `root/work` when they exist. The hidden root, `root/upper`
-  and `root/work` keep new modification times, and so does the container file
-  of a hidden volume in a file container. A `check` killed in the middle of a
-  probe can leave that probe's file or directory on the hidden volume, never on
-  the decoy; remove it from inside a hidden session, not from the decoy shell.
+- **Probes on the hidden volume.** Four checks try what the session needs and
+  remove what they wrote before they finish. `hidden-volume` makes the file
+  `.nails_write_test` in the hidden root, and `symlink-support` the link
+  `.nails_symlink_probe`. `upper-fs-capability` makes the directory
+  `.probe-<pid>-<time>` in the hidden root, sets and removes a `trusted.*`
+  extended attribute on it, and tries a small overlay whose layers are inside
+  it. `storage-readiness` makes the file `.nails_write_test` in `root/upper`
+  and `root/work` when they exist. The hidden root, `root/upper` and
+  `root/work` keep new modification times, and so does the container file of a
+  hidden volume in a file container. A `check` killed in the middle of a probe
+  can leave that probe's file or directory on the hidden volume, never on the
+  decoy; remove it from inside a hidden session, not from the decoy shell.
+- **With `--allow-decoy-storage`, on the decoy's storage.** The flag accepts a
+  hidden root on storage the attach gate takes for the decoy's. The write and
+  symlink probes then write there, and the modification times they move and
+  anything a killed `check` leaves are on that storage too.
+  `upper-fs-capability` does not run on such a root: it reports itself
+  skipped.
 - **No mount the system can see.** The trial overlay is mounted detached,
   through the kernel's mount API: no mount table lists it at any moment, so
   systemd never sees it and writes no `.mount` unit line about it to the
