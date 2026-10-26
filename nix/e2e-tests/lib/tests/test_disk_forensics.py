@@ -17,6 +17,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -564,10 +565,13 @@ class PartitionOffsetTest(unittest.TestCase):
     debugfs exits 0 on a filesystem it cannot open or a path it does not find,
     so a carve of the wrong filesystem finds nothing and the scan passes."""
 
-    def _offset(self, mmls: str | None, types: dict[int, str], bare: str = "") -> int:
+    def _offset(
+        self, mmls: str | None, types: Mapping[int, str | int], bare: str | int = ""
+    ) -> int:
         """``partition_offset`` with ``mmls`` printing ``mmls`` (failing when
         ``None``), ``blkid`` finding ``types[start]`` in the partition at each
-        start and ``bare`` in the whole image."""
+        start and ``bare`` in the whole image. A number there is the status
+        ``blkid`` exits with instead."""
         self.blkid_calls: list[list[str]] = []
 
         def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -578,6 +582,8 @@ class PartitionOffsetTest(unittest.TestCase):
             self.assertEqual(cmd[0], df.BLKID)
             self.blkid_calls.append(cmd)
             found = types.get(int(cmd[cmd.index("-O") + 1])) if "-O" in cmd else bare
+            if isinstance(found, int):
+                raise subprocess.CalledProcessError(found, cmd, "", "blkid: probe\n")
             if not found:
                 raise subprocess.CalledProcessError(2, cmd)
             return subprocess.CompletedProcess(cmd, 0, f"{found}\n", "")
@@ -637,6 +643,34 @@ class PartitionOffsetTest(unittest.TestCase):
             with self.assertRaises(RuntimeError, msg=str(types)) as raised:
                 self._offset(_MMLS_GPT, types)
             self.assertIn("no partition can hold the root", str(raised.exception))
+
+    def test_an_ambivalent_probe_is_refused_not_read_as_nothing(self) -> None:
+        # blkid exits 8 when it finds more than one signature in a partition,
+        # a stale superblock next to the one in use, and cannot tell which one
+        # is. That partition may hold the root, so the disk is refused rather
+        # than carved from the one ext partition next to it.
+        types: dict[int, str | int] = {_ESP: "vfat", _ROOT: "ext4", _SECOND: 8}
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(_MMLS_GPT, types)
+        message = str(raised.exception)
+        self.assertIn("ambivalent", message)
+        self.assertIn(f"in the partition at byte {_SECOND}", message)
+        # A bare image whose probe is ambivalent is refused the same way, not
+        # as one in which blkid recognises no filesystem.
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(None, {}, bare=8)
+        self.assertIn("ambivalent", str(raised.exception))
+        self.assertIn("in the image", str(raised.exception))
+
+    def test_a_probe_that_fails_otherwise_is_refused(self) -> None:
+        # Only exit 2 means blkid found nothing; a usage or other error
+        # (exit 4) says nothing about what the partition holds.
+        types: dict[int, str | int] = {_ESP: "vfat", _ROOT: "ext4", _SECOND: 4}
+        with self.assertRaises(RuntimeError) as raised:
+            self._offset(_MMLS_GPT, types)
+        message = str(raised.exception)
+        self.assertIn(f"could not probe in the partition at byte {_SECOND}", message)
+        self.assertIn("exit 4", message)
 
     def test_partition_names_do_not_decide(self) -> None:
         # mmls prints a GPT partition's name, which need not say Linux.
