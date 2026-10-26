@@ -185,12 +185,12 @@ fn write_warnings(settings: &OutputSettings, warnings: &[String], out: &mut impl
 /// lines come first, and a failure to prepare or enqueue it follows them on
 /// stderr. Under `--json` the one envelope reports the outcome instead, so it
 /// is printed only once the soft-reboot (or the power-off) is enqueued: a
-/// failure is the only envelope, never one after a success, and it carries
-/// the `warnings` given before the question. A backend device the way back
-/// could not mark to close is named after the enqueue, on both. The process
-/// outlives the switch long enough to print it, since a mutating command
-/// catches SIGTERM and ignores SIGHUP, but a reader the switch stops first may
-/// not read it.
+/// failure is the only envelope, never one after a success, and a success
+/// carries the `warnings` given before the question. A backend device the
+/// way back could not mark to close is named after the enqueue, on both. The
+/// process outlives the switch long enough to print it, since a mutating
+/// command catches SIGTERM and ignores SIGHUP, but a reader the switch stops
+/// first may not read it.
 fn leave_and_report(
     settings: &OutputSettings,
     to: LeaveTo,
