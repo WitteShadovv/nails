@@ -6,16 +6,24 @@ The plan job of mutants-in-diff.yml lists the mutants of a pull request's diff
 here. The plan gives the lane as many shards as keep each one inside its time
 box with a margin, at most MAX_SHARDS. A diff too large for that many shards of
 the ordinary box gets a longer box for each shard, up to MAX_SHARD_MINUTES. A
-diff too large even for that runs no shard: the plan reports its count and the
-lane passes, since it gates nothing and the weekly sweep still mutates the code
-it covers. A diff that holds no mutant runs no shard either.
+diff that holds no mutant runs no shard.
+
+A diff too large even for the longest boxes runs no shard either, so none of
+its mutants is tested, and the rest of CI does not make up for it: the weekly
+sweep mutates only its own three directories, and a release pull request into
+main gets no in-diff run. The plan therefore fails, with the count, rather than
+pass a diff it did not test. That turns the lane red but blocks nothing: the
+lane is informational, and a pull request can merge into next with it red,
+cancelled or skipped.
 
 Usage: python3 -m ci.mutants_plan LIST
 
 LIST is what `cargo mutants --list --json` printed, or - for stdin. Prints
 ``name=value`` lines in the format of $GITHUB_OUTPUT (``shards`` and the shard
 ``matrix``, which the workflow reads) and explains the plan, with the count of
-mutants, on stderr and, in CI, in the job summary ($GITHUB_STEP_SUMMARY).
+mutants, on stderr and, in CI, in the job summary ($GITHUB_STEP_SUMMARY). Exits
+1 when LIST cannot be read, printing no outputs, and when the diff is too large
+for the lane, after printing them.
 """
 
 from __future__ import annotations
@@ -186,9 +194,8 @@ def describe(planned: Plan) -> str:
             f"The diff holds {_mutants(planned.mutants)}, more than the lane can "
             f"test: {MAX_SHARDS} shards of {capacity(MAX_SHARD_MINUTES)}, in "
             f"{MAX_SHARD_MINUTES}-minute time boxes, hold {most_mutants()}. No "
-            "shard runs and the lane passes; the weekly sweep still mutates the "
-            "code it covers, and `just mutants-in-diff` tests the diff where "
-            "time allows."
+            "shard runs, so none of the diff's mutants is tested, and the lane "
+            "fails. `just mutants-in-diff` tests the diff where time allows."
         )
     if planned.shards == 1:
         return (
@@ -239,15 +246,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("matrix=" + json.dumps(matrix(planned), separators=(",", ":")))
     message = describe(planned)
     print(message, file=sys.stderr)
+    _write_summary(f"## {TITLE}\n\n{message}\n")
     if planned.too_large:
         # The runner reads workflow commands on stderr as well; stdout is the
         # step's $GITHUB_OUTPUT.
         print(
-            "::warning title=Diff too large for mutation testing::"
-            + _escape(message),
+            "::error title=Diff too large for mutation testing::" + _escape(message),
             file=sys.stderr,
         )
-    _write_summary(f"## {TITLE}\n\n{message}\n")
+        return 1
     return 0
 
 
