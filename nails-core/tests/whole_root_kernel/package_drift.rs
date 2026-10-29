@@ -237,3 +237,95 @@ fn without_a_copy_the_row_passes_even_without_root() {
             );
         });
 }
+
+/// rpm's database, as rpm wrote it for the fixtures of `nails-base`: the
+/// decoy's after its own updates, and the hidden session's copy after it
+/// updated alpha from 1.0 to 1.1 and installed epsilon.
+const RPMDB_DECOY: &[u8] =
+    include_bytes!("../../../nails-base/src/packages/fixtures/rpmdb-decoy.sqlite");
+const RPMDB_HIDDEN: &[u8] =
+    include_bytes!("../../../nails-base/src/packages/fixtures/rpmdb-hidden.sqlite");
+const RPMDB: &str = "usr/lib/sysimage/rpm/rpmdb.sqlite";
+
+/// A hidden session changes rpm's database through the root overlay, which
+/// copies it into the upper, and writes alpha 1.1's and epsilon's files and
+/// deletes alpha 1.0's; the decoy then writes its own database. The row
+/// names the packages the decoy changed, not the hidden session's, reads
+/// both databases without changing the decoy's access times, and the next
+/// root keeps the hidden session's copy.
+#[test]
+fn the_row_reads_rpms_databases_and_tells_the_decoys_changes_from_the_hidden_sessions() {
+    let _ = Rerun::new(test_path!(
+        the_row_reads_rpms_databases_and_tells_the_decoys_changes_from_the_hidden_sessions
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = ScratchTmpfs::strictatime();
+        decoy.mkdir("usr/lib/sysimage/rpm");
+        decoy.mkdir("usr/bin");
+        decoy.mkdir("usr/share/alpha");
+        // The database before either side changed it; the hidden session's
+        // first write copies it whole into the upper.
+        std::fs::write(decoy.path().join(RPMDB), RPMDB_HIDDEN).unwrap();
+        std::fs::write(decoy.path().join(format!("{RPMDB}-wal")), b"").unwrap();
+        for file in ["usr/bin/alpha-1.0", "usr/share/alpha/1.0"] {
+            std::fs::write(decoy.path().join(file), b"alpha 1.0\n").unwrap();
+        }
+        let hidden = hidden();
+        let upper = hidden.path().join("root/upper");
+
+        in_next_root(decoy.path(), hidden.path(), |next| {
+            std::fs::write(next.join(RPMDB), RPMDB_HIDDEN).unwrap();
+            std::fs::create_dir_all(next.join("usr/share/epsilon")).unwrap();
+            for file in [
+                "usr/bin/alpha-1.1",
+                "usr/share/alpha/1.1",
+                "usr/bin/epsilon-0.5",
+                "usr/share/epsilon/0.5",
+            ] {
+                std::fs::write(next.join(file), b"hidden\n").unwrap();
+            }
+        });
+        assert!(upper.join(RPMDB).is_file(), "the copy of the database");
+        whiteout(&upper, "usr/bin/alpha-1.0");
+        whiteout(&upper, "usr/share/alpha/1.0");
+
+        // The decoy writes its database afterwards, as rpm does in place.
+        std::fs::write(decoy.path().join(RPMDB), RPMDB_DECOY).unwrap();
+
+        let read = [
+            decoy.path().join(RPMDB),
+            decoy.path().join(format!("{RPMDB}-wal")),
+        ];
+        let before: Vec<_> = read.iter().map(|path| atime(path)).collect();
+        let check = PackageDriftCheck::new(decoy.path().to_path_buf(), hidden.path().to_path_buf())
+            .as_privileged(true);
+        let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+        let after: Vec<_> = read.iter().map(|path| atime(path)).collect();
+        assert_eq!(
+            after, before,
+            "the row reads without changing an access time"
+        );
+
+        assert!(result.is_warn(), "{result:?}");
+        let message = result.message();
+        for named in [
+            "beta (2.1-1 on the decoy, 2.0-1 in hidden sessions)",
+            "delta (1:3.0-1 on the decoy, not in hidden sessions)",
+            "gamma (not on the decoy, 1.0-1 in hidden sessions)",
+            "kernel-core (6.17.1-200.fc44 and 6.17.2-200.fc44 on the decoy",
+        ] {
+            assert!(message.contains(named), "{named}: {message}");
+        }
+        for own in ["alpha (", "epsilon ("] {
+            assert!(
+                !message.contains(own),
+                "the hidden session's own: {message}"
+            );
+        }
+
+        in_next_root(decoy.path(), hidden.path(), |next| {
+            assert_eq!(std::fs::read(next.join(RPMDB)).unwrap(), RPMDB_HIDDEN);
+        });
+    });
+}

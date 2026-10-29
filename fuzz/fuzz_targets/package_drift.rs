@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
 
     assert_eq!(
         judge_dpkg(&decoy, &decoy, &owners),
-        Verdict::Follows { own: Some(0) }
+        Verdict::Follows { own: 0 }
     );
     let forth = stale(&judge_dpkg(&decoy, &hidden, &owners));
     let back = stale(&judge_dpkg(&hidden, &decoy, &owners));
@@ -73,9 +73,7 @@ fuzz_target!(|data: &[u8]| {
         .collect();
     assert_eq!(
         judge_dpkg(&decoy, &hidden, &everyone),
-        Verdict::Follows {
-            own: Some(differing)
-        }
+        Verdict::Follows { own: differing }
     );
 
     let decoy_local: Vec<pacman::Package> = part(3).split('\n').filter_map(parse_entry).collect();

@@ -51,7 +51,7 @@ fn decoy_record() -> Vec<dpkg::Package> {
 #[test]
 fn a_copy_that_matches_the_decoys_record_follows_it() {
     let verdict = judge_dpkg(&decoy_record(), &decoy_record(), &changed(&[]));
-    assert_eq!(verdict, Verdict::Follows { own: Some(0) });
+    assert_eq!(verdict, Verdict::Follows { own: 0 });
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn a_package_a_hidden_session_changed_itself_is_its_own() {
     ]);
     assert_eq!(
         judge_dpkg(&decoy_record(), &hidden, &owners),
-        Verdict::Follows { own: Some(3) }
+        Verdict::Follows { own: 3 }
     );
 }
 
@@ -114,7 +114,7 @@ fn an_architecture_is_named_where_the_record_has_several() {
     );
     // An info file without an architecture is the package's for each.
     let verdict = judge_dpkg(&decoy, &hidden, &changed(&[("libc6", None)]));
-    assert_eq!(verdict, Verdict::Follows { own: Some(2) });
+    assert_eq!(verdict, Verdict::Follows { own: 2 });
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn only_packages_with_their_files_on_disk_count() {
     hidden[2].state = Some(State::TriggersPending);
     assert_eq!(
         judge_dpkg(&decoy_record(), &hidden, &changed(&[])),
-        Verdict::Follows { own: Some(0) }
+        Verdict::Follows { own: 0 }
     );
 }
 
@@ -159,7 +159,7 @@ fn packages_only_hidden_sessions_changed_are_their_own() {
     let removed = [arch("firefox", "131.0-1")];
     assert_eq!(
         judge_pacman(&decoy_local(), &kept, &removed),
-        Verdict::Follows { own: Some(2) }
+        Verdict::Follows { own: 2 }
     );
 }
 
@@ -192,7 +192,7 @@ fn the_same_update_on_both_sides_is_one_entry() {
     let removed = [arch("firefox", "131.0-1")];
     assert_eq!(
         judge_pacman(&decoy, &kept, &removed),
-        Verdict::Follows { own: Some(1) }
+        Verdict::Follows { own: 1 }
     );
 }
 
@@ -211,15 +211,8 @@ fn a_package_hidden_sessions_removed_and_the_decoy_changed_is_listed_without_its
     // Removed and left alone on the decoy, it is gone in hidden sessions.
     assert_eq!(
         judge_pacman(&decoy_local(), &[], &removed),
-        Verdict::Follows { own: Some(1) }
+        Verdict::Follows { own: 1 }
     );
-}
-
-fn stamp(size: u64, seconds: u64) -> rpm::Stamp {
-    rpm::Stamp {
-        size,
-        modified: SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
-    }
 }
 
 #[test]
@@ -227,26 +220,6 @@ fn a_count_of_packages_reads_as_words() {
     assert_eq!(packages(0), "0 packages");
     assert_eq!(packages(1), "1 package");
     assert_eq!(packages(2), "2 packages");
-}
-
-#[test]
-fn rpms_copy_drifted_when_the_decoys_database_was_written_after_it() {
-    assert_eq!(
-        judge_rpm(stamp(4096, 200), stamp(4096, 100)),
-        Verdict::Drifted(Drift::Older)
-    );
-    // The same time with another size cannot be the same database.
-    assert_eq!(
-        judge_rpm(stamp(8192, 100), stamp(4096, 100)),
-        Verdict::Drifted(Drift::Older)
-    );
-    // A copy written later, or unchanged since it was made, follows.
-    for hidden in [stamp(8192, 300), stamp(4096, 200)] {
-        assert_eq!(
-            judge_rpm(stamp(4096, 200), hidden),
-            Verdict::Follows { own: None }
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +344,53 @@ fn a_copy_without_root_cannot_be_judged() {
 }
 
 #[test]
+fn without_root_a_decoy_filesystem_mounted_noatime_is_read() {
+    let fs = debian(
+        &status(&[("libc6", "2.41-13")]),
+        Some(&status(&[("libc6", "2.41-12")])),
+    );
+    let unprivileged = check().as_privileged(false);
+    // On a filesystem that keeps access times only root reads it.
+    fs.mock_set_mount_table("1 0 8:2 / /decoy rw,relatime - ext4 /dev/vda2 rw\n");
+    let result = run(&unprivileged, &fs);
+    assert!(result.message().contains("only root reads"), "{result:?}");
+    // Mounted noatime, no read changes an access time.
+    fs.mock_set_mount_table("1 0 8:2 / /decoy rw,noatime - ext4 /dev/vda2 rw\n");
+    let result = run(&unprivileged, &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("libc6 (2.41-13 on the decoy, 2.41-12 in hidden sessions)"),
+        "{result:?}"
+    );
+    // The filesystem the record is on decides: a /var/lib of its own that
+    // keeps access times (whose upper holds hidden sessions' copy), and the
+    // topmost of two mounts at one place.
+    fs.mock_add_file(
+        "/mnt/data/root/mounts/var-lib/upper/dpkg/status",
+        &status(&[("libc6", "2.41-12")]),
+    );
+    for table in [
+        "1 0 8:2 / /decoy rw,noatime - ext4 /dev/vda2 rw\n\
+         2 1 8:3 / /decoy/var/lib rw,relatime - ext4 /dev/vda3 rw\n",
+        "1 0 8:2 / /decoy rw,noatime - ext4 /dev/vda2 rw\n\
+         2 1 8:3 / /decoy rw,relatime - ext4 /dev/vda3 rw\n",
+    ] {
+        fs.mock_set_mount_table(table);
+        let result = run(&unprivileged, &fs);
+        assert!(
+            result.message().contains("only root reads"),
+            "{table}: {result:?}"
+        );
+    }
+    // An option that merely contains the word is not it.
+    fs.mock_set_mount_table("1 0 8:2 / /decoy rw,nonoatime - ext4 /dev/vda2 rw\n");
+    let result = run(&unprivileged, &fs);
+    assert!(result.message().contains("only root reads"), "{result:?}");
+}
+
+#[test]
 fn a_deleted_or_replaced_record_warns_with_the_discard_that_brings_it_back() {
     for (setup, path, what) in [
         ("whiteout", "/var/lib/dpkg/status", "deleted"),
@@ -431,8 +451,10 @@ fn a_record_on_a_decoy_filesystem_of_its_own_is_judged_against_its_upper() {
         // A copy in the root upper is not what hidden sessions see.
         Some(&status(&[("libc6", "2.41-12")])),
     );
+    // A deeper filesystem elsewhere does not hold the record.
     fs.mock_set_mount_table(
-        "1 0 8:2 / /decoy rw - ext4 /dev/vda2 rw\n2 1 8:3 / /decoy/var rw - ext4 /dev/vda3 rw\n",
+        "1 0 8:2 / /decoy rw - ext4 /dev/vda2 rw\n2 1 8:3 / /decoy/var rw - ext4 /dev/vda3 rw\n\
+         3 1 8:4 / /decoy/home/a/b/c rw - ext4 /dev/vda4 rw\n",
     );
     let result = run(&check(), &fs);
     assert!(result.is_pass(), "{result:?}");
@@ -603,62 +625,13 @@ fn pacman_entries_of_hidden_sessions_alone_pass() {
         "hidden sessions see the decoy's pacman package database (/var/lib/pacman/local) with \
          the 1 package they changed themselves, none of which the decoy changed since"
     );
-    // Without root the decoy's entries cannot be listed.
+    // Without root the decoy's entries cannot be listed, unless they are on a
+    // filesystem mounted noatime.
     let result = run(&check().as_privileged(false), &fs);
     assert!(result.is_warn(), "{result:?}");
     assert!(result.message().contains("only root reads"), "{result:?}");
-}
-
-/// A decoy with rpm's database written at `decoy`, and hidden sessions'
-/// copy written at `hidden` when given.
-fn fedora(decoy: u64, hidden: Option<u64>) -> MockFilesystem {
-    let fs = MockFilesystem::new();
-    let at = |base: &str, seconds: u64| {
-        let path = format!("{base}/usr/lib/sysimage/rpm/rpmdb.sqlite");
-        fs.mock_set_file_size(&path, 16 << 20);
-        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(seconds);
-        fs.mock_set_modified_time(Path::new(&path), time.into());
-    };
-    at(ROOT, decoy);
-    if let Some(hidden) = hidden {
-        at(UPPER, hidden);
-    }
-    // Fedora keeps the old place as a link to the new one.
-    fs.mock_set_path_type(&format!("{ROOT}/var/lib/rpm"), PathKind::Symlink);
-    fs
-}
-
-#[test]
-fn rpms_copy_is_judged_by_time_even_without_root() {
-    let check = check().as_privileged(false);
-    let result = run(&check, &fedora(2_000, None));
-    assert!(result.is_pass(), "{result:?}");
-    assert_eq!(
-        result.message(),
-        "hidden sessions see the decoy's own rpm package database \
-         (/usr/lib/sysimage/rpm/rpmdb.sqlite)"
-    );
-
-    let result = run(&check, &fedora(2_000, Some(3_000)));
-    assert!(result.is_pass(), "{result:?}");
-    assert!(
-        result.message().contains("written no earlier"),
-        "{result:?}"
-    );
-
-    let result = run(&check, &fedora(3_000, Some(2_000)));
-    assert!(result.is_warn(), "{result:?}");
-    assert!(
-        result.message().starts_with(
-            "the decoy's rpm package database (/usr/lib/sysimage/rpm/rpmdb.sqlite) changed \
-             after hidden sessions last changed their own copy"
-        ),
-        "{result:?}"
-    );
-    assert!(
-        result.message().contains("`sudo dnf upgrade --refresh`"),
-        "{result:?}"
-    );
+    fs.mock_set_mount_table("1 0 8:2 / /decoy rw,noatime - ext4 /dev/vda2 rw\n");
+    assert!(run(&check().as_privileged(false), &fs).is_pass());
 }
 
 #[test]
@@ -779,12 +752,36 @@ fn without_the_mount_table_a_copy_cannot_be_placed() {
         Some(&status(&[("libc6", "2.41-13")])),
     );
     fs.mock_set_mount_table_error("permission denied");
+    // The kernel that does not say whether a directory is a mount point
+    // leaves the copy's place unknown.
     let result = run(&check(), &fs);
     assert!(result.is_warn(), "{result:?}");
     assert!(
-        result
-            .message()
-            .contains("the mount table cannot be read, so where hidden sessions keep their copy"),
+        result.message().contains(
+            "the mount table cannot be read, and the kernel does not say whether /var/lib/dpkg \
+             is a mount point"
+        ),
+        "{result:?}"
+    );
+
+    // Where the kernel says, the copy is placed by its word: no mount point
+    // above the record keeps it in the root upper, where it follows.
+    for dir in ["var", "var/lib", "var/lib/dpkg"] {
+        fs.mock_set_mount_root(&format!("{ROOT}/{dir}"), false);
+    }
+    let result = run(&check(), &fs);
+    assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result.message().contains("which follows the decoy's"),
+        "{result:?}"
+    );
+    // A /var of its own keeps hidden sessions' copy in its own upper, which
+    // holds none: they see the decoy's record.
+    fs.mock_set_mount_root(&format!("{ROOT}/var"), true);
+    let result = run(&check(), &fs);
+    assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result.message().contains("see the decoy's own dpkg"),
         "{result:?}"
     );
 
@@ -815,6 +812,18 @@ fn a_record_with_no_package_read_cannot_be_judged() {
             "{result:?}"
         );
     }
+}
+
+#[test]
+fn a_copy_that_holds_the_decoys_record_follows_it_whatever_its_format() {
+    // Neither side records a package NAILS reads, but they hold the same.
+    let record = "Description: no package\n";
+    let result = run(&check(), &debian(record, Some(record)));
+    assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result.message().contains("which follows the decoy's"),
+        "{result:?}"
+    );
 }
 
 #[test]

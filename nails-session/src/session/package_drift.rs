@@ -32,10 +32,19 @@
 //!   they keep their own files of it, or when a hidden session removed one the
 //!   decoy changed since, so pacman lists the decoy's entry while the files
 //!   the hidden session deleted stay deleted.
-//! - rpm keeps a SQLite database, which NAILS does not read. Hidden sessions'
-//!   copy drifted when the decoy's was written after it, by size and time
-//!   alone; a change on the decoy between two changes in hidden sessions
-//!   goes unseen.
+//! - rpm keeps a SQLite database in WAL mode, which hidden sessions copy
+//!   whole at their first change, as dpkg's `status`. NAILS reads both with
+//!   its own reader ([`nails_base::packages::rpm`]), the committed
+//!   transactions of each one's log included, and compares the packages
+//!   they record. A package whose record differs drifted, unless a hidden
+//!   session changed the package itself: rpm keeps no file per package next
+//!   to its database, but a package's header lists the files it installs,
+//!   and a hidden session that installs, updates or removes a package writes,
+//!   or deletes, those files in the upper. So a package one of whose own
+//!   files ([`rpm::File::is_own`]: no directory, configuration file or ghost)
+//!   the upper holds or deleted, by the record of either side, is one a
+//!   hidden session changed. The public keys rpm records as `gpg-pubkey`
+//!   packages install no file and are left out.
 //!
 //! The check only warns, never refuses: a package a hidden session installs
 //! on purpose is its own business, and the warning says what drifted and how
@@ -50,9 +59,19 @@
 //! through the [`Filesystem`] seam ([`nails_base::packages`] on access times),
 //! and each lookup below the decoy root passes only through entries already
 //! seen not to be symbolic links. Only root reads the decoy's database without
-//! changing its access time, so a `nails check` that is not running as root
-//! says it cannot tell, and names the `sudo` line, whenever the verdict needs
-//! more than the database's metadata. Nothing here writes.
+//! changing its access time, unless the filesystem it is on is mounted
+//! `noatime`, so a `nails check` that is not running as root says it cannot
+//! tell, and names the `sudo` line, whenever hidden sessions keep a copy to
+//! judge on any other filesystem. Nothing here writes.
+//!
+//! [`Verdict::Unknown`] is left for what no reading decides without a trace:
+//! that read without root where atimes are kept, a symbolic link on the way to the decoy's database
+//! (a lookup through it changes the link's access time, and no open flag
+//! spares it), a file or a directory that cannot be read, a database whose
+//! format does not hold, an rpm transaction stopped half way (SQLite rolls
+//! back its journal only when it next opens the database, so neither state is
+//! the one rpm will see), and, without the mount table, a kernel that does
+//! not say what is a mount point.
 
 use crate::error::Result;
 use crate::filesystem::Filesystem;
@@ -120,9 +139,9 @@ pub struct Change {
 /// How hidden sessions' package database no longer follows the decoy's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Drift {
-    /// dpkg: the packages the decoy installed, updated or removed since
-    /// hidden sessions made their copy of the record, none of which a hidden
-    /// session changed itself.
+    /// dpkg and rpm: the packages the decoy installed, updated or removed
+    /// since hidden sessions made their copy of the record, none of which a
+    /// hidden session changed itself.
     Stale(Vec<Change>),
     /// pacman: the packages the decoy changed after a hidden session changed
     /// them too (`twice`), and those a hidden session removed and the decoy
@@ -133,8 +152,6 @@ pub enum Drift {
         /// Listed in hidden sessions without the files they deleted.
         removed: Vec<Change>,
     },
-    /// rpm: the decoy's database was written after hidden sessions' copy.
-    Older,
 }
 
 /// Why a verdict could not be reached.
@@ -156,11 +173,10 @@ pub enum Verdict {
     /// upper.
     Shared,
     /// Hidden sessions keep records of their own, which follow the decoy's
-    /// but for the `own` packages they changed themselves; `None` for rpm,
-    /// whose packages are not read.
+    /// but for the `own` packages they changed themselves.
     Follows {
         /// The packages hidden sessions changed themselves.
-        own: Option<usize>,
+        own: usize,
     },
     /// Hidden sessions' records no longer follow the decoy's.
     Drifted(Drift),
@@ -228,7 +244,7 @@ pub fn judge_dpkg(
         });
     }
     if stale.is_empty() {
-        Verdict::Follows { own: Some(own) }
+        Verdict::Follows { own }
     } else {
         Verdict::Drifted(Drift::Stale(stale))
     }
@@ -292,9 +308,7 @@ pub fn judge_pacman(
             .chain(removed)
             .map(|package| package.name.as_str())
             .collect();
-        return Verdict::Follows {
-            own: Some(own.len()),
-        };
+        return Verdict::Follows { own: own.len() };
     }
     Verdict::Drifted(Drift::Merged {
         twice: twice.into_iter().collect(),
@@ -302,16 +316,84 @@ pub fn judge_pacman(
     })
 }
 
-/// Judge rpm's database by size and time: `decoy` is the decoy's stamp,
-/// `hidden` that of hidden sessions' copy. The copy drifted when the decoy's
-/// was written after it, or at the same time with another size.
-pub fn judge_rpm(decoy: rpm::Stamp, hidden: rpm::Stamp) -> Verdict {
-    let later = decoy.modified > hidden.modified
-        || (decoy.modified == hidden.modified && decoy.size != hidden.size);
-    if later {
-        Verdict::Drifted(Drift::Older)
+/// An rpm package's key: its name and architecture.
+pub type RpmKey = (String, Option<String>);
+
+/// rpm's packages by key, each with its versions: several of one key are
+/// installed side by side (the kernel's). The public keys rpm records as
+/// packages are left out.
+fn by_key(packages: &[rpm::Package]) -> BTreeMap<RpmKey, BTreeSet<String>> {
+    let mut keys: BTreeMap<RpmKey, BTreeSet<String>> = BTreeMap::new();
+    for package in packages.iter().filter(|package| !package.is_key()) {
+        keys.entry((package.name.clone(), package.arch.clone()))
+            .or_default()
+            .insert(package.evr());
+    }
+    keys
+}
+
+/// The packages of each key whose versions differ between the decoy's
+/// database `decoy` and hidden sessions' copy `hidden`, of both sides: those
+/// whose files tell whether a hidden session changed them.
+pub fn rpm_differing<'a>(
+    decoy: &'a [rpm::Package],
+    hidden: &'a [rpm::Package],
+) -> BTreeMap<RpmKey, Vec<&'a rpm::Package>> {
+    let (on_decoy, in_hidden) = (by_key(decoy), by_key(hidden));
+    let mut differing: BTreeMap<RpmKey, Vec<&rpm::Package>> = BTreeMap::new();
+    for package in decoy
+        .iter()
+        .chain(hidden)
+        .filter(|package| !package.is_key())
+    {
+        let key = (package.name.clone(), package.arch.clone());
+        if on_decoy.get(&key) != in_hidden.get(&key) {
+            differing.entry(key).or_default().push(package);
+        }
+    }
+    differing
+}
+
+/// Judge rpm's database: `decoy` is the decoy's packages, `hidden` those of
+/// hidden sessions' copy, and `changed` the keys of the differing packages
+/// ([`rpm_differing`]) a hidden session changed itself.
+pub fn judge_rpm(
+    decoy: &[rpm::Package],
+    hidden: &[rpm::Package],
+    changed: &BTreeSet<RpmKey>,
+) -> Verdict {
+    let (on_decoy, in_hidden) = (by_key(decoy), by_key(hidden));
+    let keys: BTreeSet<&RpmKey> = on_decoy.keys().chain(in_hidden.keys()).collect();
+    let several = |name: &str| keys.iter().filter(|(other, _)| other == name).count() > 1;
+    let versions = |set: Option<&BTreeSet<String>>| {
+        set.map(|set| set.iter().cloned().collect::<Vec<_>>().join(" and "))
+    };
+    let mut own = 0;
+    let mut stale = Vec::new();
+    for &key in &keys {
+        let (decoy, hidden) = (on_decoy.get(key), in_hidden.get(key));
+        if decoy == hidden {
+            continue;
+        }
+        if changed.contains(key) {
+            own += 1;
+            continue;
+        }
+        let (name, arch) = key;
+        let name = match arch {
+            Some(arch) if several(name) => format!("{name}.{arch}"),
+            _ => name.clone(),
+        };
+        stale.push(Change {
+            name,
+            decoy: versions(decoy),
+            hidden: versions(hidden),
+        });
+    }
+    if stale.is_empty() {
+        Verdict::Follows { own }
     } else {
-        Verdict::Follows { own: None }
+        Verdict::Drifted(Drift::Stale(stale))
     }
 }
 
@@ -411,24 +493,20 @@ pub fn report(verdicts: &[(Database, String, Verdict)], allow_decoy_storage: boo
         match verdict {
             Verdict::Absent => {}
             Verdict::Shared => passes.push(format!("hidden sessions see the decoy's own {shown}")),
-            Verdict::Follows { own: Some(0) } => passes.push(format!(
+            Verdict::Follows { own: 0 } => passes.push(format!(
                 "hidden sessions keep their own copy of the {shown}, which follows the decoy's"
             )),
-            Verdict::Follows { own: Some(own) } if *database == Database::Pacman => {
+            Verdict::Follows { own } if *database == Database::Pacman => {
                 passes.push(format!(
                     "hidden sessions see the decoy's {shown} with the {} they changed \
                      themselves, none of which the decoy changed since",
                     packages(*own)
                 ));
             }
-            Verdict::Follows { own: Some(own) } => passes.push(format!(
+            Verdict::Follows { own } => passes.push(format!(
                 "hidden sessions keep their own copy of the {shown}, which follows the decoy's \
                  but for the {} they changed themselves",
                 packages(*own)
-            )),
-            Verdict::Follows { own: None } => passes.push(format!(
-                "hidden sessions keep their own copy of the {shown}, written no earlier than the \
-                 decoy's"
             )),
             Verdict::Drifted(drift) => {
                 warnings.push(drifted(&shown, drift));
@@ -507,10 +585,6 @@ fn drifted(shown: &str, drift: &Drift) -> String {
             }
             parts.join("; ")
         }
-        Drift::Older => format!(
-            "the decoy's {shown} changed after hidden sessions last changed their own copy, so \
-             hidden sessions do not know what the decoy installed, updated or removed since"
-        ),
     }
 }
 
@@ -635,3 +709,7 @@ impl<F: Filesystem> PreFlightCheck<F> for PackageDriftCheck {
 #[cfg(test)]
 #[path = "package_drift_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "package_drift_rpm_tests.rs"]
+mod rpm_tests;

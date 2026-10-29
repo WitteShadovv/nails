@@ -1149,8 +1149,10 @@ and that record is where hidden sessions and the decoy drift apart:
   session removed and the decoy updated since is listed without its files.
   After a full update in a hidden session and a later one on the decoy, a
   hidden session can fail to start.
-- **rpm** (Fedora) keeps a SQLite database, which hidden sessions copy at
-  their first change and keep from then on, as with dpkg.
+- **rpm** (Fedora) keeps a SQLite database,
+  `/usr/lib/sysimage/rpm/rpmdb.sqlite`, with its write-ahead log next to it,
+  which hidden sessions copy at their first change and keep from then on, as
+  with dpkg.
 
 The `package-drift` check warns, and never refuses, when hidden sessions'
 record no longer follows the decoy's. For dpkg it names each package the decoy
@@ -1159,16 +1161,43 @@ record, with its version on each side, and leaves out the packages a hidden
 session changed itself: dpkg writes or deletes a package's files in
 `/var/lib/dpkg/info` whenever it changes the package, so their copies in the
 upper show which packages those are. For pacman it names each package listed
-twice or without its files. rpm's database is not read: the check compares its
-size and modification time with those of hidden sessions' copy, so a change on
-the decoy between two changes in hidden sessions goes unseen. Activation shows
+twice or without its files. For rpm it reads both databases with a reader of
+its own (no SQLite library, no `rpm` command, nothing written), the
+transactions rpm committed to the write-ahead log but has not copied into the
+database yet included, and names each package the decoy installed, updated or
+removed since, as for dpkg. rpm keeps no file per package beside its database,
+so a package counts as one a hidden session changed when the upper holds, or
+deleted, one of the files the package installs by either side's record (not
+its directories, configuration files or ghost files, which other packages
+share or the operator edits). A package that installs no such file, other
+than the public keys rpm records as `gpg-pubkey`, which the check leaves out,
+is named when its record differs. Activation shows
 the same warning before it asks to log you out (unless `-y` skips the
 question), so you can answer no, and again among the warnings of its result,
 which then exits `9`. A hidden session that deleted or replaced the database
 itself draws a warning that names the `discard` that brings the decoy's back.
-Only root reads the decoy's database without changing its access time, so an
-unprivileged `nails check` that would need to read it says it cannot tell and
-names the `sudo` line.
+Where the mount table cannot be read, the kernel's own word on each directory
+above a database (`statx`) tells whether the database lies on a decoy
+filesystem of its own, such as a separate `/var`.
+
+The check says it cannot tell only where nothing can decide without leaving a
+trace or reading what cannot be read:
+
+- an unprivileged `nails check` that would need to read the decoy's database
+  on a filesystem that keeps access times: only root reads it without changing
+  its access time, so it names the `sudo` line (on a filesystem mounted
+  `noatime` no read changes one, and the check reads it without root);
+- a symbolic link on the way to the decoy's database: following it changes the
+  link's access time;
+- a database or an upper that cannot be read (an I/O error, a file larger than
+  any package database, a dpkg record in a format NAILS does not know whose
+  copy differs from it, an rpm database whose pages or headers do not hold, or
+  one rpm wrote while it was read, twice in a row);
+- an rpm transaction stopped half way that left a rollback journal: rpm rolls
+  it back the next time it opens the database, so the check names neither
+  state;
+- no mount table and a kernel older than 5.8, which does not say what is a
+  mount point.
 
 To bring hidden sessions back in line, make the decoy's changes in a hidden
 session too:
