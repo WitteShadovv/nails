@@ -508,6 +508,11 @@ soft-reboots with `py/nails_e2e/session.py`:
   gives them, as they do after a second session beside a unit that every
   soft-reboot leaves running with a lower number, and a plain soft-reboot, as
   a positive control, does not;
+- `session-wayback-poweroff`: a way back that cannot put the decoy's network
+  state back (the hidden session loaded `ipip`, whose fallback device `tunl0`
+  the kernel keeps when asked to delete it) powers the machine off instead of
+  returning, with one console line that names the link, after `deactivate`
+  and after a plain `emergency`; one that undoes everything still returns;
 - `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
   with its store on the root disk under NixOS's read-only bind, a store path
   bound after it, a read-only bind stacked on an fstab filesystem and its ESP
