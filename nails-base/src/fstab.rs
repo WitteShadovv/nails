@@ -25,6 +25,11 @@ pub struct FstabEntry {
     pub options: Vec<String>,
 }
 
+/// Whether `vfstype` is the type of a RAM or kernel filesystem.
+pub fn is_virtual_type(vfstype: &str) -> bool {
+    VIRTUAL_TYPES.contains(&vfstype)
+}
+
 /// Filesystem types that live in RAM or the kernel, never on a decoy disk.
 const VIRTUAL_TYPES: &[&str] = &[
     "tmpfs",
@@ -88,7 +93,7 @@ impl FstabEntry {
 
     /// A RAM or kernel filesystem.
     pub fn is_virtual(&self) -> bool {
-        VIRTUAL_TYPES.contains(&self.vfstype.as_str())
+        is_virtual_type(&self.vfstype)
     }
 
     /// A virtual machine's host share.
