@@ -290,7 +290,9 @@ of this changelog for that version becomes the release notes word for word, and
   device is kept off like disk swap. A unit whose files cannot be read, or that names its source by
   a specifier, is masked, and a directory of unit links that cannot be listed refuses the
   activation. A mount unit that only another unit pulls in is not decided. `nails check` lists the
-  decisions with the fstab's.
+  decisions with the fstab's. A mask now also goes into `/run/systemd/system.control`: in
+  `/run/systemd/system` alone it lost to a unit in `/etc/systemd/system`, where NixOS installs
+  every unit, so the hidden systemd started such a unit masked there all the same.
 - A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
   keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
   fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
