@@ -29,7 +29,10 @@
 //! only that it exists. Before it empties a restored Nix store database, it
 //! dumps every row of the database, its schema included, into
 //! `nix_db/<label>.jsonl` (see [`crate::nix_db`]), since the oracle's decoy VMs
-//! rewrite that file at every start.
+//! rewrite that file at every start. It keeps the login record files whole
+//! (`wtmp`, `btmp` and their rotations, see
+//! [`crate::carved::is_login_record_file`]), and the control image's are read
+//! for the records the control cycle wrote ([`Scans::control_login_records`]).
 //!
 //! These parsers are lenient with output they cannot parse (an unparseable
 //! line is skipped) and with a tool that did not run (a missing subtree yields
@@ -74,12 +77,52 @@ pub fn scan_all(outputs: &Path) -> io::Result<Scans> {
     } else {
         JournalFiles::LeaveToPlaso
     };
+    let restore = outputs.join("restore");
+    let control = ImageLabel::Control.dir_name();
     Ok(Scans {
         before: scan_image(outputs, ImageLabel::Before, journal_files)?,
         control: scan_image(outputs, ImageLabel::Control, journal_files)?,
         after: scan_image(outputs, ImageLabel::After, journal_files)?,
         not_run,
+        control_login_records: scan_login_records(
+            &restore.join(control),
+            &restore.join(format!("{control}.sha256")),
+        )?,
     })
+}
+
+/// The SHA-256 of no bytes: what a digest manifest records for an empty file.
+const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // pragma: allowlist secret
+
+/// The keys of the login records the login record files of the restored tree
+/// at `root` hold ([`carved::is_login_record_file`], [`carved::login_record_keys`]),
+/// read from the files themselves, which `run-scan.sh` keeps whole. A file
+/// found empty that `manifest` recorded as holding something was emptied
+/// after the carve, and its records would be lost: that is an error. A missing
+/// tree, a carve that did not run, yields none.
+fn scan_login_records(root: &Path, manifest: &Path) -> io::Result<BTreeSet<String>> {
+    let mut keys = BTreeSet::new();
+    if !present(root)? {
+        return Ok(keys);
+    }
+    let digests = parse_digest_manifest(&fs::read(manifest).map_err(|e| at(manifest, e))?)
+        .map_err(|message| invalid(format!("{}: {message}", manifest.display())))?;
+    for (abs, digest) in digests {
+        if !carved::is_login_record_file(&abs) {
+            continue;
+        }
+        let file = root.join(abs.trim_start_matches('/'));
+        let data = fs::read(&file).map_err(|e| at(&file, e))?;
+        if data.is_empty() && digest != EMPTY_SHA256 {
+            return Err(invalid(format!(
+                "{}: empty, but {} records it as holding data; the login record files must be kept whole",
+                file.display(),
+                manifest.display()
+            )));
+        }
+        keys.extend(carved::login_record_keys(&data));
+    }
+    Ok(keys)
 }
 
 /// The marker `run-scan.sh` writes into `outputs/plaso/` when it leaves the
