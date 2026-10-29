@@ -46,6 +46,19 @@ of this changelog for that version becomes the release notes word for word, and
   inside a hidden session instead of a `.new` file moved into place, and so does the README. A new
   fuzz target, `config_edit`, checks that an edit keeps every comment and every key it does not
   name.
+- A root helper for the coming window, `nails helper --stdio`, built only with the `gui` cargo
+  feature, so the released binary has no such command (a flake check runs the shipped binary to
+  prove it refuses it). The window runs as the operator and drives the engine through the helper's
+  stdin and stdout, one JSON line per request. The helper speaks first and answers nothing until the
+  window's hello names the same release and protocol version; then it runs one request at a time
+  and answers each with the envelope and exit code the CLI gives for the same command under
+  `--json`, with the progress of `check` streamed as events. It serves `status`, `check`, `config
+  path`, `config show` and `config validate` (of its own configuration only, never a path the
+  window names), and `discard` as a plan and an apply: the plan takes the state lock and hands out a
+  single-use token, and only the next request, an apply carrying that token, deletes what the plan
+  listed. The decoder refuses a line over 16 KiB, an unknown or duplicate field, another protocol
+  version and an argument of the wrong shape, and ends the session; a libFuzzer target
+  (`helper_request`) covers it. The remaining commands follow before the window ships.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

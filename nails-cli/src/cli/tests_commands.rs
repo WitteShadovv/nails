@@ -151,6 +151,8 @@ fn test_only_the_commands_that_change_the_system_count_as_mutating() {
         &["discard", "/home"],
         &["config", "set", "minimum_space_mb", "600"],
         &["config", "unset", "minimum_space_mb"],
+        #[cfg(feature = "gui")]
+        &["helper", "--stdio"],
     ];
     let other: &[&[&str]] = &[
         &["status"],

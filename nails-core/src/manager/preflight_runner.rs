@@ -415,7 +415,7 @@ pub fn build_registry<F: Filesystem>(
 }
 
 /// The typed event outcome of a check result, for the progress event stream.
-fn check_outcome(result: &crate::preflight::CheckResult) -> nails_api::CheckOutcome {
+pub(crate) fn check_outcome(result: &crate::preflight::CheckResult) -> nails_api::CheckOutcome {
     use crate::preflight::CheckResult;
     use nails_api::CheckOutcome;
     match result {

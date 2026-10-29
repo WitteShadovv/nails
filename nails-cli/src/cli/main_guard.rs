@@ -37,6 +37,10 @@ pub fn requires_root(command: &Commands) -> bool {
         | Commands::GuardDevice { .. }
         | Commands::ReconcileRecords { .. }
         | Commands::BootWriter { .. } => true,
+        // The window's helper reads the root-only configuration and runs the
+        // mutating operations for a window that runs as the operator.
+        #[cfg(feature = "gui")]
+        Commands::Helper(_) => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
         // files and the status view are not gated here: they still read the
@@ -72,6 +76,8 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::GuardDevice { .. } => "guard-device",
         Commands::ReconcileRecords { .. } => "reconcile-records",
         Commands::BootWriter { .. } => "boot-writer",
+        #[cfg(feature = "gui")]
+        Commands::Helper(_) => "helper",
     }
 }
 
