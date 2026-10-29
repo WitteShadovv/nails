@@ -144,6 +144,36 @@ pub struct Skip {
     pub device: Option<PathBuf>,
 }
 
+/// Why the entry masked a unit a boot target requires instead of skipping
+/// it ([`Skip`]): the mask keeps that target from being reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskCause {
+    /// The device the unit waits for was not there: a skipped unit would
+    /// have waited for it until the device timeout.
+    DeviceAbsent,
+    /// NAILS could not tell what the unit is or what it pulls in, so it
+    /// keeps the unit from starting whatever it is.
+    Undetermined,
+    /// Two fstab lines the hidden systemd may read disagree about the unit
+    /// (one does not require it, or they name two devices), and a mask holds
+    /// for both.
+    ConflictingLines,
+}
+
+/// A unit a boot target requires that the entry masked rather than skipped,
+/// and why. `status` lists these with the skips.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredMask {
+    /// The unit.
+    pub unit: String,
+    /// Why it is masked.
+    pub cause: MaskCause,
+    /// The device that was not there, for [`MaskCause::DeviceAbsent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<PathBuf>,
+}
+
 /// A decoy filesystem carried into the hidden session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarriedMount {
@@ -312,6 +342,12 @@ pub struct Plan {
     /// from a plan written before they were recorded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skips: Vec<Skip>,
+    /// The units among [`masks`](Self::masks) that a boot target requires,
+    /// each with why it is masked rather than skipped: what `status` lists
+    /// next to the skips. Only a record for the operator; nothing reads it to
+    /// keep a unit off. Absent from a plan written before it was recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_masks: Vec<RequiredMask>,
     /// Runtime units installed in `/run` at entry, for the hidden session.
     #[serde(default)]
     pub session_units: Vec<RuntimeUnit>,
@@ -512,6 +548,7 @@ pub(crate) fn sample() -> Plan {
         boot_masks: Vec::new(),
         generator_masks: Vec::new(),
         skips: Vec::new(),
+        required_masks: Vec::new(),
         session_units: Vec::new(),
         backend: vec!["sample-backend-unmapped".to_string()],
         tools: Tools::default(),
@@ -624,6 +661,38 @@ mod tests {
         let older = sample().to_json();
         assert!(!older.contains("skips"), "{older}");
         assert!(Plan::from_json(&older).unwrap().skips.is_empty());
+    }
+
+    #[test]
+    fn the_required_masks_are_kept_and_a_plan_without_them_still_loads() {
+        let masking = Plan {
+            required_masks: vec![
+                RequiredMask {
+                    unit: "srv-data.mount".to_string(),
+                    cause: MaskCause::DeviceAbsent,
+                    device: Some(PathBuf::from("/dev/vdb1")),
+                },
+                RequiredMask {
+                    unit: "net.mount".to_string(),
+                    cause: MaskCause::ConflictingLines,
+                    device: None,
+                },
+            ],
+            ..sample()
+        };
+        let text = masking.to_json();
+        assert!(
+            text.contains(
+                "\"required_masks\":[{\"unit\":\"srv-data.mount\",\"cause\":\"device_absent\",\
+                 \"device\":\"/dev/vdb1\"},{\"unit\":\"net.mount\",\"cause\":\"conflicting_lines\"}]"
+            ),
+            "{text}"
+        );
+        assert_eq!(Plan::from_json(&text).unwrap(), masking);
+
+        let older = sample().to_json();
+        assert!(!older.contains("required_masks"), "{older}");
+        assert!(Plan::from_json(&older).unwrap().required_masks.is_empty());
     }
 
     #[test]
