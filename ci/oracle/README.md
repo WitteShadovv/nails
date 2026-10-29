@@ -5,13 +5,15 @@ pass/fail verdict: did a torn-down hidden session leave a trace an examiner
 could find? The verdict tool is the `nails-oracle` crate; this directory holds
 its input policy files and `run-scan.sh`, the scan that feeds it.
 
-The only oracle run in CI is `.github/workflows/oracle-real-nightly.yml`. Every
+The oracle runs in CI are in `.github/workflows/oracle-real-nightly.yml`. Every
 night it images real ext4 decoy roots in the `oracle-images` E2E test, runs
-`run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict.
-`oracle-nightly.yml` in this directory is a template for a run over synthetic
-btrfs images. It is not installed under `.github/workflows`, so nothing runs
-it, and it could not pass as it stands: plaso cannot open btrfs (see
-[Proving plaso read each image](#proving-plaso-read-each-image)).
+`run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict,
+and its `scan-btrfs` job runs `run-scan.sh` over the synthetic btrfs images
+`make-sample-images.sh` builds. plaso cannot open btrfs, so a btrfs scan runs
+no timeline and its verdict is `partial` at best, never `clean` (see
+[btrfs: no timeline](#btrfs-no-timeline)). `oracle-nightly.yml` in this
+directory is a template for the synthetic run alone; it is not installed under
+`.github/workflows`.
 
 ## What it compares
 
@@ -31,8 +33,10 @@ cited allowlist entry explains it. A difference goes either way: a trace new in
 when every difference it can see is accounted for, the scan proved it is not
 blind (the positive controls, and every analysis channel but nix_db reporting
 on every image; only a Nix decoy has a store database, so nix_db is held to the
-database instead), and it proved it read the image (the canary). What it cannot
-see is listed under [What it does not see](#what-it-does-not-see).
+database instead), and it proved it read the image (the canary). A btrfs scan,
+which runs no plaso timeline, is at best `partial`: everything else holds, but
+it is not a full run. What it cannot see is listed under
+[What it does not see](#what-it-does-not-see).
 
 ## The outputs/ tree it consumes
 
@@ -45,6 +49,7 @@ outputs/nix_db/<label>.jsonl           every row of the restored Nix store datab
 outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 outputs/bulk_extractor/<label>/*_carved/...  the objects its carvers saved
 outputs/plaso/<label>.jsonl            plaso timeline, one JSON event per line
+outputs/plaso/not-run                  on btrfs, instead of the timelines: "btrfs"
 ```
 
 `<label>` is `before`, `control` or `after`. `run-scan.sh` hashes every restored
@@ -63,7 +68,8 @@ normalizes to findings keyed by `(tool, path, field)`:
   recovers. An empty directory or a symlink (a unit's enablement link, say) is
   a trace in its own right. The rotating journal files under `/var/log/journal`
   are left to plaso, which compares them by content; the directories that hold
-  them are still reported.
+  them are still reported. A btrfs scan runs no timeline, so there they are
+  reported like any file: a journal the session left is residue, not unseen.
 - nix_db — `path` is the store database's on-image path; `field` is one of its
   rows: the table's name, then its columns as `name=value` in name order, a
   NULL left out, as in `ValidPaths hash="sha256:..." narSize=1216
@@ -130,8 +136,10 @@ to plaso, and every shipped self-check is a bulk_extractor finding.
 `run-scan.sh` drops the plaso channel whole when docker is missing, its pinned
 image cannot be pulled, or any image's timeline fails, runs past 20 minutes or
 does not show that plaso read the image (see below), so such a run fails. There
-is no switch to skip a channel; the verdict is still written, so a local run
-without docker can read what the other channels found.
+is no switch to skip a channel: the one channel left out is the timeline of
+btrfs images, by design and named in the verdict (see
+[btrfs: no timeline](#btrfs-no-timeline)). The verdict is still written, so a
+local run without docker can read what the other channels found.
 
 ### Carving the restore channel
 
@@ -162,12 +170,49 @@ image, and the run could read clean, while plaso read no file in any of them.
 canary's file (`timeline-has-file.sh` checks the events' `filename`), and drops
 the plaso channel otherwise.
 
-plaso opens ext{2,3,4} but not btrfs, so a btrfs image, the synthetic ones
-included, fails the plaso channel and with it the run. It also opens a
-whole-disk image only when the image holds a single partition: `run-scan.sh`
-runs log2timeline unattended and without `--partitions`, and log2timeline then
-stops rather than choose among several, an EFI system or BIOS boot partition
-next to the root included. Scan the root filesystem's own image instead.
+plaso opens ext{2,3,4} but not btrfs, so on btrfs images `run-scan.sh` runs
+no timeline at all (next section). It also opens a whole-disk image only when
+the image holds a single partition: `run-scan.sh` runs log2timeline unattended
+and without `--partitions`, and log2timeline then stops rather than choose
+among several, an EFI system or BIOS boot partition next to the root included.
+Scan the root filesystem's own image instead.
+
+### btrfs: no timeline
+
+Fedora and Arch decoys are btrfs by default, and plaso cannot read btrfs. So
+when the three images are btrfs, `run-scan.sh` neither pulls nor runs plaso and
+writes `outputs/plaso/not-run` holding `btrfs` in place of the timelines. The
+three images are one host's disk, so all three must be btrfs; some btrfs and
+some not stops the run. `nails-oracle` then:
+
+- requires the restore carve (`btrfs restore`) and bulk_extractor on every
+  image, as on any scan, and compares the files, their content, the records
+  bulk_extractor decodes and the rows of a Nix store database as always; a
+  silent channel, a leak, a missing control or canary fails the run;
+- reports the rotating journal files as restore findings (above);
+- writes `"status": "partial"`, exit `3`, when nothing else is wrong, never
+  `clean`, with `"not_run": [{"tool": "plaso", "channel": "timeline",
+  "reason": "plaso cannot read btrfs"}]` and a summary that begins `PARTIAL, NOT
+  A FULL RUN (timeline: not run, plaso cannot read btrfs)`; a failing summary
+  names it too;
+- stops (exit `2`) on a `not-run` marker that says anything else or sits next
+  to a timeline, and fails a run in which plaso reported a finding although
+  the marker says it did not run (`not_run_channel_reported`).
+
+What a partial run does not see beyond a full one is what only plaso reads:
+the records it parses out of a file, such as the login records of `wtmp`
+(bulk_extractor still carves those) and the messages of a journal (whose file
+the restore channel then compares whole). A file a reboot rewrites that only
+plaso read records of is named under `reboot_rewritten` instead.
+
+`run-scan.sh` passes a partial verdict only on btrfs images that ran no
+timeline, and only when the verdict says `partial` and names exactly that
+channel; it then prints `PARTIAL verdict, not a full run` (a warning
+annotation in GitHub Actions). Anything that asks for `"status": "clean"`
+does not take a partial run for one.
+
+On a real btrfs `after` image the positive controls go into device space no
+btrfs chunk is allocated in (see [controls.json](#controlsjson--the-scan-self-checks)).
 
 ### What it does not see
 
@@ -279,8 +324,12 @@ widen into a blanket residue exemption.
   free block of a working copy of `after.raw` that holds nothing but zeros,
   byte by byte with no mount (`plant-in-free-space.sh`): a read-write mount
   would replay or restart the ext4 journal and rewrite the superblock, so the
-  image scanned would no longer be the one captured. On the synthetic images
-  `make-sample-images.sh` writes them past the end of the filesystem. A control
+  image scanned would no longer be the one captured. On a btrfs image the free
+  blocks are the device space no chunk is allocated in, found offline in the
+  device tree with btrfs-progs; the first MiB and the superblock copies are
+  passed over, and btrfs tracks nothing there, so the image reads the same to
+  btrfs afterwards. On the synthetic images `make-sample-images.sh` writes them
+  past the end of the filesystem. A control
   counts as detected only when `after` carries it and `before` and `control`
   do not, so a value the baseline already holds can never stand in for the
   planted one. A control missing, or already in the baseline, makes the scan
@@ -315,8 +364,11 @@ nails-oracle <outputs-dir> [--allowlist FILE] [--controls FILE]
 It prints the verdict as JSON to stdout and a one-line summary to stderr; a
 clean summary ends with what the verdict cannot see. Exit codes: `0` clean,
 `1` fail (residue, a blind scan or a missing channel, canary or a bad
-allowlist), `2` usage or I/O error. `run-scan.sh` passes a run only when the
-tool exits `0` and the `verdict.json` it wrote says `"status": "clean"`. Run it
+allowlist), `2` usage or I/O error, `3` partial (a btrfs scan without the
+timeline that passes everything else). `run-scan.sh` passes a run only when the
+tool exits `0` and the `verdict.json` it wrote says `"status": "clean"`, or on
+btrfs images only, when it exits `3` and the verdict says `partial` and names
+the timeline as the one channel not run. Run it
 as a user who can read the whole outputs tree: the carved trees keep the
 decoy's root-only modes (`/root`, `/etc/credstore`), so that is normally root.
 An entry it cannot read, a restored file without its digest, a carved record

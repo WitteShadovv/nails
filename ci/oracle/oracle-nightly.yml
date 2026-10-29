@@ -1,11 +1,12 @@
 name: Oracle nightly
 
 # A TEMPLATE, not a workflow: it is not installed under .github/workflows, so
-# GitHub never runs it and no CI run scans the synthetic images. The oracle
-# run in CI is .github/workflows/oracle-real-nightly.yml, over the decoy
-# images of the oracle-images E2E test. As it stands this template could not
-# pass either: plaso cannot open btrfs, so the synthetic images fail the plaso
-# channel and with it the run (see ci/oracle/README.md).
+# GitHub never runs it. The oracle runs in CI are in
+# .github/workflows/oracle-real-nightly.yml: over the decoy images of the
+# oracle-images E2E test, and (its scan-btrfs job) over these synthetic btrfs
+# images. plaso cannot open btrfs, so on them no timeline runs and the verdict
+# is partial, never clean, which run-scan.sh passes and says so (see
+# ci/oracle/README.md).
 #
 # Nightly forensic oracle. On GitHub-hosted runners (no KVM): the scan script
 # builds the before, control and after images one at a time (streaming, so peak
