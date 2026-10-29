@@ -584,6 +584,46 @@ fn a_carved_record_that_cannot_be_read_as_one_stops_the_scan() {
 }
 
 #[test]
+fn a_cached_login_record_is_read_from_the_record_saved_with_its_hash() {
+    // The carver saves equal bytes once and names every later copy
+    // <CACHED>, with the same hash; such a copy is read from the saved
+    // record. One whose hash no saved record in the file has stops the scan.
+    let dir = TmpDir::new();
+    let be = dir.path();
+    let saved = be.join("utmp_carved").join("000");
+    fs::create_dir_all(&saved).expect("carved dir");
+    fs::write(saved.join("100utmp"), login_record(6, 618)).expect("record");
+    let cached = |sha1: &str| {
+        format!(
+            "900\t<CACHED>\t<fileobject><filesize>384</filesize>\
+             <hashdigest type='sha1'>{sha1}</hashdigest></fileobject>\n"
+        )
+    };
+    let first = carved_line(100, "utmp_carved/000/100utmp", "aa");
+    fs::write(
+        be.join("utmp_carved.txt"),
+        format!("{first}{}", cached("AA")),
+    )
+    .expect("file");
+    let mut out = BTreeSet::new();
+    scan_bulk_extractor(be, &mut out).expect("scans");
+    assert_eq!(
+        out,
+        BTreeSet::from([Finding::new(
+            Tool::BulkExtractor,
+            "utmp_carved",
+            "type=LOGIN_PROCESS pid=512-1023 line=tty1 id= user= host= exit=0/0 addr=0.0.0.0",
+        )])
+    );
+
+    for alone in [format!("{first}{}", cached("bb")), cached("aa")] {
+        fs::write(be.join("utmp_carved.txt"), alone).expect("file");
+        let mut out = BTreeSet::new();
+        assert!(scan_bulk_extractor(be, &mut out).is_err());
+    }
+}
+
+#[test]
 fn a_zip_member_description_is_passed_over_only_beside_its_saved_file() {
     // The zip carver describes each member it saves on a line of its own,
     // with no hash, at the member's place; the saved file's line, named
