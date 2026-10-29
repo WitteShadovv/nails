@@ -12,6 +12,7 @@
 //! image, that control noise is actually subtracted, and that every verdict
 //! names what it cannot see.
 
+use crate::carved::UTMP_CARVED;
 use crate::catalog::{Catalog, CatalogRow};
 use crate::model::{
     AllowEntry, Allowlist, Canary, Change, Controls, Finding, NotRun, OraclePolicy,
@@ -174,6 +175,7 @@ fn clean_scans() -> Scans {
         control: set([base.clone(), canary_finding(), noise.clone()]),
         after: set([base, canary_finding(), noise, allowed, control_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     }
 }
 
@@ -913,6 +915,7 @@ fn a_positive_control_is_expected_residue_not_a_leak() {
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let v = decide(&scans, &policy_with(vec![]));
     assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
@@ -931,6 +934,7 @@ fn fail_when_no_positive_control_is_configured() {
         control: set([canary_finding()]),
         after: set([canary_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1254,6 +1258,7 @@ fn a_valid_concrete_control_is_detected_and_clean() {
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let v = decide(&scans, &policy_with(vec![]));
     assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
@@ -1302,6 +1307,7 @@ fn a_positive_control_on_the_wrong_channel_is_not_detected() {
         control: set([canary_finding(), wrong_channel.clone()]),
         after: set([canary_finding(), wrong_channel]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let control = PositiveControl {
         name: "wtmpdb-boot".into(),
@@ -1337,6 +1343,7 @@ fn a_canary_on_the_wrong_channel_is_not_detected() {
         control: set([wrong_channel.clone()]),
         after: set([wrong_channel, control_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let v = decide(&scans, &clean_policy());
     assert_eq!(v.status, Status::Fail, "{:?}", v.failures);
@@ -1366,6 +1373,7 @@ fn a_null_tool_control_is_detected_through_any_channel() {
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1400,6 +1408,7 @@ fn a_detected_control_does_not_excuse_a_second_missing_one() {
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1435,6 +1444,7 @@ fn a_configured_but_rejected_control_fails_rather_than_passing_clean() {
         control: set([canary_finding()]),
         after: set([canary_finding()]),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1591,6 +1601,7 @@ fn complete_scans() -> Scans {
         control: baseline,
         after,
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     }
 }
 
@@ -1902,4 +1913,114 @@ fn a_marker_names_the_timeline_left_out_only_for_btrfs() {
     let n = NotRun::PlasoCannotReadBtrfs;
     assert_eq!(n.tool(), Tool::Plaso);
     assert_eq!(n.describe(), "timeline: not run, plaso cannot read btrfs");
+}
+
+// --- a carved login record the control's login files hold ---------------------
+
+/// A carved login record, keyed as the scan keys one.
+fn carved_login(key: &str) -> Finding {
+    Finding::new(Tool::BulkExtractor, UTMP_CARVED, key)
+}
+
+/// The boot and shutdown records the real Fedora 44 decoy's boots write.
+const BOOT_RECORD: &str = "type=BOOT_TIME pid=0 line=~ id=~~ user=reboot host=6.19.10-300.fc44.x86_64 exit=0/0 addr=0.0.0.0";
+const SHUTDOWN_RECORD: &str = "type=RUN_LVL pid=0 line=~ id=~~ user=shutdown host=6.19.10-300.fc44.x86_64 exit=0/0 addr=0.0.0.0";
+
+/// The records of the getty a fresh boot starts on tty1.
+const FRESH_GETTY: [&str; 3] = [
+    "type=INIT_PROCESS pid=512-1023 line=tty1 id=tty1 user= host= exit=0/0 addr=0.0.0.0",
+    "type=LOGIN_PROCESS pid=512-1023 line=tty1 id=tty1 user=LOGIN host= exit=0/0 addr=0.0.0.0",
+    "type=DEAD_PROCESS pid=512-1023 line=tty1 id=tty1 user= host= exit=2/15 addr=0.0.0.0",
+];
+
+/// A btrfs scan of a decoy whose wtmp btrfs keeps compressed in `before` and
+/// the control image, so that none of its records is carved there, and
+/// partly plain in `after`, where the boot, shutdown and fresh getty records
+/// are carved: the control image's login files hold all five, and no
+/// allowlist entry covers any of them.
+fn compressed_wtmp_scans() -> Scans {
+    let mut scans = btrfs_scans();
+    for key in [BOOT_RECORD, SHUTDOWN_RECORD]
+        .into_iter()
+        .chain(FRESH_GETTY)
+    {
+        scans.after.insert(carved_login(key));
+        scans.control_login_records.insert(key.to_string());
+    }
+    scans
+}
+
+#[test]
+fn a_carved_login_record_the_control_login_files_hold_subtracts() {
+    // Without the control's login files the five records are what the real
+    // scan reported: residue nothing explains. With them each is a record
+    // the control cycle wrote too, noise as if the control had carved it.
+    let base = decide_scan(&btrfs_scans(), &complete_policy());
+    let mut unread = compressed_wtmp_scans();
+    unread.control_login_records.clear();
+    let v = decide_scan(&unread, &complete_policy());
+    assert_eq!(unexplained_at(&v, UTMP_CARVED).len(), 5, "{v:?}");
+
+    let v = decide_scan(&compressed_wtmp_scans(), &complete_policy());
+    assert_eq!(v.status, Status::Partial, "{:?}", v.failures);
+    assert!(v.failures.is_empty(), "{:?}", v.failures);
+    assert_eq!(v.counts.noise_subtracted, base.counts.noise_subtracted + 5);
+    assert_eq!(v.counts.residue, base.counts.residue);
+}
+
+#[test]
+fn a_carved_login_record_only_after_holds_is_still_residue() {
+    // The keys must match exactly. A getty record in a later process range,
+    // a login of a user and a getty on another terminal are each in no
+    // record of the control's login files, so each is residue as before.
+    for leak in [
+        "type=LOGIN_PROCESS pid=1024-2047 line=tty1 id=tty1 user=LOGIN host= exit=0/0 addr=0.0.0.0",
+        "type=USER_PROCESS pid=512-1023 line=pts/0 id=ts/0 user=root host=10.0.2.2 exit=0/0 addr=10.0.2.2",
+        "type=LOGIN_PROCESS pid=512-1023 line=tty2 id=tty2 user=LOGIN host= exit=0/0 addr=0.0.0.0",
+    ] {
+        let mut scans = compressed_wtmp_scans();
+        scans.after.insert(carved_login(leak));
+        let v = decide_scan(&scans, &complete_policy());
+        assert_eq!(v.status, Status::Fail, "{leak}: {v:?}");
+        assert_eq!(
+            unexplained_at(&v, UTMP_CARVED),
+            [(Change::Added, leak.to_string())],
+            "{v:?}"
+        );
+    }
+}
+
+#[test]
+fn the_control_login_files_subtract_only_carved_login_records() {
+    // A value of another recorder, or a restored path, that reads like a key
+    // the control's login files hold is compared as before: the files stand
+    // only for the records bulk_extractor could not carve.
+    for leak in [
+        Finding::new(Tool::BulkExtractor, "email", BOOT_RECORD),
+        Finding::new(Tool::BtrfsRestore, "/var/log/leftover", BOOT_RECORD),
+    ] {
+        let mut scans = compressed_wtmp_scans();
+        scans.after.insert(leak.clone());
+        let v = decide_scan(&scans, &complete_policy());
+        assert!(has_unexplained(&v, &leak.path), "{leak:?}: {v:?}");
+    }
+}
+
+#[test]
+fn a_carved_login_record_after_lost_is_residue_whatever_the_control_files_hold() {
+    // The control's login files only subtract a record new in after. One
+    // before and the control both carved and after lost is residue as before,
+    // even when the control's files hold its key.
+    let lost =
+        "type=USER_PROCESS pid=512-1023 line=tty1 id=tty1 user=decoy host= exit=0/0 addr=0.0.0.0";
+    let mut scans = compressed_wtmp_scans();
+    scans.before.insert(carved_login(lost));
+    scans.control.insert(carved_login(lost));
+    scans.control_login_records.insert(lost.to_string());
+    let v = decide_scan(&scans, &complete_policy());
+    assert_eq!(
+        unexplained_at(&v, UTMP_CARVED),
+        [(Change::Removed, lost.to_string())],
+        "{v:?}"
+    );
 }
