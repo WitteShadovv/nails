@@ -397,10 +397,14 @@ fn a_list_entry_could_not_read_is_left_alone() {
         kept.unknown,
         ["IPv4 rules", "IPv6 rules", "firewall tables"]
     );
+    // A missing tool is no failure: the way back cannot see what it left.
+    assert!(kept.failed().is_empty(), "{kept:?}");
 }
 
+/// A part whose tool is there but cannot list it now is unverified, not left
+/// alone: the session's rules or tables may still be loaded.
 #[test]
-fn a_list_that_cannot_be_read_on_the_way_back_is_unknown() {
+fn a_list_that_cannot_be_read_on_the_way_back_is_unverified() {
     let dir = tempfile::tempdir().unwrap();
     let (ip, nft, sys) = decoy(dir.path());
     let policy = Policy::capture(Some(&ip), Some(&nft), &sys);
@@ -411,7 +415,12 @@ fn a_list_that_cannot_be_read_on_the_way_back_is_unknown() {
 
     policy.restore(Some(&ip), Some(&nft), &sys, &mut kept);
 
-    assert_eq!(kept.unknown, ["IPv6 rules", "firewall tables"]);
+    assert!(kept.unknown.is_empty(), "{kept:?}");
+    assert_eq!(kept.unverified, ["IPv6 rules", "firewall tables"]);
+    assert_eq!(
+        kept.failed(),
+        ["IPv6 rules unverified", "firewall tables unverified"]
+    );
 }
 
 #[test]

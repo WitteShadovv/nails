@@ -34,7 +34,7 @@
           ]
         },
         "warnings": {
-          "description": "What the return does not put back, one sentence each, as a person reads them: where its last step finds no `ip` (iproute2), the virtual links the session made, the MAC addresses it changed and the policy-routing rules it added; where it finds no `nft` (nftables), the nftables tables the session added; where it finds no `iw` on a machine with a Wi-Fi interface, the Wi-Fi interfaces the session added on the decoy's radios; and each backend device in `backend_left_open`. Absent when there is nothing to say; a power-off has none.",
+          "description": "What the return does not put back, one sentence each, as a person reads them: where its last step finds no `ip` (iproute2), the policy-routing rules the session added, and that a virtual link it made or a MAC address it changed makes the machine power off instead of returning; where it finds no `nft` (nftables), the nftables tables the session added; where it finds no `iw` on a machine with a Wi-Fi interface, that a Wi-Fi interface the session added on the decoy's radios makes the machine power off instead; and each backend device in `backend_left_open`. Absent when there is nothing to say; a power-off has none.",
           "type": "array",
           "items": {
             "type": "string",
