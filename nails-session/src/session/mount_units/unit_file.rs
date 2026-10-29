@@ -92,31 +92,45 @@ fn unichar_is_valid(c: char) -> bool {
     !(0xfdd0..=0xfdef).contains(&code) && code & 0xfffe != 0xfffe
 }
 
+/// The kind of line end `byte` is: 1 for a newline, 2 for a carriage return,
+/// 4 for a NUL, 0 for none.
+fn end_kind(byte: u8) -> u8 {
+    match byte {
+        b'\n' => 1,
+        b'\r' => 2,
+        0 => 4,
+        _ => 0,
+    }
+}
+
 /// The lines `read_line()` returns (see the module docs).
 fn read_lines(bytes: &[u8]) -> Vec<&[u8]> {
     let mut lines = Vec::new();
-    let mut at = 0;
-    while at < bytes.len() {
-        let start = at;
-        while at < bytes.len() && !matches!(bytes[at], b'\n' | b'\r' | 0) {
-            at += 1;
-        }
-        let end = at;
-        let mut seen = 0u8;
-        while at < bytes.len() {
-            let kind = match bytes[at] {
-                b'\n' => 1,
-                b'\r' => 2,
-                0 => 4,
-                _ => break,
-            };
-            if seen & 4 != 0 || seen & kind != 0 {
-                break;
+    let mut rest = bytes;
+    // A line takes its bytes and the first byte of its end off the front of
+    // what is left, so the walk ends with the file whatever a step decides.
+    while let [_, ..] = rest {
+        let end = rest
+            .iter()
+            .position(|&byte| end_kind(byte) != 0)
+            .unwrap_or(rest.len());
+        let (line, after) = rest.split_at(end);
+        lines.push(line);
+        rest = after;
+        if let [first, tail @ ..] = rest {
+            // More of the end goes as long as no kind repeats in it and no
+            // NUL came.
+            let mut seen = end_kind(*first);
+            rest = tail;
+            while let [byte, tail @ ..] = rest {
+                let kind = end_kind(*byte);
+                if kind == 0 || seen & 4 != 0 || seen & kind != 0 {
+                    break;
+                }
+                seen |= kind;
+                rest = tail;
             }
-            seen |= kind;
-            at += 1;
         }
-        lines.push(&bytes[start..end]);
     }
     lines
 }

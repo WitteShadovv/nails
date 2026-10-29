@@ -99,6 +99,32 @@ fn comments_continuations_and_line_ends_are_read_as_systemd_reads_them() {
 }
 
 #[test]
+fn a_line_ends_at_a_run_of_ends_in_which_no_kind_repeats_and_nothing_follows_a_nul() {
+    let lines = |text: &[u8]| -> Vec<String> {
+        read_lines(text)
+            .iter()
+            .map(|line| String::from_utf8_lossy(line).into_owned())
+            .collect()
+    };
+    for (text, expected) in [
+        (&b""[..], vec![]),
+        (b"a", vec!["a"]),
+        (b"a\n", vec!["a"]),
+        (b"\n", vec![""]),
+        (b"a\r\nb", vec!["a", "b"]),
+        (b"a\n\rb", vec!["a", "b"]),
+        (b"a\n\nb", vec!["a", "", "b"]),
+        (b"a\r\rb", vec!["a", "", "b"]),
+        (b"a\n\r\nb", vec!["a", "", "b"]),
+        (b"a\n\r\0b", vec!["a", "b"]),
+        (b"a\0\nb", vec!["a", "", "b"]),
+        (b"\0\0", vec!["", ""]),
+    ] {
+        assert_eq!(lines(text), expected, "{:?}", String::from_utf8_lossy(text));
+    }
+}
+
+#[test]
 fn a_unit_file_systemd_refuses_is_refused() {
     for (text, why) in [
         (&b"[Mount\nWhat=/dev/sda\n"[..], Refused::MalformedHeader),
