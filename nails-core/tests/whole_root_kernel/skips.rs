@@ -11,7 +11,7 @@ use nails_core::session::entry;
 use nails_core::test_path;
 use nails_core::test_support::Rerun;
 use nails_teardown::mountinfo::read_mountinfo;
-use nails_teardown::whole_root::plan::{Skip, unix_now};
+use nails_teardown::whole_root::plan::{MaskCause, RequiredMask, Skip, unix_now};
 use nails_teardown::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT, dropin_dir};
 use nails_teardown::whole_root::transition::{self, Env, Outcome};
 use std::path::{Path, PathBuf};
@@ -75,6 +75,15 @@ fn the_units_a_boot_target_requires_are_skipped_at_the_switch_while_their_device
         );
         assert!(plan.masks.contains(&"srv-gone.mount".to_string()));
         assert!(!plan.masks.contains(&"srv-spare.mount".to_string()));
+        // `status` names the masked one and why.
+        assert_eq!(
+            plan.required_masks,
+            [RequiredMask {
+                unit: "srv-gone.mount".into(),
+                cause: MaskCause::DeviceAbsent,
+                device: Some("/dev/vdy1".into()),
+            }]
+        );
         assert_eq!(entry.warnings.len(), 1, "{:?}", entry.warnings);
         let warning = &entry.warnings[0];
         for part in ["/srv/gone", "/dev/vdy1", "local-fs.target"] {

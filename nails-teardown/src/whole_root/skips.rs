@@ -93,6 +93,15 @@ pub fn skip_units(run: &Path, skips: &[Skip]) -> io::Result<Vec<PathBuf>> {
     Ok(written)
 }
 
+/// Whether the switch masked `unit` of a skip under `run` instead of
+/// skipping it, its device gone by then ([`skip_units`]): `unit` has a
+/// runtime mask there. A skipped unit never has one.
+pub fn masked_at_switch(run: &Path, unit: &str) -> bool {
+    valid_unit_name(unit)
+        && std::fs::read_link(run.join(RUNTIME_UNIT_DIR).join(unit))
+            .is_ok_and(|target| target == Path::new("/dev/null"))
+}
+
 /// Write the skip drop-in of `unit` under `run` (see [`skip_units`]).
 fn write_dropin(run: &Path, unit: &str) -> io::Result<PathBuf> {
     let relative = dropin_dir(unit);
@@ -203,6 +212,7 @@ mod tests {
                 "{unit} is not masked"
             );
         }
+        assert!(!masked_at_switch(run.path(), "srv-data.mount"));
         // Writing again replaces them with the same text.
         assert_eq!(skip_units(run.path(), &skips).unwrap().len(), 4);
 
@@ -237,6 +247,8 @@ mod tests {
             .join("srv-data.mount");
         assert_eq!(written, vec![mask.clone(), control.clone()]);
         assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
+        assert!(masked_at_switch(run.path(), "srv-data.mount"));
+        assert!(!masked_at_switch(run.path(), "../srv-data.mount"));
         assert!(fs::symlink_metadata(dropin(run.path(), "srv-data.mount")).is_err());
         assert!(
             fs::symlink_metadata(run.path().join(dropin_dir("systemd-fsck@dev-vdb1.service")))

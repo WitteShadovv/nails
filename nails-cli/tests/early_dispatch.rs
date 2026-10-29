@@ -161,6 +161,7 @@ mod kernel_tests {
                 boot_masks: Vec::new(),
                 generator_masks: Vec::new(),
                 skips: Vec::new(),
+                required_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
                 tools: Tools::default(),

@@ -219,7 +219,8 @@ Keep all of it `root`-owned on the hidden volume.
      `nofail`), so that `local-fs.target`, `remote-fs.target` and `swap.target`
      are still reached. An entry a target requires whose device is not there
      is masked, and activation warns that the hidden session will not reach
-     that target.
+     that target. In the session `nails status` lists these units, skipped or
+     masked, with why.
 
    The decoy's own mount, swap and automount units that a boot target links
    in its `.wants` or `.requires` directory outside the fstab (a NixOS

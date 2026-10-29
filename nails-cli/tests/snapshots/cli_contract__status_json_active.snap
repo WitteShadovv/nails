@@ -16,7 +16,8 @@ expression: redact_status(value)
     "place": "decoy",
     "policy_mounts": [],
     "reason": "the record still holds an active session, but none is running: it ended without updating the record (a power loss, a reset or a failed hidden volume)",
-    "remediation": "Run `sudo [binary] recover` to reset the record"
+    "remediation": "Run `sudo [binary] recover` to reset the record",
+    "required_units": []
   },
   "ok": true,
   "schema_version": 2
