@@ -73,6 +73,9 @@ pub struct EnterOptions {
     /// then warns instead of refusing. Per run only; there is no stored
     /// equivalent.
     pub allow_discards: bool,
+    /// The window's launcher to write into the hidden root: a build with the
+    /// window sets it when the window's program lies beside the binary.
+    pub window_launcher: Option<crate::session::WindowLauncher>,
 }
 
 impl EnterOptions {
@@ -407,6 +410,7 @@ impl<F: Filesystem> NailsManager<F> {
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
             accepted_decoy_storage,
+            window_launcher: options.window_launcher.as_ref(),
         };
         let mut prepared = entry::prepare(&machine.paths, &inputs, host)?;
         prepared
