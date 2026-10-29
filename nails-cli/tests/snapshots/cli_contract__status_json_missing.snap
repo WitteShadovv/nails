@@ -15,7 +15,8 @@ expression: redact_status(value)
     "opsec_reminders": [],
     "persona_mode": "shared-home",
     "place": "decoy",
-    "policy_mounts": []
+    "policy_mounts": [],
+    "required_units": []
   },
   "ok": true,
   "schema_version": 2

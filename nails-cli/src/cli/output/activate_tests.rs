@@ -82,6 +82,7 @@ fn entry(warnings: Vec<String>) -> Entry {
             boot_masks: vec!["systemd-boot-random-seed.service".to_string()],
             generator_masks: Vec::new(),
             skips: Vec::new(),
+            required_masks: Vec::new(),
             session_units: Vec::new(),
             backend: Vec::new(),
             tools: Tools::default(),
