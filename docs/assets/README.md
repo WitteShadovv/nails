@@ -52,9 +52,11 @@ fails when `check` or `activate` prints a warning. It also gives the VM QEMU's
 emulated Intel IOMMU, turned on with `intel_iommu=on`, which the
 [operator guide](../operator-guide.md#cold-boot-and-running-memory-attacks)
 advises and the decoy requirements do not ask for. That is why `dma-protection`
-passes in the `check` capture, and its caption says so: with Linux 5.14 or
-newer, that check warns on a machine whose IOMMU does not remap the DMA of
-every device. Run
+passes in the `check` capture, and its caption says so. That check warns when
+the IOMMU is off or in passthrough, or when a Thunderbolt or USB4 controller
+reports no DMA protection, and with Linux 5.14 or newer also when an IOMMU group
+is identity-mapped; a device the IOMMU leaves out entirely has no group and is
+not seen. Run
 `nix build -L .#e2e.session-readme-captures` and copy the command's output from
 the log (the test prints the `check` output, the activation log and the status
 JSON). The test driver puts `machine: ` in front of the first line of the
