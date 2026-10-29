@@ -509,3 +509,8 @@ fn a_shared_home_entry_walks_only_as_far_as_the_upper_holds_the_way_to_the_home(
     persona_home(&paths, &inputs, &layout, &[]).unwrap();
     assert_eq!(ctime(&upper_home), before);
 }
+
+#[test]
+fn the_real_host_finds_no_device_without_its_node() {
+    assert!(!RealEntryHost.device_present(Path::new("/dev/disk/by-id/nails-test-no-such-disk")));
+}
