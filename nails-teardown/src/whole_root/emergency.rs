@@ -400,7 +400,7 @@ fn enqueue(systemctl: Option<&Path>, finish: Finish, report: &mut HotReport) {
 }
 
 /// Sync and power off through the kernel, when PID 1 cannot be asked.
-fn kernel_power_off() -> bool {
+pub(crate) fn kernel_power_off() -> bool {
     rustix::fs::sync();
     rustix::system::reboot(rustix::system::RebootCommand::PowerOff).is_ok()
 }

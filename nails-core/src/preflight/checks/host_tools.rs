@@ -32,10 +32,11 @@
 //! The `network-tools` check ([`NetworkToolsCheck`]) looks for the optional
 //! ones where the way back looks for them ([`way_back_lacks`]) and warns about
 //! each it will not find: `nft` on every decoy, and `iw` on one with a Wi-Fi
-//! interface. It only warns. A decoy without them still returns, with the
-//! session's firewall tables or Wi-Fi interfaces left on it until power-off,
-//! and a stock NixOS decoy has no `nft` (`networking.nftables.enable` is off
-//! by default), so a refusal would refuse it.
+//! interface. It only warns. A decoy without `nft` still returns, with the
+//! session's firewall tables left on it until power-off; one without `iw`
+//! powers off instead of returning when a session added a Wi-Fi interface
+//! there; and a stock NixOS decoy has no `nft` (`networking.nftables.enable`
+//! is off by default), so a refusal would refuse it.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::backend_lock::resolve_backend_chain;
@@ -278,7 +279,7 @@ fn optional_network_tool(tool: NetworkTool) -> Option<(Package, &'static str)> {
         NetworkTool::Iw => Some((
             Package::everywhere("iw"),
             "a Wi-Fi interface a session adds on one of the decoy's radios (a monitor or access \
-             point interface) stays on the decoy until power-off",
+             point interface) makes the way back power off instead of returning",
         )),
     }
 }

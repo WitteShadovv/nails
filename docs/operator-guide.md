@@ -490,6 +490,23 @@ journal that starts late:
     resolved's per-link DNS settings), rewritten in place, so each file keeps
     its owner and mode.
 
+  When one of these steps fails, the way back powers off instead of
+  returning: a device that still has the session's MAC address after the
+  retry, a link or Wi-Fi interface of the session's that is still there, a
+  policy-routing rule or firewall table of the session's that is still
+  loaded, or a part it cannot read back (the kernel's list of links, or
+  `ip` or `nft` failing to list the rules or tables). That state lives only
+  in the kernel, so a power-off erases it, where a return would hand it to
+  the decoy. A missing tool counts the same way wherever the way back can
+  see what the session left without it: without `ip` a changed MAC address
+  or a link the session made, without `iw` a Wi-Fi interface it added. The
+  console shows one line before the power-off that names what stayed, and
+  the next boot is the plain decoy. A missing tool with nothing to undo
+  (the stock NixOS decoy without `nft`, a session that added no Wi-Fi
+  interface) returns as before. The network settings and the hostname do
+  not count: the way back writes them back and does not power off over
+  them.
+
   The decoy's NetworkManager therefore does not adopt a session link as
   connected externally or record a profile for it in
   `/var/lib/NetworkManager/timestamps` on the decoy disk. A plain `emergency`
@@ -512,12 +529,10 @@ journal that starts late:
   that software in the session replaced with one of its own, as iwd does by
   default when it starts and airmon-ng does when it starts monitor mode: the
   way back deletes the replacement but does not make the decoy's interface
-  again, so the decoy has no Wi-Fi on that radio; a Wi-Fi interface the
-  session added where `iw` is not installed, and its links and rules where
-  `ip` (iproute2) is not; and a MAC address the way back cannot set back,
-  because the driver refuses the change even with the device down, because
-  `ip` is not installed, or because the device was plugged in, or unplugged
-  and plugged in again, during the session, which makes it a new link. The
+  again, so the decoy has no Wi-Fi on that radio; the policy-routing rules
+  the session added where `ip` (iproute2) is not installed; and the MAC
+  address the session gave a device that was plugged in, or unplugged and
+  plugged in again, during the session, which makes it a new link. The
   decoy's NetworkManager goes on using such an address unless the decoy's
   profile sets one, so it can reach the decoy disk (in a DHCP lease, for
   one). The way back also leaves alone a part of the network state that
@@ -534,12 +549,13 @@ journal that starts late:
   Before it asks, `deactivate` warns when the way back's last step will find
   no `ip` (iproute2), no `nft` (nftables) or, on a machine with a Wi-Fi
   interface, no `iw`, in the hidden session's system directories or, on
-  NixOS, the decoy's system: without `ip` the virtual links the session
-  made, the MAC addresses it changed and the policy-routing rules it added
-  stay, without `nft` the nftables tables it added, and without `iw` the
-  Wi-Fi interfaces it added on the decoy's radios. Beyond that, the step
-  runs with no output after the session has ended, so nothing tells you what
-  it left: take a VPN connection down with its own tool (`wg-quick down`,
+  NixOS, the decoy's system: without `ip` the policy-routing rules the
+  session added stay, and a virtual link it made or a MAC address it
+  changed makes the machine power off instead of returning; without `nft`
+  the nftables tables it added stay; and without `iw` a Wi-Fi interface it
+  added on the decoy's radios makes the machine power off instead. Beyond
+  that, the step runs after the session has ended and shows nothing but the
+  console line of such a power-off, so nothing tells you what it left: take a VPN connection down with its own tool (`wg-quick down`,
   `nmcli connection down`, the app's disconnect), end monitor mode with
   `airmon-ng stop`, and stop the containers and virtual machines of the
   session before you deactivate, and end a session with

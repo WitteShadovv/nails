@@ -653,6 +653,19 @@ of this changelog for that version becomes the release notes word for word, and
   cannot be read or holds anything but `0` or `1` is refused the same way.
   `--allow-persistent-decoy` accepts it for one run, with a warning. `nails status` shows an armed
   kdump on the decoy, and `status --json` carries it as `decoy_kdump_armed`.
+- The way back from a hidden session powers off instead of returning to the decoy when it cannot
+  put the decoy's network state back: a device that keeps the MAC address the session gave it, a
+  link, Wi-Fi interface, policy-routing rule or nftables table of the session's that is still
+  there after the delete, or a part it cannot read back (the kernel's list of links, or `ip` or
+  `nft` failing to list the rules or tables). That state lives only in the kernel, so a power-off
+  erases it, where a return would hand it to the decoy, and a changed MAC address can reach a DHCP
+  lease on the decoy disk. `deactivate` and a plain `emergency` behave the same, since both return
+  through the same last step, and the console shows one line that names what stayed. A missing
+  tool alone changes nothing: activation and `deactivate` still only warn, and a session that left
+  nothing for that tool to undo returns as before. Where the way back sees what the session left
+  without the tool (a changed MAC address or a link without `ip`, a Wi-Fi interface without
+  `iw`), it powers off as well, and the warnings say so. The network settings and the hostname
+  do not count.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On

@@ -33,7 +33,11 @@
 //! A list entry could not read (no `ip` or `nft`, a tool that failed, output
 //! that does not parse) is unknown, and the way back leaves that part as the
 //! session leaves it: without the decoy's list, a rule or table of the decoy's
-//! cannot be told from the session's. A rule or table the session deleted is
+//! cannot be told from the session's. So is a part whose tool the way back
+//! does not find. A part whose tool the way back finds but that cannot list
+//! it, before or after the deletions, is unverified: the session's rules or
+//! tables may still be there, and the transition powers off instead of
+//! returning, as it does for a rule or table it could not delete. A rule or table the session deleted is
 //! not made again, and what the session added inside a table the decoy already
 //! had stays.
 //!
@@ -164,8 +168,10 @@ impl Policy {
 
     /// Put the policy back: delete the rules and tables that were not there at
     /// entry with `ip` and `nft`, and write back the settings below `proc_sys`
-    /// that differ. What is still the session's afterwards, and every part
-    /// that could not be read at entry or now, goes into `kept`.
+    /// that differ. What is still the session's afterwards goes into `kept`,
+    /// with every part that entry could not read or that has no tool now
+    /// (`unknown`, left alone) and every part whose tool cannot list it now
+    /// (`unverified`, not known to be the decoy's again).
     pub fn restore(&self, ip: Option<&Path>, nft: Option<&Path>, proc_sys: &Path, kept: &mut Kept) {
         for (family, recorded) in [(Family::V4, &self.rules_v4), (Family::V6, &self.rules_v6)] {
             match (recorded, ip) {
@@ -227,7 +233,7 @@ fn parse_rules(text: &str) -> Option<Vec<Rule>> {
 /// `kept` the ones still there.
 fn restore_rules(ip: &Path, family: Family, recorded: &[Rule], kept: &mut Kept) {
     let Some(now) = list_rules(ip, family) else {
-        kept.unknown.push(family.label());
+        kept.unverified.push(family.label());
         return;
     };
     for rule in added(recorded, &now) {
@@ -247,7 +253,7 @@ fn restore_rules(ip: &Path, family: Family, recorded: &[Rule], kept: &mut Kept) 
                     rule.spec.join(" ")
                 )
             })),
-        None => kept.unknown.push(family.label()),
+        None => kept.unverified.push(family.label()),
     }
 }
 
@@ -284,7 +290,7 @@ fn parse_tables(json: &str) -> Option<Vec<Table>> {
 /// `kept` the ones still there.
 fn restore_tables(nft: &Path, recorded: &[Table], kept: &mut Kept) {
     let Some(now) = list_tables(nft) else {
-        kept.unknown.push("firewall tables");
+        kept.unverified.push("firewall tables");
         return;
     };
     for table in added(recorded, &now) {
@@ -298,7 +304,7 @@ fn restore_tables(nft: &Path, recorded: &[Table], kept: &mut Kept) {
                 .into_iter()
                 .map(|table| format!("{} {}", table.family, table.name)),
         ),
-        None => kept.unknown.push("firewall tables"),
+        None => kept.unverified.push("firewall tables"),
     }
 }
 

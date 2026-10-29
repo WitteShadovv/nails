@@ -233,7 +233,9 @@ fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Vec<PathBuf> {
 
 /// A tool the last step of the way back runs to put the decoy's network state
 /// back ([`network::restore`]). Where the step does not find one, it leaves
-/// that tool's part of the state as the session left it, until power-off.
+/// that tool's part of the state as the session left it, until power-off, but
+/// for what it sees without the tool (a device's changed MAC address, a link
+/// still there): over that it powers off instead of returning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkTool {
     /// `ip` (iproute2), which deletes the virtual links and the policy-routing
