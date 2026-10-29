@@ -24,10 +24,15 @@
 //!    next root's store, its closure copied onto the hidden volume so a decoy
 //!    garbage collection cannot break it ([`super::store`]), and activated
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
-//!    generation's own fstab for what the decoy's did not cover;
-//! 7. the masks the entry transition writes at the switch: the fstab
-//!    policy's, the units the hidden root does not need and the generators
-//!    the hidden systemd must never run ([`super::hidden_masks`]);
+//!    generation's own fstab for what the decoy's did not cover; then the
+//!    mount, swap and automount units outside the fstabs that the targets of
+//!    the next root and of `/run` pull in, decided as fstab lines
+//!    ([`super::mount_units`]);
+//! 7. the masks and skips the entry transition writes at the switch: the
+//!    fstab policy's (a skip for a unit a boot target requires, see
+//!    [`super::policy`]), the units the hidden root does not need and the
+//!    generators the hidden systemd must never run
+//!    ([`super::hidden_masks`]);
 //! 8. the decoy filesystems the way back needs carried onto the hidden volume,
 //!    and the decoy's mounts recorded for the way back to make again
 //!    ([`super::way_back`]); `/run` bound in and everything below the next
@@ -46,6 +51,7 @@
 use super::fstab::FstabEntry;
 use super::hidden_masks;
 use super::layout::{Layout, Paths};
+use super::mount_units::{self, UnitDirs};
 use super::network_state;
 use super::nixos;
 use super::policy::{self, Decision};
@@ -61,7 +67,7 @@ use nails_teardown::whole_root::plan::{
 };
 use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
-use nails_teardown::whole_root::{kernel_helpers, network, ret, transition, utab};
+use nails_teardown::whole_root::{kernel_helpers, network, ret, skips, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -106,6 +112,12 @@ pub trait EntryHost {
     /// ([`kernel_helpers::HELPER_PATHS`]), which every way back writes back.
     fn kernel_settings(&self) -> Vec<kernel_helpers::KernelSetting> {
         kernel_helpers::read(&kernel_helpers::HELPER_PATHS)
+    }
+    /// Whether `device` is there now: the fstab policy skips a unit that
+    /// waits for a device only while the device is there, its node and its
+    /// active device unit ([`policy::device_present`]).
+    fn device_present(&self, device: &Path) -> bool {
+        policy::device_present(device)
     }
 }
 
@@ -319,8 +331,8 @@ fn fhs_init(root: &Path) -> PathBuf {
 }
 
 /// Undo a failed or abandoned entry: detach `/run/nextroot`, remove the
-/// drop-in, the masks the entry transition wrote (an entry whose switch
-/// failed) and the runtime directory, and give the kernel back the helper
+/// drop-in, the masks and skips the entry transition wrote (an entry whose
+/// switch failed) and the runtime directory, and give the kernel back the helper
 /// paths a hidden NixOS activation changed. Returns the mounts still left.
 pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
     let plan = Plan::load(&paths.plan()).ok();
@@ -335,6 +347,7 @@ pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
             &plan.generator_masks,
             &kept,
         );
+        skips::remove_skips(&paths.run, &plan.skips, &kept);
         kernel_helpers::restore(&plan.kernel_settings);
     }
     nextroot::remove_runtime_dir(&paths.runtime());
@@ -434,6 +447,8 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         masks: Vec::new(),
         boot_masks: Vec::new(),
         generator_masks: Vec::new(),
+        skips: Vec::new(),
+        required_masks: Vec::new(),
         session_units: inputs.session_units.clone(),
         backend: inputs.backend.clone(),
         tools: Tools {
@@ -523,8 +538,9 @@ fn build(
     let decoy_text = super::fstab::read_in_root(&paths.root)
         .map_err(|e| io(&paths.root.join("etc/fstab"), e))?;
     let decoy_fstab = super::fstab::parse_in_root(&decoy_text, &paths.root);
+    let present = |device: &Path| host.device_present(device);
     let mut decided = Decided {
-        decisions: decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?,
+        decisions: decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root, &present)?,
         fstab: decoy_fstab.clone(),
     };
     plan.policy_mounts = apply_mounts(paths, &layout, &decided.decisions, inputs.hidden_root, &[])?;
@@ -538,7 +554,7 @@ fn build(
         &decoy_fstab,
         super::fstab::parse_in_root(&decoy_text, &nextroot),
     );
-    let more = decide_elsewhere(&elsewhere, &decoy_mounts, inputs.hidden_root)?;
+    let more = decide_elsewhere(&elsewhere, &decoy_mounts, inputs.hidden_root, &present)?;
     decided.add(
         paths,
         &layout,
@@ -593,7 +609,7 @@ fn build(
         let hidden_text = super::fstab::read_in_root(&nextroot)
             .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
         let hidden_fstab = super::fstab::parse_in_root(&hidden_text, &nextroot);
-        let more = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
+        let more = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root, &present)?;
         decided.add(
             paths,
             &layout,
@@ -606,7 +622,15 @@ fn build(
         plan.hidden.init = fhs_init(&nextroot);
     }
     activation_step(ActivationPhase::MaskUnits, building);
-    plan.masks = policy::masks(&decided.fstab, &decided.decisions);
+    warnings.extend(keep_units_off(
+        paths,
+        &layout,
+        &mut plan,
+        &mut decided,
+        &decoy_mounts,
+        inputs.hidden_root,
+        &present,
+    )?);
     plan.boot_masks = hidden_masks::units(&nextroot, &plan.masks);
     plan.generator_masks = hidden_masks::generators();
     if let Some(operator) = &inputs.operator {
@@ -646,6 +670,62 @@ fn build(
         decisions: decided.decisions,
         warnings,
     })
+}
+
+/// Decide the mount, swap and automount units outside the fstabs, as the
+/// hidden systemd will find them in the next root (on NixOS the hidden
+/// generation's) and in `/run` ([`mount_units`]), put in place what those
+/// decisions call for, and record in `plan` what the hidden session keeps
+/// from starting ([`mount_units::kept_off`]), each skip with the units it
+/// pulls in that act on its device, and each unit a boot target requires
+/// that is masked with why, for `status`. A directory of unit links that cannot be
+/// listed refuses the entry. Returns the warnings of every decision.
+///
+/// The filesystems of these units are put in place after the fstabs': one
+/// that is the parent of an fstab entry's mount point, both mounted now,
+/// covers that entry's filesystem in the next root, as a later fstab batch
+/// does an earlier one's.
+fn keep_units_off(
+    paths: &Paths,
+    layout: &Layout,
+    plan: &mut Plan,
+    decided: &mut Decided,
+    decoy_mounts: &[MountEntry],
+    hidden_root: &Path,
+    present: policy::Present<'_>,
+) -> Result<Vec<String>> {
+    let nextroot = paths.nextroot();
+    let dirs = UnitDirs {
+        root: &nextroot,
+        run: &paths.run,
+    };
+    let refused = |decision: Decision| NailsError::InvalidState(decision.describe());
+    let native = mount_units::read(dirs).map_err(|unlisted| refused(unlisted.refusal()))?;
+    let more = mount_units::decide(
+        dirs,
+        &native,
+        decoy_mounts,
+        hidden_root,
+        present,
+        Path::new("/sys"),
+    );
+    if let Some(refusal) = more
+        .iter()
+        .find(|decision| matches!(decision, Decision::Refuse { .. }))
+    {
+        return Err(refused(refusal.clone()));
+    }
+    decided.add(paths, layout, plan, Vec::new(), more, hidden_root)?;
+    let (kept_off, unskipped) = mount_units::kept_off(dirs, &decided.fstab, &decided.decisions);
+    plan.masks = kept_off.masks;
+    plan.skips = kept_off.skips;
+    plan.required_masks = kept_off.required_masks;
+    Ok(decided
+        .decisions
+        .iter()
+        .filter_map(Decision::warning)
+        .chain(unskipped)
+        .collect())
 }
 
 /// Refuse a hidden NixOS build when the hidden volume holding `upper` has less
@@ -760,24 +840,33 @@ fn relative_mounts(mounts: &[MountEntry], root: &Path) -> Vec<MountEntry> {
 /// Decide every entry; an entry with no safe decision refuses the entry. The
 /// entries come resolved ([`super::fstab::parse_in_root`]), so a `/home` that
 /// the decoy keeps at `var/home` is decided, mounted and masked as `var/home`
-/// (`var-home.mount`), the way systemd mounts it.
+/// (`var-home.mount`), the way systemd mounts it. `present` tells whether a
+/// device is there now.
 fn decide_fstab(
     entries: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
+    present: policy::Present<'_>,
 ) -> Result<Vec<Decision>> {
-    refuse_undecided(policy::decide_all(entries, mounts, hidden_root))
+    refuse_undecided(policy::decide_all(entries, mounts, hidden_root, present))
 }
 
 /// [`decide_fstab`] for the entries the next root resolves elsewhere
 /// ([`resolved_elsewhere`]), by [`policy::decide_redirected`]: one that a link
-/// leads into the hidden volume is masked, never left to the hidden systemd.
+/// leads into the hidden volume is kept unmounted, never left to the hidden
+/// systemd.
 fn decide_elsewhere(
     entries: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
+    present: policy::Present<'_>,
 ) -> Result<Vec<Decision>> {
-    refuse_undecided(policy::decide_all_redirected(entries, mounts, hidden_root))
+    refuse_undecided(policy::decide_all_redirected(
+        entries,
+        mounts,
+        hidden_root,
+        present,
+    ))
 }
 
 /// `decisions`, or the refusal of the first entry that has no safe decision.

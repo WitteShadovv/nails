@@ -116,6 +116,8 @@ mod kernel_tests {
                 masks: vec!["dev-vdb1.swap".to_string(), "boot.automount".to_string()],
                 boot_masks: Vec::new(),
                 generator_masks: Vec::new(),
+                skips: Vec::new(),
+                required_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
                 tools: Tools::default(),
@@ -619,6 +621,12 @@ mod labels_kernel_tests;
 
 #[path = "whole_root_kernel/kernel_modules.rs"]
 mod kernel_modules_kernel_tests;
+
+#[path = "whole_root_kernel/skips.rs"]
+mod skips_kernel_tests;
+
+#[path = "whole_root_kernel/mount_units.rs"]
+mod mount_units_kernel_tests;
 
 mod nixos_kernel_tests {
     //! The chrooted activation of a hidden toplevel:

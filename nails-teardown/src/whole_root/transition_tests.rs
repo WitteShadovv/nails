@@ -929,6 +929,128 @@ fn an_entry_whose_generator_path_holds_no_mask_is_refused() {
     );
 }
 
+/// The skips of a disk local-fs.target requires, with its fsck, of an
+/// automount, and of a disk that is gone by the switch.
+fn skips(world: &World) -> Vec<crate::whole_root::plan::Skip> {
+    use crate::whole_root::plan::Skip;
+    let disk = world.dir.path().join("disk");
+    fs::write(&disk, "").unwrap();
+    vec![
+        Skip {
+            units: vec!["srv-data.mount".to_string()],
+            pulled: vec!["systemd-fsck@dev-vdb1.service".to_string()],
+            device: Some(disk),
+        },
+        Skip {
+            units: vec!["boot.automount".to_string()],
+            pulled: Vec::new(),
+            device: None,
+        },
+        Skip {
+            units: vec!["srv-gone.mount".to_string()],
+            pulled: vec!["systemd-fsck@dev-vdc1.service".to_string()],
+            device: Some(world.dir.path().join("gone")),
+        },
+    ]
+}
+
+/// The units a boot target requires are skipped at the switch, those they
+/// pull in with them, and the units of a disk gone by then masked instead;
+/// the way back removes all of it.
+#[test]
+fn the_skips_are_written_at_the_switch_and_go_with_the_session() {
+    use crate::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT, dropin_dir};
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.skips = skips(&world);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+
+    let r = world.run();
+    for unit in [
+        "srv-data.mount",
+        "systemd-fsck@dev-vdb1.service",
+        "boot.automount",
+    ] {
+        let dropin = r.join(dropin_dir(unit)).join(SKIP_DROPIN_NAME);
+        assert_eq!(fs::read_to_string(&dropin).unwrap(), SKIP_TEXT, "{unit}");
+    }
+    let gone = r.join("systemd/system/srv-gone.mount");
+    assert_eq!(fs::read_link(&gone).unwrap(), Path::new("/dev/null"));
+    assert!(!r.join(dropin_dir("srv-gone.mount")).exists());
+    assert!(!r.join(dropin_dir("systemd-fsck@dev-vdc1.service")).exists());
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+    for unit in [
+        "srv-data.mount",
+        "systemd-fsck@dev-vdb1.service",
+        "boot.automount",
+    ] {
+        assert!(!r.join(dropin_dir(unit)).exists(), "{unit}");
+    }
+    assert!(fs::symlink_metadata(&gone).is_err());
+}
+
+/// A skip that cannot be written refuses the switch, as a mask does: through
+/// a drop-in directory that is a link into a directory the scrub never
+/// enters, the drop-in would outlive the session on the decoy. What the
+/// switch wrote before is gone again.
+#[test]
+fn an_entry_whose_skips_cannot_be_written_is_refused() {
+    use crate::whole_root::skips::dropin_dir;
+    let world = World::new();
+    let elsewhere = world.run().join("udev/elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::create_dir_all(world.run().join("systemd/system")).unwrap();
+    symlink(&elsewhere, world.run().join(dropin_dir("boot.automount"))).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.skips = skips(&world);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+
+    let outcome = run(&world.env(true, 1_010));
+    assert!(
+        matches!(&outcome, Outcome::Disarmed(why) if why.starts_with("could not skip decoy units")),
+        "{outcome:?}"
+    );
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+    let r = world.run();
+    assert!(
+        !r.join(dropin_dir("srv-data.mount")).exists(),
+        "skipped again"
+    );
+    assert!(
+        fs::symlink_metadata(r.join("systemd/system/dev-vda3.swap")).is_err(),
+        "the decoy units are unmasked again"
+    );
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/aaa-nixos-system")
+    );
+}
+
 /// A file that stands for the kernel's module loader path: the decoy's
 /// value recorded, then the session's written over it.
 fn repointed_modprobe(world: &World) -> Vec<kernel_helpers::KernelSetting> {
@@ -944,9 +1066,9 @@ fn modprobe_now(world: &World) -> String {
 }
 
 /// The entry's snapshot of `/run`, then the masks the entry transition
-/// writes: the decoy units in the runtime unit directory, the units the hidden
-/// root does not need in the control directory, the generators in the
-/// generator directory.
+/// writes: the decoy units in the runtime unit and control directories, the
+/// units the hidden root does not need in the control directory, the
+/// generators in the generator directory.
 fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
     fs::write(
         world.runtime().join(SNAPSHOT_NAME),
@@ -961,7 +1083,7 @@ fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
     masks.extend(runtime_units::mask_generators(&world.run(), &plan.generator_masks).unwrap());
     assert_eq!(
         masks.len(),
-        plan.masks.len() + plan.boot_masks.len() + plan.generator_masks.len()
+        2 * plan.masks.len() + plan.boot_masks.len() + plan.generator_masks.len()
     );
     masks
 }

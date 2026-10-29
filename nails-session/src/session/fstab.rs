@@ -6,13 +6,16 @@
 //! The hidden root runs the decoy's own fstab (or, on NixOS, the hidden
 //! toplevel's). `systemd-fstab-generator` turns every entry into a `.mount` or
 //! `.swap` unit, so the session policy ([`super::policy`]) needs the same view
-//! of it, plus the unit names it would generate, to overlay, bind or mask each
-//! entry before the switch. The parser is [`nails_base::fstab`], re-exported
-//! here; the unit names are the session's own.
+//! of it, plus the unit names it would generate, what requires each unit at
+//! boot ([`required_by`]), the device it waits for ([`waits_for`]) and the
+//! units it pulls in that act on that device ([`checkers`]), to overlay,
+//! bind, skip or mask each entry before the switch. The parser is
+//! [`nails_base::fstab`], re-exported here; the unit names are the session's
+//! own.
 
 use std::path::{Path, PathBuf};
 
-pub use nails_base::fstab::{FstabEntry, escape_path, parse_fstab, spec_device};
+pub use nails_base::fstab::{FstabEntry, escape_path, is_virtual_type, parse_fstab, spec_device};
 
 /// The `/etc/fstab` of the root at `root`, read as that root resolves it
 /// ([`read_in_root`](nails_teardown::whole_root::nextroot::read_in_root)).
@@ -56,6 +59,122 @@ pub fn automount_unit(path: &Path) -> String {
 pub fn swap_unit(spec: &str) -> Option<String> {
     let path = spec_device(spec).or_else(|| spec.starts_with('/').then(|| PathBuf::from(spec)))?;
     Some(format!("{}.swap", escape_path(&path)))
+}
+
+/// The mount options that turn on quota for a filesystem, for which systemd's
+/// fstab generator has the mount pull in its quota check and activation.
+const QUOTA_OPTIONS: &[&str] = &[
+    "usrquota",
+    "grpquota",
+    "quota",
+    "usrjquota",
+    "grpjquota",
+    "prjquota",
+];
+
+/// What requires the unit systemd's fstab generator makes for `entry` (its
+/// automount, if it has one) at boot, as the generator links it: the entry's
+/// boot target, `local-fs.target`, or `remote-fs.target` for a network
+/// filesystem, or `swap.target` for swap (`remote-fs.target` for a `_netdev`
+/// swap); or the units its `x-systemd.required-by=` options name, which then
+/// take the target's place. `None` when nothing requires it: `nofail` (the
+/// target only wants the unit), `noauto` without an automount (nothing pulls
+/// it in), `x-systemd.wanted-by=` alone, or an NFS `bg` mount, which the
+/// generator makes `nofail`.
+pub fn required_by(entry: &FstabEntry) -> Option<String> {
+    if entry.is_swap() {
+        if entry.yes_no_option("noauto", "auto") || entry.is_nofail() {
+            return None;
+        }
+        let target = if entry.has_option("_netdev") {
+            "remote-fs.target"
+        } else {
+            "swap.target"
+        };
+        return Some(target.to_string());
+    }
+    let named = |key: &str| -> Vec<&str> {
+        entry
+            .options
+            .iter()
+            .filter_map(|option| option.strip_prefix(key))
+            .filter(|unit| !unit.is_empty())
+            .collect()
+    };
+    let required = named("x-systemd.required-by=");
+    if !required.is_empty() {
+        return Some(required.join(" "));
+    }
+    let nfs_background = matches!(entry.vfstype.as_str(), "nfs" | "nfs4")
+        && !entry.is_automount()
+        && entry.yes_no_option("bg", "fg");
+    if !named("x-systemd.wanted-by=").is_empty()
+        || entry.is_noauto()
+        || entry.is_nofail()
+        || nfs_background
+    {
+        return None;
+    }
+    let target = if entry.is_network() {
+        "remote-fs.target"
+    } else {
+        "local-fs.target"
+    };
+    Some(target.to_string())
+}
+
+/// The device the unit systemd makes for `entry` waits for at its start: the
+/// node its spec names (`/dev/...`, or a `UUID=`-style tag as the link udev
+/// makes for it), on whose device unit systemd makes the unit depend. A bind,
+/// whose spec is a directory, and a swap file wait for no device, and neither
+/// does a network filesystem named by its server.
+pub fn waits_for(entry: &FstabEntry) -> Option<PathBuf> {
+    if entry.is_bind() {
+        return None;
+    }
+    entry
+        .device()
+        .filter(|device| device != Path::new("/dev/root") && device != Path::new("/dev/nfs"))
+}
+
+/// The units systemd's fstab generator has the unit of `entry` pull in that
+/// act on its device or filesystem, and which therefore start before the unit
+/// tests its own start condition: for an entry on a device its fsck (whatever
+/// its pass number: a unit nothing pulls in is skipped for nothing), and its
+/// makefs or, for swap, its mkswap (`x-systemd.makefs`); for a mount its
+/// growfs (`x-systemd.growfs`), pcrfs (`x-systemd.pcrfs`) and validatefs
+/// (`x-systemd.validatefs`), and its quota check and activation (a quota
+/// option).
+pub fn checkers(entry: &FstabEntry) -> Vec<String> {
+    let mut units = Vec::new();
+    let device = waits_for(entry).map(|device| escape_path(&device));
+    if entry.is_swap() {
+        if let Some(device) = device.filter(|_| entry.has_option("x-systemd.makefs")) {
+            units.push(format!("systemd-mkswap@{device}.service"));
+        }
+        return units;
+    }
+    if let Some(device) = device {
+        units.push(format!("systemd-fsck@{device}.service"));
+        if entry.has_option("x-systemd.makefs") {
+            units.push(format!("systemd-makefs@{device}.service"));
+        }
+    }
+    let at = escape_path(&entry.file);
+    for (option, template) in [
+        ("x-systemd.growfs", "systemd-growfs"),
+        ("x-systemd.pcrfs", "systemd-pcrfs"),
+        ("x-systemd.validatefs", "systemd-validatefs"),
+    ] {
+        if entry.has_option(option) {
+            units.push(format!("{template}@{at}.service"));
+        }
+    }
+    if QUOTA_OPTIONS.iter().any(|option| entry.has_option(option)) {
+        units.push(format!("systemd-quotacheck@{at}.service"));
+        units.push(format!("quotaon@{at}.service"));
+    }
+    units
 }
 
 #[cfg(test)]

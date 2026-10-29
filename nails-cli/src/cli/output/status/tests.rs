@@ -6,7 +6,7 @@ use super::json::{status_envelope, status_unknown_envelope};
 use nails_core::SystemState;
 use nails_core::config::PersonaMode;
 use nails_core::output::Style;
-use nails_core::status::{CoverView, PolicyMountView, Posture, StatusReport};
+use nails_core::status::{CoverView, PolicyMountView, Posture, RequiredUnitView, StatusReport};
 use std::path::PathBuf;
 
 fn report(posture: Posture, session: &'static str) -> StatusReport {
@@ -28,6 +28,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         hidden_root_covered_by: None,
         policy_mounts: Vec::new(),
         masked_units: Vec::new(),
+        required_units: Vec::new(),
         nextroot_mounted: false,
         last_activation: None,
         decoy_persistent: false,
@@ -200,6 +201,70 @@ fn an_accepted_override_is_shown_in_both_forms() {
     );
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
     assert_eq!(value["data"]["accepted_decoy_storage"], reason);
+}
+
+#[test]
+fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
+    let mut active = report(Posture::Active, "hidden");
+    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("Required at boot"), "{lines}");
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_eq!(value["data"]["required_units"], serde_json::json!([]));
+
+    let unit = |unit: &str, action, reason, device: Option<&str>| RequiredUnitView {
+        unit: unit.into(),
+        action,
+        reason,
+        device: device.map(PathBuf::from),
+    };
+    active.required_units = vec![
+        unit("srv-data.mount", "skipped", "required_at_boot", None),
+        unit(
+            "srv-gone.mount",
+            "masked",
+            "device_absent",
+            Some("/dev/vdy1"),
+        ),
+        unit("srv-native.mount", "masked", "undetermined", None),
+        unit("data.mount", "masked", "conflicting_lines", None),
+    ];
+    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    for line in [
+        "Required at boot, kept off:",
+        "srv-data.mount: skipped, as a boot target requires it",
+        "srv-gone.mount: masked, as its device /dev/vdy1 was not there; the boot target that \
+         requires it is not reached",
+        "srv-native.mount: masked, as NAILS could not tell what it is or pulls in; the boot \
+         target that requires it is not reached",
+        "data.mount: masked, as the fstab lines for it disagree",
+    ] {
+        assert!(lines.contains(line), "{line}: {lines}");
+    }
+    // The decoy shows them only with --details, as it does the masks.
+    let mut decoy = active.clone();
+    decoy.posture = Posture::Decoy;
+    decoy.session = "decoy";
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("srv-data.mount"), "{lines}");
+    let lines = status_lines(&decoy, true, plain(), &chrono::Utc).join("\n");
+    assert!(lines.contains("srv-data.mount"), "{lines}");
+
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_matches_the_schema(&value);
+    assert_eq!(
+        value["data"]["required_units"],
+        serde_json::json!([
+            { "unit": "srv-data.mount", "action": "skipped", "reason": "required_at_boot" },
+            {
+                "unit": "srv-gone.mount",
+                "action": "masked",
+                "reason": "device_absent",
+                "device": "/dev/vdy1"
+            },
+            { "unit": "srv-native.mount", "action": "masked", "reason": "undetermined" },
+            { "unit": "data.mount", "action": "masked", "reason": "conflicting_lines" },
+        ])
+    );
 }
 
 #[test]

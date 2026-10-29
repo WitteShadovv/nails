@@ -158,7 +158,8 @@ impl Interrupted {
             &plan.boot_masks,
         ));
         masks.extend(runtime_units::mask_generators(&host.run, &plan.generator_masks).unwrap());
-        assert_eq!(masks.len(), 3);
+        // The decoy unit's mask in the runtime unit and control directories.
+        assert_eq!(masks.len(), 4);
         Self {
             dir,
             host,

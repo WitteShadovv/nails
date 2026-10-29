@@ -114,7 +114,7 @@ pub fn mask_units_best_effort(run: &Path, units: &[String]) -> Vec<PathBuf> {
 }
 
 /// Remove the masks a session wrote below `run`: `masks` from the runtime
-/// unit directory, `boot_masks` from the control directory and
+/// unit and control directories, `boot_masks` from the control directory and
 /// `generator_masks` from the generator directory, each only where it is
 /// still a link to `/dev/null` and `kept` (the `/run` snapshot the entry
 /// took, empty when it is gone) does not hold it, so a mask the decoy had
@@ -135,7 +135,7 @@ pub fn remove_masks(
     generator_masks: &[String],
     kept: &Snapshot,
 ) -> bool {
-    let mut removed = remove_links(run, RUNTIME_UNIT_DIR, masks, valid_unit_name, kept);
+    let mut removed = remove_unit_masks(run, masks, kept);
     removed |= remove_links(run, RUNTIME_CONTROL_DIR, boot_masks, valid_unit_name, kept);
     removed |= remove_links(
         run,
@@ -150,6 +150,15 @@ pub fn remove_masks(
         }
     }
     removed
+}
+
+/// Remove the masks of `units` ([`mask_units`]) from the runtime unit and
+/// control directories under `run`, as [`remove_masks`] removes the masks a
+/// session wrote there: only where a unit's path is still a link to
+/// `/dev/null` and `kept` does not hold it. Returns whether one went.
+pub fn remove_unit_masks(run: &Path, units: &[String], kept: &Snapshot) -> bool {
+    let removed = remove_links(run, RUNTIME_UNIT_DIR, units, valid_unit_name, kept);
+    remove_links(run, RUNTIME_CONTROL_DIR, units, valid_unit_name, kept) | removed
 }
 
 /// Remove from `dir` below `run` each of `names` that `valid` accepts, where
@@ -211,19 +220,46 @@ pub fn install_units(run: &Path, units: &[RuntimeUnit]) -> io::Result<Vec<PathBu
 }
 
 /// Mask `units` under `run`: a `/dev/null` symlink in the runtime unit
-/// directory, which ranks above the generator output (fstab units).
+/// directory, which ranks above the generator output (fstab units) and the
+/// units below `/usr`, and another in [`RUNTIME_CONTROL_DIR`], which ranks
+/// above `/etc/systemd/system`, where NixOS links every unit and an
+/// administrator installs one of their own. A mask in the runtime unit
+/// directory alone leaves such a unit loaded. An entry of the decoy's own in
+/// the control directory that masks the unit already stays; one that does not
+/// mask it refuses the mask, as it would override it. Returns the links
+/// written.
 pub fn mask_units(run: &Path, units: &[String]) -> io::Result<Vec<PathBuf>> {
-    let dir = run.join(RUNTIME_UNIT_DIR);
+    if let Some(name) = units.iter().find(|name| !valid_unit_name(name)) {
+        return Err(invalid(name));
+    }
     let mut written = Vec::new();
+    if units.is_empty() {
+        return Ok(written);
+    }
+    let dir = run.join(RUNTIME_UNIT_DIR);
+    let control = run.join(RUNTIME_CONTROL_DIR);
+    std::fs::create_dir_all(&control)?;
+    if let Some(taken) = units
+        .iter()
+        .map(|name| control.join(name))
+        .find(|path| std::fs::symlink_metadata(path).is_ok() && !masks_generator(path))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} is there and does not mask it", taken.display()),
+        ));
+    }
     for name in units {
-        if !valid_unit_name(name) {
-            return Err(invalid(name));
-        }
         std::fs::create_dir_all(&dir)?;
         let link = dir.join(name);
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink("/dev/null", &link)?;
         written.push(link);
+        let link = control.join(name);
+        if std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink("/dev/null", &link)?;
+            written.push(link);
+        }
     }
     Ok(written)
 }
@@ -534,8 +570,10 @@ mod tests {
         let units = ["dev-vda3.swap", "data.mount", "data.automount"].map(String::from);
         mask_units(run.path(), &units).unwrap();
         for unit in &units {
-            let link = run.path().join(RUNTIME_UNIT_DIR).join(unit);
-            assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
+            for dir in [RUNTIME_UNIT_DIR, RUNTIME_CONTROL_DIR] {
+                let link = run.path().join(dir).join(unit);
+                assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
+            }
         }
         assert!(remove_masks(
             run.path(),
@@ -549,6 +587,59 @@ mod tests {
                 .unwrap()
                 .next()
                 .is_none()
+        );
+        assert!(!run.path().join(RUNTIME_CONTROL_DIR).exists());
+    }
+
+    #[test]
+    fn removing_a_mask_that_one_directory_alone_holds_says_so() {
+        let units = ["srv-native.mount".to_string()];
+        for dir in [RUNTIME_UNIT_DIR, RUNTIME_CONTROL_DIR] {
+            let run = tempfile::tempdir().unwrap();
+            let mask = run.path().join(dir).join(&units[0]);
+            std::fs::create_dir_all(mask.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("/dev/null", &mask).unwrap();
+            assert!(
+                remove_unit_masks(run.path(), &units, &Snapshot::default()),
+                "{dir}"
+            );
+            assert!(std::fs::symlink_metadata(&mask).is_err(), "{dir}");
+            assert!(!remove_unit_masks(run.path(), &units, &Snapshot::default()));
+        }
+    }
+
+    #[test]
+    fn a_mask_ranks_above_etc_and_keeps_the_decoy_s_own_control_entries() {
+        // The decoy masks one unit in the control directory itself: that mask
+        // stays, and so does the directory.
+        let run = tempfile::tempdir().unwrap();
+        let control = run.path().join(RUNTIME_CONTROL_DIR);
+        std::fs::create_dir_all(&control).unwrap();
+        std::os::unix::fs::symlink("/dev/null", control.join("dev-zram0.swap")).unwrap();
+        let kept = Snapshot::take(run.path());
+        let units = ["dev-zram0.swap", "srv-native.mount"].map(String::from);
+        let written = mask_units(run.path(), &units).unwrap();
+        assert!(written.contains(&control.join("srv-native.mount")));
+        assert!(!written.contains(&control.join("dev-zram0.swap")));
+        assert!(remove_unit_masks(run.path(), &units, &kept));
+        assert!(std::fs::symlink_metadata(control.join("srv-native.mount")).is_err());
+        assert_eq!(
+            std::fs::read_link(control.join("dev-zram0.swap")).unwrap(),
+            Path::new("/dev/null")
+        );
+
+        // An override of the decoy's own there would win over the mask: the
+        // mask is refused, and nothing is written.
+        let run = tempfile::tempdir().unwrap();
+        let control = run.path().join(RUNTIME_CONTROL_DIR);
+        std::fs::create_dir_all(&control).unwrap();
+        std::fs::write(control.join("srv-native.mount"), "[Mount]\n").unwrap();
+        let error = mask_units(run.path(), &units).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(!run.path().join(RUNTIME_UNIT_DIR).exists());
+        assert_eq!(
+            std::fs::read_to_string(control.join("srv-native.mount")).unwrap(),
+            "[Mount]\n"
         );
     }
 }

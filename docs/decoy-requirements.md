@@ -419,9 +419,20 @@ decision in place inside the next root:
 | --- | --- |
 | `/boot`, `/boot/efi`, `/efi` (ESP, boot partitions), and filesystems mounted read-only | read-only bind |
 | other mounted local filesystems (a separate `/home`, `/var`, `/srv`), mounted VM host shares and overlays | overlay, upper at `<hidden>/root/mounts/<unit name>/upper` |
-| swap | masked: never activated |
-| local filesystems not mounted now but mounted at boot, network filesystems, overlay entries not mounted now with an upper on a disk | masked: not available in the hidden session |
+| swap | kept off: never activated |
+| local filesystems not mounted now but mounted at boot, network filesystems, overlay entries not mounted now with an upper on a disk | kept unmounted: not available in the hidden session |
 | tmpfs and kernel filesystems, `noauto` entries, the hidden volume | left alone |
+
+A unit kept off is masked in `/run`, or skipped where a boot target requires it
+(an entry without `nofail`): a mask there would leave `local-fs.target`,
+`remote-fs.target` or `swap.target` unreached in the hidden session, and with
+it every unit only that target pulls in. A skipped unit, and the fsck, makefs
+and other units it pulls in that act on its disk, gets a runtime drop-in whose
+start condition never holds. A skipped mount still waits for its device, so an
+entry whose device is not there when you activate is masked, and `check` and
+`activate` warn that the target will not be reached: attach the device, or give
+the entry `nofail` (see
+[What the session covers](configuration.md#what-the-session-covers)).
 
 systemd's GPT auto-generator mounts the partitions it finds by their type on
 the root filesystem's disk (`/home`, `/srv`, `/var`, the ESP) and turns on a
@@ -432,12 +443,26 @@ one all the same: one whose separate `/usr` is mounted read-only. The policy
 binds that `/usr` read-only into the hidden root, and with `/` on no disk the
 generator takes the disk of `/usr`.
 
-A mount that is not in fstab (an automounted USB drive, a disk mounted by hand)
-is not carried into the hidden session at all; the hidden session can mount it
-again itself, and then writes to it directly. The session watcher alerts on
-every such read-write mount, and `[session_mounts] read_only` makes every disk
-the session does not use read-only for the session, including disks attached
-during it; `nails deactivate` unmounts them before the way back (see
+The decoy's own mount, swap and automount units that a boot target links in
+its `.wants` or `.requires` directory outside the fstab (a NixOS
+`systemd.mounts` unit wanted by `local-fs.target`, a `.mount` unit enabled for
+`multi-user.target`, a mount the kernel command line names) get the decision
+an fstab line with the same source, type and options would get, and the ESP
+the GPT auto-generator mounted in the decoy is bound read-only into the hidden
+root. zram-generator's swap is left to the hidden systemd as RAM-only swap
+while its zram device has no backing device, and kept off like disk swap when
+it has one; NAILS does not read zram-generator's configuration (see
+[What the session covers](configuration.md#what-the-session-covers)).
+
+Any other mount outside the fstab is not carried into the hidden session: an
+automounted USB drive, a disk mounted by hand, a mount unit that only another
+unit pulls in (by `Requires=`, `Wants=` or `RequiresMountsFor=`, or from a
+service's `.wants` directory). The hidden session can mount it again itself,
+as the hidden systemd does for such a unit at its start, and then writes to it
+directly. The session watcher alerts on every such read-write mount, and
+`[session_mounts] read_only` makes every disk the session does not use
+read-only for the session, including disks attached during it;
+`nails deactivate` unmounts them before the way back (see
 [Disks mounted during the session](configuration.md#disks-mounted-during-the-session)).
 `verify` cannot tell what a session wrote there, but
 [`nails rehearse`](operator-guide.md#rehearsing-before-you-rely-on-it) scans
@@ -582,8 +607,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `session-nixos-hidden-system` |
-| [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, and masks swap, unmounted disks and systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch. | `soft-reboot-mechanics` |
-| [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) (`session-disk-mounts`) | a USB drive udisks automounts, a decoy partition the policy masked mounted by hand, a Windows partition | all | none: the disk is mounted after activation | none: verify cannot tell what a session wrote to another disk | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | `session-disk-mounts` |
+| [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root, and the mount, swap and automount units its boot targets link outside the fstab: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, keeps swap and unmounted disks off (masked, or skipped where a boot target requires them, so that the target is still reached), decides the units the boot targets link outside the fstab the same way (a zram swap without a backing device stays on), and masks systemd's GPT auto-generator (which would mount partitions the fstab does not list) before the switch. | `soft-reboot-mechanics` |
+| [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) (`session-disk-mounts`) | a USB drive udisks automounts, a decoy partition the policy masked mounted by hand, a Windows partition, a decoy mount unit that only another unit pulls in | all | none: the disk is mounted after activation | none: verify cannot tell what a session wrote to another disk | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | `session-disk-mounts` |
 | [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes the runtime journal and logind's session state whole, and whatever else the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry; it puts the decoy's name-server records below /run/resolvconf back, gives the decoy's utab lines back to the mounts it restores, under their new mount IDs, and never touches sockets or /run/udev. | `session-lifecycle`, `session-emergency`, `session-dns-records` |
 | [An interrupted entry's runtime files in /run](threat-model.md#residual-channels) (`interrupted-entry`) | an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in | all | `session-state` (refuses) | `session-leftovers` | The transition drop-in is installed before the next root is populated, so an unarmed entry is disarmed by any soft-reboot; `nails recover` removes the leftovers. | `session-interrupted-entry` |
 | [Hidden kernel records imported by the decoy journal](threat-model.md#residual-channels) (`kmsg-import`) | journald reads /dev/kmsg from its stored sequence number after every soft-reboot | all | `decoy-persistence` | `journal-scan` | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `soft-reboot-mechanics` |

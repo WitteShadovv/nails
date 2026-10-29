@@ -4,7 +4,9 @@
 use super::*;
 use crate::RealFilesystem;
 use nails_teardown::mountinfo::parse_mountinfo;
-use nails_teardown::whole_root::plan::{DecoyRoot, PLAN_VERSION, PolicyMount, RootSide, Tools};
+use nails_teardown::whole_root::plan::{
+    DecoyRoot, PLAN_VERSION, PolicyMount, RequiredMask, RootSide, Skip, Tools,
+};
 
 fn plan(root: &Path) -> Plan {
     let side = RootSide {
@@ -36,6 +38,8 @@ fn plan(root: &Path) -> Plan {
         masks: vec!["dev-vda3.swap".into()],
         boot_masks: Vec::new(),
         generator_masks: Vec::new(),
+        skips: Vec::new(),
+        required_masks: Vec::new(),
         session_units: Vec::new(),
         backend: Vec::new(),
         tools: Tools::default(),
@@ -105,6 +109,92 @@ fn the_hidden_session_reports_active_with_its_uptime_policy_and_system() {
         Some("/dev/mapper/data")
     );
     assert!(!report.opsec_reminders.is_empty(), "6 h and more remind");
+}
+
+#[test]
+fn the_units_a_boot_target_requires_are_listed_with_why() {
+    // Two skips, one whose device the switch found gone and masked, and the
+    // masks the entry recorded with their cause.
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = command(dir.path());
+    let mut plan = plan(dir.path());
+    plan.skips = vec![
+        Skip {
+            units: vec!["srv-data.mount".into()],
+            pulled: vec!["systemd-fsck@dev-vdb1.service".into()],
+            device: Some("/dev/vdb1".into()),
+        },
+        Skip {
+            units: vec!["srv-late.mount".into()],
+            pulled: Vec::new(),
+            device: Some("/dev/vdc1".into()),
+        },
+    ];
+    plan.required_masks = vec![
+        RequiredMask {
+            unit: "srv-gone.mount".into(),
+            cause: MaskCause::DeviceAbsent,
+            device: Some("/dev/vdy1".into()),
+        },
+        RequiredMask {
+            unit: "srv-native.mount".into(),
+            cause: MaskCause::Undetermined,
+            device: None,
+        },
+        RequiredMask {
+            unit: "data.mount".into(),
+            cause: MaskCause::ConflictingLines,
+            device: None,
+        },
+    ];
+    let units = dir.path().join("run/systemd/system");
+    std::fs::create_dir_all(&units).unwrap();
+    std::os::unix::fs::symlink("/dev/null", units.join("srv-late.mount")).unwrap();
+    let view = |hidden: bool| {
+        let plan = Box::new(plan.clone());
+        if hidden {
+            SessionView::Hidden(plan)
+        } else {
+            SessionView::Entering(plan)
+        }
+    };
+    let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+    let shown = |hidden: bool| -> Vec<(String, &'static str, &'static str, Option<PathBuf>)> {
+        cmd.report(&view(hidden), &[], now)
+            .unwrap()
+            .required_units
+            .into_iter()
+            .map(|u| (u.unit, u.action, u.reason, u.device))
+            .collect()
+    };
+    let masked = |unit: &str, reason, device: Option<&str>| {
+        (
+            unit.to_string(),
+            "masked",
+            reason,
+            device.map(PathBuf::from),
+        )
+    };
+    let skipped = |unit: &str| (unit.to_string(), "skipped", "required_at_boot", None);
+    let recorded = [
+        masked("srv-gone.mount", "device_absent", Some("/dev/vdy1")),
+        masked("srv-native.mount", "undetermined", None),
+        masked("data.mount", "conflicting_lines", None),
+    ];
+    let mut hidden = vec![
+        skipped("srv-data.mount"),
+        masked("srv-late.mount", "device_absent", Some("/dev/vdc1")),
+    ];
+    hidden.extend(recorded.clone());
+    assert_eq!(shown(true), hidden);
+    // Before the switch the plan's skips are what the entry decided: the
+    // mask under /run is not the switch's yet.
+    let mut entering = vec![skipped("srv-data.mount"), skipped("srv-late.mount")];
+    entering.extend(recorded);
+    assert_eq!(shown(false), entering);
+    // Without a plan nothing is listed.
+    let report = cmd.report(&SessionView::Decoy, &[], now).unwrap();
+    assert!(report.required_units.is_empty());
 }
 
 fn covered_by(report: &StatusReport) -> Option<&str> {

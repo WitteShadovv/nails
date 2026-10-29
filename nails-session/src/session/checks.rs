@@ -10,8 +10,15 @@
 //!   back;
 //! - `session-state`: neither in the hidden root already nor with leftovers of
 //!   an interrupted entry;
-//! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
-//!   safe decision ([`super::policy`]);
+//! - `fstab-policy`: every line of the decoy's fstab, and every mount, swap
+//!   and automount unit linked in a target's `.wants` or `.requires`
+//!   directory of the decoy root and of `/run` (the initrd's targets aside),
+//!   has a safe decision ([`super::policy`], [`super::mount_units`]); it
+//!   warns when a filesystem is kept from the hidden session, and names a
+//!   boot target a mask keeps from being reached. A mount the hidden systemd
+//!   starts otherwise (a unit only another unit pulls in) is not decided.
+//!   Activation decides again on the hidden root, whose own units the check
+//!   does not see;
 //! - `kernel-modules`: no hidden session deleted or replaced the running
 //!   kernel's module tree or its index ([`super::kernel_modules`]); it only
 //!   warns.
@@ -22,6 +29,7 @@
 
 use super::fstab::{parse_in_root, read_in_root as read_fstab};
 use super::layout::Paths;
+use super::mount_units;
 use super::policy::{self, Decision};
 use super::probe::{self, SessionView};
 use super::systemd::{self, MIN_SYSTEMD};
@@ -237,15 +245,17 @@ impl<F: Filesystem> PreFlightCheck<F> for SessionStateCheck {
     }
 }
 
-/// Judge the fstab decisions.
-pub fn judge_fstab(decisions: &[Decision]) -> CheckResult {
+/// Judge the fstab decisions, with `unskipped`, the warnings for the skips
+/// masked instead ([`mount_units::kept_off`]).
+pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult {
     if let Some(refused) = decisions
         .iter()
         .find(|d| matches!(d, Decision::Refuse { .. }))
     {
         return CheckResult::fail_with(
             refused.describe(),
-            "Fix the fstab entry or remove it before activating.".to_string(),
+            "Fix the fstab entry or the unit directory it names, or remove it, before activating."
+                .to_string(),
         );
     }
     let notable: Vec<String> = decisions
@@ -253,8 +263,11 @@ pub fn judge_fstab(decisions: &[Decision]) -> CheckResult {
         .filter(|d| !matches!(d, Decision::Leave { .. }))
         .map(Decision::describe)
         .collect();
-    let masked_mounts = decisions.iter().any(|d| {
-        matches!(d, Decision::Mask { units, .. } if units.iter().any(|u| !u.ends_with(".swap")))
+    let kept_off_mounts = decisions.iter().any(|d| {
+        let units = d
+            .skip()
+            .map_or(d.masked_units(), |skip| skip.units.as_slice());
+        units.iter().any(|u| !u.ends_with(".swap"))
     });
     let summary = if notable.is_empty() {
         "no decoy filesystem besides the root needs handling".to_string()
@@ -264,12 +277,45 @@ pub fn judge_fstab(decisions: &[Decision]) -> CheckResult {
             notable.join("; ")
         )
     };
-    if masked_mounts {
-        CheckResult::Warn(format!(
-            "{summary}. Masked filesystems are not available in the hidden session."
-        ))
-    } else {
+    let mut notes = Vec::new();
+    if kept_off_mounts {
+        notes.push(
+            "Masked and skipped filesystems are not available in the hidden session.".to_string(),
+        );
+    }
+    notes.extend(
+        decisions
+            .iter()
+            .filter_map(Decision::warning)
+            .chain(unskipped.iter().cloned())
+            .map(|warning| format!("{warning}.")),
+    );
+    if notes.is_empty() {
         CheckResult::Pass(summary)
+    } else {
+        CheckResult::Warn(format!("{summary}. {}", notes.join(" ")))
+    }
+}
+
+/// The decisions for the decoy's mount, swap and automount units outside its
+/// fstab ([`mount_units`]), read in `dirs` (the decoy root and its `/run`),
+/// as activation decides them: the refusal of the entry when a directory of
+/// their links cannot be listed.
+pub fn decoy_units(
+    dirs: mount_units::UnitDirs<'_>,
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+) -> Vec<Decision> {
+    match mount_units::read(dirs) {
+        Ok(units) => mount_units::decide(
+            dirs,
+            &units,
+            mounts,
+            hidden_root,
+            &policy::device_present,
+            Path::new("/sys"),
+        ),
+        Err(unlisted) => vec![unlisted.refusal()],
     }
 }
 
@@ -310,12 +356,21 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
         };
         // Resolved in the decoy root, as activation decides them first.
         let entries = parse_in_root(&text, &self.root);
-        let decisions = policy::decide_all(
+        let mounts = read_mountinfo().unwrap_or_default();
+        let mut decisions = policy::decide_all(
             &entries,
-            &read_mountinfo().unwrap_or_default(),
+            &mounts,
             &self.hidden_root,
+            &policy::device_present,
         );
-        Ok(judge_fstab(&decisions))
+        let run = self.root.join("run");
+        let dirs = mount_units::UnitDirs {
+            root: &self.root,
+            run: &run,
+        };
+        decisions.extend(decoy_units(dirs, &mounts, &self.hidden_root));
+        let (_, unskipped) = mount_units::kept_off(dirs, &entries, &decisions);
+        Ok(judge_fstab(&decisions, &unskipped))
     }
 }
 

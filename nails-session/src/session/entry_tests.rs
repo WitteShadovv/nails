@@ -278,12 +278,16 @@ fn a_symlinked_fstab_mount_point_is_decided_at_its_real_path() {
     // masked unit is the one systemd generates for the real mount point,
     // var-home.mount, not home.mount, so the hidden session really masks it.
     let fstab = parse_in_root(b"/dev/sdb1 /home ext4 defaults 0 2\n", root.path());
-    let decisions = decide_fstab(&fstab, &[], Path::new("/mnt/data")).unwrap();
+    let decisions = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| false).unwrap();
     assert_eq!(policy::masked_units(&decisions), ["var-home.mount"]);
+    // With its disk there, local-fs.target's requirement is skipped under the
+    // same name.
+    let decisions = decide_fstab(&fstab, &[], Path::new("/mnt/data"), &|_| true).unwrap();
+    assert_eq!(decisions[0].skip().unwrap().units, ["var-home.mount"]);
 }
 
 #[test]
-fn the_automount_of_an_overlaid_symlinked_mount_point_is_masked_by_its_real_path() {
+fn the_automount_of_an_overlaid_symlinked_mount_point_is_skipped_by_its_real_path() {
     // The decoy keeps /home at var/home, mounts the filesystem there, and
     // its fstab names /home behind an automount.
     let root = tempfile::tempdir().unwrap();
@@ -297,18 +301,22 @@ fn the_automount_of_an_overlaid_symlinked_mount_point_is_masked_by_its_real_path
         b"UUID=a /home ext4 defaults,x-systemd.automount 0 2\n",
         root.path(),
     );
-    let decisions = decide_fstab(&fstab, &mounts, Path::new("/mnt/data")).unwrap();
+    let decisions = decide_fstab(&fstab, &mounts, Path::new("/mnt/data"), &|_| false).unwrap();
     // The filesystem is overlaid where the decoy has it, and the automount
-    // the hidden systemd generates for that path is masked with the same
+    // the hidden systemd generates for that path is kept off with the same
     // resolved entries: left free, it would find the mount point taken and
-    // fail local-fs.target, the emergency mode the mask prevents.
+    // fail local-fs.target, the emergency mode this prevents. The target
+    // requires the automount, so it is skipped, not masked.
     assert_eq!(
         decisions,
         [Decision::Overlay {
             target: PathBuf::from("/var/home")
         }]
     );
-    assert_eq!(policy::masks(&fstab, &decisions), ["var-home.automount"]);
+    let kept = policy::runtime_units(&fstab, &decisions);
+    assert!(kept.masks.is_empty(), "{:?}", kept.masks);
+    assert_eq!(kept.skips.len(), 1, "{:?}", kept.skips);
+    assert_eq!(kept.skips[0].units, ["var-home.automount"]);
 }
 
 #[test]
@@ -328,7 +336,7 @@ fn only_the_entries_the_next_root_resolves_elsewhere_are_decided_again() {
     assert_eq!(elsewhere[0].file, Path::new("/home"));
     // Decided there, where the decoy mounts nothing: masked, so the hidden
     // systemd never mounts the decoy's disk read-write at /home.
-    let decisions = decide_elsewhere(&elsewhere, &[], Path::new("/mnt/data")).unwrap();
+    let decisions = decide_elsewhere(&elsewhere, &[], Path::new("/mnt/data"), &|_| false).unwrap();
     assert_eq!(policy::masked_units(&decisions), ["home.mount"]);
 }
 
@@ -349,14 +357,22 @@ fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
     assert_eq!(elsewhere.len(), 2, "{elsewhere:?}");
     // The hidden volume's own rule would leave them to the bind of the
     // volume, and the hidden systemd would mount the decoy's disks read-write
-    // inside it. They are masked there, the automount with its mount.
-    let decisions = decide_elsewhere(&elsewhere, &[], Path::new("/mnt/data")).unwrap();
+    // inside it. They are kept off there: the nofail mount masked, the
+    // automount local-fs.target requires skipped, its mount masked.
+    let decisions = decide_elsewhere(&elsewhere, &[], Path::new("/mnt/data"), &|_| false).unwrap();
     assert_eq!(
         policy::masked_units(&decisions),
-        [
-            "mnt-data-data.mount",
-            "mnt-data-media.mount",
-            "mnt-data-media.automount"
-        ]
+        ["mnt-data-data.mount", "mnt-data-media.mount"]
     );
+    let skipped: Vec<&String> = decisions
+        .iter()
+        .filter_map(Decision::skip)
+        .flat_map(|skip| &skip.units)
+        .collect();
+    assert_eq!(skipped, ["mnt-data-media.automount"]);
+}
+
+#[test]
+fn the_real_host_finds_no_device_without_its_node() {
+    assert!(!RealEntryHost.device_present(Path::new("/dev/disk/by-id/nails-test-no-such-disk")));
 }

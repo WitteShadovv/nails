@@ -14,8 +14,8 @@ use crate::state::LastActivation;
 use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
-use nails_teardown::whole_root::plan::{Plan, PolicyMountKind};
-use nails_teardown::whole_root::switch_refusal;
+use nails_teardown::whole_root::plan::{MaskCause, Plan, PolicyMountKind};
+use nails_teardown::whole_root::{skips, switch_refusal};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -128,6 +128,59 @@ pub struct PolicyMountView {
     pub kind: &'static str,
 }
 
+/// A unit a boot target requires (`local-fs.target`, `remote-fs.target`,
+/// `swap.target`) that the session keeps from starting, and how.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RequiredUnitView {
+    /// The unit.
+    pub unit: String,
+    /// `skipped` (its start condition never holds, and the target is still
+    /// reached) or `masked` (the target is not reached unless nothing else
+    /// requires the unit).
+    pub action: &'static str,
+    /// Why: `required_at_boot` for a skip; for a mask `device_absent`,
+    /// `undetermined` or `conflicting_lines`.
+    pub reason: &'static str,
+    /// The device that was not there, for `device_absent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<PathBuf>,
+}
+
+/// The units of `plan` that a boot target requires and the session keeps
+/// from starting: its skips, then the masks it recorded with their cause.
+/// After the switch (`switched`) a skip whose device was gone by then is
+/// shown masked, as the switch did ([`skips::masked_at_switch`] under
+/// `run`).
+fn required_units(plan: &Plan, run: &Path, switched: bool) -> Vec<RequiredUnitView> {
+    let skipped = plan.skips.iter().flat_map(|skip| {
+        skip.units.iter().map(|unit| match &skip.device {
+            Some(device) if switched && skips::masked_at_switch(run, unit) => RequiredUnitView {
+                unit: unit.clone(),
+                action: "masked",
+                reason: "device_absent",
+                device: Some(device.clone()),
+            },
+            _ => RequiredUnitView {
+                unit: unit.clone(),
+                action: "skipped",
+                reason: "required_at_boot",
+                device: None,
+            },
+        })
+    });
+    let masked = plan.required_masks.iter().map(|mask| RequiredUnitView {
+        unit: mask.unit.clone(),
+        action: "masked",
+        reason: match mask.cause {
+            MaskCause::DeviceAbsent => "device_absent",
+            MaskCause::Undetermined => "undetermined",
+            MaskCause::ConflictingLines => "conflicting_lines",
+        },
+        device: mask.device.clone(),
+    });
+    skipped.chain(masked).collect()
+}
+
 /// The last session switch, when the soft-reboot refused it and stayed on the
 /// root it was on (see `nails_teardown::whole_root::switch_refusal`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +259,9 @@ pub struct StatusReport {
     pub policy_mounts: Vec<PolicyMountView>,
     /// The decoy units masked in the hidden root.
     pub masked_units: Vec<String>,
+    /// The units a boot target requires that the session skips or masks,
+    /// each with why.
+    pub required_units: Vec<RequiredUnitView>,
     /// Whether `/run/nextroot` is populated.
     pub nextroot_mounted: bool,
     /// The last successful activation.
@@ -450,6 +506,9 @@ impl<F: Filesystem> StatusCommand<F> {
                 .unwrap_or_default(),
             masked_units: plan
                 .map(|p| p.masks.iter().chain(&p.boot_masks).cloned().collect())
+                .unwrap_or_default(),
+            required_units: plan
+                .map(|p| required_units(p, &self.paths.run, view.is_hidden()))
                 .unwrap_or_default(),
             nextroot_mounted: entries.iter().any(|e| {
                 e.mount_point == Path::new(nails_teardown::whole_root::nextroot::NEXTROOT)

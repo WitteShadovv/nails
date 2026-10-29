@@ -28,6 +28,9 @@
 //! - [`decoy_mounts`]: the decoy's mounts the way back makes again, in the
 //!   decoy's order with their options;
 //! - [`runtime_units`]: runtime units and masks in `/run`;
+//! - [`skips`]: runtime drop-ins that make the hidden systemd skip a unit a
+//!   boot target requires, where a mask would keep the target from being
+//!   reached;
 //! - [`switch_refusal`]: why the last switch was refused, kept on the hidden
 //!   volume (a refused entry) or in the runtime directory (a refused way
 //!   back) so `status` can say so;
@@ -53,6 +56,7 @@ pub mod ret;
 pub mod run_records;
 pub mod run_scrub;
 pub mod runtime_units;
+pub mod skips;
 pub mod switch_refusal;
 pub mod tools;
 pub mod transition;

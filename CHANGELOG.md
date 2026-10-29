@@ -225,6 +225,46 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- The session decides the decoy's mount, swap and automount units outside the fstab as it decides
+  fstab lines. A disk the decoy mounts through a unit of its own (NixOS's `systemd.mounts`, a
+  `.mount` unit enabled for `local-fs.target` or `multi-user.target`, a mount the kernel command
+  line names with `systemd.mount-extra=`) was mounted read-write by the hidden systemd, a swap unit
+  of its own swapped onto its disk, and the ESP the GPT auto-generator mounts at `/efi` (Arch Linux)
+  was missing from the hidden session. Activation now reads every `.mount`, `.swap` and `.automount`
+  unit linked in a target's `.wants` or `.requires` directory of the hidden root and of `/run`, with
+  its own drop-ins, except those the fstab generator made from the fstab: a filesystem the decoy has
+  mounted now is bound read-only or overlaid, one not mounted now is skipped or masked, and the
+  automount of a filesystem put in place is kept off. RAM and kernel filesystems are left to the
+  hidden systemd, and so is a zram swap whose zram device has no backing device. One with a backing
+  device is kept off like disk swap. A unit whose files cannot be read, or that names its source by
+  a specifier, is masked, and a directory of unit links that cannot be listed refuses the
+  activation. A mount unit that only another unit pulls in is not decided. `nails check` lists the
+  decisions with the fstab's. A mask now also goes into `/run/systemd/system.control`: in
+  `/run/systemd/system` alone it lost to a unit in `/etc/systemd/system`, where NixOS installs
+  every unit, so the hidden systemd started such a unit masked there all the same.
+- A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
+  keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
+  fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
+  automount of a filesystem it binds or overlays), and systemd silently drops the start of a target
+  that requires a masked unit, and with it every unit only that target pulls in: on Debian 13, a
+  session entered with the ESP unmounted ran without `local-fs.target`. Such a unit is now skipped
+  instead: a runtime drop-in gives it a start condition that never holds, so the hidden systemd
+  starts it, finds the condition unmet and reaches the target, and the decoy disk stays unmounted.
+  The fsck, makefs, mkswap, growfs and quota units its fstab line or unit files pull in would start
+  on the decoy disk before that condition is tested, so they are skipped with it; every other unit
+  it pulls in still starts, and a unit whose pulls NAILS cannot tell is masked instead. A skipped
+  mount still waits for its device, so an entry whose device is not there at activation (its node,
+  with its device unit active) is masked as before, and `nails check` and `nails activate` warn that
+  the hidden session will not reach its target (attach the device, or give the entry `nofail`); a
+  device gone by the switch has its units masked then. Entries with `nofail` stay masked. `verify`
+  reports a skip drop-in left on the decoy. `nails status` lists each such unit, skipped or masked,
+  with why (`required_units` in `status --json`): its device was not there, NAILS could not tell
+  what it is or pulls in, or two fstab lines for it disagree.
+- An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
+  reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
+  left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and
+  the attach gate did not count its device among the storage the decoy uses. The older automount
+  spelling `comment=systemd.automount` counts as an automount, as it does for systemd.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
