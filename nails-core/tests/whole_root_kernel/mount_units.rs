@@ -205,3 +205,91 @@ fn a_filesystem_of_a_unit_outside_the_fstab_mounted_now_is_overlaid() {
         entry::rollback(&paths);
     });
 }
+
+#[test]
+fn a_unit_directory_that_cannot_be_listed_refuses_the_entry() {
+    // A target's link directory in the next root that is a loop of links:
+    // the hidden systemd may start units there that NAILS never decided, so
+    // the entry is refused and undone.
+    let _ = Rerun::new(test_path!(
+        a_unit_directory_that_cannot_be_listed_refuses_the_entry
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        link(
+            world.decoy.path(),
+            "etc/systemd/system/local-fs.target.wants",
+            "local-fs.target.wants",
+        );
+        let paths = world.paths();
+        let error = entry::prepare(&paths, &world.inputs(), &FakeHost::default()).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains(
+                "/etc/systemd/system/local-fs.target.wants: refused (NAILS cannot list this \
+                 unit directory"
+            ),
+            "{text}"
+        );
+        assert!(!paths.runtime().exists());
+        assert!(
+            !read_mountinfo()
+                .unwrap()
+                .iter()
+                .any(|m| m.mount_point.starts_with(paths.nextroot())),
+            "the next root is detached"
+        );
+    });
+}
+
+#[test]
+fn a_skip_whose_pulls_cannot_be_read_is_masked_with_a_warning() {
+    // A native unit local-fs.target requires names its fsck by a specifier
+    // NAILS does not resolve: a skip could leave that fsck free to start on
+    // the decoy disk, so the unit is masked, and the operator warned that
+    // local-fs.target will not be reached.
+    let _ = Rerun::new(test_path!(
+        a_skip_whose_pulls_cannot_be_read_is_masked_with_a_warning
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let decoy = world.decoy.path();
+        world.decoy.mkdir("srv/native");
+        write(
+            decoy,
+            "etc/systemd/system/srv-native.mount",
+            "[Unit]\nRequires=systemd-fsck@%i.service\n[Mount]\nWhat=/dev/null\nType=ext4\n",
+        );
+        link(
+            decoy,
+            "etc/systemd/system/local-fs.target.requires/srv-native.mount",
+            "../srv-native.mount",
+        );
+        let paths = world.paths();
+        let host = FakeHost::with_devices(vec![PathBuf::from("/dev/null")]);
+        let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
+
+        let unit = "srv-native.mount".to_string();
+        assert!(entry.plan.masks.contains(&unit), "{:?}", entry.plan.masks);
+        assert!(
+            !entry
+                .plan
+                .skips
+                .iter()
+                .any(|skip| skip.units.contains(&unit)),
+            "{:?}",
+            entry.plan.skips
+        );
+        assert!(
+            entry.warnings.iter().any(|warning| {
+                warning.contains("srv-native.mount is masked rather than skipped")
+                    && warning.contains("by a specifier")
+            }),
+            "{:?}",
+            entry.warnings
+        );
+        entry::rollback(&paths);
+    });
+}

@@ -425,10 +425,13 @@ through its mounts, because every one of them starts inside the overlay after a
 soft-reboot. The question "which application leaks?" becomes "which writes
 bypass the mount layer?", and that set is small and enumerable: the residual
 channels listed above, and the decoy filesystems the fstab policy has to
-handle, through the fstab or through a mount or swap unit of the decoy's own,
-which the policy decides the same way (systemd's GPT auto-generator, which
-would mount partitions the fstab does not list, is masked in the hidden
-session). Residual risk is limited to
+handle: the decoy's fstab lines, and the mount, swap and automount units its
+boot targets link in their `.wants` and `.requires` directories, which the
+policy decides as fstab lines (systemd's GPT auto-generator, which would mount
+partitions the fstab does not list, is masked in the hidden session). A mount
+unit that only another unit pulls in is not decided: it is one of the
+[disks mounted during the session](configuration.md#disks-mounted-during-the-session).
+Residual risk is limited to
 those channels and to the shared state in the previous section, which the
 overlay does not claim to isolate. All of this assumes the upper is on storage
 of its own, which [the attach gate](#the-attach-gate) checks before the first

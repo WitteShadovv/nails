@@ -120,8 +120,8 @@ pub trait EntryHost {
         kernel_helpers::read(&kernel_helpers::HELPER_PATHS)
     }
     /// Whether `device` is there now: the fstab policy skips a unit that
-    /// waits for a device only while the device is there
-    /// ([`policy::device_present`]).
+    /// waits for a device only while the device is there, its node and its
+    /// active device unit ([`policy::device_present`]).
     fn device_present(&self, device: &Path) -> bool {
         policy::device_present(device)
     }
@@ -147,27 +147,6 @@ impl EntryHost for RealEntryHost {
         nails_teardown::whole_root::tools::find(None, "systemctl")
             .and_then(|systemctl| nails_teardown::whole_root::tools::failed_units(&systemctl))
             .unwrap_or_default()
-    }
-
-    /// The device is there and its device unit is active: systemd makes a
-    /// mount or swap wait for that unit, which udev's record of the device
-    /// makes active, in the hidden session as it does here. A device whose
-    /// unit is not active, or whose unit cannot be asked about, counts as not
-    /// there, so its unit is masked rather than skipped.
-    fn device_present(&self, device: &Path) -> bool {
-        if !policy::device_present(device) {
-            return false;
-        }
-        let unit = format!("{}.device", super::fstab::escape_path(device));
-        nails_teardown::whole_root::tools::find(None, "systemctl")
-            .and_then(|systemctl| {
-                nails_teardown::whole_root::tools::run_output(
-                    &systemctl,
-                    &["show", "--property=ActiveState", "--value", &unit],
-                    std::time::Duration::from_secs(30),
-                )
-            })
-            .is_some_and(|state| state.trim() == "active")
     }
 
     fn daemon_reload(&self) -> Result<()> {
@@ -695,8 +674,14 @@ fn build(
 /// hidden systemd will find them in the next root (on NixOS the hidden
 /// generation's) and in `/run` ([`mount_units`]), put in place what those
 /// decisions call for, and record in `plan` what the hidden session keeps
-/// from starting ([`policy::runtime_units`]), each skip with the units it
-/// pulls in that act on its device. Returns the warnings of every decision.
+/// from starting ([`mount_units::kept_off`]), each skip with the units it
+/// pulls in that act on its device. A directory of unit links that cannot be
+/// listed refuses the entry. Returns the warnings of every decision.
+///
+/// The filesystems of these units are put in place after the fstabs': one
+/// that is the parent of an fstab entry's mount point, both mounted now,
+/// covers that entry's filesystem in the next root, as a later fstab batch
+/// does an earlier one's.
 fn keep_units_off(
     paths: &Paths,
     layout: &Layout,
@@ -711,17 +696,31 @@ fn keep_units_off(
         root: &nextroot,
         run: &paths.run,
     };
-    let native = mount_units::read(dirs);
-    let more = mount_units::decide(dirs, &native, decoy_mounts, inputs.hidden_root, present);
+    let refused = |decision: Decision| NailsError::InvalidState(decision.describe());
+    let native = mount_units::read(dirs).map_err(|unlisted| refused(unlisted.refusal()))?;
+    let more = mount_units::decide(
+        dirs,
+        &native,
+        decoy_mounts,
+        inputs.hidden_root,
+        present,
+        Path::new("/sys"),
+    );
+    if let Some(refusal) = more
+        .iter()
+        .find(|decision| matches!(decision, Decision::Refuse { .. }))
+    {
+        return Err(refused(refusal.clone()));
+    }
     decided.add(paths, layout, plan, Vec::new(), more, inputs)?;
-    let kept_off = policy::runtime_units(&decided.fstab, &decided.decisions);
+    let (kept_off, unskipped) = mount_units::kept_off(dirs, &decided.fstab, &decided.decisions);
     plan.masks = kept_off.masks;
     plan.skips = kept_off.skips;
-    mount_units::pull_in(dirs, &mut plan.skips);
     Ok(decided
         .decisions
         .iter()
         .filter_map(Decision::warning)
+        .chain(unskipped)
         .collect())
 }
 

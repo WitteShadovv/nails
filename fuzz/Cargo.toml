@@ -165,6 +165,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "unit_name"
+path = "fuzz_targets/unit_name.rs"
+test = false
+doc = false
+bench = false
+
 # Line numbers in a crash's stack trace.
 [profile.release]
 debug = 1
