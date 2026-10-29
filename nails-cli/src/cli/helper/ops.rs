@@ -5,16 +5,21 @@
 //! exit code and the envelope the CLI gives for the same command under
 //! `--json`.
 //!
-//! Each operation goes through the code its CLI command goes through (the
-//! engine facade and the CLI's own envelope builders), so the two front ends
-//! cannot describe one outcome differently.
+//! Each operation goes through the code its CLI command goes through: the
+//! engine facade and the CLI's own envelope builders, or the CLI's command
+//! handler itself under `--json`, whose envelope the helper captures instead
+//! of printing ([`captured`]). So the two front ends cannot describe one
+//! outcome differently.
 //!
-//! A discard runs in two requests. The plan takes the exclusive state lock and
-//! keeps it, with the plan, behind a single-use token drawn from the kernel's
-//! random source; the apply deletes exactly that plan, under that lock, when it
-//! carries the token. Any other request withdraws the plan and releases the
-//! lock, so a plan never outlives the next request.
+//! An operation the CLI confirms, and init, run in two requests (the discard
+//! here, activate and deactivate in [`switch`], init in [`maintain`]). The
+//! plan keeps what the apply needs (for a discard and an activation, the
+//! exclusive state lock too) behind a single-use token drawn from the kernel's
+//! random source; the apply carrying that token runs exactly that plan. Any
+//! other request withdraws the plan and releases its lock, so a plan never
+//! outlives the next request.
 
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use nails_api::protocol::{
@@ -26,23 +31,46 @@ use nails_core::reporter::{EventReporter, progress};
 use nails_core::{NailsError, ResetUpperPlan, RuntimeEnv};
 
 use super::session::{Answer, Dispatch, EventOut};
-use crate::cli::args::ConfigCommand;
+use super::{maintain, switch};
+use crate::cli::args::{ConfigCommand, RehearseStep};
 use crate::cli::commands;
-use crate::cli::output::ExitStatus;
 use crate::cli::output::envelope::{Envelope, ErrorBody, error_envelope};
+use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 
-/// A plan waiting for its apply, with the lock it was made under.
+/// What a plan keeps for its apply.
+pub(crate) enum Planned {
+    /// A discard, with the lock it was made under.
+    Discard(Box<PlannedDiscard>),
+    /// An activation past its gates, holding the lock.
+    Activate(Box<switch::PlannedActivation>),
+    /// A deactivation with a way back.
+    Deactivate(Box<switch::PlannedDeactivation>),
+    /// An init whose preconditions held.
+    Init(crate::cli::args::InitArgs),
+}
+
+/// A discard planned for the window.
+pub(crate) struct PlannedDiscard {
+    /// What the apply deletes.
+    plan: ResetUpperPlan,
+    /// The lock the plan was made under.
+    locked: LockedDiscard,
+}
+
+/// A plan waiting for its apply.
 struct Pending {
     token: String,
-    plan: ResetUpperPlan,
-    locked: LockedDiscard,
+    planned: Planned,
 }
 
 /// The engine behind a session.
 pub(crate) struct Engine<'a> {
-    env: &'a RuntimeEnv,
+    pub(super) env: &'a RuntimeEnv,
     config: Option<PathBuf>,
     pending: Option<Pending>,
+    /// The helper's end of the window's pipe, watched for a hangup while an
+    /// activation runs. `None` where no pipe is watched (the unit tests).
+    pub(super) pipe: Option<OwnedFd>,
 }
 
 impl<'a> Engine<'a> {
@@ -53,11 +81,48 @@ impl<'a> Engine<'a> {
             env,
             config,
             pending: None,
+            pipe: None,
         }
     }
 
-    fn config(&self) -> Option<&Path> {
+    /// The engine, watching `pipe` (the helper's end of the window's pipe) for
+    /// a hangup while an activation runs.
+    pub(crate) fn watching(mut self, pipe: OwnedFd) -> Self {
+        self.pipe = Some(pipe);
+        self
+    }
+
+    /// Whether a plan waits for its apply.
+    #[cfg(test)]
+    pub(super) fn has_plan(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub(super) fn config(&self) -> Option<&Path> {
         self.config.as_deref()
+    }
+
+    /// Keep `planned` behind a fresh token and answer the plan of `command`
+    /// with the data `data` makes of that token.
+    pub(super) fn hold<T: serde::Serialize>(
+        &mut self,
+        command: &'static str,
+        planned: Planned,
+        data: impl FnOnce(String) -> T,
+    ) -> Answer {
+        let token = match random_token() {
+            Ok(token) => token,
+            Err(error) => {
+                let body = ErrorBody::new(command, format!("could not draw a plan token: {error}"));
+                return Answer::result(ExitStatus::Failed, &error_envelope(command, body));
+            }
+        };
+        let answer = Answer::result(
+            ExitStatus::Ok,
+            &Envelope::success(command, data(token.clone())),
+        );
+        self.pending = Some(Pending { token, planned });
+        answer
     }
 }
 
@@ -65,9 +130,9 @@ impl Dispatch for Engine<'_> {
     fn run(&mut self, op: Op, events: EventOut) -> Answer {
         // A plan lives until the next request: its apply, or anything else,
         // which withdraws it and releases its lock before that request runs.
-        let pending = match op {
-            Op::DiscardApply(_) => self.pending.take(),
-            _ => {
+        let planned = match op.apply_token() {
+            Some(token) => redeem(self.pending.take(), token),
+            None => {
                 self.pending = None;
                 None
             }
@@ -85,12 +150,86 @@ impl Dispatch for Engine<'_> {
             ),
             Op::ConfigValidate => config(self.config(), &ConfigCommand::Validate { path: None }),
             Op::DiscardPlan(args) => self.discard_plan(&args),
-            Op::DiscardApply(token) => discard_apply(pending, &token.token),
+            Op::DiscardApply(_) => match planned {
+                Some(Planned::Discard(planned)) => discard_apply(&planned.plan, &planned.locked),
+                _ => bad_token(),
+            },
+            Op::ActivatePlan(args) => self.activate_plan(&args),
+            Op::ActivateApply(_) => match planned {
+                Some(Planned::Activate(planned)) => self.activate_apply(*planned, events),
+                _ => bad_token(),
+            },
+            Op::DeactivatePlan(args) => self.deactivate_plan(&args),
+            Op::DeactivateApply(_) => match planned {
+                Some(Planned::Deactivate(planned)) => switch::deactivate_apply(*planned),
+                _ => bad_token(),
+            },
+            Op::Emergency(args) => switch::emergency(self.env, &args, self.config()),
+            Op::Recover => switch::recover(self.env, self.config()),
+            Op::Verify(args) => maintain::verify(self.env, &args, self.config()),
+            Op::RehearseStatus => maintain::rehearse(self.env, RehearseStep::Status, self.config()),
+            Op::RehearsePlant(args) => {
+                maintain::rehearse(self.env, maintain::plant_step(&args), self.config())
+            }
+            Op::RehearseScan(args) => {
+                maintain::rehearse(self.env, maintain::scan_step(&args), self.config())
+            }
+            Op::RehearseReset => maintain::rehearse(self.env, RehearseStep::Reset, self.config()),
+            Op::InitPlan(args) => self.init_plan(&args),
+            Op::InitApply(_) => match planned {
+                Some(Planned::Init(args)) => maintain::init_apply(&args),
+                _ => bad_token(),
+            },
             // The session answers the hello itself and never passes one on.
             Op::Hello(_) => Answer::Refused(ProtocolError {
                 code: ErrorCode::Handshake,
                 message: "the hello was already given".to_string(),
             }),
+        }
+    }
+}
+
+/// What the plan `pending` keeps, when `token` is its token. Either way the
+/// plan is spent.
+fn redeem(pending: Option<Pending>, token: &str) -> Option<Planned> {
+    pending
+        .filter(|pending| pending.token == token)
+        .map(|pending| pending.planned)
+}
+
+/// The refusal of an apply whose token names no plan of its kind.
+fn bad_token() -> Answer {
+    Answer::Refused(ProtocolError {
+        code: ErrorCode::BadToken,
+        message: "the token names no plan: make the plan again".to_string(),
+    })
+}
+
+/// The output settings of a CLI command run for the window: `--json`, since
+/// the helper answers with the envelope.
+pub(super) fn json_settings() -> OutputSettings {
+    OutputSettings {
+        mode: OutputMode::Json,
+        ..OutputSettings::default()
+    }
+}
+
+/// Run `handler`, a CLI command handler under [`json_settings`], and answer
+/// with its exit status and the envelope it printed, captured instead of
+/// printed. A handler that printed none (none does under `--json`) answers as
+/// a failure of `command`.
+pub(super) fn captured(command: &'static str, handler: impl FnOnce() -> ExitStatus) -> Answer {
+    let (exit, line) = crate::cli::output::envelope::capture(handler);
+    answer_from(command, exit, line)
+}
+
+/// The answer of `command`, which ended with `exit` and printed `line`.
+pub(super) fn answer_from(command: &'static str, exit: ExitStatus, line: Option<String>) -> Answer {
+    match line.as_deref().map(serde_json::from_str) {
+        Some(Ok(envelope)) => Answer::Result { exit, envelope },
+        _ => {
+            let body = ErrorBody::new(command, "the operation reported no result");
+            Answer::result(ExitStatus::Failed, &error_envelope(command, body))
         }
     }
 }
@@ -178,48 +317,36 @@ impl Engine<'_> {
                 &Envelope::success(DISCARD, DiscardData::from_plan(&plan)),
             );
         }
-        let token = match random_token() {
-            Ok(token) => token,
-            Err(error) => {
-                let body = ErrorBody::new(DISCARD, format!("could not draw a plan token: {error}"));
-                return Answer::result(ExitStatus::Failed, &error_envelope(DISCARD, body));
-            }
-        };
-        let data = DiscardPlanData {
-            target: plan.target.display().to_string(),
-            removals: plan
-                .removals()
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect(),
-            resets_nix_store: plan.resets_nix_store,
-            token: token.clone(),
-        };
-        self.pending = Some(Pending {
-            token,
-            plan,
-            locked,
-        });
-        Answer::result(ExitStatus::Ok, &Envelope::success(DISCARD, data))
+        let target = plan.target.display().to_string();
+        let removals = plan
+            .removals()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let resets_nix_store = plan.resets_nix_store;
+        self.hold(
+            DISCARD,
+            Planned::Discard(Box::new(PlannedDiscard { plan, locked })),
+            |token| DiscardPlanData {
+                target,
+                removals,
+                resets_nix_store,
+                token,
+            },
+        )
     }
 }
 
-/// The apply half of `nails discard`: delete the plan `token` names, which
-/// must be the plan of the request just before.
-fn discard_apply(pending: Option<Pending>, token: &str) -> Answer {
-    let Some(pending) = pending.filter(|pending| pending.token == token) else {
-        return Answer::Refused(ProtocolError {
-            code: ErrorCode::BadToken,
-            message: "the token names no plan: plan the discard again".to_string(),
-        });
-    };
-    if let Err(error) = pending.locked.apply(&pending.plan) {
+/// The apply half of `nails discard`: delete the plan its token named, which
+/// was the plan of the request just before.
+fn discard_apply(plan: &ResetUpperPlan, locked: &LockedDiscard) -> Answer {
+    if let Err(error) = locked.apply(plan) {
         let body = ErrorBody::new(DISCARD, error.to_string());
         return Answer::result(ExitStatus::Failed, &error_envelope(DISCARD, body));
     }
     Answer::result(
         ExitStatus::Ok,
-        &Envelope::success(DISCARD, DiscardData::from_plan(&pending.plan)),
+        &Envelope::success(DISCARD, DiscardData::from_plan(plan)),
     )
 }
 

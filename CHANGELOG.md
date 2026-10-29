@@ -31,11 +31,17 @@ of this changelog for that version becomes the release notes word for word, and
   and answers each with the envelope and exit code the CLI gives for the same command under
   `--json`, with the progress of `check` streamed as events. It serves `status`, `check`, `config
   path`, `config show` and `config validate` (of its own configuration only, never a path the
-  window names), and `discard` as a plan and an apply: the plan takes the state lock and hands out a
-  single-use token, and only the next request, an apply carrying that token, deletes what the plan
-  listed. The decoder refuses a line over 16 KiB, an unknown or duplicate field, another protocol
-  version and an argument of the wrong shape, and ends the session; a libFuzzer target
-  (`helper_request`) covers it. The remaining commands follow before the window ships.
+  window names), `discard`, `activate`, `deactivate` (both endings), `emergency`, `recover`,
+  `verify`, each step of `rehearse`, and `init`. What the CLI confirms, and `init`, runs as a plan
+  and an apply: the plan says what the apply would do (a discard and an activation also take the
+  state lock) and hands out a single-use token, and only the next request, an apply carrying that
+  token, does it. An activation streams its steps and says when it passes its point of no return;
+  a window that closes its pipe before that point cancels the activation, and after it the helper
+  finishes the switch. The helper keeps its stdout and stdin off the pipe, so nothing a command or
+  a child prints can reach the window. The decoder refuses a line over 16 KiB, an unknown or
+  duplicate field, another protocol version and an argument of the wrong shape (a relative path, or
+  two options the CLI refuses together), and ends the session; a libFuzzer target
+  (`helper_request`) covers it.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
