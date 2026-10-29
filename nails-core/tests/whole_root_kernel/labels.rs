@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// A host whose facts report SELinux.
-pub(crate) const REQUIRED: Labels = Labels::Required(Reason::SelinuxReported);
+pub(crate) const REQUIRED: Labels = Labels::Required(Reason::SelinuxRunning);
 /// The labels Fedora's policy gives `/`, `/home` and a home, as they are
 /// stored: with their NUL.
 pub(crate) const ROOT_LABEL: &[u8] = b"system_u:object_r:root_t:s0\0";

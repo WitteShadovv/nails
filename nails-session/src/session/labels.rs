@@ -22,21 +22,25 @@
 //! creates below them then takes its label from the policy, as on the decoy.
 //!
 //! Whether a copy must succeed depends on the host ([`Labels::for_host`]).
-//! Where the host facts report SELinux, a copy that fails refuses the entry: a
-//! hidden volume whose filesystem cannot store labels, a policy that does not
-//! let NAILS relabel, a decoy directory with no label to read. The facts report
-//! SELinux when `/sys/fs/selinux` exists or `/etc/selinux/config` names a mode
-//! or a policy ([`HostProfile::selinux`] is `Some`). That includes a host that
-//! keeps only the configuration file, `SELINUX=disabled` in it: its facts
-//! cannot be told apart from a mounted selinuxfs whose enforce flag could not
-//! be read, and refusing an entry is the safe side of that doubt. A host that
-//! was not detected at all counts the same way, since nothing rules SELinux
-//! out there. Where the facts report no SELinux, nothing reads the labels and
-//! the copy is best effort: a decoy directory without a label (the usual case
-//! there) or none at all, a filesystem without extended attributes, or a link
-//! or a file in place of an upper directory leaves the upper as it was, so such
-//! a host gets the same hidden root as before. Any other failure is an error
-//! either way.
+//! Where SELinux runs, a copy that fails refuses the entry: a hidden volume
+//! whose filesystem cannot store labels, a policy that does not let NAILS
+//! relabel, a decoy directory with no label to read. SELinux runs where the
+//! host facts report it ([`HostProfile::selinux`] is `Some`: `/sys/fs/selinux`
+//! exists, `/etc/selinux/config` names a mode or a policy, or the mount table
+//! lists a selinuxfs) and the mount table lists a selinuxfs
+//! ([`Selinuxfs::Mounted`]). A mount table that could not be read
+//! ([`Selinuxfs::Unknown`]) counts the same way, since nothing rules SELinux
+//! out there, and so does a host that was not detected at all. A host whose
+//! facts report SELinux while its mount table, read, lists no selinuxfs
+//! ([`Selinuxfs::NotMounted`]) does not run it: it keeps the configuration
+//! file of packages installed once, or boots with SELinux off, and no policy
+//! reads a label there. Such a host, and one whose facts report no SELinux,
+//! copies on a best effort basis: a decoy directory without a label (the usual
+//! case there) or none at all, a filesystem without extended attributes, or a
+//! link or a file in place of an upper directory leaves the upper as it was,
+//! so such a host gets the same hidden root as before. Any other failure is an
+//! error either way. The activation says so in one line on a host that is
+//! configured for SELinux but does not run it ([`configured_but_not_running`]).
 //!
 //! # Where the copies go
 //!
@@ -145,7 +149,7 @@
 //! label onto an upper `/etc` that was not created through the overlay.
 
 use crate::error::{NailsError, Result};
-use nails_platform::HostProfile;
+use nails_platform::{HostProfile, Selinuxfs};
 use rustix::fs::{Mode, OFlags, XattrFlags};
 use rustix::io::Errno;
 use std::os::fd::OwnedFd;
@@ -173,7 +177,8 @@ pub enum Labels {
     /// The hidden root may need every label, for the reason given: a copy that
     /// fails refuses the entry.
     Required(Reason),
-    /// The host facts report no SELinux, so nothing reads the labels: a decoy
+    /// SELinux does not run (the host facts report none, or report it with no
+    /// selinuxfs mounted), so nothing reads the labels: a decoy
     /// directory that has none or does not exist, a filesystem that stores
     /// none, or a link or a file in place of an upper directory leaves that
     /// directory as it was.
@@ -183,9 +188,11 @@ pub enum Labels {
 /// Why [`Labels::Required`] applies, for a refusal to name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// The host facts report SELinux: `/sys/fs/selinux` exists, or
-    /// `/etc/selinux/config` names a mode or a policy.
-    SelinuxReported,
+    /// The mount table lists a selinuxfs: SELinux runs.
+    SelinuxRunning,
+    /// The host facts report SELinux, and the mount table that would tell
+    /// whether it runs could not be read.
+    MountsUnreadable,
     /// The host was not detected, so no facts rule SELinux out.
     HostUndetected,
 }
@@ -193,16 +200,27 @@ pub enum Reason {
 impl Labels {
     /// What a host with this profile needs (the one `NailsManager::host_profile`
     /// returns, `None` where the detection failed): [`Labels::Required`] where
-    /// its facts report SELinux ([`HostProfile::selinux`] is `Some`, see the
-    /// module docs) and where there is no profile at all,
-    /// [`Labels::BestEffort`] where they report none.
+    /// SELinux runs or may run (see the module docs) and where there is no
+    /// profile at all, [`Labels::BestEffort`] where it does not run.
     pub fn for_host(profile: Option<&HostProfile>) -> Self {
-        match profile {
-            None => Self::Required(Reason::HostUndetected),
-            Some(profile) if profile.selinux.is_some() => Self::Required(Reason::SelinuxReported),
-            Some(_) => Self::BestEffort,
+        let Some(profile) = profile else {
+            return Self::Required(Reason::HostUndetected);
+        };
+        match profile.selinux.as_ref().map(|selinux| selinux.selinuxfs) {
+            None | Some(Selinuxfs::NotMounted) => Self::BestEffort,
+            Some(Selinuxfs::Mounted) => Self::Required(Reason::SelinuxRunning),
+            Some(Selinuxfs::Unknown) => Self::Required(Reason::MountsUnreadable),
         }
     }
+}
+
+/// Whether the host facts report SELinux while the mount table, read, lists no
+/// selinuxfs: a host configured for SELinux that does not run it, where
+/// [`Labels::for_host`] copies on a best effort basis.
+pub fn configured_but_not_running(profile: Option<&HostProfile>) -> bool {
+    profile
+        .and_then(|profile| profile.selinux.as_ref())
+        .is_some_and(|selinux| selinux.selinuxfs == Selinuxfs::NotMounted)
 }
 
 /// What [`copy_label`] did.
@@ -419,9 +437,10 @@ fn refusal(decoy: &Path, upper: &Path, labels: Labels, failure: Failure) -> Nail
     NailsError::InvalidState(match labels {
         Labels::Required(reason) => {
             let reason = match reason {
-                Reason::SelinuxReported => {
-                    "the host facts report SELinux (/sys/fs/selinux exists, or \
-                     /etc/selinux/config names a mode or a policy)"
+                Reason::SelinuxRunning => "SELinux runs on this host (selinuxfs is mounted)",
+                Reason::MountsUnreadable => {
+                    "the host facts report SELinux and /proc/self/mounts could not \
+                     be read to tell whether selinuxfs is mounted"
                 }
                 Reason::HostUndetected => "the host could not be detected and may run SELinux",
             };

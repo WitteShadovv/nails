@@ -46,8 +46,8 @@ pub use nixos::{
 };
 pub use platform::{
     ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, Platform, PlatformKind, SelinuxMode,
-    SelinuxStatus, detect, detect_platform, discover_host_target, discover_with_platform,
-    platform_for,
+    SelinuxStatus, Selinuxfs, detect, detect_platform, discover_host_target,
+    discover_with_platform, platform_for,
 };
 pub use preflight::{NixOSConfigCheck, SuspiciousNailsReferenceCheck};
 
