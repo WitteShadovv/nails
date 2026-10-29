@@ -174,21 +174,43 @@ fn filesystems_kept_off_warn_and_a_refusal_fails() {
     };
     // Swap is never available, skipped or masked: nothing to warn about while
     // its device is there.
-    let boot = judge_fstab(&decide(
-        "/dev/vda1 /boot vfat defaults 0 2\n/dev/vda3 none swap sw 0 0\n",
-        true,
-    ));
+    let boot = judge_fstab(
+        &decide(
+            "/dev/vda1 /boot vfat defaults 0 2\n/dev/vda3 none swap sw 0 0\n",
+            true,
+        ),
+        &[],
+    );
     assert!(boot.is_pass(), "{boot:?}");
     assert!(boot.message().contains("/boot: read-only"));
     assert!(boot.message().contains("/dev/vda3: skipped"), "{boot:?}");
-    let data = judge_fstab(&decide("/dev/sdb1 /data ext4 defaults 0 2\n", true));
+    let data = judge_fstab(&decide("/dev/sdb1 /data ext4 defaults 0 2\n", true), &[]);
     assert!(data.is_warn(), "{data:?}");
     assert!(data.message().contains("/data: skipped"), "{data:?}");
     assert!(
         data.message()
             .contains("not available in the hidden session")
     );
-    assert!(judge_fstab(&decide("/dev/sdb1 data ext4 defaults 0 2\n", true)).is_fail());
+    let refused = judge_fstab(&decide("/dev/sdb1 data ext4 defaults 0 2\n", true), &[]);
+    assert!(refused.is_fail());
+    assert!(
+        refused
+            .remediation()
+            .is_some_and(|remedy| remedy.contains("fstab entry or the unit directory")),
+        "{refused:?}"
+    );
+    // A skip masked instead, as NAILS cannot tell what it pulls in, warns.
+    let unskipped = judge_fstab(
+        &decide("/dev/vda1 /boot vfat defaults 0 2\n", true),
+        &["srv-x.mount is masked rather than skipped".to_string()],
+    );
+    assert!(unskipped.is_warn(), "{unskipped:?}");
+    assert!(
+        unskipped
+            .message()
+            .contains("srv-x.mount is masked rather than skipped."),
+        "{unskipped:?}"
+    );
 }
 
 #[test]
@@ -202,7 +224,7 @@ fn a_mask_that_leaves_a_boot_target_unreached_warns_with_how_to_avoid_it() {
         Path::new("/mnt/data"),
         &|_| false,
     );
-    let result = judge_fstab(&decisions);
+    let result = judge_fstab(&decisions, &[]);
     assert!(result.is_warn(), "{result:?}");
     let message = result.message();
     for part in [

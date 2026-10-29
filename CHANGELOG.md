@@ -390,10 +390,13 @@ of this changelog for that version becomes the release notes word for word, and
   was missing from the hidden session. Activation now reads every `.mount`, `.swap` and `.automount`
   unit linked in a target's `.wants` or `.requires` directory of the hidden root and of `/run`, with
   its own drop-ins, except those the fstab generator made from the fstab: a filesystem the decoy has
-  mounted now is bound read-only or overlaid, one not mounted now is skipped or masked, RAM and
-  kernel filesystems and a zram swap are left to the hidden systemd, and the automount of a
-  filesystem put in place is kept off. A unit whose files cannot be read, or that names its source
-  by a specifier, is masked. `nails check` lists the decisions with the fstab's.
+  mounted now is bound read-only or overlaid, one not mounted now is skipped or masked, and the
+  automount of a filesystem put in place is kept off. RAM and kernel filesystems are left to the
+  hidden systemd, and so is a zram swap whose zram device has no backing device. One with a backing
+  device is kept off like disk swap. A unit whose files cannot be read, or that names its source by
+  a specifier, is masked, and a directory of unit links that cannot be listed refuses the
+  activation. A mount unit that only another unit pulls in is not decided. `nails check` lists the
+  decisions with the fstab's.
 - A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
   keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
   fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
@@ -402,12 +405,14 @@ of this changelog for that version becomes the release notes word for word, and
   session entered with the ESP unmounted ran without `local-fs.target`. Such a unit is now skipped
   instead: a runtime drop-in gives it a start condition that never holds, so the hidden systemd
   starts it, finds the condition unmet and reaches the target, and the decoy disk stays unmounted.
-  The fsck, makefs, mkswap, growfs and quota units its fstab line pulls in would start on the decoy
-  disk before that condition is tested, so they are skipped with it. A skipped mount still waits for
-  its device, so an entry whose device is not there at activation is masked as before, and `nails
-  check` and `nails activate` warn that the hidden session will not reach its target (attach the
-  device, or give the entry `nofail`); a device gone by the switch has its units masked then.
-  Entries with `nofail` stay masked. `verify` reports a skip drop-in left on the decoy.
+  The fsck, makefs, mkswap, growfs and quota units its fstab line or unit files pull in would start
+  on the decoy disk before that condition is tested, so they are skipped with it; every other unit
+  it pulls in still starts, and a unit whose pulls NAILS cannot tell is masked instead. A skipped
+  mount still waits for its device, so an entry whose device is not there at activation (its node,
+  with its device unit active) is masked as before, and `nails check` and `nails activate` warn that
+  the hidden session will not reach its target (attach the device, or give the entry `nofail`); a
+  device gone by the switch has its units masked then. Entries with `nofail` stay masked. `verify`
+  reports a skip drop-in left on the decoy.
 - An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
   reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
   left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and

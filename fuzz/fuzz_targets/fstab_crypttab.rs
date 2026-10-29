@@ -36,7 +36,7 @@ use nails_base::crypttab::parse_crypttab;
 use nails_fuzz::systemd::{UnitName, fstab_node_to_udev_node, unit_name_from_path};
 use nails_session::session::fstab::{FstabEntry, parse_fstab};
 use nails_session::session::policy::{
-    Decision, decide, decide_all, decide_redirected, runtime_units,
+    Decision, Unskippable, decide, decide_all, decide_redirected, runtime_units,
 };
 use nails_teardown::mountinfo::parse_mountinfo;
 use std::path::{Component, Path};
@@ -124,6 +124,10 @@ fn check(entry: &FstabEntry, decision: &Decision, there: bool) {
             // A mask leaves a target unreached only for a device not there.
             if let Some(unreached) = unreached {
                 assert!(!there, "{entry:?}: {unreached:?} with every device there");
+                assert!(
+                    matches!(unreached.cause, Unskippable::NoDevice(_)),
+                    "{entry:?}: {unreached:?}"
+                );
             }
         }
         Decision::Skip { skip, .. } => {

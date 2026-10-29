@@ -10,10 +10,11 @@ use std::os::unix::fs::symlink;
 
 const HIDDEN: &str = "/mnt/data";
 
-/// A decoy root and its `/run`.
+/// A decoy root, its `/run` and its `/sys`.
 struct Decoy {
     root: tempfile::TempDir,
     run: tempfile::TempDir,
+    sys: tempfile::TempDir,
 }
 
 impl Decoy {
@@ -21,6 +22,7 @@ impl Decoy {
         Self {
             root: tempfile::tempdir().unwrap(),
             run: tempfile::tempdir().unwrap(),
+            sys: tempfile::tempdir().unwrap(),
         }
     }
 
@@ -46,6 +48,9 @@ impl Decoy {
     }
 
     fn at(&self, path: &str) -> PathBuf {
+        if let Some(rest) = path.strip_prefix("/sys/") {
+            return self.sys.path().join(rest);
+        }
         match path.strip_prefix("/run/") {
             Some(rest) => self.run.path().join(rest),
             None => self.root.path().join(path.trim_start_matches('/')),
@@ -53,13 +58,25 @@ impl Decoy {
     }
 
     fn decide(&self, mounts: &str, present: bool) -> Vec<Decision> {
-        let units = read(self.dirs());
+        let units = read(self.dirs()).expect("the unit directories are listed");
         decide(
             self.dirs(),
             &units,
             &parse_mountinfo(mounts),
             Path::new(HIDDEN),
             &|_| present,
+            self.sys.path(),
+        )
+    }
+
+    /// What the hidden session keeps off for `decisions`, which the fstab
+    /// `fstab` and these units were given, and the warnings for the skips it
+    /// masks instead.
+    fn kept_off(&self, fstab: &str, decisions: &[Decision]) -> (KeptOff, Vec<String>) {
+        kept_off(
+            self.dirs(),
+            &crate::session::fstab::parse_fstab(fstab),
+            decisions,
         )
     }
 }
@@ -79,7 +96,7 @@ fn a_native_mount_a_target_requires_is_skipped_with_its_fsck_while_its_disk_is_t
         "../srv-scratch.mount",
     );
     assert_eq!(
-        read(decoy.dirs()),
+        read(decoy.dirs()).unwrap(),
         [NativeUnit {
             name: "srv-scratch.mount".into(),
             required_by: Some("local-fs.target".into()),
@@ -262,6 +279,8 @@ fn zram_swap_is_left_and_a_disk_swap_is_kept_off_with_its_mkswap() {
         "/etc/systemd/system/swap.target.requires/swap-swapfile.swap",
         "../swap-swapfile.swap",
     );
+    // zram0 has no backing device.
+    decoy.write("/sys/block/zram0/backing_dev", "none\n");
 
     let decisions = decoy.decide(ROOT_ONLY, true);
     assert_eq!(decisions.len(), 3, "{decisions:?}");
@@ -290,6 +309,47 @@ fn zram_swap_is_left_and_a_disk_swap_is_kept_off_with_its_mkswap() {
             reason: "a RAM-only zram swap",
         }
     );
+}
+
+#[test]
+fn a_zram_swap_that_may_write_back_to_a_disk_is_kept_off_as_disk_swap() {
+    let decoy = Decoy::new();
+    decoy.write(
+        "/run/systemd/generator/dev-zram0.swap",
+        "[Unit]\nRequires=systemd-zram-setup@zram0.service\n[Swap]\nWhat=/dev/zram0\n",
+    );
+    decoy.link(
+        "/run/systemd/generator/swap.target.wants/dev-zram0.swap",
+        "../dev-zram0.swap",
+    );
+    let left = Decision::Leave {
+        target: "/dev/zram0".into(),
+        reason: "a RAM-only zram swap",
+    };
+    let masked = Decision::Mask {
+        target: "/dev/zram0".into(),
+        units: vec!["dev-zram0.swap".into()],
+        reason: "swap would take hidden RAM onto a decoy disk",
+        unreached: None,
+    };
+    // The device is not there: what the hidden session's zram-generator sets
+    // up is not known.
+    assert_eq!(decoy.decide(ROOT_ONLY, true), std::slice::from_ref(&masked));
+    // A kernel without writeback gives it no backing_dev at all.
+    std::fs::create_dir_all(decoy.at("/sys/block/zram0")).unwrap();
+    assert_eq!(decoy.decide(ROOT_ONLY, true), std::slice::from_ref(&left));
+    for (backing, decision) in [("none\n", &left), ("/dev/vda3\n", &masked)] {
+        decoy.write("/sys/block/zram0/backing_dev", backing);
+        assert_eq!(
+            decoy.decide(ROOT_ONLY, true),
+            std::slice::from_ref(decision),
+            "{backing}"
+        );
+    }
+    // An attribute that cannot be read tells nothing.
+    std::fs::remove_file(decoy.at("/sys/block/zram0/backing_dev")).unwrap();
+    std::fs::create_dir(decoy.at("/sys/block/zram0/backing_dev")).unwrap();
+    assert_eq!(decoy.decide(ROOT_ONLY, true), [masked]);
 }
 
 #[test]
@@ -396,16 +456,24 @@ fn a_unit_that_cannot_be_read_or_resolved_is_masked() {
             "/etc/systemd/system/local-fs.target.requires/srv-x.mount",
             "../srv-x.mount",
         );
+        let decisions = decoy.decide(ROOT_ONLY, true);
         assert_eq!(
-            decoy.decide(ROOT_ONLY, true),
+            decisions,
             [Decision::Mask {
                 target: "/srv/x".into(),
                 units: vec!["srv-x.mount".into()],
                 reason,
-                unreached: None,
+                unreached: Some(Unreached {
+                    target: "local-fs.target".into(),
+                    cause: Unskippable::Unread,
+                }),
             }],
             "{unit}"
         );
+        let warning = decisions[0].warning().expect("a warning");
+        for part in [reason, "will not reach local-fs.target"] {
+            assert!(warning.contains(part), "{part}: {warning}");
+        }
     }
     // A FIFO, which a read would wait on, and a link to a device a read
     // never ends: not regular files, so never read.
@@ -469,6 +537,9 @@ fn a_unit_name_is_the_escape_of_its_path() {
         ("srv-my-disk\\x2.mount", ".mount", None),
         ("mnt-\\xff.mount", ".mount", None),
         ("srv.swap", ".mount", None),
+        // Paths systemd refuses: a `..` component, a NUL.
+        ("srv-..-x.mount", ".mount", None),
+        ("srv-\\x00.mount", ".mount", None),
     ] {
         assert_eq!(
             unit_path(name, suffix).as_deref(),
@@ -479,7 +550,7 @@ fn a_unit_name_is_the_escape_of_its_path() {
 }
 
 #[test]
-fn the_units_a_skip_pulls_in_that_act_on_its_device_are_added() {
+fn the_units_a_skip_pulls_in_that_act_on_its_device_are_skipped_with_it() {
     let decoy = Decoy::new();
     decoy.write(
         "/run/systemd/generator/srv-data.mount",
@@ -493,17 +564,140 @@ fn the_units_a_skip_pulls_in_that_act_on_its_device_are_added() {
         "/etc/systemd/system/srv-data.mount.wants/backup.service",
         "../backup.service",
     );
-    let mut skips = vec![Skip {
-        units: vec!["srv-data.mount".into()],
-        pulled: vec!["systemd-fsck@dev-vdc1.service".into()],
-        device: Some("/dev/vdc1".into()),
-    }];
-    pull_in(decoy.dirs(), &mut skips);
+    let (kept, unskipped) = decoy.kept_off(DATA, &decide_data());
+    assert!(unskipped.is_empty(), "{unskipped:?}");
     assert_eq!(
-        skips[0].pulled,
-        [
-            "systemd-fsck@dev-vdc1.service",
-            "systemd-makefs@dev-vdc1.service"
-        ]
+        kept.skips,
+        [Skip {
+            units: vec!["srv-data.mount".into()],
+            pulled: vec![
+                "systemd-fsck@dev-vdc1.service".into(),
+                "systemd-makefs@dev-vdc1.service".into()
+            ],
+            device: Some("/dev/vdc1".into()),
+        }]
     );
+}
+
+/// An fstab line `local-fs.target` requires, not mounted now.
+const DATA: &str = "/dev/vdc1 /srv/data ext4 defaults 0 2\n";
+
+/// The decisions for [`DATA`], its device there.
+fn decide_data() -> Vec<Decision> {
+    policy::decide_all(
+        &crate::session::fstab::parse_fstab(DATA),
+        &parse_mountinfo(ROOT_ONLY),
+        Path::new(HIDDEN),
+        &|_| true,
+    )
+}
+
+#[test]
+fn a_skip_whose_pulls_cannot_all_be_told_is_masked_with_a_warning() {
+    // The administrator's drop-in names a checker by a specifier.
+    let by_specifier = Decoy::new();
+    by_specifier.write(
+        "/etc/systemd/system/srv-data.mount.d/fsck.conf",
+        "[Unit]\nRequires=systemd-fsck@%i.service\n",
+    );
+    by_specifier.write(
+        "/run/systemd/generator/srv-data.mount",
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdc1\n",
+    );
+    // A directory of the units it pulls in is a loop of links.
+    let unlisted = Decoy::new();
+    unlisted.link(
+        "/etc/systemd/system/srv-data.mount.wants",
+        "srv-data.mount.wants",
+    );
+    // Its unit file is one.
+    let unreadable = Decoy::new();
+    unreadable.link("/etc/systemd/system/srv-data.mount", "srv-data.mount");
+    for (decoy, why) in [
+        (by_specifier, UNRESOLVED_PULL),
+        (unlisted, UNLISTED_PULL),
+        (unreadable, UNREADABLE),
+    ] {
+        let (kept, unskipped) = decoy.kept_off(DATA, &decide_data());
+        assert!(kept.skips.is_empty(), "{why}: {:?}", kept.skips);
+        assert_eq!(kept.masks, ["srv-data.mount"], "{why}");
+        assert_eq!(unskipped.len(), 1, "{why}: {unskipped:?}");
+        for part in [
+            "srv-data.mount is masked rather than skipped",
+            why,
+            "will not reach the boot target that requires it",
+        ] {
+            assert!(unskipped[0].contains(part), "{part}: {}", unskipped[0]);
+        }
+    }
+}
+
+#[test]
+fn a_directory_of_links_that_cannot_be_listed_refuses_the_entry() {
+    for (link, dir) in [
+        (
+            "/etc/systemd/system/local-fs.target.wants",
+            "/etc/systemd/system/local-fs.target.wants",
+        ),
+        (
+            "/run/systemd/generator/local-fs.target.requires",
+            "/run/systemd/generator/local-fs.target.requires",
+        ),
+        // A unit directory itself.
+        ("/etc/systemd/system", "/etc/systemd/system"),
+    ] {
+        let decoy = Decoy::new();
+        // A loop of links: the hidden systemd may read what NAILS cannot.
+        decoy.link(link, link.rsplit('/').next().unwrap());
+        let unlisted = read(decoy.dirs()).expect_err(link);
+        assert_eq!(unlisted.dir, Path::new(dir), "{link}");
+        let refusal = unlisted.refusal();
+        assert!(matches!(refusal, Decision::Refuse { .. }), "{refusal:?}");
+        assert!(
+            refusal
+                .describe()
+                .contains(": refused (NAILS cannot list this unit directory: "),
+            "{}",
+            refusal.describe()
+        );
+    }
+}
+
+#[test]
+fn a_unit_whose_files_fail_to_be_looked_up_is_masked_not_read_elsewhere() {
+    // A tmpfs the vendor ships, which the administrator's copy, or drop-ins,
+    // in a place NAILS cannot look up must not be read past.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/usr/lib/systemd/system/srv-ram.mount",
+        "[Mount]\nWhat=tmpfs\nType=tmpfs\n",
+    );
+    decoy.link(
+        "/usr/lib/systemd/system/local-fs.target.requires/srv-ram.mount",
+        "../srv-ram.mount",
+    );
+    assert!(matches!(
+        decoy.decide(ROOT_ONLY, true)[..],
+        [Decision::Leave { .. }]
+    ));
+    for path in [
+        "/etc/systemd/system/srv-ram.mount",
+        "/etc/systemd/system/srv-ram.mount.d",
+    ] {
+        decoy.link(path, path.rsplit('/').next().unwrap());
+        assert_eq!(
+            decoy.decide(ROOT_ONLY, true),
+            [Decision::Mask {
+                target: "/srv/ram".into(),
+                units: vec!["srv-ram.mount".into()],
+                reason: UNREADABLE,
+                unreached: Some(Unreached {
+                    target: "local-fs.target".into(),
+                    cause: Unskippable::Unread,
+                }),
+            }],
+            "{path}"
+        );
+        std::fs::remove_file(decoy.at(path)).unwrap();
+    }
 }

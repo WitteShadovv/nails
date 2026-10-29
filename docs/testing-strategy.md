@@ -241,6 +241,7 @@ and checks more than that nothing panics or hangs:
 | `nixos_reference` | `configuration.nix` and udev's record of the hidden volume's partition | every reference lies in the file; ASCII case changes nothing; the scan reads forward only |
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `unit_file` | a decoy's systemd unit file | the assignments of the sections NAILS reads are the ones systemd applies, in order, and a unit file systemd refuses is refused |
+| `unit_name` | the name of a mount, swap or automount unit a decoy's unit directory links | a name decodes only to a plain absolute path systemd gives that name, and a path's name decodes back to the path |
 | `autologin` | GDM's, SDDM's, Plasma Login Manager's and LightDM's configuration with drop-ins | the accounts listed are the ones each display manager may log in, read with its parser in each order its locale may sort the drop-ins in |
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
 | `config_edit` | an operator's `nails.toml`, then the edits `config set` and `config unset` make of it, one a line | an edit of a file that parses writes TOML that parses; each key set holds the value asked for and each key unset is gone, while every other key, known or not, holds what it held; every comment stays; when no value changes the file comes back byte for byte; the same edits a second time change nothing |
