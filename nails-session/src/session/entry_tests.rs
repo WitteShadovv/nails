@@ -633,3 +633,8 @@ mod kernel_tests {
         });
     }
 }
+
+#[test]
+fn the_real_host_finds_no_device_without_its_node() {
+    assert!(!RealEntryHost.device_present(Path::new("/dev/disk/by-id/nails-test-no-such-disk")));
+}

@@ -592,6 +592,23 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_mask_that_one_directory_alone_holds_says_so() {
+        let units = ["srv-native.mount".to_string()];
+        for dir in [RUNTIME_UNIT_DIR, RUNTIME_CONTROL_DIR] {
+            let run = tempfile::tempdir().unwrap();
+            let mask = run.path().join(dir).join(&units[0]);
+            std::fs::create_dir_all(mask.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("/dev/null", &mask).unwrap();
+            assert!(
+                remove_unit_masks(run.path(), &units, &Snapshot::default()),
+                "{dir}"
+            );
+            assert!(std::fs::symlink_metadata(&mask).is_err(), "{dir}");
+            assert!(!remove_unit_masks(run.path(), &units, &Snapshot::default()));
+        }
+    }
+
+    #[test]
     fn a_mask_ranks_above_etc_and_keeps_the_decoy_s_own_control_entries() {
         // The decoy masks one unit in the control directory itself: that mask
         // stays, and so does the directory.

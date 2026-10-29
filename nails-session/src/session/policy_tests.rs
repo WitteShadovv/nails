@@ -495,3 +495,10 @@ fn deciding_an_fstab_twice_keeps_off_what_deciding_it_once_does() {
         );
     }
 }
+
+#[test]
+fn a_device_without_its_node_is_not_there() {
+    assert!(!device_present(Path::new(
+        "/dev/disk/by-id/nails-test-no-such-disk"
+    )));
+}
