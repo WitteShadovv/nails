@@ -78,6 +78,27 @@ pub fn carved_hash(context: &str) -> Option<String> {
     valid.then(|| format!("{kind}:{}", digest.to_ascii_lowercase()))
 }
 
+/// Whether a carved-object line's context describes a zip member
+/// (`<zipinfo>...`) rather than a saved file.
+pub fn is_zip_member_info(context: &str) -> bool {
+    context.starts_with("<zipinfo>")
+}
+
+/// The place of the zip member a saved file's line names in its first
+/// column, the forensic path bulk_extractor writes: `1304739840-ZIP-0` names
+/// the member at `1304739840`, and a member found in decompressed data has a
+/// path of its own, so `512-GZIP-80-ZIP-0` names the member at `512-GZIP-80`.
+/// `None` when the column names no zip member.
+pub fn zip_member_offset(column: &str) -> Option<&str> {
+    let (place, index) = column.rsplit_once("-ZIP-")?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let path = place.starts_with(|c: char| c.is_ascii_digit())
+        && place
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase() || b == b'-');
+    (path && digits(index)).then_some(place)
+}
+
 /// The carved object's file under the recorder's output directory, from the
 /// feature column of its line (`utmp_carved/000/123utmp`), or `None` when the
 /// column is not a plain relative path inside that directory.
