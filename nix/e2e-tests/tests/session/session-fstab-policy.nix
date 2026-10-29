@@ -19,7 +19,8 @@
 #   - /srv/spare, which local-fs.target requires (no nofail), is skipped
 #     rather than masked: local-fs.target is reached, the disk stays
 #     unmounted and unchanged, and its fsck and makefs never start. A mask
-#     there would leave local-fs.target unreached without a failure;
+#     there would leave local-fs.target unreached without a failure. status
+#     lists it as skipped;
 #   - /srv/native, mounted by the decoy's own unit, is an overlay whose upper
 #     is on the hidden volume, as an fstab line would be;
 #   - the zram swap is masked as disk swap: its device could write pages back
@@ -143,6 +144,7 @@ in
 
     ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
+    ${testHelpers.readStatusJsonFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
     SWAP_UNIT = "dev-disk-by\\x2did-virtio\\x2dswap.swap"
@@ -370,6 +372,17 @@ in
         for unit in (SPARE_UNIT, *SPARE_CHECKERS):
             assert unit not in failed, failed
         assert spare_hash() == spare_before, "the hidden session changed the skipped disk"
+
+    with subtest("status lists the skipped disk with why"):
+        required = read_status_json(CONFIG)["required_units"]
+        machine.log(f"required units in the hidden session: {required}")
+        assert {
+            "unit": SPARE_UNIT,
+            "action": "skipped",
+            "reason": "required_at_boot",
+        } in required, required
+        out = machine.succeed(f"nails --config {CONFIG} status")
+        assert f"{SPARE_UNIT}: skipped, as a boot target requires it" in out, out
 
     with subtest("a disk the decoy mounts through a unit of its own is overlaid"):
         assert machine.succeed("findmnt -no FSTYPE /srv/native").strip() == "overlay"
