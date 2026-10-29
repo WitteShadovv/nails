@@ -13,7 +13,7 @@ use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
 use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::nextroot;
-use nails_teardown::whole_root::plan::{PolicyMountKind, Skip, unix_now};
+use nails_teardown::whole_root::plan::{MaskCause, PolicyMountKind, RequiredMask, Skip, unix_now};
 use nails_teardown::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT, dropin_dir};
 use nails_teardown::whole_root::transition::{self, Env, Outcome};
 use std::path::{Path, PathBuf};
@@ -274,6 +274,15 @@ fn a_skip_whose_pulls_cannot_be_read_is_masked_with_a_warning() {
 
         let unit = "srv-native.mount".to_string();
         assert!(entry.plan.masks.contains(&unit), "{:?}", entry.plan.masks);
+        assert!(
+            entry.plan.required_masks.contains(&RequiredMask {
+                unit: unit.clone(),
+                cause: MaskCause::Undetermined,
+                device: None,
+            }),
+            "{:?}",
+            entry.plan.required_masks
+        );
         assert!(
             !entry
                 .plan
