@@ -161,3 +161,10 @@ bench = false
 # Line numbers in a crash's stack trace.
 [profile.release]
 debug = 1
+
+[[bin]]
+name = "rpmdb"
+path = "fuzz_targets/rpmdb.rs"
+test = false
+doc = false
+bench = false
