@@ -74,7 +74,10 @@
 //! wipe, so it is safe on a path that runs for every switch. [`restore`]
 //! returns what it could not put back and the parts it left alone ([`Kept`]),
 //! which the transition puts in its outcome, since nothing on the way back may
-//! log.
+//! log. When a device still has another address, a link, rule or table of the
+//! session's is still there, or a part it set out to put back cannot be read
+//! back ([`Kept::failed`]), the transition powers off instead of returning:
+//! that state lives only in the kernel, and a power-off erases it.
 
 use crate::whole_root::network_policy::Policy;
 use crate::whole_root::{network_run, tools};
@@ -244,9 +247,48 @@ pub struct Kept {
     pub tables: Vec<String>,
     /// The network settings that still differ from the decoy's.
     pub settings: Vec<String>,
-    /// The parts entry could not record or the way back could not read, which
-    /// it left alone.
+    /// The parts entry could not record, or whose tool the way back does not
+    /// find, which it left alone.
     pub unknown: Vec<&'static str>,
+    /// The parts the way back set out to put back but cannot read back: the
+    /// links when the kernel's list of them cannot be read now, and the rules
+    /// or tables when the tool it found cannot list them. The session's may
+    /// still be there.
+    pub unverified: Vec<&'static str>,
+}
+
+impl Kept {
+    /// What the session left in the kernel that the way back set out to undo
+    /// and could not, or cannot tell it did, one phrase each: a device's
+    /// changed MAC address, a link, a policy-routing rule or a firewall table
+    /// still there, and each unverified part. A tool that is missing counts
+    /// here only through what it left that the way back can see without it
+    /// (a changed address, a link still there); a part it cannot see then
+    /// (rules without `ip`, tables without `nft`) is unknown and not in it,
+    /// as are the network settings and the hostname. Empty when all of it is
+    /// back. The transition powers off instead of returning when it is not:
+    /// that state lives only in the kernel, where a power-off erases it and a
+    /// return hands it to the decoy (a changed MAC address can reach a DHCP
+    /// lease on its disk).
+    pub fn failed(&self) -> Vec<String> {
+        let addresses = self
+            .addresses
+            .iter()
+            .map(|name| format!("the MAC address of {name}"));
+        let links = self.links.iter().map(|name| format!("link {name}"));
+        let rules = self.rules.iter().map(|rule| format!("rule {rule}"));
+        let tables = self.tables.iter().map(|table| format!("table {table}"));
+        let unverified = self
+            .unverified
+            .iter()
+            .map(|part| format!("{part} unverified"));
+        addresses
+            .chain(links)
+            .chain(rules)
+            .chain(tables)
+            .chain(unverified)
+            .collect()
+    }
 }
 
 /// What the way back does to the links `current` and the hostname
@@ -363,7 +405,9 @@ pub fn read_hostname(proc_hostname: &Path) -> Vec<u8> {
 /// Returns what is still as the session left it ([`Kept`]): the decoy's
 /// devices whose address could not be set back, the session's links, rules
 /// and tables that could not be deleted, the settings that could not be
-/// written back, and the parts left alone because they could not be read.
+/// written back, the parts left alone because entry could not record them or
+/// a tool is missing, and the parts it cannot read back now
+/// ([`Kept::failed`] is what makes the transition power off instead).
 ///
 /// Call it once every hidden unit has stopped: the hidden service manager must
 /// not be running, or it would adopt a link again or rewrite the runtime state.
@@ -391,8 +435,10 @@ pub fn restore_with(places: &Places, tools: &NetTools, record_bytes: Option<&[u8
         &plan,
         &places.sys_class_net,
     );
-    if record.links.is_none() || current.is_none() {
+    if record.links.is_none() {
         kept.unknown.push("links");
+    } else if current.is_none() {
+        kept.unverified.push("links");
     }
     if let Some(hostname) = &plan.hostname {
         let _ = write_hostname(&places.proc_hostname, hostname);

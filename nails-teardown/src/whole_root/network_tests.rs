@@ -714,3 +714,82 @@ fn a_device_that_is_gone_has_no_address_left_to_report() {
 fn the_record_name_carries_no_product_name() {
     assert!(!RECORD_NAME.to_lowercase().contains("nails"));
 }
+
+/// A way back whose restore left nothing of the session's and checked it all
+/// has failed nothing, and so is a return; what entry could not record or a
+/// missing tool could not see is left alone and is no failure either.
+#[test]
+fn nothing_failed_when_all_is_back_or_only_left_alone() {
+    assert!(Kept::default().failed().is_empty());
+    let left_alone = Kept {
+        settings: vec!["net/ipv4/ip_forward".to_string()],
+        unknown: vec!["links", "IPv4 rules", "IPv6 rules", "firewall tables"],
+        ..Kept::default()
+    };
+    assert!(left_alone.failed().is_empty(), "{:?}", left_alone.failed());
+}
+
+/// Each part still the session's, and each part the way back could not read
+/// back, is named in the order a person reads it.
+#[test]
+fn what_the_way_back_could_not_undo_or_check_is_named() {
+    let kept = Kept {
+        addresses: vec!["eth0".to_string()],
+        links: vec!["tunl0".to_string()],
+        rules: vec!["-4 100: from all lookup 51820".to_string()],
+        tables: vec!["inet mullvad".to_string()],
+        unverified: vec!["IPv6 rules"],
+        ..Kept::default()
+    };
+    assert_eq!(
+        kept.failed(),
+        [
+            "the MAC address of eth0",
+            "link tunl0",
+            "rule -4 100: from all lookup 51820",
+            "table inet mullvad",
+            "IPv6 rules unverified",
+        ]
+    );
+}
+
+/// Without `ip` the way back changes no link, but it still sees, through the
+/// kernel's list, the address the session gave the decoy's device and the
+/// link it made: those are failures, not a missing tool's silence.
+#[test]
+fn a_missing_ip_fails_where_the_session_changed_what_it_would_have_undone() {
+    let (_dir, places) = world();
+    let record = NetworkRecord::capture(&places, &NetTools::default());
+    let tools = NetTools::default();
+    assert!(
+        restore_with(&places, &tools, Some(&record.encode()))
+            .failed()
+            .is_empty(),
+        "nothing to undo"
+    );
+    fs::write(
+        places.sys_class_net.join("eth0/address"),
+        "02:00:00:00:00:99\n",
+    )
+    .unwrap();
+    add_link(&places.sys_class_net, "wg0", 9, "", false);
+
+    let kept = restore_with(&places, &tools, Some(&record.encode()));
+
+    assert_eq!(kept.failed(), ["the MAC address of eth0", "link wg0"]);
+}
+
+/// Links the kernel's list cannot be read of now are unverified: the way back
+/// does not know whether a link or address of the session's is still there.
+#[test]
+fn links_that_cannot_be_read_on_the_way_back_are_unverified() {
+    let (_dir, places) = world();
+    let record = NetworkRecord::capture(&places, &NetTools::default());
+    fs::write(places.sys_class_net.join("eth0/ifindex"), "two\n").unwrap();
+
+    let kept = restore_with(&places, &NetTools::default(), Some(&record.encode()));
+
+    assert_eq!(kept.unverified, ["links"]);
+    assert!(!kept.unknown.contains(&"links"), "{kept:?}");
+    assert_eq!(kept.failed(), ["links unverified"]);
+}
