@@ -149,3 +149,58 @@ fn tokens_are_fresh_lowercase_hex_of_the_protocol_length() {
         assert_eq!(nails_api::protocol::validate(&op), Ok(()), "{token}");
     }
 }
+
+/// A token applies only the plan of its own kind: an apply of another kind is
+/// refused and spends the plan, so the right apply after it is refused too.
+#[test]
+fn a_token_applies_only_the_plan_of_its_kind_and_is_spent_either_way() {
+    let env = RuntimeEnv::default();
+    let mut engine = Engine::new(&env, None);
+    let token = "0".repeat(TOKEN_HEX_DIGITS);
+    let plan_init = |engine: &mut Engine<'_>| {
+        engine.pending = Some(Pending {
+            token: token.clone(),
+            planned: Planned::Init(crate::cli::args::InitArgs {
+                path: PathBuf::from("/nonexistent/volume"),
+                allow_decoy_storage: false,
+                hardware_config: None,
+                no_hardware_config: true,
+            }),
+        });
+    };
+    let tokened = Token {
+        token: token.clone(),
+    };
+    for other in [
+        Op::DiscardApply(tokened.clone()),
+        Op::ActivateApply(tokened.clone()),
+        Op::DeactivateApply(tokened.clone()),
+    ] {
+        plan_init(&mut engine);
+        match engine.run(other.clone(), events()) {
+            Answer::Refused(error) => assert_eq!(error.code, ErrorCode::BadToken, "{other:?}"),
+            answer => panic!("{other:?}: {answer:?}"),
+        }
+        assert!(engine.pending.is_none(), "{other:?} spent the plan");
+        match engine.run(Op::InitApply(tokened.clone()), events()) {
+            Answer::Refused(error) => assert_eq!(error.code, ErrorCode::BadToken),
+            answer => panic!("{answer:?}"),
+        }
+    }
+    // Its own apply runs it: here init's, which finds no such volume.
+    plan_init(&mut engine);
+    let (exit, envelope) = result(engine.run(Op::InitApply(tokened), events()));
+    assert_eq!(envelope["command"], "init", "{envelope}");
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_ne!(exit, ExitStatus::Ok, "{envelope}");
+}
+
+/// A handler that printed no envelope answers as a failure of its command,
+/// never with an empty result.
+#[test]
+fn a_handler_without_an_envelope_answers_as_a_failure() {
+    let (exit, envelope) = result(captured("recover", || ExitStatus::Ok));
+    assert_eq!(exit, ExitStatus::Failed);
+    assert_eq!(envelope["command"], "recover");
+    assert_eq!(envelope["ok"], false);
+}
