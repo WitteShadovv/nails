@@ -167,20 +167,27 @@ pub fn unit_path(name: &str, suffix: &str) -> Option<PathBuf> {
     if stem == "-" {
         return Some(PathBuf::from("/"));
     }
-    let bytes = stem.as_bytes();
+    // Each step takes its bytes off the front of what is left, so the walk
+    // ends with the name whatever a step decodes.
     let mut path = vec![b'/'];
-    let mut at = 0;
-    while at < bytes.len() {
-        match bytes[at] {
-            b'-' => path.push(b'/'),
-            b'\\' if bytes.get(at + 1) == Some(&b'x') => {
-                let hex = std::str::from_utf8(bytes.get(at + 2..at + 4)?).ok()?;
-                path.push(u8::from_str_radix(hex, 16).ok()?);
-                at += 3;
+    let mut rest = stem.as_bytes();
+    loop {
+        rest = match rest {
+            [] => break,
+            [b'-', tail @ ..] => {
+                path.push(b'/');
+                tail
             }
-            byte => path.push(byte),
-        }
-        at += 1;
+            [b'\\', b'x', high, low, tail @ ..] => {
+                let hex = [*high, *low];
+                path.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+                tail
+            }
+            [byte, tail @ ..] => {
+                path.push(*byte);
+                tail
+            }
+        };
     }
     if path.contains(&0) {
         return None;
