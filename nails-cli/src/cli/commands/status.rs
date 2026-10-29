@@ -17,7 +17,7 @@ use std::path::Path;
 /// dangerous one (degraded) exit [`ExitStatus::DegradedReboot`] so
 /// a script fails closed and is pointed at recovery; an unknown state exits
 /// [`ExitStatus::InvalidState`].
-fn status_exit_code(posture: Posture) -> ExitStatus {
+pub(crate) fn status_exit_code(posture: Posture) -> ExitStatus {
     match posture {
         Posture::Decoy | Posture::Active | Posture::Transitioning => ExitStatus::Ok,
         Posture::Degraded => ExitStatus::DegradedReboot,

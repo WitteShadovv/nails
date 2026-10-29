@@ -220,6 +220,10 @@ pub enum Commands {
         )]
         args: Vec<OsString>,
     },
+    /// Serve a window on stdin and stdout (started for the window, not by hand)
+    #[cfg(feature = "gui")]
+    #[command(hide = true)]
+    Helper(HelperArgs),
     /// Start the decoy's wtmpdb boot writer after the way back (run by systemd, not by hand)
     #[command(name = "boot-writer", hide = true)]
     BootWriter {
@@ -232,6 +236,15 @@ pub enum Commands {
         )]
         args: Vec<OsString>,
     },
+}
+
+/// `nails helper` arguments.
+#[cfg(feature = "gui")]
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct HelperArgs {
+    /// Speak the window protocol on stdin and stdout (the only transport)
+    #[arg(long, required = true)]
+    pub stdio: bool,
 }
 
 /// `nails activate` arguments
