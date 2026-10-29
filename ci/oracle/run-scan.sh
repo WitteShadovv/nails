@@ -23,6 +23,14 @@
 # dropped plaso channel fails it too. The run passes only when nails-oracle
 # exits 0 and the verdict.json it wrote says clean.
 #
+# btrfs images are the one exception, by design: plaso cannot open btrfs, so on
+# them no timeline runs at all and outputs/plaso/not-run (holding "btrfs") says
+# so. nails-oracle then requires the restore carve and bulk_extractor on every
+# image as always, and a run that passes everything else is "partial" (exit 3),
+# never "clean": its verdict names "timeline: not run, plaso cannot read
+# btrfs". This script passes such a run, and only on btrfs images, and says
+# loudly that it is not a full run. The three images must then all be btrfs.
+#
 # plaso reads every image through one fixed in-container path (/data/disk.img),
 # so the source path in its timeline is identical across the three images and
 # the before/control/after findings collapse as they must.
@@ -36,9 +44,10 @@
 # bare filesystem image, or a whole-disk image with exactly one btrfs or
 # ext{2,3,4} partition. The bulk_extractor and plaso channels take the image
 # itself and run the same either way, but plaso has to open its file system:
-# it cannot open btrfs, and log2timeline, run unattended without --partitions,
-# stops on a whole-disk image with more than one partition of any kind. Either
-# fails the plaso channel (see ci/oracle/README.md).
+# it cannot open btrfs, so a btrfs image runs no timeline (above), and
+# log2timeline, run unattended without --partitions, stops on a whole-disk
+# image with more than one partition of any kind, which fails the plaso
+# channel (see ci/oracle/README.md).
 #
 #   sudo run-scan.sh <workdir>
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
@@ -46,7 +55,7 @@
 # Needs root (loop mounts, and reading the decoy's root-only files), btrfs-progs,
 # git + the bulk_extractor build chain, jq (to read the verdict), and docker
 # (for the pinned plaso container; without it the verdict fails on the missing
-# plaso channel); pre-built-image mode also needs sleuthkit (mmls) and
+# plaso channel; btrfs images need none); pre-built-image mode also needs sleuthkit (mmls) and
 # e2fsprogs (debugfs) plus util-linux (blkid, losetup), and an image that holds
 # a Nix store database needs sqlite3 to read its rows. The verdict binary is
 # found at $ORACLE_BIN, or target/release/nails-oracle under the repository
@@ -84,7 +93,7 @@ for t in git make btrfs mkfs.btrfs truncate find sort xargs sha256sum jq; do
   command -v "$t" >/dev/null || { echo "run-scan: missing required tool: $t" >&2; exit 1; }
 done
 have_docker=1
-command -v docker >/dev/null || { echo "run-scan: docker absent; the plaso channel cannot run, so the verdict will fail" >&2; have_docker=0; }
+command -v docker >/dev/null || have_docker=0
 
 # --- Image source. ----------------------------------------------------------
 # Empty means the default: build the synthetic btrfs images here, one per label.
@@ -175,17 +184,6 @@ if ! (
 fi
 be_bin="$be_src/src/bulk_extractor"
 [ -x "$be_bin" ] || { echo "run-scan: bulk_extractor binary missing at $be_bin" >&2; exit 1; }
-
-# --- Pull the pinned plaso container once. ----------------------------------
-plaso_ok=0
-if [ "$have_docker" -eq 1 ]; then
-  echo "==> pulling pinned plaso $PLASO_IMAGE" >&2
-  if docker pull -q "$PLASO_IMAGE" >&2; then
-    plaso_ok=1
-  else
-    echo "run-scan: plaso pull failed; the plaso channel cannot run, so the verdict will fail" >&2
-  fi
-fi
 
 # plaso_label <image> <label>: timeline one image through a fixed in-container
 # path and export it to JSON lines. $N and the tool paths expand in the
@@ -402,15 +400,15 @@ cleanup() {
 trap cleanup EXIT
 
 # inject_after_sentinels <working-image> <fstype> <byte-offset>: plant the
-# sentinels into the working copy's ext{2,3,4} filesystem. Any other
-# filesystem stops the run: planting into it would need the mount this avoids
-# (and plaso cannot read btrfs, so such an image fails its channel anyway).
+# sentinels into the working copy's ext{2,3,4} filesystem (its free blocks) or
+# btrfs filesystem (the device space no chunk is allocated in). Any other
+# filesystem stops the run: planting into it would need the mount this avoids.
 inject_after_sentinels() {
   local img=$1 fstype=$2 off=$3 sentinel lines=()
   case "$fstype" in
-    ext2 | ext3 | ext4) ;;
+    ext2 | ext3 | ext4 | btrfs) ;;
     *)
-      echo "run-scan: cannot plant the positive controls in a $fstype image without mounting it read-write, which would change the image under test; failing closed. Scan an ext{2,3,4} image (see ci/oracle/README.md)." >&2
+      echo "run-scan: cannot plant the positive controls in a $fstype image without mounting it read-write, which would change the image under test; failing closed. Scan an ext{2,3,4} or btrfs image (see ci/oracle/README.md)." >&2
       exit 1
       ;;
   esac
@@ -422,6 +420,50 @@ inject_after_sentinels() {
     exit 1
   fi
 }
+
+# --- Whether the timeline runs: never on btrfs. ------------------------------
+# plaso cannot open a btrfs file system, so on btrfs images no timeline runs
+# and the scan says so (outputs/plaso/not-run). The before, control and after
+# images are one host's disk, so they hold one file system: either all three
+# are btrfs, or none is, and anything else stops the run, since a timeline of
+# only some images would raise phantom residue.
+if [ -n "$images_src" ]; then
+  nbtrfs=0
+  for label in "${LABELS[@]}"; do
+    # detect_fs prints why when it fails.
+    fs=$(detect_fs "$images_src/$label.raw") || exit 1
+    read -r fstype _ _ <<<"$fs"
+    if [ "$fstype" = btrfs ]; then nbtrfs=$((nbtrfs + 1)); fi
+  done
+else
+  # The synthetic images are always bare btrfs.
+  nbtrfs=${#LABELS[@]}
+fi
+case "$nbtrfs" in
+  0) timeline=run ;;
+  "${#LABELS[@]}") timeline=btrfs ;;
+  *)
+    echo "run-scan: $nbtrfs of the ${#LABELS[@]} images are btrfs and the others are not, but before, control and after are one disk; failing closed" >&2
+    exit 1
+    ;;
+esac
+# A rerun into the same workdir starts from no timeline and no marker.
+rm -f "$outputs/plaso"/*.jsonl "$outputs/plaso"/*.plaso "$outputs/plaso/not-run" 2>/dev/null || true
+
+# --- Pull the pinned plaso container once (not for btrfs images). ----------
+plaso_ok=0
+if [ "$timeline" = btrfs ]; then
+  echo "==> btrfs images: plaso cannot read btrfs, so no timeline runs; the verdict can be partial at best, never a full run" >&2
+elif [ "$have_docker" -ne 1 ]; then
+  echo "run-scan: docker absent; the plaso channel cannot run, so the verdict will fail" >&2
+else
+  echo "==> pulling pinned plaso $PLASO_IMAGE" >&2
+  if docker pull -q "$PLASO_IMAGE" >&2; then
+    plaso_ok=1
+  else
+    echo "run-scan: plaso pull failed; the plaso channel cannot run, so the verdict will fail" >&2
+  fi
+fi
 
 # --- Stream the three labels. -----------------------------------------------
 for label in "${LABELS[@]}"; do
@@ -493,8 +535,9 @@ for label in "${LABELS[@]}"; do
 
   # A timeline counts only when plaso read the image's file system: plaso dates
   # an image it cannot open as one opaque file, at the same path on every image,
-  # so the timeline must have an event for the canary's file.
-  if [ "$plaso_ok" -eq 1 ]; then
+  # so the timeline must have an event for the canary's file. On btrfs images
+  # no timeline runs (see above).
+  if [ "$timeline" = run ] && [ "$plaso_ok" -eq 1 ]; then
     if ! plaso_label "$img" "$label"; then
       echo "run-scan: plaso failed on $label" >&2
       if [ "$nparts" -gt 1 ]; then
@@ -520,7 +563,11 @@ done
 # plaso, and nails-oracle fails a run in which any channel reported nothing for
 # an image (channel_missing). The verdict is still rendered, so the other
 # channels' findings can be read.
-if [ "$plaso_ok" -ne 1 ] || [ "$plaso_failed" -ne 0 ]; then
+if [ "$timeline" = btrfs ]; then
+  # Left out by design, never dropped: the marker says why, and nails-oracle
+  # refuses it next to any timeline.
+  printf 'btrfs\n' >"$outputs/plaso/not-run"
+elif [ "$plaso_ok" -ne 1 ] || [ "$plaso_failed" -ne 0 ]; then
   echo "run-scan: dropping the plaso channel (a timeline is missing or did not read its image); the verdict will fail on it" >&2
   rm -f "$outputs/plaso"/*.jsonl "$outputs/plaso"/*.plaso 2>/dev/null || true
 fi
@@ -538,5 +585,20 @@ cat "$work/verdict.json" || true
 if [ "$status" -eq 0 ] && ! jq -e '.status == "clean"' "$work/verdict.json" >/dev/null; then
   echo "run-scan: nails-oracle exited 0, but $work/verdict.json does not say clean; failing closed" >&2
   status=1
+fi
+# A partial verdict (exit 3) passes only a scan of btrfs images that ran no
+# timeline by design, and only when the verdict says partial and names exactly
+# that. It is never reported as clean.
+if [ "$status" -eq 3 ]; then
+  partial='.status == "partial" and .not_run == [{"tool": "plaso", "channel": "timeline", "reason": "plaso cannot read btrfs"}]'
+  if [ "$timeline" = btrfs ] && jq -e "$partial" "$work/verdict.json" >/dev/null; then
+    note="PARTIAL verdict, not a full run: timeline: not run, plaso cannot read btrfs. The restore carve, the record diff and bulk_extractor ran and found nothing unexplained."
+    echo "run-scan: $note" >&2
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning title=Partial oracle verdict::$note"; fi
+    status=0
+  else
+    echo "run-scan: nails-oracle says partial, but this scan ran every channel or $work/verdict.json does not name the timeline of btrfs images as the one channel left out; failing closed" >&2
+    status=1
+  fi
 fi
 exit "$status"

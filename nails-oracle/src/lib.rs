@@ -17,7 +17,10 @@
 //! verdict honest: planted positive controls must be detected (or the scan is
 //! blind), a coverage canary must be detected (or the scan did not read the
 //! image), and every analysis channel but the Nix store database's rows must
-//! report on every image (or the scan could not look through it). Only a Nix
+//! report on every image (or the scan could not look through it). The one
+//! channel a scan may leave out by design is plaso on a btrfs image, which it
+//! cannot read; such a run is at best partial, never clean, and its verdict
+//! names the channel left out and why ([`NotRun`]). Only a Nix
 //! decoy has that database, so its rows are required instead wherever the
 //! restore carve holds it, and the scan stops without them. The verdict also
 //! names what it cannot see ([`unseen`]), so a clean one claims no more than
@@ -55,7 +58,7 @@ mod verdict_prop_tests;
 
 pub use catalog::{Catalog, CatalogRow};
 pub use model::{
-    AllowEntry, Allowlist, Canary, Change, Controls, Finding, ImageLabel, OraclePolicy,
+    AllowEntry, Allowlist, Canary, Change, Controls, Finding, ImageLabel, NotRun, OraclePolicy,
     PositiveControl, Scans, Tool,
 };
 pub use unseen::Unseen;
@@ -77,7 +80,9 @@ usage: nails-oracle <outputs-dir> [--allowlist FILE] [--controls FILE]
 Render a pass/fail forensic verdict over one scan's outputs/ tree.
 
   <outputs-dir>     the scan's outputs/ directory (restore/, bulk_extractor/, plaso/,
-                    and nix_db/ when a restored tree holds the Nix store database)
+                    and nix_db/ when a restored tree holds the Nix store database;
+                    plaso/not-run holding \"btrfs\" instead of the timelines when
+                    plaso cannot read the images)
   --allowlist FILE  cited allowlist JSON (default: ci/oracle/allowlist.json)
   --controls FILE   positive-control + canary JSON (default: ci/oracle/controls.json)
 
@@ -85,7 +90,8 @@ Prints the verdict as JSON to stdout and a one-line summary to stderr. The JSON
 lists the classes of change the verdict cannot see (unseen), and a clean summary
 ends with them.
 Exit codes: 0 clean, 1 fail (residue / blind or missing channel / canary / bad allowlist),
-2 usage or I/O error (an entry of the outputs tree it cannot read included).";
+2 usage or I/O error (an entry of the outputs tree it cannot read included), 3 partial
+(clean in the channels that ran, but plaso did not run: never a full run).";
 
 /// Parsed command line.
 struct Options {

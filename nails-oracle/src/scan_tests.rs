@@ -222,7 +222,7 @@ fn scan_image_collects_the_restore_findings() {
     let outputs = dir.path().join("outputs");
     build_before_outputs(&outputs);
 
-    let out = scan_image(&outputs, ImageLabel::Before).expect("scans");
+    let out = scan_image(&outputs, ImageLabel::Before, JournalFiles::LeaveToPlaso).expect("scans");
     assert!(
         out.contains(&restored_file("/etc/hostname", b"host")),
         "{out:?}"
@@ -236,7 +236,12 @@ fn scan_image_collects_the_restore_findings() {
 /// Scan the restored tree at `root` against its manifest.
 fn restore_findings(root: &Path) -> io::Result<BTreeSet<Finding>> {
     let mut out = BTreeSet::new();
-    scan_restore(root, &root.with_extension("sha256"), &mut out)?;
+    scan_restore(
+        root,
+        &root.with_extension("sha256"),
+        JournalFiles::LeaveToPlaso,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -703,6 +708,141 @@ fn the_cli_fails_a_scan_whose_plaso_channel_was_dropped() {
     assert!(err.contains("after.sha256"), "{err}");
 }
 
+// --- a btrfs scan: the timeline left out by design -------------------------
+
+/// Write the outputs of a scan that ran no timeline: a restore tree with
+/// `/etc/hostname` and a bulk_extractor canary on every image, the planted
+/// control on `after`, and `marker` as `plaso/not-run`. Returns the CLI
+/// arguments that render its verdict against a policy pinning that control.
+fn write_btrfs_outputs(dir: &Path, marker: &[u8]) -> (PathBuf, Vec<String>) {
+    let outputs = dir.join("outputs");
+    for label in ImageLabel::ALL {
+        let name = label.dir_name();
+        let root = outputs.join("restore").join(name);
+        fs::create_dir_all(root.join("etc")).expect("restore dir");
+        fs::write(root.join("etc").join("hostname"), b"").expect("restore file");
+        write_manifest(&root);
+        let be = outputs.join("bulk_extractor").join(name);
+        fs::create_dir_all(&be).expect("bulk_extractor dir");
+        let mut emails = String::from("4096\tcanary@oracle.example\tctx\n");
+        if label == ImageLabel::After {
+            emails.push_str("8192\tplanted@oracle.example\tctx\n");
+        }
+        fs::write(be.join("email.txt"), emails).expect("feature file");
+    }
+    let plaso = outputs.join("plaso");
+    fs::create_dir_all(&plaso).expect("plaso dir");
+    fs::write(plaso.join(NOT_RUN_MARKER), marker).expect("marker");
+    let allowlist = dir.join("allowlist.json");
+    fs::write(&allowlist, r#"{"entries":[]}"#).expect("allowlist file");
+    let controls = dir.join("controls.json");
+    fs::write(
+        &controls,
+        r#"{
+          "positive_controls": [{"name": "planted", "tool": "bulk_extractor",
+                                 "path": "email", "field": "planted@oracle.example"}],
+          "canary": {"tool": "bulk_extractor", "path": "email",
+                     "field": "canary@oracle.example"}
+        }"#,
+    )
+    .expect("controls file");
+    let args = vec![
+        outputs.display().to_string(),
+        "--allowlist".to_string(),
+        allowlist.display().to_string(),
+        "--controls".to_string(),
+        controls.display().to_string(),
+    ];
+    (outputs, args)
+}
+
+#[test]
+fn the_cli_renders_a_btrfs_scan_without_the_timeline_as_partial() {
+    // run-scan.sh writes plaso/not-run (btrfs) instead of the timelines on a
+    // btrfs image. The run is then partial, exit 3, never clean (0), as long
+    // as the restore carve and bulk_extractor report on every image; with
+    // bulk_extractor silent on after, it fails (1).
+    let dir = TmpDir::new();
+    let (outputs, args) = write_btrfs_outputs(dir.path(), b"btrfs\n");
+    let scans = scan_all(&outputs).expect("scans");
+    assert_eq!(
+        scans.not_run,
+        BTreeSet::from([NotRun::PlasoCannotReadBtrfs])
+    );
+    assert_eq!(crate::run_inner(&args), Ok(3), "a partial run exits 3");
+
+    fs::remove_dir_all(outputs.join("bulk_extractor").join("after")).expect("remove");
+    assert_eq!(
+        crate::run_inner(&args),
+        Ok(1),
+        "bulk_extractor silent on after: the run fails"
+    );
+}
+
+#[test]
+fn the_cli_fails_a_btrfs_scan_whose_restore_carve_is_silent() {
+    // The restore carve stays required on a btrfs scan.
+    let dir = TmpDir::new();
+    let (outputs, args) = write_btrfs_outputs(dir.path(), b"btrfs\n");
+    fs::remove_dir_all(outputs.join("restore").join("control")).expect("remove");
+    fs::remove_file(outputs.join("restore").join("control.sha256")).expect("remove");
+    assert_eq!(crate::run_inner(&args), Ok(1));
+}
+
+#[test]
+fn a_marker_that_names_no_left_out_channel_stops_the_scan() {
+    // A marker the scan did not write (another file system, junk) is an
+    // error, never a reason to leave the timeline out.
+    for bad in [&b"ext4\n"[..], b"", b"btrfs\nxfs\n"] {
+        let dir = TmpDir::new();
+        let (outputs, args) = write_btrfs_outputs(dir.path(), bad);
+        let err = scan_all(&outputs).expect_err("a bad marker is an error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("not-run"), "{err}");
+        assert!(crate::run_inner(&args).is_err());
+    }
+}
+
+#[test]
+fn a_marker_next_to_a_timeline_stops_the_scan() {
+    // The timeline cannot both have run and not have run: a marker next to
+    // any image's timeline is an error.
+    for label in ImageLabel::ALL {
+        let dir = TmpDir::new();
+        let (outputs, _) = write_btrfs_outputs(dir.path(), b"btrfs\n");
+        let timeline = outputs
+            .join("plaso")
+            .join(format!("{}.jsonl", label.dir_name()));
+        fs::write(&timeline, "{\"path\":\"/x\",\"data_type\":\"fs:stat\"}\n").expect("timeline");
+        let err = scan_all(&outputs).expect_err("marker and timeline");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains(label.dir_name()), "{err}");
+    }
+}
+
+#[test]
+fn without_a_timeline_the_restore_channel_keeps_the_journal_files() {
+    // A full run leaves the rotating journal files to plaso. A scan that ran
+    // no timeline reports them like any file, so a journal the session left
+    // is residue rather than unseen.
+    let dir = TmpDir::new();
+    let (outputs, _) = write_btrfs_outputs(dir.path(), b"btrfs\n");
+    let root = outputs.join("restore").join("after");
+    let journal = root.join("var").join("log").join("journal").join("m");
+    fs::create_dir_all(&journal).expect("journal dir");
+    fs::write(journal.join("system@x-1-2.journal"), b"j").expect("journal file");
+    write_manifest(&root);
+    let file = restored_file("/var/log/journal/m/system@x-1-2.journal", b"j");
+
+    let scans = scan_all(&outputs).expect("scans");
+    assert!(scans.after.contains(&file), "{:?}", scans.after);
+
+    fs::remove_file(outputs.join("plaso").join(NOT_RUN_MARKER)).expect("remove");
+    let scans = scan_all(&outputs).expect("scans");
+    assert!(scans.not_run.is_empty());
+    assert!(!scans.after.contains(&file), "{:?}", scans.after);
+}
+
 // --- the Nix store database's rows -------------------------------------------
 
 /// The dump `run-scan.sh` writes of a store database that registers
@@ -762,7 +902,8 @@ fn the_rows_of_a_restored_nix_store_database_are_read() {
     restore_store_database(&root, b"SQLite format 3", &dump, Some(&dumped));
     write_manifest(&root);
 
-    let found = scan_image(&outputs, ImageLabel::Before).expect("scans");
+    let found =
+        scan_image(&outputs, ImageLabel::Before, JournalFiles::LeaveToPlaso).expect("scans");
     let row = |field: &str| Finding::new(Tool::NixDb, NIX_DB_PATH, field);
     for expected in [
         store_row("/nix/store/a-decoy"),

@@ -1,9 +1,10 @@
 """Tests for ci/oracle/plant-in-free-space.sh, the mount-free planting of the
-oracle's positive controls into the free space of an ext4 image."""
+oracle's positive controls into the free space of an ext4 or btrfs image."""
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +35,8 @@ def e2fs(tool: str) -> str | None:
 MKFS = e2fs("mkfs.ext4")
 DEBUGFS = e2fs("debugfs")
 E2FSCK = e2fs("e2fsck")
+MKFS_BTRFS = e2fs("mkfs.btrfs")
+BTRFS = e2fs("btrfs")
 
 
 def blocks(data: bytes) -> list[bytes]:
@@ -168,6 +171,162 @@ class PlantInFreeSpaceTest(unittest.TestCase):
         missing = str(self.dir / "none.img")
         self.assertEqual(self.run_script(missing, "0", SENTINELS[0]).returncode, 2)
         self.assertEqual(self.image.read_bytes(), before)
+
+
+BTRFS_SIZE = 256 * 1024 * 1024
+MIB = 1024 * 1024
+# The superblock copy that falls inside a 256 MiB btrfs: at 64 MiB.
+MIRROR = 64 * MIB
+_DEV_EXTENT = re.compile(r"key \((\d+) DEV_EXTENT (\d+)\)")
+_LENGTH = re.compile(r"\blength (\d+)")
+
+
+@unittest.skipUnless(MKFS_BTRFS and BTRFS, "needs btrfs-progs")
+class PlantInBtrfsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.image = self.dir / "root.img"
+        tools = str(Path(str(BTRFS)).parent)
+        self.env = {
+            "PATH": os.pathsep.join([tools, os.environ.get("PATH", "")]),
+            "TMPDIR": str(self.dir),
+        }
+
+    def make_fs(self, fill: bytes = b"\0") -> None:
+        """A small single-device btrfs filesystem holding one file, made from a
+        directory with no mount. With `fill`, every byte mkfs does not write
+        keeps that value, as unallocated space holding old data does."""
+        content = self.dir / "content"
+        (content / "var" / "log").mkdir(parents=True, exist_ok=True)
+        (content / "var" / "log" / "wtmp").write_bytes(b"\x01" * 10_000)
+        self.image.write_bytes(fill * BTRFS_SIZE)
+        subprocess.run(
+            [str(MKFS_BTRFS), "-q", "-f", "-K", "--rootdir", str(content)]
+            + [str(self.image)],
+            check=True,
+            capture_output=True,
+        )
+
+    def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
+        # Through bash: the flake check copies the tree without its file modes.
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=self.env,
+        )
+
+    def dev_extents(self) -> list[tuple[int, int]]:
+        """Every device extent of the filesystem as (start, length)."""
+        tree = subprocess.run(
+            [str(BTRFS), "inspect-internal", "dump-tree", "-t", "dev"]
+            + [str(self.image)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        extents = []
+        start = None
+        for line in tree.splitlines():
+            key = _DEV_EXTENT.search(line)
+            if key:
+                start = int(key.group(2))
+                continue
+            length = _LENGTH.search(line)
+            if start is not None and length:
+                extents.append((start, int(length.group(1))))
+                start = None
+        return extents
+
+    def unallocated(self, at: int, extents: list[tuple[int, int]]) -> bool:
+        """Whether the block at filesystem byte `at` lies outside every device
+        extent, the first MiB and the superblock copy."""
+        if at < MIB or MIRROR - BLOCK < at < MIRROR + BLOCK:
+            return False
+        return all(not (s <= at < s + n) for s, n in extents)
+
+    def test_each_string_lands_once_in_its_own_unallocated_zero_block(self) -> None:
+        self.make_fs()
+        extents = self.dev_extents()
+        before = self.image.read_bytes()
+        result = self.run_script(str(self.image), "0", *SENTINELS)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = self.image.read_bytes()
+        self.assertEqual(len(after), len(before))
+        for sentinel in SENTINELS:
+            self.assertEqual(after.count(f"{sentinel}\n".encode()), 1, sentinel)
+        changed = changed_blocks(before, after)
+        self.assertEqual(len(changed), len(SENTINELS))
+        for i in changed:
+            self.assertEqual(blocks(before)[i], bytes(BLOCK), f"block {i}")
+            self.assertTrue(self.unallocated(i * BLOCK, extents), f"block {i}")
+        # The superblock copy at 64 MiB, the first string's goal, is kept.
+        mirror = slice(MIRROR, MIRROR + BLOCK)
+        self.assertEqual(before[mirror], after[mirror])
+        # Nothing btrfs tracks changed: the same device extents, a clean check.
+        self.assertEqual(self.dev_extents(), extents)
+        check = subprocess.run(
+            [str(BTRFS), "check", "--readonly", str(self.image)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+
+    def test_old_data_is_passed_over_and_never_overwritten(self) -> None:
+        # Unallocated space holding old data throughout: nothing is planted and
+        # the image is unchanged. One zeroed unallocated block past the goal
+        # then takes the string, and only it.
+        self.make_fs(fill=b"\xab")
+        extents = self.dev_extents()
+        # mkfs.btrfs zeroes the end of the device to wipe old signatures; give
+        # every unallocated block old data, as a disk in use holds.
+        data = bytearray(self.image.read_bytes())
+        for i in range(BTRFS_SIZE // BLOCK):
+            if self.unallocated(i * BLOCK, extents):
+                data[i * BLOCK : (i + 1) * BLOCK] = b"\xab" * BLOCK
+        self.image.write_bytes(bytes(data))
+        before = self.image.read_bytes()
+        result = self.run_script(str(self.image), "0", SENTINELS[0])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("no zero-filled unallocated block", result.stderr)
+        self.assertEqual(self.image.read_bytes(), before)
+
+        first = BTRFS_SIZE // BLOCK // 2 + 5
+        target = next(
+            i
+            for i in range(first, BTRFS_SIZE // BLOCK)
+            if self.unallocated(i * BLOCK, extents)
+        )
+        data = bytearray(before)
+        data[target * BLOCK : (target + 1) * BLOCK] = bytes(BLOCK)
+        self.image.write_bytes(bytes(data))
+        zeroed = self.image.read_bytes()
+        result = self.run_script(str(self.image), "0", SENTINELS[0])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = self.image.read_bytes()
+        self.assertEqual(changed_blocks(zeroed, after), [target])
+        self.assertTrue(blocks(after)[target].startswith(SENTINELS[0].encode()))
+
+    def test_a_btrfs_filesystem_at_an_offset_in_a_disk_image(self) -> None:
+        # A partition one MiB in: the script reads the filesystem from a sparse
+        # copy, removes it, and plants into the image itself.
+        self.make_fs()
+        extents = self.dev_extents()
+        fs_bytes = self.image.read_bytes()
+        lead = b"\xcd" * MIB
+        self.image.write_bytes(lead + fs_bytes)
+        result = self.run_script(str(self.image), str(len(lead)), SENTINELS[0])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = self.image.read_bytes()
+        self.assertTrue(after.startswith(lead))
+        at = after.index(SENTINELS[0].encode()) - len(lead)
+        self.assertEqual(at % BLOCK, 0)
+        self.assertEqual(fs_bytes[at : at + BLOCK], bytes(BLOCK))
+        self.assertTrue(self.unallocated(at, extents))
+        names = sorted(p.name for p in self.dir.iterdir())
+        self.assertEqual(names, ["content", "root.img"])
 
 
 if __name__ == "__main__":

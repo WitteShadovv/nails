@@ -31,11 +31,17 @@
 //!
 //! A random policy nearly always fails on something, so (d) is the property
 //! that exercises a clean verdict and the rule that a single leak fails it.
+//!
+//! (f) and (g) hold a scan that left the timeline out (plaso on a btrfs
+//! image): it is never clean, it is partial exactly when the same images with
+//! the timeline's findings removed raise no failure, it fails on every image
+//! the left-out channel still reports for, and the channel rule never asks
+//! for that channel but still for every other.
 
 use crate::catalog::{Catalog, CatalogRow};
 use crate::model::{
-    AllowEntry, Allowlist, Canary, Change, Controls, Finding, OraclePolicy, PositiveControl, Scans,
-    Tool,
+    AllowEntry, Allowlist, Canary, Change, Controls, Finding, NotRun, OraclePolicy,
+    PositiveControl, Scans, Tool,
 };
 use crate::unseen::Unseen;
 use crate::verdict::{self, ControlResult, Counts, Failure, Status, Verdict};
@@ -680,6 +686,7 @@ fn scans_strategy() -> impl Strategy<Value = Scans> {
         before,
         control,
         after,
+        not_run: BTreeSet::new(),
     })
 }
 
@@ -778,6 +785,7 @@ fn clean_world() -> impl Strategy<Value = (Scans, OraclePolicy)> {
                         before,
                         control,
                         after,
+                        not_run: BTreeSet::new(),
                     },
                     policy,
                 )
@@ -880,5 +888,91 @@ proptest! {
         prop_assert_eq!(&v.failures, &[leak_failure(&leak, Change::Added)]);
         prop_assert_eq!(v.status, Status::Fail);
         prop_assert_eq!(v.counts, expect(&leaky, &policy).counts);
+    }
+
+    /// (f) A scan that left the timeline out is never clean: with no plaso
+    /// finding it raises exactly the failures the same images raise as a full
+    /// run, is partial exactly when there are none, and names the timeline
+    /// as not run; a plaso finding left on an image fails the run on it.
+    #[test]
+    fn a_scan_without_the_timeline_is_partial_never_clean(
+        scans in scans_strategy(),
+        policy in policy_strategy(),
+    ) {
+        let mut full = scans.clone();
+        for image in [&mut full.before, &mut full.control, &mut full.after] {
+            image.retain(|f| f.tool != Tool::Plaso);
+        }
+        let mut partial = full.clone();
+        partial.not_run.insert(NotRun::PlasoCannotReadBtrfs);
+
+        let want = decide(&full, &policy);
+        let v = decide(&partial, &policy);
+        prop_assert_ne!(v.status, Status::Clean);
+        prop_assert_eq!(&v.failures, &want.failures);
+        prop_assert_eq!(v.status == Status::Partial, want.status == Status::Clean);
+        prop_assert_eq!(&v.not_run, &[NotRun::PlasoCannotReadBtrfs]);
+        prop_assert!(v.summary.contains("timeline: not run, plaso cannot read btrfs"));
+        prop_assert_eq!(v.counts, want.counts);
+
+        let mut contradicted = scans.clone();
+        contradicted.not_run.insert(NotRun::PlasoCannotReadBtrfs);
+        let reported: Vec<String> = [&scans.before, &scans.control, &scans.after]
+            .into_iter()
+            .zip(["before", "control", "after"])
+            .filter(|(image, _)| image.iter().any(|f| f.tool == Tool::Plaso))
+            .map(|(_, name)| name.to_string())
+            .collect();
+        let v = decide(&contradicted, &policy);
+        let flagged: Vec<String> = v
+            .failures
+            .iter()
+            .filter_map(|f| match f {
+                Failure::NotRunChannelReported { tool: Tool::Plaso, image } => Some(image.clone()),
+                _ => None,
+            })
+            .collect();
+        prop_assert_eq!(&flagged, &reported);
+        if !reported.is_empty() {
+            prop_assert_eq!(v.status, Status::Fail);
+        }
+    }
+
+    /// (g) The channel rule of a real scan never asks for the timeline it left
+    /// out, and asks for every other required channel on every image just as
+    /// a full run does.
+    #[test]
+    fn a_scan_without_the_timeline_still_requires_every_other_channel(
+        scans in scans_strategy(),
+        policy in policy_strategy(),
+    ) {
+        let mut partial = scans.clone();
+        for image in [&mut partial.before, &mut partial.control, &mut partial.after] {
+            image.retain(|f| f.tool != Tool::Plaso);
+        }
+        partial.not_run.insert(NotRun::PlasoCannotReadBtrfs);
+        let missing = |v: &Verdict| -> Vec<(Tool, String)> {
+            v.failures
+                .iter()
+                .filter_map(|f| match f {
+                    Failure::ChannelMissing { tool, image } => Some((*tool, image.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let v = verdict::scan_verdict(&partial, &policy, &catalog());
+        let full = verdict::scan_verdict(&scans, &policy, &catalog());
+        let want: Vec<(Tool, String)> = missing(&full)
+            .into_iter()
+            .filter(|(tool, _)| *tool != Tool::Plaso)
+            .collect();
+        prop_assert_eq!(missing(&v), want);
+        prop_assert_ne!(v.status, Status::Clean);
+        if v.failures.is_empty() {
+            prop_assert_eq!(v.status, Status::Partial);
+            prop_assert_eq!(v.exit_code(), 3);
+        } else {
+            prop_assert_eq!(v.status, Status::Fail);
+        }
     }
 }
