@@ -70,6 +70,7 @@ impl World {
             runtime_dir: self.runtime(),
             kmsg: self.kmsg(),
             systemctl: None,
+            pid_places: None,
             now,
             mounts: parse_mountinfo(&table),
         }
@@ -1085,4 +1086,92 @@ fn without_the_opt_in_no_rule_is_installed() {
     world.write_plan(&plan);
     assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
     assert!(!world.run().join(disk_guard::RULE_DIR).exists());
+}
+
+#[test]
+fn the_way_back_numbers_the_decoy_s_units_from_its_own_boot_again() {
+    // The last step sets the process-number counter to just below the floor
+    // the entry recorded, once everything else is done; without a floor, or
+    // on the way in, it stays.
+    let world = World::new();
+    let namespace = world.dir.path().join("pid-ns");
+    fs::write(&namespace, "").unwrap();
+    let places = fresh_pids::Places {
+        ns_last_pid: world.dir.path().join("ns_last_pid"),
+        own_namespace: namespace.clone(),
+        init_namespace: namespace,
+    };
+    let with_places = |now: u64| Env {
+        pid_places: Some(places.clone()),
+        ..world.env(true, now)
+    };
+
+    let mut plan = armed(Direction::Enter);
+    plan.pids.floor = Some(388);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    fs::write(&places.ns_last_pid, "1625\n").unwrap();
+    assert_eq!(run(&with_places(1_000)), Outcome::Entered);
+    assert_eq!(fs::read_to_string(&places.ns_last_pid).unwrap(), "1625\n");
+    // The entry's switch records where the hidden start begins numbering.
+    let mut plan = world.plan();
+    assert_eq!(plan.pids.at_switch, Some(1625));
+
+    // Without a measured counter the way back goes to just below the floor.
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_000,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&with_places(1_000));
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Returned {
+                pids: fresh_pids::Lowered::Set(387),
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(fs::read_to_string(&places.ns_last_pid).unwrap(), "387");
+
+    // A measured counter wins over the floor.
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    plan.pids.floor = Some(388);
+    plan.pids.counter = Some(470);
+    fs::create_dir_all(world.runtime()).unwrap();
+    world.write_plan(&plan);
+    fs::write(&places.ns_last_pid, "9031\n").unwrap();
+    let outcome = run(&with_places(1_000));
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Returned {
+                pids: fresh_pids::Lowered::Set(470),
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    fs::create_dir_all(world.runtime()).unwrap();
+    world.write_plan(&plan);
+    fs::write(&places.ns_last_pid, "1625\n").unwrap();
+    let outcome = run(&with_places(1_000));
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Returned {
+                pids: fresh_pids::Lowered::NoRecord,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(fs::read_to_string(&places.ns_last_pid).unwrap(), "1625\n");
 }

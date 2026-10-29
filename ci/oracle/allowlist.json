@@ -10,42 +10,6 @@
       "path": "/var/lib/systemd/timers/stamp-fstrim.timer",
       "cite": "timer-stamps",
       "note": "The stamp of the decoy's own weekly fstrim.timer (Persistent=true), which a catch-up run at the decoy's next boot can create. A stamp of any other timer under /var/lib/systemd/timers, one only the hidden system runs, is a leak and is not covered."
-    },
-    {
-      "path": "/var/log/wtmp",
-      "field": "linux:utmp:event exit_status=0 hostname=localhost ip_address=0.0.0.0 login_type=5 pid=1024-2047 terminal=tty1 terminal_identifier=830043252",
-      "cite": "login-boot-records",
-      "note": "The INIT_PROCESS record of the getty the decoy starts on tty1 after the way back, as plaso reads it from wtmp. Its process number continues from the decoy's boot: in the oracle-images test it falls in 1024-2047, while the getty of a fresh boot falls in 512-1023 and subtracts. A getty record in another range, or one of another terminal or user, is not covered."
-    },
-    {
-      "path": "/var/log/wtmp",
-      "field": "linux:utmp:event exit_status=0 hostname=localhost ip_address=0.0.0.0 login_type=6 pid=1024-2047 terminal=tty1 terminal_identifier=830043252 username=LOGIN",
-      "cite": "login-boot-records",
-      "note": "The LOGIN_PROCESS record of the same getty, as plaso reads it."
-    },
-    {
-      "path": "/var/log/wtmp",
-      "field": "linux:utmp:event exit_status=15 hostname=localhost ip_address=0.0.0.0 login_type=8 pid=1024-2047 terminal=tty1 terminal_identifier=830043252",
-      "cite": "login-boot-records",
-      "note": "The DEAD_PROCESS record the same getty leaves when the decoy powers off for the after image, as plaso reads it."
-    },
-    {
-      "path": "utmp_carved",
-      "field": "type=INIT_PROCESS pid=1024-2047 line=tty1 id=tty1 user= host= exit=0/0 addr=0.0.0.0",
-      "cite": "login-boot-records",
-      "note": "The same getty's INIT_PROCESS record as bulk_extractor carves it. In the oracle-images test the record spans two blocks of wtmp, so it is carved only when ext4 put those blocks side by side."
-    },
-    {
-      "path": "utmp_carved",
-      "field": "type=LOGIN_PROCESS pid=1024-2047 line=tty1 id=tty1 user=LOGIN host= exit=0/0 addr=0.0.0.0",
-      "cite": "login-boot-records",
-      "note": "The same getty's LOGIN_PROCESS record as bulk_extractor carves it."
-    },
-    {
-      "path": "utmp_carved",
-      "field": "type=DEAD_PROCESS pid=1024-2047 line=tty1 id=tty1 user= host= exit=2/15 addr=0.0.0.0",
-      "cite": "login-boot-records",
-      "note": "The same getty's DEAD_PROCESS record as bulk_extractor carves it."
     }
   ]
 }

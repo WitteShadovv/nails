@@ -20,6 +20,8 @@ pub struct Stat {
     pub pgid: u32,
     /// Session id.
     pub sid: u32,
+    /// The controlling terminal's device number (0 for none).
+    pub tty: i32,
     /// The kernel's per-task flags (`PF_*`).
     pub flags: u64,
     /// Start time in clock ticks since boot; with the pid it names one process.
@@ -48,6 +50,7 @@ pub fn parse_stat(content: &str) -> Option<Stat> {
         ppid: fields.get(1)?.parse().ok()?,
         pgid: fields.get(2)?.parse().ok()?,
         sid: fields.get(3)?.parse().ok()?,
+        tty: fields.get(4)?.parse().ok()?,
         flags: fields.get(6)?.parse().ok()?,
         start_time: fields.get(19)?.parse().ok()?,
     })

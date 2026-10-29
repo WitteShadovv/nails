@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Test support shared by the crates of the workspace: writing or copying a
-//! program that a test, or the code it tests, then runs.
+//! program that a test, or the code it tests, then runs, and the procfs files
+//! the way back writes.
 //!
 //! It lives in this crate, below every other crate that has such tests, so
 //! that this crate's own tests can use it too; the base crate's `test_support`
@@ -89,6 +90,27 @@ fn assert_written(path: &Path, output: std::io::Result<Output>) {
 fn set_mode(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .unwrap_or_else(|e| panic!("setting the mode of {}: {e}", path.display()));
+}
+
+/// Stage a process-number counter below `root` that the way back can lower,
+/// as [`crate::whole_root::fresh_pids::Places::under`] finds it: the counter
+/// at 1625, and this process in PID 1's PID namespace. Staging it again
+/// sets the counter back to 1625.
+///
+/// # Panics
+///
+/// When a file cannot be written.
+pub fn stage_pid_counter(root: &Path) {
+    let proc = root.join("proc");
+    for dir in ["sys/kernel", "1/ns", "self/ns"] {
+        std::fs::create_dir_all(proc.join(dir)).expect("create the procfs stand-in");
+    }
+    std::fs::write(proc.join("sys/kernel/ns_last_pid"), "1625\n").expect("write the counter");
+    std::fs::write(proc.join("1/ns/pid"), "").expect("write the namespace");
+    let link = proc.join("self/ns/pid");
+    if std::fs::symlink_metadata(&link).is_err() {
+        std::os::unix::fs::symlink("../../1/ns/pid", link).expect("link the namespace");
+    }
 }
 
 #[cfg(test)]

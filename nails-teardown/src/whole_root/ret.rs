@@ -22,7 +22,8 @@
 //! 4. check the decoy init resolves in it;
 //! 5. mark the hidden backend's device-mapper stack for deferred removal, so its
 //!    key leaves the kernel the moment the switch releases the hidden volume;
-//! 6. arm the plan for the way back.
+//! 6. arm the plan for the way back, with the process-number counter it sets
+//!    ([`crate::whole_root::fresh_pids`]).
 //!
 //! [`mount_decoy_root`] takes the first four steps, [`complete_decoy_root`]
 //! the second to the fourth on a decoy root mounted already. The caller then
@@ -32,7 +33,7 @@
 use crate::mountinfo::{MountEntry, parse_overlay_opts, read_mountinfo, top_mount_at};
 use crate::whole_root::plan::{Arm, Direction, Plan, RootSide};
 use crate::whole_root::tools;
-use crate::whole_root::{carry, decoy_mounts, nextroot};
+use crate::whole_root::{carry, decoy_mounts, fresh_pids, nextroot};
 use std::path::{Path, PathBuf};
 
 /// Whether this process runs in the hidden root of `plan`: `/` is an overlay
@@ -209,8 +210,11 @@ pub fn close_idle_backend(plan: &Plan, mapper_dir: &Path) -> Vec<(String, Backen
         .collect()
 }
 
-/// Arm `plan` for the way back and write it to `path`.
+/// Arm `plan` for the way back and write it to `path`, with the process-number
+/// counter the way back sets measured now, while the hidden session's own
+/// start still runs ([`fresh_pids::counter`]).
 pub fn arm_leave(plan: &mut Plan, path: &Path) -> Result<(), ReturnError> {
+    plan.pids.counter = fresh_pids::counter(&plan.pids, Path::new("/proc"));
     plan.armed = Some(Arm::now(Direction::Leave));
     plan.write_atomic(path)
         .map_err(|e| ReturnError::Arm(e.to_string()))

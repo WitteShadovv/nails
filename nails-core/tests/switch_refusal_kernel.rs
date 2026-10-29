@@ -71,6 +71,7 @@ mod kernel_tests {
                 runtime_dir: self.runtime(),
                 kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
+                pid_places: None,
                 now: 1_234,
                 mounts: read_mountinfo().expect("the live mount table"),
             }
@@ -115,6 +116,7 @@ mod kernel_tests {
             read_only_disks: false,
             failed_at_entry: Vec::new(),
             kernel_settings: Vec::new(),
+            pids: Default::default(),
         }
     }
 
