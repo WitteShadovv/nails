@@ -359,9 +359,30 @@ fn scan_bulk_extractor(dir: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()
             .filter(|(_, _, context)| carved::carved_hash(context).is_some())
             .filter_map(|(offset, _, _)| carved::zip_member_offset(offset))
             .collect();
+        // The carver saves a record once: a later one with the same bytes is
+        // named `<CACHED>`, with the hash of the one it saved. It is read
+        // from that saved record, which must be in the same file.
+        let saved_by_hash: BTreeMap<String, &str> = lines
+            .iter()
+            .filter(|(_, feature, _)| *feature != carved::CACHED)
+            .filter_map(|(_, feature, context)| Some((carved::carved_hash(context)?, *feature)))
+            .collect();
         for (offset, feature, context) in lines {
             let field = if recorder == Recorder::LoginRecords {
-                login_record_field(dir, feature)?
+                let saved = if feature == carved::CACHED {
+                    carved::carved_hash(context)
+                        .and_then(|hash| saved_by_hash.get(&hash).copied())
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "{}: a {} record at {offset} whose saved record is not in it",
+                                path.display(),
+                                carved::CACHED
+                            ))
+                        })?
+                } else {
+                    feature
+                };
+                login_record_field(dir, saved)?
             } else if let Some(hash) = carved::carved_hash(context) {
                 hash
             } else if carved::is_zip_member_info(context) && saved_members.contains(offset) {
