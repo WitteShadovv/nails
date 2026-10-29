@@ -224,6 +224,12 @@ pub enum Commands {
     #[cfg(feature = "gui")]
     #[command(hide = true)]
     Helper(HelperArgs),
+    /// Open the window, with the engine's root helper behind it
+    ///
+    /// Hidden while the window is not part of a release.
+    #[cfg(feature = "gui")]
+    #[command(hide = true)]
+    Gui,
     /// Start the decoy's wtmpdb boot writer after the way back (run by systemd, not by hand)
     #[command(name = "boot-writer", hide = true)]
     BootWriter {

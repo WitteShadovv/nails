@@ -1280,6 +1280,34 @@ fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
     assert_eq!(kdump.mock_ops().len(), before, "kdump probe must not write");
 }
 
+/// The findings the window's launcher names: none on an amnesic decoy, and
+/// one sentence for each persistent store, its fix included.
+#[test]
+fn persistence_findings_name_each_store_and_its_fix() {
+    let volatile = MockFilesystem::new();
+    volatile.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    volatile.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    assert_eq!(
+        DecoyPersistenceCheck::persistence_findings(&volatile),
+        Vec::<String>::new()
+    );
+
+    let both = MockFilesystem::new();
+    both.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=persistent\n",
+    );
+    both.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    set_unit_active(&both, "auditd.service");
+    let findings = DecoyPersistenceCheck::persistence_findings(&both);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings[0].contains("Storage=volatile"), "{findings:?}");
+    assert!(findings[1].contains("auditd"), "{findings:?}");
+}
+
 #[test]
 fn a_unit_with_a_populated_cgroup_counts_as_active_without_a_marker() {
     let fs = MockFilesystem::new();
