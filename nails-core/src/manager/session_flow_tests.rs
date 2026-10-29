@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::nixos::NixOSBuilder;
-use crate::platform::FakePlatform;
+use crate::platform::{FakePlatform, Selinuxfs};
 use crate::test_support::{Rerun, ScratchTmpfs, write_executable};
 use crate::{Config, PlatformState, RealFilesystem, StateFile};
 use nails_teardown::mountinfo::parse_mountinfo;
@@ -1030,9 +1030,10 @@ fn unlabelled_fhs_decoy() -> ScratchTmpfs {
 
 #[test]
 fn an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone() {
-    // Where the host facts report SELinux, and where there are no facts to rule
-    // it out, the root of the upper must take the decoy root's label, and this
-    // decoy root has none.
+    // Where SELinux runs, where the host facts report it and the mount table
+    // that would tell whether it runs could not be read, and where there are no
+    // facts to rule it out, the root of the upper must take the decoy root's
+    // label, and this decoy root has none.
     let _ = Rerun::new(crate::test_path!(
         an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone
     ))
@@ -1052,14 +1053,25 @@ fn an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone() {
             binary: PathBuf::from("/proc/self/exe"),
             ..EnterOptions::default()
         };
-        let mut selinux = FakePlatform::fhs().host_profile();
-        selinux.selinux = Some(crate::platform::SelinuxStatus {
-            enforce: Some(crate::platform::SelinuxMode::Enforcing),
-            config_mode: Some("enforcing".to_string()),
-            config_policy: Some("targeted".to_string()),
-        });
+        let with = |selinuxfs| {
+            let mut profile = FakePlatform::fhs().host_profile();
+            profile.selinux = Some(crate::platform::SelinuxStatus {
+                selinuxfs,
+                enforce: Some(crate::platform::SelinuxMode::Enforcing),
+                config_mode: Some("enforcing".to_string()),
+                config_policy: Some("targeted".to_string()),
+            });
+            profile
+        };
         for (profile, why) in [
-            (Some(selinux), "the host facts report SELinux"),
+            (
+                Some(with(Selinuxfs::Mounted)),
+                "SELinux runs on this host (selinuxfs is mounted)",
+            ),
+            (
+                Some(with(Selinuxfs::Unknown)),
+                "/proc/self/mounts could not be read to tell whether selinuxfs is mounted",
+            ),
             (None, "the host could not be detected and may run SELinux"),
         ] {
             let mut m = manager(hidden.path());
@@ -1093,6 +1105,59 @@ fn an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone() {
             assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
             assert!(!hidden.path().join("state.json").exists());
         }
+    });
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn an_entry_on_a_host_configured_for_selinux_without_selinuxfs_goes_on_and_says_so() {
+    // A host that keeps /etc/selinux/config from packages installed once, while
+    // its mount table lists no selinuxfs: no policy reads a label, so the entry
+    // goes on without the labels this decoy lacks, and says why in one line.
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_on_a_host_configured_for_selinux_without_selinuxfs_goes_on_and_says_so
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        let mut profile = FakePlatform::fhs().host_profile();
+        profile.selinux = Some(crate::platform::SelinuxStatus {
+            selinuxfs: Selinuxfs::NotMounted,
+            enforce: None,
+            config_mode: Some("permissive".to_string()),
+            config_policy: Some("default".to_string()),
+        });
+        m.set_host_profile(profile);
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+
+        assert!(
+            matches!(outcome, EnterOutcome::Prepared { .. }),
+            "{outcome:?}"
+        );
+        let upper = crate::session::Layout::new(hidden.path()).upper();
+        assert_eq!(selinux_label(&upper), Err(rustix::io::Errno::NODATA));
+        assert!(logs_contain(
+            "SELinux is configured on this host but selinuxfs is not mounted"
+        ));
+        entry::rollback(&machine.paths);
     });
 }
 

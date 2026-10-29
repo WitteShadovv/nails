@@ -363,8 +363,8 @@ fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
     );
 }
 
-/// Where the host facts report SELinux.
-const REQUIRED: Labels = Labels::Required(crate::session::labels::Reason::SelinuxReported);
+/// Where SELinux runs.
+const REQUIRED: Labels = Labels::Required(crate::session::labels::Reason::SelinuxRunning);
 
 /// `alice`, with the uid and gid of whoever runs the tests and her home at
 /// `home`.

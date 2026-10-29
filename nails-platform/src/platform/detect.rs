@@ -526,11 +526,16 @@ mod tests {
         fedora.mock_set_path_type("/sys/fs/selinux", crate::filesystem::PathKind::Dir);
         fedora.mock_set_file_content("/sys/fs/selinux/enforce", "1");
         fedora.mock_set_file_content(
+            "/proc/self/mounts",
+            "selinuxfs /sys/fs/selinux selinuxfs rw,nosuid,noexec,relatime 0 0\n",
+        );
+        fedora.mock_set_file_content(
             "/etc/selinux/config",
             "SELINUX=enforcing\nSELINUXTYPE=targeted\n",
         );
         let profile = detect(&fedora).unwrap();
         let selinux = profile.selinux.expect("Fedora has SELinux");
+        assert_eq!(selinux.selinuxfs, crate::platform::Selinuxfs::Mounted);
         assert_eq!(selinux.enforce, Some(SelinuxMode::Enforcing));
         assert_eq!(selinux.config_policy.as_deref(), Some("targeted"));
     }
