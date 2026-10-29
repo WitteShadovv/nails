@@ -632,6 +632,7 @@ name = "nails-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "nails-api",
  "nails-base",
  "nails-core",
  "nails-forensics",
