@@ -485,6 +485,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         boot_masks: Vec::new(),
         generator_masks: Vec::new(),
         skips: Vec::new(),
+        required_masks: Vec::new(),
         session_units: inputs.session_units.clone(),
         backend: inputs.backend.clone(),
         tools: Tools {
@@ -703,7 +704,8 @@ fn build(
 /// generation's) and in `/run` ([`mount_units`]), put in place what those
 /// decisions call for, and record in `plan` what the hidden session keeps
 /// from starting ([`mount_units::kept_off`]), each skip with the units it
-/// pulls in that act on its device. A directory of unit links that cannot be
+/// pulls in that act on its device, and each unit a boot target requires
+/// that is masked with why, for `status`. A directory of unit links that cannot be
 /// listed refuses the entry. Returns the warnings of every decision.
 ///
 /// The filesystems of these units are put in place after the fstabs': one
@@ -744,6 +746,7 @@ fn keep_units_off(
     let (kept_off, unskipped) = mount_units::kept_off(dirs, &decided.fstab, &decided.decisions);
     plan.masks = kept_off.masks;
     plan.skips = kept_off.skips;
+    plan.required_masks = kept_off.required_masks;
     Ok(decided
         .decisions
         .iter()

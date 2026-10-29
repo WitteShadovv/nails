@@ -76,7 +76,7 @@ use super::fstab::{
     waits_for,
 };
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
-use nails_teardown::whole_root::plan::Skip;
+use nails_teardown::whole_root::plan::{MaskCause, RequiredMask, Skip};
 use std::path::{Component, Path, PathBuf};
 
 /// Whether a device is there now: [`device_present`] on the running system,
@@ -606,6 +606,42 @@ pub struct KeptOff {
     pub masks: Vec<String>,
     /// The units skipped, with those they pull in and their device.
     pub skips: Vec<Skip>,
+    /// The units among [`masks`](Self::masks) that a boot target requires,
+    /// each once with why it is masked rather than skipped.
+    pub required_masks: Vec<RequiredMask>,
+}
+
+impl KeptOff {
+    /// Record that `units`, which a boot target requires, are masked for
+    /// `cause`, unless an earlier cause is recorded for one.
+    pub fn record_masked(&mut self, units: &[String], cause: MaskCause, device: Option<&Path>) {
+        for unit in units {
+            if !self.required_masks.iter().any(|m| &m.unit == unit) {
+                self.required_masks.push(RequiredMask {
+                    unit: unit.clone(),
+                    cause,
+                    device: device.map(Path::to_path_buf),
+                });
+            }
+        }
+    }
+}
+
+/// The units of `decision` masked although a boot target requires them,
+/// with why ([`Unreached`]).
+fn required_masked(decision: &Decision) -> Option<(&[String], MaskCause, Option<&Path>)> {
+    let Decision::Mask {
+        units,
+        unreached: Some(Unreached { cause, .. }),
+        ..
+    } = decision
+    else {
+        return None;
+    };
+    Some(match cause {
+        Unskippable::NoDevice(device) => (units, MaskCause::DeviceAbsent, Some(device)),
+        Unskippable::Unread => (units, MaskCause::Undetermined, None),
+    })
 }
 
 /// What the hidden session keeps from starting for `decisions` and every
@@ -621,6 +657,8 @@ pub struct KeptOff {
 /// another line could leave a checker of the line the hidden systemd reads
 /// free to start. Two skips of the same unit become one, pulling in what
 /// either pulls in; when they wait for different devices the unit is masked.
+/// A unit a boot target requires that ends up masked is recorded with why
+/// ([`KeptOff::required_masks`]).
 pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
     let placed = |file: &Path| {
         decisions.iter().any(|decision| match decision {
@@ -649,6 +687,10 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
             masks.push(automount);
         }
     }
+    let mut kept = KeptOff::default();
+    for (units, cause, device) in decisions.iter().filter_map(required_masked) {
+        kept.record_masked(units, cause, device);
+    }
     let mut merged: Vec<Skip> = Vec::new();
     for skip in skips {
         match merged.iter_mut().find(|other| other.units == skip.units) {
@@ -663,16 +705,18 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
             None => merged.push(skip),
         }
     }
-    let mut kept = KeptOff::default();
     for unit in masks {
         if !kept.masks.contains(&unit) {
             kept.masks.push(unit);
         }
     }
-    kept.skips = merged
-        .into_iter()
-        .filter(|skip| !skip.units.iter().any(|unit| kept.masks.contains(unit)))
-        .collect();
+    for skip in merged {
+        if skip.units.iter().any(|unit| kept.masks.contains(unit)) {
+            kept.record_masked(&skip.units, MaskCause::ConflictingLines, None);
+        } else {
+            kept.skips.push(skip);
+        }
+    }
     kept
 }
 

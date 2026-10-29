@@ -3,10 +3,30 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 use nails_core::output::{Mark, Style};
-use nails_core::status::{Posture, StatusReport};
+use nails_core::status::{Posture, RequiredUnitView, StatusReport};
 
 use super::{config_file_label, read_recent_logs};
 use crate::cli::output::dto::system_state_label;
+
+/// How and why the session keeps a unit a boot target requires from
+/// starting, for the human report.
+fn required_unit_line(unit: &RequiredUnitView) -> String {
+    const UNREACHED: &str = "the boot target that requires it is not reached";
+    match unit.reason {
+        "required_at_boot" => "skipped, as a boot target requires it".to_string(),
+        "device_absent" => match &unit.device {
+            Some(device) => format!(
+                "masked, as its device {} was not there; {UNREACHED}",
+                device.display()
+            ),
+            None => format!("masked, as its device was not there; {UNREACHED}"),
+        },
+        "undetermined" => {
+            format!("masked, as NAILS could not tell what it is or pulls in; {UNREACHED}")
+        }
+        _ => "masked, as the fstab lines for it disagree".to_string(),
+    }
+}
 
 /// Print the status header box.
 pub fn print_status_header(style: Style) {
@@ -100,6 +120,17 @@ where
                 "Masked decoy units: {}",
                 report.masked_units.join(", ")
             ));
+        }
+        if !report.required_units.is_empty() {
+            out.push("Required at boot, kept off:".to_string());
+            for unit in &report.required_units {
+                out.push(format!(
+                    "  {} {}: {}",
+                    style.mark(Mark::Bullet),
+                    unit.unit,
+                    required_unit_line(unit)
+                ));
+            }
         }
     }
     out.push(format!(

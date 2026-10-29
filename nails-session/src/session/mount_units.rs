@@ -63,7 +63,7 @@ pub mod unit_file;
 use super::fstab::{FstabEntry, escape_path};
 use super::policy::{self, Decision, KeptOff, Present, Units, Unreached, Unskippable};
 use nails_teardown::mountinfo::MountEntry;
-use nails_teardown::whole_root::plan::Skip;
+use nails_teardown::whole_root::plan::{MaskCause, Skip};
 use nails_teardown::whole_root::runtime_units::valid_unit_name;
 use std::path::{Component, Path, PathBuf};
 use unit_dirs::Load;
@@ -243,7 +243,8 @@ pub fn pulled_in(dirs: UnitDirs<'_>, name: &str) -> Result<Vec<String>, &'static
 /// ([`policy::runtime_units`]), each skip with the units its units pull in
 /// that act on their device or file ([`pulled_in`]), and a warning for each
 /// skip masked instead: one whose units pull in units NAILS cannot tell,
-/// any of which could act on its disk before its condition is tested.
+/// any of which could act on its disk before its condition is tested. Such a
+/// skip's units are recorded as masked for that ([`MaskCause::Undetermined`]).
 pub fn kept_off(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
@@ -273,6 +274,7 @@ pub fn kept_off(
                      pulls in will not start there",
                     skip.units.join(" and ")
                 ));
+                kept.record_masked(&skip.units, MaskCause::Undetermined, None);
                 for unit in skip.units {
                     if !kept.masks.contains(&unit) {
                         kept.masks.push(unit);
