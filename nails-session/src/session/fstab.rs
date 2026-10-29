@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use nails_base::fstab::{FstabEntry, escape_path, parse_fstab, spec_device};
+pub use nails_base::fstab::{FstabEntry, escape_path, is_virtual_type, parse_fstab, spec_device};
 
 /// The `/etc/fstab` of the root at `root`, read as that root resolves it
 /// ([`read_in_root`](nails_teardown::whole_root::nextroot::read_in_root)).

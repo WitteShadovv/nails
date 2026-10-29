@@ -858,3 +858,39 @@ fn only_conf_drop_ins_apply_each_name_from_the_first_directory_that_has_it() {
         ]
     );
 }
+
+#[test]
+fn a_ram_filesystem_over_a_disk_unit_s_mount_point_is_put_in_place_not_left_to_the_unit() {
+    // The unit mounts a disk, and the decoy has a tmpfs mounted over its mount
+    // point now. Left to the hidden systemd, the unit would mount the disk
+    // read-write in the hidden session. The tmpfs is overlaid instead, as for
+    // the same line in the fstab, so the hidden systemd finds the mount point
+    // mounted and mounts nothing there.
+    let decoy = Decoy::new();
+    decoy.write("/etc/systemd/system/srv-scratch.mount", NATIVE_MOUNT);
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.requires/srv-scratch.mount",
+        "../srv-scratch.mount",
+    );
+    let ram = format!("{ROOT_ONLY}2 1 0:45 / /srv/scratch rw - tmpfs tmpfs rw\n");
+    let overlay = [Decision::Overlay {
+        target: "/srv/scratch".into(),
+    }];
+    let fstab = crate::session::fstab::parse_fstab(
+        "/dev/disk/by-id/virtio-scratch /srv/scratch ext4 defaults 0 2\n",
+    );
+    assert_eq!(
+        policy::decide_all(&fstab, &parse_mountinfo(&ram), Path::new(HIDDEN), &|_| true),
+        overlay
+    );
+    assert_eq!(decoy.decide(&ram, true), overlay);
+    // A RAM filesystem the unit mounts itself stays the hidden systemd's.
+    decoy.write(
+        "/etc/systemd/system/srv-scratch.mount",
+        "[Mount]\nWhat=tmpfs\nWhere=/srv/scratch\nType=tmpfs\n",
+    );
+    assert!(matches!(
+        decoy.decide(&ram, true)[..],
+        [Decision::Leave { .. }]
+    ));
+}

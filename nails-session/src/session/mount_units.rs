@@ -37,7 +37,10 @@
 //! to the hidden systemd. The mount point and a swap's device are the ones
 //! the unit's name stands for, as systemd refuses a unit whose `Where=` or
 //! `What=` does not match its name; a filesystem mounted now is judged by the
-//! decoy's mount table. A zram swap is left to the hidden systemd while its
+//! decoy's mount table, but a RAM or kernel filesystem mounted over the mount
+//! point of a unit is not taken for the unit's own: the unit's files tell
+//! what it mounts, and what is mounted there is put in place as for an fstab
+//! line. A zram swap is left to the hidden systemd while its
 //! zram device keeps its pages in RAM, with no backing device to write them
 //! back to ([`ram_only_zram`]); one with a backing device, or whose device
 //! NAILS cannot tell about, is decided as a disk swap. The hidden session's
@@ -60,7 +63,7 @@
 pub mod unit_dirs;
 pub mod unit_file;
 
-use super::fstab::{FstabEntry, escape_path};
+use super::fstab::{FstabEntry, escape_path, is_virtual_type};
 use super::policy::{self, Decision, KeptOff, Present, Units, Unreached, Unskippable};
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::plan::{MaskCause, Skip};
@@ -317,15 +320,18 @@ fn generator_option(option: &str) -> bool {
 /// the type and source of a filesystem mounted now as the decoy's mount
 /// table has them. An automount point the decoy has not mounted a
 /// filesystem on yet shows PID 1's autofs, which is not the filesystem: the
-/// unit's files tell that. `Err` with the reason when they cannot be
-/// resolved.
+/// unit's files tell that. Nor is a RAM or kernel filesystem mounted over
+/// the mount point: left to the hidden systemd, a unit of a disk would mount
+/// the disk read-write there, so the unit's files tell what it mounts, and
+/// the policy puts what is mounted there in place. `Err` with the reason
+/// when they cannot be resolved.
 fn as_entry(
     unit: &UnitFile,
     name: &str,
     path: &Path,
     live: Option<&MountEntry>,
 ) -> Result<FstabEntry, &'static str> {
-    let live = live.filter(|live| live.fstype != "autofs");
+    let live = live.filter(|live| live.fstype != "autofs" && !is_virtual_type(&live.fstype));
     let swap = name.ends_with(".swap");
     let section = if swap { "Swap" } else { "Mount" };
     let options = value(unit, section, "Options")
