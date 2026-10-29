@@ -5,6 +5,8 @@ pub mod args;
 pub(crate) mod chokepoint;
 pub mod commands;
 pub mod early;
+#[cfg(feature = "gui")]
+pub mod helper;
 pub(crate) mod interrupt;
 pub mod logging;
 pub mod main_guard;
@@ -33,6 +35,10 @@ fn command_is_mutating(command: &Commands) -> bool {
         | Commands::Emergency(_)
         | Commands::Recover(_)
         | Commands::Discard(_) => true,
+        // The window's helper runs mutating operations for as long as the
+        // window lives, so it must outlive a terminal's hangup too.
+        #[cfg(feature = "gui")]
+        Commands::Helper(_) => true,
         _ => false,
     }
 }
@@ -122,6 +128,8 @@ pub fn execute_command(
         Commands::Completions(args) => commands::completions::execute(&args),
         Commands::Watch => commands::watch::execute(settings, env, config),
         Commands::SleepGuard => commands::sleep_guard::execute(settings, env, config),
+        #[cfg(feature = "gui")]
+        Commands::Helper(_) => helper::execute(env, config),
         // The transition step runs in `early::dispatch` as root; reaching clap
         // means it was not run by systemd, so it does nothing.
         Commands::Transition => ExitStatus::Ok,

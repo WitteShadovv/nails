@@ -319,7 +319,16 @@ impl Readiness {
             .is_some_and(|profile| profile.has_config_layer());
 
         let registry = manager.preflight_registry(&options)?;
-        let (results, _) = registry.run_all_detailed(manager.filesystem());
+        // A caller watching the typed event stream (a window) sees each check
+        // the moment it ends, as activation reports them; with no event
+        // reporter installed this is the plain run.
+        let (results, _) = registry.run_all_detailed_with(manager.filesystem(), |name, result| {
+            crate::reporter::progress::check(
+                name,
+                crate::manager::preflight_runner::check_outcome(result),
+                result.message(),
+            );
+        });
         let checks: Vec<CheckRow> = results
             .iter()
             .map(|(name, result)| CheckRow::from_result(name.clone(), result))

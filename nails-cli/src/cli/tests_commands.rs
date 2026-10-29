@@ -148,6 +148,8 @@ fn test_only_the_commands_that_change_the_system_count_as_mutating() {
         &["emergency"],
         &["recover"],
         &["discard", "/home"],
+        #[cfg(feature = "gui")]
+        &["helper", "--stdio"],
     ];
     let other: &[&[&str]] = &[
         &["status"],
