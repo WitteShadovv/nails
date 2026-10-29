@@ -13,7 +13,15 @@
 //! outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 //! outputs/bulk_extractor/<label>/*_carved/...  the objects its carvers saved
 //! outputs/plaso/<label>.jsonl            plaso timeline, one JSON event a line
+//! outputs/plaso/not-run                  instead of the timelines: why none ran
 //! ```
+//!
+//! On a btrfs image, which plaso cannot open, `run-scan.sh` runs no timeline
+//! and writes `plaso/not-run` (holding `btrfs`) instead. [`scan_all`] records
+//! that channel as left out by design ([`NotRun`]), which the verdict names and
+//! never calls clean, and the restore channel then keeps the rotating journal
+//! files it otherwise leaves to plaso. A marker that says anything else, or one
+//! next to a timeline, stops the run.
 //!
 //! `run-scan.sh` hashes each restored file before it empties it to save disk,
 //! into `<label>.sha256` (`sha256sum --zero`: `<hex>  ./<path>`, each record
@@ -40,7 +48,7 @@
 //! filesystem.
 
 use crate::carved::{self, Recorder};
-use crate::model::{Finding, ImageLabel, Scans, Tool};
+use crate::model::{Finding, ImageLabel, NotRun, Scans, Tool};
 use crate::nix_db::{NIX_DB_PATH, nix_db_findings};
 use crate::plaso::{is_journal_file, plaso_finding};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,21 +66,74 @@ pub fn scan_all(outputs: &Path) -> io::Result<Scans> {
             format!("outputs directory not found: {}", outputs.display()),
         ));
     }
+    let not_run = scan_not_run(&outputs.join("plaso"))?;
+    // Without a timeline nothing compares the rotating journal files by their
+    // messages, so the restore channel keeps them as files.
+    let journal_files = if not_run.iter().any(|n| n.tool() == Tool::Plaso) {
+        JournalFiles::Keep
+    } else {
+        JournalFiles::LeaveToPlaso
+    };
     Ok(Scans {
-        before: scan_image(outputs, ImageLabel::Before)?,
-        control: scan_image(outputs, ImageLabel::Control)?,
-        after: scan_image(outputs, ImageLabel::After)?,
+        before: scan_image(outputs, ImageLabel::Before, journal_files)?,
+        control: scan_image(outputs, ImageLabel::Control, journal_files)?,
+        after: scan_image(outputs, ImageLabel::After, journal_files)?,
+        not_run,
     })
 }
 
+/// The marker `run-scan.sh` writes into `outputs/plaso/` when it leaves the
+/// timeline out by design, on a btrfs image (see [`NotRun`]).
+pub const NOT_RUN_MARKER: &str = "not-run";
+
+/// The channels the scan left out by design, read from the marker in the
+/// plaso output directory `plaso`: none without one. A marker that names no
+/// such channel, one the scan cannot read, and a marker next to a timeline
+/// are errors, so that a channel is never left out by a stray file and a
+/// timeline is never both run and not run.
+fn scan_not_run(plaso: &Path) -> io::Result<BTreeSet<NotRun>> {
+    let marker = plaso.join(NOT_RUN_MARKER);
+    if !present(&marker)? {
+        return Ok(BTreeSet::new());
+    }
+    let bytes = fs::read(&marker).map_err(|e| at(&marker, e))?;
+    let not_run = NotRun::from_marker(&bytes)
+        .map_err(|message| invalid(format!("{}: {message}", marker.display())))?;
+    for label in ImageLabel::ALL {
+        let timeline = plaso.join(format!("{}.jsonl", label.dir_name()));
+        if present(&timeline)? {
+            return Err(invalid(format!(
+                "{}: says the timeline did not run, but {} is there",
+                marker.display(),
+                timeline.display()
+            )));
+        }
+    }
+    Ok(BTreeSet::from([not_run]))
+}
+
+/// What the restore channel does with a rotating journal file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JournalFiles {
+    /// Leave it out: plaso compares it by its messages (a full run).
+    LeaveToPlaso,
+    /// Report it like any file: no timeline ran to compare it.
+    Keep,
+}
+
 /// Normalize one image's findings across every tool.
-fn scan_image(outputs: &Path, label: ImageLabel) -> io::Result<BTreeSet<Finding>> {
+fn scan_image(
+    outputs: &Path,
+    label: ImageLabel,
+    journal_files: JournalFiles,
+) -> io::Result<BTreeSet<Finding>> {
     let mut findings = BTreeSet::new();
     let name = label.dir_name();
     let restore = outputs.join("restore");
     scan_restore(
         &restore.join(name),
         &restore.join(format!("{name}.sha256")),
+        journal_files,
         &mut findings,
     )?;
     scan_nix_db(
@@ -127,7 +188,12 @@ fn read_text(path: &Path) -> io::Result<String> {
 /// a tree without its manifest, a file the manifest has no digest for, a
 /// digest for a file the tree lacks, or a directory or entry that cannot be
 /// read, is an error.
-fn scan_restore(root: &Path, manifest: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()> {
+fn scan_restore(
+    root: &Path,
+    manifest: &Path,
+    journal_files: JournalFiles,
+    out: &mut BTreeSet<Finding>,
+) -> io::Result<()> {
     if !present(root)? {
         return Ok(());
     }
@@ -163,8 +229,10 @@ fn scan_restore(root: &Path, manifest: &Path, out: &mut BTreeSet<Finding>) -> io
             // content (see crate::plaso), not by its per-boot unique filename
             // and content, so it is not a restore finding -- otherwise every
             // new rotation would be false residue. The directories that hold
-            // it are still reported.
-            if !is_journal_file(&abs) {
+            // it are still reported. Without a timeline nothing reads its
+            // messages, so it is reported like any file: a journal the session
+            // left reads as residue rather than going unseen.
+            if journal_files == JournalFiles::Keep || !is_journal_file(&abs) {
                 out.insert(Finding::new(Tool::BtrfsRestore, abs, field));
             }
         }

@@ -29,7 +29,15 @@
 //!    database: the scan holds its rows to the database instead (see
 //!    [`crate::scan`]).
 //!
-//! The run is [`Status::Clean`] only when all six hold. [`verdict`] decides the
+//! A scan may leave a channel out by design ([`NotRun`]: no plaso timeline on
+//! a btrfs image, which plaso cannot read). That channel is then not required,
+//! every other one still is, and a run that passes everything else is
+//! [`Status::Partial`], never [`Status::Clean`]: its summary and its `not_run`
+//! list name the channel and why it did not run, so it never reads as a full
+//! run. A finding of a channel the scan says it did not run fails the run.
+//!
+//! The run is [`Status::Clean`] only when all six hold and no channel was left
+//! out. [`verdict`] decides the
 //! first five over the findings alone, so a test world needs only the findings
 //! its rule weighs; [`scan_verdict`] adds the sixth and is the decision the CLI
 //! renders. Every verdict also names the classes of change it cannot see (see
@@ -40,8 +48,8 @@
 
 use crate::catalog::Catalog;
 use crate::model::{
-    AllowEntry, Canary, Change, Controls, Finding, ImageLabel, OraclePolicy, PositiveControl,
-    Scans, Tool,
+    AllowEntry, Canary, Change, Controls, Finding, ImageLabel, NotRun, OraclePolicy,
+    PositiveControl, Scans, Tool,
 };
 use crate::residue::compute_residue;
 use crate::unseen::{self, Unseen};
@@ -53,9 +61,15 @@ use std::collections::BTreeSet;
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     /// Every difference is noise or cited, the scan is not blind, the canary
-    /// was seen.
+    /// was seen, and every channel ran.
     Clean,
-    /// At least one failure below; never emitted on anything but a clean run.
+    /// Everything [`Status::Clean`] asks of the channels that ran holds, but
+    /// the scan left a channel out by design ([`NotRun`]), so the run is not a
+    /// full one: the verdict's `not_run` list and its summary name what did
+    /// not run and why. It is not clean, and no consumer that asks for
+    /// `clean` takes it for one.
+    Partial,
+    /// At least one failure below.
     Fail,
 }
 
@@ -139,6 +153,15 @@ pub enum Failure {
         /// The image it reported nothing for: `before`, `control` or `after`.
         image: String,
     },
+    /// The scan says it left a channel out ([`NotRun`]), yet that channel
+    /// reported a finding for an image: the scan contradicts itself, so
+    /// neither its findings nor the channel's absence can be trusted.
+    NotRunChannelReported {
+        /// The channel the scan says did not run.
+        tool: Tool,
+        /// The image it reported a finding for: `before`, `control` or `after`.
+        image: String,
+    },
 }
 
 /// A residue finding that a cited allowlist entry explains, with the cited
@@ -212,6 +235,9 @@ pub struct Verdict {
     pub positive_controls: Vec<ControlResult>,
     /// Whether the coverage canary was detected.
     pub canary_detected: bool,
+    /// The channels the scan left out by design, each with why: empty for a
+    /// full run. A verdict with any is never [`Status::Clean`].
+    pub not_run: Vec<NotRun>,
     /// The classes of change this verdict cannot see, the files of this run a
     /// plain reboot rewrites among them: what a clean verdict does not cover.
     pub unseen: Vec<Unseen>,
@@ -223,9 +249,16 @@ impl Verdict {
         self.status == Status::Clean
     }
 
-    /// The process exit code: `0` clean, `1` fail.
+    /// The process exit code: `0` clean, `1` fail, `3` partial (clean in
+    /// the channels that ran, with a channel left out by design), so that no
+    /// caller that reads only the exit code takes a partial run for a full
+    /// one.
     pub fn exit_code(&self) -> u8 {
-        if self.is_clean() { 0 } else { 1 }
+        match self.status {
+            Status::Clean => 0,
+            Status::Fail => 1,
+            Status::Partial => 3,
+        }
     }
 }
 
@@ -571,30 +604,79 @@ fn check_canary(after: &BTreeSet<Finding>, canary: &Canary) -> (bool, Option<Fai
     (false, Some(failure))
 }
 
-/// Render the one-line human summary. A clean line ends with what the verdict
-/// cannot see.
+/// Render the one-line human summary. A clean or partial line ends with what
+/// the verdict cannot see, and any line names the channels left out.
 fn summarize(
     status: Status,
     blind: bool,
     counts: &Counts,
     failures: usize,
     unseen: &[Unseen],
+    not_run: &[NotRun],
 ) -> String {
-    if status == Status::Clean {
-        return format!(
-            "CLEAN: {} residue ({} noise subtracted, {} cited, {} self-check){}",
+    let not_run_text = not_run
+        .iter()
+        .map(|n| n.describe())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let passed = |head: &str| {
+        format!(
+            "{head}: {} residue ({} noise subtracted, {} cited, {} self-check){}",
             counts.residue,
             counts.noise_subtracted,
             counts.explained,
             counts.self_checks,
             unseen::summary_suffix(unseen)
-        );
+        )
+    };
+    match status {
+        Status::Clean => passed("CLEAN"),
+        Status::Partial => passed(&format!(
+            "PARTIAL, NOT A FULL RUN ({not_run_text}), clean in the channels that ran"
+        )),
+        Status::Fail => {
+            let marker = if blind { " (BLIND)" } else { "" };
+            let left_out = if not_run.is_empty() {
+                String::new()
+            } else {
+                format!("; {not_run_text}")
+            };
+            format!(
+                "FAIL{marker}: {failures} failure(s), {} of {} residue unexplained{left_out}",
+                counts.unexplained, counts.residue
+            )
+        }
     }
-    let marker = if blind { " (BLIND)" } else { "" };
-    format!(
-        "FAIL{marker}: {failures} failure(s), {} of {} residue unexplained",
-        counts.unexplained, counts.residue
-    )
+}
+
+/// The status the failures and the channels left out decide: any failure
+/// fails, and a run with none is clean only when no channel was left out.
+fn decide_status(failures: &[Failure], not_run: &[NotRun]) -> Status {
+    if !failures.is_empty() {
+        Status::Fail
+    } else if not_run.is_empty() {
+        Status::Clean
+    } else {
+        Status::Partial
+    }
+}
+
+/// One failure per image on which a channel the scan says it left out
+/// reported a finding, image by image, then channel by channel.
+fn contradicted_not_run(scans: &Scans) -> Vec<Failure> {
+    let mut failures = Vec::new();
+    for label in ImageLabel::ALL {
+        let findings = scans.image(label);
+        for n in &scans.not_run {
+            if findings.iter().any(|f| f.tool == n.tool()) {
+                failures.push(Failure::NotRunChannelReported {
+                    tool: n.tool(),
+                    image: label.dir_name().to_string(),
+                });
+            }
+        }
+    }
+    failures
 }
 
 /// Decide the verdict over the normalized findings: the first five rules of the
@@ -624,12 +706,10 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
     }
     failures.extend(control_failures);
     failures.extend(canary_failure);
+    failures.extend(contradicted_not_run(scans));
 
-    let status = if failures.is_empty() {
-        Status::Clean
-    } else {
-        Status::Fail
-    };
+    let not_run: Vec<NotRun> = scans.not_run.iter().copied().collect();
+    let status = decide_status(&failures, &not_run);
     let counts = Counts {
         candidate: residue.candidate,
         noise_subtracted: residue.noise_subtracted,
@@ -638,7 +718,7 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
         explained: explained.len(),
         unexplained: unexplained_count,
     };
-    let summary = summarize(status, blind, &counts, failures.len(), &unseen);
+    let summary = summarize(status, blind, &counts, failures.len(), &unseen, &not_run);
     Verdict {
         status,
         blind,
@@ -648,18 +728,23 @@ pub fn verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdi
         explained,
         positive_controls: control_results,
         canary_detected,
+        not_run,
         unseen,
     }
 }
 
 /// One failure per required analysis channel that reported no finding for an
 /// image, image by image in [`ImageLabel::ALL`] order, then channel by
-/// channel.
+/// channel. A channel the scan left out by design ([`NotRun`]) is not
+/// required; every other one is.
 fn missing_channels(scans: &Scans) -> Vec<Failure> {
     let mut failures = Vec::new();
     for label in ImageLabel::ALL {
         let findings = scans.image(label);
         for tool in Tool::REQUIRED {
+            if scans.not_run.iter().any(|n| n.tool() == tool) {
+                continue;
+            }
             if !findings.iter().any(|f| f.tool == tool) {
                 failures.push(Failure::ChannelMissing {
                     tool,
@@ -683,7 +768,10 @@ fn missing_channels(scans: &Scans) -> Vec<Failure> {
 /// open, as one opaque file at the same path on every image. So
 /// `ci/oracle/run-scan.sh` keeps a plaso timeline only when it has an event
 /// for the canary's file, and drops the channel otherwise, which this rule
-/// then fails. This is the decision the CLI renders.
+/// then fails. A channel the scan left out by design ([`NotRun`], plaso on a
+/// btrfs image) is the one exception: it is not required, the others are, and
+/// a run that passes everything else is [`Status::Partial`]. This is the
+/// decision the CLI renders.
 pub fn scan_verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> Verdict {
     let mut decided = verdict(scans, policy, catalog);
     let missing = missing_channels(scans);
@@ -697,6 +785,7 @@ pub fn scan_verdict(scans: &Scans, policy: &OraclePolicy, catalog: &Catalog) -> 
             &decided.counts,
             decided.failures.len(),
             &decided.unseen,
+            &decided.not_run,
         );
     }
     decided

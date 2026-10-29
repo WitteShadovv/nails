@@ -14,8 +14,8 @@
 
 use crate::catalog::{Catalog, CatalogRow};
 use crate::model::{
-    AllowEntry, Allowlist, Canary, Change, Controls, Finding, OraclePolicy, PositiveControl, Scans,
-    Tool,
+    AllowEntry, Allowlist, Canary, Change, Controls, Finding, NotRun, OraclePolicy,
+    PositiveControl, Scans, Tool,
 };
 use crate::nix_db::NIX_DB_PATH;
 use crate::unseen::Unseen;
@@ -173,6 +173,7 @@ fn clean_scans() -> Scans {
         before: set([base.clone(), canary_finding()]),
         control: set([base.clone(), canary_finding(), noise.clone()]),
         after: set([base, canary_finding(), noise, allowed, control_finding()]),
+        not_run: BTreeSet::new(),
     }
 }
 
@@ -911,6 +912,7 @@ fn a_positive_control_is_expected_residue_not_a_leak() {
         before: set([canary_finding()]),
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
+        not_run: BTreeSet::new(),
     };
     let v = decide(&scans, &policy_with(vec![]));
     assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
@@ -928,6 +930,7 @@ fn fail_when_no_positive_control_is_configured() {
         before: set([canary_finding()]),
         control: set([canary_finding()]),
         after: set([canary_finding()]),
+        not_run: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1250,6 +1253,7 @@ fn a_valid_concrete_control_is_detected_and_clean() {
         before: set([canary_finding()]),
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
+        not_run: BTreeSet::new(),
     };
     let v = decide(&scans, &policy_with(vec![]));
     assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
@@ -1297,6 +1301,7 @@ fn a_positive_control_on_the_wrong_channel_is_not_detected() {
         before: set([canary_finding(), wrong_channel.clone()]),
         control: set([canary_finding(), wrong_channel.clone()]),
         after: set([canary_finding(), wrong_channel]),
+        not_run: BTreeSet::new(),
     };
     let control = PositiveControl {
         name: "wtmpdb-boot".into(),
@@ -1331,6 +1336,7 @@ fn a_canary_on_the_wrong_channel_is_not_detected() {
         before: set([wrong_channel.clone()]),
         control: set([wrong_channel.clone()]),
         after: set([wrong_channel, control_finding()]),
+        not_run: BTreeSet::new(),
     };
     let v = decide(&scans, &clean_policy());
     assert_eq!(v.status, Status::Fail, "{:?}", v.failures);
@@ -1359,6 +1365,7 @@ fn a_null_tool_control_is_detected_through_any_channel() {
         before: set([canary_finding()]),
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
+        not_run: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1392,6 +1399,7 @@ fn a_detected_control_does_not_excuse_a_second_missing_one() {
         before: set([canary_finding()]),
         control: set([canary_finding()]),
         after: set([canary_finding(), control_finding()]),
+        not_run: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1426,6 +1434,7 @@ fn a_configured_but_rejected_control_fails_rather_than_passing_clean() {
         before: set([canary_finding()]),
         control: set([canary_finding()]),
         after: set([canary_finding()]),
+        not_run: BTreeSet::new(),
     };
     let policy = OraclePolicy {
         allowlist: allow(vec![]),
@@ -1581,6 +1590,7 @@ fn complete_scans() -> Scans {
         before: baseline.clone(),
         control: baseline,
         after,
+        not_run: BTreeSet::new(),
     }
 }
 
@@ -1706,4 +1716,190 @@ fn a_missing_channel_is_reported_alongside_a_leak() {
         "{v:?}"
     );
     assert_eq!(v.counts.unexplained, 1);
+}
+
+// --- a btrfs scan runs without the timeline, and says so ----------------------
+
+/// The complete scan of a btrfs image: no plaso finding on any image, and the
+/// timeline marked as left out because plaso cannot read btrfs.
+fn btrfs_scans() -> Scans {
+    let mut scans = without(
+        complete_scans(),
+        Tool::Plaso,
+        &["before", "control", "after"],
+    );
+    scans.not_run.insert(NotRun::PlasoCannotReadBtrfs);
+    scans
+}
+
+#[test]
+fn a_btrfs_scan_without_the_timeline_is_partial_and_names_it() {
+    // Every channel that ran passes, so the run passes, but it is not a full
+    // run: the status is partial, never clean, the exit code is its own, and
+    // the summary and the not_run list name the timeline and why.
+    let v = decide_scan(&btrfs_scans(), &complete_policy());
+    assert_eq!(v.status, Status::Partial, "{:?}", v.failures);
+    assert!(!v.is_clean());
+    assert_eq!(v.exit_code(), 3);
+    assert!(!v.blind);
+    assert!(v.failures.is_empty(), "{:?}", v.failures);
+    assert_eq!(v.not_run, [NotRun::PlasoCannotReadBtrfs]);
+    assert!(
+        v.summary.starts_with(
+            "PARTIAL, NOT A FULL RUN (timeline: not run, plaso cannot read btrfs), \
+             clean in the channels that ran: 1 residue"
+        ),
+        "{}",
+        v.summary
+    );
+    assert!(!v.summary.contains("CLEAN"), "{}", v.summary);
+
+    let json = serde_json::to_value(&v).expect("serializes");
+    assert_eq!(json["status"], "partial");
+    assert_eq!(
+        json["not_run"],
+        serde_json::json!([{
+            "tool": "plaso",
+            "channel": "timeline",
+            "reason": "plaso cannot read btrfs"
+        }])
+    );
+}
+
+#[test]
+fn a_full_scan_has_nothing_left_out_and_stays_clean() {
+    // The ext4 path is unchanged: every channel ran, so the verdict is clean,
+    // exits 0 and its not_run list is empty.
+    let v = decide_scan(&complete_scans(), &complete_policy());
+    assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
+    assert_eq!(v.exit_code(), 0);
+    assert!(v.not_run.is_empty());
+    assert!(v.summary.starts_with("CLEAN: "), "{}", v.summary);
+    let json = serde_json::to_value(&v).expect("serializes");
+    assert_eq!(json["status"], "clean");
+    assert_eq!(json["not_run"], serde_json::json!([]));
+}
+
+#[test]
+fn a_btrfs_scan_still_requires_restore_and_bulk_extractor_on_every_image() {
+    // Leaving the timeline out drops only that channel: the restore carve and
+    // bulk_extractor stay required on every image, and a silent one fails the
+    // run blind, naming the timeline as not run too.
+    for tool in [Tool::BtrfsRestore, Tool::BulkExtractor] {
+        for image in ["before", "control", "after"] {
+            let scans = without(btrfs_scans(), tool, &[image]);
+            let v = decide_scan(&scans, &complete_policy());
+            assert_eq!(v.status, Status::Fail, "{tool:?} silent on {image}");
+            assert!(v.blind, "{tool:?} silent on {image}");
+            assert!(
+                v.failures.contains(&channel_missing(tool, image)),
+                "{tool:?} silent on {image}: {:?}",
+                v.failures
+            );
+            assert!(
+                !v.failures.iter().any(|f| matches!(
+                    f,
+                    Failure::ChannelMissing {
+                        tool: Tool::Plaso,
+                        ..
+                    }
+                )),
+                "{:?}",
+                v.failures
+            );
+            assert!(
+                v.summary
+                    .ends_with("; timeline: not run, plaso cannot read btrfs"),
+                "{}",
+                v.summary
+            );
+        }
+    }
+}
+
+#[test]
+fn a_leak_on_a_btrfs_scan_fails_it() {
+    // The record and content diff still decides: a file new in after fails
+    // the run, and the summary still names the timeline as not run.
+    let mut scans = btrfs_scans();
+    scans.after.insert(restore("/home/user/secret.txt"));
+    let v = decide_scan(&scans, &complete_policy());
+    assert_eq!(v.status, Status::Fail);
+    assert!(has_unexplained(&v, "/home/user/secret.txt"), "{v:?}");
+    assert_eq!(v.not_run, [NotRun::PlasoCannotReadBtrfs]);
+    assert!(
+        v.summary
+            .contains("timeline: not run, plaso cannot read btrfs"),
+        "{}",
+        v.summary
+    );
+}
+
+#[test]
+fn a_btrfs_scan_that_is_blind_fails_rather_than_reading_partial() {
+    // A positive control missing on a btrfs scan is a blind run, not a
+    // partial one.
+    let mut scans = btrfs_scans();
+    scans.after.remove(&planted_finding());
+    let v = decide_scan(&scans, &complete_policy());
+    assert_eq!(v.status, Status::Fail);
+    assert!(v.blind);
+}
+
+#[test]
+fn a_timeline_finding_on_a_scan_that_left_it_out_fails_the_run() {
+    // A scan that says it ran no timeline but holds a plaso finding
+    // contradicts itself; the run fails on each image the channel reported
+    // for, in the bare engine as in the scan verdict.
+    let mut scans = complete_scans();
+    scans.not_run.insert(NotRun::PlasoCannotReadBtrfs);
+    for v in [
+        decide(&scans, &complete_policy()),
+        decide_scan(&scans, &complete_policy()),
+    ] {
+        assert_eq!(v.status, Status::Fail);
+        let flagged: Vec<&Failure> = v
+            .failures
+            .iter()
+            .filter(|f| matches!(f, Failure::NotRunChannelReported { .. }))
+            .collect();
+        assert_eq!(
+            flagged,
+            ["before", "control", "after"]
+                .map(|image| Failure::NotRunChannelReported {
+                    tool: Tool::Plaso,
+                    image: image.into(),
+                })
+                .iter()
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn a_marker_names_the_timeline_left_out_only_for_btrfs() {
+    // The marker run-scan.sh writes is the one word btrfs, with or without
+    // its newline. Anything else, another file system, another spelling, a
+    // second line or nothing, names no channel the scan may leave out.
+    for ok in [&b"btrfs"[..], b"btrfs\n"] {
+        assert_eq!(NotRun::from_marker(ok), Ok(NotRun::PlasoCannotReadBtrfs));
+    }
+    for bad in [
+        &b""[..],
+        b"\n",
+        b"ext4\n",
+        b"BTRFS\n",
+        b" btrfs\n",
+        b"btrfs \n",
+        b"btrfs\r\n",
+        b"btrfs\n\n",
+        b"btrfs\nbtrfs\n",
+        b"xfs",
+    ] {
+        let err = NotRun::from_marker(bad).expect_err("refused");
+        assert!(err.contains("expected \"btrfs\""), "{err}");
+    }
+    let n = NotRun::PlasoCannotReadBtrfs;
+    assert_eq!(n.tool(), Tool::Plaso);
+    assert_eq!(n.describe(), "timeline: not run, plaso cannot read btrfs");
 }

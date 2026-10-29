@@ -5,9 +5,14 @@ name: Oracle real-image nightly
 # control reboot and after the session, so a regression in the real
 # restore/bulk_extractor/plaso path (ext4 carving, the volatile-decoy posture,
 # the lease settle) is caught. Anything but a clean verdict fails the run.
-# This is the only oracle run in CI: ci/oracle/oracle-nightly.yml, the run over
-# synthetic btrfs images, is a template that is not installed under
-# .github/workflows, so nothing runs it.
+#
+# A third job, scan-btrfs, runs the same scan over the synthetic btrfs images
+# ci/oracle/make-sample-images.sh builds (the ci/oracle/oracle-nightly.yml
+# template's path), because plaso cannot read btrfs: on btrfs images no
+# timeline runs, and the verdict must come out partial, naming "timeline: not
+# run, plaso cannot read btrfs", never clean. It passes on that partial
+# verdict alone, so a btrfs scan that turns blind, leaks or calls itself clean
+# fails it. It needs no KVM and does not wait for the images.
 #
 # Two runners, because the two halves need different hosts:
 #   * produce: ubuntu-26.04 exposes /dev/kvm (install-nix-action opens it), so
@@ -209,15 +214,88 @@ jobs:
           name: oracle-real-verdict
           path: ${{ runner.temp }}/oracle-artifact/
 
-  # Runs of main are unattended: a failed produce or scan job opens or comments
-  # on the 'CI red: Oracle real-image nightly' issue, and the next green run
-  # closes it. Both jobs are listed because a failed produce job skips the
-  # scan, and a skipped job alone leaves the issue as it is. A dispatch on
+  # The btrfs path: the synthetic btrfs images, built here one at a time, then
+  # the restore carve (btrfs restore), the record diff and bulk_extractor over
+  # each, and no plaso timeline, since plaso cannot read btrfs. run-scan.sh
+  # passes only a partial verdict that names the timeline as not run; the step
+  # below checks the verdict says exactly that, so the job fails if the btrfs
+  # path ever reads as clean, or as anything but partial.
+  scan-btrfs:
+    name: Scan synthetic btrfs images (no timeline)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: oracle
+          save-if: false
+
+      - name: Build the verdict tool
+        run: cargo build --release --locked -p nails-oracle
+
+      # btrfs-progs builds and carves the images, jq reads the verdict, and the
+      # rest is the pinned bulk_extractor build chain. No docker: no timeline
+      # runs on btrfs.
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            btrfs-progs jq \
+            git autoconf automake build-essential libtool pkg-config flex \
+            libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
+            libabsl-dev libgcrypt20-dev libgpg-error-dev
+
+      - name: Build the btrfs images, scan them and render the verdict
+        run: |
+          sudo env \
+            "ORACLE_BIN=$PWD/target/release/nails-oracle" \
+            ci/oracle/run-scan.sh "$RUNNER_TEMP/oracle-btrfs"
+
+      - name: Check the verdict is partial and names the timeline
+        run: |
+          set -euo pipefail
+          verdict="$RUNNER_TEMP/oracle-btrfs/verdict.json"
+          cat "$verdict"
+          jq -e '.status == "partial" and .blind == false and .failures == []
+            and .not_run == [{"tool": "plaso", "channel": "timeline", "reason": "plaso cannot read btrfs"}]
+            and (.summary | contains("timeline: not run, plaso cannot read btrfs"))' "$verdict"
+          {
+            echo "### btrfs oracle verdict: partial, not a full run"
+            echo
+            echo '```'
+            jq -r .summary "$verdict"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the verdict
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oracle-btrfs-verdict
+          path: ${{ runner.temp }}/oracle-btrfs/verdict.json
+          if-no-files-found: warn
+
+  # Runs of main are unattended: a failed produce, scan or scan-btrfs job opens
+  # or comments on the 'CI red: Oracle real-image nightly' issue, and the next
+  # green run closes it. Every job is listed because a failed produce job skips
+  # the scan, and a skipped job alone leaves the issue as it is. A dispatch on
   # another branch reports nothing, so it can neither close nor comment on
   # the issue of main's nightly.
   report-status:
     name: Report status
-    needs: [produce, scan]
+    needs: [produce, scan, scan-btrfs]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
