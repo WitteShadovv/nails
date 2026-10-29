@@ -230,8 +230,9 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<Str
             let (tool, stays) = match tool {
                 NetworkTool::Ip => (
                     "`ip` (iproute2)",
-                    "the virtual links the session made, the MAC addresses it changed and the \
-                     policy-routing rules it added stay on the decoy until power-off",
+                    "the policy-routing rules the session added stay on the decoy until \
+                     power-off, and a virtual link it made or a MAC address it changed makes the \
+                     machine power off instead of returning",
                 ),
                 NetworkTool::Nft => (
                     "`nft` (nftables)",
@@ -241,8 +242,9 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<Str
                 ),
                 NetworkTool::Iw => (
                     "`iw`",
-                    "the Wi-Fi interfaces the session added on the decoy's radios (monitor or \
-                     access point interfaces) stay on the decoy until power-off",
+                    "a Wi-Fi interface the session added on one of the decoy's radios (a \
+                     monitor or access point interface) makes the machine power off instead of \
+                     returning",
                 ),
             };
             format!(
@@ -443,9 +445,10 @@ mod tests {
             [
                 format!(
                     "The return finds no `ip` (iproute2) in the hidden session's system \
-                     directories, so the virtual links the session made, the MAC addresses it \
-                     changed and the policy-routing rules it added stay on the decoy until \
-                     power-off. `{poweroff}` leaves none of them."
+                     directories, so the policy-routing rules the session added stay on the \
+                     decoy until power-off, and a virtual link it made or a MAC address it \
+                     changed makes the machine power off instead of returning. `{poweroff}` \
+                     leaves none of them."
                 ),
                 format!(
                     "The return finds no `nft` (nftables) in the hidden session's system \
@@ -454,10 +457,10 @@ mod tests {
                      tunnel keeps the decoy offline). `{poweroff}` leaves none of them."
                 ),
                 format!(
-                    "The return finds no `iw` in the hidden session's system directories, so the \
-                     Wi-Fi interfaces the session added on the decoy's radios (monitor or access \
-                     point interfaces) stay on the decoy until power-off. `{poweroff}` leaves \
-                     none of them."
+                    "The return finds no `iw` in the hidden session's system directories, so a \
+                     Wi-Fi interface the session added on one of the decoy's radios (a monitor \
+                     or access point interface) makes the machine power off instead of \
+                     returning. `{poweroff}` leaves none of them."
                 ),
             ]
         );
