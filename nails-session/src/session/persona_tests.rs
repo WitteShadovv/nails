@@ -480,12 +480,13 @@ fn a_dangling_link_a_linked_upper_or_a_file_on_the_way_refuses_the_fresh_home() 
     );
     std::fs::remove_file(&upper).unwrap();
 
-    // A link to nothing: followed, it would make the directory it names.
+    // A link to nothing is refused as a link too. mkdir never follows a
+    // dangling link (it fails with EEXIST), so the code before the fix made
+    // nothing here either; what this case pins is the refusal message.
     std::fs::create_dir(&upper).unwrap();
     std::os::unix::fs::symlink(dir.path().join("nowhere"), upper.join("home")).unwrap();
     let error = refusal(&upper.join("home"));
     assert!(error.contains("is a symbolic link to"), "{error}");
-    assert!(!dir.path().join("nowhere").exists());
     std::fs::remove_file(upper.join("home")).unwrap();
 
     // A file, and the whiteout that marks a directory a hidden session
