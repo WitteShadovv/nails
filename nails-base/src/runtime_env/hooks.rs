@@ -19,6 +19,12 @@ pub struct TestHooks {
     pub test_runtime: Option<OsString>,
     /// `NAILS_TEST_ENFORCE_ROOT` — enable the root gate in a test build.
     pub enforce_root: Option<OsString>,
+    /// `NAILS_TEST_ADMIT_WINDOW` — let `nails gui` open the window on a decoy
+    /// without its posture and desktop gate, which no test host passes.
+    pub admit_window: Option<OsString>,
+    /// `NAILS_TEST_USER_RUNTIME_BASE` — the directory `nails gui` looks for the
+    /// operator's runtime directory in, instead of `/run/user`.
+    pub user_runtime_base: Option<OsString>,
 }
 
 impl TestHooks {
@@ -29,6 +35,8 @@ impl TestHooks {
         Self {
             test_runtime: os("NAILS_TEST_RUNTIME"),
             enforce_root: os("NAILS_TEST_ENFORCE_ROOT"),
+            admit_window: os("NAILS_TEST_ADMIT_WINDOW"),
+            user_runtime_base: os("NAILS_TEST_USER_RUNTIME_BASE"),
         }
     }
 }
