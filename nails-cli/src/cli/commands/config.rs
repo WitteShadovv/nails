@@ -105,7 +105,8 @@ pub fn execute(
 
 /// The exit status and the one envelope a `nails config` subcommand gives
 /// under `--json`, without printing them: what the window's helper answers
-/// with.
+/// with. Built only with the helper, under the `gui` feature.
+#[cfg(feature = "gui")]
 pub(crate) fn json_outcome(
     config_override: Option<&Path>,
     command: &ConfigCommand,
