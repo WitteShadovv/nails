@@ -32,7 +32,10 @@
 //!    generation's own fstab for what the decoy's did not cover;
 //! 7. the masks the entry transition writes at the switch: the fstab
 //!    policy's, the units the hidden root does not need and the generators
-//!    the hidden systemd must never run ([`super::hidden_masks`]);
+//!    the hidden systemd must never run ([`super::hidden_masks`]); then,
+//!    through the next root so that they land in an upper, the persona's
+//!    masks ([`super::persona`]) and, from a build with the window, the
+//!    window's menu entry and polkit action ([`super::window_launcher`]);
 //! 8. the decoy filesystems the way back needs carried onto the hidden volume,
 //!    and the decoy's mounts recorded for the way back to make again
 //!    ([`super::way_back`]); `/run` bound in and everything below the next
@@ -234,6 +237,10 @@ pub struct EntryInputs<'a> {
     /// Why the hidden root is not a volume of its own, when the operator
     /// overrode that (recorded in the plan as `accepted_decoy_storage`).
     pub accepted_decoy_storage: Option<String>,
+    /// The window's launcher to write into the hidden root
+    /// ([`super::window_launcher`]): given by a build with the window whose
+    /// program lies beside the engine, and `None` otherwise.
+    pub window_launcher: Option<&'a super::window_launcher::WindowLauncher>,
 }
 
 /// The prepared entry.
@@ -638,6 +645,16 @@ fn build(
     plan.generator_masks = hidden_masks::generators();
     if let Some(operator) = &inputs.operator {
         super::persona::write_masks(&nextroot, &inputs.persona, operator);
+    }
+    // Best effort, like the masks: a launcher that cannot be written costs
+    // the menu entry, never the entry into the hidden root.
+    if let Some(launcher) = inputs.window_launcher {
+        super::window_launcher::put_in_place(
+            &nextroot,
+            inputs.nixos,
+            inputs.operator.as_ref(),
+            launcher,
+        );
     }
 
     activation_step(ActivationPhase::WayBack, building);

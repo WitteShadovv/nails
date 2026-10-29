@@ -171,6 +171,18 @@ pub(crate) fn gui_line(engine: &Path) -> String {
     )
 }
 
+/// The window's launcher in the hidden session for `engine`, when the window's
+/// program lies beside it: what an activation writes into the hidden root, a
+/// menu entry that runs the window and the polkit action of the helper the
+/// window then starts through pkexec.
+pub(crate) fn hidden_launcher(engine: &Path) -> Option<nails_core::session::WindowLauncher> {
+    let window = window_program(engine).ok()?;
+    Some(nails_core::session::WindowLauncher {
+        engine: engine.to_path_buf(),
+        window,
+    })
+}
+
 /// The window's program beside `engine`, which must be a file.
 fn window_program(engine: &Path) -> Result<PathBuf, Refusal> {
     let program = engine

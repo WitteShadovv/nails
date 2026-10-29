@@ -79,6 +79,18 @@ of this changelog for that version becomes the release notes word for word, and
   (refused unless it is private and in RAM), and settings that turn off shader caches, portals and
   on-disk settings. The helper and the window each lead a session of their own, so closing the
   terminal, or the shell being killed, signals neither.
+- The way into the coming window from a hidden session's menu. A build with the `gui` cargo feature
+  whose window program lies at `<hidden-root>/gui/bin/nails-gui` writes, at every activation, a menu
+  entry "Session" that starts the window as whoever clicks it, and a polkit action that matches
+  only the helper the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its
+  password dialog reads "Session needs your password each time it opens." instead of naming the
+  binary, and it asks for an administrator's password every time. Both go into the hidden root's
+  upper and never onto the decoy: on Debian, Ubuntu, Fedora and Arch into `/usr/share/applications`
+  and `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into the operator's
+  `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and later). Every
+  path is resolved inside the hidden root, so a decoy directory that is an absolute link cannot
+  take the write onto the decoy disk, and one that leads into the Nix store is refused. A file that
+  cannot be written is named on one line and the activation goes on.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
