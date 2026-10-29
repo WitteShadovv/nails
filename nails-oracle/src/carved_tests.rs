@@ -164,3 +164,49 @@ fn a_saved_zip_member_names_the_offset_of_its_description() {
     assert!(is_zip_member_info("<zipinfo><name>a</name></zipinfo>"));
     assert!(!is_zip_member_info("<fileobject></fileobject>"));
 }
+
+#[test]
+fn login_record_files_are_wtmp_btmp_and_their_rotations() {
+    for file in [
+        "/var/log/wtmp",
+        "/var/log/btmp",
+        "/var/log/wtmp.1",
+        "/var/log/btmp.12",
+        "/var/log/wtmp-20261029",
+        "/root/var/log/wtmp",
+        "wtmp",
+    ] {
+        assert!(is_login_record_file(file), "{file}");
+    }
+    for other in [
+        "/var/log/wtmp.db",
+        "/var/lib/wtmpdb/wtmp.db",
+        "/var/log/wtmp.1.gz",
+        "/var/log/wtmp.",
+        "/var/log/wtmp-",
+        "/var/log/wtmpx",
+        "/var/log/xwtmp",
+        "/var/log/lastlog",
+        "/var/log/wtmp/old",
+    ] {
+        assert!(!is_login_record_file(other), "{other}");
+    }
+}
+
+#[test]
+fn a_login_record_file_is_read_as_its_whole_records() {
+    // Each whole record gives its key, records with the same key give one,
+    // and a torn record at the end gives none.
+    let boot = utmp(2, 0, "~", "reboot", 100, 0);
+    let getty = utmp(6, 700, "tty1", "LOGIN", 101, 0);
+    let again = utmp(6, 800, "tty1", "LOGIN", 202, 0);
+    let mut data = [boot.clone(), getty.clone(), again].concat();
+    data.extend_from_slice(&getty[..100]);
+    let key = |record: &[u8]| utmp_record_key(record).expect("a record");
+    assert_eq!(
+        login_record_keys(&data),
+        BTreeSet::from([key(&boot), key(&getty)])
+    );
+    assert!(login_record_keys(&[]).is_empty());
+    assert!(login_record_keys(&getty[..383]).is_empty());
+}

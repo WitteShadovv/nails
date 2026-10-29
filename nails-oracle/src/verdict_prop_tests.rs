@@ -14,8 +14,9 @@
 //!
 //! - (a) the candidate count is the changes from `before` to `after` (a
 //!   record or feature gained or lost, a restore path whose values differ),
-//!   the noise subtracted is the ones the control cycle shows too, and the
-//!   residue is the rest;
+//!   the noise subtracted is the ones the control cycle shows too (for a
+//!   carved login record new in `after`, also one its login files hold), and
+//!   the residue is the rest;
 //! - (b) the residue splits, finding by finding, into the planted self-checks,
 //!   the findings a valid entry reaches (each under the citation that reaches
 //!   it) and the rest, which are the leaks;
@@ -38,6 +39,7 @@
 //! the left-out channel still reports for, and the channel rule never asks
 //! for that channel but still for every other.
 
+use crate::carved::UTMP_CARVED;
 use crate::catalog::{Catalog, CatalogRow};
 use crate::model::{
     AllowEntry, Allowlist, Canary, Change, Controls, Finding, NotRun, OraclePolicy,
@@ -100,6 +102,26 @@ fn decide(scans: &Scans, policy: &OraclePolicy) -> Verdict {
 const CLOCK: &str = "/var/lib/systemd/timesync/clock";
 const STAMP: &str = "/var/lib/systemd/timers/stamp-fstrim.timer";
 const RECORD: &str = "linux:utmp:event pid=1024-2047";
+
+/// Two keys of carved login records: the getty of a fresh boot, and one in a
+/// later process range.
+const GETTY: &str =
+    "type=LOGIN_PROCESS pid=512-1023 line=tty1 id=tty1 user=LOGIN host= exit=0/0 addr=0.0.0.0";
+const LATE_GETTY: &str =
+    "type=LOGIN_PROCESS pid=1024-2047 line=tty1 id=tty1 user=LOGIN host= exit=0/0 addr=0.0.0.0";
+
+/// A login record `bulk_extractor` carved, by its key.
+fn carved_login(key: &str) -> Finding {
+    Finding::new(Tool::BulkExtractor, UTMP_CARVED, key)
+}
+
+/// Whether `f` is a carved login record whose key the control image's login
+/// files hold.
+fn held_by_control_logins(scans: &Scans, f: &Finding) -> bool {
+    f.tool == Tool::BulkExtractor
+        && f.path == UTMP_CARVED
+        && scans.control_login_records.contains(&f.field)
+}
 
 /// A file `btrfs restore` recovered at `path`.
 fn restore(path: &str) -> Finding {
@@ -268,6 +290,8 @@ fn leak_pool() -> Vec<Finding> {
         Finding::new(Tool::Plaso, "/var/log/wtmp.db", "fs:stat"),
         // The canary's value, carved by a channel the canary does not pin.
         Finding::new(Tool::Plaso, "email", "canary@oracle.example"),
+        // A carved login record in a later process range than a fresh boot's.
+        carved_login(LATE_GETTY),
     ]
 }
 
@@ -293,6 +317,11 @@ fn finding_pool() -> Vec<Finding> {
         restore("/sys/firmware/efi/efivars/trace"),
         email("leak@evil.example"),
         Finding::new(Tool::Plaso, "/var/log/wtmp", RECORD),
+        carved_login(GETTY),
+        carved_login(LATE_GETTY),
+        // A value that reads like a login record's key, which no login file
+        // subtracts.
+        email(GETTY),
         canary_finding(),
     ];
     pool.extend(valid_controls().into_iter().map(|(_, planted)| planted));
@@ -363,7 +392,7 @@ fn residue_of(scans: &Scans) -> (BTreeSet<(Finding, Change)>, usize) {
         others(&scans.after),
     );
     for f in after.difference(&before) {
-        if control.contains(f) {
+        if control.contains(f) || held_by_control_logins(scans, f) {
             noise += 1;
         } else {
             residue.insert((f.clone(), Change::Added));
@@ -680,14 +709,29 @@ fn image() -> impl Strategy<Value = BTreeSet<Finding>> {
         .prop_map(|findings| findings.into_iter().collect())
 }
 
-/// Three independent images from the one small pool, so they overlap.
+/// Keys the control image's login files may hold: those of the carved login
+/// records in the pool, and a key no carved record of the pool has.
+fn control_logins() -> impl Strategy<Value = BTreeSet<String>> {
+    let keys = vec![
+        GETTY.to_string(),
+        LATE_GETTY.to_string(),
+        "type=BOOT_TIME pid=0 line=~ id=~~ user=reboot host= exit=0/0 addr=0.0.0.0".to_string(),
+    ];
+    prop::sample::subsequence(keys, 0..=3).prop_map(|keys| keys.into_iter().collect())
+}
+
+/// Three independent images from the one small pool, so they overlap, and
+/// the keys the control image's login files hold.
 fn scans_strategy() -> impl Strategy<Value = Scans> {
-    (image(), image(), image()).prop_map(|(before, control, after)| Scans {
-        before,
-        control,
-        after,
-        not_run: BTreeSet::new(),
-    })
+    (image(), image(), image(), control_logins()).prop_map(
+        |(before, control, after, control_login_records)| Scans {
+            before,
+            control,
+            after,
+            not_run: BTreeSet::new(),
+            control_login_records,
+        },
+    )
 }
 
 fn policy_from(
@@ -735,10 +779,11 @@ fn policy_strategy() -> impl Strategy<Value = OraclePolicy> {
 /// to three entries, one or two positive controls and the canary. `before` is a
 /// baseline of at least one finding, which `after` carries. The control cycle
 /// saw some noise, which `after` holds too, and whatever else was drawn.
-/// `after` adds findings the drawn arrival entries reach, the canary and each
-/// control's planted finding. The canary, planted on every image in a real
-/// run, may also be in the earlier images; a control's planted finding never
-/// is, or it would prove nothing.
+/// `after` adds findings the drawn arrival entries reach, the canary, each
+/// control's planted finding and a carved login record for each key the
+/// control's login files hold, which the control did not carve. The canary,
+/// planted on every image in a real run, may also be in the earlier images; a
+/// control's planted finding never is, or it would prove nothing.
 fn clean_world() -> impl Strategy<Value = (Scans, OraclePolicy)> {
     (
         prop::collection::vec(prop::sample::select(finding_pool()), 1..=6),
@@ -748,9 +793,10 @@ fn clean_world() -> impl Strategy<Value = (Scans, OraclePolicy)> {
         prop::collection::vec(prop::sample::select(valid_entries()), 0..=3),
         prop::collection::vec(prop::sample::select(valid_controls()), 1..=2),
         prop::array::uniform2(any::<bool>()),
+        control_logins(),
     )
         .prop_map(
-            |(baseline, noise, also_seen, drawn, entries, controls, canary_in)| {
+            |(baseline, noise, also_seen, drawn, entries, controls, canary_in, logins)| {
                 let [canary_before, canary_control] = canary_in;
                 let planted: BTreeSet<Finding> =
                     controls.iter().map(|(_, found)| found.clone()).collect();
@@ -767,6 +813,9 @@ fn clean_world() -> impl Strategy<Value = (Scans, OraclePolicy)> {
                 let reached = drawn
                     .into_iter()
                     .filter(|f| entries.iter().any(|e| reaches(e, f, Change::Added)));
+                // The login records the control's files hold, carved only
+                // in `after`, as on a filesystem that compresses.
+                let carved_logins = logins.iter().map(|key| carved_login(key));
                 let after = before
                     .iter()
                     .chain(&noise)
@@ -774,6 +823,7 @@ fn clean_world() -> impl Strategy<Value = (Scans, OraclePolicy)> {
                     .chain(reached)
                     .chain(planted)
                     .chain([canary_finding()])
+                    .chain(carved_logins)
                     .collect();
                 let policy = policy_from(
                     entries,
@@ -786,6 +836,7 @@ fn clean_world() -> impl Strategy<Value = (Scans, OraclePolicy)> {
                         control,
                         after,
                         not_run: BTreeSet::new(),
+                        control_login_records: logins,
                     },
                     policy,
                 )
@@ -794,11 +845,15 @@ fn clean_world() -> impl Strategy<Value = (Scans, OraclePolicy)> {
 }
 
 /// `scans` with `leak` new in `after` alone: out of the baseline and the
-/// control cycle, so nothing carries it or subtracts it as noise.
+/// control cycle, its key out of the control's login files when it is a
+/// carved login record, so nothing carries it or subtracts it as noise.
 fn with_leak(scans: &Scans, leak: &Finding) -> Scans {
     let mut leaky = scans.clone();
     leaky.before.remove(leak);
     leaky.control.remove(leak);
+    if held_by_control_logins(&leaky, leak) {
+        leaky.control_login_records.remove(&leak.field);
+    }
     leaky.after.insert(leak.clone());
     leaky
 }

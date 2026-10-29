@@ -16,7 +16,18 @@
 //! [`crate::unseen`]). The records and features of the other channels have no
 //! such slot: each one is its own trace, subtracted only by the same record or
 //! value in the control cycle.
+//!
+//! A carved login record is also subtracted by a record of the same key in
+//! the control image's login files, read whole
+//! ([`Scans::control_login_records`]). bulk_extractor carves only what is
+//! stored plain, so on a filesystem that compresses, the records a compressed
+//! extent holds in the control image are not carved there, and the same kind
+//! of record written later into a plain block of `after` would otherwise
+//! read as new. The keys must match exactly: a record of another type,
+//! process range, terminal, id, user, host, exit status or address that only
+//! `after` holds is residue as before.
 
+use crate::carved::UTMP_CARVED;
 use crate::model::{Change, Finding, Scans, Tool};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -56,15 +67,24 @@ fn records(set: &BTreeSet<Finding>) -> BTreeSet<&Finding> {
         .collect()
 }
 
+/// Whether `f` is a carved login record whose key the control image's login
+/// files hold (see [`Scans::control_login_records`]).
+fn in_control_login_records(scans: &Scans, f: &Finding) -> bool {
+    f.tool == Tool::BulkExtractor
+        && f.path == UTMP_CARVED
+        && scans.control_login_records.contains(&f.field)
+}
+
 /// Compare the many-findings-per-path channels finding by finding: one new in
-/// `after` is residue unless the control cycle has it too, and one `before`
-/// and the control cycle both have is residue when `after` lost it.
+/// `after` is residue unless the control cycle has it too, carved or, for a
+/// login record, in its login files, and one `before` and the control cycle
+/// both have is residue when `after` lost it.
 fn records_residue<'a>(scans: &'a Scans, residue: &mut Residue<'a>) {
     let before = records(&scans.before);
     let control = records(&scans.control);
     let after = records(&scans.after);
     for &f in after.difference(&before) {
-        if control.contains(f) {
+        if control.contains(f) || in_control_login_records(scans, f) {
             residue.noise_subtracted += 1;
         } else {
             residue.items.push((f, Change::Added));

@@ -45,7 +45,7 @@ it is not a full run. What it cannot see is listed under
 The scan writes one subtree per tool, per image label:
 
 ```
-outputs/restore/<label>/...            restored file tree, each file emptied
+outputs/restore/<label>/...            restored file tree, each file but the login record files emptied
 outputs/restore/<label>.sha256         a SHA-256 of every restored file
 outputs/nix_db/<label>.jsonl           every row of the restored Nix store database, one per line
 outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
@@ -56,7 +56,11 @@ outputs/plaso/not-run                  on btrfs, instead of the timelines: "btrf
 
 `<label>` is `before`, `control` or `after`. `run-scan.sh` hashes every restored
 file (`sha256sum --zero`, run inside the tree) before it empties the file to
-save disk. Before it empties a restored Nix store database
+save disk. It keeps the login record files whole (`wtmp` and `btmp` and their
+rotations, such as `wtmp.1` or `wtmp-20261029`): the control image's are read
+for the login records its cycle wrote (see
+[Login records the control holds](#login-records-the-control-holds)). Before
+it empties a restored Nix store database
 (`/nix/var/nix/db/db.sqlite`), it dumps every row of each of the database's
 tables and of its schema, one JSON object per line
 (`{"table": ..., "row": {...}}`), reading a copy with the write-ahead log
@@ -99,12 +103,15 @@ normalizes to findings keyed by `(tool, path, field)`:
   Its carvers save whole objects, named by the offset they were found at, so
   those are keyed by their content instead: a carved login record
   (`utmp_carved`) by the fields it records with its time and session left
-  out, and any other carved object by its content hash. Two outputs stay out
-  of the verdict: `sqlite_carved`, because the oracle's decoy VMs rewrite
-  their Nix store database file at every start and the images hold live and
-  stale, partly overwritten copies of it that no clean boot reproduces (the
-  live database is read by its rows instead), and `duplicates`, which lists
-  repeated blocks by their offsets.
+  out, and any other carved object by its content hash. A carved login record
+  new in `after` is also subtracted by a record of the same key in the control
+  image's login files (see
+  [Login records the control holds](#login-records-the-control-holds)). Two
+  outputs stay out of the verdict: `sqlite_carved`, because the oracle's decoy
+  VMs rewrite their Nix store database file at every start and the images hold
+  live and stale, partly overwritten copies of it that no clean boot
+  reproduces (the live database is read by its rows instead), and
+  `duplicates`, which lists repeated blocks by their offsets.
 - plaso — `path` is the event's source path; `field` is the event's data type,
   then, for a record, every field that says what it records (`name=value`).
   The record's timestamps, its offset, the file's inode and hash, and plaso's
@@ -271,6 +278,24 @@ Two things read differently from the ext4 images:
   grows past 4 KiB a write of a single block of it is stored plain, so
   bulk_extractor carves the getty, boot and shutdown records of that block
   from control2 and after, and none from before and control.
+
+#### Login records the control holds
+
+A carved login record is therefore also compared with the control image's
+login files, read whole. `run-scan.sh` keeps `wtmp`, `btmp` and their
+rotations whole when it empties the restored files, and nails-oracle reads
+every whole record of the control's by the key a carved record gets: its
+type, process range, terminal, id, user, host, exit status and address, with
+its time and session left out. A carved login record new in `after` whose key
+one of those records has is a record the control cycle wrote too, and
+subtracts as noise, as if the control had carved it. The key must match
+exactly: a record only `after` holds, in a later process range, of another
+user or on another terminal, stays residue. The control's files only
+subtract a record new in `after`: one that `before` and the control both
+carved and `after` lost is residue as before. A login record file found empty
+that the digest manifest recorded as holding data stops the scan, since its
+records would be lost. The same holds on ext4, where whether a record is
+carved also depends on where its blocks lie.
 
 ### What it does not see
 

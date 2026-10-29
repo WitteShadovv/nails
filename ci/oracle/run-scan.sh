@@ -9,11 +9,11 @@
 # Streaming, so peak disk is one image's worth and not the sum of all three: for
 # each label in turn it builds that one image, runs the restore carve (then
 # records a SHA-256 of every recovered file, dumps the rows of a recovered Nix
-# store database, and empties every file, so the verdict compares what each
-# file held without the contents taking up disk), bulk_extractor and plaso over
-# it, and deletes the image and the bulky plaso store before moving to the next
-# label. The small per-tool outputs for finished labels stay; nothing bulky
-# accumulates.
+# store database, and empties every file but the login record files, so the
+# verdict compares what each file held without the contents taking up disk),
+# bulk_extractor and plaso over it, and deletes the image and the bulky plaso
+# store before moving to the next label. The small per-tool outputs for
+# finished labels stay; nothing bulky accumulates.
 #
 # A scan that could not look never passes: a carve that recovers nothing or
 # reports an error stops the run, a plaso timeline with no event for the
@@ -528,7 +528,12 @@ for label in "${LABELS[@]}"; do
   if [ -f "$dest$nix_db" ] && [ ! -L "$dest$nix_db" ]; then
     dump_nix_db "$dest" "$outputs/nix_db/$label.jsonl"
   fi
-  find "$dest" -type f -exec truncate -s 0 {} +
+  # The login record files (wtmp, btmp and their rotations) stay whole:
+  # nails-oracle reads the records of the control image's, which on a
+  # compressing filesystem bulk_extractor cannot carve (see
+  # ci/oracle/README.md). These patterns keep at least every file it reads.
+  find "$dest" -type f ! \( -name wtmp -o -name btmp -o -name 'wtmp[.-][0-9]*' -o -name 'btmp[.-][0-9]*' \) \
+    -exec truncate -s 0 {} +
 
   # bulk_extractor creates outputs/bulk_extractor/<label> itself.
   "$be_bin" -j "$(nproc)" -o "$outputs/bulk_extractor/$label" "$img" >/dev/null

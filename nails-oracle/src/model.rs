@@ -231,6 +231,16 @@ pub struct Scans {
     /// The channels the scan left out by design, on every image (see
     /// [`NotRun`]); empty for a full run.
     pub not_run: BTreeSet<NotRun>,
+    /// The login records the control image's restored login files hold
+    /// ([`crate::carved::is_login_record_file`]), each by the key a carved
+    /// login record gets ([`crate::carved::utmp_record_key`]), read from the
+    /// files whole. bulk_extractor reads the bytes on the disk, so on a
+    /// filesystem that compresses it carves none of the records a compressed
+    /// extent holds, while the restore carve recovers them decompressed. A
+    /// carved login record new in `after` whose key is here is a record the
+    /// control cycle wrote too, and subtracts like one it carved (see
+    /// [`crate::residue`]).
+    pub control_login_records: BTreeSet<String>,
 }
 
 impl Scans {
@@ -375,6 +385,7 @@ mod tests {
             control: one("/control"),
             after: one("/after"),
             not_run: BTreeSet::new(),
+            control_login_records: BTreeSet::new(),
         };
         assert_eq!(scans.image(ImageLabel::Before), &one("/before"));
         assert_eq!(scans.image(ImageLabel::Control), &one("/control"));
