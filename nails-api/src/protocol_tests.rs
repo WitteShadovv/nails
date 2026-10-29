@@ -25,7 +25,7 @@ fn every_operation_round_trips_through_its_line() {
         }),
         Op::Status,
         Op::Check(CheckArgs {
-            overlay_only: true,
+            overlay_only: false,
             nixos_flake: Some("/mnt/data/nixos#host".to_string()),
             allow_persistent_decoy: true,
             allow_decoy_storage: true,
@@ -41,6 +41,48 @@ fn every_operation_round_trips_through_its_line() {
             allow_decoy_storage: true,
         }),
         Op::DiscardApply(Token { token: token() }),
+        Op::ActivatePlan(ActivateArgs {
+            overlay_only: true,
+            nixos_flake: None,
+            allow_persistent_decoy: true,
+            allow_decoy_storage: true,
+            allow_discards: true,
+        }),
+        Op::ActivateApply(Token { token: token() }),
+        Op::DeactivatePlan(DeactivateArgs { poweroff: true }),
+        Op::DeactivateApply(Token { token: token() }),
+        Op::Emergency(EmergencyArgs {
+            poweroff: false,
+            reboot: true,
+        }),
+        Op::Recover,
+        Op::Verify(VerifyArgs {
+            deep: true,
+            offline: true,
+            root: Some("/mnt/decoy".to_string()),
+            examiner: true,
+            disk: Some("/dev/sdb".to_string()),
+        }),
+        Op::RehearseStatus,
+        Op::RehearsePlant(RehearsePlantArgs {
+            user: Some("alice".to_string()),
+        }),
+        Op::RehearseScan(RehearseScanArgs {
+            devices: Vec::new(),
+            offline: true,
+            images: vec!["/srv/decoy.raw".to_string()],
+            token_file: Some("/mnt/data/token".to_string()),
+            allow_same_boot: true,
+            max_bytes: Some(1 << 30),
+        }),
+        Op::RehearseReset,
+        Op::InitPlan(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: true,
+            hardware_config: Some("/etc/nixos/hardware-configuration.nix".to_string()),
+            no_hardware_config: false,
+        }),
+        Op::InitApply(Token { token: token() }),
     ];
     for (id, op) in ops.into_iter().enumerate() {
         let request = Request {
@@ -162,6 +204,42 @@ fn arguments_of_the_wrong_shape_are_refused_with_the_id() {
         token_of(&format!("{}0", token())),
         token_of(&token().to_uppercase()),
         token_of(&format!("{}g", &token()[1..])),
+        // What the CLI refuses together, or one option without the one it
+        // needs.
+        r#"{"v":1,"id":3,"op":{"check":{"overlay_only":true,"nixos_flake":"/f#h"}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"activate_plan":{"overlay_only":true,"nixos_flake":"/f#h"}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"activate_plan":{"nixos_flake":""}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"emergency":{"poweroff":true,"reboot":true}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{"offline":true}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{"root":"/mnt"}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{"offline":true,"root":"mnt"}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{"examiner":true}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{"offline":true,"root":"/m","disk":"/dev/sdb"}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_plant":{"user":""}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_plant":{"user":"../root"}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_plant":{"user":"a\u0007"}}}"#.to_string(),
+        format!(
+            r#"{{"v":1,"id":3,"op":{{"rehearse_plant":{{"user":"{}"}}}}}}"#,
+            "a".repeat(MAX_USER_BYTES + 1)
+        ),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{"devices":["/dev/sda"],"offline":true,"images":["/i"]}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{"offline":true}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{"images":["/i"]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{"token_file":"/t"}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{"devices":["sda"]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{"offline":true,"images":["i.raw"]}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"init_plan":{"path":"data"}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"init_plan":{"path":"/d","hardware_config":"hw.nix"}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"init_plan":{"path":"/d","hardware_config":"/h","no_hardware_config":true}}}"#
+            .to_string(),
+        token_of("x").replace("discard_apply", "activate_apply"),
+        token_of("x").replace("discard_apply", "deactivate_apply"),
+        token_of("x").replace("discard_apply", "init_apply"),
     ];
     for line in &lines {
         let error = decode(line).expect_err(line);
@@ -170,6 +248,59 @@ fn arguments_of_the_wrong_shape_are_refused_with_the_id() {
     }
     let longest = "9".repeat(MAX_ENGINE_BYTES);
     assert!(valid_engine(&longest).is_ok());
+}
+
+/// The shapes the CLI accepts are accepted: an option with the one it needs,
+/// a longest account name, and every apply's token.
+#[test]
+fn arguments_of_the_right_shape_are_accepted() {
+    for line in [
+        r#"{"v":1,"id":3,"op":{"activate_plan":{}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"activate_plan":{"nixos_flake":"/f#h"}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"deactivate_plan":{}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"emergency":{}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"emergency":{"poweroff":true}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{"deep":true}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"verify":{"offline":true,"root":"/m","examiner":true}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_plant":{}}}"#.to_string(),
+        format!(
+            r#"{{"v":1,"id":3,"op":{{"rehearse_plant":{{"user":"{}"}}}}}}"#,
+            "a".repeat(MAX_USER_BYTES)
+        ),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"rehearse_scan":{"devices":["/dev/sda","/dev/sdb"]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"init_plan":{"path":"/mnt/data","no_hardware_config":true}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":"recover"}"#.to_string(),
+        r#"{"v":1,"id":3,"op":"rehearse_status"}"#.to_string(),
+        r#"{"v":1,"id":3,"op":"rehearse_reset"}"#.to_string(),
+    ] {
+        assert!(decode(&line).is_ok(), "{line}");
+    }
+}
+
+/// Exactly the apply halves carry a token.
+#[test]
+fn only_an_apply_carries_a_token() {
+    let token = Token { token: token() };
+    for op in [
+        Op::DiscardApply(token.clone()),
+        Op::ActivateApply(token.clone()),
+        Op::DeactivateApply(token.clone()),
+        Op::InitApply(token.clone()),
+    ] {
+        assert_eq!(op.apply_token(), Some(token.token.as_str()), "{op:?}");
+    }
+    for op in [
+        Op::Status,
+        Op::Recover,
+        Op::DeactivatePlan(DeactivateArgs::default()),
+        Op::Emergency(EmergencyArgs::default()),
+    ] {
+        assert_eq!(op.apply_token(), None, "{op:?}");
+    }
 }
 
 #[test]

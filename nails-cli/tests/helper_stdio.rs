@@ -5,10 +5,12 @@
 //! operation answered with exactly the envelope and exit code the CLI gives
 //! for the same command under `--json`.
 //!
-//! The discard tests need the attach gate to accept the hidden root, so they
+//! The tests of the operations that write (discard, activate, init, the
+//! rehearsal's plant) need the attach gate to accept the hidden root, so they
 //! run in an unprivileged user + mount namespace with a tmpfs as the root, as
 //! `maintenance_cli.rs` does; where user namespaces are unavailable they skip
-//! (`just kernel-tests` fails instead).
+//! (`just kernel-tests` fails instead). `emergency` and `recover` run only
+//! without root, where they act on nothing.
 
 #![cfg(feature = "gui")]
 
@@ -17,8 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use nails_api::protocol::{
-    CheckArgs, ConfigShowArgs, DiscardPlanArgs, DiscardPlanData, ErrorCode, Frame, Hello, Op,
-    PROTOCOL_VERSION, Request, Token,
+    ActivateArgs, CheckArgs, ConfigShowArgs, DeactivateArgs, DiscardPlanArgs, DiscardPlanData,
+    EmergencyArgs, ErrorCode, Frame, Hello, InitArgs, Op, PROTOCOL_VERSION, RehearseScanArgs,
+    Request, Token, VerifyArgs,
 };
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
@@ -288,8 +291,144 @@ fn a_malformed_request_ends_the_session() {
     assert_eq!(helper.child.wait().unwrap().code(), Some(1));
 }
 
+/// Drop the fields of an emergency envelope that time the run.
+fn untimed(mut envelope: Value) -> Value {
+    if let Some(data) = envelope.get_mut("data").and_then(Value::as_object_mut) {
+        data.remove("phases");
+        data.remove("elapsed_ms");
+    }
+    envelope
+}
+
+fn running_as_root() -> bool {
+    nix::unistd::geteuid().is_root()
+}
+
+#[test]
+fn the_helper_answers_as_the_cli_does_where_no_session_or_volume_is_needed() {
+    let (dir, config) = scratch_config();
+    let mut helper = Helper::greeted(&config);
+    let image = dir.path().join("image");
+    std::fs::create_dir_all(&image).unwrap();
+    let image = image.display().to_string();
+    let folder = dir.path().join("hidden-volume").display().to_string();
+    let absent = format!("{image}/absent.raw");
+    let offline = VerifyArgs {
+        offline: true,
+        root: Some(image.clone()),
+        ..VerifyArgs::default()
+    };
+    let cases: Vec<(Op, Vec<&str>)> = vec![
+        // Off the hidden root deactivate refuses before it asks, both endings.
+        (
+            Op::DeactivatePlan(DeactivateArgs::default()),
+            vec!["deactivate", "-y"],
+        ),
+        (
+            Op::DeactivatePlan(DeactivateArgs { poweroff: true }),
+            vec!["deactivate", "-y", "--poweroff"],
+        ),
+        // The gate refuses a folder as the hidden root.
+        (
+            Op::ActivatePlan(ActivateArgs::default()),
+            vec!["activate", "-y"],
+        ),
+        (
+            Op::InitPlan(InitArgs {
+                path: folder.clone(),
+                allow_decoy_storage: false,
+                hardware_config: None,
+                no_hardware_config: true,
+            }),
+            vec!["init", "--no-hardware-config", folder.as_str()],
+        ),
+        (
+            Op::Verify(offline),
+            vec!["verify", "--offline", "--root", image.as_str()],
+        ),
+        (Op::RehearseStatus, vec!["rehearse", "status"]),
+        (Op::RehearseReset, vec!["rehearse", "reset"]),
+        (
+            Op::RehearseScan(RehearseScanArgs {
+                offline: true,
+                images: vec![absent.clone()],
+                ..RehearseScanArgs::default()
+            }),
+            vec!["rehearse", "scan", "--offline", "--image", absent.as_str()],
+        ),
+    ];
+    for (op, args) in cases {
+        let answer = helper.result(op);
+        let cli = if args[0] == "init" {
+            // init takes its volume as its argument and refuses --config.
+            cli_json_without_config(&args)
+        } else {
+            cli_json(&config, &args)
+        };
+        assert_eq!(answer, cli, "{args:?}");
+        assert!(answer.1["data"].get("token").is_none(), "{args:?}");
+    }
+    if !running_as_root() {
+        for (args, cli) in [
+            (EmergencyArgs::default(), vec!["emergency"]),
+            (
+                EmergencyArgs {
+                    poweroff: true,
+                    reboot: false,
+                },
+                vec!["emergency", "--poweroff"],
+            ),
+            (
+                EmergencyArgs {
+                    poweroff: false,
+                    reboot: true,
+                },
+                vec!["emergency", "--reboot"],
+            ),
+        ] {
+            let (exit, envelope) = helper.result(Op::Emergency(args));
+            let (cli_exit, cli_envelope) = cli_json(&config, &cli);
+            assert_eq!(
+                (exit, untimed(envelope)),
+                (cli_exit, untimed(cli_envelope)),
+                "{cli:?}"
+            );
+        }
+        assert_eq!(helper.result(Op::Recover), cli_json(&config, &["recover"]));
+    }
+    assert_eq!(helper.close(), 0);
+}
+
+/// A live verify answers with the verify envelope and the exit its verdict
+/// earns. (The CLI's own run is no comparison here: it would see the helper
+/// running beside it.)
+#[test]
+fn a_live_verify_answers_with_its_verdict() {
+    let (_dir, config) = scratch_config();
+    let mut helper = Helper::greeted(&config);
+    let (exit, envelope) = helper.result(Op::Verify(VerifyArgs::default()));
+    assert!(matches!(exit, 0 | 10 | 11), "{envelope}");
+    assert_eq!(envelope["command"], "verify");
+    assert_eq!(envelope["ok"], exit == 0, "{envelope}");
+    helper.close();
+}
+
+/// Run the CLI's `args` with `--json` and no `--config`.
+fn cli_json_without_config(args: &[&str]) -> (i32, Value) {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .arg("--no-log-file")
+        .args(args)
+        .arg("--json")
+        .output()
+        .expect("run nails");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("not one envelope ({e}): {stdout}"));
+    (output.status.code().unwrap_or(-1), value)
+}
+
 // ---------------------------------------------------------------------------
-// discard: plan, token, apply
+// discard, activate and init: plan, token, apply
 // ---------------------------------------------------------------------------
 
 /// The discard through the helper on a tmpfs hidden root, in the kernel tier.
@@ -461,6 +600,179 @@ mod kernel_tests {
                 assert_eq!(answer, cli);
                 assert!(answer.1["data"].get("token").is_none(), "{}", answer.1);
                 helper.close();
+            },
+        );
+    }
+
+    /// The envelope of an activation, without the seconds it took and with
+    /// the failed checks by name (their messages carry measured values).
+    fn steady_activation(mut envelope: Value) -> Value {
+        if let Some(data) = envelope.get_mut("data").and_then(Value::as_object_mut) {
+            data.remove("duration");
+            if let Some(Value::Array(checks)) = data.get_mut("failed_checks") {
+                for check in checks.iter_mut() {
+                    *check = check["name"].clone();
+                }
+            }
+        }
+        envelope
+    }
+
+    fn activate_plan(helper: &mut Helper) -> String {
+        let (exit, plan) = helper.result(Op::ActivatePlan(ActivateArgs {
+            overlay_only: true,
+            ..ActivateArgs::default()
+        }));
+        assert_eq!(exit, 0, "{plan}");
+        assert_eq!(plan["command"], "activate");
+        assert_eq!(plan["data"]["builds_hidden_system"], false, "{plan}");
+        plan["data"]["token"].as_str().expect("a token").to_string()
+    }
+
+    /// An activation through the helper streams its steps and ends as the
+    /// CLI's `activate -y` ends on the same volume: here the pre-flight
+    /// checks refuse in the namespace, before the point of no return.
+    #[test]
+    fn an_activation_streams_its_checks_and_answers_as_the_cli_does() {
+        in_namespace(
+            test_path!(an_activation_streams_its_checks_and_answers_as_the_cli_does),
+            || {
+                let volume = Volume::new();
+                let mut helper = Helper::greeted(&volume.config);
+                let token = activate_plan(&mut helper);
+
+                // While the plan waits, it holds the state lock.
+                let (exit, envelope) =
+                    cli_json(&volume.config, &["activate", "-y", "--overlay-only"]);
+                assert_eq!(exit, 1, "{envelope}");
+                assert_eq!(envelope["error"]["code"], "state_locked");
+
+                let (events, answer) = helper.answer(apply_activation(&token));
+                let Frame::Result { exit, envelope, .. } = answer else {
+                    panic!("{answer:?}");
+                };
+                let events: Vec<nails_api::Event> = events
+                    .into_iter()
+                    .filter_map(|frame| match frame {
+                        Frame::Event { event, .. } => Some(event),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| matches!(event, nails_api::Event::Check { .. })),
+                    "{events:?}"
+                );
+                assert_eq!(
+                    events.last(),
+                    Some(&nails_api::Event::Finished { success: false }),
+                    "{events:?}"
+                );
+                assert!(
+                    !events.contains(&nails_api::Event::PointOfNoReturn),
+                    "{events:?}"
+                );
+                assert_eq!(helper.close(), 0);
+
+                let (cli_exit, cli) =
+                    cli_json(&volume.config, &["activate", "-y", "--overlay-only"]);
+                assert_eq!(
+                    (i32::from(exit), steady_activation(envelope)),
+                    (cli_exit, steady_activation(cli))
+                );
+            },
+        );
+    }
+
+    fn apply_activation(token: &str) -> Op {
+        Op::ActivateApply(Token {
+            token: token.to_string(),
+        })
+    }
+
+    /// A window that closes its pipe right after it asks for the activation
+    /// cancels it before anything is entered: the helper answers with the
+    /// CLI's cancel and ends, and no session is recorded.
+    #[test]
+    fn a_window_that_hangs_up_before_the_point_of_no_return_cancels_the_activation() {
+        in_namespace(
+            test_path!(a_window_that_hangs_up_before_the_point_of_no_return_cancels_the_activation),
+            || {
+                let volume = Volume::new();
+                let mut helper = Helper::greeted(&volume.config);
+                let token = activate_plan(&mut helper);
+                let id = helper.send(apply_activation(&token));
+                drop(helper.stdin.take());
+                match helper.frame() {
+                    Some(Frame::Result {
+                        id: got,
+                        exit,
+                        envelope,
+                    }) => {
+                        assert_eq!(got, id);
+                        assert_eq!(exit, 130, "{envelope}");
+                        assert_eq!(envelope["error"]["code"], "cancelled", "{envelope}");
+                    }
+                    other => panic!("{other:?}"),
+                }
+                assert!(helper.frame().is_none());
+                helper.child.wait().unwrap();
+                let state = StateFile::load(&volume.root.join("state.json")).unwrap();
+                assert_eq!(state.state, SystemState::Inactive);
+                // The lock went with the helper.
+                let (_, envelope) = cli_json(&volume.config, &["discard", "/srv/x", "-y"]);
+                assert_ne!(envelope["error"]["code"], "state_locked", "{envelope}");
+            },
+        );
+    }
+
+    /// Init through the helper lays a volume out as the CLI's `init` does.
+    #[test]
+    fn an_init_answers_as_the_cli_does() {
+        in_namespace(test_path!(an_init_answers_as_the_cli_does), || {
+            let (_dir, config) = scratch_config();
+            let ours = ScratchTmpfs::new("");
+            let theirs = ScratchTmpfs::new("");
+            let ours_path = ours.path().display().to_string();
+            let theirs_path = theirs.path().display().to_string();
+            let mut helper = Helper::greeted(&config);
+            let (exit, plan) = helper.result(Op::InitPlan(InitArgs {
+                path: ours_path.clone(),
+                allow_decoy_storage: false,
+                hardware_config: None,
+                no_hardware_config: true,
+            }));
+            assert_eq!(exit, 0, "{plan}");
+            assert!(
+                std::fs::read_dir(ours.path()).unwrap().next().is_none(),
+                "a plan writes nothing"
+            );
+            let token = plan["data"]["token"].as_str().unwrap().to_string();
+            let answer = helper.result(Op::InitApply(Token { token }));
+            assert_eq!(helper.close(), 0);
+
+            let (cli_exit, cli) =
+                cli_json_without_config(&["init", "--no-hardware-config", &theirs_path]);
+            let cli: Value =
+                serde_json::from_str(&cli.to_string().replace(&theirs_path, &ours_path)).unwrap();
+            assert_eq!(answer, (cli_exit, cli));
+            assert_eq!(answer.0, 0, "{}", answer.1);
+        });
+    }
+
+    /// A rehearsal plant on a volume with no session refuses as the CLI's.
+    #[test]
+    fn a_plant_without_a_session_answers_as_the_cli_does() {
+        in_namespace(
+            test_path!(a_plant_without_a_session_answers_as_the_cli_does),
+            || {
+                let volume = Volume::new();
+                let mut helper = Helper::greeted(&volume.config);
+                let answer = helper.result(Op::RehearsePlant(Default::default()));
+                assert_eq!(helper.close(), 0);
+                assert_eq!(answer, cli_json(&volume.config, &["rehearse", "plant"]));
+                assert_eq!(answer.0, 6, "{}", answer.1);
             },
         );
     }

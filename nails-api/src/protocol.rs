@@ -17,10 +17,17 @@
 //!    [`Frame::Result`] (the envelope the CLI prints under `--json` for the same
 //!    operation, and its exit code) or one [`Frame::Error`].
 //!
-//! A destructive operation runs in two requests. The plan request names what
-//! it would delete and hands out a single-use token; only the apply request
-//! carrying that token deletes it, and any other request in between withdraws
-//! the plan.
+//! An operation the CLI asks the operator to confirm (activate, deactivate,
+//! discard) or that writes a new layout (init) runs in two requests. The plan
+//! request says what the apply would do and hands out a single-use token; only
+//! the apply request carrying that token does it, and any other request in
+//! between withdraws the plan. Emergency is one request: it is the way out,
+//! and the CLI asks nothing either.
+//!
+//! While an activation's apply runs, the helper watches the window's end of
+//! the pipe. A window that closes it before the point of no return cancels
+//! the activation, which unwinds as a Ctrl+C would; from the
+//! [`Event::PointOfNoReturn`] on, the helper finishes the switch alone.
 //!
 //! The helper reads bytes from a process less trusted than itself, so its
 //! decoder ([`decode_request`]) is strict: a bounded line, no unknown field or
@@ -32,6 +39,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::events::Event;
+
+mod args;
+
+pub use args::{
+    ActivateArgs, ActivatePlanData, CheckArgs, ConfigShowArgs, DeactivateArgs, DeactivatePlanData,
+    DiscardPlanArgs, DiscardPlanData, EmergencyArgs, InitArgs, InitPlanData, RehearsePlantArgs,
+    RehearseScanArgs, Token, VerifyArgs,
+};
 
 /// The version of this protocol. A window and a helper talk only when theirs
 /// are equal.
@@ -98,6 +113,34 @@ pub enum Op {
     DiscardPlan(DiscardPlanArgs),
     /// The apply half of `nails discard`, for the plan the token names.
     DiscardApply(Token),
+    /// The plan half of `nails activate`: its gates and the state lock, and
+    /// the token that enters.
+    ActivatePlan(ActivateArgs),
+    /// The apply half of `nails activate`, with each step streamed.
+    ActivateApply(Token),
+    /// The plan half of `nails deactivate`: whether a way back exists and what
+    /// it will not put back.
+    DeactivatePlan(DeactivateArgs),
+    /// The apply half of `nails deactivate`.
+    DeactivateApply(Token),
+    /// `nails emergency`, at once.
+    Emergency(EmergencyArgs),
+    /// `nails recover`: the window's Clean Up and Reset Record.
+    Recover,
+    /// `nails verify`.
+    Verify(VerifyArgs),
+    /// `nails rehearse status`.
+    RehearseStatus,
+    /// `nails rehearse plant`.
+    RehearsePlant(RehearsePlantArgs),
+    /// `nails rehearse scan`.
+    RehearseScan(RehearseScanArgs),
+    /// `nails rehearse reset`.
+    RehearseReset,
+    /// The plan half of `nails init`: every precondition that can be read.
+    InitPlan(InitArgs),
+    /// The apply half of `nails init`.
+    InitApply(Token),
 }
 
 impl Op {
@@ -113,69 +156,33 @@ impl Op {
             Op::ConfigValidate => "config_validate",
             Op::DiscardPlan(_) => "discard_plan",
             Op::DiscardApply(_) => "discard_apply",
+            Op::ActivatePlan(_) => "activate_plan",
+            Op::ActivateApply(_) => "activate_apply",
+            Op::DeactivatePlan(_) => "deactivate_plan",
+            Op::DeactivateApply(_) => "deactivate_apply",
+            Op::Emergency(_) => "emergency",
+            Op::Recover => "recover",
+            Op::Verify(_) => "verify",
+            Op::RehearseStatus => "rehearse_status",
+            Op::RehearsePlant(_) => "rehearse_plant",
+            Op::RehearseScan(_) => "rehearse_scan",
+            Op::RehearseReset => "rehearse_reset",
+            Op::InitPlan(_) => "init_plan",
+            Op::InitApply(_) => "init_apply",
         }
     }
-}
 
-/// The options of `nails check`, each absent one off.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CheckArgs {
-    /// `--overlay-only`.
-    pub overlay_only: bool,
-    /// `--nixos-flake`.
-    pub nixos_flake: Option<String>,
-    /// `--allow-persistent-decoy`.
-    pub allow_persistent_decoy: bool,
-    /// `--allow-decoy-storage`.
-    pub allow_decoy_storage: bool,
-    /// `--allow-discards`.
-    pub allow_discards: bool,
-}
-
-/// The options of `nails config show` a window can give. The commented
-/// example (`--example`) is not one: the CLI prints it only as TOML.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ConfigShowArgs {
-    /// `--nixos-flake`.
-    pub nixos_flake: Option<String>,
-}
-
-/// The arguments of `nails discard` a plan takes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiscardPlanArgs {
-    /// The absolute path whose hidden copy is discarded.
-    pub target: String,
-    /// `--allow-decoy-storage`.
-    #[serde(default)]
-    pub allow_decoy_storage: bool,
-}
-
-/// The token of a plan, which its apply request carries back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Token {
-    /// [`TOKEN_HEX_DIGITS`] lowercase hexadecimal digits.
-    pub token: String,
-}
-
-/// The data of the answer to [`Op::DiscardPlan`] when there is something to
-/// delete: what the apply would remove, and the token that applies it. (With
-/// nothing to delete the answer is the envelope `nails discard` prints, and
-/// there is no token.)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiscardPlanData {
-    /// The path whose hidden copy the apply discards.
-    pub target: String,
-    /// The directories and files the apply removes.
-    pub removals: Vec<String>,
-    /// Whether the apply drops the hidden Nix database and store paths.
-    pub resets_nix_store: bool,
-    /// The token the apply request carries back.
-    pub token: String,
+    /// The token, when this is the apply half of a plan.
+    #[must_use]
+    pub fn apply_token(&self) -> Option<&str> {
+        match self {
+            Op::DiscardApply(token)
+            | Op::ActivateApply(token)
+            | Op::DeactivateApply(token)
+            | Op::InitApply(token) => Some(&token.token),
+            _ => None,
+        }
+    }
 }
 
 /// One frame from the helper.
@@ -234,7 +241,7 @@ pub enum ErrorCode {
     /// The request follows another protocol version.
     UnsupportedVersion,
     /// An argument has the right type but not the right shape (a relative
-    /// path, a malformed token).
+    /// path, a malformed token, two options the CLI refuses together).
     InvalidArgument,
     /// The handshake failed: the first request was not a hello, a second hello
     /// came, or the two sides are from different releases.
@@ -318,12 +325,142 @@ pub fn decode_request(line: &[u8]) -> Result<Request, DecodeError> {
 pub fn validate(op: &Op) -> Result<(), String> {
     match op {
         Op::Hello(hello) => valid_engine(&hello.engine),
-        Op::Check(args) => valid_flake(args.nixos_flake.as_deref()),
+        Op::Check(args) => valid_build(args.overlay_only, args.nixos_flake.as_deref()),
         Op::ConfigShow(args) => valid_flake(args.nixos_flake.as_deref()),
         Op::DiscardPlan(args) => valid_target(&args.target),
-        Op::DiscardApply(token) => valid_token(&token.token),
-        Op::Status | Op::ConfigPath | Op::ConfigValidate => Ok(()),
+        Op::ActivatePlan(args) => valid_build(args.overlay_only, args.nixos_flake.as_deref()),
+        Op::Emergency(args) => conflict(args.poweroff && args.reboot, "--poweroff", "--reboot"),
+        Op::Verify(args) => valid_verify(args),
+        Op::RehearsePlant(args) => args.user.as_deref().map_or(Ok(()), valid_user),
+        Op::RehearseScan(args) => valid_scan(args),
+        Op::InitPlan(args) => valid_init(args),
+        Op::DiscardApply(token)
+        | Op::ActivateApply(token)
+        | Op::DeactivateApply(token)
+        | Op::InitApply(token) => valid_token(&token.token),
+        Op::Status
+        | Op::ConfigPath
+        | Op::ConfigValidate
+        | Op::DeactivatePlan(_)
+        | Op::Recover
+        | Op::RehearseStatus
+        | Op::RehearseReset => Ok(()),
     }
+}
+
+/// The longest account name a rehearsal plant takes.
+const MAX_USER_BYTES: usize = 256;
+
+/// A hidden NixOS build target and `--overlay-only`, which the CLI refuses
+/// together.
+fn valid_build(overlay_only: bool, flake: Option<&str>) -> Result<(), String> {
+    conflict(
+        overlay_only && flake.is_some(),
+        "--overlay-only",
+        "--nixos-flake",
+    )?;
+    valid_flake(flake)
+}
+
+/// Refuse two options the CLI refuses together.
+fn conflict(both: bool, one: &str, other: &str) -> Result<(), String> {
+    if both {
+        return Err(format!("{one} and {other} cannot be given together"));
+    }
+    Ok(())
+}
+
+/// Refuse an option given without the one it needs, as the CLI does.
+fn requires(given: bool, needed: bool, option: &str, needs: &str) -> Result<(), String> {
+    if given && !needed {
+        return Err(format!("{option} needs {needs}"));
+    }
+    Ok(())
+}
+
+/// A path the helper hands the engine: absolute, with no control character.
+fn valid_path(what: &str, path: &str) -> Result<(), String> {
+    if !path.starts_with('/') || path.chars().any(char::is_control) {
+        return Err(format!(
+            "the {what} is an absolute path with no control character"
+        ));
+    }
+    Ok(())
+}
+
+fn valid_verify(args: &VerifyArgs) -> Result<(), String> {
+    requires(args.offline, args.root.is_some(), "--offline", "--root")?;
+    requires(args.root.is_some(), args.offline, "--root", "--offline")?;
+    requires(args.examiner, args.offline, "--examiner", "--offline")?;
+    requires(args.disk.is_some(), args.examiner, "--disk", "--examiner")?;
+    if let Some(root) = &args.root {
+        valid_path("offline root", root)?;
+    }
+    if let Some(disk) = &args.disk {
+        valid_path("examiner's disk", disk)?;
+    }
+    Ok(())
+}
+
+fn valid_user(user: &str) -> Result<(), String> {
+    let shaped = !user.is_empty()
+        && user.len() <= MAX_USER_BYTES
+        && !user.chars().any(|c| c.is_control() || c == '/' || c == ':');
+    if !shaped {
+        return Err(format!(
+            "the user is 1 to {MAX_USER_BYTES} bytes with no control character, slash or colon"
+        ));
+    }
+    Ok(())
+}
+
+fn valid_scan(args: &RehearseScanArgs) -> Result<(), String> {
+    conflict(
+        !args.devices.is_empty() && args.offline,
+        "--device",
+        "--offline",
+    )?;
+    requires(
+        args.offline,
+        !args.images.is_empty(),
+        "--offline",
+        "--image",
+    )?;
+    requires(
+        !args.images.is_empty(),
+        args.offline,
+        "--image",
+        "--offline",
+    )?;
+    requires(
+        args.token_file.is_some(),
+        args.offline,
+        "--token-file",
+        "--offline",
+    )?;
+    for device in &args.devices {
+        valid_path("device", device)?;
+    }
+    for image in &args.images {
+        valid_path("image", image)?;
+    }
+    if let Some(file) = &args.token_file {
+        valid_path("token file", file)?;
+    }
+    Ok(())
+}
+
+fn valid_init(args: &InitArgs) -> Result<(), String> {
+    conflict(
+        args.no_hardware_config && args.hardware_config.is_some(),
+        "--hardware-config",
+        "--no-hardware-config",
+    )?;
+    valid_path("hidden volume", &args.path)?;
+    if let Some(hardware) = &args.hardware_config {
+        valid_path("hardware configuration", hardware)?;
+    }
+    Ok(())
 }
 
 fn valid_engine(engine: &str) -> Result<(), String> {
@@ -346,10 +483,7 @@ fn valid_flake(flake: Option<&str>) -> Result<(), String> {
 }
 
 fn valid_target(target: &str) -> Result<(), String> {
-    if !target.starts_with('/') || target.chars().any(char::is_control) {
-        return Err("the discard target is an absolute path with no control character".to_string());
-    }
-    Ok(())
+    valid_path("discard target", target)
 }
 
 fn valid_token(token: &str) -> Result<(), String> {
