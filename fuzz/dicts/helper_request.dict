@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: the keys, operation names and values of the window
+# protocol's requests.
+"\"v\""
+"\"id\""
+"\"op\""
+"\"hello\""
+"\"protocol\""
+"\"engine\""
+"\"status\""
+"\"check\""
+"\"overlay_only\""
+"\"nixos_flake\""
+"\"allow_persistent_decoy\""
+"\"allow_decoy_storage\""
+"\"allow_discards\""
+"\"config_path\""
+"\"config_show\""
+"\"config_validate\""
+"\"discard_plan\""
+"\"target\""
+"\"discard_apply\""
+"\"token\""
+"true"
+"false"
+"null"
+"\\u0000"

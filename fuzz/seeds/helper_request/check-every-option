@@ -1,0 +1,1 @@
+{"v":1,"id":3,"op":{"check":{"overlay_only":true,"nixos_flake":"/mnt/data/nixos#host","allow_persistent_decoy":true,"allow_decoy_storage":false,"allow_discards":true}}}
