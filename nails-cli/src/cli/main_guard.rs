@@ -41,6 +41,10 @@ pub fn requires_root(command: &Commands) -> bool {
         // mutating operations for a window that runs as the operator.
         #[cfg(feature = "gui")]
         Commands::Helper(_) => true,
+        // The launcher reads the root-only configuration, starts the helper as
+        // root and drops the window to the operator.
+        #[cfg(feature = "gui")]
+        Commands::Gui => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
         // files and the status view are not gated here: they still read the
@@ -78,6 +82,8 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::BootWriter { .. } => "boot-writer",
         #[cfg(feature = "gui")]
         Commands::Helper(_) => "helper",
+        #[cfg(feature = "gui")]
+        Commands::Gui => "gui",
     }
 }
 

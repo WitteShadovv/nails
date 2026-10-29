@@ -42,6 +42,20 @@ of this changelog for that version becomes the release notes word for word, and
   duplicate field, another protocol version and an argument of the wrong shape (a relative path, or
   two options the CLI refuses together), and ends the session; a libFuzzer target
   (`helper_request`) covers it.
+- The launcher for the coming window, `nails gui`, built only with the `gui` cargo feature like
+  the helper (the flake check proves the released binary refuses it too). Run as
+  `sudo <hidden-root>/nails gui`, it starts the helper as root and the window's program
+  (`<hidden-root>/gui/bin/nails-gui`) as the operator on the two ends of one socket pair, and
+  returns. On the decoy it first refuses, before any window starts, on a decoy that keeps a
+  persistent record (the findings of the activation's decoy persistence check) and on every
+  desktop whose disk, journal and D-Bus trace test has not passed, which today is every desktop;
+  the refusal names the desktop and each reason and points to `activate`. In a hidden session it
+  always opens. The window gets no supplementary groups, `no_new_privs`, no inherited descriptor
+  beyond its pipe and `/dev/null`, and an environment from an allowlist: the display, the session
+  bus and the locale, a home and XDG directories of its own in the operator's runtime directory
+  (refused unless it is private and in RAM), and settings that turn off shader caches, portals and
+  on-disk settings. The helper and the window each lead a session of their own, so closing the
+  terminal, or the shell being killed, signals neither.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

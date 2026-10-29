@@ -840,7 +840,7 @@ fn not_found(program: &str, message: String) -> NailsError {
 }
 
 mod account;
-pub use account::Account;
+pub use account::{Account, drop_before_exec, leave_session_before_exec};
 
 #[cfg(test)]
 mod mock;

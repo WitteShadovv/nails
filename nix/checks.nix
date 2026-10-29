@@ -139,8 +139,8 @@ in
   # test-detection env vars, the reboot/systemctl path overrides, the
   # unsafe-ops opt-in, the build-directory heuristic or the backdoor
   # exemption), which compile only under the non-default `test-hooks` feature,
-  # and no window helper, which compiles only under the non-default `gui`
-  # feature. The release build enables neither; this asserts it over the
+  # and no window helper or launcher, which compile only under the non-default
+  # `gui` feature. The release build enables neither; this asserts it over the
   # shipped artifact (the `nails-e2e` package carries the hooks on purpose and
   # is not checked here).
   nails-release-hygiene = pkgs.runCommandLocal "nails-release-hygiene" { } ''
@@ -150,15 +150,19 @@ in
       LC_ALL=C grep -a -E -o "$forbidden" ${nails}/bin/nails | sort -u >&2 || true
       exit 1
     fi
-    # The window's root helper is built only with the `gui` feature, which the
-    # release build never enables: the shipped binary must refuse the command
-    # as an unknown one (a usage error, exit 2) without reading its stdin.
-    status=0
-    ${nails}/bin/nails --no-log-file helper --stdio < /dev/null > /dev/null 2>&1 || status=$?
-    if [ "$status" != 2 ]; then
-      echo "release binary did not refuse 'helper --stdio' (exit $status, expected 2)" >&2
-      exit 1
-    fi
+    # The window's root helper and its launcher are built only with the `gui`
+    # feature, which the release build never enables: the shipped binary must
+    # refuse both commands as unknown ones (a usage error, exit 2) without
+    # reading its stdin.
+    for command in "helper --stdio" "gui"; do
+      status=0
+      # shellcheck disable=SC2086
+      ${nails}/bin/nails --no-log-file $command < /dev/null > /dev/null 2>&1 || status=$?
+      if [ "$status" != 2 ]; then
+        echo "release binary did not refuse '$command' (exit $status, expected 2)" >&2
+        exit 1
+      fi
+    done
     touch "$out"
   '';
 
