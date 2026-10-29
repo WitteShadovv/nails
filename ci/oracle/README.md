@@ -8,10 +8,12 @@ its input policy files and `run-scan.sh`, the scan that feeds it.
 The oracle runs in CI are in `.github/workflows/oracle-real-nightly.yml`. Every
 night it images real ext4 decoy roots in the `oracle-images` E2E test, runs
 `run-scan.sh` over them in `ORACLE_IMAGES_DIR` mode and renders the verdict,
-and its `scan-btrfs` job runs `run-scan.sh` over the synthetic btrfs images
-`make-sample-images.sh` builds. plaso cannot open btrfs, so a btrfs scan runs
-no timeline and its verdict is `partial` at best, never `clean` (see
-[btrfs: no timeline](#btrfs-no-timeline)). `oracle-nightly.yml` in this
+its `scan-btrfs` job runs `run-scan.sh` over the synthetic btrfs images
+`make-sample-images.sh` builds, and its `produce-btrfs` and `scan-btrfs-real`
+jobs image a real Fedora 44 btrfs decoy and scan it (see
+[Real btrfs images: a Fedora 44 decoy](#real-btrfs-images-a-fedora-44-decoy)).
+plaso cannot open btrfs, so a btrfs scan runs no timeline and its verdict is
+`partial` at best, never `clean` (see [btrfs: no timeline](#btrfs-no-timeline)). `oracle-nightly.yml` in this
 directory is a template for the synthetic run alone; it is not installed under
 `.github/workflows`.
 
@@ -201,8 +203,9 @@ some not stops the run. `nails-oracle` then:
 
 What a partial run does not see beyond a full one is what only plaso reads:
 the records it parses out of a file, such as the login records of `wtmp`
-(bulk_extractor still carves those) and the messages of a journal (whose file
-the restore channel then compares whole). A file a reboot rewrites that only
+(bulk_extractor still carves those where they are stored uncompressed: see
+[Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)) and the messages of
+a journal (whose file the restore channel then compares whole). A file a reboot rewrites that only
 plaso read records of is named under `reboot_rewritten` instead.
 
 `run-scan.sh` passes a partial verdict only on btrfs images that ran no
@@ -213,6 +216,61 @@ does not take a partial run for one.
 
 On a real btrfs `after` image the positive controls go into device space no
 btrfs chunk is allocated in (see [controls.json](#controlsjson--the-scan-self-checks)).
+
+### Real btrfs images: a Fedora 44 decoy
+
+The `produce-btrfs` job of the nightly runs `fedora-44-oracle-images`, a host
+driver of the distribution tests (`nix/distro-tests/oracle-images.nix`), on a
+KVM runner. It boots the stock Fedora 44 Cloud image, whose root is a btrfs
+filesystem compressed with zstd, with `root`, `boot`, `home` and `var`
+subvolumes and a vfat ESP beside it, and keeps the whole disk four times,
+powered off: before, after one plain reboot (control), after a second plain
+reboot (control2), and after one more boot, a hidden session and the way back
+(after). The run stays in one QEMU process, which pauses at the guest's
+power-off instead of exiting, so the images are one disk's lineage: each is a
+copy of the paused disk, and a reset boots it again.
+
+Fedora is not admitted yet, so the driver runs a test-only build of the
+release binary in which only the Fedora row of the family table is admitted.
+That build is never released. The images say what a session leaves on a
+Fedora 44 Cloud decoy, not that NAILS supports Fedora.
+
+Before the first image the driver makes the decoy's journal volatile and masks
+auditd (the posture NAILS requires), creates `/mnt/data` and writes the
+coverage canary, with btrfs compression turned off for its file and its bytes
+checked on the partition in clear. The hidden root is a file on a tmpfs, and
+inside the session the driver writes, syncs and deletes a token whose bytes it
+then finds on the hidden root's device.
+
+`scan-btrfs-real` runs `run-scan.sh` twice: over before, control and after,
+and over before, control and control2 in the place of after. No session ran
+on control2, so the second scan has nothing to find: whatever it calls
+residue, plain reboots made, and it fails the job as a leak would. Each scan
+passes only on the partial verdict that names the timeline, as `scan-btrfs`
+does. A diagnostic job, `btrfs-wtmp-extents`, shows how each of the four
+images stores `/var/log/wtmp`: its size and which of its bytes btrfs keeps
+inline, compressed or plain (`btrfs-file-extents.sh`, which reads the image
+through a read-only loop device mounted read-only).
+
+Two things read differently from the ext4 images:
+
+- `btrfs restore` recovers the top level of the filesystem, so a file is keyed
+  by its path there: the root subvolume's `/etc/fstab` reads as
+  `/root/etc/fstab`, while `/var` and `/home`, subvolumes of the same name at
+  the top level, keep their paths. The canary's `/var/lib/nails-oracle/canary`
+  is found where the carve check looks for it.
+- Fedora mounts the filesystem with `compress=zstd:1`, and bulk_extractor reads
+  the bytes on the disk: it sees nothing a compressed extent holds, nor a file
+  btrfs keeps compressed inside its metadata, as it does with a file of at most
+  one 4 KiB block that compresses well. The restore carve still compares such
+  files whole, but what a compressed extent keeps outside the live tree is
+  unseen. And a file stored compressed in the earlier images and partly in
+  plain blocks in a later one shows bulk_extractor those blocks in the later
+  image alone. The decoy's `/var/log/wtmp` does this: it stays inline and
+  compressed through before and control, with two boots' records, and once it
+  grows past 4 KiB a write of a single block of it is stored plain, so
+  bulk_extractor carves the getty, boot and shutdown records of that block
+  from control2 and after, and none from before and control.
 
 ### What it does not see
 
