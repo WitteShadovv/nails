@@ -154,7 +154,15 @@ impl DecoyPersistenceCheck {
     /// whether or not the operator accepted the risk, so an accepted run still
     /// reports an honest posture. Performs no writes.
     pub fn decoy_is_persistent<F: Filesystem>(fs: &F) -> bool {
-        !Self::log_blockers(fs, Path::new("/")).is_empty()
+        !Self::persistence_findings(fs).is_empty()
+    }
+
+    /// Read-only probe: each way the decoy keeps a persistent log or audit
+    /// store, one sentence with its fix each, or none on an amnesic decoy. The
+    /// window's launcher refuses to open on a decoy with any, and names them.
+    /// Performs no writes.
+    pub fn persistence_findings<F: Filesystem>(fs: &F) -> Vec<String> {
+        Self::log_blockers(fs, Path::new("/"))
     }
 
     /// Read-only probe: whether kdump is armed on the decoy, or its state
