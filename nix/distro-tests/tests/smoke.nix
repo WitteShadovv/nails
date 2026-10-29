@@ -19,11 +19,15 @@
 # in the same boot, the hidden root opened again and a scan of the raw decoy
 # devices that runs and finds nothing. On systemd 255 (Ubuntu 24.04), which
 # reports no soft-reboot count, only the session's entry time tells the two
-# apart. Where the image table lists what the image is known to fail
-# (`knownFailedUnits`), the units failed on the decoy before the first switch,
-# in each hidden session and after each way back must be exactly the listed
-# ones, each failed with its known line, and the `platform` row of `check`
-# must warn about every unit listed; without a list they are only printed.
+# apart. The scenario lists the failed units on the decoy before the first
+# switch and right after each switch. Where the image table lists what the
+# image is known to fail (`knownFailedUnits`), each listing must hold exactly
+# the units listed for its phase (none before the first switch), each failed
+# with its known line, and the `platform` row of `check` must warn about every
+# unit listed; without a list they are only printed. A listing sees only what
+# is failed at that moment: a unit that failed while a switch stopped the old
+# system and that the new system started again is not in it, nor is one that
+# fails after it.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
