@@ -356,6 +356,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "session-dns-records",
             "session-nixos-hidden-system",
             "session-mac-restore",
+            "session-wayback-poweroff",
         ]),
         residual: true,
         conclusion: None,

@@ -114,6 +114,15 @@ live change as many USB Ethernet adapters and Wi-Fi cards do, the card has its
 permanent address back, and is up, after `deactivate` and after a plain
 `emergency`.
 
+A way back that cannot put the network state back powers off instead of
+returning. The decision and the power-off itself are unit tests (a fake `ip`,
+`nft` and `systemctl`, and a stand-in for the kernel's power-off); the whole
+path is tested in a VM, by `session-wayback-poweroff`: a session that loads
+`ipip`, whose fallback device `tunl0` the kernel keeps when asked to delete
+it, ends with a power-off and the console line that names it, after
+`deactivate` and after a plain `emergency`, while a session whose dummy link
+the way back deletes still returns.
+
 ### (d) Contract tests: one body, mock and real
 
 `nails-core/tests/filesystem_contract.rs` runs the same contract against both
