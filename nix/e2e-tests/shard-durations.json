@@ -54,6 +54,7 @@
   "session-refused-switch": 45,
   "session-sleep-guard": 72,
   "session-wayback-poweroff": 120,
+  "session-window-launcher": 90,
   "shell-history-fish": 31,
   "shell-history-zsh": 34,
   "smoke-verify-config": 20,
