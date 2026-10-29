@@ -248,9 +248,9 @@ fn mock_disk_usage_reports_the_seeded_sizes() {
 
 #[test]
 fn mock_byte_read_answers_with_the_seeded_text() {
-    // The mock holds text only, so its byte read (the trait's default) is the
-    // text read's bytes: a check that reads a package database as bytes sees
-    // what a test seeded, and a missing file is an error, not empty bytes.
+    // A file seeded as text reads as its text's bytes: a check that reads a
+    // package database as bytes sees what a test seeded, and a missing file
+    // is an error, not empty bytes.
     let fs = MockFilesystem::new();
     let status = "/var/lib/dpkg/status";
     fs.mock_add_file(status, "Package: cryptsetup\nVersion: 2:2.7.5-1\n");
@@ -270,4 +270,42 @@ fn mock_writable_and_readable_follow_the_seeds() {
     assert!(fs.is_writable(Path::new("/mnt/hidden-volume")).unwrap());
     fs.mock_set_writable("/mnt/hidden-volume", false);
     assert!(!fs.is_writable(Path::new("/mnt/hidden-volume")).unwrap());
+}
+
+#[test]
+fn a_file_of_bytes_reads_as_bytes_and_in_ranges_but_not_as_text() {
+    let fs = MockFilesystem::new();
+    let path = "/usr/lib/sysimage/rpm/rpmdb.sqlite";
+    fs.mock_set_file_bytes(path, &[0xff, 0, 1, 2]);
+    assert_eq!(
+        fs.read_file_bytes(Path::new(path)).unwrap(),
+        [0xff, 0, 1, 2]
+    );
+    assert_eq!(fs.file_size(Path::new(path)).unwrap(), 4);
+    assert!(fs.path_exists(Path::new(path)).unwrap());
+    assert_eq!(fs.read_file_range(Path::new(path), 1, 2).unwrap(), [0, 1]);
+    assert_eq!(fs.read_file_range(Path::new(path), 3, 9).unwrap(), [2]);
+    assert!(
+        fs.read_file_range(Path::new(path), u64::MAX, 1)
+            .unwrap()
+            .is_empty()
+    );
+    let error = fs.read_file_content(Path::new(path)).unwrap_err();
+    assert!(
+        error.to_string().contains("holds bytes, not text"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_mount_root_is_what_the_test_says_and_unknown_otherwise() {
+    let fs = MockFilesystem::new();
+    assert_eq!(fs.is_mount_root(Path::new("/var")).unwrap(), None);
+    fs.mock_set_mount_root("/var", true);
+    fs.mock_set_mount_root("/var/lib", false);
+    assert_eq!(fs.is_mount_root(Path::new("/var")).unwrap(), Some(true));
+    assert_eq!(
+        fs.is_mount_root(Path::new("/var/lib")).unwrap(),
+        Some(false)
+    );
 }

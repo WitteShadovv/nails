@@ -227,6 +227,6 @@ pub fn read_status<F: Filesystem>(fs: &F, root: &Path) -> Result<Option<Vec<Pack
 /// such file. A file larger than [`READ_LIMIT`](super::READ_LIMIT) is an
 /// error, and bytes that are not UTF-8 are read as U+FFFD.
 pub fn read_status_file<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<Vec<Package>>> {
-    let status = super::read_limited(fs, path)?;
+    let status = super::read_bounded(fs, path)?;
     Ok(status.map(|bytes| parse_status(&String::from_utf8_lossy(&bytes))))
 }

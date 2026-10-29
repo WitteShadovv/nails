@@ -1036,3 +1036,62 @@ fn secure_delete_dir_all_wipes_the_contents_even_when_the_directory_stays() {
     assert!(dir.is_dir());
     assert!(!dir.join("secret").exists());
 }
+
+#[test]
+fn a_range_of_a_file_is_read_without_its_access_time_or_a_link() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rpmdb.sqlite");
+    fs::write(&path, b"0123456789").unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    fs::File::open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_accessed(old))
+        .unwrap();
+    let atime = || {
+        let meta = fs::metadata(&path).unwrap();
+        (meta.atime(), meta.atime_nsec())
+    };
+    let before = atime();
+
+    let real = RealFilesystem;
+    assert_eq!(real.read_file_range(&path, 2, 3).unwrap(), b"234");
+    // A range past the end gives what the file holds of it.
+    assert_eq!(real.read_file_range(&path, 8, 10).unwrap(), b"89");
+    assert_eq!(real.read_file_range(&path, 20, 1).unwrap(), b"");
+    assert_eq!(atime(), before);
+
+    // A link is not followed.
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    let error = real.read_file_range(&link, 0, 1).unwrap_err();
+    assert!(error.to_string().contains("Failed to read file"), "{error}");
+}
+
+#[test]
+fn the_kernel_says_a_plain_directory_is_no_mount_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = RealFilesystem;
+    // A kernel without the attribute (before 5.8) does not say.
+    assert!(matches!(
+        real.is_mount_root(dir.path()).unwrap(),
+        Some(false) | None
+    ));
+    assert!(matches!(
+        real.is_mount_root(Path::new("/")).unwrap(),
+        Some(true) | None
+    ));
+    assert!(real.is_mount_root(&dir.path().join("missing")).is_err());
+}
+
+#[test]
+fn a_link_to_a_mount_point_is_no_mount_point_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("root");
+    std::os::unix::fs::symlink("/", &link).unwrap();
+    assert!(matches!(
+        RealFilesystem.is_mount_root(&link).unwrap(),
+        Some(false) | None
+    ));
+}

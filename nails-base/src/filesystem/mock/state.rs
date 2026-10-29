@@ -124,6 +124,14 @@ pub struct MockFilesystem {
     /// reports as unreadable (permission denied) rather than walking.
     pub(super) unreadable_dirs: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) file_contents: Arc<Mutex<HashMap<PathBuf, String>>>,
+    /// Files that hold bytes rather than text, which
+    /// [`Filesystem::read_file_bytes`](crate::Filesystem::read_file_bytes)
+    /// gives and text reads refuse.
+    pub(super) file_bytes: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>>,
+    /// What [`Filesystem::is_mount_root`](crate::Filesystem::is_mount_root)
+    /// says of a path; a path not here gets `None`, as from a kernel that does
+    /// not say.
+    pub(super) mount_roots: Arc<Mutex<HashMap<PathBuf, bool>>>,
     #[allow(clippy::type_complexity)]
     pub(super) files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>,
     /// Device, dm name and label backing a mount point, keyed by mount point.
@@ -190,6 +198,8 @@ impl MockFilesystem {
             nails_process_matches: Arc::new(Mutex::new(None)),
             unreadable_dirs: Arc::new(Mutex::new(HashSet::new())),
             file_contents: Arc::new(Mutex::new(HashMap::new())),
+            file_bytes: Arc::new(Mutex::new(HashMap::new())),
+            mount_roots: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
             device_ids: Arc::new(Mutex::new(HashMap::new())),

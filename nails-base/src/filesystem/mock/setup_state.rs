@@ -347,6 +347,37 @@ impl MockFilesystem {
         contents.insert(path_buf, content.to_string());
     }
 
+    /// Say whether `path` is the root of a mount, as `is_mount_root` gives
+    /// it; a path not set gets `None`.
+    pub fn mock_set_mount_root(&self, path: &str, mount_root: bool) {
+        self.mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(PathBuf::from(path), mount_root);
+    }
+
+    /// Set a file that holds `bytes`, which need not be text: what
+    /// `read_file_bytes` and `read_file_range` read, and its size what
+    /// `file_size` gives. A text read of it fails as one of a file that is not
+    /// UTF-8 does.
+    pub fn mock_set_file_bytes(&self, path: &str, bytes: &[u8]) {
+        let path_buf = PathBuf::from(path);
+        {
+            let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+            let entry = paths.entry(path_buf.clone()).or_default();
+            entry.exists = true;
+            entry.is_directory = false;
+        }
+        self.file_contents
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .remove(&path_buf);
+        self.file_bytes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path_buf, bytes.to_vec());
+    }
+
     /// Set mock file size for file_size() tests
     ///
     /// Sets the size that will be returned by file_size() for a specific path.

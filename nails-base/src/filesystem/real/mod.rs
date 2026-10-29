@@ -108,6 +108,10 @@ impl Filesystem for RealFilesystem {
         file_ops::is_symlink(path)
     }
 
+    fn is_mount_root(&self, path: &Path) -> Result<Option<bool>> {
+        file_ops::is_mount_root(path)
+    }
+
     fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
         file_ops::is_overlay_whiteout(path)
     }
@@ -181,6 +185,10 @@ impl Filesystem for RealFilesystem {
 
     fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
         file_ops::read_file_bytes(path)
+    }
+
+    fn read_file_range(&self, path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
+        file_ops::read_file_range(path, offset, len)
     }
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
