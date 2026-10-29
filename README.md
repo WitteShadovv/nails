@@ -136,7 +136,7 @@ model is written down; read it before relying on NAILS.
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog and audit refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
-| Host tools | `systemctl` and `loginctl` (systemd), `ip` (iproute2), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. The way back runs `ip` and `dmsetup`, so activation is refused while one is missing; `nails check` names it and the package that provides it. Keep `nft` (nftables) on the decoy too, and `iw` on a machine with Wi-Fi: without them the firewall tables and Wi-Fi interfaces a session adds stay on the decoy until power-off, which `check` and `activate` warn about. |
+| Host tools | `systemctl` and `loginctl` (systemd), `ip` (iproute2), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. The way back runs `ip` and `dmsetup`, so activation is refused while one is missing; `nails check` names it and the package that provides it. Keep `nft` (nftables) on the decoy too, and `iw` on a machine with Wi-Fi: without `nft` the firewall tables a session adds stay on the decoy until power-off, and without `iw` a Wi-Fi interface a session adds makes the way back power off instead of returning, which `check` and `activate` warn about. |
 | Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `status`, `verify`, `config` and `discard` with `sudo` too, as the examples do, so they can read and write root-owned files: the configuration `init` writes is readable by root only. |
 | A local account | The account you run `sudo` from must be in `/etc/passwd`: the static binary does not use NSS, so LDAP or SSSD accounts cannot be resolved. |
 
@@ -434,7 +434,8 @@ object is the `data` of a one-line versioned envelope (`schema_version` 2);
   deletes the links, policy-routing rules and firewall tables the session
   added and sets MAC addresses, the hostname and the network settings back,
   but the addresses and routes the session gave the decoy's own devices, and
-  the other cases the operator guide lists, stay until power-off. Take VPN
+  the other cases the operator guide lists, stay until power-off. When one of
+  its own steps fails, it powers off instead of returning. Take VPN
   connections down and stop containers and virtual machines before you
   deactivate, or end with `deactivate --poweroff`. See the
   [operator guide](docs/operator-guide.md#how-it-works).
