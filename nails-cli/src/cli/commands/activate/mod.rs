@@ -126,7 +126,22 @@ fn activate_options(args: &ActivateArgs) -> ActivateOptions {
         allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
         allow_discards: args.allow_discards,
+        window_launcher: window_launcher(),
     }
+}
+
+/// The window's launcher the entry writes into the hidden root: from a build
+/// with the window, when the window's program lies beside this binary.
+#[cfg(feature = "gui")]
+fn window_launcher() -> Option<nails_core::session::WindowLauncher> {
+    let engine = std::env::current_exe().ok()?;
+    crate::cli::gui::hidden_launcher(&engine)
+}
+
+/// A build without the window writes no launcher for it.
+#[cfg(not(feature = "gui"))]
+fn window_launcher() -> Option<nails_core::session::WindowLauncher> {
+    None
 }
 
 /// Execute the activate command.

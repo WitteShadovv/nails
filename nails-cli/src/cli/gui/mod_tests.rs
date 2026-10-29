@@ -154,6 +154,39 @@ fn the_window_program_lies_beside_the_engine() {
 }
 
 #[test]
+fn an_activation_writes_the_hidden_launcher_only_beside_a_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = dir.path().join("nails");
+    assert_eq!(hidden_launcher(&engine), None);
+    std::fs::create_dir_all(dir.path().join("gui/bin")).unwrap();
+    std::fs::write(dir.path().join("gui/bin/nails-gui"), "").unwrap();
+    assert_eq!(
+        hidden_launcher(&engine),
+        Some(nails_core::session::WindowLauncher {
+            engine: engine.clone(),
+            window: dir.path().join("gui/bin/nails-gui"),
+        })
+    );
+}
+
+#[test]
+fn the_action_written_for_the_window_matches_the_helper_command() {
+    use nails_core::session::window_launcher::HELPER_COMMAND;
+    // pkexec compares the action's argv1 with the word after the engine: the
+    // command line the window runs must be the helper's, with no global
+    // option before it.
+    let cli = Cli::try_parse_checked_from(["nails", HELPER_COMMAND, "--stdio"]).unwrap();
+    assert!(matches!(cli.command, Commands::Helper(ref args) if args.stdio));
+    assert_eq!(
+        helper_args(HelperOptions {
+            config: None,
+            no_log_file: false,
+        })[0],
+        HELPER_COMMAND
+    );
+}
+
+#[test]
 fn the_helper_reads_the_launchers_configuration() {
     let config = Path::new("/mnt/config/nails.toml");
     let args = helper_args(HelperOptions {
