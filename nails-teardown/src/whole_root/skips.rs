@@ -231,7 +231,11 @@ mod tests {
         )];
         let written = skip_units(run.path(), &skips).unwrap();
         let mask = run.path().join(RUNTIME_UNIT_DIR).join("srv-data.mount");
-        assert_eq!(written, vec![mask.clone()]);
+        let control = run
+            .path()
+            .join(runtime_units::RUNTIME_CONTROL_DIR)
+            .join("srv-data.mount");
+        assert_eq!(written, vec![mask.clone(), control.clone()]);
         assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
         assert!(fs::symlink_metadata(dropin(run.path(), "srv-data.mount")).is_err());
         assert!(
@@ -242,6 +246,7 @@ mod tests {
 
         assert!(remove_skips(run.path(), &skips, &Snapshot::default()));
         assert!(fs::symlink_metadata(&mask).is_err());
+        assert!(fs::symlink_metadata(&control).is_err());
     }
 
     #[test]
