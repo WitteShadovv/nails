@@ -401,6 +401,12 @@ fn two_fstabs_that_disagree_about_a_unit_keep_it_masked() {
     let kept = runtime_units(&fstab, &decisions);
     assert_eq!(kept.masks, ["data.mount"]);
     assert!(kept.skips.is_empty(), "{:?}", kept.skips);
+    let conflict = [RequiredMask {
+        unit: "data.mount".into(),
+        cause: MaskCause::ConflictingLines,
+        device: None,
+    }];
+    assert_eq!(kept.required_masks, conflict);
 
     // Both require it: one skip, pulling in what either line pulls in.
     let hidden = parse_fstab(
@@ -411,6 +417,7 @@ fn two_fstabs_that_disagree_about_a_unit_keep_it_masked() {
     decisions.extend(decide_all(&hidden, &mounts(), Path::new(HIDDEN), &present));
     let kept = runtime_units(&fstab, &decisions);
     assert!(kept.masks.is_empty(), "{:?}", kept.masks);
+    assert!(kept.required_masks.is_empty(), "{:?}", kept.required_masks);
     assert_eq!(
         kept.skips,
         [Skip {
@@ -434,6 +441,37 @@ fn two_fstabs_that_disagree_about_a_unit_keep_it_masked() {
     let kept = runtime_units(&fstab, &decisions);
     assert_eq!(kept.masks, ["data.mount"]);
     assert!(kept.skips.is_empty(), "{:?}", kept.skips);
+    assert_eq!(kept.required_masks, conflict);
+}
+
+#[test]
+fn a_required_unit_masked_for_its_absent_device_is_recorded_with_it() {
+    // What `status` lists: the mask of a unit a boot target requires, its
+    // device not there, once although two fstabs name it; neither a mask no
+    // target needs nor a skip.
+    let fstab = parse_fstab(
+        "/dev/sdb1 /data ext4 defaults 0 2
+         /dev/sdb2 /media ext4 nofail 0 2
+         /dev/sdb1 /data ext4 defaults 0 2
+",
+    );
+    let decisions = decide_all(&fstab, &mounts(), Path::new(HIDDEN), &absent);
+    let kept = runtime_units(&fstab, &decisions);
+    assert_eq!(kept.masks, ["data.mount", "media.mount"]);
+    assert_eq!(
+        kept.required_masks,
+        [RequiredMask {
+            unit: "data.mount".into(),
+            cause: MaskCause::DeviceAbsent,
+            device: Some("/dev/sdb1".into()),
+        }]
+    );
+    let kept = runtime_units(
+        &fstab,
+        &decide_all(&fstab, &mounts(), Path::new(HIDDEN), &present),
+    );
+    assert!(kept.required_masks.is_empty(), "{:?}", kept.required_masks);
+    assert_eq!(kept.skips.len(), 1, "{:?}", kept.skips);
 }
 
 #[test]

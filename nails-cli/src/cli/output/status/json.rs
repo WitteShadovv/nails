@@ -15,7 +15,9 @@ use serde::Serialize;
 
 use crate::cli::output::envelope::{Envelope, EnvelopePrint};
 use nails_core::SystemState;
-use nails_core::status::{PolicyMountView, Posture, ReminderSeverity, StatusReport};
+use nails_core::status::{
+    PolicyMountView, Posture, ReminderSeverity, RequiredUnitView, StatusReport,
+};
 
 /// The `data` payload for `status --json`.
 #[derive(Debug, Serialize)]
@@ -63,6 +65,9 @@ pub struct StatusData<'a> {
     policy_mounts: &'a [PolicyMountView],
     /// The decoy units masked in the hidden root.
     masked_units: &'a [String],
+    /// The units a boot target requires that the session skips or masks,
+    /// each with why.
+    required_units: &'a [RequiredUnitView],
     /// Whether `/run/nextroot` is populated.
     nextroot_mounted: bool,
     /// Whether the decoy keeps a persistent journal or syslog.
@@ -170,6 +175,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
             .map(|cover| cover.source.as_str()),
         policy_mounts: &report.policy_mounts,
         masked_units: &report.masked_units,
+        required_units: &report.required_units,
         nextroot_mounted: report.nextroot_mounted,
         decoy_persistent: report.decoy_persistent,
         decoy_kdump_armed: report.decoy_kdump_armed,
