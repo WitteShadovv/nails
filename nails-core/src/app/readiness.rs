@@ -382,12 +382,14 @@ fn attach_refusal<F: Filesystem>(
 /// and with the decoy's mount, swap and automount units outside its fstab. An
 /// entry the policy leaves as it is, such as the root itself, is not listed.
 fn decoy_filesystems(root: &Path, mounts: &[MountEntry], hidden_root: &Path) -> Vec<String> {
-    use crate::session::{checks, fstab, policy};
+    use crate::session::{checks, fstab, mount_units, policy};
     let text = nails_teardown::whole_root::nextroot::read_in_root(root, Path::new("/etc/fstab"))
         .unwrap_or_default();
     let entries = fstab::parse_in_root(&text, root);
     let mut decisions = policy::decide_all(&entries, mounts, hidden_root, &policy::device_present);
-    decisions.extend(checks::decoy_units(root, mounts, hidden_root));
+    let run = root.join("run");
+    let dirs = mount_units::UnitDirs { root, run: &run };
+    decisions.extend(checks::decoy_units(dirs, mounts, hidden_root));
     decisions
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))

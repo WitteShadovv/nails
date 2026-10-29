@@ -605,9 +605,15 @@ pub fn exists_in_root(root: &Path, path: &Path) -> bool {
 /// opens nothing it reads (`O_PATH`), so a FIFO or a device found there is
 /// never opened.
 pub fn is_file_in_root(root: &Path, path: &Path) -> bool {
-    open_in_root(root, path)
-        .and_then(|fd| rustix::fs::fstat(&fd).map_err(to_io))
-        .is_ok_and(|stat| (stat.st_mode & libc::S_IFMT) == libc::S_IFREG)
+    regular_file_in_root(root, path).unwrap_or(false)
+}
+
+/// [`is_file_in_root`], with the error of a lookup that fails: `NotFound`
+/// when nothing is there, another kind when something may be there that the
+/// lookup cannot reach (a loop of links, a directory it may not search).
+pub fn regular_file_in_root(root: &Path, path: &Path) -> io::Result<bool> {
+    let stat = rustix::fs::fstat(open_in_root(root, path)?).map_err(to_io)?;
+    Ok((stat.st_mode & libc::S_IFMT) == libc::S_IFREG)
 }
 
 /// How many symlinks [`canonical_in_root`] follows by their text before it
