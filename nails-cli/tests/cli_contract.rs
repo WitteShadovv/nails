@@ -446,6 +446,10 @@ fn redact_status(mut value: Value) -> Value {
         if data.contains_key("decoy_persistent") {
             data["decoy_persistent"] = Value::String("[decoy_persistent]".to_string());
         }
+        // kdump is probed from the live host's /sys/kernel/kexec_crash_loaded.
+        if data.contains_key("decoy_kdump_armed") {
+            data["decoy_kdump_armed"] = Value::String("[decoy_kdump_armed]".to_string());
+        }
         if data.contains_key("uptime_seconds") {
             data["uptime_seconds"] = Value::String("[uptime_s]".to_string());
         }

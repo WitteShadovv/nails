@@ -67,6 +67,8 @@ pub struct StatusData<'a> {
     nextroot_mounted: bool,
     /// Whether the decoy keeps a persistent journal or syslog.
     decoy_persistent: bool,
+    /// Whether kdump is armed on the decoy, or its state cannot be read.
+    decoy_kdump_armed: bool,
     /// The persona mode.
     persona_mode: &'static str,
     /// How long the last successful activation took, and when it finished.
@@ -170,6 +172,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         masked_units: &report.masked_units,
         nextroot_mounted: report.nextroot_mounted,
         decoy_persistent: report.decoy_persistent,
+        decoy_kdump_armed: report.decoy_kdump_armed,
         persona_mode: report.persona_mode.as_str(),
         last_activation: report.last_activation.as_ref(),
         switch_refusal: refused.map(|refused| RefusalJson {

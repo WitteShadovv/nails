@@ -324,9 +324,8 @@ of this changelog for that version becomes the release notes word for word, and
   unit, a systemd template instance (such as `syslog-ng@default`), the unit `syslog.service` names on
   Debian and Ubuntu, or a bare process, so a logging daemon on the decoy can no longer slip past
   activation. It also reads the systemd 262 kernel coredump socket pattern correctly instead of
-  mis-reporting it as a raw core-dump path, warns on Ubuntu's default-enabled kdump, whose crash
-  kernel writes a dump of kernel memory and the hidden session's kernel log to `/var/crash` on the
-  decoy disk if the kernel crashes during a session, and no longer warns about `sudo` logfile or
+  mis-reporting it as a raw core-dump path, catches Ubuntu's default-enabled kdump (refused, see
+  Security), and no longer warns about `sudo` logfile or
   I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
 - The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
   when the kernel command line is silent, from the running kernel's own `/proc/config.gz` (NixOS and
@@ -466,6 +465,14 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
+- An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
+  during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
+  the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the
+  overlay. kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` or
+  `kdump-tools.service` or `kdump.service` is active, and Ubuntu arms kdump-tools by default from
+  24.10. A `kexec_crash_loaded` that cannot be read or holds anything but `0` or `1` is refused the
+  same way. `--allow-persistent-decoy` accepts it for one run, with a warning. `nails status` shows
+  an armed kdump on the decoy, and `status --json` carries it as `decoy_kdump_armed`.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On

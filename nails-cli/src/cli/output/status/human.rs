@@ -133,6 +133,12 @@ where
             "The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on its disk",
         ));
     }
+    if report.decoy_kdump_armed && report.posture != Posture::Active {
+        out.push(style.marked(
+            Mark::Warn,
+            "kdump is armed on the decoy: a kernel crash in a hidden session writes its memory to the decoy disk, and activation refuses it",
+        ));
+    }
     if let Some(last) = &report.last_activation {
         out.push(format!(
             "Last activation:    took {} (finished {})",
