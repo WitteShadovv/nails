@@ -583,6 +583,50 @@ fn a_carved_record_that_cannot_be_read_as_one_stops_the_scan() {
     }
 }
 
+#[test]
+fn a_zip_member_description_is_passed_over_only_beside_its_saved_file() {
+    // The zip carver describes each member it saves on a line of its own,
+    // with no hash, at the member's place; the saved file's line, named
+    // after that place, keys the content. A member found in decompressed data
+    // has a forensic path for its place. A description with no saved file
+    // beside it is content the scan did not get: it stops the scan.
+    let dir = TmpDir::new();
+    let be = dir.path();
+    let info = |place: &str| {
+        format!(
+            "{place}\tpip/__init__.py\t<zipinfo><name>pip/__init__.py</name>\
+             <crc32>4245335440</crc32></zipinfo>\n"
+        )
+    };
+    let saved = |place: &str, sha1: &str| {
+        let file = format!("zip_carved/000/{place}-ZIP-0_pip___init__.py");
+        carved_line(0, &file, sha1).replacen("0\t", &format!("{place}-ZIP-0\t"), 1)
+    };
+    let pairs = [
+        info("7"),
+        saved("7", "AB12"),
+        info("512-GZIP-80"),
+        saved("512-GZIP-80", "cd34"),
+    ]
+    .concat();
+    fs::write(be.join("zip_carved.txt"), pairs).expect("feature file");
+    let mut out = BTreeSet::new();
+    scan_bulk_extractor(be, &mut out).expect("scans");
+    assert_eq!(
+        out,
+        BTreeSet::from([
+            Finding::new(Tool::BulkExtractor, "zip_carved", "sha1:ab12"),
+            Finding::new(Tool::BulkExtractor, "zip_carved", "sha1:cd34"),
+        ])
+    );
+
+    for alone in [info("8") + &saved("7", "AB12"), info("7")] {
+        fs::write(be.join("zip_carved.txt"), alone).expect("feature file");
+        let mut out = BTreeSet::new();
+        assert!(scan_bulk_extractor(be, &mut out).is_err());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn an_unreadable_feature_file_stops_the_scan() {

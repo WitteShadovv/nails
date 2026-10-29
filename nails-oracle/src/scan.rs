@@ -347,13 +347,30 @@ fn scan_bulk_extractor(dir: &Path, out: &mut BTreeSet<Finding>) -> io::Result<()
             out.extend(bulk_extractor_findings(feature_type, &contents));
             continue;
         }
-        for (feature, context) in feature_lines(&contents) {
+        let lines: Vec<_> = feature_records(&contents).collect();
+        // The zip carver writes two lines for each member it saves: one that
+        // describes the member (`<zipinfo>`, no hash) at the member's place,
+        // and one for the saved file, keyed by its hash and named
+        // `<place>-ZIP-<n>`. A description is passed over only when the saved
+        // file of the member at its place is in the same file: that line keys
+        // its content.
+        let saved_members: BTreeSet<&str> = lines
+            .iter()
+            .filter(|(_, _, context)| carved::carved_hash(context).is_some())
+            .filter_map(|(offset, _, _)| carved::zip_member_offset(offset))
+            .collect();
+        for (offset, feature, context) in lines {
             let field = if recorder == Recorder::LoginRecords {
                 login_record_field(dir, feature)?
+            } else if let Some(hash) = carved::carved_hash(context) {
+                hash
+            } else if carved::is_zip_member_info(context) && saved_members.contains(offset) {
+                continue;
             } else {
-                carved::carved_hash(context).ok_or_else(|| {
-                    invalid(format!("{}: no content hash for {feature}", path.display()))
-                })?
+                return Err(invalid(format!(
+                    "{}: no content hash for {feature}",
+                    path.display()
+                )));
             };
             out.insert(Finding::new(Tool::BulkExtractor, feature_type, field));
         }
@@ -387,6 +404,13 @@ fn login_record_field(dir: &Path, feature: &str) -> io::Result<String> {
 /// feature file (`offset \t feature \t context`), skipping comments (`#...`)
 /// and blanks. A line with a single column is its own feature.
 fn feature_lines(contents: &str) -> impl Iterator<Item = (&str, &str)> {
+    feature_records(contents).map(|(_, feature, context)| (feature, context))
+}
+
+/// The `offset \t feature \t context` columns of each feature line, with
+/// comments and blanks skipped; a line of one column is its feature, with no
+/// offset.
+fn feature_records(contents: &str) -> impl Iterator<Item = (&str, &str, &str)> {
     contents
         .lines()
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -394,8 +418,8 @@ fn feature_lines(contents: &str) -> impl Iterator<Item = (&str, &str)> {
             let mut columns = line.split('\t');
             let first = columns.next().unwrap_or(line);
             match columns.next() {
-                Some(feature) => (feature, columns.next().unwrap_or("")),
-                None => (first, ""),
+                Some(feature) => (first, feature, columns.next().unwrap_or("")),
+                None => ("", first, ""),
             }
         })
 }

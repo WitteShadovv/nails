@@ -141,3 +141,26 @@ fn a_carved_object_path_stays_inside_the_recorder_directory() {
         assert_eq!(carved_object_path(dir, outside), None, "{outside}");
     }
 }
+
+#[test]
+fn a_saved_zip_member_names_the_offset_of_its_description() {
+    assert_eq!(zip_member_offset("1304739840-ZIP-0"), Some("1304739840"));
+    assert_eq!(zip_member_offset("7-ZIP-12"), Some("7"));
+    // A member found in decompressed data, a zip in a zip included.
+    assert_eq!(zip_member_offset("512-GZIP-80-ZIP-0"), Some("512-GZIP-80"));
+    assert_eq!(zip_member_offset("7-ZIP-500-ZIP-0"), Some("7-ZIP-500"));
+    for other in [
+        "",
+        "7",
+        "7-ZIP-",
+        "-ZIP-0",
+        "7-ZIP-x",
+        "x-ZIP-0",
+        "7-zip-0",
+        "7/../8-ZIP-0",
+    ] {
+        assert_eq!(zip_member_offset(other), None, "{other}");
+    }
+    assert!(is_zip_member_info("<zipinfo><name>a</name></zipinfo>"));
+    assert!(!is_zip_member_info("<fileobject></fileobject>"));
+}
