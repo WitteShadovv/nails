@@ -617,10 +617,11 @@ volume keeps the unit's stop from unmounting it; rehearses on that session
 `deactivate` a clean scan of the raw decoy devices in the same boot, which on
 Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
 host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
-NixOS suite) with null and positive controls. In each phase (on the decoy
-before the first switch, in both hidden sessions and after both ways back) it
-compares the failed units with the entry's `knownFailedUnits`, and it checks
-that the `platform` row of `check` warns about every unit listed there
+NixOS suite) with null and positive controls. It lists the failed units five
+times, on the decoy before the first switch and right after each switch (in
+both hidden sessions and on the decoy after both ways back), compares each
+listing with the entry's `knownFailedUnits`, and checks that the `platform` row
+of `check` warns about every unit listed there
 ([Known failures](#known-failures)).
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
@@ -652,18 +653,24 @@ issue that the `platform` row of `nails check` warns about. An entry's
 }
 ```
 
-`hiddenSession` and `afterReturn` map each unit that must be failed in both
-hidden sessions, or on the decoy after both ways back, to a line its failed
-start logs. `notInImage` lists the units the release's warning names that the
-image does not install, so the scenario cannot see them: the cloud image has no
-CUPS, and the printing half of the Ubuntu 26.04 warning rests on a check by
-hand. Ubuntu 24.04 lists nothing, so no unit may fail there in any phase.
-Debian 13 has no list yet: its failed units are printed, not checked.
+`hiddenSession` and `afterReturn` map each unit that must be failed when the
+scenario lists the failed units in both hidden sessions, or on the decoy after
+both ways back, to a line its failed start logs. `notInImage` lists the units
+the release's warning names that the image does not install, so the scenario
+cannot see them: the cloud image has no CUPS, and the printing half of the
+Ubuntu 26.04 warning rests on a check by hand. Ubuntu 24.04 lists nothing, so
+no unit may be failed there at any of the five listings. Debian 13 has no list
+yet: its failed units are printed, not checked.
+
+A listing sees only the units failed at that moment. It misses a unit that
+fails after the listing of its phase, and one that fails but starts again
+before the listing, which includes a unit that fails while a switch stops the
+old system and that the new system starts again.
 
 The scenario fails when:
 
-- a unit that the list does not name has failed, on the decoy before the first
-  switch (where nothing may be failed) or after a switch;
+- a listing holds a unit that the list does not name: on the decoy before the
+  first switch (where nothing may be failed) or right after a switch;
 - a listed unit failed, but what it logged since its latest start lacks its
   line, so it fails in another way;
 - a `notInImage` unit is in the image, which asks for it to move to the phases
@@ -671,13 +678,14 @@ The scenario fails when:
 - the `platform` row does not warn, or does not name every listed unit. The
   rule goes one way: the row never has to pass, so the warning may cover more
   than the list does;
-- a listed unit no longer fails, probably fixed in a newer image. Each phase
-  where it now starts is printed at once, and the scenario fails at its end,
-  naming them all. Remove the unit from those phases of the list. Then narrow
-  the release's warning (its caveat in `nails-platform/src/platform/family.rs`
-  and `docs/decoy-requirements.md`) to what still fails, after checking what it
-  names beyond the list (the `notInImage` units) on an image that has them, or
-  by hand. The warning goes only when all of it is shown fixed.
+- a listed unit is not failed at a listing of its phase, probably fixed in a
+  newer image. Each listing that misses it is printed at once, and the scenario
+  fails at its end, naming them all. Remove the unit from those phases of the
+  list. Then narrow the release's warning (its caveat in
+  `nails-platform/src/platform/family.rs` and `docs/decoy-requirements.md`) to
+  what still fails, after checking what it names beyond the list (the
+  `notInImage` units) on an image that has them, or by hand. The warning goes
+  only when all of it is shown fixed.
 
 `images.nix` and `python3 -m ci.distro_images check` reject a malformed list.
 
@@ -687,9 +695,9 @@ Once a distribution's backend and detection have landed, add one entry to
 `nix/distro-tests/images.json` with `enabled` set to `true`; an upstream Fedora
 or Arch image is pinned with `python3 -m ci.distro_images repin <name>`. The
 scenario, the flake's `e2e-distro` attribute and the CI matrix are all derived
-by mapping over this table, so nothing else changes. Once its failed units have
-been recorded in every phase, give it a `knownFailedUnits`, empty where nothing
-fails.
+by mapping over this table, so nothing else changes. Once its runs have printed
+the failed units of every listing, give it a `knownFailedUnits`, with an empty
+phase where none was failed.
 
 ### The refusal of Fedora and Arch
 

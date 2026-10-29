@@ -35,20 +35,29 @@
 #                  "archlinux" for nix-vm-test's per-family prepare function);
 #   source         where the image comes from (see below);
 #   knownFailedUnits
-#                  optional: the units the smoke scenario must find failed.
-#                  Absent or null, the scenario only prints the failed units of
-#                  each phase. Otherwise it has exactly three keys:
-#                  `hiddenSession` and `afterReturn` map each unit that must be
-#                  failed in both hidden sessions, or on the decoy after both
-#                  ways back, to a line its failed start logs, and `notInImage`
-#                  lists the units the release's warning names that the image
-#                  does not install, so the scenario cannot see them. Any other
-#                  failed unit in those phases, or any failed unit on the decoy
-#                  before the first switch, fails the scenario; so does a listed
-#                  unit that no longer fails or whose failed start did not log
-#                  its line, a `notInImage` unit the image now has, and a
+#                  optional: the units the smoke scenario must find failed when
+#                  it lists the failed units, which it does five times: on the
+#                  decoy before the first switch, and right after each switch,
+#                  in both hidden sessions and on the decoy after both ways
+#                  back. Absent or null, the scenario only prints them.
+#                  Otherwise the table has exactly three keys: `hiddenSession`
+#                  and `afterReturn` map each unit that must be failed at the
+#                  listings in both hidden sessions, or at those on the decoy
+#                  after both ways back, to a line its failed start logs, and
+#                  `notInImage` lists the units the release's warning names
+#                  that the image does not install, so the scenario cannot see
+#                  them. Any other unit failed at a listing after a switch, or
+#                  any unit failed at the one before the first switch, fails
+#                  the scenario; so does a listed unit that is not failed at a
+#                  listing of its phase or whose failed start did not log its
+#                  line, a `notInImage` unit the image now has, and a
 #                  `platform` row of `check` that does not warn and name every
-#                  unit listed. An empty table asserts that nothing fails.
+#                  unit listed. An empty table asserts that no unit is failed
+#                  at any of the five listings. A listing sees only what is
+#                  failed at that moment: not a unit that failed and started
+#                  again before it, as one that failed while a switch stopped
+#                  the old system does when the new system starts it, nor one
+#                  that fails after it.
 #
 # A `source` is one of:
 #   { kind = "nix-vm-test"; distro; image; }  a release nix-vm-test already pins,

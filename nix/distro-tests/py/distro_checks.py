@@ -5,14 +5,14 @@ whole-root lifecycle on every distribution in the image table. A few of its
 assertions have to know the decoy's own shape -- where a hidden write lands
 depends on whether the tree it writes to is a filesystem of its own, and which
 boot filesystems a distribution mounts differs between families. It also
-compares the units failed in each phase with the failures the image table lists
-as known for the image. The refusal scenario (``nix/distro-tests/refusal.nix``)
-compares listings of the hidden root and of the decoy's disk filesystems taken
-before and after NAILS refuses a family it has not admitted. Keeping that logic
-here, as pure functions with a unit-test suite, means the scenarios themselves
-stay thin driver scripts and the rules cannot drift unnoticed: the
-``distro-checks`` flake check locks them on every ``nix flake check``, without a
-VM.
+compares the units failed each time it lists them with the failures the image
+table lists as known for the image. The refusal scenario
+(``nix/distro-tests/refusal.nix``) compares listings of the hidden root and of
+the decoy's disk filesystems taken before and after NAILS refuses a family it
+has not admitted. Keeping that logic here, as pure functions with a unit-test
+suite, means the scenarios themselves stay thin driver scripts and the rules
+cannot drift unnoticed: the ``distro-checks`` flake check locks them on every
+``nix flake check``, without a VM.
 
 Nothing here imports Nix or the test driver, so it runs under a plain
 ``python3 -m unittest``. The scenarios load it on the driver the same way they
@@ -549,11 +549,14 @@ def journal_traces(journal_json: str, tokens: Iterable[str]) -> list[str]:
 # (``knownFailedUnits`` in nix/distro-tests/images.json): the ones failed in
 # both hidden sessions and on the decoy after both ways back, each with a line
 # its failed start logs, and the ones the release's warning names that the
-# image does not install. The smoke scenario compares what failed in each phase
-# with that list, checks that each listed failure is the known one, and that
-# the ``platform`` row of ``check`` warns about every unit listed. A known
-# failure that is gone asks for the list, and then the warning, to be narrowed;
-# the scenario never requires the warning to go away.
+# image does not install. The smoke scenario lists the failed units on the
+# decoy before the first switch and right after each switch, and compares each
+# listing with that list: a listing sees only what is failed at that moment,
+# not a unit that failed while a switch stopped the old system and that the new
+# system started again. It checks that each listed failure is the known one,
+# and that the ``platform`` row of ``check`` warns about every unit listed. A
+# known failure that is gone asks for the list, and then the warning, to be
+# narrowed; the scenario never requires the warning to go away.
 
 #: The image table, where a known failure is listed.
 TABLE_FILE = "nix/distro-tests/images.json"
