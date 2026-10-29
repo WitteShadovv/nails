@@ -711,3 +711,150 @@ fn a_unit_whose_files_fail_to_be_looked_up_is_masked_not_read_elsewhere() {
         std::fs::remove_file(decoy.at(path)).unwrap();
     }
 }
+
+#[test]
+fn only_mount_swap_and_automount_units_a_target_pulls_in_are_read() {
+    let decoy = Decoy::new();
+    decoy.write("/etc/systemd/system/srv-scratch.mount", NATIVE_MOUNT);
+    for (link, target) in [
+        (
+            "local-fs.target.wants/srv-scratch.mount",
+            "../srv-scratch.mount",
+        ),
+        // A service a target wants is no filesystem.
+        (
+            "local-fs.target.wants/backup.service",
+            "/usr/lib/systemd/system/backup.service",
+        ),
+        // Nor is a link systemd loads no unit by.
+        (
+            "local-fs.target.wants/.hidden.mount",
+            "../srv-scratch.mount",
+        ),
+    ] {
+        decoy.link(&format!("/etc/systemd/system/{link}"), target);
+    }
+    assert_eq!(
+        read(decoy.dirs()).unwrap(),
+        [NativeUnit {
+            name: "srv-scratch.mount".into(),
+            required_by: None,
+        }]
+    );
+}
+
+#[test]
+fn a_unit_s_options_pass_on_without_those_only_the_fstab_generator_reads() {
+    let unit = unit_file::parse(
+        b"[Mount]\nWhat=/dev/vdb1\nWhere=/srv/x\nType=ext4\n\
+          Options=ro,noauto,auto,,nofail,fail,x-systemd.wanted-by=a.target,\
+          x-systemd.required-by=b.target,x-systemd.automount,\
+          comment=systemd.automount,noatime\n",
+    )
+    .unwrap();
+    let entry = as_entry(&unit, "srv-x.mount", Path::new("/srv/x"), None).unwrap();
+    assert_eq!(entry.options, ["ro", "noatime"]);
+}
+
+#[test]
+fn a_zram_device_is_named_by_its_number() {
+    assert_eq!(zram_device(Path::new("/dev/zram0")), Some("zram0"));
+    assert_eq!(zram_device(Path::new("/dev/zram12")), Some("zram12"));
+    for path in [
+        "/dev/zram",
+        "/dev/zramx",
+        "/dev/zram0p1",
+        "/dev/vda",
+        "/zram0",
+    ] {
+        assert_eq!(zram_device(Path::new(path)), None, "{path}");
+    }
+}
+
+#[test]
+fn a_filesystem_mounted_now_is_placed_as_the_mount_table_has_it() {
+    // The unit names a server, and the decoy has a disk filesystem mounted
+    // there now: that filesystem is overlaid, so the hidden systemd finds the
+    // mount point mounted.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/usr/lib/systemd/system/srv-scratch.mount",
+        "[Mount]\nWhat=server:/export\nWhere=/srv/scratch\nType=nfs4\n",
+    );
+    decoy.link(
+        "/usr/lib/systemd/system/remote-fs.target.wants/srv-scratch.mount",
+        "../srv-scratch.mount",
+    );
+    let disk = format!("{ROOT_ONLY}2 1 8:17 / /srv/scratch rw - ext4 /dev/vdb1 rw\n");
+    assert_eq!(
+        decoy.decide(&disk, true),
+        [Decision::Overlay {
+            target: "/srv/scratch".into()
+        }]
+    );
+}
+
+#[test]
+fn a_unit_file_of_up_to_four_mebibytes_is_read_and_a_larger_one_is_not() {
+    let decoy = Decoy::new();
+    // Comments fill the unit file to `size` bytes.
+    let sized = |size: usize| {
+        let comment = format!("#{}\n", "x".repeat(1022));
+        let mut text = NATIVE_MOUNT.to_string();
+        while text.len() + comment.len() <= size {
+            text.push_str(&comment);
+        }
+        let padding = "\n".repeat(size - text.len());
+        text + &padding
+    };
+    for (size, loads) in [(2 << 20, true), (4 << 20, true), ((4 << 20) + 1, false)] {
+        decoy.write("/etc/systemd/system/srv-scratch.mount", &sized(size));
+        let load = decoy.dirs().load("srv-scratch.mount");
+        if loads {
+            assert!(matches!(load, Load::Loaded(_)), "{size} bytes");
+        } else {
+            assert!(matches!(load, Load::Unreadable), "{size} bytes");
+        }
+    }
+}
+
+#[test]
+fn only_conf_drop_ins_apply_each_name_from_the_first_directory_that_has_it() {
+    let decoy = Decoy::new();
+    decoy.write(
+        "/usr/lib/systemd/system/srv-ram.mount",
+        "[Mount]\nWhat=tmpfs\nWhere=/srv/ram\nType=tmpfs\n",
+    );
+    decoy.write(
+        "/etc/systemd/system/srv-ram.mount.d/20-mode.conf",
+        "[Mount]\nOptions=mode=0700\n",
+    );
+    decoy.write(
+        "/etc/systemd/system/srv-ram.mount.d/10-size.conf",
+        "[Mount]\nOptions=size=1G\n",
+    );
+    // Hidden by the one of the same name in /etc, which comes first.
+    decoy.write(
+        "/usr/lib/systemd/system/srv-ram.mount.d/10-size.conf",
+        "[Mount]\nWhat=/dev/vdb1\n",
+    );
+    // No drop-in at all.
+    decoy.write(
+        "/etc/systemd/system/srv-ram.mount.d/30-off.conf.disabled",
+        "[Mount]\nType=ext4\n",
+    );
+    let Load::Loaded(unit) = decoy.dirs().load("srv-ram.mount") else {
+        panic!("the unit loads");
+    };
+    let mount = |key: &str, value: &str| ("Mount".to_string(), key.to_string(), value.to_string());
+    assert_eq!(
+        unit.assignments,
+        [
+            mount("What", "tmpfs"),
+            mount("Where", "/srv/ram"),
+            mount("Type", "tmpfs"),
+            mount("Options", "size=1G"),
+            mount("Options", "mode=0700"),
+        ]
+    );
+}
