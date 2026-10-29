@@ -76,6 +76,24 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
+        "required_units": {
+          "description": "The units a boot target (local-fs.target, remote-fs.target, swap.target) requires that the session keeps from starting, each with how and why. `skipped`: the unit gets a runtime drop-in whose start condition never holds, so the target is still reached (`required_at_boot`). `masked`: the unit never loads, and a target that still requires it is not reached; its device was not there at the entry or at the switch (`device_absent`, with `device`), NAILS could not tell what the unit is or what it pulls in (`undetermined`), or two fstab lines the hidden systemd may read disagree about it (`conflicting_lines`). Read from the session plan in /run; empty when there is none.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["unit", "action", "reason"],
+            "properties": {
+              "unit": { "type": "string", "minLength": 1 },
+              "action": { "type": "string", "enum": ["skipped", "masked"] },
+              "reason": {
+                "type": "string",
+                "enum": ["required_at_boot", "device_absent", "undetermined", "conflicting_lines"]
+              },
+              "device": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
         "nextroot_mounted": { "type": "boolean" },
         "decoy_persistent": {
           "description": "Whether the decoy keeps a persistent log/audit store (a persistent journald journal, or active rsyslog/syslog-ng/auditd).",

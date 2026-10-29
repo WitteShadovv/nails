@@ -18,6 +18,7 @@ expression: redact_status(value)
     "policy_mounts": [],
     "reason": "the next root has neither /etc/os-release nor /usr/lib/os-release",
     "remediation": "Run `sudo [binary] recover` to reset the record",
+    "required_units": [],
     "switch_refusal": {
       "at": "2023-11-14T22:13:20+00:00",
       "reason": "the next root has neither /etc/os-release nor /usr/lib/os-release"
