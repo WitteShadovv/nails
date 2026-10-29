@@ -202,6 +202,7 @@ fn minimal_inputs<'a>(
         rebuild_space_mb: 0,
         read_only_disks: false,
         accepted_decoy_storage: None,
+        window_launcher: None,
     }
 }
 
