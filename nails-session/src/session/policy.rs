@@ -72,7 +72,8 @@
 //! the next root (a relative or odd mount point).
 
 use super::fstab::{
-    FstabEntry, automount_unit, checkers, mount_unit, required_by, swap_unit, waits_for,
+    FstabEntry, automount_unit, checkers, escape_path, mount_unit, required_by, swap_unit,
+    waits_for,
 };
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
 use nails_teardown::whole_root::plan::Skip;
@@ -82,10 +83,28 @@ use std::path::{Component, Path, PathBuf};
 /// a fixed answer in tests.
 pub type Present<'a> = &'a dyn Fn(&Path) -> bool;
 
-/// Whether `device` is there on the running system now: its node, or the
-/// link udev makes for it, resolves.
+/// Whether `device` is there on the running system now, as systemd waits for
+/// it: its node, or the link udev makes for it, resolves, and its device unit
+/// is active. systemd makes a mount or swap wait for that unit, which udev's
+/// record of the device makes active, in the hidden session as it does here;
+/// a device udev marks not ready (`SYSTEMD_READY=0`) has a node but no active
+/// unit. A unit that cannot be asked about counts as not there. `check` and
+/// activation both decide with it.
 pub fn device_present(device: &Path) -> bool {
-    device.exists()
+    use nails_teardown::whole_root::tools;
+    if !device.exists() {
+        return false;
+    }
+    let unit = format!("{}.device", escape_path(device));
+    tools::find(None, "systemctl")
+        .and_then(|systemctl| {
+            tools::run_output(
+                &systemctl,
+                &["show", "--property=ActiveState", "--value", &unit],
+                std::time::Duration::from_secs(30),
+            )
+        })
+        .is_some_and(|state| state.trim() == "active")
 }
 
 /// Mount points whose filesystem is kept read-only in the hidden root. The
@@ -152,9 +171,20 @@ pub enum Decision {
 pub struct Unreached {
     /// The target that requires the masked unit (`local-fs.target`).
     pub target: String,
+    /// Why the unit is masked rather than skipped.
+    pub cause: Unskippable,
+}
+
+/// Why a unit a boot target requires is masked rather than skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unskippable {
     /// The device the unit waits for, which was not there: a skipped unit
     /// would have waited for it until the device timeout.
-    pub device: PathBuf,
+    NoDevice(PathBuf),
+    /// NAILS cannot tell what the unit is (the mask's reason says why), so it
+    /// keeps the unit from starting whatever it is
+    /// ([`super::mount_units`]).
+    Unread,
 }
 
 impl Decision {
@@ -200,24 +230,32 @@ impl Decision {
     pub fn warning(&self) -> Option<String> {
         let Decision::Mask {
             target,
+            reason,
             unreached:
                 Some(Unreached {
                     target: boot,
-                    device,
+                    cause,
                 }),
             ..
         } = self
         else {
             return None;
         };
-        Some(format!(
-            "{} is masked rather than skipped, as its device {} is not there: the hidden \
-             session will not reach {boot}, which requires it, and the units only {boot} \
-             pulls in will not start there. Attach the device before activating, or give \
-             the fstab entry the nofail option",
-            target.display(),
-            device.display()
-        ))
+        let unreached = format!(
+            "the hidden session will not reach {boot}, which requires it, and the units only \
+             {boot} pulls in will not start there"
+        );
+        Some(match cause {
+            Unskippable::NoDevice(device) => format!(
+                "{} is masked rather than skipped, as its device {} is not there: {unreached}. \
+                 Attach the device before activating, or give the fstab entry the nofail option",
+                target.display(),
+                device.display()
+            ),
+            Unskippable::Unread => {
+                format!("{} is masked, as {reason}: {unreached}", target.display())
+            }
+        })
     }
 }
 
@@ -387,7 +425,7 @@ fn gate(
             reason,
             unreached: Some(Unreached {
                 target: required,
-                device,
+                cause: Unskippable::NoDevice(device),
             }),
         },
         device => Decision::Skip {
