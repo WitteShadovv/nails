@@ -634,10 +634,16 @@ mounts the 9p share again after every switch.
 
 ### Known failures
 
-Some images fail a unit that NAILS cannot fix. On Ubuntu 26.04, AppArmor blocks
-chrony from reaching systemd and the journal after each switch, an upstream
-issue that the `platform` row of `nails check` warns about. An entry's
-`knownFailedUnits` states what the smoke scenario must find:
+Some images fail a unit that NAILS cannot fix. On Ubuntu 26.04, after each
+switch, AppArmor denies what chrony sends to the journal's syslog socket and to
+systemd's notification socket, and chrony exits when its notification is
+denied, so it fails to start. The denials in the kernel log name the sockets
+without `/run` (`/systemd/journal/dev-log`, `/systemd/notify`). This is an
+upstream issue that the `platform` row of `nails check` warns about. The line
+chrony exits with still reaches the journal through its standard error, which
+systemd connected to the journal before chrony started, and the scenario looks
+for that line. An entry's `knownFailedUnits` states what the smoke scenario
+must find:
 
 ```json
 "knownFailedUnits": {
