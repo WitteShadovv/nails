@@ -104,6 +104,9 @@ in
     with subtest("deactivate powers off when the way back cannot delete a link"):
         enter_with_tunl0("activate-deactivate")
         leave_detached(f"nails --config {CONFIG} deactivate -y")
+        # The way back writes this line straight to /dev/console, not through journald,
+        # and the machine powers off right after, so no file under /run is left to wait on.
+        # sync-lint: allow console-wait -- a direct /dev/console write, see above
         machine.wait_for_console_text(POWER_OFF_LINE, timeout=300)
         session.wait_for_power_off(machine, 300)
         assert_cold_decoy("after deactivate")
@@ -111,6 +114,9 @@ in
     with subtest("a plain emergency powers off when the way back cannot delete a link"):
         enter_with_tunl0("activate-emergency")
         leave_detached(f"nails --config {CONFIG} emergency")
+        # The way back writes this line straight to /dev/console, not through journald,
+        # and the machine powers off right after, so no file under /run is left to wait on.
+        # sync-lint: allow console-wait -- a direct /dev/console write, see above
         machine.wait_for_console_text(POWER_OFF_LINE, timeout=300)
         session.wait_for_power_off(machine, 300)
         assert_cold_decoy("after emergency")
