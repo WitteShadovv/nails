@@ -43,6 +43,7 @@
   "session-disk-mounts": 39,
   "session-dns-records": 28,
   "session-emergency": 89,
+  "session-fresh-pids": 245,
   "session-fstab-policy": 29,
   "session-interrupted-entry": 30,
   "session-lifecycle": 36,

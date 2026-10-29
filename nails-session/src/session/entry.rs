@@ -67,7 +67,7 @@ use nails_teardown::whole_root::plan::{
 };
 use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
-use nails_teardown::whole_root::{kernel_helpers, network, ret, transition, utab};
+use nails_teardown::whole_root::{fresh_pids, kernel_helpers, network, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -112,6 +112,11 @@ pub trait EntryHost {
     /// ([`kernel_helpers::HELPER_PATHS`]), which every way back writes back.
     fn kernel_settings(&self) -> Vec<kernel_helpers::KernelSetting> {
         kernel_helpers::read(&kernel_helpers::HELPER_PATHS)
+    }
+    /// The decoy's process numbers now ([`fresh_pids::record`]), which the
+    /// way back numbers the decoy's units by again.
+    fn pid_record(&self) -> fresh_pids::Record {
+        fresh_pids::record(Path::new("/proc"))
     }
 }
 
@@ -465,6 +470,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         read_only_disks: inputs.read_only_disks,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        pids: Default::default(),
     }
 }
 
@@ -504,6 +510,9 @@ fn build(
     // hidden build's as well as a `nixos-rebuild test` in a session entered
     // without one, and every way back writes the decoy's values back.
     plan.kernel_settings = host.kernel_settings();
+    // Read in the decoy, while its own processes run: the hidden session's
+    // processes, numbered on from the decoy's, say nothing about its boot.
+    plan.pids = host.pid_record();
     // Recorded before it is cleared, so a rollback always knows to set it again.
     plan.run_noexec = nextroot::is_mount_point(&mounts, &paths.run)
         && nextroot::is_noexec(&paths.run).unwrap_or(false);
