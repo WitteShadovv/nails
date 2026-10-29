@@ -188,7 +188,7 @@ fn a_required_unit_whose_device_is_not_there_is_masked_with_a_warning() {
             reason: "not mounted now; the hidden session would mount it read-write",
             unreached: Some(Unreached {
                 target: "local-fs.target".into(),
-                device: "/dev/sdb1".into(),
+                cause: Unskippable::NoDevice("/dev/sdb1".into()),
             }),
         }
     );
