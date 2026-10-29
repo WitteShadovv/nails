@@ -10,10 +10,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-orphan-modules.sh"
 
-# The script checks the crate directories and every crate of the side
-# workspaces, and refuses a tree that lacks a source tree in one of them, so
-# every scratch tree has a crate in each.
-CRATES = ("nails-core", "setup/nails-setup", "gui/nails-gui")
+# The script checks the crate directories, every crate of the side workspaces
+# and the fuzz crate, and refuses a tree that lacks a source tree in one of
+# them, so every scratch tree has a crate in each.
+CRATES = ("nails-core", "setup/nails-setup", "gui/nails-gui", "fuzz")
 
 
 class CheckOrphanModulesTest(unittest.TestCase):
@@ -75,13 +75,57 @@ class CheckOrphanModulesTest(unittest.TestCase):
     def test_side_workspaces_are_checked_like_the_crates(self) -> None:
         self.write("setup/nails-setup/src/stale.rs")
         self.write("gui/nails-gui/src/widgets/stale.rs")
-        # Integration tests are crate roots of their own, outside src/.
+        # An integration test is a crate root of its own.
         self.write("gui/nails-gui/tests/window.rs")
         result = self.run_check()
         self.assertEqual(result.returncode, 1)
         self.assertIn("  setup/nails-setup/src/stale.rs\n", result.stdout)
         self.assertIn("  gui/nails-gui/src/widgets/stale.rs\n", result.stdout)
         self.assertNotIn("tests/window.rs", result.stdout)
+
+    def test_the_test_bench_and_example_trees_are_checked(self) -> None:
+        # Each file directly in tests/, benches/ or examples/ is a crate root of
+        # its own, which declares its modules beside itself, as lib.rs does.
+        trees = (
+            "nails-core/tests",
+            "nails-core/benches",
+            "setup/nails-setup/tests",
+            "gui/nails-gui/examples",
+        )
+        for tree in trees:
+            self.write(f"{tree}/flow.rs", "mod common;\n")
+            self.write(f"{tree}/common/mod.rs")
+            self.write(f"{tree}/kernel.rs", '#[path = "kernel/entry.rs"]\nmod entry;\n')
+            self.write(f"{tree}/kernel/entry.rs")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for tree in trees:
+            self.write(f"{tree}/common/stale.rs")
+        # A tests/ directory inside src/ holds modules, not crate roots.
+        self.write("nails-core/src/config/tests/stale.rs")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        for tree in trees:
+            self.assertIn(f"  {tree}/common/stale.rs\n", result.stdout)
+        self.assertIn("  nails-core/src/config/tests/stale.rs\n", result.stdout)
+        self.assertNotIn("flow.rs", result.stdout)
+        self.assertNotIn("kernel", result.stdout)
+
+    def test_the_fuzz_crate_is_checked_like_the_crates(self) -> None:
+        self.write("fuzz/src/lib.rs", "pub mod libmount;\n")
+        self.write("fuzz/src/libmount.rs")
+        # A fuzz target is a crate root of its own.
+        self.write("fuzz/fuzz_targets/utab.rs", "mod common;\n")
+        self.write("fuzz/fuzz_targets/common/mod.rs")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.write("fuzz/src/stale.rs")
+        self.write("fuzz/fuzz_targets/common/stale.rs")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("  fuzz/src/stale.rs\n", result.stdout)
+        self.assertIn("  fuzz/fuzz_targets/common/stale.rs\n", result.stdout)
+        self.assertNotIn("utab.rs", result.stdout)
 
     def test_a_side_workspace_without_a_crate_fails(self) -> None:
         for workspace, crate in (("setup", "nails-setup"), ("gui", "nails-gui")):
@@ -95,6 +139,14 @@ class CheckOrphanModulesTest(unittest.TestCase):
                     f"ERROR: no Rust source tree at {workspace}/*/src", result.stderr
                 )
                 self.write(f"{workspace}/{crate}/src/lib.rs")
+
+    def test_a_fuzz_crate_without_a_source_tree_fails(self) -> None:
+        source = self.root / "fuzz" / "src"
+        (source / "lib.rs").unlink()
+        source.rmdir()
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR: no Rust source tree at fuzz/src", result.stderr)
 
 
 if __name__ == "__main__":
