@@ -16,7 +16,8 @@ expression: redact_status(value)
     "persona_mode": "shared-home",
     "place": "decoy",
     "policy_mounts": [],
-    "remediation": "Run `sudo [binary] verify` and check the hidden volume before activating again"
+    "remediation": "Run `sudo [binary] verify` and check the hidden volume before activating again",
+    "required_units": []
   },
   "ok": false,
   "schema_version": 2

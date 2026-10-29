@@ -6,6 +6,7 @@
 
 use super::*;
 use nails_teardown::mountinfo::parse_mountinfo;
+use nails_teardown::whole_root::plan::RequiredMask;
 use std::os::unix::fs::symlink;
 
 const HIDDEN: &str = "/mnt/data";
@@ -621,6 +622,15 @@ fn a_skip_whose_pulls_cannot_all_be_told_is_masked_with_a_warning() {
         let (kept, unskipped) = decoy.kept_off(DATA, &decide_data());
         assert!(kept.skips.is_empty(), "{why}: {:?}", kept.skips);
         assert_eq!(kept.masks, ["srv-data.mount"], "{why}");
+        assert_eq!(
+            kept.required_masks,
+            [RequiredMask {
+                unit: "srv-data.mount".into(),
+                cause: MaskCause::Undetermined,
+                device: None,
+            }],
+            "{why}"
+        );
         assert_eq!(unskipped.len(), 1, "{why}: {unskipped:?}");
         for part in [
             "srv-data.mount is masked rather than skipped",
