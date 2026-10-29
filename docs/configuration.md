@@ -268,7 +268,9 @@ systemd would find the mount point taken and fail the automount, and with it
 `local-fs.target`, which would start the hidden session in emergency mode. The
 automount is skipped where `local-fs.target` requires it and masked where the
 entry has `nofail`. Masks and skips are runtime files in `/run`, gone with the
-session. systemd's GPT auto-generator, which would mount partitions the fstab
+session; a mask is written in `/run/systemd/system` and in
+`/run/systemd/system.control`, which ranks above `/etc/systemd/system`, so it
+also masks a unit installed there. systemd's GPT auto-generator, which would mount partitions the fstab
 does not list, is masked the same way. `nails check` prints the decision for
 every entry and every unit outside the fstab it reads (the `fstab-policy`
 check). A decoy partition you mount by hand inside the hidden session is
