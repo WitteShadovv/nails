@@ -198,6 +198,13 @@ of this changelog for that version becomes the release notes word for word, and
   and later, and the files are read both ways. An account any of these readings names is listed,
   whatever `Relogin` says; on systemd 256 and later, Plasma Login Manager 6.7 and later log in after
   a soft-reboot only with `Relogin=true` (docs/operator-guide.md).
+- The forensic oracle scans btrfs images, the default root of Fedora and Arch decoys. plaso cannot
+  read btrfs, so on btrfs images no timeline runs, and the verdict says `partial` (exit 3), never
+  `clean`, and names `timeline: not run, plaso cannot read btrfs`. The restore carve, the record
+  diff and bulk_extractor stay required on every image, and the journal files plaso would compare
+  are compared as files instead. The positive controls of a real btrfs image go into device space
+  no btrfs chunk uses, with no mount. A nightly job scans synthetic btrfs images and passes only on
+  that partial verdict (ci/oracle/README.md).
 
 ### Changed
 

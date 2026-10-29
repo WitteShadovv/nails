@@ -66,6 +66,79 @@ impl Tool {
     }
 }
 
+/// An analysis channel a scan left out by design, never by failure: the one
+/// case is plaso on a btrfs image, since plaso cannot open a btrfs file system
+/// and would date the image as one opaque file. `ci/oracle/run-scan.sh` then
+/// runs no timeline and writes the `outputs/plaso/not-run` marker
+/// ([`crate::scan`]), and the verdict holds every other required channel to
+/// every image as before. A verdict over such a scan is never
+/// [`Status::Clean`](crate::Status::Clean): with nothing else wrong it is
+/// [`Status::Partial`](crate::Status::Partial), which names the channel and
+/// why it did not run, so it never reads as a full run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NotRun {
+    /// No plaso timeline: plaso cannot read btrfs.
+    PlasoCannotReadBtrfs,
+}
+
+impl NotRun {
+    /// The channel left out.
+    pub fn tool(self) -> Tool {
+        match self {
+            NotRun::PlasoCannotReadBtrfs => Tool::Plaso,
+        }
+    }
+
+    /// What the channel reads, in the words a verdict names it with.
+    pub fn channel(self) -> &'static str {
+        match self {
+            NotRun::PlasoCannotReadBtrfs => "timeline",
+        }
+    }
+
+    /// Why it did not run.
+    pub fn reason(self) -> &'static str {
+        match self {
+            NotRun::PlasoCannotReadBtrfs => "plaso cannot read btrfs",
+        }
+    }
+
+    /// The one-line description a verdict carries:
+    /// `timeline: not run, plaso cannot read btrfs`.
+    pub fn describe(self) -> String {
+        format!("{}: not run, {}", self.channel(), self.reason())
+    }
+
+    /// The channel and the reason a `not-run` marker of the scan names, or an
+    /// error naming what is wrong with it. The marker holds one word, the
+    /// file system the channel cannot read (`btrfs`), and at most one newline
+    /// after it; anything else is refused, so a marker the scan did not write
+    /// cannot leave out a channel.
+    pub fn from_marker(bytes: &[u8]) -> Result<NotRun, String> {
+        let word = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        match word {
+            b"btrfs" => Ok(NotRun::PlasoCannotReadBtrfs),
+            _ => Err(format!(
+                "names no channel the scan leaves out by design: {:?} (expected \"btrfs\")",
+                String::from_utf8_lossy(bytes)
+            )),
+        }
+    }
+}
+
+impl Serialize for NotRun {
+    /// As `{"tool": "plaso", "channel": "timeline", "reason": "plaso cannot
+    /// read btrfs"}`.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("NotRun", 3)?;
+        s.serialize_field("tool", &self.tool())?;
+        s.serialize_field("channel", self.channel())?;
+        s.serialize_field("reason", self.reason())?;
+        s.end()
+    }
+}
+
 /// How a residue finding differs between `before` and `after`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -155,6 +228,9 @@ pub struct Scans {
     pub control: BTreeSet<Finding>,
     /// Findings from the `after` image under test.
     pub after: BTreeSet<Finding>,
+    /// The channels the scan left out by design, on every image (see
+    /// [`NotRun`]); empty for a full run.
+    pub not_run: BTreeSet<NotRun>,
 }
 
 impl Scans {
@@ -298,6 +374,7 @@ mod tests {
             before: one("/before"),
             control: one("/control"),
             after: one("/after"),
+            not_run: BTreeSet::new(),
         };
         assert_eq!(scans.image(ImageLabel::Before), &one("/before"));
         assert_eq!(scans.image(ImageLabel::Control), &one("/control"));
