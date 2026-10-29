@@ -55,9 +55,9 @@ The decoy also has to be one the session can enter and leave:
   (on NixOS, the decoy's system), `/usr/bin`, `/bin`, `/usr/sbin` and
   `/sbin`.
 - **SELinux labels on the hidden volume**, where the host may run SELinux:
-  where `/sys/fs/selinux` exists, where `/etc/selinux/config` sets `SELINUX=`
-  or `SELINUXTYPE=` (whatever the value, `SELINUX=disabled` included), and
-  where NAILS cannot detect the host. A policy sees a directory without a
+  where the mount table (`/proc/self/mounts`) lists a selinuxfs, where it
+  cannot be read while `/sys/fs/selinux` exists or `/etc/selinux/config` sets
+  `SELINUX=` or `SELINUXTYPE=`, and where NAILS cannot detect the host. A policy sees a directory without a
   label as `unlabeled_t`, which confined services may not even look up. So at
   every activation NAILS copies onto these directories on the hidden volume
   the SELinux label of the decoy directory each stands for: the root of each
@@ -84,11 +84,11 @@ The decoy also has to be one the session can enter and leave:
     activation you run is refused until the decoy has that home or it is
     removed from the upper (the refusal names its path there).
 
-  A host that does not run SELinux but keeps such an `/etc/selinux/config`
-  needs the same, so its activation is refused while the decoy's directories
-  carry no labels: comment out both keys in that file. `nails check` does not
-  test any of this yet. Elsewhere a label is copied only where the decoy has
-  one, and the hidden root is made as before.
+  A host whose mount table lists no selinuxfs does not run SELinux, even
+  where it keeps an `/etc/selinux/config` from SELinux packages installed
+  once or an empty `/sys/fs/selinux`: there a label is copied only where the
+  decoy has one, the hidden root is made as before, and the activation says
+  so in one line. `nails check` does not test any of this yet.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The

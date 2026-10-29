@@ -20,10 +20,6 @@ of this changelog for that version becomes the release notes word for word, and
   run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
   `config/nails.toml` next to it), delete the key if it is reported, and pass
   `--allow-persistent-decoy` on the activations that need the override.
-- A host that does not run SELinux but keeps an `/etc/selinux/config` that sets `SELINUX=` or
-  `SELINUXTYPE=` (`SELINUX=disabled` included) now needs SELinux labels on the decoy's directories,
-  as a host that runs SELinux does, and its activation is refused while they carry none. Comment
-  out both keys in that file before you activate with the new binary (see Changed).
 
 ### Added
 
@@ -240,13 +236,16 @@ of this changelog for that version becomes the release notes word for word, and
   such a host each shows as `unlabeled_t` unless the volume was relabelled, among them `root`,
   `root/mounts/<unit>` and the work directories, which the hidden session sees through the hidden
   volume's bind, and the hidden `/etc/nixos`, with `/etc` where `init` made it, that
-  `init --hardware-config` makes in the root upper. Where `/sys/fs/selinux` exists,
-  `/etc/selinux/config` sets `SELINUX=` or `SELINUXTYPE=`, or the host cannot be detected, a label
-  that cannot be copied refuses the activation and undoes it: a hidden volume whose filesystem
+  `init --hardware-config` makes in the root upper. Where the mount table in `/proc/self/mounts`
+  lists a selinuxfs, or cannot be read while `/sys/fs/selinux` exists or `/etc/selinux/config` sets
+  `SELINUX=` or `SELINUXTYPE=`, or the host cannot be detected, a label that cannot be copied
+  refuses the activation and undoes it: a hidden volume whose filesystem
   stores no labels, a decoy directory without one, a policy that denies the relabel, or an operator
   without a home on the decoy, in the fresh-home persona and, once the upper holds a home for them,
   in the shared-home persona. Elsewhere a label is copied only where the decoy has one, so a decoy
-  without labels gets the hidden root it got before. `nails check` does not test this yet; see
+  without labels gets the hidden root it got before. That includes a host that keeps an
+  `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
+  no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line. `nails check` does not test this yet; see
   docs/decoy-requirements.md.
 
 ### Fixed
