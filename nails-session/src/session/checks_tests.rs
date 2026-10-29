@@ -288,3 +288,30 @@ fn an_unreadable_fstab_fails_the_policy_check() {
         .unwrap();
     assert!(result.is_pass(), "{result:?}");
 }
+
+#[test]
+fn the_decoy_s_units_outside_its_fstab_are_decided_as_activation_decides_them() {
+    let root = tempfile::tempdir().unwrap();
+    let run = tempfile::tempdir().unwrap();
+    let units = root.path().join("etc/systemd/system");
+    std::fs::create_dir_all(units.join("local-fs.target.wants")).unwrap();
+    std::fs::write(
+        units.join("srv-scratch.mount"),
+        "[Mount]\nWhat=/dev/disk/by-id/nails-test-no-such-disk\nWhere=/srv/scratch\nType=ext4\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../srv-scratch.mount",
+        units.join("local-fs.target.wants/srv-scratch.mount"),
+    )
+    .unwrap();
+    let dirs = crate::session::mount_units::UnitDirs {
+        root: root.path(),
+        run: run.path(),
+    };
+    let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    // Its disk is not on this host, and a target only wants it: masked.
+    let decisions = decoy_units(dirs, &mounts, Path::new("/mnt/data"));
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0].masked_units(), ["srv-scratch.mount"]);
+}

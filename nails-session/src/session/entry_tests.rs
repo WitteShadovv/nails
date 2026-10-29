@@ -371,3 +371,8 @@ fn an_entry_a_link_leads_into_the_hidden_volume_is_masked_there() {
         .collect();
     assert_eq!(skipped, ["mnt-data-media.automount"]);
 }
+
+#[test]
+fn the_real_host_finds_no_device_without_its_node() {
+    assert!(!RealEntryHost.device_present(Path::new("/dev/disk/by-id/nails-test-no-such-disk")));
+}
