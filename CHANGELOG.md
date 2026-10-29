@@ -119,6 +119,14 @@ of this changelog for that version becomes the release notes word for word, and
   are compared as files instead. The positive controls of a real btrfs image go into device space
   no btrfs chunk uses, with no mount. A nightly job scans synthetic btrfs images and passes only on
   that partial verdict (ci/oracle/README.md).
+- The oracle real-image nightly also images a real btrfs decoy: a stock Fedora 44 Cloud disk, kept
+  whole before, after a plain reboot, after a second plain reboot and after a hidden session and the
+  way back, then scanned without the timeline, once with the session and once with the second plain
+  reboot in its place, which must leave nothing. Fedora is not admitted yet, so these images come
+  from a test-only build that admits its row and is never released. The scan now reads what
+  bulk_extractor carves from such a disk: the description of a zip member next to its saved file, a
+  member found in decompressed data, and a login record it saved once and names `<CACHED>` after
+  that. On a disk btrfs compresses, bulk_extractor sees no compressed extent (ci/oracle/README.md).
 
 ### Changed
 

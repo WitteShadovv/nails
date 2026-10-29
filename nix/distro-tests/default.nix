@@ -49,6 +49,11 @@ let
   # too, kept out of the metadata like the probes.
   refusals = import ./refusal.nix { inherit self pkgs nix-vm-test; };
 
+  # The real btrfs decoy images of the forensic oracle, keyed
+  # "<name>-oracle-images": a host driver too, run by the oracle real-image
+  # nightly and kept out of the metadata.
+  oracleImages = import ./oracle-images.nix { inherit self pkgs nix-vm-test; };
+
   distros = builtins.attrNames enabledImages;
 
   metadata = {
@@ -88,6 +93,7 @@ tests
 // records
 // probes
 // refusals
+// oracleImages
 // {
   _metadata = metadata;
   # Plain data the `distro-images` check serialises to force evaluation of the
