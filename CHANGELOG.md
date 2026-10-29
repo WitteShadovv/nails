@@ -212,7 +212,9 @@ of this changelog for that version becomes the release notes word for word, and
   from a test-only build that admits its row and is never released. The scan now reads what
   bulk_extractor carves from such a disk: the description of a zip member next to its saved file, a
   member found in decompressed data, and a login record it saved once and names `<CACHED>` after
-  that. On a disk btrfs compresses, bulk_extractor sees no compressed extent (ci/oracle/README.md).
+  that. On a disk btrfs compresses, bulk_extractor sees no compressed extent, so a carved login
+  record new in after is also subtracted by a record of exactly the same key in the control image's
+  login files, which the scan keeps whole and reads (ci/oracle/README.md).
 
 ### Changed
 

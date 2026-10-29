@@ -14,8 +14,15 @@
 //! host, terminal or process range does not, whether it sits in a live login
 //! file or in free space. Any other carved object is keyed by the content hash
 //! bulk_extractor records for it. [`recorder`] says which recorder gets which.
+//!
+//! The same key reads the records of a restored login file
+//! ([`login_record_keys`]): on a filesystem that compresses, bulk_extractor
+//! carves none of the records a compressed extent holds, so the control
+//! image's login files, read whole, say which records the control cycle wrote
+//! (see [`crate::model::Scans::control_login_records`]).
 
 use crate::plaso::pid_range;
+use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Component, Path, PathBuf};
 
@@ -51,10 +58,13 @@ pub enum Recorder {
 /// verdict cannot see, so it names them.
 pub const SKIPPED_CARVERS: [&str; 1] = ["sqlite_carved"];
 
+/// The feature type of bulk_extractor's carved login records.
+pub const UTMP_CARVED: &str = "utmp_carved";
+
 /// The way the scan reads the feature file of `feature_type`.
 pub fn recorder(feature_type: &str) -> Recorder {
     match feature_type {
-        "utmp_carved" => Recorder::LoginRecords,
+        UTMP_CARVED => Recorder::LoginRecords,
         "duplicates" => Recorder::Skipped,
         skipped if SKIPPED_CARVERS.contains(&skipped) => Recorder::Skipped,
         other if other.ends_with("_carved") => Recorder::CarvedObjects,
@@ -166,6 +176,35 @@ pub fn utmp_record_key(record: &[u8]) -> Option<String> {
         i16_at(334),
         utmp_address(&record[348..364]),
     ))
+}
+
+/// Whether the restored file at the absolute on-image `path` is one a decoy
+/// keeps login records in, as glibc writes them: `wtmp` or `btmp`, or a
+/// rotation of one (`wtmp.1`, `wtmp-20261029`), in whatever directory the
+/// restored tree holds it. A compressed rotation (`wtmp.1.gz`) is not: its
+/// bytes are no records.
+pub fn is_login_record_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    ["wtmp", "btmp"]
+        .iter()
+        .any(|base| match name.strip_prefix(base) {
+            Some("") => true,
+            Some(rest) => rest
+                .strip_prefix(['.', '-'])
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
+            None => false,
+        })
+}
+
+/// The key ([`utmp_record_key`]) of every whole login record in `data`, the
+/// contents of a login record file. A partial record at its end, which a torn
+/// write can leave, is no record and adds none.
+pub fn login_record_keys(data: &[u8]) -> BTreeSet<String> {
+    let (records, _torn) = data.as_chunks::<UTMP_RECORD_SIZE>();
+    records
+        .iter()
+        .filter_map(|record| utmp_record_key(record))
+        .collect()
 }
 
 /// A login record's address (`ut_addr_v6`): IPv4 when only its first four

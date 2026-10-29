@@ -121,8 +121,13 @@ impl Drop for TmpDir {
 
 /// A stand-in for a file's SHA-256 in a test manifest: the scan never hashes
 /// anything itself, it only carries the digest `run-scan.sh` recorded, so any
-/// 64 hex digits that differ with the content do.
+/// 64 hex digits that differ with the content do. An empty file gets the real
+/// digest of no bytes, which the scan does compare (a login record file found
+/// empty must have been recorded empty).
 fn digest_of(content: &[u8]) -> String {
+    if content.is_empty() {
+        return EMPTY_SHA256.to_string();
+    }
     let mut hex: String = content.iter().map(|b| format!("{b:02x}")).collect();
     hex.truncate(64);
     format!("{hex:0>64}")
@@ -503,6 +508,70 @@ fn carved_line(offset: u64, file: &str, sha1: &str) -> String {
         "{offset}\t{file}\t<fileobject><filename>{file}</filename>\
          <hashdigest type='sha1'>{sha1}</hashdigest></fileobject>\n"
     )
+}
+
+/// Write a restored tree for `label` under `outputs` holding a wtmp of
+/// `records`, a non-login file and an empty btmp, with its manifest, and
+/// return the tree's root.
+fn restore_with_login_files(outputs: &Path, label: &str, records: &[Vec<u8>]) -> PathBuf {
+    let root = outputs.join("restore").join(label);
+    fs::create_dir_all(root.join("var/log")).expect("restore dir");
+    fs::write(root.join("var/log/wtmp"), records.concat()).expect("wtmp");
+    fs::write(root.join("var/log/btmp"), b"").expect("btmp");
+    fs::write(root.join("var/log/wtmp.db"), login_record(7, 9999)).expect("not a login file");
+    write_manifest(&root);
+    root
+}
+
+#[test]
+fn the_login_record_files_are_read_whole_for_their_records() {
+    // wtmp's records are read by their keys; the empty btmp, recorded empty,
+    // adds none; wtmp.db is no login record file and is not read. A tree that
+    // is not there, a carve that did not run, holds no records.
+    let dir = TmpDir::new();
+    let wtmp = [login_record(2, 0), login_record(6, 700)];
+    let root = restore_with_login_files(dir.path(), "control", &wtmp);
+    let keys = scan_login_records(&root, &root.with_extension("sha256")).expect("reads");
+    assert_eq!(keys, carved::login_record_keys(&wtmp.concat()));
+    assert!(
+        !keys.iter().any(|k| k.starts_with("type=USER_PROCESS")),
+        "{keys:?}"
+    );
+
+    let missing = dir.path().join("restore").join("before");
+    let none = scan_login_records(&missing, &missing.with_extension("sha256")).expect("none");
+    assert!(none.is_empty());
+}
+
+#[test]
+fn a_login_record_file_emptied_after_the_carve_stops_the_scan() {
+    // The manifest says what the file held when the carve hashed it. Found
+    // empty, its records are gone, and reading none would subtract nothing
+    // silently: the scan stops instead.
+    let dir = TmpDir::new();
+    let root = restore_with_login_files(dir.path(), "control", &[login_record(2, 0)]);
+    fs::write(root.join("var/log/wtmp"), b"").expect("empty it");
+    let err = scan_login_records(&root, &root.with_extension("sha256"))
+        .expect_err("an emptied login file is an error")
+        .to_string();
+    assert!(err.contains("var/log/wtmp: empty"), "{err}");
+}
+
+#[test]
+fn scan_all_reads_the_login_records_of_the_control_image() {
+    // Only the control image's login files stand for the records its cycle
+    // wrote; the records of before and after are not read into that set.
+    let dir = TmpDir::new();
+    let outputs = dir.path().join("outputs");
+    let record = |pid: i32| login_record(6, pid);
+    restore_with_login_files(&outputs, "before", &[record(100)]);
+    restore_with_login_files(&outputs, "control", &[record(700)]);
+    restore_with_login_files(&outputs, "after", &[record(3000)]);
+    let scans = scan_all(&outputs).expect("scans");
+    assert_eq!(
+        scans.control_login_records,
+        carved::login_record_keys(&record(700))
+    );
 }
 
 #[test]
