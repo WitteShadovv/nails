@@ -27,7 +27,9 @@
 # unit listed; without a list they are only printed. A listing sees only what
 # is failed at that moment: a unit that failed while a switch stopped the old
 # system and that the new system started again is not in it, nor is one that
-# fails after it.
+# fails after it. After the second session, which pushes the kernel's process
+# numbers far on, logind and the getty the decoy starts again carry numbers in
+# the power-of-two range the decoy's fresh boot gave them.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -312,6 +314,30 @@ distroVm.buildVmTest {
         prepare_boot()
 
 
+    # The decoy units whose process numbers the way back must give the range
+    # a fresh boot gives them: the getty writes its number into /var/log/wtmp.
+    NUMBERED_UNITS = ["systemd-logind.service", "getty@tty1.service", "serial-getty@ttyS0.service"]
+
+
+    def pid_range(pid):
+        # The power-of-two range the forensic oracle keys a process number by.
+        low = 1 << (pid.bit_length() - 1)
+        return (low, 2 * low - 1)
+
+
+    def unit_numbers(label):
+        # The main process numbers of the numbered units that run now.
+        numbers = {}
+        for unit in NUMBERED_UNITS:
+            if vm.execute(f"timeout 60 bash -c 'until systemctl is-active -q {unit}; do sleep 1; done'")[0] != 0:
+                continue
+            pid = int(vm.succeed(f"systemctl show -P MainPID {unit}").strip() or "0")
+            if pid > 0:
+                numbers[unit] = pid
+        print(f"{label}: process numbers {numbers}")
+        return numbers
+
+
     def blk_availability_stop():
         return vm.succeed("systemctl show -P ExecStop blk-availability.service").strip()
 
@@ -523,6 +549,8 @@ distroVm.buildVmTest {
         os.remove(baseline)
         vm.start()
         prepare_boot()
+        fresh_numbers = unit_numbers("fresh boot")
+        assert "systemd-logind.service" in fresh_numbers, fresh_numbers
 
     with subtest("decoy-persistence preflight refuses a persistent journal"):
         # Prepare everything else first, so the only finding left is the decoy
@@ -782,6 +810,11 @@ distroVm.buildVmTest {
         rc, out, err = rehearse("scan")
         assert rc == 6, (rc, out, err)
         assert json.loads(out)["error"]["code"] == "same_boot", out
+        # Push the kernel's process numbers far past a fresh boot's, so the
+        # numbers after the way back mean something.
+        vm.succeed("for i in $(seq 8000); do /bin/sh -c :; done")
+        reached = int(vm.succeed("sh -c 'echo $$'").strip())
+        assert reached > 4 * max(fresh_numbers.values()), (reached, fresh_numbers)
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
         check_failed_units("on the decoy after deactivate", "afterReturn")
@@ -803,6 +836,16 @@ distroVm.buildVmTest {
         assert_gpt_auto_masked("after deactivate", masked=False)
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
+
+    with subtest("the decoy's units after the way back are numbered like a fresh boot's"):
+        back_numbers = unit_numbers("after deactivate")
+        for unit, fresh in fresh_numbers.items():
+            back = back_numbers.get(unit)
+            assert back is not None, f"{unit} ran at the fresh boot and not after the way back"
+            assert back < reached and pid_range(back) == pid_range(fresh), (
+                f"{unit} is {back} after the way back, in {pid_range(back)}; the fresh boot "
+                f"gave it {fresh}, in {pid_range(fresh)}; the session reached {reached}"
+            )
 
     with subtest("the rehearsal's scan runs on the decoy in the planting boot"):
         # As the operator would: unlock and mount the hidden volume again.
