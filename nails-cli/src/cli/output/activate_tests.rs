@@ -92,6 +92,7 @@ fn entry(warnings: Vec<String>) -> Entry {
             read_only_disks: false,
             failed_at_entry: Vec::new(),
             kernel_settings: Vec::new(),
+            pids: Default::default(),
         },
         decisions: vec![
             Decision::ReadOnlyBind {

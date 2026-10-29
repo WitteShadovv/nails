@@ -342,6 +342,7 @@ fn the_transition_gives_each_utab_line_the_mount_made_in_its_mount_s_place() {
             runtime_dir: runtime,
             kmsg: run.join("no-kmsg"),
             systemctl: None,
+            pid_places: None,
             now: nails_teardown::whole_root::plan::unix_now(),
             mounts: read_mountinfo().unwrap(),
         });

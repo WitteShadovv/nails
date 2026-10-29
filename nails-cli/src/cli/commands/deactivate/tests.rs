@@ -165,7 +165,9 @@ fn ready_at(root: &Path) -> ReadyDeactivation {
         log_path: root.join("logs"),
         ..nails_core::Config::test_default()
     };
-    let plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
+    let mut plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
+    plan.pids.floor = Some(388);
+    nails_teardown::test_support::stage_pid_counter(root);
     ReadyDeactivation::for_test(config, plan, root)
 }
 
@@ -291,7 +293,13 @@ fn the_lock_step_refuses_a_hidden_root_that_is_no_mount_point() {
     let root = tempfile::tempdir().unwrap();
     let status = super::lock_and_leave(&json(), ready_at(root.path()), LeaveTo::Decoy, Vec::new());
     assert_eq!(status, ExitStatus::PreflightRefused);
-    assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+    // Only the stand-in for the procfs files ready_at staged is there.
+    let left: Vec<_> = std::fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name != "proc")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 /// A way back that marked one backend device to close and not the other.

@@ -26,7 +26,9 @@
 //!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
 //!   the hidden units have stopped, put the decoy's network state back
 //!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
-//!   the decoy mounts the way back restored and write the kmsg cursor last.
+//!   the decoy mounts the way back restored, write the kmsg cursor and, last,
+//!   set the kernel's process-number counter back to where the decoy's own
+//!   boot numbered its units ([`crate::whole_root::fresh_pids`]).
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -55,7 +57,8 @@ use crate::whole_root::plan::{
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::{
-    boot_records, kernel_helpers, network, run_records, runtime_units, switch_refusal, utab,
+    boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, switch_refusal,
+    utab,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -233,6 +236,9 @@ pub struct Env {
     pub now: u64,
     /// The live mount table.
     pub mounts: Vec<MountEntry>,
+    /// Where the way back sets the process-number counter
+    /// ([`fresh_pids::lower`]); `None` leaves it alone.
+    pub pid_places: Option<fresh_pids::Places>,
 }
 
 impl Env {
@@ -246,6 +252,7 @@ impl Env {
             systemctl: crate::whole_root::tools::find(None, "systemctl"),
             now: unix_now(),
             mounts: read_mountinfo().unwrap_or_default(),
+            pid_places: Some(fresh_pids::Places::system()),
         }
     }
 
@@ -279,6 +286,8 @@ pub enum Outcome {
         /// The network state the way back could not put back, and the parts
         /// it left alone ([`network::restore`]).
         network: network::Kept,
+        /// What became of the process-number counter ([`fresh_pids::lower`]).
+        pids: fresh_pids::Lowered,
     },
     /// `/run/nextroot` was populated but not armed for this transition, or
     /// failed the init check: it was detached, so PID 1 stays on this root.
@@ -411,6 +420,12 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     if run_records::save(&env.run, &env.runtime_dir.join(RECORDS_NAME)).is_err() {
         let _ = std::fs::remove_file(env.runtime_dir.join(RECORDS_NAME));
     }
+    // The counter as PID 1 hands over: the way back measures how many numbers
+    // the hidden start uses from here ([`fresh_pids::counter`]).
+    plan.pids.at_switch = env
+        .pid_places
+        .as_ref()
+        .and_then(fresh_pids::Places::current);
     plan.armed = None;
     plan.entered_at = Some(env.now);
     let _ = plan.write_atomic(&env.runtime_dir.join(PLAN_NAME));
@@ -569,14 +584,24 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     if plan.run_noexec && !fixup_installed {
         let _ = nextroot::set_noexec(&env.run, true);
     }
-    // Last: anything logged after this is imported by the decoy journald.
+    // Anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
     }
+    // Last, after every process this step started: the next process is one
+    // PID 1 starts for the decoy, numbered from where the decoy's own boot
+    // numbered its units. Best effort, as everything here.
+    let pids = env
+        .pid_places
+        .as_ref()
+        .map_or(fresh_pids::Lowered::NoRecord, |places| {
+            fresh_pids::lower(plan.pids.way_back_counter(), places)
+        });
     Outcome::Returned {
         removed: report.removed.len(),
         failed: report.failed.len(),
         network: network_kept,
+        pids,
     }
 }
 

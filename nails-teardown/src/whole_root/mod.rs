@@ -21,6 +21,8 @@
 //!   clean power cycle after the way back;
 //! - [`boot_writer`]: starting the decoy's wtmpdb boot writer so it records
 //!   the way back as a power cycle would;
+//! - [`fresh_pids`]: process numbers after the way back that read like a
+//!   fresh boot;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
@@ -42,6 +44,7 @@ pub mod carry;
 pub mod decoy_mounts;
 pub mod disk_guard;
 pub mod emergency;
+pub mod fresh_pids;
 pub mod kernel_helpers;
 pub mod kill;
 pub mod network;

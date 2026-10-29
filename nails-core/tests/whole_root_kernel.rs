@@ -127,6 +127,7 @@ mod kernel_tests {
                 read_only_disks: false,
                 failed_at_entry: Vec::new(),
                 kernel_settings: Vec::new(),
+                pids: Default::default(),
             }
         }
 
@@ -137,6 +138,7 @@ mod kernel_tests {
                 runtime_dir: self.run.path().join("overlay-runtime"),
                 kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
+                pid_places: None,
                 now: nails_teardown::whole_root::plan::unix_now(),
                 mounts: read_mountinfo().unwrap(),
             }

@@ -754,6 +754,7 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             runtime_dir: paths.runtime(),
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
+            pid_places: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
         };
@@ -1208,6 +1209,7 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
             runtime_dir: paths.runtime(),
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
+            pid_places: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
         };
