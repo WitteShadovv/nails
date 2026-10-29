@@ -221,9 +221,15 @@ Keep all of it `root`-owned on the hidden volume.
      is masked, and activation warns that the hidden session will not reach
      that target.
 
-   The decoy's own mount, swap and automount units that a target pulls in
-   outside the fstab (a NixOS `systemd.mounts` unit, zram-generator's swap,
-   the GPT auto-generator's ESP) get the same decisions.
+   The decoy's own mount, swap and automount units that a boot target links
+   in its `.wants` or `.requires` directory outside the fstab (a NixOS
+   `systemd.mounts` unit, the GPT auto-generator's ESP) get the same
+   decisions. zram-generator's swap stays on in the hidden session as RAM-only
+   swap while its zram device has no backing device, and is kept off like
+   disk swap when it has one; NAILS does not read zram-generator's
+   configuration. A mount unit that only another unit pulls in is not
+   decided: the hidden systemd mounts it as the decoy's would, and the session
+   watcher alerts on its read-write mount.
 
    Whatever the fstab says, the hidden session also masks
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail
@@ -232,7 +238,7 @@ Keep all of it `root`-owned on the hidden volume.
    well, so the generator mounts no partition the fstab does not list. The full
    table is in [configuration.md](configuration.md#what-the-session-covers).
 
-   `nails check` lists the decision for each entry.
+   `nails check` lists the decision for each entry and each unit it reads.
 6. It binds `/run` and the hidden volume into the next root (the hidden volume
    appears at the same path in the hidden session) and checks the init the way
    PID 1 will, so a broken tree is refused before the switch instead of freezing

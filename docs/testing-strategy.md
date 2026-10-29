@@ -202,6 +202,7 @@ and checks more than that nothing panics or hangs:
 | `nixos_reference` | `configuration.nix` and udev's record of the hidden volume's partition | every reference lies in the file; ASCII case changes nothing; the scan reads forward only |
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `unit_file` | a decoy's systemd unit file | the assignments of the sections NAILS reads are the ones systemd applies, in order, and a unit file systemd refuses is refused |
+| `unit_name` | the name of a mount, swap or automount unit a decoy's unit directory links | a name decodes only to a plain absolute path systemd gives that name, and a path's name decodes back to the path |
 | `autologin` | GDM's, SDDM's, Plasma Login Manager's and LightDM's configuration with drop-ins | the accounts listed are the ones each display manager may log in, read with its parser in each order its locale may sort the drop-ins in |
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
 | `cryptsetup_version` | a decoy's dpkg `status` file, whose lines are also pacman entries and a store path's name | a version read comes from what names cryptsetup and reads back the same; another package's stanza or entry changes nothing |

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: the escapes systemd writes in a unit name for a path,
+# and the path components it treats apart.
+"-"
+"\\x2d"
+"\\x2e"
+"\\x20"
+"\\x2f"
+"\\x00"
+"\\x5c"
+"\\xc3\\xa9"
+"\\x"
+"/"
+"//"
+"/./"
+"/../"
+"dev-"
+"dev-disk-by\\x2duuid-"
+"dev-zram"
