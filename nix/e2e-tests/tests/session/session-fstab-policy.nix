@@ -4,8 +4,8 @@
 # The decoy here has an ESP at /boot, a separate ext4 filesystem at /srv/data,
 # one on LVM at /srv/files, a disk at /srv/spare that it does not mount now and
 # a swap partition in its fstab, besides the root and the VM's own Nix store,
-# and a disk at /srv/native that a mount unit of its own mounts, outside the
-# fstab. Like a Debian or Ubuntu host with dmsetup, it also runs
+# a disk at /srv/native that a mount unit of its own mounts, outside the
+# fstab, and a zram swap unit of its own whose zram device has a backing disk. Like a Debian or Ubuntu host with dmsetup, it also runs
 # blk-availability.service (lib/blk-availability.nix), whose stop in every
 # soft-reboot unmounts the filesystems on device-mapper devices. In the hidden
 # session:
@@ -22,6 +22,8 @@
 #     there would leave local-fs.target unreached without a failure;
 #   - /srv/native, mounted by the decoy's own unit, is an overlay whose upper
 #     is on the hidden volume, as an fstab line would be;
+#   - the zram swap is masked as disk swap: its device could write pages back
+#     to the backing disk;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
@@ -29,6 +31,10 @@
 #     command cleared. On real hardware the uncleared stop unmounted the hidden
 #     volume below /run/nextroot; here the carried store mounts below the
 #     volume keep it busy, and the LVM filesystem shows the same loss.
+#
+# Before the entry, check skips /srv/spare only while systemd has its device
+# unit active, as activation does: with udev marking the disk not ready, check
+# masks it and warns that local-fs.target will not be reached.
 #
 # Back on the decoy, the filesystems are mounted by the decoy's own fstab
 # again, without a trace of the hidden writes, and blk-availability's stop is
@@ -82,7 +88,12 @@ in
           size = 64;
           driveConfig.deviceExtraOpts.serial = "native";
         }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "zback";
+        }
       ];
+      boot.kernelModules = [ "zram" ];
       boot.supportedFilesystems = [ "vfat" ];
       virtualisation.fileSystems = {
         "/boot" = {
@@ -113,6 +124,18 @@ in
           unitConfig.ConditionPathExists = "/run/native-disk-ready";
         }
       ];
+      # A zram swap of the decoy's own, as zram-generator makes one. The test
+      # gives the zram device a backing disk, then leaves the swap off, as the
+      # swap check asks of a zram that can write back.
+      systemd.units."dev-zram0.swap" = {
+        wantedBy = [ "swap.target" ];
+        text = ''
+          [Unit]
+          ConditionPathExists=/run/zram-ready
+          [Swap]
+          What=/dev/zram0
+        '';
+      };
     };
 
   testScript = _: ''
@@ -132,6 +155,9 @@ in
         "systemd-makefs@dev-disk-by\\x2did-virtio\\x2dspare.service",
     )
     LV = "/dev/mapper/vg0-files"
+    ZRAM_UNIT = "dev-zram0.swap"
+    SPARE_DEVICE_UNIT = "dev-disk-by\\x2did-virtio\\x2dspare.device"
+    NOT_READY_RULE = "/run/udev/rules.d/99-spare-not-ready.rules"
     BLK_UNIT = "blk-availability.service"
     BLKDEACTIVATE = "/bin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
 
@@ -218,6 +244,12 @@ in
     # the hidden systemd would mount it read-write.
     machine.succeed("mountpoint -q /srv/spare && umount /srv/spare")
     spare_before = spare_hash()
+    # A zram device that can write its pages back to a disk, its swap off.
+    machine.succeed(
+        "echo /dev/disk/by-id/virtio-zback > /sys/block/zram0/backing_dev && "
+        "echo 32M > /sys/block/zram0/disksize && mkswap /dev/zram0 && touch /run/zram-ready"
+    )
+    assert machine.succeed("cat /sys/block/zram0/backing_dev").strip() != "none"
 
     with subtest("blk-availability's stop unmounts the decoy's device-mapper filesystems"):
         # Started at boot, so every soft-reboot runs its stop. Stopping it here
@@ -252,6 +284,31 @@ in
         assert "masked" in out, out
         assert "/srv/spare: skipped" in out, out
         assert "/srv/native: overlaid" in out, out
+        assert "/dev/zram0: masked" in out, out
+
+    with subtest("check masks a required disk whose device unit is not active"):
+        # udev marks the disk not ready: its node is there, but systemd's
+        # device unit is not active, so a skipped mount would wait for it.
+        kernel = machine.succeed(f"basename \"$(readlink -f {SPARE})\"").strip()
+        machine.succeed(
+            f"mkdir -p /run/udev/rules.d && echo 'KERNEL==\"{kernel}\", "
+            f"ENV{{SYSTEMD_READY}}=\"0\"' > {NOT_READY_RULE} && udevadm control --reload && "
+            f"udevadm trigger --settle --action=change {SPARE}"
+        )
+        machine.wait_until_fails(f"systemctl is-active '{SPARE_DEVICE_UNIT}'")
+        machine.succeed(f"test -e {SPARE}")
+        out = machine.succeed(f"nails --config {CONFIG} check --overlay-only")
+        machine.log(out)
+        assert "/srv/spare: masked" in out, out
+        assert "/srv/spare is masked rather than skipped" in out, out
+        assert "will not reach local-fs.target" in out, out
+        machine.succeed(
+            f"rm {NOT_READY_RULE} && udevadm control --reload && "
+            f"udevadm trigger --settle --action=change {SPARE}"
+        )
+        machine.wait_until_succeeds(f"systemctl is-active '{SPARE_DEVICE_UNIT}'")
+        out = machine.succeed(f"nails --config {CONFIG} check --overlay-only")
+        assert "/srv/spare: skipped" in out, out
 
     entered_after = monotonic_us()
     canonical_activate(CONFIG, "--overlay-only", "activate")
@@ -293,6 +350,8 @@ in
         state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
         assert state == "masked", f"{SWAP_UNIT}: {state}"
         machine.fail(f"systemctl start '{SWAP_UNIT}'")
+        state = machine.succeed(f"systemctl show -p LoadState --value '{ZRAM_UNIT}'").strip()
+        assert state == "masked", f"{ZRAM_UNIT}: {state}"
         assert machine.succeed("swapon --show --noheadings").strip() == ""
 
     with subtest("a disk local-fs.target requires is skipped, and the target reached"):
@@ -338,6 +397,8 @@ in
         assert esp_hashes() == esp_before, "the ESP changed"
         state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
         assert state != "masked", f"the swap mask leaked into the decoy: {state}"
+        state = machine.succeed(f"systemctl show -p LoadState --value '{ZRAM_UNIT}'").strip()
+        assert state != "masked", f"the zram swap mask leaked into the decoy: {state}"
         source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
         assert source == LV, f"/srv/files is {source!r} after the way back"
         assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
