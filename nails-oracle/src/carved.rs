@@ -78,6 +78,10 @@ pub fn carved_hash(context: &str) -> Option<String> {
     valid.then(|| format!("{kind}:{}", digest.to_ascii_lowercase()))
 }
 
+/// The name bulk_extractor gives an object whose bytes it already saved
+/// under another name; the context still carries the hash of those bytes.
+pub const CACHED: &str = "<CACHED>";
+
 /// Whether a carved-object line's context describes a zip member
 /// (`<zipinfo>...`) rather than a saved file.
 pub fn is_zip_member_info(context: &str) -> bool {
