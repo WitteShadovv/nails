@@ -37,7 +37,34 @@ impl MockFilesystem {
         })
     }
 
+    pub(super) fn read_file_bytes_impl(&self, path: &Path) -> Result<Vec<u8>> {
+        let bytes = self
+            .file_bytes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .cloned();
+        match bytes {
+            Some(bytes) => Ok(bytes),
+            None => self.read_file_content_impl(path).map(String::into_bytes),
+        }
+    }
+
     pub(super) fn read_file_content_impl(&self, path: &Path) -> Result<String> {
+        if self
+            .file_bytes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains_key(path)
+        {
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} holds bytes, not text", path.display()),
+                ),
+            ));
+        }
         let content = self
             .file_contents
             .lock()

@@ -186,6 +186,12 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// most systems let only root and the `disk` group do.
     fn loop_backing_device(&self, node: &Path) -> Result<u64>;
 
+    /// Whether `path` itself (never a symlink's target) is the root of a
+    /// mount, as the kernel's `statx` says (`STATX_ATTR_MOUNT_ROOT`, Linux
+    /// 5.8): `None` when the kernel does not say. A bind mount counts, as it
+    /// does in the mount table. Looking it up changes no access time.
+    fn is_mount_root(&self, path: &Path) -> Result<Option<bool>>;
+
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
@@ -289,6 +295,22 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// does.
     fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
         self.read_file_content(path).map(String::into_bytes)
+    }
+
+    /// Read `len` bytes from `offset` on of the file at `path`, which must
+    /// not be a symbolic link, without updating its access time where the
+    /// implementation reads a disk. Fewer bytes come back only where the file
+    /// ends first.
+    ///
+    /// The default reads the whole file with
+    /// [`read_file_bytes`](Self::read_file_bytes) and takes the range.
+    fn read_file_range(&self, path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let bytes = self.read_file_bytes(path)?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let end = start.saturating_add(len).min(bytes.len());
+        Ok(bytes[start..end].to_vec())
     }
 
     /// Find files matching a pattern in a directory (recursive).

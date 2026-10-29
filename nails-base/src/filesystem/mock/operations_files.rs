@@ -31,6 +31,14 @@ impl MockFilesystem {
             }
             drop(explicit_sizes);
 
+            if let Some(bytes) = self
+                .file_bytes
+                .lock()
+                .expect("MockFilesystem mutex poisoned")
+                .get(path)
+            {
+                return Ok(bytes.len() as u64);
+            }
             let contents = self
                 .file_contents
                 .lock()

@@ -11,13 +11,16 @@
 //!   ([`dpkg::info_owner`]);
 //! - pacman (Arch Linux) keeps one `<name>-<version>-<release>` directory per
 //!   installed package in `/var/lib/pacman/local` ([`pacman::parse_entry`]);
-//! - rpm (Fedora) keeps a SQLite database, which NAILS does not read: only
-//!   the file's size and modification time ([`rpm::Stamp`]).
+//! - rpm (Fedora) keeps a SQLite database, whose table of packages NAILS
+//!   reads with its own reader ([`sqlite`]): each package's name, version,
+//!   architecture and files ([`rpm::read_packages`]).
 //!
 //! Each of them holds whatever the decoy's disk holds, or what a hidden
 //! session wrote, so the parsers take any input: a line, a stanza or an entry
-//! they cannot read is left out, never an error. The `dpkg_status` and
-//! `pacman_local` fuzz targets drive them with hostile input.
+//! they cannot read is left out, never an error. rpm's database is read
+//! whole or not at all: a header or a page it cannot read is an error. The
+//! `dpkg_status`, `pacman_local` and `rpmdb` fuzz targets drive them with
+//! hostile input.
 //!
 //! # Reading without a trace
 //!
@@ -34,6 +37,7 @@
 pub mod dpkg;
 pub mod pacman;
 pub mod rpm;
+pub mod sqlite;
 
 use crate::{Filesystem, NailsError, Result};
 use std::path::Path;
@@ -55,7 +59,7 @@ fn missing(error: &NailsError) -> bool {
 /// The bytes of the file at `path`, read through `fs`: `None` when there is
 /// no such file, an error when it holds more than [`READ_LIMIT`] bytes or
 /// cannot be read. Its size is looked up first, which changes no access time.
-fn read_limited<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<Vec<u8>>> {
+pub fn read_bounded<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<Vec<u8>>> {
     let size = match fs.file_size(path) {
         Ok(size) => size,
         Err(e) if missing(&e) => return Ok(None),

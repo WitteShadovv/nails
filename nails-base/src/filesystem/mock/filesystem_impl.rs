@@ -96,6 +96,19 @@ impl Filesystem for MockFilesystem {
         self.read_file_content_impl(path)
     }
 
+    fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
+        self.read_file_bytes_impl(path)
+    }
+
+    fn is_mount_root(&self, path: &Path) -> Result<Option<bool>> {
+        Ok(self
+            .mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .copied())
+    }
+
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
         self.find_files_with_pattern_impl(dir, pattern)
     }
