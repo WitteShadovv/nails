@@ -14,6 +14,17 @@ name: Oracle real-image nightly
 # verdict alone, so a btrfs scan that turns blind, leaks or calls itself clean
 # fails it. It needs no KVM and does not wait for the images.
 #
+# produce-btrfs and scan-btrfs-real do the same for a REAL btrfs decoy: the
+# fedora-44-oracle-images distro driver (nix/distro-tests/oracle-images.nix)
+# images a stock Fedora 44 Cloud disk before, after a plain reboot (control),
+# after a second plain reboot (control2) and after a full hidden session and
+# the way back (after). run-scan.sh scans before, control and after, and, as
+# a check of the scan itself, before, control and control2, which no session
+# ran on. Fedora is not admitted yet, so that driver runs a test-only build
+# that admits its row and is never released. On btrfs the timeline cannot
+# run, so each of these scans, like scan-btrfs, passes only on the partial
+# verdict that names it.
+#
 # Two runners, because the two halves need different hosts:
 #   * produce: ubuntu-26.04 exposes /dev/kvm (install-nix-action opens it), so
 #     the oracle-images test boots and retains before/control/after.raw. Its
@@ -287,15 +298,260 @@ jobs:
           path: ${{ runner.temp }}/oracle-btrfs/verdict.json
           if-no-files-found: warn
 
-  # Runs of main are unattended: a failed produce, scan or scan-btrfs job opens
-  # or comments on the 'CI red: Oracle real-image nightly' issue, and the next
-  # green run closes it. Every job is listed because a failed produce job skips
-  # the scan, and a skipped job alone leaves the issue as it is. A dispatch on
+  # The real btrfs decoy: a Fedora 44 Cloud disk, imaged whole before, after a
+  # plain reboot, after a second one and after a hidden session and the way
+  # back. The distro driver runs directly, as the oracle-images driver above
+  # does, so every night images a fresh session. A nix-vm-test driver keeps
+  # its QEMU state in TMPDIR, which names a directory on the root disk.
+  produce-btrfs:
+    name: Produce real btrfs decoy images (Fedora 44)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
+
+      - name: Run the Fedora oracle-images driver and retain the raws
+        run: |
+          set -euo pipefail
+          driver="$RUNNER_TEMP/fedora-oracle-images-driver"
+          out="$RUNNER_TEMP/fedora-oracle-images"
+          scratch="$RUNNER_TEMP/vm"
+          nix build --print-build-logs --out-link "$driver" \
+            '.#legacyPackages.x86_64-linux.e2e-distro."fedora-44-oracle-images"'
+          mkdir -p "$out" "$scratch"
+          (
+            cd "$scratch"
+            TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" NAILS_ORACLE_OUT="$out" \
+              timeout 3300 "$driver/bin/test-driver" </dev/null
+          )
+          for raw in before control control2 after; do
+            test -f "$out/forensics/$raw.raw"
+          done
+
+      # Unlike the ext4 raws these are not sparse: nearly every block of the
+      # 5 GiB Fedora disk holds data, so the artifact is about 2.3 GB.
+      - name: Pack the raws
+        run: |
+          tar -Sczf raws-btrfs.tar.gz -C "$RUNNER_TEMP/fedora-oracle-images/forensics" \
+            before.raw control.raw control2.raw after.raw
+          ls -la raws-btrfs.tar.gz
+
+      - name: Upload the raws
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oracle-real-btrfs-raws
+          path: raws-btrfs.tar.gz
+          retention-days: 3
+
+  # run-scan.sh over the Fedora disks, twice: before, control and after (the
+  # session), and before, control and control2 in the place of after (no
+  # session). Each scan carves the btrfs root partition with btrfs restore,
+  # diffs the records, runs bulk_extractor over each whole disk, plants the
+  # positive controls in the unallocated btrfs device space of a copy of the
+  # image in the place of after, and runs no timeline. Each passes only on
+  # the partial verdict that names the timeline as the one channel left out,
+  # so the no-session scan proves that two plain reboots alone leave nothing
+  # the verdict calls residue.
+  scan-btrfs-real:
+    name: Scan the real btrfs images, ${{ matrix.scan }} (no timeline)
+    needs: produce-btrfs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scan: session
+            image: after
+          - scan: no-session
+            image: control2
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: oracle
+          save-if: false
+
+      - name: Build the verdict tool
+        run: cargo build --release --locked -p nails-oracle
+
+      - name: Download the raws
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6.0.0
+        with:
+          name: oracle-real-btrfs-raws
+
+      # The scan reads before.raw, control.raw and after.raw from one
+      # directory: the three raws it compares, with the image this scan
+      # compares in the place of after. Only those are unpacked, since each
+      # raw takes about 5 GB of the runner's disk.
+      - name: Unpack the raws
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          images="$RUNNER_TEMP/images"
+          mkdir -p "$images"
+          tar -Sxzf raws-btrfs.tar.gz -C "$images" before.raw control.raw "$IMAGE.raw"
+          rm raws-btrfs.tar.gz
+          if [ "$IMAGE" != after ]; then mv "$images/$IMAGE.raw" "$images/after.raw"; fi
+          ls -las "$images"
+          df -h "$images"
+
+      # btrfs-progs carves the root partition and plants the controls,
+      # sleuthkit (mmls) and util-linux (blkid) find it on the whole disk,
+      # e2fsprogs is a tool the real-image mode requires, sqlite3 reads a store
+      # database (Fedora has none) and jq the verdict; the rest is the pinned
+      # bulk_extractor build chain. No docker: no timeline runs on btrfs.
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            btrfs-progs sleuthkit e2fsprogs jq sqlite3 \
+            git autoconf automake build-essential libtool pkg-config flex \
+            libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
+            libabsl-dev libgcrypt20-dev libgpg-error-dev
+
+      - name: Scan the real btrfs images and render the verdict
+        run: |
+          sudo env \
+            "ORACLE_BIN=$PWD/target/release/nails-oracle" \
+            "ORACLE_IMAGES_DIR=$RUNNER_TEMP/images" \
+            ci/oracle/run-scan.sh "$RUNNER_TEMP/oracle-btrfs-real"
+
+      - name: Check the verdict is partial and names the timeline
+        env:
+          SCAN: ${{ matrix.scan }}
+        run: |
+          set -euo pipefail
+          verdict="$RUNNER_TEMP/oracle-btrfs-real/verdict.json"
+          jq -e '.status == "partial" and .blind == false and .failures == []
+            and .not_run == [{"tool": "plaso", "channel": "timeline", "reason": "plaso cannot read btrfs"}]
+            and (.summary | contains("timeline: not run, plaso cannot read btrfs"))' "$verdict"
+          {
+            echo "### Real btrfs (Fedora 44) oracle verdict, $SCAN: partial, not a full run"
+            echo
+            echo '```'
+            jq -r .summary "$verdict"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Show the verdict
+        if: ${{ !cancelled() }}
+        run: |
+          cat "$RUNNER_TEMP/oracle-btrfs-real/verdict.json" 2>/dev/null \
+            || echo "(no verdict.json: the scan did not reach the verdict)"
+
+      # As in the scan job: the outputs go up as one tar, packed by root.
+      - name: Pack the verdict and analysis outputs
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/oracle-btrfs-real"
+          dest="$RUNNER_TEMP/oracle-btrfs-real-artifact"
+          mkdir -p "$dest"
+          if [ -f "$src/verdict.json" ]; then
+            cp "$src/verdict.json" "$dest/verdict.json"
+          fi
+          if [ -d "$src/outputs" ]; then
+            sudo tar -czf "$dest/outputs.tar.gz" -C "$src" outputs
+            sudo chown "$(id -u):$(id -g)" "$dest/outputs.tar.gz"
+          fi
+          ls -la "$dest"
+
+      - name: Upload the verdict and analysis outputs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oracle-real-btrfs-verdict-${{ matrix.scan }}
+          path: ${{ runner.temp }}/oracle-btrfs-real-artifact/
+
+  # A diagnostic, not a gate: how each Fedora image stores the decoy's login
+  # records, read offline. It prints the size of /var/log/wtmp and which of
+  # its bytes btrfs keeps inline, compressed or plain; bulk_extractor carves
+  # only the plain ones (ci/oracle/README.md). One raw is unpacked at a time.
+  btrfs-wtmp-extents:
+    name: Show how each Fedora image stores /var/log/wtmp
+    needs: produce-btrfs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the raws
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6.0.0
+        with:
+          name: oracle-real-btrfs-raws
+
+      - name: Install btrfs-progs
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends btrfs-progs e2fsprogs
+
+      - name: Show the extents of /var/log/wtmp
+        run: |
+          set -euo pipefail
+          images="$RUNNER_TEMP/images"
+          mkdir -p "$images"
+          for raw in before control control2 after; do
+            tar -Sxzf raws-btrfs.tar.gz -C "$images" "$raw.raw"
+            echo "### $raw.raw"
+            sudo ci/oracle/btrfs-file-extents.sh "$images/$raw.raw" /var/log/wtmp
+            rm "$images/$raw.raw"
+          done | tee "$RUNNER_TEMP/wtmp-extents.txt"
+          {
+            echo "### How each Fedora image stores /var/log/wtmp"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/wtmp-extents.txt"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the extents
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oracle-real-btrfs-wtmp-extents
+          path: ${{ runner.temp }}/wtmp-extents.txt
+          if-no-files-found: warn
+
+  # Runs of main are unattended: a failed job of this workflow opens or
+  # comments on the 'CI red: Oracle real-image nightly' issue, and the next
+  # green run closes it. Every job but the btrfs-wtmp-extents diagnostic is
+  # listed, because a failed produce job skips the scan, and a skipped job
+  # alone leaves the issue as it is. A dispatch on
   # another branch reports nothing, so it can neither close nor comment on
   # the issue of main's nightly.
   report-status:
     name: Report status
-    needs: [produce, scan, scan-btrfs]
+    needs: [produce, scan, scan-btrfs, produce-btrfs, scan-btrfs-real]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
