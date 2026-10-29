@@ -45,9 +45,9 @@ lint:
 line-count:
     ./scripts/check-line-count.sh
 
-# Every Rust source file of the crates and the side workspaces is declared as a
-# module: a file that is not compiles for nobody and escapes clippy and the
-# tests unseen.
+# Every Rust file of the crates, the side workspaces and the fuzz crate is a
+# crate root or declared as a module: a file that is neither compiles for
+# nobody and escapes clippy and the tests unseen.
 orphan-modules:
     ./scripts/check-orphan-modules.sh
 
