@@ -102,6 +102,17 @@ fn only_regular_files_count_as_files_inside_the_root() {
             "{path}"
         );
     }
+    // Nothing there is told from a lookup that fails on the way.
+    symlink("/etc/loop", root.path().join("etc/loop")).unwrap();
+    let kind =
+        |path: &str| regular_file_in_root(root.path(), Path::new(path)).map_err(|e| e.kind());
+    assert_eq!(kind("/etc/sddm.conf"), Ok(true));
+    assert_eq!(kind("/etc/fifo"), Ok(false));
+    assert_eq!(kind("/etc/absent"), Err(std::io::ErrorKind::NotFound));
+    assert!(!matches!(
+        kind("/etc/loop"),
+        Ok(_) | Err(std::io::ErrorKind::NotFound)
+    ));
 }
 
 /// Lookups through a `..` link while another thread renames files: the
