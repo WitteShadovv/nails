@@ -31,6 +31,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         nextroot_mounted: false,
         last_activation: None,
         decoy_persistent: false,
+        decoy_kdump_armed: false,
         persona_mode: PersonaMode::SharedHome,
         switch_refusal: None,
         opsec_reminders: Vec::new(),
@@ -179,6 +180,27 @@ fn a_refused_switch_is_shown_with_its_reason_and_time_in_both_forms() {
         "it ended without updating the record"
     );
     assert!(value["data"].get("switch_refusal").is_none());
+}
+
+#[test]
+fn an_armed_kdump_is_shown_on_the_decoy_in_both_forms() {
+    let mut decoy = report(Posture::Decoy, "decoy");
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("kdump"), "{lines}");
+
+    decoy.decoy_kdump_armed = true;
+    let lines = status_lines(&decoy, false, plain(), &chrono::Utc).join("\n");
+    assert!(lines.contains("kdump is armed on the decoy"), "{lines}");
+    assert!(lines.contains("activation refuses it"), "{lines}");
+    let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
+    assert_eq!(value["data"]["decoy_kdump_armed"], true);
+    assert_matches_the_schema(&value);
+
+    // In the session the line is about the decoy, so it is left out.
+    let mut active = report(Posture::Active, "hidden");
+    active.decoy_kdump_armed = true;
+    let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("kdump"), "{lines}");
 }
 
 #[test]

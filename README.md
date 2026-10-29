@@ -133,7 +133,7 @@ model is written down; read it before relying on NAILS.
 | Requirement | Notes |
 |---|---|
 | A supported host | NixOS, Debian 13, or Ubuntu 24.04 or 26.04, with **systemd 254 or newer**. A later Debian or Ubuntu release runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
-| An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog and audit refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
+| An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no armed kdump, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog, audit and kdump refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
 | Host tools | `systemctl` and `loginctl` (systemd), `ip` (iproute2), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. The way back runs `ip` and `dmsetup`, so activation is refused while one is missing; `nails check` names it and the package that provides it. Keep `nft` (nftables) on the decoy too, and `iw` on a machine with Wi-Fi: without them the firewall tables and Wi-Fi interfaces a session adds stay on the decoy until power-off, which `check` and `activate` warn about. |
@@ -523,7 +523,8 @@ persona gives it an empty home instead. See
 
 **Does it work on a persistent decoy?** Only with `--allow-persistent-decoy`,
 and then the decoy's journal records the soft-reboots and the activation
-command. Prefer an amnesic decoy.
+command, and an armed kdump can write a crashed session's memory to the decoy
+disk. Prefer an amnesic decoy.
 
 **How do I know it works on my machine?** Run `nails rehearse` (plant a canary in
 a hidden session, then search the raw decoy disk for it) and

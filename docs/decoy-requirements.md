@@ -112,12 +112,30 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 | [Persistent systemd journal](#fail-closed-activation-is-refused) | The decoy journal records the sudo command line (including the hidden-root binary path) before the soft-reboot, and the decoy's own shutdown and start around each transition. |
 | [Classic syslog daemon](#fail-closed-activation-is-refused) | A syslog daemon (rsyslog, syslog-ng, a syslogd, metalog or socklog) writes every logged line to /var/log on the decoy disk, outside the journal. |
 | [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
+| [Armed kdump](#fail-closed-activation-is-refused) | If the kernel crashes during a hidden session, kdump's crash kernel mounts the decoy root by its device, outside the session's overlay, and writes a dump of kernel memory (which can hold the hidden volume's key) and the session's kernel log to /var/crash on the decoy disk. |
 <!-- residue-catalog:end fail-closed -->
 
 Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
 only if you understand and
 accept that what the decoy logs around each soft-reboot may survive on the
-decoy disk.
+decoy disk, and that a kernel crash during the session can leave a dump of its
+memory there.
+
+kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
+kernel is loaded) or when `kdump-tools.service` (Ubuntu, Debian) or
+`kdump.service` (Fedora) is active: the hidden session starts the decoy's own
+units, so an active service loads the crash kernel again in the session. If the
+kernel crashes during a hidden session, the crash kernel mounts the decoy root
+by its device, outside the session's overlay, and writes a dump of kernel
+memory, which can hold the hidden volume's encryption key and the names of the
+files the session used, and the session's kernel log to `/var/crash` on the
+decoy disk. Ubuntu arms kdump-tools by default from 24.10, so 26.04 among them.
+Disarm it on the decoy with `sudo systemctl disable --now kdump-tools`
+(Fedora: `sudo systemctl disable --now kdump`). When `kexec_crash_loaded`
+exists but cannot be read, or holds anything but `0` or `1`, NAILS cannot tell
+and refuses as if kdump were armed. A kernel without that file has no crash
+kernel support, so nothing can be loaded. `nails status` shows an armed kdump
+on the decoy (`decoy_kdump_armed` in `--json`).
 
 NAILS reads journald's `Storage=` the way journald does. The main
 `journald.conf` and every `journald.conf.d/*.conf` drop-in come first, and
@@ -143,8 +161,8 @@ volatile can count as persistent. Run them with sudo.
 - **atime policy** — a root mounted without `noatime`/`relatime` records read
   access, leaving an atime trail on the decoy.
 - **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump with
-  any setting other than `Storage=none` together with `ProcessSizeMax=0`,
-  registered pstore records, or an armed kdump. Each can persist process or
+  any setting other than `Storage=none` together with `ProcessSizeMax=0`, or
+  registered pstore records. Each can persist process or
   kernel memory (which may contain hidden-session data) to the decoy disk or
   firmware-backed storage. systemd-coredump writes every core it processes to
   `/var/lib/systemd/coredump` first, so `Storage=none` alone still puts each
@@ -152,14 +170,8 @@ volatile can count as persistent. Run them with sudo.
   processing, and with both set it only logs that a program crashed. Keep
   systemd-coredump running with those two settings rather than turning it off:
   without it the kernel writes a `core` file into the crashing program's
-  working directory. kdump is the one that reaches past the session entirely:
-  if the kernel crashes during a hidden session, kdump's crash kernel mounts
-  the decoy root by its device, outside the session's overlay, and writes a
-  dump of kernel memory, which can hold the hidden volume's encryption key and
-  the names of the files the session used, and the session's kernel log to
-  `/var/crash` on the decoy disk. Ubuntu arms kdump-tools by default from
-  24.10, so 26.04 among them; disable it on the decoy (Ubuntu: `kdump-tools`,
-  Fedora: `kdump`).
+  working directory. An armed kdump, which reaches past the session entirely,
+  is refused (see above).
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
   module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
@@ -619,7 +631,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
-| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, send other core dumps nowhere persistent, and disarm kdump on the decoy. | `examiner-audit` |
+| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent. | `examiner-audit` |
+| [Armed kdump](#fail-closed-activation-is-refused) (`kdump`) | `/var/crash` | all | `decoy-persistence` (refuses) | none: the crash-dumps row probes /var/crash, where kdump writes its dumps | Disable kdump on the decoy (Ubuntu: kdump-tools, Fedora: kdump). | none: a VM test would have to reserve crash kernel memory and panic the guest kernel; the refusal is unit tested |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |

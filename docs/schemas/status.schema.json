@@ -81,6 +81,10 @@
           "description": "Whether the decoy keeps a persistent log/audit store (a persistent journald journal, or active rsyslog/syslog-ng/auditd).",
           "type": "boolean"
         },
+        "decoy_kdump_armed": {
+          "description": "Whether kdump is armed on the decoy (a loaded crash kernel, or an active kdump-tools.service or kdump.service), or /sys/kernel/kexec_crash_loaded cannot be read or holds neither 0 nor 1. Activation refuses it without --allow-persistent-decoy. False in a hidden session.",
+          "type": "boolean"
+        },
         "persona_mode": { "type": "string", "enum": ["shared-home", "fresh-home"] },
         "switch_refusal": {
           "description": "Why and when the last session switch was refused: the soft-reboot stayed on the root it was on. Kept on the hidden volume (a refused entry, shown once the volume is open again) or in /run (a refused way back, shown in the hidden session) until the next activate or deactivate arms its own switch.",

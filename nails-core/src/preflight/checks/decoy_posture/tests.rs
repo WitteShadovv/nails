@@ -383,7 +383,8 @@ fn volatile_journald_drop_in_passes() {
         .run(&RealFilesystem)
         .unwrap();
     assert!(!result.is_fail(), "{}", result.message());
-    assert!(DecoyPersistenceCheck::blockers(&RealFilesystem, root).is_empty());
+    assert!(DecoyPersistenceCheck::log_blockers(&RealFilesystem, root).is_empty());
+    assert!(DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root).is_none());
 }
 
 #[test]
@@ -407,21 +408,28 @@ fn pstore_records_warn() {
     assert!(result.message().contains("pstore"));
 }
 
-#[test]
-fn kdump_armed_warns() {
+/// A decoy that is clean apart from what a test adds: a volatile journal and a
+/// `noatime` disk root.
+fn amnesic_decoy() -> MockFilesystem {
     let fs = MockFilesystem::new();
     fs.mock_add_file(
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
     fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs
+}
+
+#[test]
+fn armed_kdump_without_the_override_is_refused() {
+    let fs = amnesic_decoy();
     fs.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
 
-    let check = DecoyPersistenceCheck::new(false, true);
-    let result = check.run(&fs).unwrap();
-    assert!(result.is_warn());
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "armed kdump must refuse: {result:?}");
     let message = result.message();
     assert!(message.contains("kdump is armed"), "{message}");
+    assert!(message.contains("a crash kernel is loaded"), "{message}");
     // The finding says where the crash kernel writes, and that the session's
     // overlay does not catch it.
     assert!(
@@ -433,6 +441,109 @@ fn kdump_armed_warns() {
         "{message}"
     );
     assert!(message.contains("encryption key"), "{message}");
+    let remediation = result.remediation().expect("a refusal names its fix");
+    assert!(remediation.starts_with("Disarm kdump"), "{remediation}");
+    assert!(
+        remediation.contains("--allow-persistent-decoy"),
+        "{remediation}"
+    );
+    // Only the kdump fix is offered: the logs are already amnesic.
+    assert!(!remediation.contains("journald"), "{remediation}");
+}
+
+#[test]
+fn armed_kdump_with_the_override_proceeds_with_a_warning() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+
+    let result = DecoyPersistenceCheck::new(true, true).run(&fs).unwrap();
+    assert!(
+        result.is_warn(),
+        "the override turns it into a warning: {result:?}"
+    );
+    let message = result.message();
+    assert!(message.contains("--allow-persistent-decoy"), "{message}");
+    assert!(message.contains("kdump is armed"), "{message}");
+    assert!(
+        message.contains("dump of its memory in /var/crash"),
+        "{message}"
+    );
+    // No log sink was found, so the log sentence stays out.
+    assert!(!message.contains("Records written before"), "{message}");
+}
+
+#[test]
+fn unloaded_crash_kernel_is_clean() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "0\n");
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    assert!(!DecoyPersistenceCheck::decoy_kdump_armed(&fs));
+}
+
+#[test]
+fn a_kernel_without_crash_kernel_support_is_clean() {
+    // No kexec_crash_loaded at all: the kernel cannot load a crash kernel.
+    let fs = amnesic_decoy();
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn unreadable_kexec_crash_loaded_fails_closed() {
+    // The file exists but cannot be read: whether kdump is armed is unknown,
+    // and the check refuses as if it were.
+    let fs = amnesic_decoy();
+    fs.mock_set_path_exists(KEXEC_CRASH_LOADED, true);
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(
+        result.is_fail(),
+        "an unknown kdump state must refuse: {result:?}"
+    );
+    let message = result.message();
+    assert!(
+        message.contains("cannot tell whether kdump is armed"),
+        "{message}"
+    );
+    assert!(message.contains("cannot be read"), "{message}");
+    assert!(DecoyPersistenceCheck::decoy_kdump_armed(&fs));
+
+    // The same override accepts it for one run.
+    let accepted = DecoyPersistenceCheck::new(true, true).run(&fs).unwrap();
+    assert!(accepted.is_warn(), "{accepted:?}");
+}
+
+#[test]
+fn unexpected_kexec_crash_loaded_content_fails_closed() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "yes\n");
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(result.message().contains("not 0 or 1"), "{result:?}");
+}
+
+#[test]
+fn kdump_and_a_log_sink_offer_both_fixes() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+    set_unit_active(&fs, "rsyslog.service");
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    let remediation = result.remediation().unwrap();
+    assert!(
+        remediation.starts_with("Make the decoy amnesic"),
+        "{remediation}"
+    );
+    assert!(remediation.contains("and disarm kdump"), "{remediation}");
+
+    let accepted = DecoyPersistenceCheck::new(true, true).run(&fs).unwrap();
+    let message = accepted.message();
+    assert!(message.contains("Records written before"), "{message}");
+    assert!(message.contains("dump of its memory"), "{message}");
 }
 
 #[test]
@@ -707,19 +818,32 @@ fn an_argv0_without_a_matching_comm_still_counts() {
 }
 
 #[test]
-fn kdump_tools_service_warns_without_a_loaded_crash_kernel() {
-    // Ubuntu arms kdump-tools by default (24.10+); the crash kernel may not be
-    // loaded when check runs, but the enabled service still means a panic dumps.
-    let fs = MockFilesystem::new();
-    fs.mock_add_file(
-        "/etc/systemd/journald.conf",
-        "[Journal]\nStorage=volatile\n",
+fn kdump_service_is_refused_without_a_loaded_crash_kernel() {
+    // Ubuntu arms kdump-tools by default (24.10+). The crash kernel may not be
+    // loaded when check runs, but the active service loads it again in the
+    // hidden session, which starts the decoy's units.
+    for unit in ["kdump-tools.service", "kdump.service"] {
+        let fs = amnesic_decoy();
+        fs.mock_add_file(KEXEC_CRASH_LOADED, "0\n");
+        set_unit_active(&fs, unit);
+        let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+        assert!(result.is_fail(), "{unit}: {result:?}");
+        assert!(
+            result.message().contains(&format!("({unit} is active)")),
+            "{result:?}"
+        );
+    }
+
+    let both = amnesic_decoy();
+    both.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+    set_unit_active(&both, "kdump-tools.service");
+    let result = DecoyPersistenceCheck::new(false, false).run(&both).unwrap();
+    assert!(
+        result
+            .message()
+            .contains("a crash kernel is loaded and kdump-tools.service is active"),
+        "{result:?}"
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
-    set_unit_active(&fs, "kdump-tools.service");
-    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
-    assert!(result.is_warn(), "{result:?}");
-    assert!(result.message().contains("kdump"), "{result:?}");
 }
 
 #[test]
@@ -875,6 +999,14 @@ fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
     auditd.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&auditd, "auditd.service");
     assert!(DecoyPersistenceCheck::decoy_is_persistent(&auditd));
+
+    // An armed kdump is reported on its own: it is no persistent log store.
+    let kdump = amnesic_decoy();
+    kdump.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+    let before = kdump.mock_ops().len();
+    assert!(!DecoyPersistenceCheck::decoy_is_persistent(&kdump));
+    assert!(DecoyPersistenceCheck::decoy_kdump_armed(&kdump));
+    assert_eq!(kdump.mock_ops().len(), before, "kdump probe must not write");
 }
 
 #[test]
