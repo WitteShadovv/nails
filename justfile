@@ -511,11 +511,21 @@ mutants_in_diff_options := "--all-features --cargo-arg=--locked --timeout 120"
 # it). `minutes`, when given, is the shard's time box: cargo-mutants is stopped
 # when it runs out, the mutants tested by then are still reported, and the
 # recipe fails, since the rest were never tested. The report goes to
-# target/mutants/mutants.out, with the survivors in the job summary.
+# target/mutants/mutants.out, with the survivors in the job summary. Each test
+# binary runs through ci/mutants_guard.py, which caps what each process may
+# allocate and kills the binary when it outlives the signal that ends its test
+# run, so that a mutant which makes a loop endless in the binary neither fills
+# the runner's memory nor outlives its run.
 mutants-in-diff diff shard="0" shards="1" minutes="":
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p target/mutants
+    # cargo runs each test binary through its target runner: the guard caps
+    # what the binary may allocate and kills it when it ignores the signal
+    # that ends its test run.
+    host=$(rustc --print host-tuple)
+    host=${host^^}
+    export "CARGO_TARGET_${host//-/_}_RUNNER=python3 -I {{ justfile_directory() }}/ci/mutants_guard.py"
     # On SIGTERM cargo-mutants ends the build or test it runs and exits,
     # keeping the outcome of every mutant it finished. --foreground leaves it
     # in this shell's process group, so a Ctrl-C still reaches it.
