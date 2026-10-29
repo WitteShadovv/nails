@@ -152,6 +152,16 @@ fn a_unit_file_systemd_refuses_is_refused() {
 }
 
 #[test]
+fn a_long_line_is_read_up_to_systemd_s_limit_and_a_section_name_may_hold_a_space() {
+    let value = "a".repeat(64 * 1024);
+    let text = format!("[X-Own Section]\nKey={value}\n");
+    assert_eq!(
+        assignments(text.as_bytes()),
+        [triple("X-Own Section", "Key", &value)]
+    );
+}
+
+#[test]
 fn only_the_escape_of_a_percent_sign_is_resolved() {
     assert_eq!(
         without_specifiers("/dev/sdb1").as_deref(),
