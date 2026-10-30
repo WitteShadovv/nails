@@ -382,6 +382,22 @@ of this changelog for that version becomes the release notes word for word, and
   refuses while an interrupted activation's soft-reboot may still come, and `emergency` on the
   decoy drops it, or powers off at once where it may still come. `emergency` in the hidden session
   still enqueues its soft-reboot directly, without waiting for anything.
+- `emergency` spares only the emergency command itself until the switch: the `nails` process and,
+  when `nails emergency` was typed into a terminal's shell, the rest of its job, or when `sudo nails
+  emergency` was typed there with `use_pty`, that `sudo`, its monitor and the rest of their job.
+  It used to spare every ancestor up to PID 1, every
+  process group one of them led except a shell's, and every process in its own session and
+  process group. A desktop shell that starts menu entries as its own children in its session and
+  process group, as GNOME Shell and niri do, could then survive the kill with the display server
+  and every app it started, when the emergency ran from a program it had started: they stayed on
+  screen and in RAM until the shutdown stopped them, an app that hung until its stop timeout. The
+  command is now read before the shells are killed. Its ancestors count only when `nails` has a
+  terminal and leads its own process group, and the walk up reaches the shell it was typed into
+  through processes that run in its cgroup, have a terminal and lead their own process groups. A
+  wrapper that keeps `nails` in its own process group is killed with the rest: `timeout -k` passes
+  the shell kill's SIGHUP on and kills the emergency when its grace runs out. The shell kill hangs
+  up the terminal's foreground job, so a reader the report was piped to, such as `less` or `tee`,
+  ends then, unless it ignores SIGHUP or its job runs in the background.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root

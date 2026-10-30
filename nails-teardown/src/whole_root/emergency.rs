@@ -14,9 +14,11 @@
 //! 5. enqueue `soft-reboot.target` (or the requested power action) directly
 //!    with PID 1, with every other job replaced;
 //! 6. `cgroup.kill` every unit that can hold a hidden program, sparing
-//!    `init.scope`, this invocation's and the service manager's own machinery
-//!    ([`crate::whole_root::kill`]), so the orderly shutdown has little left
-//!    to stop.
+//!    `init.scope` and the service manager's own machinery, and in the cgroup
+//!    of this invocation SIGKILL every process but its command chain
+//!    ([`Invocation`], [`crate::whole_root::kill`]), so the orderly shutdown
+//!    has little left to stop. Nothing the kill takes can stop the switch:
+//!    PID 1 has it queued by then.
 //!
 //! When the way back cannot be prepared, it powers off instead: a soft-reboot
 //! without `/run/nextroot` would restart the hidden userspace in place. When
@@ -325,14 +327,17 @@ fn hidden(plan: &mut Plan, host: &Host, report: &mut HotReport) {
             finish = Finish::Poweroff;
         }
     }
-    dispatch(plan, host, finish, report);
-    report.kill = report.timed("kill", |_| {
-        if !host.act {
-            return KillReport::default();
-        }
+    // Read before the shells are killed: a killed shell takes its terminal
+    // from every process of its session, and its jobs go to PID 1.
+    let invocation = host.act.then(|| {
         let mut invocation = Invocation::current();
         invocation.extra.extend(host.protected_pids.iter().copied());
-        kill::kill_userspace(&host.cgroup_root, &invocation)
+        invocation
+    });
+    dispatch(plan, host, finish, report);
+    report.kill = report.timed("kill", |_| match &invocation {
+        Some(invocation) => kill::kill_userspace(&host.cgroup_root, invocation),
+        None => KillReport::default(),
     });
 }
 

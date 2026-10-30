@@ -123,79 +123,169 @@ pub fn fd_is_terminal(pid: u32, fd: u32) -> bool {
     })
 }
 
-/// The teardown's own invocation: the processes it must never kill before its
-/// output is written.
+/// The teardown's own invocation: the processes the kill spares until the
+/// teardown's output is written. That is its command chain, every process in a
+/// session or a process group that a member of the chain leads, and the pids
+/// the caller adds.
 ///
-/// That is its ancestry (`sudo`, the shell that typed the command) and every
-/// process sharing its session or process group: in `nails emergency | base64`
-/// the pipe reader is a sibling, not an ancestor, and killing it would break the
-/// pipe carrying the teardown's own result.
+/// The chain is this process, and, when it is a command typed into an
+/// interactive shell, the ancestors between it and that shell that the command
+/// runs in, such as `sudo` and its monitor. This process counts as typed when
+/// it has a controlling terminal and leads its own process group, as a shell's
+/// job and the command `sudo` runs do. Walking up from it, an ancestor joins
+/// while it
+///
+/// - is not PID 1 and not an interactive shell;
+/// - runs in this process's own cgroup;
+/// - has a controlling terminal, as `sudo` has the shell's and its monitor the
+///   pseudo-terminal `sudo` opens;
+/// - leads its own process group, as `sudo` (the shell's job) and its monitor
+///   (a session of its own) do.
+///
+/// The ancestors are kept only when the walk ends at an interactive shell: the
+/// one the command was typed into. A walk that ends anywhere else (at PID 1,
+/// at a process without a terminal or a process group of its own, in another
+/// cgroup) met what started the command without a shell, such as a terminal
+/// that runs it directly, a desktop or a service, and leaves this process
+/// alone. Either way `sudo` and its monitor are kept or killed together: the
+/// monitor ends the command once `sudo` is gone.
+///
+/// So an ancestor without a terminal never joins: a desktop shell, a
+/// compositor or a display server that a display manager or a service manager
+/// runs, and the windows, terminal emulators and apps they start. What a
+/// desktop or a window manager starts without a terminal (a window, the helper
+/// pkexec runs in place of it, a key binding's command in a session of its
+/// own) or in the starter's process group is not typed and spares itself
+/// alone. Only a window manager typed into a login shell that started the
+/// emergency in a process group but not a session of its own would still be
+/// kept.
+///
+/// A command that a wrapper keeps in the wrapper's process group, as `timeout`
+/// and `su` do, is not typed either, so the wrapper dies in the kill, as it
+/// must: `timeout -k` passes the shell kill's SIGHUP on to the command and
+/// kills it once its grace has run out.
+///
+/// In `nails emergency | base64` typed into a shell the pipe reader is in the
+/// job's process group, which nails leads; in `sudo nails emergency | less`
+/// under `use_pty`, nails leads a group of its own in the session of `sudo`'s
+/// monitor, and the pipe reader is in `sudo`'s group. The kill spares both,
+/// but the shell kill before it hangs up the terminal's foreground job: a
+/// reader there ends unless it ignores SIGHUP, and only a job in the
+/// background keeps its reader. A window's helper has no terminal: it spares
+/// itself alone.
+///
+/// Read it before any shell is killed: a killed shell takes its terminal from
+/// every process of its session.
 #[derive(Debug, Clone, Default)]
 pub struct Invocation {
-    /// This process and its ancestors.
+    /// This process and every ancestor up to PID 1.
     pub ancestry: Vec<u32>,
+    /// The command chain: this process and the ancestors the rule keeps, the
+    /// start of `ancestry`.
+    pub chain: Vec<u32>,
     /// This process's session id (`0` when unknown).
     pub sid: u32,
-    /// This process's process group id (`0` when unknown).
-    pub pgid: u32,
-    /// The process groups of the ancestors. `sudo nails emergency | less`
-    /// under `use_pty` makes nails a session leader of its own, but the pipe
-    /// reader stays in the pipeline's process group, which is sudo's.
-    pub ancestor_pgids: Vec<u32>,
     /// Further pids to spare, handed in by the caller.
     pub extra: Vec<u32>,
+}
+
+/// What the invocation rule reads of one process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    /// Its `/proc/<pid>/stat` fields.
+    pub stat: Stat,
+    /// Its cgroup v2 path, `None` when it cannot be read.
+    pub cgroup: Option<String>,
+    /// Whether it is an interactive shell.
+    pub interactive_shell: bool,
+}
+
+impl Node {
+    /// The node of `pid` as `/proc` shows it now; `None` when it is gone.
+    pub fn read(pid: u32) -> Option<Self> {
+        Some(Self {
+            stat: stat(pid)?,
+            cgroup: cgroup(pid).and_then(|c| crate::cgroup::v2_path(&c)),
+            interactive_shell: crate::shells::is_interactive_shell(pid),
+        })
+    }
 }
 
 impl Invocation {
     /// The invocation of the running process.
     pub fn current() -> Self {
-        let own = std::process::id();
-        let mut ancestry = Vec::new();
-        let mut next = Some(own);
-        while let Some(pid) = next {
-            if pid == 0 || ancestry.contains(&pid) {
+        Self::of(std::process::id())
+    }
+
+    /// The invocation of `pid`, as `/proc` shows its process tree now.
+    pub fn of(pid: u32) -> Self {
+        Self::walk(pid, Node::read)
+    }
+
+    /// The invocation of `own` in the process tree `read` describes.
+    pub fn walk(own: u32, read: impl Fn(u32) -> Option<Node>) -> Self {
+        let own_node = read(own);
+        let own_cgroup = own_node.as_ref().and_then(|node| node.cgroup.clone());
+        let typed = own_node
+            .as_ref()
+            .is_some_and(|n| n.stat.tty != 0 && n.stat.pgid == own);
+        let mut ancestry = vec![own];
+        let mut chain = vec![own];
+        let mut joining = typed;
+        let mut typed_into_a_shell = false;
+        let mut node = own_node.clone();
+        while let Some(current) = node {
+            let parent = current.stat.ppid;
+            if parent == 0 || ancestry.contains(&parent) {
                 break;
             }
-            ancestry.push(pid);
-            next = stat(pid).map(|s| s.ppid);
+            ancestry.push(parent);
+            let parent_node = read(parent);
+            if joining {
+                match &parent_node {
+                    Some(n) if joins(parent, n, own_cgroup.as_deref()) => chain.push(parent),
+                    end => {
+                        typed_into_a_shell = end.as_ref().is_some_and(|n| n.interactive_shell);
+                        joining = false;
+                    }
+                }
+            }
+            node = parent_node;
         }
-        let own_stat = stat(own);
-        // Not the groups of the shell that typed the command, nor of PID 1 or
-        // the session manager above it: only the process groups led by a
-        // process of the command chain itself (sudo's pipeline group).
-        let ancestor_pgids = ancestry
-            .iter()
-            .skip(1)
-            .filter_map(|&pid| stat(pid).map(|s| (pid, s.pgid)))
-            .filter(|&(pid, pgid)| pgid == pid && pid != 1)
-            .map(|(_, pgid)| pgid)
-            .filter(|pgid| !is_interactive_shell_group(*pgid))
-            .collect();
+        if !typed_into_a_shell {
+            chain.truncate(1);
+        }
         Self {
             ancestry,
-            sid: own_stat.map_or(0, |s| s.sid),
-            pgid: own_stat.map_or(0, |s| s.pgid),
-            ancestor_pgids,
+            chain,
+            sid: own_node.map_or(0, |n| n.stat.sid),
             extra: Vec::new(),
         }
     }
 
-    /// Whether `pid` (with its stat) belongs to the invocation.
+    /// Whether `pid` (with its stat) belongs to the invocation: it is a member
+    /// of the chain, one of the extra pids, or in a session or a process group
+    /// that a member of the chain leads.
     pub fn contains(&self, pid: u32, stat: Option<&Stat>) -> bool {
-        self.ancestry.contains(&pid)
+        self.chain.contains(&pid)
             || self.extra.contains(&pid)
-            || stat.is_some_and(|s| {
-                (self.sid != 0 && s.sid == self.sid)
-                    || (self.pgid != 0 && s.pgid == self.pgid)
-                    || self.ancestor_pgids.contains(&s.pgid)
-            })
+            || stat.is_some_and(|s| self.chain.contains(&s.sid) || self.chain.contains(&s.pgid))
+    }
+
+    /// Whether `pid` (with its stat) is this process, one of its ancestors or
+    /// in its session: where the shells that started this invocation run.
+    pub fn is_invoking(&self, pid: u32, stat: Option<&Stat>) -> bool {
+        self.ancestry.contains(&pid) || (self.sid != 0 && stat.is_some_and(|s| s.sid == self.sid))
     }
 }
 
-/// Whether the process group `pgid` is led by an interactive shell: the
-/// terminal session's own group, whose other jobs are not part of the command.
-fn is_interactive_shell_group(pgid: u32) -> bool {
-    crate::shells::is_interactive_shell(pgid)
+/// Whether the ancestor `pid` joins the chain (see [`Invocation`]).
+fn joins(pid: u32, node: &Node, own_cgroup: Option<&str>) -> bool {
+    pid != 1
+        && !node.interactive_shell
+        && own_cgroup.is_some_and(|own| node.cgroup.as_deref() == Some(own))
+        && node.stat.tty != 0
+        && node.stat.pgid == pid
 }
 
 /// A handle that signals one process and only it.
@@ -281,6 +371,10 @@ pub fn await_exit(handles: &[ProcessHandle], deadline: std::time::Instant) -> Ve
 }
 
 #[cfg(test)]
+#[path = "invocation_tests.rs"]
+mod invocation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -292,6 +386,7 @@ mod tests {
         assert_eq!(stat.ppid, 1);
         assert_eq!(stat.pgid, 1234);
         assert_eq!(stat.sid, 1234);
+        assert_eq!(stat.tty, 34_817);
         assert_eq!(stat.flags, 4_194_560);
         assert_eq!(stat.start_time, 98_765);
         assert!(!stat.is_kernel_thread());
@@ -386,13 +481,14 @@ mod tests {
     }
 
     #[test]
-    fn the_invocation_holds_this_process_and_its_parent() {
+    fn the_invocation_holds_this_process_and_knows_its_parent() {
         let invocation = Invocation::current();
         let own = std::process::id();
         assert_eq!(invocation.ancestry.first(), Some(&own));
+        assert_eq!(invocation.chain.first(), Some(&own));
         assert!(invocation.contains(own, None));
         let parent = stat(own).unwrap().ppid;
-        assert!(invocation.contains(parent, None));
+        assert!(invocation.is_invoking(parent, None));
     }
 
     #[test]
