@@ -214,6 +214,19 @@ pub enum Verdict {
 /// A dpkg package's key: its name and architecture.
 type Key = (String, Option<String>);
 
+/// Whether a name of `keys`, each a name and an architecture, comes with
+/// more than one: each name counted once, so that naming many packages takes
+/// no longer than counting them.
+fn several_architectures<'a>(
+    keys: impl IntoIterator<Item = &'a Key>,
+) -> impl Fn(&str) -> bool + 'a {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for (name, _) in keys {
+        *counts.entry(name.as_str()).or_default() += 1;
+    }
+    move |name: &str| counts.get(name).is_some_and(|count| *count > 1)
+}
+
 /// Judge dpkg's record: `decoy` is the decoy's `status`, `hidden` hidden
 /// sessions' copy of it, and `changed` the owners of the files of dpkg's
 /// `info` directory the upper holds (or deleted), as
@@ -237,7 +250,7 @@ pub fn judge_dpkg(
     let decoy = installed(decoy);
     let hidden = installed(hidden);
     let keys: BTreeSet<&Key> = decoy.keys().chain(hidden.keys()).collect();
-    let several = |name: &str| keys.iter().filter(|(other, _)| other == name).count() > 1;
+    let several = several_architectures(keys.iter().copied());
     let mut own = 0;
     let mut stale = Vec::new();
     for key in &keys {
@@ -383,7 +396,7 @@ pub fn judge_rpm(
 ) -> Verdict {
     let (on_decoy, in_hidden) = (by_key(decoy), by_key(hidden));
     let keys: BTreeSet<&RpmKey> = on_decoy.keys().chain(in_hidden.keys()).collect();
-    let several = |name: &str| keys.iter().filter(|(other, _)| other == name).count() > 1;
+    let several = several_architectures(keys.iter().copied());
     let versions = |set: Option<&BTreeSet<String>>| {
         set.map(|set| set.iter().cloned().collect::<Vec<_>>().join(" and "))
     };
