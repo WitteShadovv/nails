@@ -266,6 +266,29 @@ fn ram_kernel_noauto_root_and_hidden_entries_are_left_alone() {
 }
 
 #[test]
+fn a_noauto_entry_a_named_unit_pulls_in_is_kept_off_not_left() {
+    // systemd's fstab generator links such an entry's mount into the named
+    // unit's directory whatever noauto says: left alone, the hidden systemd
+    // would mount the disk read-write when that unit starts.
+    let wanted =
+        decide_present("/dev/vdb1 /srv/x ext4 noauto,x-systemd.wanted-by=multi-user.target 0 2");
+    assert_eq!(wanted.masked_units(), ["srv-x.mount"], "{wanted:?}");
+    let required =
+        decide_present("/dev/vdb1 /srv/x ext4 noauto,x-systemd.required-by=multi-user.target 0 2");
+    assert_eq!(
+        skipped(&required),
+        (
+            vec!["srv-x.mount".to_string()],
+            vec!["systemd-fsck@dev-vdb1.service".to_string()]
+        )
+    );
+    assert!(matches!(
+        decide_present("/dev/vdb1 /srv/x ext4 noauto 0 2"),
+        Decision::Leave { .. }
+    ));
+}
+
+#[test]
 fn a_mounted_host_share_or_overlay_is_overlaid_into_the_next_root() {
     // A NixOS test VM: the store is an overlay of a 9p share and a tmpfs.
     for (line, target) in [

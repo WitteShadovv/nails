@@ -187,7 +187,7 @@ gets a fixed decision before the switch:
 | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
 | an overlay entry not mounted now, its upper on a disk | kept unmounted |
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
-| a `noauto` entry without an automount | left alone: never mounted |
+| a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back | left alone: never mounted |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | the hidden volume, or a path inside it | bound at its own path |
 
@@ -233,26 +233,28 @@ a mount the kernel command line names (`systemd.mount-extra=`), zram-generator's
 swap, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
 `.swap` and `.automount` unit linked in a target's `.wants`, `.requires` or
 `.upholds` directory (the initrd's targets aside), including the directories
-systemd reads for every target (`target.wants`) and for the targets whose
-names begin with a prefix (`local-.target.wants`), of the hidden root's unit
+systemd reads for every target (`target.wants`) and for the targets whose names
+begin with a prefix (`local-.target.wants`), of the hidden root's unit
 directories and of `/run`, except those the fstab generator made from a line
-the fstab policy decides, with its drop-ins (those of its name's prefixes,
-such as `srv-.mount.d`, and of its type, `mount.d`, included), and gives each
-the decision an fstab line with its source, type
-and options would get: a filesystem the decoy has mounted now is bound
+whose decision keeps them off or puts their mount point in place, with its
+drop-ins (those of its name's prefixes, such as `srv-.mount.d`, and of its type,
+`mount.d`, included), and gives each the decision an fstab line with its source,
+type and options would get: a filesystem the decoy has mounted now is bound
 read-only or overlaid, one not mounted now is kept unmounted, skipped where it
 is linked in a target's `.requires` directory, and RAM and kernel filesystems
 (such as `tmp.mount`) are left to the hidden systemd. The automount of a
 filesystem put in place is kept off. A unit the decoy masks is left alone, and
-one whose unit files cannot be read, or that names its source by a specifier,
-is masked; where a target requires it, `nails check` and `nails activate` warn
-that the target will not be reached. A copy of a generated unit outside the
+one whose unit files cannot be read, or that names its source by a specifier, is
+masked; where a target requires it, `nails check` and `nails activate` warn that
+the target will not be reached. A copy of a generated unit outside the
 generator's directory, such as the one `systemctl edit --full` writes to
 `/etc/systemd/system`, is decided as a unit of its own, and so is a generated
-unit that no line of the fstab makes any more. A directory of unit links that
-NAILS cannot list refuses the activation. The GPT auto-generator does not run in the
-hidden session, but the ESP it mounted in the decoy (at `/efi` on Arch Linux)
-is bound read-only into the hidden root, as an fstab line for `/efi` would be.
+unit of a line the policy leaves as it is (a drop-in can make a tmpfs line's
+unit mount a disk, and a link can pull in a `noauto` line's unit) or of a line
+the fstab no longer has. A directory of unit links that NAILS cannot list
+refuses the activation. The GPT auto-generator does not run in the hidden
+session, but the ESP it mounted in the decoy (at `/efi` on Arch Linux) is bound
+read-only into the hidden root, as an fstab line for `/efi` would be.
 
 zram-generator's swap is left to the hidden systemd as RAM-only swap while its
 zram device keeps its pages in RAM: the device is there and

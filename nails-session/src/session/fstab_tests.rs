@@ -114,6 +114,15 @@ fn what_requires_an_entry_s_unit_is_read_as_the_generator_links_it() {
             Some("local-fs.target"),
         ),
         ("/dev/sdb1 /data ext4 noauto 0 2", None),
+        // A unit named to pull it in links it whatever noauto says.
+        (
+            "/dev/sdb1 /data ext4 noauto,x-systemd.required-by=backup.service 0 2",
+            Some("backup.service"),
+        ),
+        (
+            "/dev/sdb1 /data ext4 noauto,x-systemd.wanted-by=multi-user.target 0 2",
+            None,
+        ),
         (
             "/dev/sdb1 /data ext4 noauto,auto 0 2",
             Some("local-fs.target"),
