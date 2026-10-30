@@ -8,14 +8,15 @@
 //! every run: no key holds a time, a file is keyed by its content and not its
 //! metadata, a process id by its power-of-two range, content outside the live
 //! tree by the features bulk_extractor records in it, and some carvers'
-//! objects are left out. One class is this run's own: a file a plain reboot
+//! objects are left out. A btrfs scan adds one: bulk_extractor reads no
+//! extent btrfs compressed. One class is this run's own: a file a plain reboot
 //! rewrites too is subtracted as noise whatever `after` holds there, so a
 //! session's write to it reads the same as the reboot's, unless a channel
 //! reads the file's records (plaso the login records of `wtmp`, the scan the
 //! rows of the Nix store database). The verdict lists those files by path.
 
 use crate::carved::SKIPPED_CARVERS;
-use crate::model::{Finding, Scans, Tool};
+use crate::model::{Finding, NotRun, Scans, Tool};
 use crate::plaso::is_file_event;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -40,6 +41,13 @@ pub enum Unseen {
     /// bulk_extractor reports the features it finds in free space, not the
     /// bytes around them.
     DeletedContent,
+    /// On a btrfs scan, what a compressed extent holds outside the live tree.
+    /// bulk_extractor reads the bytes on the disk and decodes no btrfs
+    /// compression, so it records no feature in an extent btrfs compressed (a
+    /// filesystem mounted with `compress`, as Fedora's is), and content a file
+    /// left there is unseen whatever value it carries. The restore carve reads
+    /// the live tree's files decompressed, so their content is compared.
+    CompressedExtents,
     /// What these bulk_extractor carvers reconstruct, a database carved from
     /// free space, unless its content carries an e-mail address, a URL or a
     /// domain the value recorders find.
@@ -69,6 +77,9 @@ impl Unseen {
             Unseen::DeletedContent => {
                 Some("deleted content without a recorded feature".to_string())
             }
+            Unseen::CompressedExtents => {
+                Some("content in compressed btrfs extents outside the live tree".to_string())
+            }
             Unseen::SkippedCarvers { feature_types } => {
                 (!feature_types.is_empty()).then(|| feature_types.join(", "))
             }
@@ -81,10 +92,11 @@ impl Unseen {
     }
 }
 
-/// Every class the verdict cannot see in this run: the fixed ones, and the
-/// paths of `rewritten` (the restore paths the residue subtracted as noise
-/// while `after` differs from both other images) whose records no channel
-/// reads on any image.
+/// Every class the verdict cannot see in this run: the fixed ones, the
+/// compressed extents of a btrfs scan (one that left the timeline out because
+/// plaso cannot read btrfs), and the paths of `rewritten` (the restore paths
+/// the residue subtracted as noise while `after` differs from both other
+/// images) whose records no channel reads on any image.
 pub(crate) fn classes(scans: &Scans, rewritten: &[&str]) -> Vec<Unseen> {
     let read = paths_with_records(scans);
     let paths = rewritten
@@ -92,16 +104,20 @@ pub(crate) fn classes(scans: &Scans, rewritten: &[&str]) -> Vec<Unseen> {
         .filter(|path| !read.contains(**path))
         .map(|path| (*path).to_string())
         .collect();
-    vec![
+    let mut classes = vec![
         Unseen::Timestamps,
         Unseen::Metadata,
         Unseen::ProcessIdRange,
         Unseen::DeletedContent,
-        Unseen::SkippedCarvers {
-            feature_types: SKIPPED_CARVERS.iter().map(|t| (*t).to_string()).collect(),
-        },
-        Unseen::RebootRewritten { paths },
-    ]
+    ];
+    if scans.not_run.contains(&NotRun::PlasoCannotReadBtrfs) {
+        classes.push(Unseen::CompressedExtents);
+    }
+    classes.push(Unseen::SkippedCarvers {
+        feature_types: SKIPPED_CARVERS.iter().map(|t| (*t).to_string()).collect(),
+    });
+    classes.push(Unseen::RebootRewritten { paths });
+    classes
 }
 
 /// The paths whose records a channel read on some image: a file plaso parsed
