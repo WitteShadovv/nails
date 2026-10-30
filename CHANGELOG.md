@@ -66,20 +66,24 @@ of this changelog for that version becomes the release notes word for word, and
   duplicate field, another protocol version and an argument of the wrong shape (a relative path, or
   two options the CLI refuses together), and ends the session; a libFuzzer target
   (`helper_request`) covers it.
-- The launcher for the coming window, `nails gui`, built only with the `gui` cargo feature like
-  the helper (the flake check proves the released binary refuses it too). Run as
+- The launcher for the coming window, `nails gui`, built only with the `gui` cargo feature like the
+  helper (the flake check proves the released binary refuses it too). Run as
   `sudo <hidden-root>/nails gui`, it starts the helper as root and the window's program
   (`<hidden-root>/gui/bin/nails-gui`) as the operator on the two ends of one socket pair, and
   returns. On the decoy it first refuses, before any window starts, on a decoy that keeps a
-  persistent record (the findings of the activation's decoy persistence check) and on every
-  desktop whose disk, journal and D-Bus trace test has not passed, which today is every desktop;
-  the refusal names the desktop and each reason and points to `activate`. In a hidden session it
-  always opens. The window gets no supplementary groups, `no_new_privs`, no inherited descriptor
-  beyond its pipe and `/dev/null`, and an environment from an allowlist: the display, the session
-  bus and the locale, a home and XDG directories of its own in the operator's runtime directory
-  (refused unless it is private and in RAM), and settings that turn off shader caches, portals and
-  on-disk settings. The helper and the window each lead a session of their own, so closing the
-  terminal, or the shell being killed, signals neither.
+  persistent record (the findings of the activation's decoy persistence check) and on every desktop
+  whose disk, journal and D-Bus trace test has not passed, which today is every desktop; the refusal
+  names the desktop and each reason and points to `activate`. In a hidden session it always opens.
+  The window gets no supplementary groups, `no_new_privs`, no inherited descriptor beyond its pipe
+  and `/dev/null`, and an environment from an allowlist: the display, the session bus and the
+  locale, a home and XDG directories of its own in the operator's runtime directory (refused unless
+  it is private and in RAM), and settings that turn off shader caches, on-disk settings and the
+  portals of GTK. Slint, the window's toolkit, still reads the desktop's appearance from the
+  settings portal on the session bus at every start, starting xdg-desktop-portal through D-Bus
+  activation where it is not running: no setting of Slint 1.18 turns that off, and the session bus
+  stays, since the screen reader support needs it. The desktop trace test that admits a decoy
+  desktop has to clear it. The helper and the window each lead a session of their own, so closing
+  the terminal, or the shell being killed, signals neither.
 - The way into the coming window from a hidden session's menu. A build with the `gui` cargo feature
   whose window program lies at `<hidden-root>/gui/bin/nails-gui` writes, at every activation, a menu
   entry "Session" that starts the window as whoever clicks it, and a polkit action for the helper
