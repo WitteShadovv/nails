@@ -163,7 +163,9 @@ specifier such as `%i`, or a directory of them cannot be listed), the unit is
 masked instead. A skipped mount or swap still waits for its device, so an
 entry whose device is not there at activation (NAILS also asks systemd
 whether the device's unit is active, at `nails check` as at activation) is
-masked instead as well; attach the device, or give the entry `nofail`. For
+masked instead as well; attach the device, or give the entry `nofail` (for a
+unit file of the decoy's own, install it with `WantedBy=` rather than
+`RequiredBy=`). For
 either mask `nails check` and `nails activate` warn that the hidden session
 will not reach the unit's target. A device that is gone by the switch has its
 units masked then. An entry with `nofail` is masked: its target only wants it.
