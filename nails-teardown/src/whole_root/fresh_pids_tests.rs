@@ -280,24 +280,29 @@ fn a_hidden_copy_started_again_after_the_switch_is_no_measure() {
 }
 
 #[test]
-fn the_measured_counter_never_goes_below_the_floor() {
-    // A hidden start that used 300 numbers up to its getty, where the decoy's
-    // boot used 212 from its floor to its own, would give the decoy's units
-    // numbers below the lowest its own boot's userspace held.
+fn a_measure_may_go_below_the_floor_but_not_to_nothing() {
+    // A soft-reboot start runs its generators before the first process that
+    // keeps running, so the floor of a decoy that came back from an earlier
+    // session sits above where its start began, and a hidden start that used
+    // 300 numbers up to its getty, where the decoy's used 212 from its floor
+    // to its own, is the normal case: the counter goes below the floor.
     let mut record = Record {
         floor: Some(388),
-        anchors: vec![getty(TTY1, 600)],
+        anchors: vec![getty(TTY1, 600), logind(590)],
         at_switch: Some(9031),
         counter: None,
     };
     let fake = FakeProc::with(&[
         (9040, "systemd-journal", 0, BOOT),
+        (9140, "systemd-logind", 0, BOOT),
         (9331, "agetty", TTY1, BOOT),
     ]);
-    assert_eq!(counter(&record, &fake.proc()), Some(387));
-    // Nor below 1 in a record without a floor.
-    record.floor = None;
-    record.anchors = vec![getty(TTY1, 300)];
+    assert_eq!(counter(&record, &fake.proc()), Some(300));
+    // A measure that leaves nothing is none, and the next anchor is tried; one
+    // that leaves 1 counts.
+    record.anchors[0] = getty(TTY1, 300);
+    assert_eq!(counter(&record, &fake.proc()), Some(590 - 109));
+    record.anchors[0] = getty(TTY1, 301);
     assert_eq!(counter(&record, &fake.proc()), Some(1));
 }
 
