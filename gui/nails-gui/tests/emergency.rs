@@ -183,6 +183,34 @@ fn moving_off_the_button_cancels_even_a_full_hold() {
 }
 
 #[test]
+fn a_press_beside_it_let_go_on_it_does_nothing() {
+    let screen = hidden();
+    let button = control(&screen);
+    let (at, size) = (button.absolute_position(), button.size());
+    let middle = screen.middle(&button);
+    // Long after it appeared: a press it never saw must not count as held.
+    screen.wait_ms(1100);
+    for beside in [
+        // The header bar's strip left of it, its row above it and the bar
+        // right of its label, where a window drag starts; and the page.
+        LogicalPosition::new(at.x - 3.0, middle.y),
+        LogicalPosition::new(middle.x, at.y - 0.5),
+        LogicalPosition::new(at.x + size.width + 4.0, middle.y),
+        LogicalPosition::new(middle.x, 300.0),
+    ] {
+        screen.press_at(beside);
+        screen.wait_ms(1100);
+        screen.move_to(middle);
+        screen.release_at(middle);
+        assert_eq!(screen.emergencies(), 0, "pressed at {beside:?}");
+        assert_eq!(label(&screen), text::EMERGENCY, "not even a hint");
+    }
+    // A hold of its own still ends the session.
+    hold(&screen, 1100, None);
+    assert_ended(&screen);
+}
+
+#[test]
 fn the_keyboard_takes_two_presses_and_escape_or_tab_cancels() {
     let screen = hidden();
     let walk = screen.walk(Key::Tab, 3);
@@ -208,6 +236,26 @@ fn the_keyboard_takes_two_presses_and_escape_or_tab_cancels() {
     screen.press(Key::Backtab);
     assert_eq!(screen.focused(), text::EMERGENCY);
     screen.press(Key::Space);
+    screen.press(Key::Return);
+    assert_ended(&screen);
+}
+
+#[test]
+fn a_key_held_down_is_one_press_however_long_it_repeats() {
+    let screen = hidden();
+    let walk = screen.walk(Key::Tab, 3);
+    assert_eq!(walk.last().map(String::as_str), Some(text::EMERGENCY));
+    for (key, name) in [(Key::Return, "Return"), (Key::Space, "Space")] {
+        // Past a keyboard's repeat delay and well past the pointer's hold.
+        screen.hold_key(key, 20, 100);
+        assert_eq!(screen.emergencies(), 0, "{name} held down");
+        assert_eq!(label(&screen), text::EMERGENCY_AGAIN);
+        screen.press(Key::Escape);
+        assert_eq!(label(&screen), text::EMERGENCY);
+    }
+    // Two presses of their own still end it.
+    screen.hold_key(Key::Return, 3, 100);
+    assert_eq!(screen.emergencies(), 0);
     screen.press(Key::Return);
     assert_ended(&screen);
 }
