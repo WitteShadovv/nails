@@ -95,6 +95,22 @@ of this changelog for that version becomes the release notes word for word, and
   link cannot take the write onto the decoy disk, and one that leads into the Nix store is refused,
   each directory checked right before anything is made in it. A file that cannot be written is
   named on one line and the activation goes on.
+- The window itself, `gui/nails-gui`, a Cargo workspace of its own on the Slint toolkit (its
+  software renderer: no GL, no shader cache). It is not part of the release yet. It opens on the
+  socket `nails gui` hands it, and from a hidden session's menu entry, which starts it with
+  `--engine <hidden-root>/nails`, it asks pkexec for that engine's helper itself; only where `/` is
+  the overlay of a hidden session on that engine's volume, so pkexec never runs on the decoy.
+  Started any other way it opens nothing and prints the line that opens it. It refuses a helper of
+  another release or protocol with a page that says so before it sends anything, and reads each
+  frame strictly and with a size limit. Its pages: the decoy's check, which runs when the window
+  opens and shows each check as it finishes, then the verdict with each problem and its fix; a
+  hidden session's status; and a page for each way a session can end (another release, a refused
+  request, a lost connection, an answer it cannot read, a password pkexec could not get). A
+  dismissed password dialog closes it. An operation the engine confirms first goes through a
+  question whose answer sends the plan's token back or withdraws the plan at once. Every control
+  and row is a Tab stop with an accessible name, an open question keeps the keyboard until it is
+  answered and Escape cancels it, and the window's title and app id ("Session", `session`) name
+  nothing about NAILS. Its tests run without a display, on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

@@ -352,11 +352,11 @@ jobs:
         if: needs.changes.outputs.deps == 'true'
         run: python3 ci/deny_ignores.py
 
-  # The supply-chain gate of the gui/ workspace, in place before the toolkit of
-  # the graphical interface lands: cargo-vet fails on a third-party crate of
-  # its graph that no audit or exemption under gui/supply-chain/ covers, the
-  # audits imported from the public sets its config.toml names among them. The
-  # root workspace's own vet.yml lane only reports. --locked reads the committed
+  # The supply-chain gate of the gui/ workspace, whose graph is the window's
+  # toolkit: cargo-vet fails on a third-party crate of it that no audit or
+  # exemption under gui/supply-chain/ covers, the audits imported from the
+  # public sets its config.toml names among them. The root workspace's own
+  # vet.yml lane only reports. --locked reads the committed
   # gui/supply-chain/imports.lock. The rust filter holds the justfile, and the
   # nix filter the flake lock that pins cargo-vet, which decide how it runs too.
   gui-vet:
@@ -468,9 +468,11 @@ jobs:
       - name: Build the gui/ package
         run: nix build -L .#nails-gui -o result-gui --option accept-flake-config false
 
-      # The binary is a placeholder that prints its version and exits.
+      # The window names its version, the engine release it was built for
+      # and its protocol, and exits; started any other way here it would
+      # refuse to open, as it does outside the launcher and a hidden session.
       - name: Smoke-test the gui/ binary
-        run: result-gui/bin/nails-gui
+        run: result-gui/bin/nails-gui --version
 
   # The CI tooling tests and the cheap flake checks: nixfmt, statix, deadnix,
   # shellcheck, actionlint, zizmor, the ci/ Python lints and the E2E shard

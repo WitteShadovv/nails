@@ -1,0 +1,122 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// A button as libadwaita draws one: a bold label on a tint of the
+// foreground, the accent colour for the suggested action, a red tint for a
+// destructive one. Pill buttons sit alone under a view; response buttons end a
+// dialog.
+//
+// Keyboard: the button is a Tab stop, Space and Return press it, and a focus
+// ring shows after keyboard navigation. A button behind an open dialog is not
+// reachable: it takes no focus, ignores keys and reads as disabled.
+
+import { Adw } from "theme.slint";
+
+export enum ButtonKind { regular, suggested, destructive }
+export enum ButtonShape { normal, pill, response }
+
+export component Button {
+    in property <string> text;
+    in property <ButtonKind> kind: ButtonKind.regular;
+    in property <ButtonShape> shape: ButtonShape.normal;
+    in property <bool> enabled: true;
+    // False while a dialog covers the button.
+    in property <bool> reachable: true;
+    // The foreground of the surface the button sits on.
+    in property <color> surface-fg: Adw.window-fg;
+    out property <bool> has-focus: focus.has-focus;
+    callback clicked();
+
+    property <bool> live: root.enabled && root.reachable;
+    property <length> pad-x: root.shape == ButtonShape.pill ? 32px : root.shape == ButtonShape.response ? 20px : 17px;
+    property <length> pad-y: root.shape == ButtonShape.normal ? 5px : 10px;
+    property <length> label-w: ceil(label.preferred-width / 1px) * 1px;
+    property <length> label-h: ceil(label.preferred-height / 1px) * 1px;
+    property <length> radius: root.shape == ButtonShape.pill ? root.height / 2
+        : root.shape == ButtonShape.response ? 12px : Adw.button-radius;
+    property <bool> focus-visible;
+
+    min-width: max(root.shape == ButtonShape.response ? 60px : 16px, root.label-w + 2 * root.pad-x);
+    min-height: max(24px, root.label-h) + 2 * root.pad-y;
+    preferred-width: self.min-width;
+    preferred-height: self.min-height;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.5;
+    forward-focus: focus;
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.live;
+    accessible-action-default => {
+        if (root.live) {
+            root.clicked();
+        }
+    }
+
+    Rectangle {
+        border-radius: root.radius;
+        background: root.kind == ButtonKind.suggested
+            ? (touch.pressed ? Adw.suggested-active : touch.has-hover ? Adw.suggested-hover : Adw.accent-bg)
+            : root.kind == ButtonKind.destructive
+            ? (touch.pressed ? Adw.destructive-button-active : touch.has-hover ? Adw.destructive-button-hover : Adw.destructive-button-bg)
+            : (touch.pressed ? Adw.button-active : touch.has-hover ? Adw.button-hover : Adw.button-bg);
+        animate background {
+            duration: Adw.transition;
+            easing: ease-out;
+        }
+    }
+
+    label := Text {
+        width: root.width;
+        y: floor((root.height - root.label-h) / 2px) * 1px;
+        height: root.label-h;
+        text: root.text;
+        font-weight: Adw.weight-bold;
+        color: root.kind == ButtonKind.suggested ? Adw.accent-fg
+            : root.kind == ButtonKind.destructive ? Adw.destructive : root.surface-fg;
+        horizontal-alignment: center;
+        vertical-alignment: top;
+        accessible-role: none;
+    }
+
+    touch := TouchArea {
+        enabled: root.live;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    focus := FocusScope {
+        enabled: root.live;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (root.live && (event.text == Key.Space || event.text == Key.Return)) {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        focus-gained(reason) => {
+            root.focus-visible = reason == FocusReason.tab-navigation;
+            Adw.focused-label = root.text;
+        }
+        focus-lost(reason) => {
+            if (Adw.focused-label == root.text) {
+                Adw.focused-label = "";
+            }
+        }
+    }
+
+    // The focus ring, only after keyboard navigation.
+    if focus.has-focus && root.focus-visible: Rectangle {
+        property <length> out: root.kind == ButtonKind.suggested ? 3px : 0px;
+        x: -self.out;
+        y: -self.out;
+        width: root.width + 2 * self.out;
+        height: root.height + 2 * self.out;
+        border-radius: root.radius + self.out;
+        border-width: 2px;
+        border-color: Adw.focus-ring;
+    }
+}
