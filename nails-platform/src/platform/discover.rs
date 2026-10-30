@@ -51,11 +51,16 @@ pub enum HostTarget {
 ///
 /// In order: `overlay_only` short-circuits to [`HostTarget::OverlayOnly`]; an
 /// explicit flake reference (the operator's own choice) is honoured on every
-/// host, unless it names the decoy's own `/etc/nixos` flake in a local
-/// spelling discovery resolves (a path, `path:`, `git+file:` or `file:`, with
-/// a query, a `dir` parameter or through a link), which is the refused
+/// host, unless it names the decoy's own `/etc/nixos` flake or a directory
+/// below it, compared by device and inode, in any reading Nix may make of it
+/// (a path, `path:`, or a URL that reads local files such as `git+file:`,
+/// `hg+file:` or `file:`, percent-encoded or not, with a query, a `dir`
+/// parameter, `.` or `..` components or through the repository's `.git`
+/// directory, and the path relative to the working directory Nix reads a
+/// reference it cannot parse as a URL as), which is the refused
 /// [`HostTarget::DecoyFlake`]; otherwise the backend's auto-discovery
-/// answers. Tests pass a
+/// answers. A lookup that fails other than for a missing file is an error.
+/// Tests pass a
 /// [`FakePlatform`](super::FakePlatform) here to pin the discovered target
 /// without staging any host files.
 pub fn discover_with_platform<F: Filesystem>(
@@ -69,7 +74,7 @@ pub fn discover_with_platform<F: Filesystem>(
         return Ok(HostTarget::OverlayOnly);
     }
     if let Some(flake_ref) = explicit_flake {
-        if let Some(dir) = super::nixos::explicit_decoy_flake(fs, flake_ref) {
+        if let Some(dir) = super::nixos::explicit_decoy_flake(fs, flake_ref)? {
             return Ok(HostTarget::DecoyFlake {
                 dir,
                 hidden_volume_root: hidden_volume_root.to_path_buf(),

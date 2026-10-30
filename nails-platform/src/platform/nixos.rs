@@ -99,17 +99,95 @@ pub fn hidden_flake<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> HiddenF
     }
 }
 
-/// The decoy's own flake directory when `flake_ref` names it and `/etc/nixos`
-/// holds a flake: a local reference (an absolute path, `path:`, `git+file:`
-/// or `file:`, or a relative one) whose directory is `/etc/nixos` once both
-/// are resolved and its `dir` parameter is applied, so `/etc/nixos/`,
-/// `/etc/nixos?ref=main`, `path:/etc?dir=nixos`, `git+file:///etc?dir=nixos`
-/// and a link to the directory name it too. Naming it explicitly is no way
+/// The decoy's own flake directory when `flake_ref`, read against the
+/// working directory, names it or a directory below it while `/etc/nixos`
+/// holds a flake ([`names_decoy_flake`]). Naming it explicitly is no way
 /// around the refusal [`HostTarget::DecoyFlake`] carries.
-pub(crate) fn explicit_decoy_flake<F: Filesystem>(fs: &F, flake_ref: &str) -> Option<PathBuf> {
+///
+/// # Errors
+///
+/// The working directory, which Nix reads a relative reference against, or a
+/// file that decides the answer, cannot be looked at.
+pub(crate) fn explicit_decoy_flake<F: Filesystem>(
+    fs: &F,
+    flake_ref: &str,
+) -> Result<Option<PathBuf>> {
+    let cwd = std::env::current_dir().map_err(|error| crate::NailsError::NixOSPreflightError {
+        category: "configuration",
+        message: format!(
+            "could not read the working directory, which Nix reads a flake reference against: \
+             {error}"
+        ),
+    })?;
+    Ok(names_decoy_flake(fs, flake_ref, &cwd)?.then(|| PathBuf::from(ETC_FLAKE_DIR)))
+}
+
+/// Whether `flake_ref`, read against the working directory `cwd`, names the
+/// decoy's own flake or a directory below it while `/etc/nixos` holds a
+/// flake. Every reading counts ([`crate::nixos::flake_ref_readings`]): what
+/// NAILS reads a local reference as (`/etc/nixos/`, `path:/etc?dir=nixos`,
+/// `git+file:///etc/nixos/.git`, `hg+file:///etc/nixos`, the percent-encoded
+/// `path:/etc/%6Eixos`), whether it exists or not, and the path relative to
+/// `cwd` that Nix reads a reference it cannot parse as
+/// (`git+file://../../etc/nixos`, `github:/../../etc/nixos`), where it
+/// exists. A directory counts by what it is, not by its name: when it, or a
+/// directory above it, has the device and inode of `/etc/nixos`, so a link
+/// and a bind mount count (impermanence's `/persist/etc/nixos`). A directory
+/// below counts because Nix builds the flake above a directory that holds
+/// none, and a flake on the decoy is no hidden flake anyway.
+///
+/// # Errors
+///
+/// Only a missing `flake.nix` means `/etc/nixos` holds no flake: another
+/// error looking it up, or looking at a directory on the way, is one, so
+/// the reference is refused rather than passed.
+pub(crate) fn names_decoy_flake<F: Filesystem>(
+    fs: &F,
+    flake_ref: &str,
+    cwd: &Path,
+) -> Result<bool> {
+    let etc = Path::new(ETC_FLAKE_DIR);
+    if fs.inode(&etc.join("flake.nix"))?.is_none() {
+        return Ok(false);
+    }
+    let decoy = identity(fs, etc)?.ok_or_else(|| crate::NailsError::NixOSPreflightError {
+        category: "configuration",
+        message: format!("{ETC_FLAKE_DIR} holds a flake.nix, but cannot be looked at itself"),
+    })?;
     let (base, _) = crate::nixos::split_flake_ref(flake_ref);
-    let dir = local_flake_path(base)?;
-    is_decoy_flake_dir(fs, &dir).then(|| PathBuf::from(ETC_FLAKE_DIR))
+    let readings = crate::nixos::flake_ref_readings(base, cwd);
+    for dir in &readings.local {
+        if at_or_below(fs, dir, decoy)? {
+            return Ok(true);
+        }
+    }
+    for dir in &readings.fallback {
+        if identity(fs, dir)?.is_some() && at_or_below(fs, dir, decoy)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// What the file `path` leads to is, its links followed: its device and its
+/// inode, or `None` when nothing is there.
+fn identity<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<(u64, u64)>> {
+    let path = fs.canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let Some(inode) = fs.inode(&path)? else {
+        return Ok(None);
+    };
+    Ok(Some((fs.device_id(&path)?, inode)))
+}
+
+/// Whether `path`, or a directory above it, is the file whose identity is
+/// `decoy`.
+fn at_or_below<F: Filesystem>(fs: &F, path: &Path, decoy: (u64, u64)) -> Result<bool> {
+    for dir in path.ancestors() {
+        if identity(fs, dir)? == Some(decoy) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether `/etc/nixos` holds a flake and `dir` is that directory once both
@@ -118,22 +196,6 @@ fn is_decoy_flake_dir<F: Filesystem>(fs: &F, dir: &Path) -> bool {
     let etc = Path::new(ETC_FLAKE_DIR);
     fs.path_exists(&etc.join("flake.nix")).unwrap_or(false)
         && resolved(fs, dir) == resolved(fs, etc)
-}
-
-/// The directory a local flake reference names, its `dir` parameter applied;
-/// `None` for a remote one.
-fn local_flake_path(base: &str) -> Option<PathBuf> {
-    let (location, dir) = crate::nixos::location_and_dir(base);
-    for scheme in ["git+file:", "file:"] {
-        if let Some(rest) = location.strip_prefix(scheme) {
-            // `git+file:///etc/nixos`: an empty authority before the path.
-            let path = rest.strip_prefix("//").unwrap_or(rest);
-            return path
-                .starts_with('/')
-                .then(|| crate::nixos::with_dir(PathBuf::from(path), dir));
-        }
-    }
-    crate::nixos::resolve_local_flake_dir(base).ok().flatten()
 }
 
 /// `path` with its links resolved where it can be, and with `.` components
@@ -181,6 +243,7 @@ pub(super) mod tests_support {
     pub(in crate::platform) fn full_nixos_host() -> MockFilesystem {
         let fs = MockFilesystem::new();
         fs.mock_set_path_type("/mnt/hidden/nixos/flake.nix", PathKind::File);
+        fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
         fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
         fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
         fs.mock_set_path_type("/nix/var/nix/profiles/system", PathKind::Dir);

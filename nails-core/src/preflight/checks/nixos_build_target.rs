@@ -15,13 +15,20 @@ use std::path::{Path, PathBuf};
 /// Validates the NixOS build target reference will resolve
 ///
 /// When an explicit `--flake` is provided, validates:
-/// - The path is absolute (not relative)
+/// - It is one NAILS can tell how Nix reads: a path (absolute, or `./`,
+///   `../`, `.` or `..`), a `path:` reference, a URL whose transport is a
+///   local file with no authority (`git+file:///srv/cfg`), or a plain remote
+///   reference (`github:owner/repo`, `git+https://example.org/repo`). Any
+///   other is refused whatever it names: a local URL with an authority
+///   (`git+file://../../etc/nixos`) and any other reference Nix may read as
+///   a path relative to the working directory (`a_b:x`), a registry alias
+///   written `flake:<name>`, which Nix looks up in its registries, and a
+///   relative path without `./`, which takes in a name alone
 /// - The directory exists
 /// - The directory contains a `flake.nix`
-/// - It is not the decoy's own `/etc/nixos` flake, named as a local path or a
-///   `path:`, `git+file:` or `file:` reference, with a query, a `dir`
-///   parameter or through a link (discovery reports that as
-///   [`HostTarget::DecoyFlake`])
+/// - It is not the decoy's own `/etc/nixos` flake or a directory below it,
+///   compared by device and inode, in any reading Nix may make of the
+///   reference (discovery reports that as [`HostTarget::DecoyFlake`])
 ///
 /// When no flake is specified, it reports the target the host's platform
 /// discovered ([`discover_host_target`](crate::platform::discover_host_target)),
