@@ -24,7 +24,7 @@ url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/
 
 [policy.i-slint-backend-winit]
 audit-as-crates-io = true
-notes = "The window builds gui/patches/i-slint-backend-winit, a copy of this crate as Slint publishes it at 1.18.1 with one change of the project's own, which its manifest marks: its wayland feature no longer turns on winit's sctk-adwaita window decorations. It is audited as the crates.io crate it copies, so the exemption of 1.18.1 stands for Slint's code, and the change is reviewed as the project's own code is."
+notes = "The window builds gui/patches/i-slint-backend-winit, a copy of this crate as Slint publishes it at 1.18.1 with two changes of the project's own, each marked NAILS: in place: its wayland feature no longer turns on winit's sctk-adwaita window decorations, and its reads of the settings portal carry NO_AUTO_START. It is audited as the crates.io crate it copies, so the exemption of 1.18.1 stands for Slint's code, and the changes are reviewed as the project's own code is."
 
 [[exemptions.accesskit]]
 version = "0.24.1"
