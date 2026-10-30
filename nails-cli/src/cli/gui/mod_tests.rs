@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use super::gate::{ADMITTED_DESKTOPS, DecoyFacts, decide_on_decoy};
+use super::gate::{ADMITTED_DESKTOPS, DecoyFacts, decide, decide_on_decoy};
 use super::runtime_dir::{DirFacts, judge};
 use super::*;
 use crate::cli::{Cli, Commands};
@@ -320,4 +320,87 @@ fn the_windows_own_directory_is_fresh_private_and_the_operators() {
 
     let gone = runtime_dir::make_own_dir(&runtime.path().join("missing"), &operator).unwrap_err();
     assert_eq!(gone.body.code, "launch_failed");
+}
+
+/// In the hidden session the window always opens, and the decoy's records
+/// and desktop are not even read; anywhere else the decoy gate decides.
+#[test]
+fn in_the_hidden_session_the_window_always_opens() {
+    use nails_core::session::SessionView;
+    let engine = Path::new(ENGINE);
+    let hidden = SessionView::HiddenWithoutPlan("/mnt/data".to_string());
+    assert!(
+        decide(
+            &hidden,
+            || panic!("the decoy is not looked at in a hidden session"),
+            engine
+        )
+        .is_ok()
+    );
+    for view in [
+        SessionView::Decoy,
+        SessionView::Interrupted {
+            plan: None,
+            nextroot_mounted: true,
+        },
+    ] {
+        let refused = decide(
+            &view,
+            || decoy(&["persistent journal"], Some("GNOME")),
+            engine,
+        )
+        .expect_err("the decoy gate refuses");
+        assert_eq!(refused.body.code, "decoy_persistent", "{view:?}");
+    }
+}
+
+/// The window's directory goes to the operator: made by the launcher, handed
+/// over through a handle that follows no link. An unprivileged launcher cannot
+/// give it to another account, says so and leaves nothing behind; as root the
+/// other account owns it.
+#[test]
+fn the_windows_directory_is_handed_to_the_operator_or_not_made() {
+    use std::os::unix::fs::MetadataExt;
+    let runtime = tempfile::tempdir().unwrap();
+    let other = TargetUser::for_test(4242, 4242, "operator", "/home/operator", "/bin/sh");
+    match runtime_dir::make_own_dir(runtime.path(), &other) {
+        Ok(dir) => {
+            assert!(nix::unistd::geteuid().is_root(), "only root hands it over");
+            let meta = std::fs::metadata(&dir).unwrap();
+            assert_eq!((meta.uid(), meta.gid()), (4242, 4242));
+        }
+        Err(refused) => {
+            assert!(
+                !nix::unistd::geteuid().is_root(),
+                "{}",
+                refused.body.message
+            );
+            assert_eq!(refused.body.code, "launch_failed");
+            assert_eq!(
+                std::fs::read_dir(runtime.path()).unwrap().count(),
+                0,
+                "a directory that was not handed over is not left behind"
+            );
+        }
+    }
+}
+
+/// A link put where the window's directory was is never followed: the hand
+/// over refuses it, so root changes the owner of nothing it points at.
+#[test]
+fn the_hand_over_follows_no_link() {
+    let runtime = tempfile::tempdir().unwrap();
+    let target = runtime.path().join("elsewhere");
+    std::fs::create_dir(&target).unwrap();
+    let link = runtime.path().join("swapped");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let me = TargetUser::for_test(
+        nix::unistd::getuid().as_raw(),
+        nix::unistd::getgid().as_raw(),
+        "operator",
+        "/home/operator",
+        "/bin/sh",
+    );
+    assert!(runtime_dir::hand_over(&link, &me).is_err());
+    assert!(runtime_dir::hand_over(&target, &me).is_ok());
 }
