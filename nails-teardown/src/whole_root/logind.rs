@@ -215,9 +215,9 @@ pub fn cancel(busctl: &Path) -> Option<bool> {
     call(busctl, "CancelScheduledShutdown")?.get(0)?.as_bool()
 }
 
-/// The numbers of PID 1's start jobs for the soft-reboot, `None` when it
-/// cannot be asked.
-fn soft_reboot_jobs(systemctl: &Path) -> Option<Vec<u32>> {
+/// Whether PID 1 holds a start job for the soft-reboot, `None` when it cannot
+/// be asked.
+pub fn pid1_holds_soft_reboot(systemctl: &Path) -> Option<bool> {
     let list = tools::run_output(
         systemctl,
         &["list-jobs", "--plain", "--no-legend", "--full"],
@@ -225,32 +225,9 @@ fn soft_reboot_jobs(systemctl: &Path) -> Option<Vec<u32>> {
     )?;
     Some(
         tools::parse_jobs(&list)
-            .into_iter()
-            .filter(|job| job.kind == "start" && SOFT_REBOOT_UNITS.contains(&job.unit.as_str()))
-            .map(|job| job.id)
-            .collect(),
+            .iter()
+            .any(|job| job.kind == "start" && SOFT_REBOOT_UNITS.contains(&job.unit.as_str())),
     )
-}
-
-/// Whether PID 1 holds a soft-reboot job, `None` when it cannot be asked.
-pub fn pid1_holds_soft_reboot(systemctl: &Path) -> Option<bool> {
-    soft_reboot_jobs(systemctl).map(|jobs| !jobs.is_empty())
-}
-
-/// Cancel PID 1's soft-reboot jobs, so that a power action enqueued next to
-/// them is the only switch left: both wait for the same stop of every unit,
-/// and the first to run would win. `true` once PID 1 holds none.
-pub fn cancel_soft_reboot_jobs(systemctl: &Path) -> bool {
-    let Some(jobs) = soft_reboot_jobs(systemctl) else {
-        return false;
-    };
-    if !jobs.is_empty() {
-        let ids: Vec<String> = jobs.iter().map(u32::to_string).collect();
-        let mut args = vec!["cancel"];
-        args.extend(ids.iter().map(String::as_str));
-        let _ = tools::run(systemctl, &args, TOOL_BUDGET);
-    }
-    pid1_holds_soft_reboot(systemctl) == Some(false)
 }
 
 /// How long [`request_soft_reboot`] waits and how often it looks.

@@ -9,8 +9,8 @@ use std::path::PathBuf;
 ///
 /// - `preparing` (`true`/`false`): whether logind holds a shutdown;
 /// - `kind`: the kind it names in the shutdown's metadata;
-/// - `job`: present while PID 1 holds the soft-reboot job, which `cancel`
-///   removes; `stop-job`: PID 1 holds a job that stops the soft-reboot target;
+/// - `job`: present while PID 1 holds the soft-reboot job; `stop-job`: PID 1
+///   holds a job that stops the soft-reboot target;
 /// - `fires-after`: logind starts the job once PID 1 has been asked this many
 ///   times while it holds the request;
 /// - `v255`: logind cannot drop a request it holds back, and names its kind
@@ -50,7 +50,6 @@ impl Fake {
                  exit 0 ;;\n\
                  'show --property=ActiveState --value systemd-logind.service') \
                  cat $d/logind-state ;;\n\
-                 cancel*) rm -f $d/job; exit 0 ;;\n\
                  start*) [ -e $d/start-refused ] && exit 1; touch $d/job; exit 0 ;;\n\
                  esac\nexit 0\n"
             ),
@@ -98,10 +97,6 @@ impl Fake {
 
     fn put(&self, name: &str, text: &str) {
         std::fs::write(self.dir.path().join(name), format!("{text}\n")).unwrap();
-    }
-
-    fn has(&self, name: &str) -> bool {
-        self.dir.path().join(name).exists()
     }
 
     /// The calls that act: those that only ask (`list-jobs`, `show`) are left
@@ -429,20 +424,6 @@ fn a_logind_that_does_not_answer_holds_the_soft_reboot_unless_it_does_not_run() 
     fake.put("preparing", "true");
     fake.put("gone-after-cancel", "");
     assert_eq!(fake.drop_it(), Pending::Held);
-}
-
-/// The soft-reboot jobs PID 1 holds are cancelled, so a power action enqueued
-/// next to them is the only switch left.
-#[test]
-fn the_soft_reboot_jobs_are_cancelled_by_number() {
-    let fake = Fake::new();
-    assert!(cancel_soft_reboot_jobs(&fake.systemctl));
-    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
-    fake.put("job", "");
-    fake.put("stop-job", "");
-    assert!(cancel_soft_reboot_jobs(&fake.systemctl));
-    assert!(!fake.has("job"));
-    assert_eq!(fake.calls(), ["cancel 7"]);
 }
 
 #[test]
