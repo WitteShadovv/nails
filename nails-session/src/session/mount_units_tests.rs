@@ -726,6 +726,11 @@ fn the_units_a_skip_pulls_in_that_act_on_its_device_are_skipped_with_it() {
         "/etc/systemd/system/srv-data.mount.wants/backup.service",
         "../backup.service",
     );
+    decoy.write(
+        "/etc/systemd/system/backup.service",
+        "[Service]\nExecStart=/bin/true\n",
+    );
+    decoy.write("/usr/lib/systemd/system/network-online.target", "[Unit]\n");
     let (kept, unskipped) = decoy.kept_off(DATA, &decide_data());
     assert!(unskipped.is_empty(), "{unskipped:?}");
     assert_eq!(

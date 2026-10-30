@@ -246,6 +246,91 @@ pub fn without_specifiers(value: &str) -> Option<String> {
     Some(out)
 }
 
+/// `escaped` with systemd's `\xNN` escapes of a unit name decoded.
+fn unescape(escaped: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(escaped.len());
+    let mut rest = escaped.as_bytes();
+    loop {
+        rest = match rest {
+            [] => break,
+            [b'\\', b'x', high, low, tail @ ..] => {
+                let hex = [*high, *low];
+                out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+                tail
+            }
+            [byte, tail @ ..] => {
+                out.push(*byte);
+                tail
+            }
+        };
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The path the escaped `escaped` stands for, as systemd's `%f` gives it:
+/// `-` alone is `/`, every other `-` a `/`, `\xNN` the byte NN.
+fn path_unescape(escaped: &str) -> Option<String> {
+    if escaped == "-" || escaped.is_empty() {
+        return Some("/".to_string());
+    }
+    let path = unescape(&escaped.replace('-', "/"))?;
+    Some(if path.starts_with('/') {
+        path
+    } else {
+        format!("/{path}")
+    })
+}
+
+/// `value`, a setting of the unit `name`, with the specifiers systemd
+/// resolves for the system manager resolved: those of the unit's name
+/// (`%n`, `%N`, `%p`, `%P`, `%i`, `%I`, `%f`, `%j`, `%J`), the system's
+/// directories (`%t`, `%S`, `%C`, `%L`, `%E`, `%T`, `%V`) and `%%`. `None`
+/// when it holds another one (the host name, a user's, the machine's), which
+/// NAILS does not resolve.
+pub fn resolve_specifiers(value: &str, name: &str) -> Option<String> {
+    if !value.contains('%') {
+        return Some(value.to_string());
+    }
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    let (prefix, instance) = stem.split_once('@').unwrap_or((stem, ""));
+    // What follows the prefix's last dash, empty when it ends in one.
+    let last = prefix.rsplit_once('-').map_or(prefix, |(_, last)| last);
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let resolved = match chars.next()? {
+            '%' => "%".to_string(),
+            'n' => name.to_string(),
+            'N' => stem.to_string(),
+            'p' => prefix.to_string(),
+            'P' => unescape(prefix)?,
+            'i' => instance.to_string(),
+            'I' => unescape(instance)?,
+            'f' => path_unescape(if instance.is_empty() {
+                prefix
+            } else {
+                instance
+            })?,
+            'j' => last.to_string(),
+            'J' => unescape(last)?,
+            't' => "/run".to_string(),
+            'S' => "/var/lib".to_string(),
+            'C' => "/var/cache".to_string(),
+            'L' => "/var/log".to_string(),
+            'E' => "/etc".to_string(),
+            'T' => "/tmp".to_string(),
+            'V' => "/var/tmp".to_string(),
+            _ => return None,
+        };
+        out.push_str(&resolved);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 #[path = "unit_file_tests.rs"]
 mod tests;
