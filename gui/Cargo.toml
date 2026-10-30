@@ -10,6 +10,10 @@
 
 [workspace]
 members = ["nails-gui"]
+# The patched copy of a Slint crate below is a dependency of the window, not
+# a member: its code is Slint's, and the workspace's lints, formatting and
+# tests are the window's own.
+exclude = ["patches"]
 resolver = "3"
 
 [workspace.package]
@@ -36,3 +40,15 @@ cognitive_complexity = "warn"
 [profile.release]
 strip = true
 lto = true
+
+# Slint's winit backend, patched: gui/patches/i-slint-backend-winit is the
+# crate Slint publishes at the version the window pins, with a change of
+# ours, marked "NAILS:" in place. Its Wayland support no longer turns on
+# winit's sctk-adwaita window decorations, which winit builds even for a
+# window without a frame and then hides, running dbus-send (for the colour
+# scheme and the button layout), gsettings (for the title's font) and
+# fc-match on the way. No feature of Slint 1.18 turns them off. winit then
+# draws smithay's fallback frame, which starts nothing. A new Slint release
+# brings a new copy of the crate with the same change.
+[patch.crates-io]
+i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }
