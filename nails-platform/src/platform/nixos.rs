@@ -46,7 +46,7 @@ pub(crate) fn discover_nixos_target<F: Filesystem>(
     fs: &F,
     hidden_volume_root: &Path,
 ) -> Result<HostTarget> {
-    match hidden_flake(fs, hidden_volume_root) {
+    match hidden_flake(fs, hidden_volume_root)? {
         HiddenFlake::Present => return Ok(HostTarget::Flake(hidden_volume_root.join("nixos"))),
         HiddenFlake::DecoyFlake => {
             return Ok(HostTarget::DecoyFlake {
@@ -80,69 +80,149 @@ pub enum HiddenFlake {
     Missing,
     /// A flake of its own.
     Present,
-    /// The decoy's own flake: the directory resolves to `/etc/nixos`, through
-    /// a link.
+    /// The decoy's own flake: the directory is `/etc/nixos` or a directory
+    /// below it, by device and inode, through a link or a bind mount.
     DecoyFlake,
 }
 
 /// What `<hidden_volume_root>/nixos` holds: a flake of its own, none, or the
-/// decoy's own flake through a link, which is no way around the refusal
-/// [`HostTarget::DecoyFlake`] carries.
-pub fn hidden_flake<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> HiddenFlake {
+/// decoy's own flake, which is no way around the refusal
+/// [`HostTarget::DecoyFlake`] carries. The directory is the decoy's flake
+/// when it, the target of a link on its way, or a directory above either has
+/// the device and inode of `/etc/nixos` while that holds a flake, so a link
+/// to `/etc/nixos` or below it and a bind mount of it count.
+///
+/// # Errors
+///
+/// Only a missing `flake.nix`, here or in `/etc/nixos`, means no flake:
+/// another error looking at one, or at a directory on the way, is one, so
+/// discovery refuses rather than takes the directory for a flake of its own.
+pub fn hidden_flake<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Result<HiddenFlake> {
     let dir = hidden_volume_root.join("nixos");
-    if !fs.path_exists(&dir.join("flake.nix")).unwrap_or(false) {
-        HiddenFlake::Missing
-    } else if is_decoy_flake_dir(fs, &dir) {
+    if fs.inode(&dir.join("flake.nix"))?.is_none() {
+        return Ok(HiddenFlake::Missing);
+    }
+    let decoy = match decoy_flake_identity(fs)? {
+        Some(decoy) => at_or_below(fs, &dir, decoy)?,
+        None => false,
+    };
+    Ok(if decoy {
         HiddenFlake::DecoyFlake
     } else {
         HiddenFlake::Present
-    }
+    })
 }
 
-/// The decoy's own flake directory when `flake_ref` names it and `/etc/nixos`
-/// holds a flake: a local reference (an absolute path, `path:`, `git+file:`
-/// or `file:`, or a relative one) whose directory is `/etc/nixos` once both
-/// are resolved and its `dir` parameter is applied, so `/etc/nixos/`,
-/// `/etc/nixos?ref=main`, `path:/etc?dir=nixos`, `git+file:///etc?dir=nixos`
-/// and a link to the directory name it too. Naming it explicitly is no way
+/// The decoy's own flake directory when `flake_ref`, read against the
+/// working directory, names it or a directory below it while `/etc/nixos`
+/// holds a flake ([`names_decoy_flake`]). Naming it explicitly is no way
 /// around the refusal [`HostTarget::DecoyFlake`] carries.
-pub(crate) fn explicit_decoy_flake<F: Filesystem>(fs: &F, flake_ref: &str) -> Option<PathBuf> {
+///
+/// # Errors
+///
+/// The working directory, which Nix reads a relative reference against, or a
+/// file that decides the answer, cannot be looked at.
+pub(crate) fn explicit_decoy_flake<F: Filesystem>(
+    fs: &F,
+    flake_ref: &str,
+) -> Result<Option<PathBuf>> {
+    let cwd = std::env::current_dir().map_err(|error| crate::NailsError::NixOSPreflightError {
+        category: "configuration",
+        message: format!(
+            "could not read the working directory, which Nix reads a flake reference against: \
+             {error}"
+        ),
+    })?;
+    Ok(names_decoy_flake(fs, flake_ref, &cwd)?.then(|| PathBuf::from(ETC_FLAKE_DIR)))
+}
+
+/// Whether `flake_ref`, read against the working directory `cwd`, names the
+/// decoy's own flake or a directory below it while `/etc/nixos` holds a
+/// flake. Every reading counts ([`crate::nixos::flake_ref_readings`]): what
+/// NAILS reads a local reference as (`/etc/nixos/`, `path:/etc?dir=nixos`,
+/// `git+file:///etc/nixos/.git`, `hg+file:///etc/nixos`, the percent-encoded
+/// `path:/etc/%6Eixos`), whether it exists or not, and the path relative to
+/// `cwd` that Nix reads a reference it cannot parse as
+/// (`git+file://../../etc/nixos`, `github:/../../etc/nixos`), where it
+/// exists. A directory counts by what it is, not by its name: when it, or a
+/// directory above it, has the device and inode of `/etc/nixos`, so a link
+/// and a bind mount count (impermanence's `/persist/etc/nixos`). A directory
+/// below counts because Nix builds the flake above a directory that holds
+/// none, and a flake on the decoy is no hidden flake anyway.
+///
+/// # Errors
+///
+/// Only a missing `flake.nix` means `/etc/nixos` holds no flake: another
+/// error looking it up, or looking at a directory on the way, is one, so
+/// the reference is refused rather than passed.
+pub(crate) fn names_decoy_flake<F: Filesystem>(
+    fs: &F,
+    flake_ref: &str,
+    cwd: &Path,
+) -> Result<bool> {
+    let Some(decoy) = decoy_flake_identity(fs)? else {
+        return Ok(false);
+    };
     let (base, _) = crate::nixos::split_flake_ref(flake_ref);
-    let dir = local_flake_path(base)?;
-    is_decoy_flake_dir(fs, &dir).then(|| PathBuf::from(ETC_FLAKE_DIR))
-}
-
-/// Whether `/etc/nixos` holds a flake and `dir` is that directory once both
-/// are resolved.
-fn is_decoy_flake_dir<F: Filesystem>(fs: &F, dir: &Path) -> bool {
-    let etc = Path::new(ETC_FLAKE_DIR);
-    fs.path_exists(&etc.join("flake.nix")).unwrap_or(false)
-        && resolved(fs, dir) == resolved(fs, etc)
-}
-
-/// The directory a local flake reference names, its `dir` parameter applied;
-/// `None` for a remote one.
-fn local_flake_path(base: &str) -> Option<PathBuf> {
-    let (location, dir) = crate::nixos::location_and_dir(base);
-    for scheme in ["git+file:", "file:"] {
-        if let Some(rest) = location.strip_prefix(scheme) {
-            // `git+file:///etc/nixos`: an empty authority before the path.
-            let path = rest.strip_prefix("//").unwrap_or(rest);
-            return path
-                .starts_with('/')
-                .then(|| crate::nixos::with_dir(PathBuf::from(path), dir));
+    let readings = crate::nixos::flake_ref_readings(base, cwd);
+    for dir in &readings.local {
+        if at_or_below(fs, dir, decoy)? {
+            return Ok(true);
         }
     }
-    crate::nixos::resolve_local_flake_dir(base).ok().flatten()
+    for dir in &readings.fallback {
+        if identity(fs, dir)?.is_some() && at_or_below(fs, dir, decoy)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-/// `path` with its links resolved where it can be, and with `.` components
-/// and a trailing slash dropped.
-fn resolved<F: Filesystem>(fs: &F, path: &Path) -> PathBuf {
-    fs.canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .components()
-        .collect()
+/// The device and inode of `/etc/nixos` while it holds a flake; `None` when
+/// it holds none. Only a missing `flake.nix` means none: another error
+/// looking at it, or at `/etc/nixos`, is one.
+fn decoy_flake_identity<F: Filesystem>(fs: &F) -> Result<Option<(u64, u64)>> {
+    let etc = Path::new(ETC_FLAKE_DIR);
+    if fs.inode(&etc.join("flake.nix"))?.is_none() {
+        return Ok(None);
+    }
+    identity(fs, etc)?
+        .map(Some)
+        .ok_or_else(|| crate::NailsError::NixOSPreflightError {
+            category: "configuration",
+            message: format!("{ETC_FLAKE_DIR} holds a flake.nix, but cannot be looked at itself"),
+        })
+}
+
+/// What the file `path` leads to is, its links followed: its device and its
+/// inode, or `None` when nothing is there.
+fn identity<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<(u64, u64)>> {
+    let path = fs.canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let Some(inode) = fs.inode(&path)? else {
+        return Ok(None);
+    };
+    Ok(Some((fs.device_id(&path)?, inode)))
+}
+
+/// Whether `path`, or a directory above it, is the file whose identity is
+/// `decoy`, the links on its way followed: each directory of `path` that
+/// exists counts with its target and every directory above that target, so
+/// a link to a directory below `/etc/nixos` leads below it, as Nix follows
+/// it, and a directory above the link counts too, as Nix looks for a flake
+/// above a directory that holds none.
+fn at_or_below<F: Filesystem>(fs: &F, path: &Path, decoy: (u64, u64)) -> Result<bool> {
+    for dir in path.ancestors() {
+        if fs.inode(dir)?.is_none() {
+            continue;
+        }
+        let target = fs.canonicalize(dir)?;
+        for above in target.ancestors() {
+            if identity(fs, above)? == Some(decoy) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// First-class NixOS backend.
@@ -181,6 +261,7 @@ pub(super) mod tests_support {
     pub(in crate::platform) fn full_nixos_host() -> MockFilesystem {
         let fs = MockFilesystem::new();
         fs.mock_set_path_type("/mnt/hidden/nixos/flake.nix", PathKind::File);
+        fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
         fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
         fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
         fs.mock_set_path_type("/nix/var/nix/profiles/system", PathKind::Dir);
