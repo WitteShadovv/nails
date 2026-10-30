@@ -633,6 +633,9 @@ mod kernel_modules_kernel_tests;
 #[path = "whole_root_kernel/package_drift.rs"]
 mod package_drift_kernel_tests;
 
+#[path = "whole_root_kernel/spare.rs"]
+mod spare_kernel_tests;
+
 mod nixos_kernel_tests {
     //! The chrooted activation of a hidden toplevel:
     //! it runs inside the next root, sees `/proc`, `/dev` and `/sys`, writes

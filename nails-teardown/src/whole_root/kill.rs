@@ -10,10 +10,11 @@
 //! so the orderly shutdown has little left to wait for. Spared are
 //! `init.scope` (PID 1), the service manager's own machinery (mount, swap
 //! and socket units, `systemd-*` services and the bus; see
-//! [`left_to_the_shutdown`]), which the shutdown stops itself, and the branch
-//! holding this invocation, where every other process is killed one by one
-//! through a pidfd. The invocation itself dies with the soft-reboot moments
-//! later.
+//! [`left_to_the_shutdown`]), which the shutdown stops itself, and the cgroups
+//! holding a process of this invocation, where every process but the
+//! invocation's own is killed one by one through a pidfd. The invocation is the
+//! emergency's command chain ([`Invocation`]), and it dies with the
+//! soft-reboot moments later.
 
 use crate::cgroup;
 use crate::proc::{self, Invocation, ProcessHandle};
@@ -38,12 +39,31 @@ fn direct_procs(dir: &Path) -> Vec<u32> {
         .collect()
 }
 
-/// The cgroup v2 paths that hold a process of `invocation`.
-fn protected_paths(invocation: &Invocation) -> BTreeSet<String> {
+/// The processes `invocation` spares, as `/proc` lists them now.
+pub fn spared_pids(invocation: &Invocation) -> Vec<u32> {
     proc::pids()
         .into_iter()
         .filter(|&pid| invocation.contains(pid, proc::stat(pid).as_ref()))
-        .filter_map(|pid| proc::cgroup(pid).and_then(|c| cgroup::v2_path(&c)))
+        .collect()
+}
+
+/// SIGKILL, one by one through a pidfd, every process of `pids` that is not in
+/// `spare`. Returns the pids killed.
+pub fn kill_unspared(pids: impl IntoIterator<Item = u32>, spare: &[u32]) -> Vec<u32> {
+    let mut killed = Vec::new();
+    for pid in pids {
+        if !spare.contains(&pid) && ProcessHandle::open(pid).is_some_and(|h| h.kill()) {
+            killed.push(pid);
+        }
+    }
+    killed
+}
+
+/// The cgroup v2 paths that hold one of the processes `spare`.
+fn protected_paths(spare: &[u32]) -> BTreeSet<String> {
+    spare
+        .iter()
+        .filter_map(|&pid| proc::cgroup(pid).and_then(|c| cgroup::v2_path(&c)))
         .collect()
 }
 
@@ -57,11 +77,8 @@ pub fn kill_userspace(cgroup_root: &Path, invocation: &Invocation) -> KillReport
 /// [`kill_userspace`] limited to the subtree `subtree` (a cgroup path such as
 /// `/user.slice`, or `""` for everything) of the hierarchy at `cgroup_root`.
 pub fn kill_below(cgroup_root: &Path, subtree: &str, invocation: &Invocation) -> KillReport {
-    let protected = protected_paths(invocation);
-    let spare: Vec<u32> = proc::pids()
-        .into_iter()
-        .filter(|&pid| invocation.contains(pid, proc::stat(pid).as_ref()))
-        .collect();
+    let spare = spared_pids(invocation);
+    let protected = protected_paths(&spare);
     let mut report = KillReport::default();
     let start = cgroup::dir(cgroup_root, subtree);
     visit(
@@ -123,11 +140,9 @@ fn visit(
         if protected.iter().any(|own| cgroup::contains(&child, own)) {
             visit(&path, &child, protected, spare, report);
             if protected.contains(&child) {
-                for pid in direct_procs(&path) {
-                    if !spare.contains(&pid) && ProcessHandle::open(pid).is_some_and(|h| h.kill()) {
-                        report.processes.push(pid);
-                    }
-                }
+                report
+                    .processes
+                    .extend(kill_unspared(direct_procs(&path), spare));
             }
         } else if cgroup::kill(&path, spare).is_ok() {
             report.cgroups.push(path);

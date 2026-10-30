@@ -652,7 +652,7 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
 |--------|-------------------------|-------------|-----------|
 | Runs in | the hidden session | the hidden session (or the decoy, see below) | the decoy |
 | Prepares the way back (decoy root at `/run/nextroot`) | Yes | Yes | — |
-| Hidden programs | stopped in order by the shutdown | killed at once (`cgroup.kill` on every cgroup but PID 1's and its own) | — |
+| Hidden programs | stopped in order by the shutdown | killed at once (`cgroup.kill`), all but the emergency command itself and the service manager's own units ([below](#what-emergency-does)) | — |
 | Hidden backend | marked for deferred removal; closed by the switch | marked for deferred removal; closed by the switch | — |
 | `/run` scrub, `utab` restore, kmsg cursor | Yes | Yes | — |
 | Ends at | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead, see [How it works](#how-it-works): off) | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead: off; `--reboot`: a full reboot) | the decoy, unchanged |
@@ -695,8 +695,31 @@ In the hidden session, emergency:
    report and stays open until power-off);
 3. enqueues the soft-reboot directly with PID 1, so the pending stop jobs keep
    `Restart=` from reviving anything;
-4. kills every hidden cgroup at once with `cgroup.kill`. Only PID 1 and its own
-   invocation survive until the switch.
+4. kills every hidden program at once: each cgroup with `cgroup.kill`, and in
+   a cgroup that holds the emergency command every other process one by one.
+   Spared until the switch are PID 1, the service manager's own units (its
+   `systemd-*` services such as journald, udevd and logind, the bus, and its
+   mount, swap and socket units), which the shutdown stops moments later, and
+   the emergency command itself: the `nails` process and, when you typed
+   `nails emergency` into a terminal's shell, the rest of its job, or when you
+   typed `sudo nails emergency` there and sudo runs commands on a
+   pseudo-terminal of their own (`use_pty`, the default since sudo 1.9.14),
+   that `sudo`, its monitor and the rest of their job.
+   Everything else dies at once: the shell you typed it into, the terminal,
+   the desktop shell, the display server, every app, and a wrapper that keeps
+   the command in its own process group, such as `timeout` or `su`. Two
+   exceptions are kept with the command: a terminal emulator you started from
+   a shell to run it, as in `xterm -e sudo nails emergency &`, which dies with
+   the display server moments later, and a window manager you started from a
+   login shell that starts the command in a process group but not a session
+   of its own.
+
+   The shells are killed before the soft-reboot is enqueued, and a shell's
+   death hangs up its terminal's foreground job. A reader you piped the report
+   to, such as `less`, `tee` or `base64` in `sudo nails emergency | less`,
+   ends there, unless it ignores SIGHUP or the job runs in the background,
+   while `sudo` and `nails` go on. A `timeout -k` you typed the command with
+   can still end it in the moments between the shell kill and the kill.
 
 The orderly shutdown then has nothing left to wait for, the `/run` scrub still
 runs as the last step, and the machine returns to the plain decoy, which shows
