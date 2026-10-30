@@ -233,7 +233,14 @@ Keep all of it `root`-owned on the hidden volume.
    the machine.
 7. It installs the transition step (a runtime drop-in for
    `systemd-soft-reboot.service`), prints its result, kills the decoy's
-   interactive shells and soft-reboots. A second runtime drop-in clears the
+   interactive shells and soft-reboots the way `systemctl soft-reboot` does,
+   through logind: the programs that wait for logind's shutdown signal end on
+   it before the decoy stops (for at most `InhibitDelayMaxSec=`, 5 seconds by
+   default), as at an ordinary shutdown. unattended-upgrades' shutdown helper
+   on Debian and Ubuntu is one; stopped without that signal, it writes a line
+   to its log in `/var/log/unattended-upgrades` that an ordinary shutdown does
+   not. When logind does not take the soft-reboot, activation enqueues it with
+   PID 1 directly. A second runtime drop-in clears the
    stop command of `blk-availability.service`, which Debian's and Ubuntu's
    lvm2 package enables: its `blkdeactivate -u` would unmount the hidden volume
    below `/run/nextroot` during the switch, or a LUKS or LVM decoy root on the
@@ -354,7 +361,7 @@ holds (the hidden session unmounted a carried filesystem, or mounted something
 on one) stops the way back instead of being left out or replaced: `deactivate`
 then refuses, and `emergency` powers off. It then marks the hidden backend's
 device-mapper stack for deferred removal, records the state as inactive and
-soft-reboots. A device it cannot mark (the hidden session removed `dmsetup`,
+soft-reboots, through logind as activation does. A device it cannot mark (the hidden session removed `dmsetup`,
 say) stays open after the switch, its key in RAM, until power-off:
 `deactivate` and `emergency` name it once the soft-reboot is enqueued
 (`backend_left_open` under `--json`). The orderly shutdown stops every hidden

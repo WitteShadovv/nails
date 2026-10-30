@@ -528,7 +528,7 @@ impl<F: Filesystem> NailsManager<F> {
         target: &dyn TargetHost,
         entry_host: &dyn EntryHost,
     ) -> Result<()> {
-        let enqueued = target.start_target("soft-reboot.target");
+        let enqueued = target.start_target(nails_teardown::whole_root::tools::SOFT_REBOOT_TARGET);
         if enqueued.is_err() {
             entry::rollback(&machine.paths);
             let _ = entry_host.daemon_reload();

@@ -165,6 +165,11 @@ pub fn ignore_stop_signals(command: &mut Command) {
 /// call was cut short, typically because the shutdown it enqueued is already
 /// stopping the caller.
 pub fn start_target(systemctl: &Path, target: &str) -> Outcome {
+    start_target_within(systemctl, target, TOOL_BUDGET)
+}
+
+/// [`start_target`] bounded by `budget`.
+fn start_target_within(systemctl: &Path, target: &str, budget: Duration) -> Outcome {
     run(
         systemctl,
         &[
@@ -174,8 +179,37 @@ pub fn start_target(systemctl: &Path, target: &str) -> Outcome {
             "--",
             target,
         ],
-        TOOL_BUDGET,
+        budget,
     )
+}
+
+/// The target of every soft-reboot.
+pub const SOFT_REBOOT_TARGET: &str = "soft-reboot.target";
+
+/// Soft-reboot the way `systemctl soft-reboot` does, without its wall message:
+/// through logind, which first tells every program that holds a shutdown delay
+/// inhibitor that the system is going down and waits for them to finish (for
+/// at most `InhibitDelayMaxSec=`, 5 s by default), then enqueues
+/// `soft-reboot.target` itself, replacing every other job irreversibly.
+/// unattended-upgrades' shutdown helper (Debian, Ubuntu) is such a program.
+/// Stopped by a bare SIGTERM instead, as [`start_target`] would have it, it
+/// writes a line to its log file on the root filesystem that an ordinary
+/// shutdown never writes, or it fails when the system bus stops under it.
+///
+/// A call not known to have succeeded (logind refused it, because of a block
+/// inhibitor for one, or the call was cut short) falls back to
+/// [`start_target`], so logind can delay the switch by its timeout but never
+/// keep it from happening.
+pub fn soft_reboot(systemctl: &Path) -> Outcome {
+    soft_reboot_within(systemctl, TOOL_BUDGET)
+}
+
+/// [`soft_reboot`] with each call bounded by `budget`.
+fn soft_reboot_within(systemctl: &Path, budget: Duration) -> Outcome {
+    if run(systemctl, &["--no-wall", "soft-reboot"], budget) == Outcome::Done {
+        return Outcome::Done;
+    }
+    start_target_within(systemctl, SOFT_REBOOT_TARGET, budget)
 }
 
 /// Reload the service manager, so a runtime drop-in written to `/run` applies.
@@ -379,6 +413,71 @@ mod tests {
             Duration::from_millis(200)
         ));
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A `systemctl` stand-in that appends its arguments to `calls` and ends
+    /// `soft-reboot` with `soft_reboot`, any other command with `other` (shell
+    /// code, such as `exit 0`).
+    fn recording_systemctl(dir: &Path, soft_reboot: &str, other: &str) -> (PathBuf, PathBuf) {
+        let calls = dir.join("calls");
+        let tool = dir.join("systemctl");
+        crate::test_support::write_executable(
+            &tool,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {calls}\n\
+                 if [ \"$2\" = soft-reboot ]; then {soft_reboot}; fi\n{other}\n",
+                calls = calls.display()
+            ),
+            0o755,
+        );
+        (tool, calls)
+    }
+
+    fn calls_made(calls: &Path) -> Vec<String> {
+        std::fs::read_to_string(calls)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    const DIRECT: &str = "start --no-block --job-mode=replace-irreversibly -- soft-reboot.target";
+
+    /// logind takes the soft-reboot, as `systemctl soft-reboot` asks it to:
+    /// nothing is enqueued with PID 1 next to it.
+    #[test]
+    fn a_soft_reboot_goes_through_logind_without_a_wall_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, calls) = recording_systemctl(dir.path(), "exit 0", "exit 9");
+        assert_eq!(soft_reboot(&tool), Outcome::Done);
+        assert_eq!(calls_made(&calls), ["--no-wall soft-reboot"]);
+    }
+
+    /// When logind refuses, or its call overruns its budget, the soft-reboot
+    /// is enqueued with PID 1 directly; only when that fails too is it refused.
+    #[test]
+    fn a_soft_reboot_logind_does_not_take_is_enqueued_with_pid_1() {
+        for (logind, direct, outcome) in [
+            ("exit 1", "exit 0", Outcome::Done),
+            ("kill -KILL $$", "exit 0", Outcome::Done),
+            ("sleep 5", "exit 0", Outcome::Done),
+            ("exit 1", "exit 1", Outcome::Refused),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (tool, calls) = recording_systemctl(dir.path(), logind, direct);
+            let start = Instant::now();
+            assert_eq!(
+                soft_reboot_within(&tool, Duration::from_millis(500)),
+                outcome,
+                "{logind} then {direct}"
+            );
+            assert!(start.elapsed() < Duration::from_secs(3), "{logind}");
+            assert_eq!(
+                calls_made(&calls),
+                ["--no-wall soft-reboot", DIRECT],
+                "{logind} then {direct}"
+            );
+        }
     }
 
     #[test]
