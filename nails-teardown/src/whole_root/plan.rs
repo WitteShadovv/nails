@@ -164,10 +164,12 @@ pub enum MaskCause {
     /// pulls in: one named like the skip's drop-in that systemd reads in its
     /// place, or one that sorts after it and resets the start conditions.
     SkipUndone,
-    /// The skipped unit, or one it pulls in, would pull in a mount, swap or
-    /// automount the session neither keeps off nor puts in place (the mount
-    /// of a parent directory, a `Requires=`, a `RequiresMountsFor=`), which
-    /// the hidden systemd would start before it tests the skip's condition.
+    /// What the skipped unit pulls in, followed unit by unit as far as it
+    /// leads, would pull in a mount, swap or automount the session neither
+    /// keeps off nor puts in place (the mount of a parent directory or of a
+    /// bind source, one a `Requires=` or a service's `RequiresMountsFor=`
+    /// names), which the hidden systemd would start before it tests the
+    /// skip's condition.
     PullsInMount,
 }
 

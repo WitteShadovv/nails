@@ -187,7 +187,7 @@ gets a fixed decision before the switch:
 | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
 | an overlay entry not mounted now, its upper on a disk | kept unmounted |
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
-| a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back | left alone: nothing mounts it at boot, but a skipped unit that pulls it in is masked instead (see below) |
+| a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back | left alone: no boot target pulls it in. A skipped unit whose pulls reach it is masked instead (see below); any other unit that pulls it in, such as a service with `RequiresMountsFor=` on it, mounts it read-write, as one of the [disks mounted during the session](#disks-mounted-during-the-session) |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | the hidden volume, or a path inside it | bound at its own path |
 
@@ -216,22 +216,38 @@ in: one named like the skip's drop-in (`zz-overlay-runtime.conf`) that systemd
 reads in its place, or one whose name sorts after it and resets the start
 conditions with an empty `Condition…=` assignment. So is a unit whose skip would
 pull in a mount, swap or automount that the session neither keeps off nor puts
-in place: systemd has every mount require the mount of each parent directory
-that has a unit (a `noauto` line's unit among them), and a skipped unit starts
-the mounts its unit files name in `Requires=`, `BindsTo=`, `Wants=` or
-`Upholds=` or link in its `.requires`, `.wants` or `.upholds` directory, those
-of the paths in its `RequiresMountsFor=` and `WantsMountsFor=`, and those its
-fstab line names with `x-systemd.requires=` or `x-systemd.requires-mounts-for=`.
-The hidden systemd would mount such a filesystem read-write from the decoy's
-disk before the skip's condition is tested. A skipped unit that requires a unit
-the session masks, such as the mount of an unmounted parent directory with
-`nofail`, does not start, so its target is not reached either, and `nails check`
-and `nails activate` warn of that too. A skipped mount or swap still waits for
-its device, so an entry whose device is not there at activation (NAILS also asks
-systemd whether the device's unit is active, at `nails check` as at activation)
-is masked instead as well; attach the device, or give the entry `nofail` (for a
-unit file of the decoy's own, install it with `WantedBy=` rather than
-`RequiredBy=`; for a unit a generator makes and requires, such as a
+in place, and that mounts neither the root nor a RAM or kernel filesystem nor a
+host share: the hidden systemd would mount it read-write from the decoy's disk
+before the skip's condition is tested. PID 1 starts what a skipped unit pulls
+in, active or not, and what that pulls in in turn, and NAILS follows it unit by
+unit: the units each one's files name in `Requires=`, `BindsTo=`, `Wants=`,
+`Upholds=`, `OnFailure=` or `OnSuccess=` or link in its `.requires`, `.wants` or
+`.upholds` directory; the mounts for the paths in its `RequiresMountsFor=` and
+`WantsMountsFor=`, for each parent directory of a mount or automount (a `noauto`
+line's unit among them), for the source of a mount that is no network filesystem
+and of every bind or loop mount, for a swap's file, for a service's working,
+root and state directories (`StateDirectory=` and the like) and private `/tmp`,
+and for the paths a socket listens on or a path unit watches; the device a mount
+or swap waits for, the `network-online.target` a network filesystem's mount
+wants, a unit's slice, the sockets a service takes (`Sockets=`, the D-Bus
+socket, those of its log namespace), the unit a socket, path unit, timer or
+automount starts, the names a unit shares through alias links, and what an fstab
+line names with `x-systemd.requires=`, `x-systemd.requires-mounts-for=` or
+`x-systemd.wants-mounts-for=`. It stops only at the targets the boot starts
+anyway (`default.target` and the targets it pulls in) and at scopes. Where it
+cannot follow a unit on the way (its unit files or a link of its name cannot be
+read, it does not load, which a generator of the hidden session could change, it
+names a unit or path by a specifier NAILS does not resolve, such as `%H`, or an
+fstab line puts a specifier in one of those options), or the chain runs more
+than 8 units deep or past 256 units, the skip is masked as well. A skipped unit
+that requires a unit the session masks, such as the mount of an unmounted parent
+directory with `nofail`, does not start, so its target is not reached either,
+and `nails check` and `nails activate` warn of that too. A skipped mount or swap
+still waits for its device, so an entry whose device is not there at activation
+(NAILS also asks systemd whether the device's unit is active, at `nails check`
+as at activation) is masked instead as well; attach the device, or give the
+entry `nofail` (for a unit file of the decoy's own, install it with `WantedBy=`
+rather than `RequiredBy=`; for a unit a generator makes and requires, such as a
 `systemd.mount-extra=` of the kernel command line, give that line `nofail`, or
 run `systemctl daemon-reload` if the line is gone). For either mask
 `nails check` and `nails activate` warn that the hidden session will not reach
@@ -289,7 +305,8 @@ NAILS lists the decoy's unit directories and reads its unit files with
 root. A `nails check` or `nails activate --dry-run` run without root falls back
 to plain reads, which update their access times on a decoy root mounted without
 `noatime`, and a lookup that follows a symbolic link (a mask, or NixOS's
-`/etc/systemd/system`) updates the link's access time either way.
+`/etc/systemd/system`) updates the link's access time either way, as does
+reading a link to tell whether it makes a unit's alias.
 
 No other unit outside the fstab is decided. A mount unit that only another
 unit pulls in, by `Requires=` or `Wants=` (a target's own unit file among

@@ -206,3 +206,55 @@ fn only_the_escape_of_a_percent_sign_is_resolved() {
     assert_eq!(without_specifiers("/srv/%H"), None);
     assert_eq!(without_specifiers("%"), None);
 }
+
+#[test]
+fn specifiers_resolve_as_systemd_resolves_them_for_a_unit() {
+    let name = "systemd-fsck@dev-disk-by\\x2dlabel-data.service";
+    for (value, resolved) in [
+        ("%i.device", Some("dev-disk-by\\x2dlabel-data.device")),
+        ("%I", Some("dev-disk-by-label-data")),
+        ("%f", Some("/dev/disk/by-label/data")),
+        ("%n", Some(name)),
+        ("%N", Some("systemd-fsck@dev-disk-by\\x2dlabel-data")),
+        ("%p", Some("systemd-fsck")),
+        ("%P", Some("systemd-fsck")),
+        ("%j", Some("fsck")),
+        ("%J", Some("fsck")),
+        (
+            "%t/x %S %C %L %E %T %V 100%%",
+            Some("/run/x /var/lib /var/cache /var/log /etc /tmp /var/tmp 100%"),
+        ),
+        ("%H", None),
+        ("%u", None),
+        ("%", None),
+        ("%i%", None),
+    ] {
+        assert_eq!(
+            resolve_specifiers(value, name).as_deref(),
+            resolved,
+            "{value}"
+        );
+    }
+    // A unit with no instance: %f is the path its name escapes, %i empty, and
+    // %j what follows its prefix's last dash, empty when it ends in one.
+    for (value, name, resolved) in [
+        ("%f", "srv-data.mount", "/srv/data"),
+        ("%f", "-.mount", "/"),
+        ("[%i]", "srv-data.mount", "[]"),
+        ("%j", "srv-data.mount", "data"),
+        ("%j", "srv-.mount", ""),
+        ("%P", "srv-my\\x20data.mount", "srv-my data"),
+        ("%J", "srv-my\\x20data.mount", "my data"),
+        ("%I", "getty@tty\\x2d1.service", "tty-1"),
+        ("plain", "srv-data.mount", "plain"),
+    ] {
+        assert_eq!(
+            resolve_specifiers(value, name).as_deref(),
+            Some(resolved),
+            "{value} of {name}"
+        );
+    }
+    // An escape that is no byte stops the resolution.
+    assert_eq!(resolve_specifiers("%I", "a@\\xzz.service"), None);
+    assert_eq!(resolve_specifiers("%f", "a@\\xff.service"), None);
+}

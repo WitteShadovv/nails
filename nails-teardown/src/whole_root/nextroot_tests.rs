@@ -300,6 +300,40 @@ fn canonical_in_root_follows_a_link_whose_target_is_not_there_yet() {
 }
 
 #[test]
+fn read_link_in_root_reads_a_link_without_following_it() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("usr/lib/units")).unwrap();
+    std::fs::write(root.path().join("usr/lib/units/real.target"), "").unwrap();
+    // The directory is reached through an absolute link inside the root, as
+    // NixOS's /etc/systemd/system is.
+    symlink("/usr/lib/units", root.path().join("units")).unwrap();
+    symlink(
+        "real.target",
+        root.path().join("usr/lib/units/alias.target"),
+    )
+    .unwrap();
+    symlink(
+        "/gone/x.target",
+        root.path().join("usr/lib/units/dangling.target"),
+    )
+    .unwrap();
+
+    let read = |p: &str| read_link_in_root(root.path(), Path::new(p));
+    assert_eq!(
+        read("/units/alias.target").unwrap(),
+        Path::new("real.target")
+    );
+    assert_eq!(
+        read("/units/dangling.target").unwrap(),
+        Path::new("/gone/x.target")
+    );
+    let kind = |p: &str| read(p).unwrap_err().kind();
+    assert_eq!(kind("/units/real.target"), io::ErrorKind::InvalidInput);
+    assert_eq!(kind("/units/none.target"), io::ErrorKind::NotFound);
+    assert_eq!(kind("/"), io::ErrorKind::InvalidInput);
+}
+
+#[test]
 fn nothing_is_created_through_a_dangling_link_or_a_dot_dot() {
     let root = tempfile::tempdir().unwrap();
     symlink("/gone", root.path().join("away")).unwrap();
