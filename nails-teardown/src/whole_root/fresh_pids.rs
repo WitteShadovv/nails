@@ -35,14 +35,15 @@
 //! terminal, took its number after everything that ran before it, so it is no
 //! anchor and no measure, and the next anchor is tried.
 //!
-//! The counter never goes lower than just below the floor: it goes there
-//! without an anchor to measure by, and when the measure would put it lower (a
-//! hidden start that used more numbers up to its anchor than the decoy's boot
-//! did from its floor). The decoy's start then numbers its units from where
-//! its own boot's userspace began; no test measures how close its getty lands
-//! to its own boot's from there. Only the anchor is measured: the decoy's
-//! other units get their numbers in the order its start runs them, which a
-//! soft-reboot need not share with a cold boot.
+//! Without an anchor to measure by, the counter goes to just below the floor.
+//! The decoy's start then numbers its units from where its own boot's
+//! userspace began; no test measures how close its getty lands to its own
+//! boot's from there. A measured counter may well lie below the floor: a
+//! soft-reboot start runs its generators and other short-lived processes
+//! before the first one that keeps running, so the floor of a decoy that came
+//! back from an earlier session sits above where its start began. Only the
+//! anchor is measured: the decoy's other units get their numbers in the order
+//! its start runs them, which a soft-reboot need not share with a cold boot.
 //!
 //! It is best effort and never stops the way back: without a record, outside
 //! PID 1's PID namespace, when the counter is already lower or cannot be
@@ -111,8 +112,7 @@ pub struct Record {
     /// The counter as the entry's switch handed over to the hidden root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_switch: Option<u32>,
-    /// The counter the way back sets, measured when it was armed, no lower than
-    /// just below the floor ([`counter`]).
+    /// The counter the way back sets, measured when it was armed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counter: Option<u32>,
 }
@@ -229,8 +229,7 @@ pub fn record(proc: &Path) -> Record {
 /// also ran (the same `comm` on the same terminal, started with the first
 /// process above the switch's counter still running, [`START_WINDOW`]), the
 /// decoy's number of it less the numbers the hidden start used up to its own
-/// copy, but no lower than just below the floor. `None` when no anchor can be
-/// measured, which leaves the floor.
+/// copy. `None` when no anchor can be measured, which leaves the floor.
 pub fn counter(record: &Record, proc: &Path) -> Option<u32> {
     let at_switch = record.at_switch?;
     let live: Vec<Process> = processes(proc)
@@ -238,7 +237,7 @@ pub fn counter(record: &Record, proc: &Path) -> Option<u32> {
         .filter(|p| p.pid > at_switch)
         .collect();
     let first = live.iter().min_by_key(|p| p.pid)?;
-    let measured = record.anchors.iter().find_map(|anchor| {
+    record.anchors.iter().find_map(|anchor| {
         let hidden = live
             .iter()
             .filter(|p| p.comm == anchor.comm && p.tty == anchor.tty && p.started_with(first))
@@ -248,9 +247,8 @@ pub fn counter(record: &Record, proc: &Path) -> Option<u32> {
         if used > START_SPAN {
             return None;
         }
-        anchor.pid.checked_sub(used)
-    })?;
-    Some(measured.max(record.below_floor().unwrap_or(1)))
+        anchor.pid.checked_sub(used).filter(|&c| c >= 1)
+    })
 }
 
 /// The device and inode of the file `path` names, following a link: the
