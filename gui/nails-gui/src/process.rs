@@ -9,8 +9,11 @@
 //!   so the name the kernel gives the process at `exec`, the one a process
 //!   list shows, is neutral already. The window sets it again first thing
 //!   ([`name_neutrally`]), so a start through another file name (a bundled
-//!   loader, say) still shows `session`, and every thread it starts
-//!   afterwards inherits it.
+//!   loader, say) still shows `session`, and a thread starts with the name
+//!   of the thread that starts it. A library may name a thread of its own,
+//!   which then shows that name instead: the toolkit's D-Bus support names
+//!   its reactor thread `async-io`, a name of the library's that says
+//!   nothing about NAILS.
 //! - **Its limits**, on every start ([`limit`]): no core dump (the limit is 0,
 //!   soft and hard), not dumpable, which also keeps the operator's other
 //!   programs from attaching to it, and `no_new_privs`, so nothing it starts
@@ -64,9 +67,9 @@ pub const RESTART_ARGS: [&str; 2] = ["--engine", ENGINE_ON_STDIN];
 /// The longest engine path the window takes on standard input, `PATH_MAX`.
 const ENGINE_MAX: usize = 4096;
 
-/// Give the calling thread, and so every thread it starts afterwards, the
-/// window's neutral name. Called first thing on the main thread, it is the
-/// name of the process.
+/// Give the calling thread, and so every thread it starts afterwards that
+/// names itself nothing else, the window's neutral name. Called first thing
+/// on the main thread, it is the name of the process.
 ///
 /// # Errors
 ///
