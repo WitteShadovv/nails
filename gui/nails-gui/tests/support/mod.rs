@@ -180,3 +180,60 @@ pub fn fixture_events(name: &str) -> Vec<Event> {
         .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{path}: {e}: {line}")))
         .collect()
 }
+
+/// A stand-in for `systemctl` in a directory of its own, removed with it: a
+/// script that appends its arguments to a file and then runs `then`.
+pub struct FakePowerOff {
+    dir: std::path::PathBuf,
+}
+
+impl FakePowerOff {
+    pub fn new(then: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "nails-gui-poweroff-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("systemctl");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\n{then}\n",
+                dir.join("calls").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Self { dir }
+    }
+
+    /// The power-off of the window's emergency through this stand-in, with
+    /// `grace` to wait for the helper.
+    pub fn fallback(&self, grace: Duration) -> nails_gui::emergency::Fallback {
+        nails_gui::emergency::Fallback {
+            program: Some(self.dir.join("systemctl")),
+            args: vec!["poweroff".into(), "--no-ask-password".into()],
+            grace,
+            limit: Duration::from_secs(5),
+        }
+    }
+
+    /// Each call's arguments.
+    pub fn calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+impl Drop for FakePowerOff {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}

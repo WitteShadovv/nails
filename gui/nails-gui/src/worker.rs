@@ -19,6 +19,10 @@
 //! reach the helper through it; [`HangUp`] is how it still can: it shuts the
 //! window's writing half of the pipe, which cancels an activation before its
 //! point of no return. The worker reads the answer that follows and ends.
+//! The window's emergency does not go through the worker at all: the worker
+//! only hands it the pipe once the handshake passed, and takes it back when
+//! the session is over ([`crate::emergency`]). Once the emergency fired, the
+//! worker sends no request more.
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -30,6 +34,7 @@ use nails_api::Event;
 use nails_api::protocol::{CheckArgs, Hello, Op, ProtocolError};
 
 use crate::client::{Answer, Client, ClientError, Plan, PlanAnswer, PlanData, Planned};
+use crate::emergency::Emergency;
 use crate::launch::{PkexecEnd, pkexec_end, start_helper};
 
 /// What the window asks the worker to do.
@@ -230,18 +235,34 @@ impl Worker {
 }
 
 /// Start the worker: open the session with `connect`, then serve the window's
-/// asks, reporting through `report`. The worker ends when the returned
-/// [`Worker`] is dropped, when the session is over, and once the answer that
-/// a hang-up waited for came.
-pub fn spawn(connect: Connect, report: impl Fn(Update) + Send + 'static) -> Worker {
+/// asks, reporting through `report`, and hand `emergency`, if any, the pipe
+/// while the session is open. The worker ends when the returned [`Worker`] is
+/// dropped, when the session is over, and once the answer that a hang-up
+/// waited for came.
+pub fn spawn(
+    connect: Connect,
+    emergency: Option<Emergency>,
+    report: impl Fn(Update) + Send + 'static,
+) -> Worker {
     let (asks, inbox) = channel();
     let hang_up = HangUp::default();
     let line = hang_up.clone();
-    std::thread::spawn(move || run(connect, &inbox, &line, &report));
+    std::thread::spawn(move || {
+        run(connect, &inbox, &line, emergency.as_ref(), &report);
+        if let Some(emergency) = &emergency {
+            emergency.close();
+        }
+    });
     Worker { asks, hang_up }
 }
 
-fn run(connect: Connect, inbox: &Receiver<Ask>, line: &HangUp, report: &dyn Fn(Update)) {
+fn run(
+    connect: Connect,
+    inbox: &Receiver<Ask>,
+    line: &HangUp,
+    emergency: Option<&Emergency>,
+    report: &dyn Fn(Update),
+) {
     let (mut client, mut pkexec) = match open(connect) {
         Ok(opened) => opened,
         Err(failure) => {
@@ -252,9 +273,19 @@ fn run(connect: Connect, inbox: &Receiver<Ask>, line: &HangUp, report: &dyn Fn(U
     if let Ok(stream) = client.hang_up_handle() {
         line.open(stream);
     }
+    if let Some(emergency) = emergency {
+        match client.emergency_line() {
+            Ok(helper) => emergency.open(helper),
+            Err(_) => emergency.close(),
+        }
+    }
     report(Update::Connected(client.engine().clone()));
     let mut planned: Option<Planned> = None;
     while let Ok(ask) = inbox.recv() {
+        if emergency.is_some_and(Emergency::fired) {
+            // The emergency's request is the session's last word.
+            continue;
+        }
         let served = serve(&mut client, ask, &mut planned, report);
         let hung_up = line.hung_up();
         match served {
@@ -274,6 +305,9 @@ fn run(connect: Connect, inbox: &Receiver<Ask>, line: &HangUp, report: &dyn Fn(U
         }
     }
     line.close();
+    if let Some(emergency) = emergency {
+        emergency.close();
+    }
     drop(client);
     if let Some(child) = pkexec.as_mut() {
         let _ = child.wait();

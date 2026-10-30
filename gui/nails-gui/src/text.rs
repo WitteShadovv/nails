@@ -150,6 +150,25 @@ pub const POWERING_OFF: &str = "Powering off in a few seconds.";
 pub const BACKEND_LEFT_OPEN: &str = "A device of the hidden volume could not be marked to close: \
      its key stays in memory until the computer is off.";
 
+/// The Emergency control at rest. Its labels are its markup's own
+/// (`ui/adw/emergency.slint`); the tests read them back against these.
+pub const EMERGENCY: &str = "Emergency";
+/// What the Emergency control's tooltip and description say.
+pub const EMERGENCY_HOW: &str = "Press and hold to end the hidden session now";
+/// While the pointer holds it and the bar fills.
+pub const EMERGENCY_KEEP_HOLDING: &str = "Keep Holding";
+/// Once the bar is full.
+pub const EMERGENCY_RELEASE: &str = "Release to End";
+/// After a press too short, for two seconds.
+pub const EMERGENCY_HOLD_HINT: &str = "Hold to End the Session";
+/// After the keyboard's first press.
+pub const EMERGENCY_AGAIN: &str = "Press Enter Again to End Now";
+/// Once the emergency fired: what `nails emergency` prints too.
+pub const EMERGENCY_NOW: &str = "Ending the hidden session now.";
+/// The way out that needs nothing of the window or of NAILS.
+pub const POWER_BUTTON_IF_STILL_ON: &str =
+    "If the computer does not turn off, hold the power button until it is off.";
+
 /// A hidden session runs.
 pub const HIDDEN_SESSION: &str = "Hidden Session";
 /// An activation runs.
