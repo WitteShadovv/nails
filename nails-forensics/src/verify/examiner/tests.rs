@@ -16,6 +16,15 @@ fn random(len: usize) -> Vec<u8> {
     bytes
 }
 
+/// What a container file holds: random bytes behind a start that no format
+/// the examiner knows begins with. A random start is gzip's two-byte magic in
+/// one file of 65536, and the audit then rightly takes it for no container.
+fn container(len: usize) -> Vec<u8> {
+    let mut bytes = random(len);
+    bytes[..8].copy_from_slice(b"\x01\x02\x03\x04\x05\x06\x07\x08");
+    bytes
+}
+
 fn write(root: &Path, rel: &str, bytes: &[u8]) {
     let path = root.join(rel.trim_start_matches('/'));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -89,7 +98,7 @@ fn every_seeded_setup_trace_is_reported_under_its_conclusion() {
     );
     write(r, "/var/lib/udisks2/drive.conf", b"[Drive]\n");
     write(r, "/usr/bin/veracrypt", b"#!/bin/sh\n");
-    write(r, "/home/alice/vault.hc", &random(2 << 20));
+    write(r, "/home/alice/vault.hc", &container(2 << 20));
     write(
         r,
         "/home/alice/.local/share/recently-used.xbel",
@@ -242,7 +251,7 @@ fn a_file_whose_size_is_not_a_multiple_of_512_is_no_candidate() {
 fn the_audit_changes_nothing_and_keeps_access_times() {
     let root = clean_root();
     let vault = root.path().join("home/alice/vault.hc");
-    std::fs::write(&vault, random(2 << 20)).unwrap();
+    std::fs::write(&vault, container(2 << 20)).unwrap();
     let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
     std::fs::File::open(&vault)
         .unwrap()
@@ -340,7 +349,7 @@ fn an_unreadable_disk_is_reported_as_not_checked() {
 fn verify_carries_the_audit_without_changing_its_status() {
     let root = clean_root();
     write(root.path(), "/var/lib/udisks2/drive.conf", b"[Drive]\n");
-    write(root.path(), "/home/alice/vault.hc", &random(2 << 20));
+    write(root.path(), "/home/alice/vault.hc", &container(2 << 20));
 
     let result = crate::Verifier::new(crate::RealFilesystem)
         .offline_under(root.path().to_path_buf())
