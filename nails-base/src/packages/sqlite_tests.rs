@@ -433,3 +433,273 @@ fn a_record_longer_than_its_values_is_refused() {
         Err(Error::Malformed("a record longer than its values".into()))
     );
 }
+
+/// `value` as a varint of SQLite, in `width` bytes (two at most here).
+fn varint_of(value: usize, width: usize) -> Vec<u8> {
+    match width {
+        1 => vec![u8::try_from(value).unwrap()],
+        2 => {
+            assert!(value < 1 << 14);
+            vec![0x80 | (value >> 7) as u8, (value & 0x7f) as u8]
+        }
+        _ => unreachable!("one or two bytes"),
+    }
+}
+
+/// The record of one blob of `len` bytes (`fill`), its header in three bytes.
+fn blob_record(len: usize, fill: u8) -> Vec<u8> {
+    let mut record = vec![3];
+    record.extend(varint_of(2 * len + 12, 2));
+    record.extend(std::iter::repeat_n(fill, len));
+    record
+}
+
+/// A table leaf cell of row `rowid` with `record`, its size in two bytes.
+fn cell(rowid: u8, record: &[u8]) -> Vec<u8> {
+    let mut cell = varint_of(record.len(), 2);
+    cell.push(rowid);
+    cell.extend(record);
+    cell
+}
+
+/// A table leaf page of `page_size` bytes with the cell pointers `pointers`
+/// and the bytes of each `(offset, bytes)` of `content` where it says.
+fn leaf(page_size: usize, pointers: &[usize], content: &[(usize, Vec<u8>)]) -> Vec<u8> {
+    let mut page = vec![0; page_size];
+    page[0] = 0x0d;
+    page[3..5].copy_from_slice(&u16::try_from(pointers.len()).unwrap().to_be_bytes());
+    for (i, at) in pointers.iter().enumerate() {
+        page[8 + 2 * i..10 + 2 * i].copy_from_slice(&u16::try_from(*at).unwrap().to_be_bytes());
+    }
+    for (at, bytes) in content {
+        page[*at..*at + bytes.len()].copy_from_slice(bytes);
+    }
+    page
+}
+
+/// A database of two pages of `page_size` bytes, `reserved` of each kept
+/// back: page 1 names the table `t` at page 2, and page 2 is `root`.
+fn database(page_size: usize, reserved: u8, root: Vec<u8>) -> Vec<u8> {
+    let mut file = vec![0; page_size];
+    file[..16].copy_from_slice(MAGIC);
+    let raw = if page_size == 65536 { 1 } else { page_size };
+    file[16..18].copy_from_slice(&u16::try_from(raw).unwrap().to_be_bytes());
+    file[20] = reserved;
+    file[56..60].copy_from_slice(&1u32.to_be_bytes());
+    // The schema's row: ("table", "t", "t", 2, "CREATE TABLE t(x)").
+    let sql = b"CREATE TABLE t(x)";
+    let mut record = vec![6, 23, 15, 15, 1, u8::try_from(2 * sql.len() + 13).unwrap()];
+    for text in [&b"table"[..], b"t", b"t"] {
+        record.extend(text);
+    }
+    record.push(2);
+    record.extend(sql);
+    let mut schema = vec![u8::try_from(record.len()).unwrap(), 1];
+    schema.extend(record);
+    let at = page_size - usize::from(reserved) - schema.len();
+    file[at..at + schema.len()].copy_from_slice(&schema);
+    file[100] = 0x0d;
+    file[103..105].copy_from_slice(&1u16.to_be_bytes());
+    file[108..110].copy_from_slice(&u16::try_from(at).unwrap().to_be_bytes());
+    assert_eq!(root.len(), page_size);
+    file.extend(root);
+    file
+}
+
+/// The rows of `t` in `file`.
+fn rows_of(file: &[u8]) -> Result<Vec<Row>> {
+    rows(file, None, "t")
+}
+
+#[test]
+fn a_page_whose_cell_pointers_repeat_is_refused() {
+    let one = cell(1, &blob_record(100, 7));
+    let page = |pointers: &[usize]| database(4096, 0, leaf(4096, pointers, &[(3500, one.clone())]));
+    let read = rows_of(&page(&[3500])).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].values, [Value::Blob(vec![7; 100])]);
+    // One cell named by a thousand pointers would be read as a thousand
+    // rows.
+    for pointers in [vec![3500, 3500], vec![3500; 1000]] {
+        assert_eq!(
+            rows_of(&page(&pointers)).unwrap_err(),
+            Error::Malformed("two cell pointers of a page point at one cell".into())
+        );
+    }
+}
+
+#[test]
+fn a_cell_pointer_outside_the_cells_of_its_page_is_refused() {
+    let one = cell(1, &blob_record(100, 7));
+    let outside = |pointers: &[usize], reserved: u8| {
+        let file = database(4096, reserved, leaf(4096, pointers, &[(2000, one.clone())]));
+        let error = rows_of(&file).unwrap_err();
+        assert!(
+            matches!(&error, Error::Malformed(why) if why.ends_with("outside the cells of its page")),
+            "{pointers:?}: {error}"
+        );
+    };
+    // Into the page's header, into its pointer array, past its end, and
+    // into the bytes it reserves.
+    outside(&[4], 0);
+    outside(&[2000, 10], 0);
+    outside(&[4096], 0);
+    outside(&[2000, 4090], 32);
+    // Right after the pointer array is where the cells may start.
+    let first = database(4096, 0, leaf(4096, &[10], &[(10, one.clone())]));
+    assert_eq!(rows_of(&first).unwrap().len(), 1);
+}
+
+#[test]
+fn cells_that_hold_more_bytes_than_the_file_are_refused() {
+    // Each cell starts in the blob of the one before and ends where it ends,
+    // so the cells overlap: 300 of them on one page of 4096 bytes hold
+    // 750000 bytes.
+    let (cells, tail) = (300, 1600);
+    let first = 8 + 2 * cells;
+    let end = first + 6 * cells + tail;
+    let pointers: Vec<usize> = (0..cells).map(|k| first + 6 * k).collect();
+    let mut bytes = Vec::new();
+    for k in 0..cells {
+        let blob = end - (first + 6 * k + 6);
+        bytes.extend(varint_of(3 + blob, 2));
+        bytes.push(1);
+        bytes.push(3);
+        bytes.extend(varint_of(2 * blob + 12, 2));
+    }
+    bytes.extend(vec![9; tail]);
+    let nested =
+        |pointers: &[usize]| database(4096, 0, leaf(4096, pointers, &[(first, bytes.clone())]));
+    assert_eq!(
+        rows_of(&nested(&pointers)).unwrap_err(),
+        Error::Malformed("cells that hold more bytes than the file and its log".into())
+    );
+    // Each cell alone is one a table can hold.
+    let alone = rows_of(&nested(&pointers[..1])).unwrap();
+    assert_eq!(alone.len(), 1);
+    let read = rows_of(&nested(&pointers[..2]));
+    assert_eq!(read.unwrap().len(), 2, "two of them fit in 8192 bytes");
+}
+
+#[test]
+fn a_payload_larger_than_the_limit_is_refused_before_it_is_read() {
+    let database = Database::open(&TREE, None).unwrap().with_payload_limit(100);
+    let root = database.table_root("t").unwrap().unwrap();
+    let error = database.rows(root).unwrap_err();
+    assert!(
+        matches!(&error, Error::Malformed(why) if why.ends_with("more than the 100 a row may hold")),
+        "{error}"
+    );
+    // The table's largest row fits a limit of its size.
+    let largest = rows(TREE, None, "t")
+        .unwrap()
+        .iter()
+        .map(|row| match &row.values[1] {
+            Value::Blob(blob) => blob.len(),
+            other => panic!("{other:?}"),
+        })
+        .max()
+        .unwrap();
+    let database = Database::open(&TREE, None)
+        .unwrap()
+        .with_payload_limit(largest + 4);
+    assert_eq!(database.rows(root).unwrap().len(), 120);
+}
+
+#[test]
+fn a_record_of_more_values_than_a_table_has_columns_is_refused() {
+    // A header of `nulls` NULL values after its own size, in three bytes.
+    let record = |nulls: usize| {
+        let size = nulls + 3;
+        let mut record = vec![0x80 | (size >> 14) as u8, 0x80 | ((size >> 7) & 0x7f) as u8];
+        record.push((size & 0x7f) as u8);
+        record.extend(vec![0; nulls]);
+        record
+    };
+    assert_eq!(super::record(&record(32767)).unwrap().len(), 32767);
+    assert_eq!(
+        super::record(&record(32768)),
+        Err(Error::Malformed(
+            "a record of more values than a table has columns".into()
+        ))
+    );
+}
+
+#[test]
+fn a_record_that_ends_in_a_blob_or_a_text_hands_its_bytes_over() {
+    assert_eq!(
+        owned_record(vec![3, 0, 17, b'h', b'i']).unwrap(),
+        [Value::Null, Value::Text("hi".into())]
+    );
+    assert_eq!(
+        owned_record(vec![3, 16, 1, 0xab, 0xcd, 5]).unwrap(),
+        [Value::Blob(vec![0xab, 0xcd]), Value::Integer(5)]
+    );
+    assert_eq!(
+        owned_record(vec![2, 15, 0xff]),
+        Err(Error::Malformed("text that is not UTF-8".into()))
+    );
+}
+
+#[test]
+fn the_rows_are_handed_out_until_the_reader_stops() {
+    let database = Database::open(&TREE, None).unwrap();
+    let root = database.table_root("t").unwrap().unwrap();
+    let mut seen = Vec::new();
+    let stopped = database
+        .each_row(root, |row| {
+            seen.push(row.rowid);
+            if row.rowid == 5 {
+                ControlFlow::Break("stopped")
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .unwrap();
+    assert_eq!(stopped, Some("stopped"));
+    assert_eq!(seen, [1, 2, 3, 4, 5]);
+    let all = database
+        .each_row(root, |_| ControlFlow::<()>::Continue(()))
+        .unwrap();
+    assert_eq!(all, None);
+}
+
+/// An interior root page of 4096 bytes whose ten cells name ten children and
+/// whose right child is an eleventh, none of which a database of two pages
+/// holds.
+fn interior_root() -> Vec<u8> {
+    let mut page = vec![0; 4096];
+    page[0] = 0x05;
+    page[3..5].copy_from_slice(&10u16.to_be_bytes());
+    page[8..12].copy_from_slice(&13u32.to_be_bytes());
+    for i in 0..10 {
+        let at = 3000 + 5 * i;
+        page[12 + 2 * i..14 + 2 * i].copy_from_slice(&u16::try_from(at).unwrap().to_be_bytes());
+        page[at..at + 4].copy_from_slice(&(3 + i as u32).to_be_bytes());
+        page[at + 4] = 1 + i as u8;
+    }
+    page[5..7].copy_from_slice(&3000u16.to_be_bytes());
+    page
+}
+
+#[test]
+fn a_b_tree_that_names_more_pages_than_the_database_holds_is_refused() {
+    // The walk would hold eleven pages waiting in a database of two, which
+    // page after page of such cells would grow past the size of the file.
+    let refused = Error::Malformed("a b-tree of more pages than the database holds".into());
+    let file = database(4096, 0, interior_root());
+    assert_eq!(rows_of(&file).unwrap_err(), refused);
+    // A log whose last transaction says the database has 4294967295 pages
+    // holds one of them: the walk is bound by the pages that exist.
+    let claim = Frame {
+        number: 1,
+        commit: u32::MAX,
+        salts: SALTS,
+        page: file[..4096].to_vec(),
+    };
+    let log = log(LE, VERSION, 4096, SALTS, &[claim]);
+    let database = Database::open(&file, Some(&log as &dyn Pages)).unwrap();
+    assert_eq!(database.pages, u32::MAX);
+    assert_eq!(database.held, 3);
+    assert_eq!(rows(&file, Some(&log[..]), "t").unwrap_err(), refused);
+}
