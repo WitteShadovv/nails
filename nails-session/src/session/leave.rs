@@ -248,7 +248,8 @@ pub enum NetworkTool {
     /// deletes none.
     Nft,
     /// `iw`, which deletes the Wi-Fi interfaces the session added on one of
-    /// the decoy's radios (a monitor or access point interface).
+    /// the decoy's radios (a monitor or access point interface, or the one iwd
+    /// makes in place of the decoy's by default).
     Iw,
 }
 
