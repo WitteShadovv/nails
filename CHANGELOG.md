@@ -442,21 +442,24 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
-- Activation kills the decoy's interactive shells the newest first. A login shell that leads a
-  console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the console
-  as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at the
-  console's prompt) ends with it: its terminal windows close, and each shell in them gets SIGHUP,
-  on which bash writes its history. A root shell that `sudo -i` opened at the prompt gets the
-  SIGHUP from `sudo`, and a shell started at another shell's prompt (`bash`, `su`, `nix-shell`) as
-  that prompt's foreground job. Activation killed the other shells in the order of their process
-  IDs and the ones it was started from last, so such a shell, the one the activation was typed into
-  among them, could write its history to the decoy disk before its own SIGKILL came, the
-  activation command included. Every interactive shell is now found first and then killed before
-  each one older than it, back to back: what the kernel sends as a shell dies reaches only shells
-  started after it, and those have their SIGKILL by then. A terminal multiplexer that ends a
-  session when its last client goes (tmux's `destroy-unattached` or `exit-unattached`, screen's
-  `autodetach off`, zellij's `on_force_close "quit"`) can still hang up an older shell in it
-  itself, and there the order only narrows the race: keep those options off on the decoy.
+- Activation and `emergency` kill the interactive shells the newest first. A login shell that
+  leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
+  console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at
+  the console's prompt) ends with it: its terminal windows close, and each shell in them gets
+  SIGHUP, on which bash writes its history. A root shell that `sudo -i` opened at the prompt gets
+  the SIGHUP from `sudo`, and a shell started at another shell's prompt (`bash`, `su`,
+  `nix-shell`) as that prompt's foreground job. Both killed the other shells in the order of their
+  process IDs and the ones they were started from last, so such a shell, the one the command was
+  typed into among them, could write its history to the decoy disk before its own SIGKILL came,
+  the activation or emergency command included. Every interactive shell is now found first and
+  then killed before each one older than it, back to back: what the kernel sends as a shell dies
+  reaches only shells started after it, and those have their SIGKILL by then. A terminal
+  multiplexer that ends a session when its last client goes (tmux's `destroy-unattached` or
+  `exit-unattached`, screen's `autodetach off`, zellij's `on_force_close "quit"`) can still hang
+  up an older shell in it itself, and there the order only narrows the race: keep those options
+  off on the decoy. The emergency kills the shells of the hidden session the same way, though a
+  history written there lands on the hidden volume, and still spares only its own command chain.
+  An emergency that leaves the decoy running kills no shell, as before.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

@@ -54,8 +54,8 @@ NAILS does at runtime is:
    interactive shells, yours included, the newest first, so none of them writes
    the activation command to a history file on the decoy (see
    [the flush race](#the-flush-race), and its exception for terminal
-   multiplexers). `nails emergency` kills them too before
-   it starts the way back or the power-off.
+   multiplexers). `nails emergency` kills them the same way before it starts
+   the way back or the power-off.
 3. **Make no write to decoy history.** NAILS never edits or reads a history file
    on the decoy: an access would itself leave a fresh timestamp. Decoy-history
    hygiene is decoy configuration and the operator's pre-activation routine.
@@ -123,6 +123,12 @@ write its history before its own `SIGKILL` came. What the kernel sends as a
 shell dies reaches only processes started after it, and the windows and shells
 those end in turn started after it too, so when a shell dies, those shells have
 their `SIGKILL` already, and a shell sent `SIGKILL` runs no handler any more.
+An emergency that returns from the hidden session, powers off or reboots kills
+the shells in the same order, so one typed into such a shell does not reach the
+decoy's history either. A plain `nails emergency` that leaves the decoy
+running kills no shell: the shell you typed it into writes it to its history
+file when that shell exits, so type it, as `nails recover`, in a shell with
+history off.
 
 A terminal multiplexer that ends a session when its last client goes is the
 exception: tmux with `destroy-unattached` or `exit-unattached`, screen with
