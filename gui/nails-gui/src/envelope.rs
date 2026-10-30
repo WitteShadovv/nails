@@ -244,6 +244,33 @@ pub struct BackendDevice {
     pub state: String,
 }
 
+/// The data of `deactivate` the window shows
+/// (`docs/schemas/deactivate.schema.json`): it comes only once the switch is
+/// enqueued.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DeactivateData {
+    /// Which switch was enqueued.
+    pub status: DeactivateStatus,
+    /// What the return does not put back, as a person reads it, and each
+    /// device of the hidden volume left open, by its name.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    /// The devices of the hidden volume that could not be marked to close,
+    /// which the window does not name.
+    #[serde(default)]
+    pub backend_left_open: Vec<String>,
+}
+
+/// Which switch a deactivation enqueued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeactivateStatus {
+    /// The soft-reboot back to the decoy.
+    ReturnRequested,
+    /// The power-off.
+    PoweroffRequested,
+}
+
 /// The tally of a readiness report.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Summary {

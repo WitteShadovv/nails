@@ -71,6 +71,8 @@ export component AppWindow inherits Window {
     // whether its confirming button still waits for it.
     in property <string> question-prompt;
     in property <bool> question-locked;
+    // The label of the question's second action, empty for none.
+    in property <string> question-alternative;
     in property <bool> follow-system-scheme: true;
 
     callback close-window();
@@ -85,6 +87,7 @@ export component AppWindow inherits Window {
     callback escape-pressed();
     callback allow-requested(index: int);
     callback question-answered(confirmed: bool);
+    callback question-alternative-chosen();
     callback question-typed(text: string);
 
     title: "Session";
@@ -261,8 +264,12 @@ export component AppWindow inherits Window {
         destructive: root.question-destructive;
         prompt: root.question-prompt;
         locked: root.question-locked;
+        alternative: root.question-alternative;
         answered(confirmed) => {
             root.question-answered(confirmed);
+        }
+        alternative-chosen => {
+            root.question-alternative-chosen();
         }
         typed(text) => {
             root.question-typed(text);

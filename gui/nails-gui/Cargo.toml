@@ -103,3 +103,7 @@ required-features = ["testing"]
 [[test]]
 name = "activation"
 required-features = ["testing"]
+
+[[test]]
+name = "deactivation"
+required-features = ["testing"]
