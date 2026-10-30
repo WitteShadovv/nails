@@ -141,6 +141,12 @@ mod kernel_tests {
                 pid_places: None,
                 now: nails_teardown::whole_root::plan::unix_now(),
                 mounts: read_mountinfo().unwrap(),
+                network: nails_teardown::whole_root::network::Places::system(self.run.path()),
+                network_tools: None,
+                power_off: transition::PowerOff {
+                    grace: std::time::Duration::ZERO,
+                    kernel: || false,
+                },
             }
         }
     }
