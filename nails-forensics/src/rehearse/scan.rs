@@ -161,24 +161,119 @@ impl ScanTarget {
 /// The type of an eCryptfs mount.
 const ECRYPTFS: &str = "ecryptfs";
 
-/// The mount whose filesystem holds `path`: of the mounts on the longest
-/// mount point `path` lies under, the last, an eCryptfs mount aside. `None`
-/// when no mount point holds it (a relative path).
-fn holding_mount<'a>(mounts: &'a [MountEntry], path: &Path) -> Option<&'a MountEntry> {
-    mounts
+/// The mount whose filesystem holds the folder of the eCryptfs mount at
+/// `index` in `mounts`: the one the folder lay on when it was mounted
+/// ([`folder_mount`]), which a mount made over the folder's path since does
+/// not change. A folder that lay in the view of another eCryptfs mount is
+/// stored, encrypted again, in that mount's folder, so it is held where that
+/// folder is. `None` when the table cannot place a folder on the way.
+fn holding_mount(mounts: &[MountEntry], mut index: usize) -> Option<&MountEntry> {
+    // Each round moves on to the eCryptfs mount the last folder lay in, so a
+    // table whose eCryptfs mounts lie in each other's views ends unplaced.
+    for _ in 0..mounts.len() {
+        index = folder_mount(mounts, index)?;
+        if mounts[index].fstype != ECRYPTFS {
+            return Some(&mounts[index]);
+        }
+    }
+    None
+}
+
+/// The index of the one mount of `mounts` that `matches`: `Some(None)` when
+/// none does, and `None` when two or more do.
+fn only(mounts: &[MountEntry], matches: impl Fn(&MountEntry) -> bool) -> Option<Option<usize>> {
+    let mut found = mounts
         .iter()
-        .filter(|entry| entry.fstype != ECRYPTFS && path.starts_with(&entry.mount_point))
-        .max_by_key(|entry| entry.mount_point.components().count())
+        .enumerate()
+        .filter(|(_, entry)| matches(entry))
+        .map(|(at, _)| at);
+    match (found.next(), found.next()) {
+        (first, None) => Some(first),
+        (_, Some(_)) => None,
+    }
+}
+
+/// The index of the mount the folder of the eCryptfs mount at `index` in
+/// `mounts` lay on when it was mounted.
+///
+/// The mount point's way down then ran through the mount it was made on (its
+/// parent) and that mount's parents, which no later mount changes, and the
+/// folder's path took the same way as far as the two paths agree. Below that,
+/// the folder's path reached only mounts made before the eCryptfs mount, which
+/// the table lists before it (mountinfo lists mounts in the order they were
+/// made), so a filesystem mounted over the folder's path later is passed by.
+/// `None` for a relative path, a parent the table does not list or lists
+/// twice, a parent chain that runs in a circle, and two mounts the way down
+/// could take at one place.
+fn folder_mount(mounts: &[MountEntry], index: usize) -> Option<usize> {
+    let entry = &mounts[index];
+    let folder = entry.source.as_path();
+    if !folder.is_absolute() {
+        return None;
+    }
+    let mut at = only(mounts, |mount| mount.mount_id == entry.parent_id)??;
+    // A parent chain is no longer than the table unless it runs in a circle.
+    for _ in 0..mounts.len() {
+        if folder.starts_with(&mounts[at].mount_point) {
+            break;
+        }
+        let parent = mounts[at].parent_id;
+        at = only(mounts, |mount| mount.mount_id == parent)??;
+    }
+    if !folder.starts_with(&mounts[at].mount_point) {
+        return None;
+    }
+    let shared = folder
+        .components()
+        .zip(entry.mount_point.components())
+        .take_while(|(own, point)| own == point)
+        .count();
+    let mut point: PathBuf = folder.components().take(shared).collect();
+    for component in folder.components().skip(shared) {
+        point.push(component);
+        at = top_made_before(mounts, index, at, &point)?;
+    }
+    Some(at)
+}
+
+/// The index of the mount on top at `point` of those stacked there on the
+/// mount at `at`, counting only the mounts listed before the one at `index`
+/// in `mounts`; `at` itself when none is. `None` when two of them sit on one
+/// mount there, or they run in a circle.
+fn top_made_before(
+    mounts: &[MountEntry],
+    index: usize,
+    mut at: usize,
+    point: &Path,
+) -> Option<usize> {
+    let made_before = &mounts[..index];
+    // Each step up goes to another of them unless they run in a circle, so
+    // one more round than there are of them reaches the top.
+    for _ in 0..=made_before.len() {
+        let below = mounts[at].mount_id;
+        let above = only(made_before, |mount| {
+            mount.parent_id == below && mount.mount_point == point && mount.mount_id != below
+        })?;
+        match above {
+            Some(above) => at = above,
+            None => return Some(at),
+        }
+    }
+    None
 }
 
 /// Where the eCryptfs mounts of `mounts` keep their encrypted files: the
-/// mounts whose filesystems their folders lie on, and the eCryptfs mounts
-/// whose folder lies on no mount the table shows.
+/// mounts whose filesystems their folders lie on ([`holding_mount`]), and the
+/// eCryptfs mounts whose folder the scan cannot place on a mount the table
+/// shows.
 fn ecryptfs_lowers(mounts: &[MountEntry]) -> (Vec<&MountEntry>, Vec<&MountEntry>) {
     let mut lowers = Vec::new();
     let mut unplaced = Vec::new();
-    for entry in mounts.iter().filter(|entry| entry.fstype == ECRYPTFS) {
-        match holding_mount(mounts, &entry.source) {
+    for (index, entry) in mounts.iter().enumerate() {
+        if entry.fstype != ECRYPTFS {
+            continue;
+        }
+        match holding_mount(mounts, index) {
             Some(lower) => lowers.push(lower),
             None => unplaced.push(entry),
         }
@@ -209,10 +304,11 @@ const ECRYPTFS_UNPLACED: &str = "an eCryptfs mount (an encrypted home or Private
      prove the canary absent";
 
 /// Why a clean scan of `device` cannot rule out the eCryptfs mounts whose
-/// folders lie on the filesystems of `lowers` or on no mount (`unplaced`): it
-/// holds one of those folders, read from sysfs through `fs`, or the scan
-/// cannot tell whether it does. `None` when there is no eCryptfs mount, or
-/// each one's folder lies on other devices.
+/// folders lie on the filesystems of `lowers`, or that the scan cannot place
+/// on a mount the table shows (`unplaced`): it holds one of those folders,
+/// read from sysfs through `fs`, or the scan cannot tell whether it does.
+/// `None` when there is no eCryptfs mount, or each one's folder lies on other
+/// devices.
 ///
 /// A device holds a folder when it is the block device of the filesystem the
 /// folder lies on, or lies below that device: a whole disk with it in a
@@ -220,9 +316,9 @@ const ECRYPTFS_UNPLACED: &str = "an eCryptfs mount (an encrypted home or Private
 /// array, the file a loop device reads (named as a regular file) or the device
 /// of the filesystem that holds that file. A folder on a filesystem with no
 /// block device of its own (a tmpfs, an overlay, a network share) or on no
-/// mount at all, and a path sysfs lists no block device for that is no
-/// regular file (a node outside `/dev`, a system without sysfs), leave the
-/// scan unable to tell.
+/// mount the scan can place it on, and a path sysfs lists no block device for
+/// that is no regular file (a node outside `/dev`, a system without sysfs),
+/// leave the scan unable to tell.
 fn ecryptfs_blind_spot<F: Filesystem>(
     fs: &F,
     device: &Path,
@@ -327,7 +423,8 @@ fn push_target(
 /// mount with no block device of its own (a zfs dataset, named by its pool)
 /// cannot be read raw: one whose filesystem is such a blind spot is listed
 /// unread with it, so a zfs decoy reports "not checked" too, and so is an
-/// eCryptfs mount whose folder lies on no mount the table shows.
+/// eCryptfs mount whose folder the scan cannot place on a mount the table
+/// shows.
 pub fn default_scan_targets(
     mounts: &[MountEntry],
     swaps: &str,
@@ -373,8 +470,8 @@ pub fn default_scan_targets(
                 probe: false,
                 fstype: Some(entry.fstype.clone()),
                 unread: Some(
-                    "an ecryptfs mount whose folder lies on no mount the table shows, so no \
-                     device the scan reads is known to hold it"
+                    "an ecryptfs mount whose folder the scan cannot place on a mount the table \
+                     shows, so no device the scan reads is known to hold it"
                         .to_string(),
                 ),
             });
