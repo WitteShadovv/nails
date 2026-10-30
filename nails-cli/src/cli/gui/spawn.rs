@@ -21,11 +21,14 @@
 //! signal. The window is besides dropped to the operator's account, with no
 //! supplementary groups, `no_new_privs`, no inherited descriptor above the
 //! standard three, and the zero core-dump limit the launcher set for itself
-//! at start (`main`).
+//! at start (`main`). Its command line is its name alone, `session`: every
+//! log that quotes it (dbus-daemon's line for a service the window's bus
+//! traffic starts, say) names no place.
 
 use std::ffi::OsString;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -83,6 +86,7 @@ pub(super) fn start(
 
     let mut child = Command::new(&window.program);
     child
+        .arg0(nails_core::session::window_launcher::APP_ID)
         .env_clear()
         .envs(window.vars)
         .current_dir("/")
