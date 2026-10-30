@@ -502,7 +502,7 @@ fn a_scan_reads_as_a_pass_only_when_the_engine_and_every_disk_say_so() {
     assert_eq!(page.groups[0].rows.len(), 6, "every blind spot of the scan");
     assert_eq!(
         page.groups[1].rows[0].message,
-        "/tmp/scratch/ext4.img: 8.4 MB read in full"
+        "/tmp/scratch/ext4.img: 8.4\u{a0}MB read in full"
     );
 
     // A disk not read in full makes it incomplete.
@@ -844,7 +844,7 @@ fn a_discard_with_nothing_to_delete_or_refused_says_so() {
     model.action();
     model.apply(answered(Kind::Plan, 4, fixture("discard-refused")));
     let page = model.page();
-    assert_eq!(page.heading, text::DISCARD);
+    assert_eq!(page.heading, text::NOT_DISCARDED);
     assert!(
         page.note
             .starts_with("/mnt/data is not a volume of its own"),

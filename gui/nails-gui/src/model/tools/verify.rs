@@ -161,7 +161,16 @@ fn result_page(data: &VerifyData) -> Page {
         heading: heading.to_string(),
         urgent,
         groups: [
-            group(text::GROUP_FOUND, found),
+            // Notes alone are no find: a page that found no known trace
+            // calls them what they are.
+            group(
+                if attention == 0 {
+                    text::GROUP_NOTED
+                } else {
+                    text::GROUP_FOUND
+                },
+                found,
+            ),
             group(text::GROUP_NOT_CHECKED_RUN, not_checked),
         ]
         .into_iter()
