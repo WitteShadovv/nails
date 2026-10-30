@@ -28,14 +28,23 @@
 //! `NAILS_REQUIRE_USERNS=1` turns into a failure, as it does a missing user
 //! namespace, a network namespace the run cannot create and a sysfs it cannot
 //! mount.
+//!
+//! One test runs the whole way back over a fake network state that it cannot
+//! put back, with a file bound over `/dev/console` in its own mount
+//! namespace: the power-off the way back then asks for writes nothing there.
 
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, skip};
+use nails_core::test_support::{Rerun, skip, skip_host, write_executable};
+use nails_teardown::mountinfo::parse_mountinfo;
 use nails_teardown::whole_root::network::{
     self, Kept, NetTools, NetworkRecord, Places, RestorePlan, apply_links,
 };
 use nails_teardown::whole_root::network_policy::Policy;
+use nails_teardown::whole_root::plan::{
+    Arm, DecoyRoot, Direction, PLAN_NAME, PLAN_VERSION, Plan, RootSide, Tools,
+};
 use nails_teardown::whole_root::tools;
+use nails_teardown::whole_root::transition::{self, Env, Outcome, PowerOff};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -406,6 +415,159 @@ fn the_way_back_deletes_the_firewall_tables_the_session_added() {
             keep(&output(&nft, &["-j", "list", "tables"])),
             keep(&before),
             "the decoy's table stays, with its handle"
+        );
+    });
+}
+
+/// A plan armed for the way back to an FHS decoy whose init is
+/// `/usr/lib/systemd/systemd`, with nothing else to put back.
+fn way_back_plan(hidden: &Path) -> Plan {
+    Plan {
+        version: PLAN_VERSION,
+        hidden_root: hidden.to_path_buf(),
+        hidden_dev: None,
+        accepted_decoy_storage: None,
+        upper: hidden.join("root/upper"),
+        work: hidden.join("root/work"),
+        owner: None,
+        decoy_root: DecoyRoot {
+            source: PathBuf::from("/dev/null"),
+            fstype: "ext4".to_string(),
+            data: None,
+        },
+        decoy: RootSide {
+            init: PathBuf::from("/usr/lib/systemd/systemd"),
+            system: None,
+        },
+        hidden: RootSide {
+            init: PathBuf::from("/usr/lib/systemd/systemd"),
+            system: None,
+        },
+        policy_mounts: Vec::new(),
+        masks: Vec::new(),
+        boot_masks: Vec::new(),
+        generator_masks: Vec::new(),
+        session_units: Vec::new(),
+        backend: Vec::new(),
+        tools: Tools::default(),
+        armed: Some(Arm::now(Direction::Leave)),
+        entered_at: Some(1),
+        run_noexec: false,
+        carried: Vec::new(),
+        decoy_mounts: Vec::new(),
+        read_only_disks: false,
+        failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
+        pids: nails_teardown::whole_root::fresh_pids::Record::default(),
+    }
+}
+
+/// Add link `name` with interface index `index` to the fake `/sys/class/net`
+/// at `class_net`, virtual as the kernel lists a link it made.
+fn add_fake_link(class_net: &Path, name: &str, index: u32) {
+    let dir = class_net.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
+}
+
+/// A way back that cannot put the network state back powers off, and says
+/// nothing on the screen while it does: a line there would tell anyone
+/// watching, on the emergency path above all, that a hidden session has just
+/// ended. The console is a file here, bound over `/dev/console` in this run's
+/// mount namespace, so whatever the way back writes to it is read back. The
+/// network state is a fake one below a temporary directory: the session's
+/// link stays there, as no `ip` is given to delete it.
+#[test]
+fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
+    let _ = Rerun::new(test_path!(
+        a_way_back_that_powers_off_writes_nothing_on_the_console
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        use nix::mount::{MsFlags, mount};
+        if !Path::new("/dev/console").exists() {
+            skip_host("this host has no /dev/console");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let console = dir.path().join("console");
+        std::fs::write(&console, "").unwrap();
+        if let Err(e) = mount(
+            Some(&console),
+            "/dev/console",
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        ) {
+            skip(&format!("cannot bind a file over /dev/console: {e}"));
+        }
+        // The way back, armed with the record entry took of the decoy's
+        // network: its loopback link and its hostname.
+        let run = dir.path().join("run");
+        let runtime = run.join("overlay-runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let nextroot = dir.path().join("nextroot");
+        std::fs::create_dir_all(nextroot.join("etc")).unwrap();
+        std::fs::write(nextroot.join("etc/os-release"), "ID=debian\n").unwrap();
+        std::fs::create_dir_all(nextroot.join("usr/lib/systemd")).unwrap();
+        write_executable(&nextroot.join("usr/lib/systemd/systemd"), "", 0o755);
+        way_back_plan(&dir.path().join("hidden"))
+            .write_atomic(&runtime.join(PLAN_NAME))
+            .unwrap();
+        let places = Places {
+            run: run.clone(),
+            sys_class_net: dir.path().join("sys/class/net"),
+            proc_hostname: dir.path().join("hostname"),
+            proc_sys: dir.path().join("proc/sys"),
+        };
+        std::fs::write(&places.proc_hostname, "decoy-host\n").unwrap();
+        add_fake_link(&places.sys_class_net, "lo", 1);
+        let record = NetworkRecord::capture(&places, &NetTools::default());
+        std::fs::write(runtime.join(network::RECORD_NAME), record.encode()).unwrap();
+        // The session's tunnel, still there when the way back runs.
+        add_fake_link(&places.sys_class_net, "wg0", 9);
+        let calls = dir.path().join("calls");
+        let systemctl = dir.path().join("systemctl");
+        write_executable(
+            &systemctl,
+            format!("#!/bin/sh\necho \"$*\" >> '{}'\n", calls.display()),
+            0o755,
+        );
+
+        let outcome = transition::run(&Env {
+            run: run.clone(),
+            nextroot: nextroot.clone(),
+            runtime_dir: runtime,
+            kmsg: run.join("no-kmsg"),
+            systemctl: Some(systemctl),
+            now: nails_teardown::whole_root::plan::unix_now(),
+            mounts: parse_mountinfo(&format!(
+                "40 1 0:40 / {} rw - overlay overlay rw\n",
+                nextroot.display()
+            )),
+            pid_places: None,
+            network: places,
+            network_tools: Some(NetTools::default()),
+            power_off: PowerOff {
+                grace: std::time::Duration::ZERO,
+                kernel: || false,
+            },
+        });
+
+        // The way back ran and asked for the power-off: the stand-in kernel
+        // refused it, so it returned after all, with the link that stayed.
+        let Outcome::Returned { network, .. } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(network.links, ["wg0"]);
+        let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+        assert!(
+            calls.lines().any(|call| call == "--force poweroff"),
+            "{calls}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&console).unwrap(),
+            "",
+            "the way back wrote on the console"
         );
     });
 }

@@ -32,8 +32,9 @@
 //!   When the network state cannot be put back (a device keeps the session's
 //!   MAC address, a link, rule or table of the session's cannot be deleted,
 //!   or a part cannot be read back: [`network::Kept::failed`]), it powers off
-//!   instead of returning, with one line on the console that says why: that
-//!   state lives only in the kernel, where a power-off erases it.
+//!   instead of returning: that state lives only in the kernel, where a
+//!   power-off erases it. Nothing on the screen says why, as a line there
+//!   would tell anyone watching that a hidden session has just ended.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -45,8 +46,7 @@
 //! the arming expired), this step detaches `/run/nextroot` instead of letting
 //! PID 1 enter it.
 //!
-//! It never writes to the decoy disk and never logs: its output goes nowhere
-//! (but for the console line before such a power-off),
+//! It never writes to the decoy disk and never logs: its output goes nowhere,
 //! and a name sent to `/dev/kmsg` would reach the decoy's ring buffer. The one
 //! thing it does keep is the reason a switch was refused ([`disarm`]), never on
 //! the decoy (see [`switch_refusal`]): a refused entry's on the encrypted hidden
@@ -594,14 +594,12 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     };
     // What the restore could not undo, or cannot tell it undid, lives only in
     // the kernel: a power-off erases it, a return hands it to the decoy. So
-    // power off instead. This returns only when neither PID 1 nor the kernel
-    // took the power-off, and the way back then returns after all.
-    let failed = network_kept.failed();
-    if !failed.is_empty() {
+    // power off instead, without a word on the screen, where it would be a
+    // tell. This returns only when neither PID 1 nor the kernel took the
+    // power-off, and the way back then returns after all.
+    if network_kept.failed() {
         let _ = power_off_instead(
-            Path::new(CONSOLE),
             env.systemctl.as_deref(),
-            &power_off_line(&failed),
             env.power_off.grace,
             env.power_off.kernel,
         );
@@ -665,39 +663,23 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
 }
 
-/// Where the way back says why it powers off instead of returning.
-pub const CONSOLE: &str = "/dev/console";
-
 /// How long the way back waits, once PID 1 took the power-off, before it asks
 /// the kernel itself: PID 1's final stage signals every process to end as soon
 /// as it starts, this one included.
 const POWER_OFF_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The one line the way back shows on the console when it powers off instead
-/// of returning: what of the session's network state it could not undo
-/// ([`network::Kept::failed`]), and why it powers off.
-pub fn power_off_line(failed: &[String]) -> String {
-    format!(
-        "The way back could not undo the session's network changes ({}): powering off instead \
-         of returning to the decoy, which clears them.\n",
-        failed.join(", ")
-    )
-}
-
-/// Power off instead of returning. Write `line` to `console`, then ask PID 1
-/// with `systemctl --force poweroff`, which goes straight to its final stage
-/// (as `systemd-poweroff.service` does), and wait `grace` for that stage to end
+/// Power off instead of returning. Ask PID 1 with `systemctl --force
+/// poweroff`, which goes straight to its final stage (as
+/// `systemd-poweroff.service` does), and wait `grace` for that stage to end
 /// this process. When there is no `systemctl`, PID 1 refuses, or this process
 /// still runs after `grace`, ask the kernel (`kernel`: sync, then power off).
-/// Returns only when neither powered off, with whether PID 1 had taken it.
+/// Nothing goes to the screen. Returns only when neither powered off, with
+/// whether PID 1 had taken it.
 fn power_off_instead(
-    console: &Path,
     systemctl: Option<&Path>,
-    line: &str,
     grace: std::time::Duration,
     kernel: impl FnOnce() -> bool,
 ) -> bool {
-    say_on_console(console, line);
     let taken = systemctl.is_some_and(|systemctl| {
         crate::whole_root::tools::run(
             systemctl,
@@ -710,20 +692,6 @@ fn power_off_instead(
     }
     let _ = kernel();
     taken
-}
-
-/// Write `line` to the console, best effort: it is a terminal, never a file
-/// on a disk, and it never becomes the controlling terminal of this process.
-fn say_on_console(console: &Path, line: &str) {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let opened = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
-        .open(console);
-    if let Ok(mut console) = opened {
-        let _ = console.write_all(line.as_bytes());
-    }
 }
 
 /// Forget the failures the session caused: every unit failed now that was
