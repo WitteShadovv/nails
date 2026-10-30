@@ -269,6 +269,9 @@ fn a_power_off_that_hangs_is_given_up_on_and_none_found_is_no_power_off() {
 fn the_systems_power_off_asks_logind_without_a_password_prompt() {
     let fallback = Fallback::system();
     assert_eq!(fallback.args, ["poweroff", "--no-ask-password"]);
+    // NixOS's first: the command line the VM test `session-window-emergency`
+    // runs as the operator.
+    assert_eq!(SYSTEMCTL[0], "/run/current-system/sw/bin/systemctl");
     assert_eq!(fallback.grace, HELPER_GRACE);
     assert_eq!(fallback.limit, POWER_OFF_LIMIT);
     if let Some(program) = &fallback.program {
