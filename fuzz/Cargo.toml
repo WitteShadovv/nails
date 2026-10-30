@@ -5,8 +5,8 @@
 # read text and data NAILS does not control: the kernel's and libmount's mount
 # tables, the kernel's compressed config, a decoy's fstab, crypttab, os-release,
 # package databases, the rows of its Nix store database the forensic oracle
-# reads, systemd, display-manager and NixOS configuration, udev's records, and
-# raw disks.
+# reads, systemd, display-manager, updatedb and NixOS configuration, udev's
+# records, and raw disks.
 # docs/testing-strategy.md says how to run a target; .clusterfuzzlite/ builds
 # them for CI.
 #
@@ -174,6 +174,13 @@ debug = 1
 [[bin]]
 name = "rpmdb"
 path = "fuzz_targets/rpmdb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "locate_database"
+path = "fuzz_targets/locate_database.rs"
 test = false
 doc = false
 bench = false

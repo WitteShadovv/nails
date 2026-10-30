@@ -141,10 +141,10 @@ pub fn build_registry<F: Filesystem>(
     use crate::preflight::{
         BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
         DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck,
-        InheritedAutostartCheck, MemoryWipeCheck, MountNamespaceCheck, NetworkToolsCheck,
-        NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck,
-        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck,
+        InheritedAutostartCheck, LocateDatabaseCheck, MemoryWipeCheck, MountNamespaceCheck,
+        NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck,
+        ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
@@ -329,6 +329,17 @@ pub fn build_registry<F: Filesystem>(
     // NixOS host.
     registry.add_check(Box::new(DecoyPersistenceCheck::new(
         inputs.options.allow_persistent_decoy,
+        config_layer.is_some(),
+    )));
+
+    // Refuses an updatedb (plocate, mlocate, NixOS's update-locatedb) that
+    // runs now, or that a timer or cron job schedules, and that does not skip
+    // the hidden volume: a run while the volume is mounted on the decoy writes
+    // the name of every file on it into the locate database on the decoy
+    // disk. No flag lifts this refusal. One NAILS cannot read the prune lists
+    // of, or one only a person starts, warns. Read-only.
+    registry.add_check(Box::new(LocateDatabaseCheck::new(
+        hidden_root.clone(),
         config_layer.is_some(),
     )));
 

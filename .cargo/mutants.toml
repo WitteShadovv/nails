@@ -50,6 +50,12 @@ exclude_re = [
     # with `#`, so it is neither SELINUX nor SELINUXTYPE.
     'nails-platform/src/platform/host_facts\.rs:\d+:\d+: replace \|\| with && in parse_selinux_config$',
 
+    # The locate-database check's unescape() joins the digits of a `\x`,
+    # `\u` or `\U` escape four bits at a time and those of an octal escape
+    # three at a time, each shifted clear of the next, so no two operands of
+    # a `|` share a bit and `^` in its place gives the same value.
+    'nails-core/src/preflight/checks/locate_database/exec\.rs:\d+:\d+: replace \| with \^ in unescape$',
+
     # --- Near-equivalent ---
 
     # `&` in place of the first `|` of read_config_bytes_noatime's flags
