@@ -1,10 +1,10 @@
 # What a guest that stopped answering waits on (nails_e2e.stall). When a switch
-# or a power-off never ends, the test driver presses Alt+ArrowUp and the SysRq
-# keys through QMP. PID 1 starts kbrequest.target on Alt+ArrowUp; systemd ships
-# no such unit, and here it starts a report of PID 1's job queue on the serial
-# console. Nothing of it loads before the key is pressed, so a passing run never
-# sees it, and neither unit has default dependencies, so the report also runs
-# while a startup or a shutdown waits.
+# or a power-off never ends, the test driver presses the SysRq keys and then
+# Alt+ArrowUp through QMP. PID 1 starts kbrequest.target on Alt+ArrowUp;
+# systemd ships no such unit, and here it starts a report of PID 1's job queue
+# on the serial console. Nothing of it loads before the key is pressed, so a
+# passing run never sees it, and neither unit has default dependencies, so the
+# report also runs while a startup or a shutdown waits.
 { pkgs, ... }:
 let
   # The serial console the test driver reads.

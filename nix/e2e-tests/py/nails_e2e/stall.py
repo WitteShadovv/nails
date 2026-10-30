@@ -2,8 +2,11 @@
 
 When a soft-reboot never brings the backdoor back, or a power-off never ends,
 the guest's shell is gone, and only its keyboard and its serial console are
-left. :func:`report` uses both, through QMP:
+left. :func:`report` uses both, through QMP, in this order:
 
+- The SysRq dumps of the blocked tasks and of every task tell whether PID 1
+  is idle or stuck in the kernel. The VMs boot with ``sysrq_always_enabled``.
+  They come first, while nothing has touched PID 1 yet.
 - Alt+ArrowUp makes PID 1 start ``kbrequest.target``. The suite's VMs
   (``nix/e2e-tests/lib/vm-config.nix``) hang a unit on it that prints PID 1's
   job queue, each job with the jobs it waits for and the jobs it holds up,
@@ -12,11 +15,13 @@ left. :func:`report` uses both, through QMP:
   of it loads or runs before the key is pressed, so a passing run never sees
   it, and neither unit has default dependencies, so it also runs while a
   startup or a shutdown waits.
-- The SysRq dumps of the blocked tasks and of every task tell whether PID 1
-  is idle or stuck in the kernel. The VMs boot with ``sysrq_always_enabled``.
 
 A job that waits with no job left to wait for is how a lost ordering shows:
-PID 1 never runs it again.
+PID 1 never runs it again. A PID 1 that sleeps in ``epoll_wait`` with no task
+blocked, and moves on as soon as the key is pressed, missed a wakeup instead:
+the key reaches it as SIGWINCH, which wakes its event loop, so the stall ends
+there and the job queue shows the switch moving again. The dumps taken before
+the key are what show such a stall.
 """
 
 from __future__ import annotations
@@ -112,11 +117,19 @@ def waiting_for_nothing(lines: list[str]) -> list[str]:
 
 
 def report(machine: Machine, label: str) -> str:
-    """Make the guest print what PID 1 waits on and the SysRq dumps, log all
-    of it, and return one line for the failure message. Never raises: the
-    stall it explains matters more than a report that went wrong."""
+    """Make the guest print the SysRq dumps, then what PID 1 waits on, log all
+    of it, and return one line for the failure message. The dumps come first,
+    since the key press that asks PID 1 for its jobs also wakes it. Never
+    raises: the stall it explains matters more than a report that went
+    wrong."""
     start = len(machine.full_console_log)
     problems = []
+    for key in SYSRQ_DUMPS:
+        try:
+            press(machine, "alt", "sysrq", key)
+            _wait_until_quiet(machine, QUIET_S, DUMP_TIMEOUT_S)
+        except Exception as e:  # never hide the stall behind a broken report
+            problems.append(f"SysRq {key} failed: {e}")
     try:
         press(machine, *REPORT_KEYS)
         _wait(
@@ -125,14 +138,8 @@ def report(machine: Machine, label: str) -> str:
             lambda lines: any(REPORT_END in line for line in lines),
             REPORT_TIMEOUT_S,
         )
-    except Exception as e:  # never hide the stall behind a broken report
+    except Exception as e:  # as above
         problems.append(f"Alt+ArrowUp failed: {e}")
-    for key in SYSRQ_DUMPS:
-        try:
-            press(machine, "alt", "sysrq", key)
-            _wait_until_quiet(machine, QUIET_S, DUMP_TIMEOUT_S)
-        except Exception as e:  # as above
-            problems.append(f"SysRq {key} failed: {e}")
     lines = machine.full_console_log[start:]
     machine.log(
         f"{label}: what PID 1 waits on, and the SysRq dumps:\n" + "\n".join(lines)
