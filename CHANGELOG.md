@@ -92,8 +92,9 @@ of this changelog for that version becomes the release notes word for word, and
   `/usr/share/applications` and `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into
   the operator's `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and
   later). Every path is resolved inside the hidden root, so a decoy directory that is an absolute
-  link cannot take the write onto the decoy disk, and one that leads into the Nix store is refused.
-  A file that cannot be written is named on one line and the activation goes on.
+  link cannot take the write onto the decoy disk, and one that leads into the Nix store is refused,
+  each directory checked right before anything is made in it. A file that cannot be written is
+  named on one line and the activation goes on.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

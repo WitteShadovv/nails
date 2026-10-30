@@ -557,6 +557,20 @@ pub fn create_dir_all_in_root(
     path: &Path,
     made: &mut dyn FnMut(BorrowedFd<'_>, &OsStr) -> io::Result<()>,
 ) -> io::Result<OwnedFd> {
+    create_dir_all_in_root_guarded(root, path, &mut |_| Ok(()), made)
+}
+
+/// [`create_dir_all_in_root`], calling `before_make` with the directory a
+/// missing one is about to be made in, right before it is made: an error
+/// there makes nothing more. It is handed the very descriptor the directory
+/// is then made through, so a check of it cannot be raced by a part of the
+/// path swapped in after an earlier look.
+pub fn create_dir_all_in_root_guarded(
+    root: &Path,
+    path: &Path,
+    before_make: &mut dyn FnMut(&OwnedFd) -> io::Result<()>,
+    made: &mut dyn FnMut(BorrowedFd<'_>, &OsStr) -> io::Result<()>,
+) -> io::Result<OwnedFd> {
     let mut names = Vec::new();
     for component in path.components() {
         match component {
@@ -577,6 +591,7 @@ pub fn create_dir_all_in_root(
         dir = match open_dir_in_root(root, &current) {
             Ok(fd) => fd,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                before_make(&dir)?;
                 rustix::fs::mkdirat(&dir, name, Mode::from_raw_mode(0o777)).map_err(to_io)?;
                 made(dir.as_fd(), name)?;
                 open_dir_in_root(root, &current)?
