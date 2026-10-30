@@ -140,6 +140,17 @@ fn a_line_longer_than_the_limit_is_refused_before_it_is_parsed() {
     assert!(decode(&fits).is_ok());
 }
 
+/// The limit the changelog and the docs state: 16 KiB, a line of exactly that
+/// many bytes read, one byte more refused before it is parsed.
+#[test]
+fn the_line_limit_is_sixteen_kib() {
+    assert_eq!(MAX_LINE_BYTES, 16_384);
+    let request = r#"{"v":1,"id":1,"op":"status"}"#;
+    let at_the_limit = format!("{request}{}", " ".repeat(16_384 - request.len()));
+    assert!(decode(&at_the_limit).is_ok());
+    assert_eq!(code(&format!("{at_the_limit} ")), ErrorCode::TooLong);
+}
+
 #[test]
 fn a_newline_inside_the_line_is_refused() {
     assert_eq!(
