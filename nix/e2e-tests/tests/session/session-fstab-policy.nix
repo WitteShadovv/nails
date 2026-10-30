@@ -32,6 +32,11 @@
 #     rather than skipped: its mount requires that of its noauto parent
 #     /srv/pa, which a skip would mount. Starting the target fails, and the
 #     parent disk stays unmounted and unchanged;
+#   - a bind of a directory on a noauto disk at /srv/bsrc to /srv/bdata,
+#     which nails-bind.target requires, is masked rather than skipped:
+#     systemd has a bind mount require the mounts for its source, so a skip
+#     would mount the noauto disk. Starting the target fails, and that disk
+#     stays unmounted and unchanged;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
@@ -112,6 +117,10 @@ in
           size = 64;
           driveConfig.deviceExtraOpts.serial = "pc";
         }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "bsrc";
+        }
       ];
       boot.kernelModules = [ "zram" ];
       boot.supportedFilesystems = [ "vfat" ];
@@ -163,6 +172,11 @@ in
           [Unit]
           Description=The child disk below a noauto one
         '';
+        # Likewise: there it requires the bind of a directory on a noauto disk.
+        "nails-bind.target".text = ''
+          [Unit]
+          Description=The bind of a directory on a noauto disk
+        '';
       };
     };
 
@@ -191,6 +205,8 @@ in
     PARENT = "/dev/disk/by-id/virtio-pa"
     CHILD = "/dev/disk/by-id/virtio-pc"
     CHILD_UNIT = "srv-pa-child.mount"
+    BIND_SOURCE = "/dev/disk/by-id/virtio-bsrc"
+    BIND_UNIT = "srv-bdata.mount"
     NOT_READY_RULE = "/run/udev/rules.d/99-spare-not-ready.rules"
     BLK_UNIT = "blk-availability.service"
     BLKDEACTIVATE = "/bin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
@@ -248,6 +264,10 @@ in
 
     def parent_hash():
         return machine.succeed(f"sha256sum {PARENT}").split()[0]
+
+
+    def bind_source_hash():
+        return machine.succeed(f"sha256sum {BIND_SOURCE}").split()[0]
 
 
     machine.start()
@@ -315,6 +335,19 @@ in
     )
     machine.fail("mountpoint -q /srv/pa")
     parent_before = parent_hash()
+    # A noauto disk at /srv/bsrc, and a bind of a directory on it that
+    # nails-bind.target requires. systemd has a bind mount require the mounts
+    # for its source, so the bind's skip would mount the noauto disk before its
+    # condition is tested.
+    machine.succeed(
+        f"mkfs.ext4 -q {BIND_SOURCE} && "
+        f"echo '{BIND_SOURCE} /srv/bsrc ext4 noauto 0 2' >> /etc/fstab && "
+        "echo '/srv/bsrc/data /srv/bdata none bind,x-systemd.required-by=nails-bind.target 0 0' "
+        ">> /etc/fstab && systemctl daemon-reload && "
+        f"test -L /run/systemd/generator/nails-bind.target.requires/{BIND_UNIT}"
+    )
+    machine.fail("mountpoint -q /srv/bsrc")
+    bind_source_before = bind_source_hash()
 
     with subtest("blk-availability's stop unmounts the decoy's device-mapper filesystems"):
         # Started at boot, so every soft-reboot runs its stop. Stopping it here
@@ -353,6 +386,8 @@ in
         assert "/srv/later: masked" in out, out
         assert f"{CHILD_UNIT} is masked rather than skipped" in out, out
         assert "srv-pa.mount (the mount of a parent directory)" in out, out
+        assert f"{BIND_UNIT} is masked rather than skipped" in out, out
+        assert "srv-bsrc.mount (the source" in out, out
 
     with subtest("check masks a required disk whose device unit is not active"):
         # udev marks the disk not ready: its node is there, but systemd's
@@ -427,6 +462,16 @@ in
         machine.fail("mountpoint -q /srv/pa")
         assert parent_hash() == parent_before, "the hidden session changed the noauto parent disk"
 
+    with subtest("a skip that would mount the noauto disk of its bind source is masked instead"):
+        state = machine.succeed(f"systemctl show -p LoadState --value '{BIND_UNIT}'").strip()
+        assert state == "masked", f"{BIND_UNIT}: {state}"
+        machine.fail("systemctl start nails-bind.target")
+        machine.fail("mountpoint -q /srv/bsrc")
+        machine.fail("mountpoint -q /srv/bdata")
+        assert bind_source_hash() == bind_source_before, (
+            "the hidden session changed the noauto disk of the bind source"
+        )
+
     with subtest("decoy swap is masked and never active"):
         state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
         assert state == "masked", f"{SWAP_UNIT}: {state}"
@@ -465,6 +510,11 @@ in
             "action": "masked",
             "reason": "pulls_in_mount",
         } in required, required
+        assert {
+            "unit": BIND_UNIT,
+            "action": "masked",
+            "reason": "pulls_in_mount",
+        } in required, required
         out = machine.succeed(f"nails --config {CONFIG} status")
         assert f"{SPARE_UNIT}: skipped, as a boot target requires it" in out, out
 
@@ -500,6 +550,8 @@ in
         assert state != "masked", f"the noauto disk's mask leaked into the decoy: {state}"
         state = machine.succeed(f"systemctl show -p LoadState --value '{CHILD_UNIT}'").strip()
         assert state != "masked", f"the child disk's mask leaked into the decoy: {state}"
+        state = machine.succeed(f"systemctl show -p LoadState --value '{BIND_UNIT}'").strip()
+        assert state != "masked", f"the bind's mask leaked into the decoy: {state}"
         source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
         assert source == LV, f"/srv/files is {source!r} after the way back"
         assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
