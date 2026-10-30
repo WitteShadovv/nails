@@ -209,10 +209,10 @@ volatile can count as persistent. Run them with sudo.
   whole terminal sessions, keystrokes and output included. Both write to the
   decoy disk, outside the journal.
 - **sssd** — sssd in use on the decoy: one of its units or daemons running,
-  its Kerberos ticket cache listening on its socket, or one of its state files
-  under `/var/lib/sss`. NAILS is not tested on a decoy joined to a domain,
-  whose domain controller records the hidden session's logins; see
-  [Decoys joined to a domain](#decoys-joined-to-a-domain).
+  its Kerberos ticket cache listening on its socket, or one of nine state
+  files it writes under `/var/lib/sss`. NAILS is not tested on a decoy joined
+  to a domain, whose domain controller records the hidden session's logins;
+  see [Decoys joined to a domain](#decoys-joined-to-a-domain).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
@@ -608,18 +608,24 @@ is in use on the decoy:
   the socket counts as its and not as sssd's. A socket file that nothing
   listens on, which a stopped socket leaves until the next boot, does not
   count;
-- `/var/lib/sss` holds one of the files sssd writes when it runs: its
-  configuration databases, the memory caches of its accounts, the database of
-  its Kerberos ticket cache or the sockets of its responders. Only root can see
-  some of them, so run `nails check` with sudo to see them all.
+- `/var/lib/sss` holds one of nine files sssd writes when it runs: its two
+  configuration databases (`db/config.ldb`, `db/config_kcm.ldb`), the four
+  memory caches of its NSS responder (`mc/passwd`, `mc/group`,
+  `mc/initgroups`, `mc/sid`), the database of its Kerberos ticket cache
+  (`secrets/secrets.ldb`) and the sockets of its NSS and PAM responders
+  (`pipes/nss`, `pipes/pam`). Only root can see some of them, so run
+  `nails check` with sudo to see them all.
 
 The probes read file metadata and `/proc`, `/run` and `/sys`, never a file or
-a directory listing on the decoy disk, so no access time there changes. Fedora
-44 Cloud enables `sssd-kcm.socket` by default, so a decoy made from it warns
-even when it is not joined to a domain.
+a directory listing on the decoy disk, so no access time there changes. That is
+also why the check looks for those nine files by name: sssd keeps more under
+`/var/lib/sss`, such as the cache of each domain, named after the domain, and
+finding those would take a listing of its directories. Fedora 44 Cloud enables
+`sssd-kcm.socket` by default, so a decoy made from it warns even when it is not
+joined to a domain.
 
 Use a decoy that is not joined to a domain. Where nothing on the decoy needs
-sssd, disable it, then delete the files it leaves behind:
+sssd, disable it, then delete the nine state files the warning looks for:
 
 ```bash
 sudo systemctl disable --now sssd.service
@@ -638,16 +644,19 @@ units, so `systemctl disable` cannot change them: set `services.sssd.enable`
 and `services.sssd.kcm` to `false` and run `nixos-rebuild switch` in place of
 the two `systemctl` commands.
 
-Stopping sssd leaves these files in place until they are deleted, and each of
-them keeps the warning, so the warning names the ones it finds and the `rm`
-that deletes them. The socket file stays in `/run` until the next boot, but
-once `sssd-kcm.socket` is stopped nothing listens on it and it no longer
-counts, so nothing here deletes it. Deleting the files once sssd is stopped is
-safe: sssd builds its configuration databases again from `sssd.conf` at every
-start, and makes its memory caches, its sockets and an empty ticket database
-anew. What is lost is the Kerberos tickets its ticket cache kept, which nothing
-reaches while `sssd-kcm` is off. On Fedora, turning `sssd-kcm` off also turns
-off the ticket cache that `kinit` uses by default.
+Stopping sssd leaves those of the nine it wrote in place until they are
+deleted, and each of them keeps the warning, so the warning names the ones it
+finds and the `rm` that deletes them. The socket file stays in `/run` until the
+next boot, but once `sssd-kcm.socket` is stopped nothing listens on it and it
+no longer counts, so nothing here deletes it. The rest of sssd's state under
+`/var/lib/sss`, such as the cache of each domain, neither keeps the warning nor
+goes with that `rm`: the warning can clear while it is still on the decoy disk.
+Deleting the nine files once sssd is stopped is safe: sssd builds its
+configuration databases again from `sssd.conf` at every start, and makes its
+memory caches, its sockets and an empty ticket database anew. What is lost is
+the Kerberos tickets its ticket cache kept, which nothing reaches while
+`sssd-kcm` is off. On Fedora, turning `sssd-kcm` off also turns off the ticket
+cache that `kinit` uses by default.
 
 ## Session-time records
 

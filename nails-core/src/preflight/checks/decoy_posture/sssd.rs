@@ -26,10 +26,14 @@
 //!   runs the socket counts as its and not as sssd's. A socket file that
 //!   nothing listens on, which a stopped socket leaves in `/run` until the
 //!   next boot, is no sign;
-//! - `/var/lib/sss` holds one of the files sssd writes when it runs: its
-//!   configuration databases, the memory caches of its accounts, the database
-//!   of its Kerberos ticket cache and the sockets of its responders. Its
-//!   package installs only the directories.
+//! - `/var/lib/sss` holds one of the nine files in [`STATE_FILES`], which sssd
+//!   writes there when it runs: its two configuration databases, the four
+//!   memory caches of its NSS responder, the database of its Kerberos ticket
+//!   cache and the sockets of its NSS and PAM responders. Its package installs
+//!   only the directories. sssd keeps more there, such as the cache of each
+//!   domain, under names that hold the domain's own. Finding those would take
+//!   a listing of the directories, which changes their access times, so they
+//!   are not looked for.
 //!
 //! Fedora 44 Cloud enables `sssd-kcm.socket` by default, so a decoy made from
 //! it warns even when it is not joined to a domain.
@@ -43,13 +47,13 @@
 //! `sssd-kcm.socket` only with the `sssd-kcm` package. On NixOS the
 //! configuration owns the units and `systemctl disable` cannot change them, so
 //! the advice names the `services.sssd` options instead. sssd leaves its state
-//! files behind when it stops, and they keep the warning, so the advice also
-//! names each one found with the `rm` that deletes it. That is safe once sssd
-//! is stopped: sssd makes each of them again when it starts, its configuration
-//! databases from `sssd.conf`, and only the Kerberos tickets its ticket cache
-//! kept are lost, which nothing reaches while `sssd-kcm` is off. The advice
-//! never deletes the socket: once `sssd-kcm.socket` is stopped nothing listens
-//! on it, and another daemon may.
+//! files behind when it stops, and those of [`STATE_FILES`] keep the warning,
+//! so the advice also names each of them found with the `rm` that deletes it.
+//! That is safe once sssd is stopped: sssd makes each of them again when it
+//! starts, its configuration databases from `sssd.conf`, and only the Kerberos
+//! tickets its ticket cache kept are lost, which nothing reaches while
+//! `sssd-kcm` is off. The advice never deletes the socket: once
+//! `sssd-kcm.socket` is stopped nothing listens on it, and another daemon may.
 //!
 //! Every probe reads metadata, or files under `/proc`, `/run` and `/sys`;
 //! nothing on the decoy disk is opened or listed, so no access time there
@@ -106,8 +110,8 @@ const OTHER_KCM_DAEMONS: &[&str] = &["kcm"];
 /// Files sssd writes under `/var/lib/sss` when it runs, relative to the root:
 /// the configuration database of the monitor and that of sssd-kcm, the memory
 /// caches its NSS responder maps into every process, the database of its
-/// Kerberos ticket cache, and the sockets of its responders, which stay when
-/// they stop.
+/// Kerberos ticket cache, and the sockets of its NSS and PAM responders, which
+/// stay when they stop. These are all the check looks for there.
 const STATE_FILES: &[&str] = &[
     "var/lib/sss/db/config.ldb",
     "var/lib/sss/db/config_kcm.ldb",
@@ -203,9 +207,9 @@ fn other_kcm_runs(running: &BTreeSet<String>) -> bool {
         .any(|daemon| running.contains(*daemon))
 }
 
-/// The files sssd leaves behind when it stops, as paths on the decoy under
-/// `root`: every one of its state files there. Each keeps the warning after
-/// sssd is off.
+/// The state files sssd leaves behind when it stops, as paths on the decoy
+/// under `root`: every one of [`STATE_FILES`] there. Each keeps the warning
+/// after sssd is off.
 fn left_behind<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
     STATE_FILES
         .iter()
@@ -227,14 +231,14 @@ fn turn_off(is_nixos: bool) -> &'static str {
     }
 }
 
-/// The rest of the advice: delete the files sssd left behind (`left`), which
-/// would keep the warning after it is off. Empty when there are none.
+/// The rest of the advice: delete the state files sssd left behind (`left`),
+/// which would keep the warning after it is off. Empty when there are none.
 fn delete(left: &[String]) -> String {
     if left.is_empty() {
         return String::new();
     }
     format!(
-        ", then delete the files it leaves behind, which keep this warning (rm {}): sssd \
+        ", then delete the files it left behind that keep this warning (rm {}): sssd \
          makes each again when it starts",
         left.join(" ")
     )

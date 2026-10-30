@@ -133,9 +133,9 @@ fn on_nixos_the_advice_turns_sssd_off_through_its_options() {
     let message = finding_on_nixos(&fs).expect("must warn");
     assert!(
         message.ends_with(
-            "then run nixos-rebuild switch), then delete the files it leaves behind, which \
-             keep this warning (rm /var/lib/sss/db/config.ldb): sssd makes each again when \
-             it starts"
+            "then run nixos-rebuild switch), then delete the files it left behind that keep \
+             this warning (rm /var/lib/sss/db/config.ldb): sssd makes each again when it \
+             starts"
         ),
         "{message}"
     );
@@ -339,6 +339,23 @@ fn each_state_file_warns_by_its_path() {
         );
         assert_eq!(deleted_by_advice(&message), [format!("/{file}")]);
     }
+}
+
+#[test]
+fn the_rest_of_its_state_neither_warns_nor_goes_with_the_rm() {
+    // The check looks for its nine files by name and lists no directory, so a
+    // domain's cache and timestamps, named after the domain, are not seen.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/var/lib/sss/db/cache_example.com.ldb", PathKind::File);
+    fs.mock_set_path_type("/var/lib/sss/db/timestamps_example.com.ldb", PathKind::File);
+    assert_eq!(finding(&fs), None);
+    // Beside a file it knows, the rm names only that one.
+    fs.mock_set_path_type("/var/lib/sss/db/config.ldb", PathKind::File);
+    let message = finding(&fs).expect("a state file it knows must warn");
+    assert_eq!(deleted_by_advice(&message), ["/var/lib/sss/db/config.ldb"]);
+    assert!(!message.contains("example.com"), "{message}");
+    // The docs and the changelog count them.
+    assert_eq!(STATE_FILES.len(), 9);
 }
 
 #[test]
