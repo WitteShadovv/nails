@@ -26,8 +26,9 @@
 //! deactivation's offers a second action ([`Model::alternative`]).
 //!
 //! The main page, once it settled, has rows that open the window's tools
-//! ([`tools`]): Verify and Rehearsal. A tool's page has a Back of its own
-//! ([`Model::back`]), and Escape goes back too.
+//! ([`tools`]): Verify and Rehearsal on both sides, Discard Hidden Changes
+//! and Set Up Hidden Volume on the decoy. A tool's page has a Back of its
+//! own ([`Model::back`]), and Escape goes back too.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -115,6 +116,8 @@ pub enum ActionKind {
     Suggested,
     /// A plain button (Cancel).
     Plain,
+    /// A button that leads to deleting something (Discard…).
+    Destructive,
 }
 
 /// A titled group of rows on a tool's page: what an operation found, read
@@ -125,6 +128,18 @@ pub struct Group {
     pub title: String,
     /// The rows, each with its word and its sentence.
     pub rows: Vec<CheckView>,
+}
+
+/// A field on a page, for what an operation needs typed (the folder of a
+/// discard).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Field {
+    /// What it takes, which also names it for a screen reader.
+    pub label: String,
+    /// What is in it.
+    pub text: String,
+    /// The line under it.
+    pub hint: String,
 }
 
 /// Which page shows: the session's own, or a tool's.
@@ -177,10 +192,14 @@ pub struct Page {
     pub links: Vec<Link>,
     /// Titled groups of rows, on a tool's page.
     pub groups: Vec<Group>,
+    /// A field to type into, on a tool's page that needs one.
+    pub field: Option<Field>,
     /// The page has Back, to the session's page.
     pub back: bool,
     /// A second action beside the main one, as a plain button.
     pub secondary: Option<&'static str>,
+    /// The main action waits for something the page asks for first.
+    pub action_locked: bool,
 }
 
 /// What the window does for a control the person used.
@@ -224,13 +243,17 @@ enum PlanFor {
     Activation,
     /// A deactivation, whose question offers both endings.
     Deactivation,
+    /// The open tool (a discard or a set up), which words its question
+    /// and reads its answers.
+    Tool,
 }
 
 /// What the open question asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asking {
-    /// Whether to apply the plan that holds.
-    Plan,
+    /// Whether to apply the plan that holds; once `word`, when the question
+    /// asks for one, is `typed`.
+    Plan { word: Option<String>, typed: String },
     /// Whether to allow `risk` for one activation; `typed` so far.
     Allow { risk: Risk, typed: String },
 }
@@ -438,28 +461,35 @@ impl Model {
                 self.allowed.insert(risk);
                 Some(Ask::Check(activation::check_args(&self.allowed)))
             }
-            Some(Asking::Plan) | None => {
-                let activation = matches!(self.plan_for, Some(PlanFor::Activation));
-                if !confirmed {
-                    // The status that follows a withdrawal runs the check
-                    // again, without what was allowed for this activation.
-                    if activation {
-                        self.forget_allowed();
-                    }
-                    return Some(Ask::Withdraw);
-                }
-                if activation {
-                    self.activation = Some(Activation::started());
-                }
-                if matches!(self.plan_for, Some(PlanFor::Deactivation)) {
-                    // Power Off, on the plan of a return: the plan of a
-                    // power-off replaces it, and is applied once it holds.
-                    self.deactivation = Some(Deactivation::Replanning);
-                    return Some(Ask::Plan(Plan::Deactivate(Ending::PowerOff.args())));
-                }
-                Some(Ask::Apply)
+            Some(Asking::Plan { word, typed }) => {
+                let typed_it = word.is_none_or(|word| tools::is_the_folder(&word, &typed));
+                self.answer_plan(confirmed && typed_it)
             }
+            None => self.answer_plan(confirmed),
         }
+    }
+
+    /// The answer to the question of the plan that holds.
+    fn answer_plan(&mut self, confirmed: bool) -> Option<Ask> {
+        let activation = matches!(self.plan_for, Some(PlanFor::Activation));
+        if !confirmed {
+            // The status that follows a withdrawal runs the check again,
+            // without what was allowed for this activation.
+            if activation {
+                self.forget_allowed();
+            }
+            return Some(Ask::Withdraw);
+        }
+        if activation {
+            self.activation = Some(Activation::started());
+        }
+        if matches!(self.plan_for, Some(PlanFor::Deactivation)) {
+            // Power Off, on the plan of a return: the plan of a power-off
+            // replaces it, and is applied once it holds.
+            self.deactivation = Some(Deactivation::Replanning);
+            return Some(Ask::Plan(Plan::Deactivate(Ending::PowerOff.args())));
+        }
+        Some(Ask::Apply)
     }
 
     /// The person chose the open question's second action: a deactivation's
@@ -479,7 +509,11 @@ impl Model {
 
     /// What the page's main action does, while the page has one.
     pub fn action(&mut self) -> Option<Effect> {
-        let label = self.page().action?;
+        let page = self.page();
+        if page.action_locked {
+            return None;
+        }
+        let label = page.action?;
         if self.tool.is_some() {
             return self.tool_action(label);
         }
@@ -546,11 +580,22 @@ impl Model {
 
     /// What the person typed so far into the open question's field.
     pub fn typed(&mut self, typed: &str) {
-        if let Some(Asking::Allow { typed: so_far, .. }) = &mut self.asking {
-            typed.clone_into(so_far);
-            if let Some(question) = &mut self.question {
-                question.locked = !activation::is_the_word(typed);
+        let locked = match &mut self.asking {
+            Some(Asking::Allow { typed: so_far, .. }) => {
+                typed.clone_into(so_far);
+                !activation::is_the_word(typed)
             }
+            Some(Asking::Plan {
+                word: Some(word),
+                typed: so_far,
+            }) => {
+                typed.clone_into(so_far);
+                !tools::is_the_folder(word, typed)
+            }
+            _ => return,
+        };
+        if let Some(question) = &mut self.question {
+            question.locked = locked;
         }
     }
 
@@ -634,13 +679,29 @@ impl Model {
                 deactivation::question(plan)
             }
             (Some(PlanFor::Screen(asker)), data) => asker(data),
+            (Some(PlanFor::Tool), data) => {
+                if let Some((question, word)) = self.tool_question(data) {
+                    self.asking = Some(Asking::Plan {
+                        word,
+                        typed: String::new(),
+                    });
+                    self.question = Some(question);
+                    return Vec::new();
+                }
+                // Not the plan the tool asked for: drop it.
+                self.plan_for = None;
+                return vec![Ask::Withdraw];
+            }
             // No screen waits for this plan: drop it at once.
             _ => {
                 self.plan_for = None;
                 return vec![Ask::Withdraw];
             }
         };
-        self.asking = Some(Asking::Plan);
+        self.asking = Some(Asking::Plan {
+            word: None,
+            typed: String::new(),
+        });
         self.question = Some(question);
         Vec::new()
     }
