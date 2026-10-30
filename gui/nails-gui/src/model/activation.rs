@@ -117,15 +117,26 @@ pub fn allow_question(message: &str, locked: bool) -> Question {
     }
 }
 
-/// The question before the activation `data` plans: the logout, then each
-/// line that applies, the risks `allowed` first.
+/// The question before the activation `data` plans: the risks the entry does
+/// not refuse first, each with its fix, as the CLI writes them before it asks
+/// to log out; then the logout, and each line that applies, the risks
+/// `allowed` first.
 #[must_use]
 pub fn activate_question(
     data: &ActivatePlanData,
     allowed: &BTreeSet<Risk>,
     in_decoy_home: bool,
 ) -> Question {
-    let mut lines = vec![text::ACTIVATE_CONSEQUENCE.to_string()];
+    let mut lines: Vec<String> = data
+        .advisories
+        .iter()
+        .flat_map(|advisory| {
+            std::iter::once(advisory.message.as_str())
+                .chain(advisory.fix.iter().flat_map(|fix| fix.lines()))
+                .map(|line| text::sentence(&text::engine_fix(line)))
+        })
+        .collect();
+    lines.push(text::ACTIVATE_CONSEQUENCE.to_string());
     lines.extend(allowed.iter().map(|risk| text::allowed_by_you(risk.what())));
     if let Some(warning) = &data.warning {
         lines.push(text::sentence(warning));

@@ -1,0 +1,19 @@
+{
+  "command": "deactivate",
+  "data": {
+    "poweroff": false,
+    "powers_off_instead": {
+      "certain": false,
+      "what": "The way back finds no `ip` to delete veth0 with"
+    },
+    "token": "cccccccccccccccccccccccccccccccc",
+    "warnings": [
+      "The way back finds no `ip` to delete veth0 with, so unless that changes before it runs, the machine powers off instead of returning to the decoy. `sudo /mnt/data/nails deactivate --poweroff` powers off at once.",
+      "The return finds no `ip` (iproute2) in the hidden session's system directories, so the policy-routing rules the session added stay on the decoy until power-off, and a virtual link it made or a MAC address it changed makes the machine power off instead of returning. `sudo /mnt/data/nails deactivate --poweroff` leaves none of them.",
+      "The return finds no `nft` (nftables) in the hidden session's system directories, so the nftables tables the session added stay on the decoy until power-off (a VPN app's table that blocks all traffic outside its tunnel keeps the decoy offline). `sudo /mnt/data/nails deactivate --poweroff` leaves none of them.",
+      "The return cannot number the decoy's processes from where its own boot numbered them, so where the decoy keeps classic wtmp, its getty and login records carry process numbers that continue from this boot. `sudo /mnt/data/nails deactivate --poweroff` leaves none of them."
+    ]
+  },
+  "ok": true,
+  "schema_version": 2
+}
