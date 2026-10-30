@@ -5,8 +5,12 @@
 # would start on the way back with numbers that continue from everything the
 # decoy and the hidden session ran. The getty on tty1 writes its number into
 # /var/log/wtmp on the decoy disk, next to the low numbers of every earlier
-# boot. The way back sets the counter to just below the lowest number the
-# decoy's own userspace held at entry, as its last step.
+# boot. As its last step the way back sets the counter by a measure: the entry
+# records the number the decoy's boot gave its getty on tty1, and the hidden
+# root's own start, which runs a getty on tty1 that nobody logs in to, shows how
+# many numbers a start uses up to it. So this test takes the measured path. The
+# fallback, just below the lowest number the decoy's own userspace held at
+# entry, for a decoy without a getty or logind to measure by, has no VM test.
 #
 #   1. Two fresh boots of the image (the first start and a power cycle): the
 #      number of the getty on tty1, its records in wtmp and logind's number,
