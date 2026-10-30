@@ -10,11 +10,13 @@
 // confirming one, the second action, and Cancel at the bottom.
 //
 // It holds the keyboard while it is open. Focus starts on Cancel, or in the
-// field when there is one; Tab and Shift+Tab move between its controls and
-// never leave it, because every control behind it is unreachable while it is
-// open (the window passes that down); Escape cancels from anywhere in it;
-// Return presses only the button that has the focus, so it never confirms by
-// itself. The pointer cannot reach the window behind it either.
+// field when there is one; Tab and Shift+Tab move between its controls,
+// because every control behind it is unreachable while it is open (the
+// window passes that down); Escape cancels from anywhere in it; Return
+// presses only the button that has the focus, so it never confirms by
+// itself. The pointer cannot reach the window behind it either. One control
+// is not behind it: in a hidden session the window's Emergency control lies
+// above it, and Tab and the pointer reach it as well.
 
 import { Adw } from "theme.slint";
 import { Button, ButtonKind, ButtonShape } from "button.slint";
