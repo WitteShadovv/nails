@@ -54,6 +54,7 @@ fn plan(warning: Option<&str>, notice: Option<&str>, builds: bool) -> Update {
         warning: warning.map(str::to_string),
         defaults_notice: notice.map(str::to_string),
         builds_hidden_system: builds,
+        advisories: Vec::new(),
         token: "0".repeat(32),
     }))
 }

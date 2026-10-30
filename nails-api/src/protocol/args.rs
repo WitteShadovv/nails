@@ -251,8 +251,27 @@ pub struct ActivatePlanData {
     pub defaults_notice: Option<String>,
     /// Whether the activation builds a hidden NixOS system.
     pub builds_hidden_system: bool,
+    /// The risks the entry does not refuse, which the CLI writes before it
+    /// asks to log the operator out, such as hidden sessions' package
+    /// database no longer following the decoy's.
+    #[serde(default)]
+    pub advisories: Vec<PlanAdvisory>,
     /// The token the apply request carries back.
     pub token: String,
+}
+
+/// A risk an activation does not refuse, which the operator reads before
+/// confirming it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanAdvisory {
+    /// The stable name of the check that found it (`package-drift`).
+    pub name: String,
+    /// What it found.
+    pub message: String,
+    /// What to do about it, when there is one thing to do.
+    #[serde(default)]
+    pub fix: Option<String>,
 }
 
 /// The data of the answer to [`super::Op::DeactivatePlan`] in a hidden session
@@ -265,8 +284,26 @@ pub struct DeactivatePlanData {
     pub poweroff: bool,
     /// What the return will not put back, one sentence each.
     pub warnings: Vec<String>,
+    /// Why the return powers the machine off instead of returning to the
+    /// decoy, as far as the hidden session can tell before the switch: what
+    /// the way back cannot undo. Never for the plan of a power-off.
+    #[serde(default)]
+    pub powers_off_instead: Option<PowerOffInstead>,
     /// The token the apply request carries back.
     pub token: String,
+}
+
+/// Why a return to the decoy powers the machine off instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerOffInstead {
+    /// What the way back cannot undo, as the start of a sentence: "The way
+    /// back cannot delete tunl0, which the kernel keeps".
+    pub what: String,
+    /// Whether it powers off whatever happens before the way back runs: a
+    /// link the kernel keeps never goes. Otherwise it powers off unless that
+    /// changes before then.
+    pub certain: bool,
 }
 
 /// The data of the answer to [`super::Op::InitPlan`] when every precondition

@@ -49,6 +49,7 @@ fn logging_out() -> Screen {
         warning: None,
         defaults_notice: None,
         builds_hidden_system: false,
+        advisories: Vec::new(),
         token: "0".repeat(32),
     })));
     screen
@@ -141,6 +142,7 @@ fn a_hidden_session_that_does_not_end_points_to_the_emergency_in_a_minute() {
     screen.update(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
         poweroff: false,
         warnings: vec![],
+        powers_off_instead: None,
         token: "0".repeat(32),
     })));
     screen
@@ -172,6 +174,7 @@ fn a_new_switch_is_timed_from_its_own_start() {
         Update::Planned(PlanData::Deactivate(DeactivatePlanData {
             poweroff: false,
             warnings: vec![],
+            powers_off_instead: None,
             token: "0".repeat(32),
         }))
     };

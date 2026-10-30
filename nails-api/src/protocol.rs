@@ -46,8 +46,8 @@ mod args;
 pub use args::{
     ActivateArgs, ActivatePlanData, CheckArgs, ConfigChange, ConfigEditArgs, ConfigEditPlanData,
     ConfigShowArgs, DeactivateArgs, DeactivatePlanData, DiscardPlanArgs, DiscardPlanData,
-    EmergencyArgs, InitArgs, InitPlanData, RehearsePlantArgs, RehearseScanArgs, SettingArg,
-    SettingValue, Token, VerifyArgs,
+    EmergencyArgs, InitArgs, InitPlanData, PlanAdvisory, PowerOffInstead, RehearsePlantArgs,
+    RehearseScanArgs, SettingArg, SettingValue, Token, VerifyArgs,
 };
 
 /// The version of this protocol. A window and a helper talk only when theirs

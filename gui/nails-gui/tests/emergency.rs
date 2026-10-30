@@ -327,6 +327,7 @@ fn deactivation_asked(screen: &Screen) {
     screen.update(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
         poweroff: false,
         warnings: vec![],
+        powers_off_instead: None,
         token: "0".repeat(32),
     })));
     assert!(screen.window.get_question_open());

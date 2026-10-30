@@ -493,3 +493,50 @@ fn the_release_is_an_engine_version_the_decoder_takes() {
     .to_line();
     assert!(decode(&line).is_ok(), "{line}");
 }
+
+/// An activation's plan carries its advisories, and a deactivation's why a
+/// return powers off instead; a plan of either without them reads as having
+/// none.
+#[test]
+fn plans_carry_advisories_and_the_reason_a_return_powers_off() {
+    let activation: ActivatePlanData = serde_json::from_value(serde_json::json!({
+        "warning": null, "defaults_notice": null, "builds_hidden_system": false,
+        "advisories": [{"name": "package-drift", "message": "drifted", "fix": "discard it"}],
+        "token": "0".repeat(32)}))
+    .unwrap();
+    assert_eq!(
+        activation.advisories,
+        [PlanAdvisory {
+            name: "package-drift".to_string(),
+            message: "drifted".to_string(),
+            fix: Some("discard it".to_string()),
+        }]
+    );
+    let deactivation: DeactivatePlanData = serde_json::from_value(serde_json::json!({
+        "poweroff": false, "warnings": [],
+        "powers_off_instead": {"what": "The way back cannot delete tunl0", "certain": true},
+        "token": "0".repeat(32)}))
+    .unwrap();
+    assert_eq!(
+        deactivation.powers_off_instead,
+        Some(PowerOffInstead {
+            what: "The way back cannot delete tunl0".to_string(),
+            certain: true,
+        })
+    );
+    let older: ActivatePlanData = serde_json::from_value(serde_json::json!({
+        "warning": null, "defaults_notice": null, "builds_hidden_system": false,
+        "token": "0".repeat(32)}))
+    .unwrap();
+    assert!(older.advisories.is_empty());
+    let older: DeactivatePlanData = serde_json::from_value(serde_json::json!({
+        "poweroff": false, "warnings": [], "token": "0".repeat(32)}))
+    .unwrap();
+    assert_eq!(older.powers_off_instead, None);
+    // An unknown field in either is still refused.
+    assert!(
+        serde_json::from_value::<PowerOffInstead>(serde_json::json!({
+            "what": "x", "certain": false, "more": 1}))
+        .is_err()
+    );
+}

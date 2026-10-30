@@ -57,6 +57,7 @@ fn plan(poweroff: bool, warnings: &[&str]) -> Update {
     Update::Planned(PlanData::Deactivate(DeactivatePlanData {
         poweroff,
         warnings: warnings.iter().map(|w| (*w).to_string()).collect(),
+        powers_off_instead: None,
         token: "0".repeat(32),
     }))
 }

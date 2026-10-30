@@ -39,6 +39,7 @@ fn past_the_point() -> Model {
             warning: None,
             defaults_notice: None,
             builds_hidden_system: false,
+            advisories: Vec::new(),
             token: "0".repeat(32),
         },
     )));
@@ -63,6 +64,7 @@ fn ending() -> Model {
     model.apply(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
         poweroff: false,
         warnings: vec![],
+        powers_off_instead: None,
         token: "0".repeat(32),
     })));
     assert_eq!(model.alternative(), Some(Ask::Apply));
