@@ -126,10 +126,16 @@ fn a_native_mount_a_target_requires_is_skipped_with_its_fsck_while_its_disk_is_t
     );
 
     // Its disk is not there: masked, and local-fs.target is not reached.
+    // A unit file has no fstab entry to give nofail: its link is the remedy.
     let decisions = decoy.decide(ROOT_ONLY, false);
     assert_eq!(decisions[0].masked_units(), ["srv-scratch.mount"]);
     let warning = decisions[0].warning().expect("a warning");
     assert!(warning.contains("local-fs.target"), "{warning}");
+    assert!(
+        warning.contains("WantedBy= rather than RequiredBy="),
+        "{warning}"
+    );
+    assert!(!warning.contains("nofail"), "{warning}");
 }
 
 #[test]
@@ -524,6 +530,7 @@ fn a_unit_that_cannot_be_read_or_resolved_is_masked() {
                 unreached: Some(Unreached {
                     target: "local-fs.target".into(),
                     cause: Unskippable::Unread,
+                    native: true,
                 }),
             }],
             "{unit}"
@@ -800,6 +807,7 @@ fn a_unit_whose_files_fail_to_be_looked_up_is_masked_not_read_elsewhere() {
                 unreached: Some(Unreached {
                     target: "local-fs.target".into(),
                     cause: Unskippable::Unread,
+                    native: true,
                 }),
             }],
             "{path}"
