@@ -7,7 +7,9 @@
 // a field for it, and its confirming button acts only once the word is there.
 // A question with a second action (a deactivation's two endings) stacks its
 // three buttons, as libadwaita does when they do not fit side by side: the
-// confirming one, the second action, and Cancel at the bottom.
+// confirming one, the second action, and Cancel at the bottom. Cancel and
+// the confirming button stack the same way where a label does not fit half
+// the dialog's width, at the window's narrowest or for a long label.
 //
 // It holds the keyboard while it is open. Focus starts on Cancel, or in the
 // field when there is one; Tab and Shift+Tab move between its controls,
@@ -44,6 +46,22 @@ export component AlertDialog {
     accessible-label: root.heading;
     accessible-description: root.body;
 
+    // The widest label of the two buttons, measured as a button draws it,
+    // against the half of the dialog each would get side by side.
+    confirm-measure := Text {
+        text: root.confirm-label;
+        font-weight: Adw.weight-bold;
+        visible: false;
+        accessible-role: none;
+    }
+    cancel-measure := Text {
+        text: "Cancel";
+        font-weight: Adw.weight-bold;
+        visible: false;
+        accessible-role: none;
+    }
+    property <length> label-room: (sheet.width - 2 * 24px - 12px) / 2 - 2 * 20px;
+    property <bool> stacked: max(confirm-measure.preferred-width, cancel-measure.preferred-width) > root.label-room;
 
     // The dimming over the window, and nothing underneath gets the pointer.
     Rectangle {
@@ -105,7 +123,7 @@ export component AlertDialog {
                     }
                 }
 
-                if root.alternative == "": HorizontalLayout {
+                if root.alternative == "" && !root.stacked: HorizontalLayout {
                     padding-top: 22px;
                     spacing: 12px;
 
@@ -138,6 +156,40 @@ export component AlertDialog {
                         enabled: !root.locked;
                         clicked => {
                             root.answered(true);
+                        }
+                    }
+                }
+
+                if root.alternative == "" && root.stacked: VerticalLayout {
+                    padding-top: 22px;
+                    spacing: 12px;
+
+                    Button {
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        text: root.confirm-label;
+                        shape: ButtonShape.response;
+                        surface-fg: Adw.dialog-fg;
+                        kind: root.destructive ? ButtonKind.destructive : ButtonKind.suggested;
+                        enabled: !root.locked;
+                        clicked => {
+                            root.answered(true);
+                        }
+                    }
+
+                    Button {
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        text: "Cancel";
+                        shape: ButtonShape.response;
+                        surface-fg: Adw.dialog-fg;
+                        init => {
+                            if (root.prompt == "") {
+                                self.focus();
+                            }
+                        }
+                        clicked => {
+                            root.answered(false);
                         }
                     }
                 }
