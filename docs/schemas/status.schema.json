@@ -82,7 +82,7 @@
           "type": "boolean"
         },
         "decoy_kdump_armed": {
-          "description": "Whether kdump is armed on the decoy (a loaded crash kernel, or an active kdump-tools.service or kdump.service), or /sys/kernel/kexec_crash_loaded cannot be read or holds neither 0 nor 1. Activation refuses it without --allow-persistent-decoy. False in a hidden session.",
+          "description": "Whether kdump is armed on the decoy (a loaded crash kernel, or an enabled or active kdump-tools.service or kdump.service), or /sys/kernel/kexec_crash_loaded cannot be read or holds neither 0 nor 1. Activation refuses it without --allow-persistent-decoy. False in a hidden session.",
           "type": "boolean"
         },
         "persona_mode": { "type": "string", "enum": ["shared-home", "fresh-home"] },

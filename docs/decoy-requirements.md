@@ -122,9 +122,15 @@ decoy disk, and that a kernel crash during the session can leave a dump of its
 memory there.
 
 kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
-kernel is loaded) or when `kdump-tools.service` (Ubuntu, Debian) or
-`kdump.service` (Fedora) is active: the hidden session starts the decoy's own
-units, so an active service loads the crash kernel again in the session. If the
+kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or
+`kdump.service` (Fedora) is enabled or active. The soft-reboot into the hidden
+session starts the decoy's enabled units, so an enabled unit that was stopped
+before activation, with no crash kernel loaded, starts again there and loads
+it. An active unit counts too, because the check cannot tell whether it is
+still loading the crash kernel. A unit is enabled when a link to it sits in a
+`.wants`, `.requires` or `.upholds` directory under `/etc/systemd/system`,
+`/run/systemd/system`, `/usr/lib/systemd/system` or `/lib/systemd/system`,
+unless a link to `/dev/null` in `/etc/systemd/system` masks it. If the
 kernel crashes during a hidden session, the crash kernel mounts the decoy root
 by its device, outside the session's overlay, and writes a dump of kernel
 memory, which can hold the hidden volume's encryption key and the names of the

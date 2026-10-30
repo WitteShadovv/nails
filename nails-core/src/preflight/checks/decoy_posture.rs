@@ -19,8 +19,10 @@
 //!   before the overlays are mounted, detected as a unit, a template instance,
 //!   the unit `syslog.service` names, or a process (see [`loggers`]),
 //! - an armed kdump (Ubuntu arms kdump-tools by default from 24.10): a crash
-//!   kernel loaded according to `/sys/kernel/kexec_crash_loaded`, or an active
-//!   `kdump-tools.service` or `kdump.service`. A kernel crash during the hidden
+//!   kernel loaded according to `/sys/kernel/kexec_crash_loaded`, or an enabled
+//!   or active `kdump-tools.service` or `kdump.service` (an enabled one starts
+//!   again in the hidden session and loads the crash kernel there, even when it
+//!   is stopped at activation). A kernel crash during the hidden
 //!   session boots kdump's crash kernel, which mounts the decoy root by its
 //!   device, outside the session's overlay, and writes a dump of kernel memory
 //!   and the session's kernel log to `/var/crash` on the decoy disk. When
@@ -71,6 +73,15 @@ const PSTORE_DIR: &str = "/sys/fs/pstore";
 const KEXEC_CRASH_LOADED: &str = "/sys/kernel/kexec_crash_loaded";
 /// Enabled-timer marker for the NixOS automatic-upgrade timer.
 const NIXOS_UPGRADE_TIMER: &str = "/etc/systemd/system/timers.target.wants/nixos-upgrade.timer";
+/// The kdump units: kdump-tools on Debian and Ubuntu, kdump on Fedora and
+/// others.
+const KDUMP_UNITS: &[&str] = &["kdump-tools.service", "kdump.service"];
+/// The suffixes of the dependency directories `systemctl enable` links a unit
+/// into, from its `WantedBy=`, `RequiredBy=` and `UpheldBy=`: a link to it in
+/// `<target>.wants/` pulls it in wherever `<target>` starts.
+const DEPENDENCY_DIR_SUFFIXES: &[&str] = &[".wants", ".requires", ".upholds"];
+/// The unit directory whose `/dev/null` link masks a unit above every other.
+const ADMIN_UNIT_DIR: &str = "etc/systemd/system";
 
 /// Pre-flight check that refuses a forensically persistent decoy.
 #[derive(Debug)]
@@ -147,12 +158,14 @@ impl DecoyPersistenceCheck {
     ///
     /// A loaded crash kernel dumps memory to the decoy disk on panic. Ubuntu
     /// arms kdump-tools by default from 24.10 (so 26.04); Fedora and others
-    /// ship it as kdump.service. The loaded crash kernel and the active service
-    /// count alike: the hidden session boots from the decoy's units, so an
-    /// active service loads the crash kernel again in the session. The crash
-    /// kernel boots from the decoy's root device, never through the session's
-    /// overlay, so what it writes lands on the decoy disk past every barrier
-    /// the session keeps.
+    /// ship it as kdump.service. A kdump unit counts when it is enabled
+    /// ([`unit_enabled`]): the soft-reboot into the hidden session starts the
+    /// decoy's enabled units, so one that is stopped at activation, with no
+    /// crash kernel loaded, starts again there and loads it. An active unit
+    /// counts too, as its marker does not tell whether it is still loading the
+    /// crash kernel. The crash kernel boots from the decoy's root device, never
+    /// through the session's overlay, so what it writes lands on the decoy
+    /// disk past every barrier the session keeps.
     fn kdump_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
         // Read below `root` like the unit markers, so a test on a temporary
         // tree never sees the live host's crash kernel.
@@ -177,17 +190,26 @@ impl DecoyPersistenceCheck {
             },
             Err(e) => return unknown(format!("cannot be probed ({e})")),
         };
-        let service = ["kdump-tools.service", "kdump.service"]
-            .into_iter()
-            .find(|unit| loggers::unit_active(fs, root, unit));
-        if !loaded && service.is_none() {
+        let mut armed = Vec::new();
+        if loaded {
+            armed.push("a crash kernel is loaded".to_string());
+        }
+        for unit in KDUMP_UNITS {
+            let state = match (
+                unit_enabled(fs, root, unit),
+                loggers::unit_active(fs, root, unit),
+            ) {
+                (true, true) => "enabled and active",
+                (true, false) => "enabled",
+                (false, true) => "active",
+                (false, false) => continue,
+            };
+            armed.push(format!("{unit} is {state}"));
+        }
+        if armed.is_empty() {
             return None;
         }
-        let what = match service {
-            Some(unit) if loaded => format!("a crash kernel is loaded and {unit} is active"),
-            Some(unit) => format!("{unit} is active"),
-            None => "a crash kernel is loaded".to_string(),
-        };
+        let what = armed.join(" and ");
         Some(format!(
             "kdump is armed ({what}): if the kernel crashes during the hidden session, its \
              crash kernel mounts the decoy root by its device, outside the session's overlay, \
@@ -289,6 +311,46 @@ impl DecoyPersistenceCheck {
 
         out
     }
+}
+
+/// Whether `unit` is enabled under `root`: a link to it sits in a dependency
+/// directory ([`DEPENDENCY_DIR_SUFFIXES`]) of a unit directory, and
+/// `/etc/systemd/system` does not mask it.
+///
+/// Only a link counts, as `systemctl enable` makes one. The unit directories
+/// are the ones [`loggers::UNIT_DIRS`] names, the packages' ones among them,
+/// where a package ships the links that pull a unit in without an
+/// `enable`. A mask (`systemctl mask`) is a link to `/dev/null` in
+/// `/etc/systemd/system`, which outranks every link to the unit. It is followed
+/// only once an enabling link was found, so on a decoy without one no unit
+/// link is followed.
+fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+    let linked = loggers::UNIT_DIRS.iter().any(|dir| {
+        fs.list_directory(&root.join(dir)).is_ok_and(|entries| {
+            entries.iter().any(|entry| {
+                let dependency_dir = entry
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        DEPENDENCY_DIR_SUFFIXES
+                            .iter()
+                            .any(|suffix| name.ends_with(suffix))
+                    });
+                dependency_dir && fs.is_symlink(&entry.join(unit)).unwrap_or(false)
+            })
+        })
+    });
+    linked && !masked(fs, root, unit)
+}
+
+/// Whether `/etc/systemd/system` under `root` masks `unit`: a link there that
+/// resolves to `/dev/null`.
+fn masked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+    let unit_file = root.join(ADMIN_UNIT_DIR).join(unit);
+    fs.is_symlink(&unit_file).unwrap_or(false)
+        && fs
+            .canonicalize(&unit_file)
+            .is_ok_and(|target| target == Path::new("/dev/null"))
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
