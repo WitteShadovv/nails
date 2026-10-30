@@ -83,6 +83,8 @@ fn every_page_names_each_control_and_row() {
             nails_gui::text::ALLOW,
             nails_gui::text::VERIFY,
             nails_gui::text::REHEARSAL,
+            nails_gui::text::DISCARD,
+            nails_gui::text::SET_UP,
             "Check Again"
         ]
     );

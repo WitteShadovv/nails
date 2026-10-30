@@ -145,7 +145,11 @@ of this changelog for that version becomes the release notes word for word, and
   session that planted them, which the engine refuses), and Remove Test Words on the decoy. A scan's
   result lists first what the scan did not check, a disk whose storage can hide the test words among
   it, and reads Not a Clean Result, never Passed, for such a disk, and Scan Incomplete for one it
-  could not read in full. Every control and row is a Tab
+  could not read in full. On the decoy, where no desktop is admitted yet, the tools also discard the
+  hidden changes of a folder typed as its full path, and set up the hidden volume (`nails init`),
+  each as a plan, its token and its apply: the question says what goes (every path the discard
+  deletes from the hidden volume) or what is written, and a discard of a folder that holds a home,
+  or of `/nix`, acts only once the folder is typed. Every control and row is a Tab
   stop with an accessible name. The window's own names are neutral: its title is "Session", and its
   app id, its program (`<hidden-root>/gui/bin/session`), its process name and the application name a
   screen reader reads are all `session`. Its command line is its name alone, `session` (`session

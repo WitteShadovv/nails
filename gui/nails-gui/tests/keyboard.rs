@@ -47,13 +47,15 @@ fn not_ready() -> Screen {
 
 /// The Tab stops of the page in order: its rows, its action, and then the
 /// window's Close.
-const TAB_ORDER: [&str; 8] = [
+const TAB_ORDER: [&str; 10] = [
     "Hidden volume",
     "This computer",
     "Failed: The journal is kept on disk.",
     "Failed: Swap is on.",
     nails_gui::text::VERIFY,
     nails_gui::text::REHEARSAL,
+    nails_gui::text::DISCARD,
+    nails_gui::text::SET_UP,
     "Check Again",
     "Close",
 ];
