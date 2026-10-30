@@ -2585,6 +2585,7 @@ dependencies = [
  "fontique",
  "i-slint-backend-testing",
  "nails-api",
+ "png",
  "rustix 1.1.5",
  "serde",
  "serde_json",
