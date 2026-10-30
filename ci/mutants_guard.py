@@ -12,14 +12,26 @@ then outlast the mutant's test run unless they are stopped here:
   three pull requests were lost so, and each held a mutant whose test binary,
   run again under the cap below, aborted at it, all but one within seven
   seconds. The binary runs here with its data segment capped (RLIMIT_DATA,
-  which counts what it allocates), so the allocation that would pass the cap
-  fails, the binary aborts and its tests fail: the mutant is caught.
+  which counts what a process allocates), so the allocation that would pass
+  the cap fails, the binary aborts and its tests fail: the mutant is caught.
+  The cap holds for each process on its own: the binary and every process it
+  starts, such as the nails binary that the nails-cli tests run, may each
+  allocate that much. One runaway cannot fill a runner, several at once still
+  could.
 - The binary. cargo-mutants ends a test run that passes its --timeout with
   SIGTERM to the run's process group. A test binary in which a test installed
   the SIGTERM handler of nails-base's cancel module (the nails-base tests do)
   only sets a flag and runs on, beside the mutants after it, which then build
-  and test slower. A SIGTERM, SIGINT or SIGHUP is passed on to the binary here,
-  and the binary is killed if it has not ended GRACE_SECONDS later.
+  and test slower. The binary runs here as the leader of a process group of
+  its own, and a SIGTERM, SIGINT or SIGHUP is passed on to that group. The
+  group is killed if the binary has not ended GRACE_SECONDS later. Once the
+  binary has ended, whatever ended it (a signal, a failing test, the abort at
+  the cap), every process it started is killed: what is left of its group,
+  and what left the group for one or a session of its own, as the
+  workspace's process runner and some tests start their children. Such a
+  process gets none of the signals passed on while the binary runs, but the
+  guard is the subreaper of everything the binary starts, so it finds such a
+  process at the end even when the one that started it has ended.
 
 The binary's exit code is passed back, and 128 plus the signal for a binary
 that a signal ended, as a shell reports it.
@@ -31,16 +43,21 @@ Usage: python3 -I ci/mutants_guard.py [--memory BYTES] [--grace SECONDS]
 from __future__ import annotations
 
 import argparse
+import contextlib
+import ctypes
+import os
 import resource
 import signal
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from types import FrameType
 
-# The most a test binary may allocate. A test binary of the workspace takes a
-# few hundred megabytes at most, and a hosted runner has 16 GiB.
+# The most each process of a test run may allocate. A test binary of the
+# workspace takes a few hundred megabytes at most, and a hosted runner has
+# 16 GiB.
 MEMORY_BYTES = 4 * 1024**3
 # How long a test binary has to end after a signal is passed on to it.
 GRACE_SECONDS = 2.0
@@ -49,6 +66,10 @@ GRACE_SECONDS = 2.0
 PASSED_ON = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 # How long to wait for the binary between looks at the signals received.
 POLL_SECONDS = 0.05
+# prctl(2): the process that orphaned descendants are given to.
+PR_SET_CHILD_SUBREAPER = 36
+# How long the guard keeps killing what the binary left, at most.
+SWEEP_SECONDS = 5.0
 
 
 def cap_memory(limit: int) -> None:
@@ -59,11 +80,77 @@ def cap_memory(limit: int) -> None:
     resource.setrlimit(resource.RLIMIT_DATA, (limit, limit))
 
 
-def run(command: Sequence[str], grace: float = GRACE_SECONDS) -> int:
-    """Run ``command``; return its exit status as a shell reports it.
+def become_subreaper() -> None:
+    """Have the processes below this one that lose their parent given to it.
 
-    A signal of PASSED_ON is passed on to the command, which is killed when it
-    has not ended ``grace`` seconds after the first.
+    Best effort: where the kernel refuses, such a process goes to init, and
+    the sweep at the end no longer finds it.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+
+
+def signal_group(child: subprocess.Popen[bytes], signum: int) -> None:
+    """Send ``signum`` to the process group that ``child`` leads."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(child.pid, signum)
+
+
+def descendants(root: int) -> list[int]:
+    """The processes below ``root`` that still run (zombies left out)."""
+    children: dict[int, list[int]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            stat = Path("/proc", entry, "stat").read_text(encoding="utf-8")
+        except OSError:
+            continue  # Ended meanwhile.
+        state, parent = stat.rsplit(")", 1)[1].split()[:2]
+        if state != "Z":
+            children.setdefault(int(parent), []).append(int(entry))
+    found: list[int] = []
+    below = [root]
+    while below:
+        for pid in children.get(below.pop(), []):
+            found.append(pid)
+            below.append(pid)
+    return found
+
+
+def reap() -> None:
+    """Collect every child of this process that has ended."""
+    with contextlib.suppress(ChildProcessError):
+        while os.waitpid(-1, os.WNOHANG)[0]:
+            pass
+
+
+def sweep(seconds: float = SWEEP_SECONDS) -> None:
+    """Kill every process below this one, until none is left or time is up.
+
+    Run once the binary has ended and been waited for, so the reaping here
+    takes no status that subprocess waits for.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        reap()
+        left = descendants(os.getpid())
+        if not left or time.monotonic() >= deadline:
+            return
+        for pid in left:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+        time.sleep(0.01)
+
+
+def run(command: Sequence[str], grace: float = GRACE_SECONDS) -> int:
+    """Run ``command`` as a process group's leader; return its exit status.
+
+    A signal of PASSED_ON is passed on to the group, which is killed when the
+    command has not ended ``grace`` seconds after the first. Once the command
+    has ended, every process it started is killed. The status is the
+    command's exit code, or 128 plus the signal that ended it, and 127 when it
+    cannot start.
     """
     received: list[int] = []
 
@@ -74,8 +161,9 @@ def run(command: Sequence[str], grace: float = GRACE_SECONDS) -> int:
     # handlers. The command starts with the signals' default actions.
     for signum in PASSED_ON:
         signal.signal(signum, receive)
+    become_subreaper()
     try:
-        child = subprocess.Popen(command)
+        child = subprocess.Popen(command, process_group=0)
     except OSError as error:
         # The binary cannot start; an error once it runs is the guard's own.
         print(f"{command[0]}: {error}", file=sys.stderr)
@@ -89,12 +177,15 @@ def run(command: Sequence[str], grace: float = GRACE_SECONDS) -> int:
         except subprocess.TimeoutExpired:
             pass
         for arrived in received[passed:]:
-            child.send_signal(arrived)
+            signal_group(child, arrived)
             passed += 1
             if kill_at is None:
                 kill_at = time.monotonic() + grace
         if kill_at is not None and time.monotonic() >= kill_at:
-            child.kill()
+            signal_group(child, signal.SIGKILL)
+    # Nothing the binary started outlives it, in its group or out of it.
+    signal_group(child, signal.SIGKILL)
+    sweep()
     return status if status >= 0 else 128 - status
 
 
@@ -107,7 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--memory",
         type=int,
         default=MEMORY_BYTES,
-        help="the most the binary may allocate, in bytes",
+        help="the most each process may allocate, in bytes",
     )
     parser.add_argument(
         "--grace",

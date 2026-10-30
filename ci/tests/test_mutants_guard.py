@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import signal
@@ -25,6 +26,43 @@ def guard(*arguments: str) -> list[str]:
 
 def python(code: str, *arguments: str) -> list[str]:
     return [sys.executable, "-I", "-c", code, *arguments]
+
+
+def stat_fields(pid: int) -> list[str] | None:
+    """The fields of /proc/<pid>/stat after the command, or None when gone."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    return stat.rsplit(")", 1)[1].split()
+
+
+def alive(pid: int) -> bool:
+    """Whether process ``pid`` runs: it is there and not a zombie."""
+    fields = stat_fields(pid)
+    return fields is not None and fields[0] != "Z"
+
+
+def kill_if_alive(pid: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        if alive(pid):
+            os.kill(pid, signal.SIGKILL)
+
+
+def kill_session(session: int) -> None:
+    """Kill every process of ``session``: a guard and all it started."""
+    for entry in os.listdir("/proc"):
+        fields = stat_fields(int(entry)) if entry.isdigit() else None
+        if fields is not None and fields[3] == str(session):
+            kill_if_alive(int(entry))
+
+
+def gone_soon(pid: int, seconds: float = 20) -> bool:
+    """Whether process ``pid`` has ended within ``seconds``."""
+    deadline = time.monotonic() + seconds
+    while alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not alive(pid)
 
 
 class GuardTest(unittest.TestCase):
@@ -62,7 +100,13 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(mutants_guard.GRACE_SECONDS, 2)
 
     def start(self, code: str, grace: str) -> subprocess.Popen[str]:
-        """Start ``code`` under the guard, in a group of their own; wait for it."""
+        """Start ``code`` under the guard, in a session of its own; wait for it."""
+        started, line = self.start_reading(code, grace)
+        self.assertEqual(line, "ready\n")
+        return started
+
+    def start_reading(self, code: str, grace: str) -> tuple[subprocess.Popen[str], str]:
+        """Start ``code`` under the guard; return it and the first line it prints."""
         started = subprocess.Popen(
             guard("--grace", grace, *python(code)),
             stdout=subprocess.PIPE,
@@ -71,21 +115,22 @@ class GuardTest(unittest.TestCase):
         )
         self.addCleanup(self.stop, started)
         assert started.stdout is not None
-        self.assertEqual(started.stdout.readline(), "ready\n")
-        return started
+        return started, started.stdout.readline()
 
     @staticmethod
     def stop(started: subprocess.Popen[str]) -> None:
-        if started.poll() is None:
-            os.killpg(started.pid, signal.SIGKILL)
-            started.wait()
+        # The guard leads a session of its own, which holds the binary's
+        # process group too.
+        kill_session(started.pid)
+        started.wait()
         if started.stdout is not None:
             started.stdout.close()
 
     def test_kills_a_binary_that_ignores_the_signal_ending_its_run(self) -> None:
         # As a test binary does once a test installed the SIGTERM handler of
         # the cancel module. cargo-mutants signals the whole process group of
-        # a test run that passed its timeout.
+        # a test run that passed its timeout, which the guard is in and the
+        # binary is not.
         code = (
             "import signal, time\n"
             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
@@ -115,20 +160,101 @@ class GuardTest(unittest.TestCase):
                 self.assertEqual(started.wait(timeout=30), 128 + signum)
                 self.assertLess(time.monotonic() - sent, 20)
 
-    def test_the_binary_stays_in_the_process_group_of_its_test_run(self) -> None:
-        # So the SIGTERM with which cargo-mutants ends a test run reaches the
-        # binary as well as the guard.
-        code = "import os; print(os.getpgrp())"
+    def test_the_binary_leads_a_process_group_of_its_own(self) -> None:
+        # So the guard can signal the binary and what it starts as one.
+        code = "import os; print(os.getpgrp() == os.getpid() != os.getsid(0))"
+        done = self.run_guard(*python(code))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, "True\n")
+
+    def test_a_stopped_run_ends_what_the_binary_started_too(self) -> None:
+        # As the nails binary that a nails-cli test runs: a process the test
+        # binary started, here one that ignores SIGTERM, goes with the binary.
+        grandchild = (
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        code = (
+            "import subprocess, sys, time\n"
+            "started = subprocess.Popen([sys.executable, '-I', '-c', sys.argv[1]],"
+            " stdout=subprocess.PIPE, text=True)\n"
+            "started.stdout.readline()\n"
+            "print(started.pid, flush=True)\n"
+            "time.sleep(60)\n"
+        )
         started = subprocess.Popen(
-            guard(*python(code)),
+            guard("--grace", "30", *python(code, grandchild)),
             stdout=subprocess.PIPE,
             text=True,
             start_new_session=True,
         )
-        printed, _ = started.communicate(timeout=60)
-        self.assertEqual(started.returncode, 0)
-        # The guard leads the group it was started in.
-        self.assertEqual(printed, f"{started.pid}\n")
+        self.addCleanup(self.stop, started)
+        assert started.stdout is not None
+        pid = int(started.stdout.readline())
+        self.addCleanup(kill_if_alive, pid)
+        self.assertTrue(alive(pid))
+        # The binary ends on the SIGTERM, long before the grace runs out, and
+        # what it started is killed with the rest of its group.
+        started.send_signal(signal.SIGTERM)
+        self.assertEqual(started.wait(timeout=30), 128 + signal.SIGTERM)
+        self.assertTrue(gone_soon(pid))
+
+    def run_reading(self, code: str, *arguments: str) -> tuple[int, int]:
+        """Run ``code`` under the guard; its exit status and the pid it prints."""
+        started = subprocess.Popen(
+            guard(*python(code, *arguments)),
+            stdout=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        self.addCleanup(self.stop, started)
+        assert started.stdout is not None
+        pid = int(started.stdout.readline())
+        self.addCleanup(kill_if_alive, pid)
+        return started.wait(timeout=30), pid
+
+    def test_what_a_binary_that_ends_on_its_own_started_goes_too(self) -> None:
+        # A failing test, a panic or the abort at the cap ends the binary with
+        # no signal to the guard: what it started is killed all the same.
+        code = (
+            "import subprocess, sys\n"
+            "started = subprocess.Popen([sys.executable, '-I', '-c',"
+            " 'import time; time.sleep(60)'])\n"
+            "print(started.pid, flush=True)\n"
+            "sys.exit(101)\n"
+        )
+        status, pid = self.run_reading(code)
+        self.assertEqual(status, 101)
+        self.assertTrue(gone_soon(pid))
+
+    def test_a_process_that_left_the_binary_s_group_goes_too(self) -> None:
+        # As the workspace's process runner and some tests start their
+        # children: in a group or a session of their own, out of reach of the
+        # group's signals. The guard, their subreaper, kills them at the end,
+        # also when the process that started them has ended before.
+        sleeper = "import time; time.sleep(60)"
+        starter = (
+            "import subprocess, sys\n"
+            "away = {'session': {'start_new_session': True},"
+            " 'group': {'process_group': 0}}[sys.argv[1]]\n"
+            "started = subprocess.Popen([sys.executable, '-I', '-c', sys.argv[2]],"
+            " **away)\n"
+            "print(started.pid, flush=True)\n"
+        )
+        binary = (
+            "import subprocess, sys\n"
+            "starter = subprocess.Popen([sys.executable, '-I', '-c', *sys.argv[1:]],"
+            " stdout=subprocess.PIPE, text=True)\n"
+            "print(starter.stdout.readline().strip(), flush=True)\n"
+            "starter.wait()\n"
+        )
+        for way in ("session", "group"):
+            with self.subTest(way=way):
+                status, pid = self.run_reading(binary, starter, way, sleeper)
+                self.assertEqual(status, 0)
+                self.assertTrue(gone_soon(pid))
 
     def test_a_binary_that_cannot_start_fails(self) -> None:
         done = self.run_guard(str(REPO_ROOT / "no-such-binary"))
