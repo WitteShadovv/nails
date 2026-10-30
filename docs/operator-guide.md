@@ -433,26 +433,28 @@ journal that starts late:
     resolved's per-link DNS settings), rewritten in place, so each file keeps
     its owner and mode.
 
-  When the way back cannot undo what the session did to the links, MAC
-  addresses, rules or tables, it powers off instead of returning: a device
-  that still has the session's MAC address after the retry, a link or Wi-Fi
-  interface of the session's that is still there, a policy-routing rule or
-  firewall table of the session's that is still loaded, or a part it cannot
-  read back (the kernel's list of links, or `ip` or `nft` failing to list the
-  rules or tables). That state lives only in the kernel, so a power-off erases
-  it, where a return would hand it to the decoy. A missing tool counts the
-  same way wherever the way back can see what the session left without it:
-  without `ip` a changed MAC address or a link the session made, without `iw`
-  a Wi-Fi interface it added, the one iwd makes in place of the decoy's by
-  default when it starts included, so on a decoy without `iw` a session that
-  runs iwd ends in a power-off. The machine turns off as with `--poweroff`,
-  and the next boot is the plain decoy. Nothing on the screen says why: a line
-  there would tell anyone watching that a hidden session had just ended. A
-  missing tool with nothing to undo (the stock NixOS decoy without `nft`, a
-  session that added no Wi-Fi interface and ran no iwd) returns as before. The
-  network settings, the hostname and the per-link state below `/run` do not
-  count: the way back writes them back and does not power off over them, also
-  when a write fails.
+  The way back powers off instead of returning when what it set out to undo of
+  these is still the session's afterwards: a device of the decoy's that still
+  has another MAC address after the retry, a virtual link or Wi-Fi interface
+  the session added that is still there, a policy-routing rule or firewall
+  table the session added that is still loaded, or a part it cannot read back
+  (the kernel's list of links, or `ip` or `nft` failing to list the rules or
+  tables). The rules and tables count only where activation listed the decoy's
+  own and the way back finds `ip` and `nft` (see below). That state lives only
+  in the kernel, so a power-off erases it, where a return would hand it to the
+  decoy. A missing tool counts the same way wherever the way back can see what
+  the session left without it: without `ip` a changed MAC address or a link
+  the session made, without `iw` a Wi-Fi interface it added, the one iwd makes
+  in place of the decoy's by default when it starts included, so on a decoy
+  without `iw` a session that runs iwd ends in a power-off. The machine turns
+  off as with `--poweroff`, and the next boot is the plain decoy. Nothing on
+  the screen says why: a line there would tell anyone watching that a hidden
+  session had just ended. A missing tool with nothing to undo (the stock NixOS
+  decoy without `nft`, a session that added no Wi-Fi interface and ran no iwd)
+  returns as before. The network settings, the hostname and the per-link state
+  below `/run` do not count: the way back writes them back and does not power
+  off over them, also when a write fails. Neither does what it leaves alone,
+  listed below.
 
   The decoy's NetworkManager therefore does not adopt a session link as
   connected externally or record a profile for it in
@@ -591,7 +593,7 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
 | Hidden programs | stopped in order by the shutdown | killed at once (`cgroup.kill` on every cgroup but PID 1's and its own) | — |
 | Hidden backend | marked for deferred removal; closed by the switch | marked for deferred removal; closed by the switch | — |
 | `/run` scrub, `utab` restore, kmsg cursor | Yes | Yes | — |
-| Ends at | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a network change the way back cannot undo: off) | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a network change the way back cannot undo: off; `--reboot`: a full reboot) | the decoy, unchanged |
+| Ends at | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead, see [How it works](#how-it-works): off) | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead: off; `--reboot`: a full reboot) | the decoy, unchanged |
 | Detaches a leftover `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in | — | on the decoy: Yes | Yes |
 | Reads the configuration first | Yes (falls back to defaults) | No: it runs before argument parsing, the configuration and logging | Yes |
 
@@ -641,11 +643,10 @@ autologin, like a restart of the desktop.
 
 - With `--poweroff` the machine powers off instead. RAM decays: the strongest
   answer to a seizure. Leave it off for a few minutes.
-- When the way back cannot undo what the session did to the links, MAC
-  addresses, policy-routing rules or firewall tables (see
-  [How it works](#how-it-works)), it powers off instead of returning, as after
-  `deactivate`. Nothing on the screen says why, so to an observer it looks
-  like a plain shutdown.
+- Wherever the way back powers off instead of returning after `deactivate`
+  (see [How it works](#how-it-works)), it does after a plain emergency too.
+  Nothing on the screen says why, so to an observer it looks like a plain
+  shutdown.
 - If the way back cannot be prepared, emergency powers off instead: a
   soft-reboot without a prepared decoy root would restart the hidden userspace
   in place. If even the power-off cannot be enqueued, it asks the kernel to

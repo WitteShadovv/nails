@@ -27,12 +27,13 @@
 //!   the hidden units have stopped, put the decoy's network state back
 //!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
 //!   the decoy mounts the way back restored and write the kmsg cursor last.
-//!   When the network state cannot be put back (a device keeps the session's
-//!   MAC address, a link, rule or table of the session's cannot be deleted,
-//!   or a part cannot be read back: [`network::Kept::failed`]), it powers off
-//!   instead of returning: that state lives only in the kernel, where a
-//!   power-off erases it. Nothing on the screen says why, as a line there
-//!   would tell anyone watching that a hidden session has just ended.
+//!   When what it sets out to undo of the network state is still the
+//!   session's afterwards (a decoy device keeps another MAC address, a link,
+//!   rule or table of the session's is still there, or a part cannot be read
+//!   back: [`network::Kept::failed`]), it powers off instead of returning:
+//!   that state lives only in the kernel, where a power-off erases it.
+//!   Nothing on the screen says why, as a line there would tell anyone
+//!   watching that a hidden session has just ended.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
