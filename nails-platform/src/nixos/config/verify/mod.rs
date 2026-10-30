@@ -9,10 +9,11 @@
 //! decoy, so an examination reads it. [`verify_base_config_clean`] reports
 //! each line that names the hidden volume (its device, its mount point, the
 //! units systemd names after them, its mapping where a line opens it, or the
-//! storage it lives on, by its device paths, every link udev made for it, its
-//! uuids and its labels) or NAILS, with the file, the line, the matched text
-//! and why it counts. Only `.nix` files are read: other files in `/etc/nixos`
-//! and the history of a git repository there are not.
+//! storage it lives on, by its device paths, its kernel names, every link
+//! udev made for it, its uuids and its labels) or NAILS, with the file, the
+//! line, the matched text and why it counts. Only `.nix` files are read:
+//! other files in `/etc/nixos` and the history of a git repository there are
+//! not.
 
 mod nix_text;
 mod scan;
@@ -46,9 +47,12 @@ pub enum ReferenceKind {
     DeviceUnit,
     /// What the hidden volume is stored on, as the system names it below its
     /// mount: the partition or disk (`/dev/sdb2`) and the image file behind a
-    /// loop device; every link udev made for one of them or for the hidden
-    /// volume's own device (`/dev/disk/by-id/…`, `by-path`, `by-partlabel`,
-    /// `by-uuid`, `by-label`, the LVM path `/dev/<vg>/<lv>`); their uuids (the
+    /// loop device; the kernel's name of each of them and of the hidden
+    /// volume's own device, alone (`KERNEL=="sdb2"`) or as a device node
+    /// (`/dev/dm-0`), and its `/dev/block/<major>:<minor>` link; every link
+    /// udev made for one of them or for the hidden volume's own device
+    /// (`/dev/disk/by-id/…`, `by-path`, `by-partlabel`, `by-uuid`,
+    /// `by-label`, the LVM path `/dev/<vg>/<lv>`); their uuids (the
     /// partition's, the LUKS header's, the filesystem's: `UUID=<uuid>`); and
     /// their labels as tags (`LABEL=`, `PARTLABEL=`, a `fileSystems` entry's
     /// `label`).
@@ -74,7 +78,7 @@ impl ReferenceKind {
             ReferenceKind::DeviceUnit => "the unit systemd names after the hidden volume's device",
             ReferenceKind::Storage => {
                 "a name of the device or file the hidden volume is stored on (a device node, a \
-                 link, a uuid or a label)"
+                 kernel name, a link, a uuid or a label)"
             }
             ReferenceKind::MountPoint => "the hidden volume's mount point",
             ReferenceKind::MountUnit => {
@@ -101,7 +105,9 @@ impl ReferenceKind {
             ReferenceKind::Storage => {
                 "Remove it from that file long before the next use and rebuild the decoy. If \
                  it is a label the decoy's own device carries too, give the hidden volume \
-                 another label instead."
+                 another label instead. If it is a kernel name such as /dev/dm-1 that the \
+                 decoy's own device holds at other times, name that device by its uuid \
+                 instead."
             }
             _ => "Remove it from that file long before the next use and rebuild the decoy.",
         }
@@ -161,7 +167,9 @@ struct Marker {
 ///   (`dev-mapper-data.device`);
 /// - what the volume is stored on, read from the system below its mount as
 ///   long as nothing else is built on it ([`storage`]): the partition or
-///   disk, the image file behind a loop device, every link udev made for
+///   disk, the image file behind a loop device, the device node of each of
+///   these layers and of the volume's own device (`/dev/sdb2`, `/dev/dm-0`)
+///   and its `/dev/block/<major>:<minor>` link, every link udev made for
 ///   them or for the volume's own device (`/dev/disk/by-id/…`, `by-path`,
 ///   `by-partlabel`, `by-uuid`, `by-label`, `/dev/<vg>/<lv>`), their uuids
 ///   (partition, LUKS, filesystem) and their labels as tags (`LABEL=`,
@@ -182,27 +190,41 @@ struct Marker {
 ///   instance of `systemd-cryptsetup@data.service`, or the first field of a
 ///   crypttab line at the start of a line or a string (`data UUID=… none
 ///   luks`, `data /var/lib/vault.img none luks`);
+/// - the kernel's name of each layer of that storage as a whole word, as a
+///   udev rule writes it (`KERNEL=="sdb2"`; `sdb20` does not count), after
+///   the markers above, so a line that names the storage by a path reports
+///   the path;
 /// - the word `nails`.
 ///
-/// A unit name with a character systemd escapes (`mnt-my\x2ddata.mount`)
-/// counts in both spellings: with one backslash, as a comment or an indented
-/// `''…''` string holds it, and with two, as a double-quoted string writes it.
-/// Matching ignores ASCII case. Ordinary configuration passes: the mapping
-/// name as an ordinary word (`description = "Back up user data"` with the
-/// mapping `data`, `cryptsetup` beside it in a package list, or in prose that
-/// puts none of those verbs between `cryptsetup` and the name, such as
+/// A path counts however many slashes separate its parts (`/mnt//data`,
+/// `/dev/mapper//data`); `/srv//mnt/data` is `/srv/mnt/data` and does not
+/// count. A path counts behind the prefixes systemd allows before one where
+/// they start a value (`EnvironmentFile=-/mnt/data/app.env`), but not inside
+/// another path (`/srv/-/mnt/data`). A unit name with a character systemd
+/// escapes (`mnt-my\x2ddata.mount`) counts in both spellings: with one
+/// backslash, as a comment or an indented `''…''` string holds it, and with
+/// two, as a double-quoted string writes it. Matching ignores ASCII case.
+/// Ordinary configuration passes: the mapping name as an ordinary word
+/// (`description = "Back up user data"` with the mapping `data`,
+/// `cryptsetup` beside it in a package list, or in prose that puts none of
+/// those verbs between `cryptsetup` and the name, such as
 /// `# cryptsetup keeps the data safe`) or a directory
 /// (`/var/lib/postgresql/data`), the decoy's own mapping whose name ends like
-/// the hidden one (`user-data`), the word `hidden` (GRUB's
+/// the hidden one (`user-data`), another device's kernel name (`sdb20` beside
+/// `sdb2`, `/dev/dm-1` beside `/dev/dm-0`), the word `hidden` (GRUB's
 /// `timeoutStyle = "hidden"`), or an option such as `services.plausible`.
 ///
 /// The scan reads text and evaluates no Nix. A mapping defined through a
 /// `let` binding, `lib.listToAttrs` or an interpolated name
 /// (`luks.devices.${"data"}`) is not followed; its device still counts when
-/// it is written as above. Names of the storage that are not matched: the
-/// kernel's name without `/dev/` (`KERNEL=="sdb2"` in a udev rule),
-/// `/dev/dm-<n>`, `/dev/block/<major>:<minor>`, and a path written with a
-/// doubled slash (`/dev/mapper//data`).
+/// it is written as above. A path written with a `.` or `..` component or
+/// relative to the file (`/mnt/./data`, `../../mnt/data`) is not matched,
+/// and neither are the units systemd names after the storage's devices
+/// (`dev-sdb2.device`) nor the storage's `<major>:<minor>` outside
+/// `/dev/block/` (`8:18` in a device-mapper table). A kernel name counts as
+/// the kernel gives it while the scan runs: `/dev/dm-1` is refused while the
+/// hidden volume's mapping holds that number, also where the decoy means a
+/// device of its own that holds it at other times.
 ///
 /// This is a best-effort trace scan, not a proof: a clean result means none of
 /// the known markers were found, which is weaker than the base being
@@ -330,6 +352,12 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
             },
             ReferenceKind::MapperName,
         ));
+    }
+
+    // A kernel name is a short word (`sdb2`): it comes after every other
+    // marker, so a line that names the storage by a path reports the path.
+    for name in below.kernel_names {
+        markers.push(marker(Pattern::Word(name), ReferenceKind::Storage));
     }
 
     markers.push(marker(

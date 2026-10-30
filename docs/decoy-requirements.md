@@ -332,10 +332,14 @@ logind.
     link of a mapping called `data`), or the unit systemd names after it
     (`dev-mapper-data.device`);
   - what it is stored on, unless the decoy's own volumes sit on it too: its
-    device paths, every link udev made for it, its uuids and its labels.
-    NAILS reads the layers below the mount from the kernel and their names
-    from udev: the partition or disk as a whole path (`/dev/sdb2`), the
-    mapping below a logical volume, the image file behind a loop device;
+    device paths, its kernel names, every link udev made for it, its uuids
+    and its labels. NAILS reads the layers below the mount from the kernel
+    and their names from udev: the partition or disk as a whole path
+    (`/dev/sdb2`), the mapping below a logical volume, the image file behind
+    a loop device; the kernel's name of each of these layers and of the
+    hidden volume's own device, alone as a udev rule writes it
+    (`KERNEL=="sdb2"`, but not `sdb20`) or as its device node (`/dev/dm-0`),
+    and its `/dev/block/<major>:<minor>` link (`/dev/block/8:18`);
     every link udev made for one of these layers or for the hidden volume's
     own device, among them each `/dev/disk/by-id`, `by-path`, `by-partlabel`,
     `by-partuuid`, `by-diskseq`, `by-uuid` and `by-label` name and the LVM
@@ -371,7 +375,19 @@ logind.
   A unit name with a character systemd escapes counts in both spellings: with
   one backslash, as a comment or an indented `''…''` string holds it
   (`mnt-my\x2ddata.mount` for `/mnt/my-data`), and with two, as a
-  double-quoted string must write it (`"mnt-my\\x2ddata.mount"`).
+  double-quoted string must write it (`"mnt-my\\x2ddata.mount"`). A path
+  counts however many slashes separate its parts: `/mnt//data` and
+  `/dev/mapper//data` are refused as `/mnt/data` and `/dev/mapper/data` are,
+  while `/srv//mnt/data`, which is `/srv/mnt/data`, passes. A path counts
+  behind the prefixes systemd allows before one too, where they start the
+  value (`EnvironmentFile=-/mnt/data/app.env`, `ExecStart=+/mnt/data/bin/app`),
+  but not where such a prefix is part of another path (`/srv/-/mnt/data`).
+
+  A kernel name counts as the kernel gives it while the check runs. The
+  numbers of `dm-<n>` and `loop<n>` are handed out as the devices appear, so
+  a line that names a device of the decoy that way (`/dev/dm-1`) is refused
+  while the hidden volume's storage holds that number. Name the decoy's own
+  devices by their uuid or label instead.
 
   Ordinary configuration passes. The mapping name as an ordinary word passes
   (`description = "Back up user data"`, `cryptsetup` next to it in a package
@@ -379,19 +395,22 @@ logind.
   the name, such as `# cryptsetup keeps the data safe`, or the comment
   `nixos-generate-config` writes above `system.stateVersion`), and so do a
   directory such as `/var/lib/postgresql/data`, the decoy's own mapping whose
-  name merely ends like the hidden one (`user-data` beside `data`), the word
-  `hidden` and options such as `services.plausible`.
+  name merely ends like the hidden one (`user-data` beside `data`), another
+  device's kernel name (`sdb20` beside `sdb2`, `/dev/dm-1` beside
+  `/dev/dm-0`), the word `hidden` and options such as `services.plausible`.
 
   The check reads text; it does not evaluate Nix. It does not follow a
   mapping defined through a `let` binding, `lib.listToAttrs` or an
-  interpolated name (`luks.devices.${"data"}`), and it does not know these
-  names of the storage: the kernel's name without `/dev/` (`KERNEL=="sdb2"`
-  in a udev rule), `/dev/dm-<n>`, `/dev/block/<major>:<minor>`, and a path
-  written with a doubled slash (`/dev/mapper//data`, `/mnt//data`). Keep
-  such lines out of `/etc/nixos` yourself; an entry defined in one of these
-  ways still counts by its device when that is written in one of the forms
-  above. Run `nixos-generate-config` only while the hidden volume is closed:
-  it writes an entry for every mounted filesystem.
+  interpolated name (`luks.devices.${"data"}`), nor a path written with a
+  `.` or `..` component or relative to the file (`/mnt/./data`,
+  `../../mnt/data`), and it does not know these names of the storage: the
+  units systemd names after its device nodes and links (`dev-sdb2.device`,
+  `dev-dm\x2d0.device`), and its `<major>:<minor>` outside `/dev/block/`
+  (`8:18` in a device-mapper table). Keep such lines out of `/etc/nixos`
+  yourself; an entry defined in one of these ways still counts by its device
+  when that is written in one of the forms above. Run
+  `nixos-generate-config` only while the hidden volume is closed: it writes
+  an entry for every mounted filesystem.
 
   The check reads `.nix` files only. Keep the other files in `/etc/nixos`
   (notes, scripts, a README) free of these names too, and, where
