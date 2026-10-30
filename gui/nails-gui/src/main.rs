@@ -70,7 +70,9 @@ fn parse(args: &[OsString]) -> Option<Args> {
 }
 
 fn main() -> ExitCode {
-    // Before anything else, so every thread the window starts inherits it.
+    // Before anything else, so every thread the window starts inherits it
+    // (a library's thread that names itself shows its own name, such as the
+    // D-Bus support's `async-io`).
     if let Err(error) = process::name_neutrally() {
         eprintln!("The window could not name its process: {error}");
         return ExitCode::FAILURE;
