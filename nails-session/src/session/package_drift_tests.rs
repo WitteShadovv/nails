@@ -1003,3 +1003,21 @@ fn a_dpkg_run_the_decoy_did_not_finish_cannot_be_judged_against_a_copy() {
         "{result:?}"
     );
 }
+
+#[test]
+fn a_judge_of_many_packages_names_an_architecture_where_a_name_has_several() {
+    // Twenty thousand packages the decoy installed since, one of them of two
+    // architectures.
+    let mut decoy: Vec<dpkg::Package> = (0..20_000)
+        .map(|i| deb(&format!("p{i}"), Some("amd64"), "1"))
+        .collect();
+    decoy.push(deb("p7", Some("i386"), "1"));
+    let Verdict::Drifted(Drift::Stale(changes)) = judge_dpkg(&decoy, &[], &BTreeSet::new()) else {
+        panic!("not drifted");
+    };
+    assert_eq!(changes.len(), 20_001);
+    let named: BTreeSet<&str> = changes.iter().map(|change| change.name.as_str()).collect();
+    for name in ["p7:amd64", "p7:i386", "p8", "p19999"] {
+        assert!(named.contains(name), "{name}");
+    }
+}

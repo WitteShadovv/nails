@@ -818,3 +818,21 @@ fn without_the_mount_table_the_reads_follow_no_link_on_the_decoy() {
     let (_, _, rpm) = &verdicts[2];
     assert!(matches!(rpm, Verdict::Drifted(_)), "{rpm:?}");
 }
+
+#[test]
+fn a_judge_of_many_rpm_packages_names_an_architecture_where_a_name_has_several() {
+    // Twenty thousand packages the decoy installed since, one of them of two
+    // architectures.
+    let mut decoy: Vec<rpm::Package> = (0..20_000)
+        .map(|i| package(&format!("p{i}"), Some("x86_64"), "1"))
+        .collect();
+    decoy.push(package("p7", Some("i686"), "1"));
+    let Verdict::Drifted(Drift::Stale(changes)) = judge_rpm(&decoy, &[], &BTreeSet::new()) else {
+        panic!("not drifted");
+    };
+    assert_eq!(changes.len(), 20_001);
+    let named: BTreeSet<&str> = changes.iter().map(|change| change.name.as_str()).collect();
+    for name in ["p7.x86_64", "p7.i686", "p8", "p19999"] {
+        assert!(named.contains(name), "{name}");
+    }
+}
