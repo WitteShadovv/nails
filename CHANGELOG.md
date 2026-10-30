@@ -350,6 +350,10 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/systemd/journald.conf` gone, let a decoy pass whose journald keeps its `auto` default and
   persists to an on-disk `/var/log/journal`. When NAILS cannot read the running release, a main
   file outside `/etc` that changes what is read leaves the configuration unread.
+- `check` no longer hangs when `/usr/lib/systemd/journald.conf`, whose commented `#Storage=` NAILS
+  takes for the vendor's default, is a FIFO, and no longer reads without end when it is a device
+  such as `/dev/zero`. A vendor file that is no regular file, or one over 1 MiB, gives no such hint,
+  so the default stays the fail-closed one.
 - A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
   equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
   activation, naming the folder, instead of passing the pre-flight check and then failing the

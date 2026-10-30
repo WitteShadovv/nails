@@ -405,6 +405,22 @@ pub fn read_config_text<F: Filesystem>(fs: &F, path: &Path) -> Option<String> {
     read_listed_config(fs, path).ok().flatten()
 }
 
+/// The most a file read for a hint may hold, far beyond any real configuration.
+const MAX_HINT_BYTES: u64 = 1 << 20;
+
+/// The text of `path`, as [`read_config_text`] reads it, for a caller that
+/// only takes a hint from it and does without one: `None` unless it is a
+/// regular file of at most [`MAX_HINT_BYTES`]. The type is looked at without
+/// opening the file, as [`config_files`] looks at it: a FIFO would block the
+/// read, and a device such as `/dev/zero` can be read without end.
+pub fn read_hint_text<F: Filesystem>(fs: &F, path: &Path) -> Option<String> {
+    if !matches!(entry(fs, path), Entry::Regular) || fs.file_size(path).ok()? > MAX_HINT_BYTES {
+        return None;
+    }
+    // A file that grew since its size was read is no hint either.
+    read_config_text(fs, path).filter(|text| text.len() as u64 <= MAX_HINT_BYTES)
+}
+
 /// [`read_config_text`] for a file that [`config_files`] listed: `None` when it
 /// is gone, as systemd skips a file that is gone when it opens it, and
 /// [`Unread`] when it is there and NAILS cannot read it.

@@ -137,9 +137,11 @@ fn resolve_storage(
 /// hint: a distro that keeps journald's pre-259 `auto` default documents it
 /// there, while a stale `/etc` comment is never trusted. The last commented
 /// `Storage=` under `[Journal]` wins, as journald would fold real assignments.
+/// A vendor file that is no regular file, or a larger one than any real
+/// configuration, gives no hint ([`systemd_conf::read_hint_text`]).
 fn vendor_storage_hint<F: Filesystem>(fs: &F, root: &Path) -> Option<JournaldStorage> {
     let path = root.join(VENDOR_CONF_DIR).join(JOURNALD_CONF);
-    let text = systemd_conf::read_config_text(fs, &path)?;
+    let text = systemd_conf::read_hint_text(fs, &path)?;
     let mut in_section = false;
     let mut hint = None;
     for line in text.lines() {
@@ -605,6 +607,58 @@ mod tests {
             "usr/lib/systemd/journald.conf",
             "[Journal]\nStorage=persistent\n",
         );
+        assert_eq!(vendor_storage_hint(&RealFilesystem, root), None);
+    }
+
+    /// A vendor file that is no regular file gives no hint, and is not opened:
+    /// a FIFO there blocked `check` in the open for good. The read runs on a
+    /// thread with a deadline of its own; past it, the test opens the FIFO's
+    /// other end so the blocked read ends, and fails.
+    #[test]
+    fn a_vendor_fifo_gives_no_hint_and_does_not_block() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let fifo = root.join(VENDOR_CONF_DIR).join(JOURNALD_CONF);
+        std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let reader_root = root.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(vendor_storage_hint(&RealFilesystem, &reader_root));
+        });
+        match receiver.recv_timeout(Duration::from_secs(30)) {
+            Ok(hint) => assert_eq!(hint, None),
+            Err(_) => {
+                use rustix::fs::{Mode, OFlags, open};
+                let _writer = open(&fifo, OFlags::WRONLY | OFlags::NONBLOCK, Mode::empty());
+                panic!("reading the vendor FIFO blocked for 30 s");
+            }
+        }
+    }
+
+    /// A vendor file of up to 1 MiB gives its hint. A larger one, more than
+    /// any real configuration holds, gives none: it is not read into memory,
+    /// and the default stays the fail-closed one.
+    #[test]
+    fn a_vendor_file_over_1_mib_gives_no_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut text = String::from("[Journal]\n#Storage=auto\n#");
+        text.push_str(&"x".repeat((1 << 20) - text.len() - 1));
+        text.push('\n');
+        assert_eq!(text.len(), 1 << 20);
+        write(root, "usr/lib/systemd/journald.conf", &text);
+        assert_eq!(
+            vendor_storage_hint(&RealFilesystem, root),
+            Some(JournaldStorage::Auto)
+        );
+
+        text.insert(text.len() - 1, 'x');
+        write(root, "usr/lib/systemd/journald.conf", &text);
         assert_eq!(vendor_storage_hint(&RealFilesystem, root), None);
     }
 
