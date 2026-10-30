@@ -116,15 +116,23 @@ of this changelog for that version becomes the release notes word for word, and
   problem and its fix; a hidden session's status; a page for a status the engine could not build,
   such as settings it cannot read, which names no place; and a page for each way a session can end
   (another release, a refused request, a lost connection, an answer it cannot read, a password
-  pkexec could not get). A dismissed password dialog closes it. Its client and worker already run an
-  operation the engine confirms first as a plan and its apply, and the question dialog for the
-  answer, which sends the plan's token back or withdraws the plan at once, keeps the keyboard until
-  it is answered and Escape cancels it, is ready for the operation pages to come, though no page
-  opens it yet. Every control and row is a Tab stop with an accessible name. The names a window
-  list, a process list or an accessibility tool shows are neutral: the title is "Session", and the
-  app id, the program (`<hidden-root>/gui/bin/session`), the process name and the application name a
-  screen reader reads are all `session`. Its tests run without a display, on Slint's testing
-  platform.
+  pkexec could not get). A dismissed password dialog closes it. An operation the engine confirms
+  first runs as a plan and its apply, and its question sends the plan's token back or withdraws the
+  plan at once, and keeps the keyboard until it is answered, Escape cancelling it. A ready decoy
+  activates from the window: Activate… asks first, with what the activation's plan says (the logout,
+  each risk allowed, the warning for a root accepted on this computer's storage, the decoy home, a
+  hidden system to build, a missing settings file); the steps then show as they stream; Cancel or
+  Escape stops the activation before its point of no return by hanging up on the helper, which
+  unwinds it and gives its answer last; and past that point the page reads "Logging Out" and takes
+  no input, not even its Close. A refused check that the CLI lets one allow for one run with a flag
+  (a decoy that keeps a persistent record, `--allow-persistent-decoy`) offers "Allow for This
+  Activation…", whose button acts only once the word "allow" is typed; the window then checks again
+  with the flag, names the risk on the page and in the question, and gives the flag to that one
+  activation, storing nothing. Every control and row is a Tab stop with an accessible name. The
+  names a window list, a process list or an accessibility tool shows are neutral: the title is
+  "Session", and the app id, the program (`<hidden-root>/gui/bin/session`), the process name and the
+  application name a screen reader reads are all `session`. Its tests run without a display, on
+  Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

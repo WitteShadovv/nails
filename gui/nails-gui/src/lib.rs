@@ -54,4 +54,4 @@ mod markup {
     slint::include_modules!();
 }
 
-pub use markup::{Adw, AppWindow, CheckLine, Fact, Outcome};
+pub use markup::{Adw, AppWindow, CheckLine, Fact, Outcome, StepLine};

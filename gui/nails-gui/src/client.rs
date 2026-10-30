@@ -254,6 +254,17 @@ impl Client {
         &self.engine
     }
 
+    /// Another handle on the window's end of the pipe, for
+    /// [`crate::worker::HangUp`]: once its writing half is shut, the helper
+    /// reads the window as gone.
+    ///
+    /// # Errors
+    ///
+    /// The error of duplicating the descriptor.
+    pub fn hang_up_handle(&self) -> std::io::Result<UnixStream> {
+        self.output.try_clone()
+    }
+
     /// Run `op` and return its answer, passing each event of it to
     /// `on_event` as it comes. A plan goes through [`Client::plan`] instead,
     /// and an apply through [`Client::apply`].

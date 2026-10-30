@@ -166,6 +166,31 @@ pub struct Readiness {
     pub checks: Vec<CheckRow>,
     /// The tally.
     pub summary: Summary,
+    /// The effective configuration, as far as the question before an
+    /// activation names it.
+    #[serde(default)]
+    pub config: Option<ReadinessConfig>,
+}
+
+/// What the window reads of the configuration a check reports.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ReadinessConfig {
+    /// Whose home the session runs in: `shared-home` (the decoy's) or
+    /// `fresh-home`.
+    #[serde(default)]
+    pub persona_mode: Option<String>,
+}
+
+impl Readiness {
+    /// Whether the session would run in the decoy's home, where its accounts
+    /// and keys are live.
+    #[must_use]
+    pub fn in_decoy_home(&self) -> bool {
+        self.config
+            .as_ref()
+            .and_then(|config| config.persona_mode.as_deref())
+            == Some("shared-home")
+    }
 }
 
 /// One check of a readiness report.

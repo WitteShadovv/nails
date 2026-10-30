@@ -3,7 +3,9 @@
 
 use super::*;
 use crate::client::Answer;
-use nails_api::protocol::{DiscardPlanArgs, DiscardPlanData, ErrorCode, Hello, ProtocolError};
+use nails_api::protocol::{
+    ActivateArgs, CheckArgs, DiscardPlanArgs, DiscardPlanData, ErrorCode, Hello, ProtocolError,
+};
 use serde_json::{Value, json};
 
 fn engine() -> Option<PathBuf> {
@@ -113,7 +115,7 @@ fn the_decoys_page_is_its_check_which_runs_when_the_window_opens() {
 }
 
 #[test]
-fn a_ready_decoy_counts_its_checks_lists_its_warnings_and_offers_to_check_again() {
+fn a_ready_decoy_counts_its_checks_lists_its_warnings_and_offers_to_activate() {
     let mut model = on_the_decoy();
     model.apply(Update::Running(Kind::Check));
     model.apply(check(
@@ -133,12 +135,15 @@ fn a_ready_decoy_counts_its_checks_lists_its_warnings_and_offers_to_check_again(
     );
     assert_eq!(page.checks.len(), 1);
     assert_eq!(page.checks[0].word, "Warning");
+    assert_eq!(page.fix, "");
+    assert_eq!(page.action, Some("Activate\u{2026}"));
+    assert_eq!(page.action_kind, ActionKind::Suggested);
     assert_eq!(
-        page.fix,
-        "Activate from a terminal: sudo /mnt/data/nails activate"
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Activate(
+            ActivateArgs::default()
+        ))))
     );
-    assert_eq!(page.action, Some("Check Again"));
-    assert_eq!(model.action(), Some(Ask::Check(CheckArgs::default())));
 }
 
 #[test]
@@ -173,6 +178,14 @@ fn a_decoy_that_is_not_ready_lists_its_problems_first_each_with_its_fix() {
     );
     assert_eq!(page.fix, "", "nothing to activate");
     assert_eq!(page.action, Some("Check Again"));
+    assert!(
+        page.checks.iter().all(|check| check.allow.is_none()),
+        "neither problem can be allowed"
+    );
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Check(CheckArgs::default())))
+    );
 }
 
 #[test]
@@ -324,8 +337,9 @@ fn a_refused_switch_or_an_abnormal_end_is_said_above_the_check() {
     assert_eq!(page.description, text::DECOY_ENDED_ABNORMALLY);
     assert_eq!(
         page.fix,
-        "Run sudo /mnt/data/nails recover to reset the record\nActivate from a terminal: sudo /mnt/data/nails activate"
+        "Run sudo /mnt/data/nails recover to reset the record"
     );
+    assert_eq!(page.action, Some(text::ACTIVATE));
 }
 
 #[test]
@@ -513,6 +527,7 @@ fn discard_question(data: &PlanData) -> Question {
         body: format!("{} goes.", data.target),
         confirm: "Discard".to_string(),
         destructive: true,
+        ..Question::default()
     }
 }
 
@@ -542,7 +557,7 @@ fn a_plan_asks_its_question_once_it_holds_and_the_answer_applies_or_withdraws_it
     );
     assert!(question.destructive);
 
-    assert_eq!(model.answer(true), Ask::Apply);
+    assert_eq!(model.answer(true), Some(Ask::Apply));
     assert_eq!(model.page().question, None);
     model.apply(Update::Running(Kind::Apply));
     let follow = model.apply(answered(
@@ -568,7 +583,7 @@ fn a_withdrawn_or_unasked_plan_leaves_no_question() {
         discard_question,
     );
     model.apply(Update::Planned(discard_data()));
-    assert_eq!(model.answer(false), Ask::Withdraw);
+    assert_eq!(model.answer(false), Some(Ask::Withdraw));
     model.apply(Update::Withdrawn);
     assert_eq!(model.page().question, None);
     // A plan no screen asked for is dropped at once.

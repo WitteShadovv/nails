@@ -2,32 +2,44 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 // A question over the window, as libadwaita's alert dialog: a heading, the
-// sentence it asks about, Cancel and the action it confirms.
+// sentence it asks about, Cancel and the action it confirms. A question that
+// asks for a word to be typed first (allowing a risk is never one click) has
+// a field for it, and its confirming button acts only once the word is there.
 //
-// It holds the keyboard while it is open. Focus starts on Cancel; Tab and
-// Shift+Tab move between its two buttons and never leave it, because every
-// control behind it is unreachable while it is open (the window passes that
-// down); Escape cancels from anywhere in it; Return presses only the button
-// that has the focus, so it never confirms by itself. The pointer cannot
-// reach the window behind it either.
+// It holds the keyboard while it is open. Focus starts on Cancel, or in the
+// field when there is one; Tab and Shift+Tab move between its controls and
+// never leave it, because every control behind it is unreachable while it is
+// open (the window passes that down); Escape cancels from anywhere in it;
+// Return presses only the button that has the focus, so it never confirms by
+// itself. The pointer cannot reach the window behind it either.
 
 import { Adw } from "theme.slint";
 import { Button, ButtonKind, ButtonShape } from "button.slint";
+import { WordEntry } from "entry.slint";
 
 export component AlertDialog {
     in property <string> heading;
     in property <string> body;
     in property <string> confirm-label;
     in property <bool> destructive;
+    // The prompt of the word to type first; empty when there is none.
+    in property <string> prompt;
+    // The confirming button waits for that word.
+    in property <bool> locked;
     // Called with true for the confirming button, false for Cancel or Escape.
     callback answered(confirmed: bool);
+    // Called with what is in the field each time it changes.
+    callback typed(text: string);
 
     accessible-role: groupbox;
     accessible-label: root.heading;
     accessible-description: root.body;
 
     init => {
-        cancel.focus();
+        // The field takes the focus itself when there is one.
+        if (root.prompt == "") {
+            cancel.focus();
+        }
     }
 
     // The dimming over the window, and nothing underneath gets the pointer.
@@ -83,6 +95,13 @@ export component AlertDialog {
                     accessible-role: none;
                 }
 
+                if root.prompt != "": WordEntry {
+                    prompt: root.prompt;
+                    edited(text) => {
+                        root.typed(text);
+                    }
+                }
+
                 HorizontalLayout {
                     padding-top: 22px;
                     spacing: 12px;
@@ -107,6 +126,7 @@ export component AlertDialog {
                         shape: ButtonShape.response;
                         surface-fg: Adw.dialog-fg;
                         kind: root.destructive ? ButtonKind.destructive : ButtonKind.suggested;
+                        enabled: !root.locked;
                         clicked => {
                             root.answered(true);
                         }

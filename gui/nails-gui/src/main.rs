@@ -29,7 +29,7 @@ use nails_gui::launch::{self, PKEXEC, Start};
 use nails_gui::model::Model;
 use nails_gui::process;
 use nails_gui::text;
-use nails_gui::ui::Controller;
+use nails_gui::ui::{Controller, Hooks};
 use nails_gui::worker::{self, Connect};
 use slint::ComponentHandle;
 
@@ -137,7 +137,7 @@ fn open(connect: Connect, engine: Option<PathBuf>) -> Result<(), slint::Platform
     // the window with it; it names nothing about NAILS.
     slint::set_xdg_app_id(text::APP_ID)?;
     let waits_for_password = matches!(connect, Connect::Pkexec { .. });
-    let asks = worker::spawn(connect, |update| {
+    let worker = worker::spawn(connect, |update| {
         // On the window's thread, once its event loop runs.
         let _ = slint::invoke_from_event_loop(move || {
             CONTROLLER.with(|controller| {
@@ -147,22 +147,25 @@ fn open(connect: Connect, engine: Option<PathBuf>) -> Result<(), slint::Platform
             });
         });
     });
+    let line = worker.hang_up();
     let weak = window.as_weak();
-    let controller = Controller::new(
-        &window,
-        Model::new(engine, waits_for_password),
-        move |ask| {
-            // The worker is gone only when the session is over, which the
-            // page already says.
-            let _ = asks.send(ask);
-        },
-        move || {
+    let hooks = Hooks {
+        // The worker is gone only when the session is over, which the page
+        // already says.
+        ask: Box::new(move |ask| {
+            let _ = worker.ask(ask);
+        }),
+        hang_up: Box::new(move || {
+            let _ = line.hang_up();
+        }),
+        close: Box::new(move || {
             if let Some(window) = weak.upgrade() {
                 let _ = window.hide();
             }
             let _ = slint::quit_event_loop();
-        },
-    );
+        }),
+    };
+    let controller = Controller::new(&window, Model::new(engine, waits_for_password), hooks);
     CONTROLLER.with(|slot| *slot.borrow_mut() = Some(controller));
     window.show()?;
     // The loop ends with the window, whether its own Close or the window
