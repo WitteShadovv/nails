@@ -683,7 +683,8 @@ fn build(
 /// The filesystems of these units are put in place after the fstabs': one
 /// that is the parent of an fstab entry's mount point, both mounted now,
 /// covers that entry's filesystem in the next root, as a later fstab batch
-/// does an earlier one's.
+/// does an earlier one's. The hidden volume is bound again over one at its
+/// own parent ([`apply_mounts`]).
 fn keep_units_off(
     paths: &Paths,
     layout: &Layout,
@@ -1015,9 +1016,13 @@ pub(super) fn target_in_nextroot(paths: &Paths, target: &Path) -> Result<PathBuf
 }
 
 /// Put the mounts `decisions` call for in place inside the next root, parents
-/// first, skipping the targets in `done`. The hidden volume
-/// (`inputs.hidden_root`) is bound unless it is in `done` already, and the
-/// upper of each overlay is labelled by `inputs.labels` ([`make_layer`]).
+/// first, skipping the targets in `done`, and return those put in place. The
+/// hidden volume (`inputs.hidden_root`) is bound unless it is in `done`
+/// already, and bound again when a mount put in place now is at one of its
+/// parents: it would cover the hidden volume's bind in the next root, as a
+/// later batch of decisions (the units outside the fstab) comes after the
+/// bind. The upper of each overlay is labelled by `inputs.labels`
+/// ([`make_layer`]).
 fn apply_mounts(
     paths: &Paths,
     layout: &Layout,
@@ -1045,9 +1050,26 @@ fn apply_mounts(
     });
     wanted.retain(|m| !done.contains(&m.target));
     wanted.sort_by_key(|m| m.target.components().count());
-    let first = done.len();
+    let hidden_root = inputs.hidden_root;
+    let covered = done.iter().any(|target| target == hidden_root)
+        && wanted
+            .iter()
+            .any(|m| m.target != hidden_root && hidden_root.starts_with(&m.target));
+    let mut placing: Vec<(Option<usize>, &PolicyMount)> = Vec::new();
     for (offset, mount) in wanted.iter().enumerate() {
-        let index = first + offset;
+        placing.push((Some(done.len() + offset), mount));
+    }
+    let rebind = PolicyMount {
+        target: hidden_root.to_path_buf(),
+        kind: PolicyMountKind::HiddenVolume,
+    };
+    if covered {
+        // After every parent, before what is deeper: the order is stable.
+        placing.push((None, &rebind));
+        placing.sort_by_key(|(_, m)| m.target.components().count());
+    }
+    for (index, mount) in placing {
+        let index = index.unwrap_or_default();
         let source = if mount.kind == PolicyMountKind::HiddenVolume {
             mount.target.clone()
         } else {
