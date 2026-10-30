@@ -28,8 +28,9 @@
 # is failed at that moment: a unit that failed while a switch stopped the old
 # system and that the new system started again is not in it, nor is one that
 # fails after it. After the second session, which pushes the kernel's process
-# numbers far on, logind and the getty the decoy starts again carry numbers in
-# the power-of-two range the decoy's fresh boot gave them.
+# numbers far on, the getty the decoy starts again carries a number in the
+# power-of-two range the decoy's fresh boot gave it, and logind a number below
+# the one the session pushed the counter to.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -314,9 +315,14 @@ distroVm.buildVmTest {
         prepare_boot()
 
 
-    # The decoy units whose process numbers the way back must give the range
-    # a fresh boot gives them: the getty writes its number into /var/log/wtmp.
+    # The decoy units whose process numbers the scenario reads at the fresh boot
+    # and after the way back. The gettys write theirs into /var/log/wtmp, and
+    # the way back measures by the getty, so theirs must fall in the range a
+    # fresh boot gives them. logind is not measured where a getty runs, and a
+    # soft-reboot starts it in another order, so its number only has to come
+    # from the counter the way back set.
     NUMBERED_UNITS = ["systemd-logind.service", "getty@tty1.service", "serial-getty@ttyS0.service"]
+    RANGED_UNITS = ["getty@tty1.service", "serial-getty@ttyS0.service"]
 
 
     def pid_range(pid):
@@ -551,6 +557,7 @@ distroVm.buildVmTest {
         prepare_boot()
         fresh_numbers = unit_numbers("fresh boot")
         assert "systemd-logind.service" in fresh_numbers, fresh_numbers
+        assert any(unit in fresh_numbers for unit in RANGED_UNITS), fresh_numbers
 
     with subtest("decoy-persistence preflight refuses a persistent journal"):
         # Prepare everything else first, so the only finding left is the decoy
@@ -837,15 +844,17 @@ distroVm.buildVmTest {
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
 
-    with subtest("the decoy's units after the way back are numbered like a fresh boot's"):
+    with subtest("the decoy's gettys after the way back are numbered like a fresh boot's"):
         back_numbers = unit_numbers("after deactivate")
         for unit, fresh in fresh_numbers.items():
             back = back_numbers.get(unit)
             assert back is not None, f"{unit} ran at the fresh boot and not after the way back"
-            assert back < reached and pid_range(back) == pid_range(fresh), (
-                f"{unit} is {back} after the way back, in {pid_range(back)}; the fresh boot "
-                f"gave it {fresh}, in {pid_range(fresh)}; the session reached {reached}"
-            )
+            assert back < reached, f"{unit} is {back} after the way back; the session reached {reached}"
+            if unit in RANGED_UNITS:
+                assert pid_range(back) == pid_range(fresh), (
+                    f"{unit} is {back} after the way back, in {pid_range(back)}; the fresh boot "
+                    f"gave it {fresh}, in {pid_range(fresh)}"
+                )
 
     with subtest("the rehearsal's scan runs on the decoy in the planting boot"):
         # As the operator would: unlock and mount the hidden volume again.
