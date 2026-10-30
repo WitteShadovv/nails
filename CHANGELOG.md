@@ -174,8 +174,10 @@ of this changelog for that version becomes the release notes word for word, and
   and the emergency then goes its own way on a thread of its own: it writes the engine's emergency,
   a power-off, onto the helper's pipe beside whatever request the window waits on (a helper busy
   with another request reads it once that one is done), and where there is no helper, the request
-  cannot be written within 3 seconds, or the window still runs 3 seconds after it, it asks logind
-  for the power-off itself with `systemctl poweroff`, which needs neither root nor the helper. The
+  cannot be written within 3 seconds, or the window still runs 3 seconds after it (the engine's
+  emergency ends the window with the session's other programs, so only a helper that never ran it
+  leaves the window running), it asks logind for the power-off itself with `systemctl poweroff`,
+  which needs neither root nor the helper. The
   page names the power button for a computer that still does not turn off. The worker's updates
   reach the window's thread through one task on its event loop at a time, at most 64 per turn, so no
   flood of the helper's events can queue ahead of the person's input. A settled page of the session
