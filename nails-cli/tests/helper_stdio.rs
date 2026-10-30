@@ -305,8 +305,8 @@ fn a_malformed_request_ends_the_session() {
 
 /// pkexec starts the helper on the one command line its polkit action covers,
 /// `<engine> helper --stdio`, whose dialog shows no argument: started by
-/// pkexec with any other, the helper refuses before it reads a configuration
-/// or says hello, and exits 2.
+/// pkexec with any other, `--help` included, the helper refuses before it
+/// reads a configuration or says hello, prints nothing on stdout, and exits 2.
 #[test]
 fn under_pkexec_the_helper_takes_no_argument_but_stdio() {
     let (_dir, config) = scratch_config();
@@ -339,6 +339,10 @@ fn under_pkexec_the_helper_takes_no_argument_but_stdio() {
             "--no-log-file".as_ref(),
         ],
         &["helper".as_ref(), "--stdio".as_ref(), "--json".as_ref()],
+        // clap's own answers, which would print and exit 0.
+        &["helper".as_ref(), "--help".as_ref()],
+        &["helper".as_ref(), "-h".as_ref()],
+        &["helper".as_ref(), "--stdio".as_ref(), "--help".as_ref()],
     ] {
         let output = run(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");

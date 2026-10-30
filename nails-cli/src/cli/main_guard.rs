@@ -210,19 +210,8 @@ fn pkexec_helper_refusal(
     under_pkexec: bool,
     args: &[std::ffi::OsString],
 ) -> Option<String> {
-    if !under_pkexec || !matches!(command, Commands::Helper(_)) {
-        return None;
-    }
-    let exact = args
-        .iter()
-        .map(std::ffi::OsString::as_os_str)
-        .eq(PKEXEC_HELPER_ARGS.iter().map(std::ffi::OsStr::new));
-    (!exact).then(|| {
-        "pkexec starts the window's helper only as `helper --stdio`, with no other \
-         argument: its polkit action matches the program and its first argument alone, \
-         so the password dialog would not show the rest"
-            .to_string()
-    })
+    let helper = matches!(command, Commands::Helper(_));
+    (under_pkexec && helper && !is_pkexec_helper_line(args)).then(pkexec_helper_message)
 }
 
 /// Without the window's helper there is nothing to refuse.
@@ -233,6 +222,51 @@ fn pkexec_helper_refusal(
     _args: &[std::ffi::OsString],
 ) -> Option<String> {
     None
+}
+
+/// [`refuse_helper_options_under_pkexec`] for the command line as it was
+/// given, before clap reads it: clap answers `--help`, `-h` and the like on
+/// its own, prints and exits 0, which a helper that pkexec started must not
+/// do either. A line whose first argument is `helper`, the one the polkit
+/// action matches, runs only as `helper --stdio`.
+pub fn refuse_helper_line_under_pkexec(env: &nails_core::RuntimeEnv) -> Option<ExitStatus> {
+    let refusal = pkexec_helper_line_refusal(env.pkexec_uid.is_some(), &invocation_args())?;
+    eprintln!("error: {refusal}");
+    Some(ExitStatus::Usage)
+}
+
+/// Why the command line `args` does not run (`under_pkexec` when pkexec
+/// started it): `None` unless pkexec started it, its first argument is
+/// `helper`, and it is not exactly `helper --stdio`.
+#[cfg(feature = "gui")]
+fn pkexec_helper_line_refusal(under_pkexec: bool, args: &[std::ffi::OsString]) -> Option<String> {
+    let names_helper = args
+        .first()
+        .is_some_and(|first| first.as_os_str() == PKEXEC_HELPER_ARGS[0]);
+    (under_pkexec && names_helper && !is_pkexec_helper_line(args)).then(pkexec_helper_message)
+}
+
+/// Without the window's helper there is nothing to refuse.
+#[cfg(not(feature = "gui"))]
+fn pkexec_helper_line_refusal(_under_pkexec: bool, _args: &[std::ffi::OsString]) -> Option<String> {
+    None
+}
+
+/// Whether `args` are exactly `helper --stdio`.
+#[cfg(feature = "gui")]
+fn is_pkexec_helper_line(args: &[std::ffi::OsString]) -> bool {
+    args.iter()
+        .map(std::ffi::OsString::as_os_str)
+        .eq(PKEXEC_HELPER_ARGS.iter().map(std::ffi::OsStr::new))
+}
+
+/// What a helper that pkexec started with another argument says.
+#[cfg(feature = "gui")]
+fn pkexec_helper_message() -> String {
+    "pkexec starts the window's helper only as `helper --stdio`, with no other argument: \
+     its polkit action matches the program and its first argument alone, so the password \
+     dialog would not show the rest"
+        .to_string()
 }
 
 /// Report the refused privileged command: one error envelope on stdout under
@@ -459,6 +493,48 @@ mod tests {
         // Any other command under pkexec is pkexec's own action, whose dialog
         // names the whole command line.
         assert_eq!(refused(&["--config", "/x.toml", "status"], true), None);
+    }
+
+    /// Before clap reads the line, a first argument `helper` under pkexec is
+    /// held to `helper --stdio`, so clap's own help and version answers, which
+    /// exit 0, never come from a helper that pkexec started either.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn under_pkexec_a_helper_line_is_held_before_clap_reads_it() {
+        assert_eq!(
+            pkexec_helper_line_refusal(true, &args(&["helper", "--stdio"])),
+            None
+        );
+        for argv in [
+            &["helper", "--help"][..],
+            &["helper", "-h"],
+            &["helper", "--stdio", "--help"],
+            &["helper", "--version"],
+            &["helper"],
+            &["helper", "--stdio", "--stdio"],
+        ] {
+            let why = pkexec_helper_line_refusal(true, &args(argv))
+                .unwrap_or_else(|| panic!("{argv:?} was let through"));
+            assert!(why.contains("`helper --stdio`"), "{why}");
+            assert_eq!(
+                pkexec_helper_line_refusal(false, &args(argv)),
+                None,
+                "{argv:?}"
+            );
+        }
+        // Only a first argument `helper` is the action's line; the rest is
+        // for clap and the guard after it.
+        for argv in [
+            &["--help"][..],
+            &["status", "--help"],
+            &["--config", "helper"],
+        ] {
+            assert_eq!(
+                pkexec_helper_line_refusal(true, &args(argv)),
+                None,
+                "{argv:?}"
+            );
+        }
     }
 
     /// The guard reads `PKEXEC_UID` from the startup snapshot, and the
