@@ -59,7 +59,9 @@ fuzz_target!(|data: &[u8]| {
         journal: None,
     };
     assert_eq!(
-        rpm::read_packages(&fs, &files).ok().as_ref(),
+        rpm::read_packages(&fs, &files, &mut rpm::Budget::default())
+            .ok()
+            .as_ref(),
         Some(&packages)
     );
 

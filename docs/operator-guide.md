@@ -1231,8 +1231,10 @@ trace or reading what cannot be read:
   link's access time;
 - a database or an upper that cannot be read (an I/O error, a file larger than
   any package database, a dpkg record in a format NAILS does not know whose
-  copy differs from it, an rpm database whose pages or headers do not hold, or
-  one rpm wrote while it was read, twice in a row);
+  copy differs from it, an rpm database whose pages or headers do not hold, an
+  rpm database or log over 4 GiB or one whose packages would take more than
+  the 256 MiB of memory the check keeps for both databases, or one rpm wrote
+  while it was read, twice in a row);
 - an rpm transaction stopped half way that left a rollback journal: rpm rolls
   it back the next time it opens the database, so the check names neither
   state;

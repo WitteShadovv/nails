@@ -59,10 +59,10 @@ fn a_packages_files_are_read_with_what_makes_them_its_own() {
         .find(|package| package.name == "delta")
         .unwrap();
     assert_eq!(delta.epoch, Some(1));
-    let files: Vec<(&str, bool)> = delta
+    let files: Vec<(String, bool)> = delta
         .files
         .iter()
-        .map(|file| (file.path.as_str(), file.is_own()))
+        .map(|file| (delta.path(file), file.is_own()))
         .collect();
     assert_eq!(
         files,
@@ -73,9 +73,26 @@ fn a_packages_files_are_read_with_what_makes_them_its_own() {
             ("/usr/share/delta/3.0", true),
             ("/var/log/delta.log", false),
         ]
+        .map(|(path, own)| (path.to_string(), own))
+    );
+    // Each directory is kept once, for all of its files.
+    assert_eq!(
+        delta.dirs,
+        [
+            "/etc/",
+            "/usr/bin/",
+            "/usr/share/",
+            "/usr/share/delta/",
+            "/var/log/"
+        ]
+        .map(Box::from)
     );
     let flags = |path: &str| {
-        let file = delta.files.iter().find(|file| file.path == path).unwrap();
+        let file = delta
+            .files
+            .iter()
+            .find(|file| delta.path(file) == path)
+            .unwrap();
         (file.flags, file.mode & S_IFMT == S_IFDIR, file.state)
     };
     assert_eq!(flags("/etc/delta.conf").0 & CONFIG, CONFIG);
@@ -225,7 +242,7 @@ fn a_header_without_basenames_reads_its_old_file_names() {
     let old = with(&header, 8 + 16 * basenames, tag::OLDFILENAMES);
     let package = parse_header(&old).unwrap();
     assert!(
-        package.files.iter().any(|file| file.path == "1.0"),
+        package.files.iter().any(|file| package.path(file) == "1.0"),
         "{:?}",
         package.files
     );
@@ -270,8 +287,12 @@ fn the_files_beside_a_database_are_counted_when_they_exist() {
             journal: None,
         }
     );
-    let packages = read_packages(&fs, &files).unwrap();
+    let mut budget = Budget::default();
+    let packages = read_packages(&fs, &files, &mut budget).unwrap();
     assert_eq!(packages.len(), 6);
+    // What the packages keep is taken from the budget, a few KiB here.
+    let taken = KEPT_LIMIT - budget.left();
+    assert!((1000..16_000).contains(&taken), "{taken}");
     assert_eq!(packages, parse_database(HIDDEN, Some(HIDDEN_WAL)).unwrap());
 }
 
@@ -334,7 +355,12 @@ fn a_database_that_cannot_be_trusted_is_an_error() {
     );
     let files = Files::beside(&fs, Path::new(DB)).unwrap();
     assert!(files.journal.is_some());
-    assert_eq!(read_packages(&fs, &files).unwrap().len(), 5);
+    assert_eq!(
+        read_packages(&fs, &files, &mut Budget::default())
+            .unwrap()
+            .len(),
+        5
+    );
 
     // A rollback journal left by a transaction stopped half way.
     let fs = staged(HIDDEN, None);
@@ -344,13 +370,13 @@ fn a_database_that_cannot_be_trusted_is_an_error() {
         (SystemTime::UNIX_EPOCH + Duration::from_secs(1)).into(),
     );
     let files = Files::beside(&fs, Path::new(DB)).unwrap();
-    let error = read_packages(&fs, &files).unwrap_err();
+    let error = read_packages(&fs, &files, &mut Budget::default()).unwrap_err();
     assert!(error.to_string().contains("rollback journal"), "{error}");
 
     // A file that is no database.
     let fs = staged(b"not a database at all", None);
     let files = Files::beside(&fs, Path::new(DB)).unwrap();
-    let error = read_packages(&fs, &files).unwrap_err();
+    let error = read_packages(&fs, &files, &mut Budget::default()).unwrap_err();
     assert!(
         error.to_string().contains("not a SQLite database"),
         "{error}"
@@ -360,7 +386,7 @@ fn a_database_that_cannot_be_trusted_is_an_error() {
     let tree = include_bytes!("fixtures/tree.sqlite");
     let fs = staged(tree, None);
     let files = Files::beside(&fs, Path::new(DB)).unwrap();
-    let error = read_packages(&fs, &files).unwrap_err();
+    let error = read_packages(&fs, &files, &mut Budget::default()).unwrap_err();
     assert!(error.to_string().contains("no table Packages"), "{error}");
 
     // A database that is gone.
@@ -370,7 +396,7 @@ fn a_database_that_cannot_be_trusted_is_an_error() {
         wal: None,
         journal: None,
     };
-    let error = read_packages(&fs, &files).unwrap_err();
+    let error = read_packages(&fs, &files, &mut Budget::default()).unwrap_err();
     assert!(error.to_string().contains("no such file"), "{error}");
 }
 
@@ -381,7 +407,7 @@ fn a_database_written_while_it_is_read_is_an_error() {
     let fs = MockFilesystem::new();
     fs.mock_set_file_bytes(DB, HIDDEN);
     let files = Files::beside(&fs, Path::new(DB)).unwrap();
-    let error = read_packages(&fs, &files).unwrap_err();
+    let error = read_packages(&fs, &files, &mut Budget::default()).unwrap_err();
     assert!(error.to_string().contains("while it was read"), "{error}");
 }
 
@@ -406,4 +432,98 @@ fn a_stamp_that_cannot_be_taken_is_an_error_not_a_missing_file() {
         stamp(&RealFilesystem, &dir.path().join("missing")).unwrap(),
         None
     );
+}
+
+/// A header of `entries`, each `(tag, type, count, data)`, laid out as
+/// `headerExport()` lays one out: the data of each entry after the one before.
+fn build(entries: &[(u32, u32, usize, Vec<u8>)]) -> Vec<u8> {
+    let mut index = Vec::new();
+    let mut data: Vec<u8> = Vec::new();
+    for (tag, type_, count, bytes) in entries {
+        for word in [*tag, *type_, data.len() as u32, *count as u32] {
+            index.extend(word.to_be_bytes());
+        }
+        data.extend(bytes);
+    }
+    let mut header = Vec::new();
+    header.extend((entries.len() as u32).to_be_bytes());
+    header.extend((data.len() as u32).to_be_bytes());
+    header.extend(index);
+    header.extend(data);
+    header
+}
+
+/// `strings` as the data of a string array.
+fn string_data(strings: &[&str]) -> Vec<u8> {
+    strings
+        .iter()
+        .flat_map(|text| text.bytes().chain([0]))
+        .collect()
+}
+
+/// A header of a package whose `files` empty names all lie in one directory
+/// of `dir` bytes, each of its files taking two bytes of the header.
+fn one_long_directory(dir: usize, files: usize) -> Vec<u8> {
+    let dir = format!("/{}/", "d".repeat(dir - 2));
+    build(&[
+        (tag::NAME, kind::STRING, 1, string_data(&["wide"])),
+        (tag::VERSION, kind::STRING, 1, string_data(&["1"])),
+        (tag::RELEASE, kind::STRING, 1, string_data(&["1"])),
+        (
+            tag::DIRNAMES,
+            kind::STRING_ARRAY,
+            1,
+            string_data(&[dir.as_str()]),
+        ),
+        (tag::BASENAMES, kind::STRING_ARRAY, files, vec![0; files]),
+        (tag::DIRINDEXES, kind::INT8, files, vec![0; files]),
+    ])
+}
+
+#[test]
+fn a_directory_is_kept_once_for_all_of_its_files() {
+    // Each path joined whole would take 4000 bytes: 200 MB for a header of
+    // 104 KB.
+    let header = one_long_directory(4_000, 50_000);
+    assert!(header.len() < 110_000, "{}", header.len());
+    let package = parse_header(&header).unwrap();
+    assert_eq!(package.dirs.len(), 1);
+    assert_eq!(package.files.len(), 50_000);
+    assert_eq!(package.path(&package.files[49_999]).len(), 4_000);
+    assert!(package.files.iter().all(File::is_own));
+}
+
+#[test]
+fn packages_that_need_more_than_the_budget_are_refused() {
+    let header = one_long_directory(100, 50_000);
+    // 50000 files take 1.6 MB, more than a budget of 1 MiB.
+    let mut budget = Budget::new(1 << 20);
+    let error = header::parse(&header, &mut budget).unwrap_err();
+    assert_eq!(
+        error,
+        "packages that need more than the 1048576 bytes of memory NAILS keeps for rpm's databases"
+    );
+    let mut budget = Budget::new(4 << 20);
+    assert!(header::parse(&header, &mut budget).is_ok());
+    assert!(budget.left() < 3 << 20, "{}", budget.left());
+    // A database whose packages need more is refused whole.
+    let database = Database::open(&DECOY, None).unwrap();
+    let error = packages(&database, &mut Budget::new(1000)).unwrap_err();
+    assert!(error.contains("more than the 1000 bytes"), "{error}");
+}
+
+#[test]
+fn a_database_or_a_log_larger_than_rpm_keeps_is_refused_unread() {
+    for path in [DB, DB_WAL] {
+        let fs = staged(HIDDEN, Some(HIDDEN_WAL));
+        fs.mock_set_file_size(path, FILE_LIMIT + 1);
+        let files = Files::beside(&fs, Path::new(DB)).unwrap();
+        let error = read_packages(&fs, &files, &mut Budget::default()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("more than rpm keeps in its database or its log"),
+            "{path}: {error}"
+        );
+    }
 }

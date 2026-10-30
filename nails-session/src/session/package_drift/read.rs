@@ -496,9 +496,11 @@ impl<F: Filesystem> Reader<'_, F> {
             wal,
             journal,
         };
-        let decoy = rpm::read_packages(self.fs, &decoy)
+        // The packages of both databases share one budget of memory.
+        let mut budget = rpm::Budget::default();
+        let decoy = rpm::read_packages(self.fs, &decoy, &mut budget)
             .map_err(|e| unreadable(&format!("{at} on the decoy"), &e))?;
-        let hidden = rpm::read_packages(self.fs, &hidden)
+        let hidden = rpm::read_packages(self.fs, &hidden, &mut budget)
             .map_err(|e| unreadable(&format!("hidden sessions' copy of {at}"), &e))?;
         let mut changed: BTreeSet<RpmKey> = BTreeSet::new();
         for (key, packages) in rpm_differing(&decoy, &hidden) {
@@ -515,7 +517,8 @@ impl<F: Filesystem> Reader<'_, F> {
     fn changed_files(&self, packages: &[&rpm::Package]) -> std::result::Result<bool, Verdict> {
         for package in packages {
             for file in package.files.iter().filter(|file| file.is_own()) {
-                let rel = file.path.trim_start_matches('/');
+                let path = package.path(file);
+                let rel = path.trim_start_matches('/');
                 if rel.is_empty() {
                     continue;
                 }
