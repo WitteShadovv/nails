@@ -501,10 +501,13 @@ fn discard_enabled_tcrypt_mapping_refuses_unless_allowed() {
             .contains("Discards are enabled over the hidden volume")
     );
     assert_names_no_dm_node(&refused);
+    // The refusal names the override that accepts it.
+    assert_eq!(refused.allowable(), Some(nails_api::Allowable::Discards));
 
     // Accepted for the run, it warns and points at the backend guide.
     let allowed = assess_offline_allowing_discards(&fs, Path::new(ROOT));
     assert!(allowed.is_warn(), "{allowed:?}");
+    assert_eq!(allowed.allowable(), None);
     assert!(allowed.message().contains("accepted for this run"));
     assert!(allowed.message().contains(BACKENDS_DOC));
 }

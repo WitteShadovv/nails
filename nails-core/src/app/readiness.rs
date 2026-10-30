@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nails_api::ErrorBody;
+use nails_api::{Allowable, ErrorBody};
 use nails_teardown::mountinfo::MountEntry;
 use serde::Serialize;
 
@@ -42,6 +42,10 @@ pub struct CheckRow {
     /// What to do about a failure, when the check says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
+    /// The override that accepts a failure for one run, when a CLI flag
+    /// covers what the check refused, so a front end can offer it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowable: Option<Allowable>,
 }
 
 impl CheckRow {
@@ -53,6 +57,7 @@ impl CheckRow {
             CheckResult::Fail {
                 message,
                 remediation,
+                ..
             } => ("fail", message.clone(), remediation.clone()),
             CheckResult::Skipped(reason) => ("skipped", reason.clone(), None),
         };
@@ -61,6 +66,7 @@ impl CheckRow {
             status,
             message,
             remediation,
+            allowable: result.allowable(),
         }
     }
 }
@@ -509,14 +515,33 @@ mod tests {
         let mut rows = rows();
         rows.push(CheckRow::from_result(
             "c".into(),
-            &CheckResult::Fail {
-                message: "boom".into(),
-                remediation: Some("fix it".into()),
-            },
+            &CheckResult::fail_with("boom", "fix it"),
         ));
         let report = report(rows);
         assert!(!report.ready);
         assert_eq!(report.summary.failed, 1);
+    }
+
+    #[test]
+    fn a_row_names_the_override_only_where_a_flag_accepts_the_failure() {
+        let accepted = CheckRow::from_result(
+            "hidden-volume".into(),
+            &CheckResult::fail_with("on the decoy's storage", "use a volume of its own")
+                .accepted_by(Allowable::DecoyStorage),
+        );
+        assert_eq!(
+            serde_json::to_value(&accepted).unwrap(),
+            serde_json::json!({
+                "name": "hidden-volume",
+                "status": "fail",
+                "message": "on the decoy's storage",
+                "remediation": "use a volume of its own",
+                "allowable": "decoy_storage",
+            })
+        );
+        let refused = CheckRow::from_result("swap".into(), &CheckResult::fail("swap is on"));
+        let json = serde_json::to_value(&refused).unwrap();
+        assert!(json.get("allowable").is_none(), "{json}");
     }
 
     #[test]

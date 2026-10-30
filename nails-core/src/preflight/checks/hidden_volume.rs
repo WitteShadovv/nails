@@ -11,6 +11,7 @@ use crate::hidden_root::separation::Verdict;
 use crate::hidden_root::{Allow, Assessment, HiddenRoot, Refusal, RefusalKind};
 use crate::naming::suspicious_token;
 use crate::{Filesystem, Result, config::get_default_hidden_volume_root};
+use nails_api::Allowable;
 use std::path::{Component, Path, PathBuf};
 
 /// Pre-flight check that validates the hidden volume is mounted and accessible
@@ -98,13 +99,19 @@ impl Default for HiddenVolumeCheck {
 
 /// The failure of a root the attach gate refused: the gate's own sentence, as
 /// `init`, `activate` and `rehearse` print it, with its hint as the
-/// remediation.
+/// remediation. A refusal `--allow-decoy-storage` would turn into a warning
+/// names that override; no other does.
 fn gate_failure(refusal: &Refusal) -> CheckResult {
     let exe = std::env::current_exe().ok();
-    CheckResult::fail_with(
+    let failure = CheckResult::fail_with(
         refusal.reason.clone(),
         refusal.hint(exe.as_deref()).join("\n"),
-    )
+    );
+    if Allow::DecoyStorage.covers(&refusal.kind) {
+        failure.accepted_by(Allowable::DecoyStorage)
+    } else {
+        failure
+    }
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {

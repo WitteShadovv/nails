@@ -64,6 +64,16 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// The row of the check `name` in the report of a `check --json` run.
+fn check_row(output: &Output, name: &str) -> Value {
+    let value = last_json(output);
+    value["data"]["checks"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+        .cloned()
+        .unwrap_or_else(|| panic!("no {name} row: {value}"))
+}
+
 /// A root that is a folder: the directory and its configuration.
 fn folder_root() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -180,6 +190,11 @@ fn a_dry_run_reports_the_refusal_and_opens_no_log() {
 #[test]
 fn the_override_never_covers_a_folder() {
     let (_dir, root, config) = folder_root();
+    // So the check names no override for it.
+    let output = nails(&config, &["check", "--json"]);
+    let row = check_row(&output, "hidden-volume");
+    assert_eq!(row["status"], "fail", "{row}");
+    assert!(row.get("allowable").is_none(), "{row}");
     let output = nails(&config, &["check", "--allow-decoy-storage", "--json"]);
     assert_eq!(output.status.code(), Some(4), "{output:?}");
     let value = last_json(&output);
@@ -187,6 +202,8 @@ fn the_override_never_covers_a_folder() {
         value["data"]["refusal"]["code"], "not_separate_volume",
         "{value}"
     );
+    let row = check_row(&output, "hidden-volume");
+    assert!(row.get("allowable").is_none(), "{row}");
     let output = nails(
         &config,
         &["activate", "-y", "--overlay-only", "--allow-decoy-storage"],
@@ -339,6 +356,9 @@ mod kernel_tests {
                 last_json(&output)["data"]["refusal"]["code"],
                 "root_covered"
             );
+            // No flag accepts it, so the check names none.
+            let row = check_row(&output, "hidden-volume");
+            assert!(row.get("allowable").is_none(), "{row}");
             // Every command that takes the state lock reports the same refusal.
             let output = nails(
                 &config,
@@ -350,6 +370,60 @@ mod kernel_tests {
             assert!(entries(volume.path()).is_empty(), "the cover was written");
             nix::mount::umount(volume.path()).expect("unmount the cover");
             assert!(entries(volume.path()).is_empty(), "the root was written");
+        });
+    }
+
+    /// A root that is a bind of a folder of this computer's own storage (the
+    /// build's scratch directory): the gate refuses it, and the hidden-volume
+    /// row names the override that accepts it, which turns the refusal into a
+    /// warning that names none. Where the scratch directory lies on a RAM
+    /// filesystem, the bind is a volume of its own and the gate refuses
+    /// nothing: the test then says so and checks nothing more.
+    #[test]
+    fn a_root_on_this_computers_storage_names_the_override_that_accepts_it() {
+        let _ = Rerun::new(test_path!(
+            a_root_on_this_computers_storage_names_the_override_that_accepts_it
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+            let folder = dir.path().join("folder");
+            let root = dir.path().join("volume");
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::create_dir(&root).unwrap();
+            nix::mount::mount(
+                Some(&folder),
+                &root,
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .expect("bind the folder over the root");
+            let config = config_for(dir.path(), &root);
+
+            let output = nails(&config, &["check", "--json"]);
+            let refused = check_row(&output, "hidden-volume");
+            let message = refused["message"].as_str().unwrap_or("");
+            if !message.contains("is not a volume of its own: it is a bind mount of a folder of") {
+                eprintln!("the scratch directory is no storage of this computer: {refused}");
+                nix::mount::umount(&root).expect("unmount the bind");
+                return;
+            }
+            assert_eq!(refused["status"], "fail", "{refused}");
+            assert_eq!(refused["allowable"], "decoy_storage", "{refused}");
+
+            let output = nails(&config, &["check", "--allow-decoy-storage", "--json"]);
+            let accepted = check_row(&output, "hidden-volume");
+            assert_eq!(accepted["status"], "warn", "{accepted}");
+            assert!(
+                accepted["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("--allow-decoy-storage: using"),
+                "{accepted}"
+            );
+            assert!(accepted.get("allowable").is_none(), "{accepted}");
+            nix::mount::umount(&root).expect("unmount the bind");
         });
     }
 

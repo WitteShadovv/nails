@@ -28,7 +28,7 @@ pub mod protocol;
 pub mod settings;
 pub mod window_env;
 
-pub use dto::StateJson;
+pub use dto::{Allowable, StateJson};
 pub use envelope::{Envelope, ErrorBody, NextStep, SCHEMA_VERSION, error_envelope};
 pub use events::{CheckOutcome, Event};
 pub use exit::ExitStatus;
