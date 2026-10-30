@@ -6,13 +6,15 @@
 //! The helper is the engine itself (`<root>/nails helper --stdio`), still
 //! root, with its end of the pair as its standard input and output; the
 //! window gets the other end as its standard input, which it reads and
-//! writes. The helper learns the operator from the launcher
-//! (`NAILS_TARGET_UID`), never from the privilege tool's variables: those are
-//! left out of its environment, so a helper of this launcher, which carries
-//! the launcher's `--config`, is never taken for one that pkexec started
-//! itself, which takes no argument but `--stdio`. Neither inherits anything else from the launcher: their other
-//! standard streams lead to `/dev/null`, so nothing either prints can reach a
-//! terminal or a log a desktop keeps, and both start in `/`.
+//! writes. The helper inherits the launcher's environment, as a command the
+//! launcher's privilege tool started would, with two changes: it learns the
+//! operator from the launcher (`NAILS_TARGET_UID`), and it does not get
+//! `PKEXEC_UID`, the sign of a helper that pkexec started itself, which takes
+//! no argument but `--stdio`, while this one carries the launcher's
+//! `--config`. The window gets only the environment `window_env` builds.
+//! The other standard streams of both lead to `/dev/null`, so nothing either
+//! prints can reach a terminal or a log a desktop keeps, and both start in
+//! `/`.
 //!
 //! Each leads a session of its own from before its `exec`: no controlling
 //! terminal, and no process group the launching terminal or shell can
@@ -41,14 +43,13 @@ pub(super) struct Window {
 }
 
 /// The helper's command: `engine` with `helper_args`, in `/`, naming the
-/// operator `operator_uid` with `NAILS_TARGET_UID` and none of the privilege
-/// tools' variables.
+/// operator `operator_uid` with `NAILS_TARGET_UID`, without `PKEXEC_UID`.
+/// sudo's and doas's variables stay, so a `verify` through the helper knows
+/// the account that ran sudo as the CLI's does.
 fn helper_command(engine: &Path, helper_args: &[OsString], operator_uid: u32) -> Command {
     let mut command = Command::new(engine);
-    for var in nails_core::target_user::PRIVILEGE_ENV_VARS {
-        command.env_remove(var);
-    }
     command
+        .env_remove(nails_core::target_user::ENV_PKEXEC_UID)
         .env(
             nails_core::constants::ENV_TARGET_UID,
             operator_uid.to_string(),
@@ -102,9 +103,9 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
-    /// The helper names the operator the launcher resolved, and gets none of
-    /// the privilege tools' variables: a helper with the launcher's options
-    /// must not look like one that pkexec started itself.
+    /// The helper names the operator the launcher resolved, and does not get
+    /// `PKEXEC_UID`: a helper with the launcher's options must not look like
+    /// one that pkexec started itself.
     #[test]
     fn the_helper_learns_the_operator_from_the_launcher_alone() {
         let args = ["--config", "/mnt/config/nails.toml", "helper", "--stdio"].map(OsString::from);
@@ -114,16 +115,16 @@ mod tests {
             envs.contains(&(OsStr::new("NAILS_TARGET_UID"), Some(OsStr::new("1000")))),
             "{envs:?}"
         );
-        for var in [
-            "PKEXEC_UID",
-            "SUDO_UID",
-            "SUDO_USER",
-            "DOAS_UID",
-            "DOAS_USER",
-        ] {
+        assert!(
+            envs.contains(&(OsStr::new("PKEXEC_UID"), None)),
+            "PKEXEC_UID not removed: {envs:?}"
+        );
+        // sudo's and doas's stay as the privilege tool set them: verify reads
+        // the account that ran sudo from SUDO_USER.
+        for var in ["SUDO_UID", "SUDO_USER", "DOAS_UID", "DOAS_USER"] {
             assert!(
-                envs.contains(&(OsStr::new(var), None)),
-                "{var} not removed: {envs:?}"
+                !envs.iter().any(|(key, _)| *key == OsStr::new(var)),
+                "{var} was changed: {envs:?}"
             );
         }
         assert_eq!(
