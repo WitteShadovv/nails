@@ -189,6 +189,36 @@ owes one.
 - **VM:** the suites in `nix/e2e-tests`, as its README describes. When a captured
   format changes, refresh the fixture as the fixture README says.
 
+## Mutation testing
+
+cargo-mutants changes the code one spot at a time and runs the tests again: a
+mutant the tests still pass is a gap that no coverage figure shows. It runs
+weekly over the state machine and the session and teardown decision cores, and
+on the lines a pull request into `next` changes ([ci.md](ci.md#important-gate-behavior)
+says how; `just mutants` and `just mutants-in-diff` run the same locally). Both
+run only the tests of the crate that holds the mutant, as cargo-mutants does by
+default, so a mutant that only another crate's tests kill is reported as
+surviving there; `--test-workspace=true` runs the whole workspace's tests.
+
+A surviving mutant is killed with a test that asserts what a caller relies on,
+never with a value picked only to differ from the mutant. The few that no test
+can kill, not even with `--test-workspace=true`, are recorded in
+`.cargo/mutants.toml`, each as an `exclude_re` entry with the reason above it.
+An equivalent mutant behaves like the code on every input (a `^` in place of a
+`|` between flags that share no bit); a near-equivalent one differs only where
+no test can reach (an `O_CLOEXEC` dropped from a descriptor that lives for a
+single read). Every cargo-mutants run reads that file, the weekly sweep and the
+in-diff lane as well as a local one, so such a mutant is not reported again and
+its reason is in one place. An entry names the file, the mutation and the
+function, so it excludes its own mutant and no other;
+`cargo mutants --list --no-config` against `cargo mutants --list` shows what
+the file excludes. A mutant that is not equivalent is never recorded there,
+even when only a VM test kills it, so the runs go on reporting it. When the
+code an entry names changes, the entry is checked again: it must still match
+its mutant, and that mutant must still be equivalent. The files that
+`mutants_skipped` in the justfile names are another matter: the weekly sweep
+leaves them out for its time budget, not because their mutants are equivalent.
+
 ## Fuzzing
 
 The parsers that read what NAILS does not control are also fuzzed, with
