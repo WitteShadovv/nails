@@ -121,6 +121,11 @@ accept that what the decoy logs around each soft-reboot may survive on the
 decoy disk, and that a kernel crash during the session can leave a dump of its
 memory there.
 
+The `locate-database` check refuses as well, and no flag lifts its refusal:
+an updatedb that runs now, or that a timer or cron job starts, and that does
+not skip the hidden volume would write the name of every file on the volume
+into the decoy's locate database (see [The locate database](#the-locate-database)).
+
 kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
 kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or
 `kdump.service` (Fedora) is enabled or active. The soft-reboot into the hidden
@@ -305,6 +310,10 @@ logind.
   `services.syslog-ng`, `services.syslogd` or `security.auditd` / the audit
   framework on the decoy.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
+- **The locate database skips the hidden volume** (`locate-database`): leave
+  `services.locate` disabled, or for a volume mounted below `/mnt` add
+  `services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];` (see
+  [The locate database](#the-locate-database)).
 - **Core dumps kept off the disk**:
   `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
@@ -426,6 +435,9 @@ logind.
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
 - Mount the root with `noatime`; disable swap and hibernation.
+- With plocate installed, add the directory the hidden volume is mounted in to
+  `PRUNEPATHS` in `/etc/updatedb.conf`, or mask `plocate-updatedb.timer`
+  (`locate-database`; see [The locate database](#the-locate-database)).
 - Keep `nftables` installed, and `iw` on a machine with Wi-Fi
   (`apt install nftables iw`), so the way back can delete the firewall tables
   and Wi-Fi interfaces a session adds (`network-tools`).
@@ -448,6 +460,9 @@ logind.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
+- With plocate installed, the directory the hidden volume is mounted in in
+  `PRUNEPATHS` of `/etc/updatedb.conf`, or `plocate-updatedb.timer` masked
+  (`locate-database`; see [The locate database](#the-locate-database)).
 - `nftables`, and `iw` on a machine with Wi-Fi (`apt install nftables iw`), so
   the way back can delete the firewall tables and Wi-Fi interfaces a session
   adds (`network-tools`).
@@ -698,6 +713,93 @@ the Kerberos tickets its ticket cache kept, which nothing reaches while
 `sssd-kcm` is off. On Fedora, turning `sssd-kcm` off also turns off the ticket
 cache that `kinit` uses by default.
 
+## The locate database
+
+updatedb, the indexer behind `locate` (plocate, mlocate, and NixOS's
+`services.locate`), walks the whole tree and writes the name of every file it
+finds into the locate database on the decoy disk:
+`/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, or
+`/var/cache/locatedb` on NixOS. A run while the hidden volume is mounted on the
+decoy, before activation or after the way back, writes every name on the
+volume there, where `locate` lists it. plocate's and NixOS's timers run daily
+with `Persistent=true`, which catches a missed run up right after boot, when
+the volume is unlocked for a session. Fedora installs and enables plocate by
+default. The default `PRUNEPATHS` of Debian 13, Ubuntu 26.04, Fedora 44 and
+NixOS do not skip `/mnt`; Arch Linux's does.
+
+The `locate-database` check refuses activation while an updatedb that runs now,
+or that a timer or cron job starts, does not skip the hidden volume, whatever
+flags the run is given. It warns instead, and does not refuse, where it cannot
+tell: an `/etc/updatedb.conf` it cannot read, or one that updatedb refuses and
+stops on; an `ExecStart=` it cannot read; findutils' updatedb, whose prune
+options it does not read. It also warns when updatedb is installed but only a
+person starts it and does not skip the volume. When every run skips it, the
+check passes and names the rule that does.
+
+What it reads:
+
+- **The runs.** One runs now when `plocate-updatedb.service`,
+  `mlocate-updatedb.service` or `update-locatedb.service` is active, or when a
+  process whose name or program is `updatedb` (or starts with `updatedb.`)
+  runs, one started by hand among them. One is scheduled when the timer of one
+  of these services is enabled or active, unless a link to `/dev/null` in
+  `/etc/systemd/system` masks the timer or the service is masked, and when
+  `/etc/crontab` or a file in `/etc/cron.d` or `/etc/cron.hourly`, `daily`,
+  `weekly` or `monthly` names updatedb. Debian's and Ubuntu's
+  `/etc/cron.daily/plocate` ends at once where systemd runs, so it does not
+  count while that test is its first command (after `set -e` and plain
+  assignments). An updatedb program in `/usr/bin`, `/usr/sbin`, `/bin`,
+  `/sbin`, `/usr/local` or NixOS's system profile, and any of these services
+  with nothing scheduling it, is one a person starts.
+- **What a run skips.** `/etc/updatedb.conf`, read as plocate and mlocate read
+  it (`PRUNEPATHS`, `PRUNENAMES`, `PRUNEFS`). A service adds the options of its
+  `ExecStart=`, read from its unit file and its drop-ins as systemd reads them:
+  `--prunepaths`, `--prunefs` and `--prunenames` replace the file's list,
+  `--add-prunepaths` (`-e`), `--add-single-prunepath`, `--add-prunefs` and
+  `--add-prunenames` add to it, and `--database-root` (`-U`) starts the scan
+  in another directory. A running process is judged by its own command line.
+  A cron job is judged by the file alone, unless its text holds `prune`,
+  `database` or `-U`, options NAILS does not read.
+- **The volume.** The hidden root where its links lead, and every other mount
+  of the filesystem mounted there. updatedb skips it when a `PRUNEPATHS` entry
+  is exactly one of the directories from `/` down to it (`/mnt` or `/mnt/data`
+  skip `/mnt/data`, `/mnt/` skips nothing), when a `PRUNENAMES` entry is the
+  name of one of them, when a `PRUNEFS` entry is, in any ASCII case, the type
+  of a filesystem mounted on the way where the device changes, or when the
+  scan starts elsewhere. `PRUNE_BIND_MOUNTS` does not count: a volume mounted
+  from its device is no bind mount.
+
+The check writes nothing. It opens each file with `O_NOATIME`, so run as root
+it changes no file's access time (an unprivileged `nails check` cannot ask for
+that, and the links a lookup follows still get theirs), and it reads no file
+that a link leads onto the hidden volume.
+
+Make updatedb skip the directory the volume is mounted in long before you use
+the volume again, since a change made just before a session dates it, and keep
+the volume locked until then:
+
+- On NixOS, leave `services.locate` disabled, or add the directory:
+
+  ```nix
+  services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];
+  ```
+
+  `lib.mkOptionDefault` adds to the default list; a plain list replaces it, and
+  `/tmp`, `/nix/store` and the rest of the default are then indexed. The line
+  names `/mnt`, not the mount point `/mnt/data`, so the
+  `suspicious-nails-reference` check does not refuse it. For a volume mounted
+  right below `/`, leave `services.locate` disabled: an entry that skips it
+  would name its mount point.
+- On Debian, Ubuntu and Fedora, add the directory to `PRUNEPATHS` in
+  `/etc/updatedb.conf`, or mask the timer with
+  `sudo systemctl mask plocate-updatedb.timer`. With the timer masked and
+  `PRUNEPATHS` as it was, the check still warns, since a run by hand indexes
+  the volume.
+
+The check cannot see a run that already happened. A database written while the
+volume was mounted lists the volume's files until updatedb runs again with the
+volume locked.
+
 ## Session-time records
 
 Some records do not hold what the session did, only that the machine was
@@ -823,6 +925,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
 | [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent. | `examiner-audit` |
 | [Armed kdump](#fail-closed-activation-is-refused) (`kdump`) | `/var/crash` | all | `decoy-persistence` (refuses) | none: the crash-dumps row probes /var/crash, where kdump writes its dumps | Disable kdump on the decoy (Ubuntu: kdump-tools, Fedora: kdump). | none: a VM test would have to reserve crash kernel memory and panic the guest kernel; the refusal is unit tested |
+| [Locate database](#the-locate-database) (`locate-database`) | `/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, `/var/cache/locatedb` | all | `locate-database` (refuses) | path probe (info) | Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now or is scheduled does not skip it. | none: the refusal and its fixes are unit tested |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |

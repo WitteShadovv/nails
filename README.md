@@ -165,6 +165,10 @@ Also refused by the pre-flight checks:
 - active disk swap; only RAM-backed zram is allowed (`swap`);
 - a persistent journal or an active syslog or audit daemon, unless overridden
   (`decoy-persistence`);
+- an updatedb (plocate, mlocate, NixOS's `services.locate`) that runs now, or
+  on a timer or cron job, and does not skip the hidden volume, so that it would
+  write the name of every file on it into the decoy's locate database; no flag
+  lifts this refusal (`locate-database`);
 - a pending offline system update, staged on the decoy or left in the root
   overlay's upper by a hidden session (`pending-offline-update`);
 - a hidden volume that is not storage of its own: a folder, a btrfs subvolume
