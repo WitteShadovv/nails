@@ -15,7 +15,10 @@
 //!   `pkexec <root>/nails helper --stdio`, on a pair of its own. pkexec's
 //!   lines land on the hidden volume there, and only there: the window does
 //!   this only when `/` is the overlay of a hidden session whose upper lies
-//!   on the volume of that engine.
+//!   on the volume of that engine. It starts pkexec by its set-user-ID path
+//!   ([`find_pkexec`]), never through `PATH`, and before it sets
+//!   `no_new_privs` ([`crate::process`]): a pkexec found through `PATH`, or
+//!   started under `no_new_privs`, would not become root.
 //! - **Anywhere else** (the window started by hand on the decoy, say) it
 //!   opens nothing: no display, no session bus, no pkexec. It names the
 //!   launcher's line on its standard error and exits.
@@ -26,7 +29,7 @@
 
 use std::fs::File;
 use std::os::fd::AsFd;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -54,8 +57,65 @@ pub enum Start {
 /// The engine's file name, beside the window's `gui` directory.
 const ENGINE: &str = "nails";
 
-/// The program that starts the helper as root in a hidden session.
-pub const PKEXEC: &str = "pkexec";
+/// Where the window looks for pkexec, which starts the helper as root in a
+/// hidden session: NixOS's set-user-ID wrapper first, then the program every
+/// other distribution installs. Never a `PATH` lookup: on NixOS the window's
+/// `PATH` finds pkexec in the store first, which is not set-user-ID.
+pub const PKEXEC_PATHS: [&str; 2] = ["/run/wrappers/bin/pkexec", "/usr/bin/pkexec"];
+
+/// What the window checks of a program before it starts it as pkexec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgramFacts {
+    /// A regular file (a link is followed, as `execve` follows it).
+    pub is_file: bool,
+    /// Its owner's uid.
+    pub owner: u32,
+    /// Its mode bits.
+    pub mode: u32,
+}
+
+/// Whether a program with `facts` runs as root whoever starts it: a regular
+/// file of root's, set-user-ID and executable.
+#[must_use]
+pub fn runs_as_root(facts: ProgramFacts) -> bool {
+    facts.is_file && facts.owner == 0 && facts.mode & 0o4000 != 0 && facts.mode & 0o111 != 0
+}
+
+/// The pkexec the window starts: the first of [`PKEXEC_PATHS`] that
+/// [`runs_as_root`].
+///
+/// # Errors
+///
+/// That none of them does, naming where the window looked.
+pub fn find_pkexec() -> Result<PathBuf, String> {
+    find_pkexec_in(&PKEXEC_PATHS.map(Path::new))
+}
+
+/// [`find_pkexec`] among `candidates`.
+///
+/// # Errors
+///
+/// As [`find_pkexec`].
+pub fn find_pkexec_in(candidates: &[&Path]) -> Result<PathBuf, String> {
+    let runs_as_root_at = |path: &Path| {
+        std::fs::metadata(path).is_ok_and(|meta| {
+            runs_as_root(ProgramFacts {
+                is_file: meta.is_file(),
+                owner: meta.uid(),
+                mode: meta.mode(),
+            })
+        })
+    };
+    if let Some(found) = candidates.iter().find(|path| runs_as_root_at(path)) {
+        return Ok(found.to_path_buf());
+    }
+    let looked: Vec<String> = candidates
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    let looked = looked.join(", ");
+    Err(format!("no set-user-ID pkexec was found ({looked})"))
+}
 
 /// The root the window was installed under, from its own program (or, when
 /// it runs through a bundled loader, that loader): `<root>/gui/<dir>/<file>`
@@ -243,9 +303,9 @@ fn unescape_octal(field: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Start `engine helper --stdio` through `pkexec` (the program [`PKEXEC`]
-/// names, or a stand-in of a test) on one end of a new pair, and return the
-/// child and the window's end.
+/// Start `engine helper --stdio` through `pkexec` (the one [`find_pkexec`]
+/// found, or a stand-in of a test) on one end of a new pair, and return the
+/// child and the window's end. The child runs pkexec when this returns.
 ///
 /// # Errors
 ///

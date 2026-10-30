@@ -15,7 +15,7 @@
 //! anything connects to a display or a session bus. Whichever way it starts,
 //! the process takes its neutral name first, and before the window opens it
 //! limits itself; a menu entry's start first runs again on the launcher's
-//! environment ([`nails_gui::process`]).
+//! environment and starts pkexec before that ([`nails_gui::process`]).
 
 use std::cell::RefCell;
 use std::ffi::OsString;
@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 use nails_api::protocol::{PROTOCOL_VERSION, RELEASE};
 use nails_gui::AppWindow;
-use nails_gui::launch::{self, PKEXEC, Start};
+use nails_gui::launch::{self, Start};
 use nails_gui::model::Model;
 use nails_gui::process;
 use nails_gui::text;
@@ -102,20 +102,19 @@ fn main() -> ExitCode {
                 eprintln!("The window could not open: {why}");
                 return ExitCode::FAILURE;
             }
-            (
-                Connect::Pkexec {
-                    program: PathBuf::from(PKEXEC),
-                    engine: engine.clone(),
-                },
-                Some(engine),
-            )
+            // pkexec starts before the window limits itself: under
+            // no_new_privs execve ignores its set-user-ID bit, and it would
+            // never become root.
+            let connect = Connect::pkexec(launch::find_pkexec(), &engine);
+            (connect, Some(engine))
         }
         Start::Refuse(line) => {
             eprintln!("{line}");
             return ExitCode::from(2);
         }
     };
-    // Whichever way it started, before the toolkit starts a thread.
+    // Whichever way it started, before the toolkit starts a thread, and
+    // after pkexec started.
     if let Err(error) = process::limit() {
         eprintln!("The window could not open: it could not limit itself: {error}");
         return ExitCode::FAILURE;

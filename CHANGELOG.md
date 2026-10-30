@@ -82,30 +82,32 @@ of this changelog for that version becomes the release notes word for word, and
   home and XDG directories in a directory of its own in the operator's runtime directory (refused
   unless it is private and in RAM), in `/` and with `/dev/null` as its standard streams. However it
   starts, it turns off its core dumps (a limit of 0), makes itself not dumpable and sets
-  `no_new_privs` before it opens. Started any other way it opens nothing and prints the line that
-  opens it. It refuses a helper of another release or protocol with a page that says so before it
-  sends anything, and reads each frame strictly and with a size limit. Its pages: the decoy's check,
-  which runs when the window opens and shows each check as it finishes, then the verdict with each
-  problem and its fix; a hidden session's status; a page for a status the engine could not build,
-  such as settings it cannot read, which names no place; and a page for each way a session can end
-  (another release, a refused request, a lost connection, an answer it cannot read, a password
-  pkexec could not get). A dismissed password dialog closes it. An operation the engine confirms
-  first runs as a plan and its apply, and its question sends the plan's token back or withdraws the
-  plan at once, and keeps the keyboard until it is answered, Escape cancelling it. A ready decoy
-  activates from the window: Activate… asks first, with what the activation's plan says (the logout,
-  each risk allowed, the warning for a root accepted on this computer's storage, the decoy home, a
-  hidden system to build, a missing settings file); the steps then show as they stream; Cancel or
-  Escape stops the activation before its point of no return by hanging up on the helper, which
-  unwinds it and gives its answer last; and past that point the page reads "Logging Out" and takes
-  no input, not even its Close. A refused check that the CLI lets one allow for one run with a flag
-  (a decoy that keeps a persistent record, `--allow-persistent-decoy`) offers "Allow for This
-  Activation…", whose button acts only once the word "allow" is typed; the window then checks again
-  with the flag, names the risk on the page and in the question, and gives the flag to that one
-  activation, storing nothing. The page of an interrupted activation offers Clean Up, and that of a
-  record that cannot be read on the decoy Reset Record, both `nails recover`; the window then says
-  what the recovery did, without naming a device, and checks again. Every control and row is a Tab
-  stop with an accessible name. The names a window list, a process list or an accessibility tool
-  shows are neutral: the title is "Session", and the app id, the program
+  `no_new_privs` before it opens. From a menu entry it starts pkexec before that, since pkexec
+  cannot become root under `no_new_privs`, and by its set-user-ID path (`/run/wrappers/bin/pkexec`
+  on NixOS, else `/usr/bin/pkexec`), never through `PATH`. Started any other way it opens nothing
+  and prints the line that opens it. It refuses a helper of another release or protocol with a page
+  that says so before it sends anything, and reads each frame strictly and with a size limit. Its
+  pages: the decoy's check, which runs when the window opens and shows each check as it finishes,
+  then the verdict with each problem and its fix; a hidden session's status; a page for a status the
+  engine could not build, such as settings it cannot read, which names no place; and a page for each
+  way a session can end (another release, a refused request, a lost connection, an answer it cannot
+  read, a password pkexec could not get). A dismissed password dialog closes it. An operation the
+  engine confirms first runs as a plan and its apply, and its question sends the plan's token back
+  or withdraws the plan at once, and keeps the keyboard until it is answered, Escape cancelling it.
+  A ready decoy activates from the window: Activate… asks first, with what the activation's plan
+  says (the logout, each risk allowed, the warning for a root accepted on this computer's storage,
+  the decoy home, a hidden system to build, a missing settings file); the steps then show as they
+  stream; Cancel or Escape stops the activation before its point of no return by hanging up on the
+  helper, which unwinds it and gives its answer last; and past that point the page reads "Logging
+  Out" and takes no input, not even its Close. A refused check that the CLI lets one allow for one
+  run with a flag (a decoy that keeps a persistent record, `--allow-persistent-decoy`) offers "Allow
+  for This Activation…", whose button acts only once the word "allow" is typed; the window then
+  checks again with the flag, names the risk on the page and in the question, and gives the flag to
+  that one activation, storing nothing. The page of an interrupted activation offers Clean Up, and
+  that of a record that cannot be read on the decoy Reset Record, both `nails recover`; the window
+  then says what the recovery did, without naming a device, and checks again. Every control and row
+  is a Tab stop with an accessible name. The names a window list, a process list or an accessibility
+  tool shows are neutral: the title is "Session", and the app id, the program
   (`<hidden-root>/gui/bin/session`), the process name and the application name a screen reader reads
   are all `session`. Its tests run without a display, on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
