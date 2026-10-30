@@ -76,7 +76,7 @@ pub fn execute(
 }
 
 /// Drive init against a filesystem: validate, apply, report.
-fn run<F: Filesystem>(settings: &OutputSettings, fs: &F, args: &InitArgs) -> ExitStatus {
+pub(crate) fn run<F: Filesystem>(settings: &OutputSettings, fs: &F, args: &InitArgs) -> ExitStatus {
     let json = settings.is_json();
     match plan(fs, args).and_then(|plan| apply(fs, &args.path, plan)) {
         Ok(report) => {
@@ -88,7 +88,7 @@ fn run<F: Filesystem>(settings: &OutputSettings, fs: &F, args: &InitArgs) -> Exi
 }
 
 /// Report why init refused or failed, and the exit status it earns.
-fn report_failure(json: bool, failure: InitFailure) -> ExitStatus {
+pub(crate) fn report_failure(json: bool, failure: InitFailure) -> ExitStatus {
     match failure {
         InitFailure::NotSeparate(refusal) => report_refusal(json, "init", &refusal),
         InitFailure::Unsupported(error) => report_error(
@@ -114,7 +114,10 @@ fn report_failure(json: bool, failure: InitFailure) -> ExitStatus {
 
 /// Plan the layout for `args`: the facade operation with the clap arguments
 /// mapped to its options.
-fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan, InitFailure> {
+pub(crate) fn plan<F: Filesystem>(
+    fs: &F,
+    args: &InitArgs,
+) -> std::result::Result<InitPlan, InitFailure> {
     init::plan(fs, &options(args))
 }
 

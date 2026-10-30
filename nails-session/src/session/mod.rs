@@ -31,8 +31,10 @@ pub mod store;
 pub mod systemd;
 pub mod units;
 pub mod way_back;
+pub mod window_launcher;
 
 pub use entry::{Entry, EntryHost, EntryInputs, RealEntryHost, decoy_root_of};
 pub use layout::{Layout, Paths};
 pub use leave::{LeaveReport, LeaveTo, RealTargetHost, TargetHost, leave};
 pub use probe::{SessionView, probe};
+pub use window_launcher::WindowLauncher;

@@ -66,7 +66,7 @@ fn deactivate_prepared(
 /// [`deactivate_prepared`], going on once the operator has confirmed with
 /// `go_on`, which takes the ready deactivation, where it leaves to and the
 /// warnings given before the question: [`lock_and_leave`], but in tests.
-fn deactivate_prepared_with(
+pub(crate) fn deactivate_prepared_with(
     settings: &OutputSettings,
     args: &DeactivateArgs,
     prepared: Prepared,
@@ -156,7 +156,7 @@ fn deactivate_prepared_with(
 /// it, reporting the outcome with the `warnings` given before the question.
 /// The handle holds the lock until it is dropped, once the outcome is
 /// reported.
-fn lock_and_leave(
+pub(crate) fn lock_and_leave(
     settings: &OutputSettings,
     ready: ReadyDeactivation,
     to: LeaveTo,

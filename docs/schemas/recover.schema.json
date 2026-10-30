@@ -16,8 +16,8 @@
       "required": ["outcome", "remaining_mounts", "backend"],
       "properties": {
         "outcome": {
-          "description": "`clean` when an interrupted activation left nothing, `rolled_back` when its leftovers were removed.",
-          "enum": ["clean", "rolled_back"]
+          "description": "`clean` when an interrupted activation left nothing, `rolled_back` when its leftovers were removed, `record_reset` when, on the plain decoy, the record on the hidden volume could not be read or trusted and was reset to no active session.",
+          "enum": ["clean", "rolled_back", "record_reset"]
         },
         "remaining_mounts": {
           "description": "Mounts still below /run/nextroot, which a reboot clears (exit 7 when any is left).",

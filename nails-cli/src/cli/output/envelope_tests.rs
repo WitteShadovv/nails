@@ -55,3 +55,36 @@ fn a_cancel_is_a_neutral_notice() {
         );
     }
 }
+
+/// A captured command prints nothing and hands its one envelope back; a second
+/// envelope of the same command is dropped, and the next command is captured
+/// as well.
+#[cfg(feature = "gui")]
+#[test]
+fn a_capture_takes_the_first_envelope_of_its_command_only() {
+    let (status, line) = capture(|| {
+        report_error(
+            true,
+            "recover",
+            ExitStatus::Failed,
+            ErrorBody::new("first", "the one envelope"),
+        );
+        report_error(
+            true,
+            "recover",
+            ExitStatus::Failed,
+            ErrorBody::new("second", "dropped"),
+        )
+    });
+    assert_eq!(status, ExitStatus::Failed);
+    let line = line.expect("the envelope was captured");
+    let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(value["error"]["code"], "first", "{line}");
+
+    let ((), again) = capture(|| {
+        error_envelope("verify", ErrorBody::new("next", "a later command")).print();
+    });
+    assert!(again.is_some_and(|line| line.contains("\"next\"")));
+    let ((), none) = capture(|| ());
+    assert_eq!(none, None, "a command that prints nothing captures nothing");
+}

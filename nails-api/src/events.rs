@@ -63,6 +63,10 @@ pub enum Event {
         /// The one-line result message.
         message: String,
     },
+    /// An activation is past its point of no return: the entry is recorded,
+    /// nothing cancels it any more, and the soft-reboot follows. A window that
+    /// closes its pipe from here on no longer stops the switch.
+    PointOfNoReturn,
     /// The operation ended. An activation ends once its soft-reboot is
     /// enqueued (`success`), or when it failed or was rolled back before that,
     /// a soft-reboot that could not be enqueued included.
@@ -124,6 +128,16 @@ mod tests {
         let json = serde_json::to_string(&Event::Finished { success: false }).unwrap();
         assert!(json.contains("\"type\":\"finished\""));
         assert!(json.contains("\"success\":false"));
+    }
+
+    #[test]
+    fn the_point_of_no_return_is_a_bare_tag() {
+        let json = serde_json::to_string(&Event::PointOfNoReturn).unwrap();
+        assert_eq!(json, r#"{"type":"point_of_no_return"}"#);
+        assert_eq!(
+            serde_json::from_str::<Event>(&json).unwrap(),
+            Event::PointOfNoReturn
+        );
     }
 
     #[test]

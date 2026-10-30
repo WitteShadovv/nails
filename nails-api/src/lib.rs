@@ -8,10 +8,12 @@
 //!
 //! One [`envelope`] shape carries every result, typed [`exit`] codes name every
 //! outcome a script can branch on, the serde [`dto`] payloads are the
-//! renderers' shared data-transfer types, and the [`events`] stream is what a
-//! front end watches while a long operation runs. Keeping the contract in a crate with
-//! no NAILS dependency lets a consumer link the wire types without the whole
-//! tool and pins the contract as a small, reviewable surface
+//! renderers' shared data-transfer types, the [`events`] stream is what a
+//! front end watches while a long operation runs, and the [`protocol`] is how a
+//! window drives the engine through its root helper, in the environment of
+//! [`window_env`], whoever started it. Keeping the contract in a
+//! crate with no NAILS dependency lets a consumer link the wire types without
+//! the whole tool and pins the contract as a small, reviewable surface
 //! (`nails-core/tests/crate_graph.rs` holds the boundary).
 
 // Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
@@ -22,6 +24,8 @@ pub mod dto;
 pub mod envelope;
 pub mod events;
 pub mod exit;
+pub mod protocol;
+pub mod window_env;
 
 pub use dto::StateJson;
 pub use envelope::{Envelope, ErrorBody, NextStep, SCHEMA_VERSION, error_envelope};

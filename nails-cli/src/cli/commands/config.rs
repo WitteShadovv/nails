@@ -100,7 +100,25 @@ pub fn execute(
         crate::cli::output::print_tolerating_broken_pipe(&outcome.stdout);
     }
     crate::cli::output::eprint_tolerating_broken_pipe(&outcome.stderr);
-    match outcome.code {
+    exit_status(outcome.code)
+}
+
+/// The exit status and the one envelope a `nails config` subcommand gives
+/// under `--json`, without printing them: what the window's helper answers
+/// with. Built only with the helper, under the `gui` feature.
+#[cfg(feature = "gui")]
+pub(crate) fn json_outcome(
+    config_override: Option<&Path>,
+    command: &ConfigCommand,
+) -> (ExitStatus, serde_json::Value) {
+    let outcome = run(config_override, command, true);
+    let envelope = serde_json::from_str(outcome.stdout.trim_end())
+        .expect("every config subcommand prints one envelope under --json");
+    (exit_status(outcome.code), envelope)
+}
+
+fn exit_status(code: i32) -> ExitStatus {
+    match code {
         0 => ExitStatus::Ok,
         EXIT_USAGE => ExitStatus::Usage,
         _ => ExitStatus::Config,

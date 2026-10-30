@@ -24,7 +24,8 @@ use crate::{NailsManager, RealFilesystem, RuntimeEnv};
 /// The machine-readable payload of a recovery.
 #[derive(Debug, Serialize)]
 pub struct RecoverData {
-    /// `clean` (nothing to do) or `rolled_back`.
+    /// `clean` (nothing to do), `rolled_back`, or `record_reset` (on the
+    /// plain decoy, a record that could not be read or trusted was reset).
     pub outcome: &'static str,
     /// Mounts still below `/run/nextroot`.
     pub remaining_mounts: Vec<String>,
@@ -83,6 +84,7 @@ pub fn recover_data(recovery: &SessionRecovery) -> RecoverData {
     let (name, remaining, backend): (_, &[std::path::PathBuf], &[(String, BackendClose)]) =
         match recovery {
             SessionRecovery::Clean => ("clean", &[], &[]),
+            SessionRecovery::RecordReset => ("record_reset", &[], &[]),
             SessionRecovery::RolledBack { remaining, backend } => {
                 ("rolled_back", remaining, backend)
             }
@@ -113,6 +115,15 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&data).unwrap(),
             serde_json::json!({"outcome": "clean", "remaining_mounts": [], "backend": []})
+        );
+    }
+
+    #[test]
+    fn a_reset_record_is_its_own_outcome_with_nothing_else_to_report() {
+        let data = recover_data(&SessionRecovery::RecordReset);
+        assert_eq!(
+            serde_json::to_value(&data).unwrap(),
+            serde_json::json!({"outcome": "record_reset", "remaining_mounts": [], "backend": []})
         );
     }
 

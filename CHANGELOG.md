@@ -23,6 +23,91 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- A root helper for the coming window, `nails helper --stdio`, built only with the `gui` cargo
+  feature, so the released binary has no such command (a flake check runs the shipped binary to
+  prove it refuses it). The window runs as the operator and drives the engine through the helper's
+  stdin and stdout, one JSON line per request. The helper speaks first and answers nothing until the
+  window's hello names the same release and protocol version; then it runs one request at a time
+  and answers each with the envelope and exit code the CLI gives for the same command under
+  `--json`, with the progress of `check` streamed as events. It serves `status`, `check`, `config
+  path`, `config show` and `config validate` (of its own configuration only, never a path the
+  window names), `discard`, `activate`, `deactivate` (both endings), `emergency`, `recover`,
+  `verify`, each step of `rehearse`, and `init`. What the CLI confirms, and `init`, runs as a plan
+  and an apply: the plan says what the apply would do (a discard and an activation also take the
+  state lock) and hands out a single-use token, and only the next request, an apply carrying that
+  token, does it. An activation streams its steps and says when it passes its point of no return;
+  a window that closes its pipe before that point cancels the activation, and after it the helper
+  finishes the switch. The helper keeps its stdout and stdin off the pipe, so nothing a command or
+  a child prints can reach the window. The decoder refuses a line over 16 KiB, an unknown or
+  duplicate field, another protocol version and an argument of the wrong shape (a relative path, or
+  two options the CLI refuses together), and ends the session; a libFuzzer target
+  (`helper_request`) covers it.
+- The launcher for the coming window, `nails gui`, built only with the `gui` cargo feature like the
+  helper (the flake check proves the released binary refuses it too). Run as
+  `sudo <hidden-root>/nails gui`, it starts the helper as root and the window's program
+  (`<hidden-root>/gui/bin/session`) as the operator on the two ends of one socket pair, and returns.
+  On the decoy it first refuses, before any window starts, on a decoy that keeps a persistent record
+  (the findings of the activation's decoy persistence check) and on every desktop whose disk,
+  journal and D-Bus trace test has not passed, which today is every desktop; the refusal names the
+  desktop and each reason and points to `activate`. In a hidden session it always opens. The window
+  gets no supplementary groups, `no_new_privs`, no inherited descriptor beyond its pipe and
+  `/dev/null`, and an environment from an allowlist: the display, the session bus and the locale, a
+  home and XDG directories of its own in the operator's runtime directory (refused unless it is
+  private and in RAM), and settings that turn off shader caches, on-disk settings and the portals of
+  GTK. Slint, the window's toolkit, still reads the desktop's appearance from the settings portal on
+  the session bus at every start, starting xdg-desktop-portal through D-Bus activation where it is
+  not running: no setting of Slint 1.18 turns that off, and the session bus stays, since the screen
+  reader support needs it. The desktop trace test that admits a decoy desktop has to clear it. The
+  helper and the window each lead a session of their own, so closing the terminal, or the shell
+  being killed, signals neither.
+- The way into the coming window from a hidden session's menu. A build with the `gui` cargo feature
+  whose window program lies at `<hidden-root>/gui/bin/session` writes, at every activation, a menu
+  entry "Session" that starts the window as whoever clicks it, and a polkit action that matches only
+  the helper the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its password
+  dialog reads "Session needs your password each time it opens." instead of naming the binary, and
+  it asks for an administrator's password every time. Both go into the hidden root's upper and never
+  onto the decoy: on Debian, Ubuntu, Fedora and Arch into `/usr/share/applications` and
+  `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into the operator's
+  `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and later). Every
+  path is resolved inside the hidden root, so a decoy directory that is an absolute link cannot take
+  the write onto the decoy disk, and one that leads into the Nix store is refused. A file that
+  cannot be written is named on one line and the activation goes on.
+- The window itself, `gui/nails-gui`, a Cargo workspace of its own on the Slint toolkit (its
+  software renderer: no GL, no shader cache). It is not part of the release yet. It opens on the
+  socket `nails gui` hands it, and from a hidden session's menu entry, which starts it with
+  `--engine <hidden-root>/nails`, it asks pkexec for that engine's helper itself; only where `/` is
+  the overlay of a hidden session on that engine's volume, so pkexec never runs on the decoy. There
+  it first gives itself the launcher's environment, which a desktop's start does not: before its
+  toolkit starts it starts itself again, as the same process, on the launcher's allowlist, with its
+  home and XDG directories in a directory of its own in the operator's runtime directory (refused
+  unless it is private and in RAM), in `/` and with `/dev/null` as its standard streams. However it
+  starts, it turns off its core dumps (a limit of 0), makes itself not dumpable and sets
+  `no_new_privs` before it opens. Started any other way it opens nothing and prints the line that
+  opens it. It refuses a helper of another release or protocol with a page that says so before it
+  sends anything, and reads each frame strictly and with a size limit. Its pages: the decoy's check,
+  which runs when the window opens and shows each check as it finishes, then the verdict with each
+  problem and its fix; a hidden session's status; a page for a status the engine could not build,
+  such as settings it cannot read, which names no place; and a page for each way a session can end
+  (another release, a refused request, a lost connection, an answer it cannot read, a password
+  pkexec could not get). A dismissed password dialog closes it. An operation the engine confirms
+  first runs as a plan and its apply, and its question sends the plan's token back or withdraws the
+  plan at once, and keeps the keyboard until it is answered, Escape cancelling it. A ready decoy
+  activates from the window: Activate… asks first, with what the activation's plan says (the logout,
+  each risk allowed, the warning for a root accepted on this computer's storage, the decoy home, a
+  hidden system to build, a missing settings file); the steps then show as they stream; Cancel or
+  Escape stops the activation before its point of no return by hanging up on the helper, which
+  unwinds it and gives its answer last; and past that point the page reads "Logging Out" and takes
+  no input, not even its Close. A refused check that the CLI lets one allow for one run with a flag
+  (a decoy that keeps a persistent record, `--allow-persistent-decoy`) offers "Allow for This
+  Activation…", whose button acts only once the word "allow" is typed; the window then checks again
+  with the flag, names the risk on the page and in the question, and gives the flag to that one
+  activation, storing nothing. The page of an interrupted activation offers Clean Up, and that of a
+  record that cannot be read on the decoy Reset Record, both `nails recover`; the window then says
+  what the recovery did, without naming a device, and checks again. Every control and row is a Tab
+  stop with an accessible name. The names a window list, a process list or an accessibility tool
+  shows are neutral: the title is "Session", and the app id, the program
+  (`<hidden-root>/gui/bin/session`), the process name and the application name a screen reader reads
+  are all `session`. Its tests run without a display, on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
@@ -115,6 +200,14 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- `recover` on the plain decoy now also resets a record on the hidden volume that cannot be read or
+  trusted (malformed, failing its integrity check, from a newer release, or unreadable), which left
+  activation refusing with no command to clear it. No hidden session is active there, which the
+  live mounts show, so the record is replaced with an inactive one; `--json` reports the outcome
+  `record_reset`. In the hidden session, and while an activation enters, `recover` still refuses,
+  and a record this process may not read at all is left alone.
+- The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
+  sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
   f2fs mount with compression) as "not checked" rather than "clean" for leaked-then-deleted traces:
   such a filesystem keeps old copies in unreferenced extents and stores file contents compressed, so a
