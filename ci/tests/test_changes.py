@@ -74,6 +74,16 @@ def ci_job(name: str) -> str:
     return match[1]
 
 
+def ci_step(job: str, step_id: str) -> str:
+    """The lines of the step with ``id: step_id`` among the lines of a job."""
+    steps = re.split(r"^(?=      - )", job, flags=re.M)
+    marker = re.compile(rf"^ {{8}}id: {re.escape(step_id)}$", re.M)
+    found = [step for step in steps if marker.search(step)]
+    if len(found) != 1:
+        raise AssertionError(f"the job has {len(found)} steps with id {step_id}")
+    return found[0]
+
+
 class SelectTest(unittest.TestCase):
     def test_documentation_runs_the_docs_check(self) -> None:
         paths = [
@@ -369,13 +379,23 @@ class WorkflowTest(unittest.TestCase):
     """
 
     def test_the_changes_job_passes_on_every_filter(self) -> None:
-        # The step that runs changes.py prints a line per filter, and the job
-        # passes each one on under its own name.
+        # The step that runs changes.py writes a line per filter to its
+        # outputs, and the job passes each one on under its own name. Every
+        # work job runs only on these, so a step that is skipped, that may fail
+        # or that writes them anywhere else skips every work job, and gate
+        # passes with nothing run. So does a BASE that compares HEAD with
+        # itself, which no path differs from.
         job = ci_job("changes")
-        self.assertRegex(
-            job,
-            r"(?m)^ {8}id: filter\n(?: {8,}\S.*\n)*?"
-            r" {8}run: python3 -m ci\.changes ",
+        self.assertNotRegex(job, r"(?m)^ {4}(if|continue-on-error):")
+        step = ci_step(job, "filter")
+        self.assertNotRegex(step, r"(?m)^ {8}(if|continue-on-error):")
+        self.assertEqual(
+            re.findall(r"^ {8}run:(.*)$", step, re.M),
+            [' python3 -m ci.changes ${BASE:+--base "$BASE"} >> "$GITHUB_OUTPUT"'],
+        )
+        self.assertEqual(
+            re.findall(r"^ {10}BASE:(.*)$", step, re.M),
+            [" ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}"],
         )
         passed_on = re.findall(
             r"^ {6}(\w+): \$\{\{ steps\.filter\.outputs\.(\w+) \}\}$", job, re.M
