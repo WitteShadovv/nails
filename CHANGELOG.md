@@ -128,17 +128,20 @@ of this changelog for that version becomes the release notes word for word, and
   helper, which unwinds it and gives its answer last; and past that point the page reads "Logging
   Out" and takes no input, not even its Close. A refused check that the CLI lets one allow for one
   run with a flag (a decoy that keeps a persistent record, `--allow-persistent-decoy`) offers "Allow
-  for This Activation…", whose button acts only once the word "allow" is typed; the window then
-  checks again with the flag, names the risk on the page and in the question, and gives the flag to
-  that one activation, storing nothing: once its apply is answered or its plan withdrawn, or a
-  recovery ran, the window forgets the risk and checks again without it. The page of an interrupted
-  activation offers Clean Up, and that of a record that cannot be read on the decoy Reset Record,
-  both `nails recover`; the window then says what the recovery did, without naming a device, and
-  checks again. Every control and row is a Tab stop with an accessible name. The names a window
-  list, a process list or an accessibility tool shows are neutral: the title is "Session", and the
-  app id, the program (`<hidden-root>/gui/bin/session`), the process name and the application name a
-  screen reader reads are all `session`. Its tests run without a display, on Slint's testing
-  platform.
+  for This Activation…", whose button acts only once the word "allow" is typed (no decoy reaches it
+  yet: the launcher refuses a decoy that keeps a persistent record before the window opens); the
+  window then checks again with the flag, names the risk on the page and in the question, and gives
+  the flag to that one activation, storing nothing: once its apply is answered or its plan
+  withdrawn, or a recovery ran, the window forgets the risk and checks again without it. The page of
+  an interrupted activation offers Clean Up, and that of a record that cannot be read on the decoy
+  Reset Record, both `nails recover`; the window then says what the recovery did, without naming a
+  device, and checks again. Every control and row is a Tab stop with an accessible name. The
+  window's own names are neutral: its title is "Session", and its app id, its program
+  (`<hidden-root>/gui/bin/session`), its process name and the application name a screen reader reads
+  are all `session`. A process list still shows `nails` while the window is open: the helper runs as
+  `<hidden-root>/nails helper --stdio`, and a menu entry's start keeps
+  `--engine <hidden-root>/nails` on the window's command line. Its tests run without a display, on
+  Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
