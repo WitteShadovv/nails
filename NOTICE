@@ -17,5 +17,10 @@ this program. If not, see <https://www.gnu.org/licenses/>.
 The full license text is in LICENSE (and in LICENSES/GPL-3.0-or-later.txt).
 The graphical interface in gui/ is licensed under version 3 of the License
 only (LICENSES/GPL-3.0-only.txt).
+gui/patches/i-slint-backend-winit is a copy of the crate of that name of the
+Slint toolkit, Copyright (C) SixtyFPS GmbH, with a change marked in its
+manifest. SixtyFPS offers it under version 3 of the License only or under
+licences of its own (its LICENSES directory), and NAILS uses it, as all of
+Slint, under version 3 of the License only.
 Per-file copyright and licensing is recorded with SPDX headers and REUSE.toml,
 following the REUSE specification (https://reuse.software).
