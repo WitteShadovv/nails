@@ -172,11 +172,9 @@ fn open(
     // its event loop at a time, however many come.
     let mailbox = Mailbox::new(|mailbox: Mailbox| {
         let _ = slint::invoke_from_event_loop(move || {
-            let updates = mailbox.take();
-            CONTROLLER.with(|controller| {
-                if let Some(controller) = controller.borrow().as_ref() {
-                    controller.borrow_mut().take(updates);
-                }
+            CONTROLLER.with(|controller| match controller.borrow().as_ref() {
+                Some(controller) => controller.borrow_mut().take_turn(&mailbox),
+                None => drop(mailbox.take()),
             });
         });
     });
