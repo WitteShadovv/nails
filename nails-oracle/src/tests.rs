@@ -1779,7 +1779,7 @@ fn a_btrfs_scan_without_the_timeline_is_partial_and_names_it() {
 
 #[test]
 fn a_full_scan_has_nothing_left_out_and_stays_clean() {
-    // The ext4 path is unchanged: every channel ran, so the verdict is clean,
+    // A full scan, as on ext4: every channel ran, so the verdict is clean,
     // exits 0 and its not_run list is empty.
     let v = decide_scan(&complete_scans(), &complete_policy());
     assert_eq!(v.status, Status::Clean, "{:?}", v.failures);

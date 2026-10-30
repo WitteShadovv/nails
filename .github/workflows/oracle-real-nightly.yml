@@ -226,8 +226,8 @@ jobs:
           path: ${{ runner.temp }}/oracle-artifact/
 
   # The btrfs path: the synthetic btrfs images, built here one at a time, then
-  # the restore carve (btrfs restore), the record diff and bulk_extractor over
-  # each, and no plaso timeline, since plaso cannot read btrfs. run-scan.sh
+  # the restore carve (btrfs restore) and bulk_extractor over each, and no
+  # plaso timeline, since plaso cannot read btrfs. run-scan.sh
   # passes only a partial verdict that names the timeline as not run; the step
   # below checks the verdict says exactly that, so the job fails if the btrfs
   # path ever reads as clean, or as anything but partial.
