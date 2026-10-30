@@ -523,6 +523,45 @@ fn a_plan_is_applied_only_to_the_file_it_read() {
     assert!(matches!(apply_with(&other, &plan), Err(Failure::Stale(_))));
 }
 
+/// A window holds back the keys of the wire crate's session list while a
+/// session runs: they are exactly the keys this guard keeps, and another
+/// key changes as before.
+#[test]
+fn the_keys_a_window_holds_back_in_a_session_are_the_ones_the_guard_keeps() {
+    let (_dir, config, mut gate) = volume();
+    let root = gate.root.display().to_string();
+    gate.session = Some(Session {
+        running: true,
+        hidden_root: Some(gate.root.clone()),
+        state_file: Some(gate.root.join("state.json")),
+    });
+    std::fs::write(
+        &config,
+        format!("hidden_volume_root = {root:?}\nstate_file_path = \"{root}/state.json\"\n"),
+    )
+    .unwrap();
+    let moved = |key: &str| -> String {
+        match key {
+            "hidden_volume_root" => gate.root.parent().unwrap().display().to_string(),
+            _ => format!("{root}/elsewhere"),
+        }
+    };
+    let mut guarded = Vec::new();
+    for setting in SETTINGS.iter().filter(|setting| setting.kind == Kind::Path) {
+        let failure = edit_with(
+            &gate,
+            Some(&config),
+            &[set(setting.key, string(&moved(setting.key)))],
+        )
+        .err();
+        if let Some(Failure::SessionPaths(key)) = failure {
+            assert_eq!(key, setting.key);
+            guarded.push(key);
+        }
+    }
+    assert_eq!(guarded, nails_api::settings::SESSION_KEYS);
+}
+
 #[test]
 fn a_hidden_session_keeps_its_root_and_state_file() {
     let (_dir, config, mut gate) = volume();
