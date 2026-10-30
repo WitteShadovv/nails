@@ -65,9 +65,10 @@ WHAT HAPPENS:
   which shows its normal login screen; log in with the decoy password (a
   display manager set to log an account in automatically logs it in again, as
   at boot). With --poweroff the machine powers off instead, and so it does,
-  as after deactivate, when the return cannot undo a link, MAC address,
-  policy-routing rule or nftables table the session made or changed. On the
-  decoy, emergency removes what an interrupted activation left in /run.
+  as after deactivate, when a link, MAC address, policy-routing rule or
+  nftables table the return sets out to undo is still the session's
+  afterwards, or it cannot read them back. On the decoy, emergency removes
+  what an interrupted activation left in /run.
 
 EXAMPLES:
   nails emergency                     Kill the hidden session and return now
