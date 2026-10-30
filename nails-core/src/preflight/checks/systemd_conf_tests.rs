@@ -8,6 +8,10 @@ use super::*;
 use crate::RealFilesystem;
 use std::fs;
 
+/// The release the tests read as, unless they say otherwise: one that looks
+/// for the main file in every directory.
+const RELEASE: Option<u32> = Some(260);
+
 fn write(root: &Path, rel: &str, content: &str) {
     let path = root.join(rel);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -15,7 +19,7 @@ fn write(root: &Path, rel: &str, content: &str) {
 }
 
 fn read(root: &Path) -> Result<Vec<Assignment>, Unread> {
-    section_assignments(&RealFilesystem, root, "journald.conf", "Journal")
+    section_assignments(&RealFilesystem, root, "journald.conf", "Journal", RELEASE)
 }
 
 fn values(root: &Path, key: &str) -> Vec<String> {
@@ -178,13 +182,14 @@ fn malformed_header_stops_the_file() {
 fn missing_config_yields_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     assert_eq!(
-        config_files(&RealFilesystem, tmp.path(), "journald.conf"),
+        config_files(&RealFilesystem, tmp.path(), "journald.conf", RELEASE),
         Ok(vec![])
     );
     assert!(!config_present(
         &RealFilesystem,
         tmp.path(),
-        "journald.conf"
+        "journald.conf",
+        RELEASE
     ));
 }
 
@@ -198,7 +203,12 @@ fn main_file_is_the_first_found_only() {
         "[Journal]\nStorage=persistent\n",
     );
     assert_eq!(values(root, "Storage"), vec!["persistent"]);
-    assert!(config_present(&RealFilesystem, root, "journald.conf"));
+    assert!(config_present(
+        &RealFilesystem,
+        root,
+        "journald.conf",
+        RELEASE
+    ));
 
     write(
         root,
@@ -310,7 +320,7 @@ fn an_entry_that_is_no_regular_file_leaves_the_configuration_unread() {
             "{what}"
         );
         assert_eq!(
-            config_files(&RealFilesystem, root, "journald.conf"),
+            config_files(&RealFilesystem, root, "journald.conf", RELEASE),
             Err(Unread {
                 path: entry,
                 cause: UnreadCause::NotRegular
@@ -318,7 +328,7 @@ fn an_entry_that_is_no_regular_file_leaves_the_configuration_unread() {
             "{what}"
         );
         assert!(
-            config_present(&RealFilesystem, root, "journald.conf"),
+            config_present(&RealFilesystem, root, "journald.conf", RELEASE),
             "{what}"
         );
     }
@@ -430,6 +440,90 @@ fn a_main_file_link_that_leads_nowhere_is_passed_over() {
     assert_eq!(values(root, "Storage"), vec!["volatile"]);
 }
 
+fn assignment(key: &str, value: &str) -> Assignment {
+    Assignment {
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+/// Before 256 the daemons read the main file from `/etc` alone, and from 256
+/// the first of the four directories that has one. NAILS looks where the
+/// running release looks, where it read a main file in `/run` on 255 as well.
+/// A main file in `/etc` counts on every release, and shadows the others.
+#[test]
+fn a_main_file_outside_etc_counts_from_256() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "run/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    write(
+        root,
+        "usr/lib/systemd/journald.conf.d/50-x.conf",
+        "[Journal]\nCompress=no\n",
+    );
+    let read_under =
+        |major| section_assignments(&RealFilesystem, root, "journald.conf", "Journal", major);
+    let compress = assignment("Compress", "no");
+    assert_eq!(read_under(Some(255)), Ok(vec![compress.clone()]));
+    assert_eq!(
+        read_under(Some(256)),
+        Ok(vec![assignment("Storage", "volatile"), compress.clone()])
+    );
+
+    write(
+        root,
+        "etc/systemd/journald.conf",
+        "[Journal]\nStorage=persistent\n",
+    );
+    for major in [Some(254), Some(255), Some(256), None] {
+        assert_eq!(
+            read_under(major),
+            Ok(vec![assignment("Storage", "persistent"), compress.clone()]),
+            "{major:?}"
+        );
+    }
+}
+
+/// When NAILS cannot read which release runs, a main file outside `/etc`
+/// counts only where reading it changes nothing: one that sets a value leaves
+/// the configuration unread, one with comments alone is read either way.
+#[test]
+fn a_main_file_outside_etc_on_an_unknown_release_counts_where_it_changes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let main = root.join("run/systemd/journald.conf");
+    write(
+        root,
+        "run/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    let read_unknown =
+        || section_assignments(&RealFilesystem, root, "journald.conf", "Journal", None);
+    assert_eq!(
+        read_unknown(),
+        unread(main.clone(), UnreadCause::UnknownRelease)
+    );
+    assert_eq!(
+        config_files(&RealFilesystem, root, "journald.conf", None),
+        Err(Unread {
+            path: main.clone(),
+            cause: UnreadCause::UnknownRelease
+        })
+    );
+    assert!(config_present(&RealFilesystem, root, "journald.conf", None));
+
+    write(
+        root,
+        "run/systemd/journald.conf",
+        "[Journal]\n#Storage=volatile\n",
+    );
+    assert_eq!(read_unknown(), Ok(vec![]));
+}
+
 /// systemd reads its configuration as root. A file or a drop-in directory
 /// that NAILS cannot read, as an unprivileged `check` cannot read one that
 /// only root may, leaves the configuration unread, where such a file used to
@@ -505,7 +599,7 @@ fn a_file_gone_when_it_is_read_adds_nothing() {
         value: value.to_string(),
     };
     assert_eq!(
-        section_assignments(&fs, Path::new("/"), "journald.conf", "Journal"),
+        section_assignments(&fs, Path::new("/"), "journald.conf", "Journal", RELEASE),
         Ok(vec![storage("persistent"), storage("volatile")])
     );
 }
@@ -538,6 +632,19 @@ fn an_unread_configuration_names_its_entry_and_what_to_do() {
         "NAILS cannot read /etc/systemd/journald.conf.d/50-x.conf"
     );
     assert_eq!(cannot_read.advice(), "run the command again with sudo");
+    let unknown_release = Unread {
+        path: PathBuf::from("/run/systemd/journald.conf"),
+        cause: UnreadCause::UnknownRelease,
+    };
+    assert_eq!(
+        unknown_release.to_string(),
+        "only systemd 256 and later read the main file /run/systemd/journald.conf, and NAILS \
+         cannot read which release runs"
+    );
+    assert_eq!(
+        unknown_release.advice(),
+        "put the main file in /etc/systemd, where every release reads it"
+    );
 }
 
 #[test]

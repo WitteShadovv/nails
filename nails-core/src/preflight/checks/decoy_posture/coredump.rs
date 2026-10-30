@@ -94,7 +94,27 @@ impl CoredumpSettings {
     /// shows it is installed. A configuration NAILS cannot read as
     /// systemd-coredump does is [`Unread`], which keeps no core off the disk.
     pub(super) fn read<F: Filesystem>(fs: &F, root: &Path) -> Self {
-        match systemd_conf::section_assignments(fs, root, COREDUMP_CONF, COREDUMP_SECTION) {
+        Self::read_under(
+            fs,
+            root,
+            super::super::journald_storage::host_systemd_major(),
+        )
+    }
+
+    /// [`Self::read`] under a service manager of major version
+    /// `systemd_major`, `None` when it is not known.
+    pub(super) fn read_under<F: Filesystem>(
+        fs: &F,
+        root: &Path,
+        systemd_major: Option<u32>,
+    ) -> Self {
+        match systemd_conf::section_assignments(
+            fs,
+            root,
+            COREDUMP_CONF,
+            COREDUMP_SECTION,
+            systemd_major,
+        ) {
             Ok(assignments) => Self::from_assignments(&assignments),
             Err(unread) => Self {
                 unread: Some(unread),

@@ -256,7 +256,9 @@ fn etc_drop_in_shadows_vendor_drop_in() {
         "etc/systemd/logind.conf.d/50-lid.conf",
         "[Login]\nIdleAction=suspend\n",
     );
-    let settings = effective_logind_sleep_at(&RealFilesystem, root);
+    // From 256 logind reads the vendor main file; the /etc drop-in shadows
+    // the vendor one of its name.
+    let settings = logind_sleep_under(&RealFilesystem, root, Some(256));
     assert_eq!(settings.effective_lid_switch(), "ignore");
     assert_eq!(settings.effective_idle_action(), "suspend");
 }

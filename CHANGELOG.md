@@ -343,6 +343,13 @@ of this changelog for that version becomes the release notes word for word, and
   lid may leave the session unlocked, and the sleep guard's `block` mode takes the lid switch. Mask
   a vendor drop-in with an empty file, which every release reads alike. A link to a path that does
   not exist still shadows the file below it and adds nothing, as in every release.
+- On systemd 255 and older, NAILS reads the main journald, logind and systemd-coredump
+  configuration file from `/etc` alone, as those releases do. It took the first of `/etc`, `/run`,
+  `/usr/local/lib` and `/usr/lib` that has one, as 256 and later look for it, so on Ubuntu 24.04,
+  which runs 255, a `/run/systemd/journald.conf` that sets `Storage=volatile`, with
+  `/etc/systemd/journald.conf` gone, let a decoy pass whose journald keeps its `auto` default and
+  persists to an on-disk `/var/log/journal`. When NAILS cannot read the running release, a main
+  file outside `/etc` that changes what is read leaves the configuration unread.
 - A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
   equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
   activation, naming the folder, instead of passing the pre-flight check and then failing the

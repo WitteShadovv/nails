@@ -406,6 +406,23 @@ fn an_unread_journald_configuration_is_refused() {
     assert!(result.message().contains(&expected), "{}", result.message());
 }
 
+/// Before 256 systemd-coredump reads its main file from `/etc` alone, so a
+/// vendor `coredump.conf` that keeps every core off the disk counts only from
+/// 256 on.
+#[test]
+fn a_vendor_coredump_main_file_counts_only_from_256() {
+    use super::coredump::CoredumpSettings;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "usr/lib/systemd/coredump.conf",
+        "[Coredump]\nStorage=none\nProcessSizeMax=0\n",
+    );
+    assert!(!CoredumpSettings::read_under(&RealFilesystem, root, Some(255)).keeps_cores_off_disk());
+    assert!(CoredumpSettings::read_under(&RealFilesystem, root, Some(256)).keeps_cores_off_disk());
+}
+
 /// A coredump configuration NAILS cannot read as systemd-coredump does keeps
 /// no core off the disk, whatever its files set, and the warning names it.
 #[test]
