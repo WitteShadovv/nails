@@ -113,6 +113,85 @@ fn a_discard_on_a_root_the_gate_refuses_takes_no_lock_and_no_token() {
     assert!(engine.pending.is_none());
 }
 
+fn change(set: &[(&str, SettingValue)], unset: &[&str]) -> Op {
+    use nails_api::protocol::SettingArg;
+    Op::ConfigEditPlan(ConfigEditArgs {
+        set: set
+            .iter()
+            .map(|(key, value)| SettingArg {
+                key: (*key).to_string(),
+                value: value.clone(),
+            })
+            .collect(),
+        unset: unset.iter().map(|key| (*key).to_string()).collect(),
+    })
+}
+
+/// The helper runs from the build tree in these tests, which is no volume of
+/// its own, so a configuration change is refused there as `config set`
+/// refuses it, the file untouched and no plan held.
+#[test]
+fn a_configuration_change_off_the_engines_volume_is_refused_and_holds_no_plan() {
+    let (_dir, config) = scratch_config();
+    let before = std::fs::read_to_string(&config).unwrap();
+    let env = RuntimeEnv::default();
+    let mut engine = Engine::new(&env, Some(config.clone()));
+    let op = change(
+        &[("persona.mode", SettingValue::Text("fresh-home".into()))],
+        &["nixos_flake"],
+    );
+    let (exit, envelope) = result(engine.run(op, events()));
+    assert_eq!(exit, ExitStatus::PreflightRefused, "{envelope}");
+    assert_eq!(envelope["command"], "config");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["error"]["code"], "config_off_volume", "{envelope}");
+    assert!(!engine.has_plan());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+}
+
+/// A key the file does not have and a value of another kind are refused as
+/// the CLI refuses them, before the file or its volume is looked at.
+#[test]
+fn a_key_or_a_value_the_file_does_not_take_is_a_usage_error() {
+    let (_dir, config) = scratch_config();
+    let env = RuntimeEnv::default();
+    let mut engine = Engine::new(&env, Some(config));
+    for op in [
+        change(
+            &[("persona.mod", SettingValue::Text("fresh-home".into()))],
+            &[],
+        ),
+        change(
+            &[("minimum_space_mb", SettingValue::Text("2000".into()))],
+            &[],
+        ),
+        change(&[("show_opsec_reminders", SettingValue::Integer(1))], &[]),
+        change(
+            &[("persona.mode", SettingValue::Text("separate-user".into()))],
+            &[],
+        ),
+        change(&[], &["bogus"]),
+    ] {
+        let (exit, envelope) = result(engine.run(op.clone(), events()));
+        assert_eq!(exit, ExitStatus::Usage, "{op:?}: {envelope}");
+        assert_eq!(envelope["error"]["code"], "usage", "{op:?}");
+        assert!(!engine.has_plan());
+    }
+}
+
+#[test]
+fn a_configuration_apply_with_no_plan_is_refused() {
+    let env = RuntimeEnv::default();
+    let mut engine = Engine::new(&env, None);
+    let apply = Op::ConfigEditApply(Token {
+        token: "0".repeat(TOKEN_HEX_DIGITS),
+    });
+    match engine.run(apply, events()) {
+        Answer::Refused(error) => assert_eq!(error.code, ErrorCode::BadToken),
+        Answer::Result { envelope, .. } => panic!("an apply without a plan ran: {envelope}"),
+    }
+}
+
 #[test]
 fn an_apply_with_no_plan_is_refused() {
     let env = RuntimeEnv::default();
