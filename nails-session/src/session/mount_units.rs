@@ -57,12 +57,14 @@
 //! off, as for an fstab line. A unit the decoy masks is left alone, and one
 //! whose files cannot be read, or that NAILS cannot resolve, is masked.
 //!
-//! A unit skipped in the hidden session starts what it requires and wants
-//! before its condition is tested: [`pulled_in`] names those that act on its
-//! device or file (its fsck, makefs, mkswap, growfs, pcrfs, validatefs and
-//! quota units, and NixOS's `mkswap-<name>.service`), from its unit files
-//! and its own `.wants` and `.requires` directories, so they are skipped
-//! with it ([`kept_off`]). Every other unit it pulls in still starts. Where
+//! A unit skipped in the hidden session starts what it requires and wants:
+//! [`pulled_in`] names those that act on its device or file, from its unit
+//! files and its own `.wants` and `.requires` directories, and they are
+//! skipped with it ([`kept_off`]). Its fsck, makefs and mkswap units, and
+//! NixOS's `mkswap-<name>.service`, would run before its condition is tested;
+//! its growfs, pcrfs, validatefs and quota units are bound to the mount and
+//! ordered after it, so they could not start while it is skipped, and are
+//! skipped for caution. Every other unit it pulls in still starts. Where
 //! NAILS cannot tell them all, the unit is masked instead, and the boot
 //! target that requires it is not reached. The generators run again in the
 //! hidden session; what they made in the decoy is taken as what they make
