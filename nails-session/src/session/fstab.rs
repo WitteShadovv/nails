@@ -83,9 +83,10 @@ const NETDEV_SWAP_TARGET: &str = "swap.target (remote-fs.target from systemd 261
 /// boot target, `local-fs.target`, or `remote-fs.target` for a network
 /// filesystem, or `swap.target` for swap ([`NETDEV_SWAP_TARGET`] for a
 /// `_netdev` swap); or the units its `x-systemd.required-by=` options name,
-/// which then take the target's place. `None` when nothing requires it: `nofail` (the
-/// target only wants the unit), `noauto` without an automount (nothing pulls
-/// it in), `x-systemd.wanted-by=` alone, or an NFS `bg` mount, which the
+/// which then take the target's place, `noauto` or not. `None` when nothing
+/// requires it: `nofail` (the target only wants the unit), `noauto` without
+/// an automount and without a unit named to pull it in (nothing pulls it
+/// in), `x-systemd.wanted-by=` alone, or an NFS `bg` mount, which the
 /// generator makes `nofail`.
 pub fn required_by(entry: &FstabEntry) -> Option<String> {
     if entry.is_swap() {
