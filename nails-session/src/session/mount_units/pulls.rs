@@ -102,8 +102,9 @@ fn required_by_option(value: &str) -> Option<String> {
 /// starts (see the module docs), each once, its own and the root's left
 /// out. `fstab` holds the decided fstab lines, whose options the line that
 /// makes `name` adds. `Err` with the reason when NAILS cannot tell them all:
-/// its unit files cannot be read or name a unit or path by a specifier it
-/// does not resolve, or a directory of its links cannot be listed.
+/// its unit files cannot be read or name a mount, swap or automount unit or
+/// a path by a specifier it does not resolve, or a directory of its links
+/// cannot be listed.
 pub fn mount_pulls(
     dirs: UnitDirs<'_>,
     name: &str,
@@ -139,7 +140,13 @@ pub fn mount_pulls(
                 ("Upholds", false, "its Upholds="),
             ] {
                 for value in unit.values("Unit", key) {
-                    for word in value.split_ascii_whitespace() {
+                    // A unit of another kind is no mount, whatever a
+                    // specifier in its name stands for (the generator's
+                    // makefs unit binds to `%i.device`).
+                    for word in value
+                        .split_ascii_whitespace()
+                        .filter(|word| is_storage_unit(word))
+                    {
                         let word = without_specifiers(word).ok_or(super::UNRESOLVED_PULL)?;
                         add(word, required, how);
                     }
