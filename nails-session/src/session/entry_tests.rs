@@ -555,7 +555,22 @@ mod kernel_tests {
             let Some(before) = places.current() else {
                 skip_host("this kernel has no ns_last_pid (CONFIG_CHECKPOINT_RESTORE)");
             };
+            let Some(sh) = nails_teardown::whole_root::tools::find(None, "sh") else {
+                skip_host("no sh in the system directories");
+            };
             let dir = tempfile::tempdir().unwrap();
+            // A root storage daemon, which a soft-reboot leaves running, with
+            // the lowest number: it is no part of the start the entry reads.
+            // A shell that waits on its input stands in for it, since a
+            // multi-call coreutils takes the program to run from argv[0].
+            let storage = Command::new(&sh)
+                .arg0("@storage")
+                .args(["-c", "read line"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
             // The decoy's userspace: its journal, the floor, and further on
             // its getty.
             let journal = start(dir.path(), &sleep, "systemd-journal");
@@ -563,7 +578,7 @@ mod kernel_tests {
             let getty = start(dir.path(), &sleep, "agetty");
             let tty = nails_teardown::proc::stat(getty.id()).unwrap().tty;
             let mut record = RealEntryHost.pid_record();
-            assert!(journal.id() > before);
+            assert!(before < storage.id() && storage.id() < journal.id());
             assert_eq!(record.floor, Some(journal.id()));
             assert_eq!(
                 record.anchors,
@@ -597,7 +612,7 @@ mod kernel_tests {
                 "{target} < {} <= {reached}",
                 next.id()
             );
-            for child in [journal, getty, next] {
+            for child in [storage, journal, getty, next] {
                 stop(child);
             }
         });
