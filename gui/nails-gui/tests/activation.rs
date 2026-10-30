@@ -74,6 +74,7 @@ fn asked(screen: &Screen) {
         warning: None,
         defaults_notice: None,
         builds_hidden_system: true,
+        advisories: Vec::new(),
         token: "0".repeat(32),
     })));
 }

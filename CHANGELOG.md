@@ -59,9 +59,13 @@ of this changelog for that version becomes the release notes word for word, and
   `verify`, each step of `rehearse`, and `init`. What the CLI confirms, and `init`, runs as a plan
   and an apply: the plan says what the apply would do (a discard and an activation also take the
   state lock) and hands out a single-use token, and only the next request, an apply carrying that
-  token, does it. An activation streams its steps and says when it passes its point of no return;
-  a window that closes its pipe before that point cancels the activation, and after it the helper
-  finishes the switch. The helper keeps its stdout and stdin off the pipe, so nothing a command or
+  token, does it. An activation's plan carries the advisories the CLI writes before it asks to log
+  out, such as hidden sessions' package database no longer following the decoy's, each with its
+  fix, and a deactivation's plan says in a field of its own why a return powers the machine off
+  instead (what the way back cannot undo, and whether that holds whatever happens before it runs).
+  An activation streams its steps and says when it passes its point of no return; a window that
+  closes its pipe before that point cancels the activation, and after it the helper finishes the
+  switch. The helper keeps its stdout and stdin off the pipe, so nothing a command or
   a child prints can reach the window. The decoder refuses a line over 16 KiB, an unknown or
   duplicate field, another protocol version and an argument of the wrong shape (a relative path, or
   two options the CLI refuses together), and ends the session; a libFuzzer target

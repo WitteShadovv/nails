@@ -15,6 +15,7 @@ use std::path::Path;
 use nails_api::Event;
 use nails_api::protocol::{
     ActivateArgs, ActivatePlanData, DeactivateArgs, DeactivatePlanData, EmergencyArgs,
+    PlanAdvisory, PowerOffInstead,
 };
 use nails_core::RuntimeEnv;
 use nails_core::app::activate::LockedActivation;
@@ -74,6 +75,18 @@ impl Engine<'_> {
             Err(exit) => return answer_from(ACTIVATE, exit, line),
         };
         let builds_hidden_system = begun.locked.builds_hidden_system();
+        // The risks the entry does not refuse, which the CLI writes before
+        // it asks to log out: the window words its question with them.
+        let advisories = begun
+            .locked
+            .entry_advisories()
+            .into_iter()
+            .map(|advisory| PlanAdvisory {
+                name: advisory.name.to_string(),
+                message: advisory.message,
+                fix: advisory.fix,
+            })
+            .collect();
         let planned = PlannedActivation {
             locked: begun.locked,
         };
@@ -83,6 +96,7 @@ impl Engine<'_> {
                 warning,
                 defaults_notice,
                 builds_hidden_system,
+                advisories,
                 token,
             }
         })
@@ -156,12 +170,19 @@ impl Engine<'_> {
         };
         let poweroff = planned.to == LeaveTo::Poweroff;
         let warnings = planned.warnings.clone();
+        // Why the return powers off instead, which the CLI's question
+        // states before it asks: the window offers no return then.
+        let powers_off_instead = planned.bound.as_ref().map(|reason| PowerOffInstead {
+            what: reason.what.clone(),
+            certain: reason.certain,
+        });
         self.hold(
             DEACTIVATE,
             Planned::Deactivate(Box::new(planned)),
             |token| DeactivatePlanData {
                 poweroff,
                 warnings,
+                powers_off_instead,
                 token,
             },
         )

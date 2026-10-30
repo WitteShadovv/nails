@@ -735,6 +735,73 @@ mod kernel_tests {
         plan["data"]["token"].as_str().expect("a token").to_string()
     }
 
+    /// The decoy's dpkg record, in hidden sessions' upper below `root` with
+    /// its first package at another version: a record that no longer follows
+    /// the decoy's, as after an update on the decoy.
+    fn drift(root: &Path, decoy: &Path) {
+        let status = std::fs::read_to_string(decoy).unwrap();
+        let mut changed = false;
+        let drifted: String = status
+            .lines()
+            .map(|line| match line.strip_prefix("Version: ") {
+                Some(version) if !changed => {
+                    changed = true;
+                    format!("Version: {version}+hidden\n")
+                }
+                _ => format!("{line}\n"),
+            })
+            .collect();
+        assert!(changed, "a package with a version in {}", decoy.display());
+        let upper = root.join("root/upper/var/lib/dpkg");
+        std::fs::create_dir_all(&upper).unwrap();
+        std::fs::write(upper.join("status"), drifted).unwrap();
+    }
+
+    /// Where hidden sessions' package database no longer follows the
+    /// decoy's, the plan of an activation carries the advisory the CLI writes
+    /// before it asks to log out, in the words of the check's row for it.
+    #[test]
+    fn an_activation_plan_carries_the_advisories_the_cli_writes() {
+        let decoy = Path::new("/var/lib/dpkg/status");
+        if !decoy.is_file() {
+            eprintln!("no dpkg record on this host: nothing to drift from");
+            return;
+        }
+        in_namespace(
+            test_path!(an_activation_plan_carries_the_advisories_the_cli_writes),
+            || {
+                let volume = Volume::new();
+                drift(&volume.root, decoy);
+                let mut helper = Helper::greeted(&volume.config);
+                let (exit, plan) = helper.result(Op::ActivatePlan(ActivateArgs {
+                    overlay_only: true,
+                    ..ActivateArgs::default()
+                }));
+                assert_eq!(exit, 0, "{plan}");
+                let advisory = plan["data"]["advisories"]
+                    .as_array()
+                    .and_then(|all| all.iter().find(|one| one["name"] == "package-drift"))
+                    .unwrap_or_else(|| panic!("no package-drift advisory: {plan}"))
+                    .clone();
+                assert_eq!(helper.close(), 0);
+                let (_, check) = cli_json(&volume.config, &["check", "--overlay-only"]);
+                let row = check["data"]["checks"]
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|row| row["name"] == "package-drift"))
+                    .unwrap_or_else(|| panic!("no package-drift row: {check}"));
+                assert_eq!(row["status"], "warn", "{check}");
+                // The CLI writes an advisory as the check's row says it: what
+                // it found, and its fix on a line of its own.
+                let message = advisory["message"].as_str().unwrap_or_default();
+                let written = match advisory["fix"].as_str() {
+                    Some(fix) => format!("{message}\n{fix}"),
+                    None => message.to_string(),
+                };
+                assert_eq!(row["message"], written.as_str(), "{check}");
+            },
+        );
+    }
+
     /// An activation through the helper streams its steps and ends as the
     /// CLI's `activate -y` ends on the same volume: here the pre-flight
     /// checks refuse in the namespace, before the point of no return.
