@@ -49,7 +49,9 @@ The decoy also has to be one the session can enter and leave:
   `nft list tables`, a table's name can name the VPN that made it, and a VPN
   app's table that blocks all traffic outside its tunnel keeps the decoy
   offline. Without `iw` such a Wi-Fi interface makes the way back power off
-  instead of returning, as any network state it cannot put back does.
+  instead of returning, as does every link, MAC address, policy-routing rule
+  or nftables table of the session's that the way back sees and cannot undo
+  (the network settings and the hostname do not count).
   `nails check` and activation warn and name the package to install; they do
   not refuse, since a stock NixOS decoy has no `nft`. NAILS looks for both
   where the way back does, never in `PATH`: in `/run/current-system/sw/bin`
