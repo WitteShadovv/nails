@@ -87,6 +87,9 @@ fn assert_ending(screen: &Screen, description: &str) {
     let close = screen.find_with("Close", AccessibleRole::Button);
     assert_eq!(close.accessible_enabled(), Some(false));
     assert!(!screen.shows(text::DEACTIVATE));
+    // But for the Emergency, which stays the way out.
+    let emergency = screen.find_with(text::EMERGENCY, AccessibleRole::Button);
+    assert_eq!(emergency.accessible_enabled(), Some(true));
     for key in [Key::Escape, Key::Return, Key::Space] {
         screen.press(key);
     }
@@ -120,11 +123,19 @@ fn a_hidden_session_deactivates_through_a_question_with_both_endings() {
 }
 
 #[test]
-fn the_keyboard_walks_the_three_answers_and_stays_with_them() {
+fn the_keyboard_walks_the_three_answers_and_the_emergency_and_nothing_else() {
     let screen = hidden();
     asked(&screen, &[]);
-    let walk = screen.walk(Key::Tab, 3);
-    assert_eq!(walk, [text::POWER_OFF, text::RETURN_TO_DECOY, "Cancel"]);
+    let walk = screen.walk(Key::Tab, 4);
+    assert_eq!(
+        walk,
+        [
+            text::EMERGENCY,
+            text::POWER_OFF,
+            text::RETURN_TO_DECOY,
+            "Cancel"
+        ]
+    );
     let back = screen.walk(Key::Backtab, 2);
     assert_eq!(back, [text::RETURN_TO_DECOY, text::POWER_OFF]);
     // Escape anywhere in the question cancels it.

@@ -10,6 +10,11 @@
 //
 // The title is "Session" on purpose: a window title others may see names
 // nothing about NAILS.
+//
+// A hidden session's window has the Emergency control at the start of its
+// header bar, on every page until it fires. It lies above everything else,
+// an open question included, and stays reachable by pointer and keyboard on
+// a page that takes no other input.
 
 import { Palette } from "std-widgets.slint";
 import { Adw } from "adw/theme.slint";
@@ -18,6 +23,7 @@ import { Button, ButtonKind, ButtonShape } from "adw/button.slint";
 import { BoxedList, ActionRow, CheckRow, Outcome } from "adw/lists.slint";
 import { StatusHead, Busy } from "adw/status.slint";
 import { AlertDialog } from "adw/dialog.slint";
+import { EmergencyButton } from "adw/emergency.slint";
 
 export { Adw, Outcome }
 
@@ -74,8 +80,11 @@ export component AppWindow inherits Window {
     // The label of the question's second action, empty for none.
     in property <string> question-alternative;
     in property <bool> follow-system-scheme: true;
+    // The Emergency control shows, and acts.
+    in property <bool> emergency-shown;
 
     callback close-window();
+    callback emergency-fired();
     callback action-activated();
 
     // Gives the page the keyboard back, once a question that held it closed:
@@ -273,6 +282,18 @@ export component AppWindow inherits Window {
         }
         typed(text) => {
             root.question-typed(text);
+        }
+    }
+
+    // Last, so it lies above the question and the page, and follows them in
+    // the Tab order: never where the focus starts.
+    if root.emergency-shown: EmergencyButton {
+        x: 6px;
+        y: 1px;
+        width: min(self.preferred-width, root.width - 92px);
+        height: 44px;
+        fired => {
+            root.emergency-fired();
         }
     }
 }

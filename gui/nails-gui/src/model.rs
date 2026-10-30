@@ -128,10 +128,14 @@ pub struct Page {
     pub action: Option<&'static str>,
     /// How the main action looks.
     pub action_kind: ActionKind,
-    /// The page takes no input at all, not even the window's Close.
+    /// The page takes no input at all, not even the window's Close: none
+    /// but the Emergency control, when it shows.
     pub no_input: bool,
     /// The question that waits for an answer.
     pub question: Option<Question>,
+    /// The Emergency control shows and acts: on every page of a hidden
+    /// session until it fires.
+    pub emergency: bool,
 }
 
 /// What the window does for a control the person used.
@@ -143,6 +147,8 @@ pub enum Effect {
     /// window as gone, which cancels an activation before its point of no
     /// return. The session ends with the answer that follows.
     HangUp,
+    /// Fire the emergency ([`crate::emergency`]), which goes its own way.
+    Emergency,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,6 +207,10 @@ pub struct Model {
     activation: Option<Activation>,
     deactivation: Option<Deactivation>,
     hung_up: bool,
+    /// Whether the window runs in a hidden session, by its own reading of
+    /// the mount table: the Emergency control shows from the start then.
+    in_hidden_session: bool,
+    emergency_fired: bool,
 }
 
 impl Model {
@@ -227,13 +237,49 @@ impl Model {
             activation: None,
             deactivation: None,
             hung_up: false,
+            in_hidden_session: false,
+            emergency_fired: false,
         }
+    }
+
+    /// The window runs in a hidden session (`/` is its overlay), which the
+    /// window read itself: the Emergency control shows on every page, also
+    /// before the helper answered and after it is gone.
+    #[must_use]
+    pub fn in_hidden_session(mut self, hidden: bool) -> Self {
+        self.in_hidden_session = hidden;
+        self
+    }
+
+    /// The person completed the Emergency control's gesture: the window
+    /// fires the emergency, closes any question and shows the session
+    /// ending, and from then on takes in nothing more. `None` where the
+    /// control does not show, and once it fired.
+    pub fn emergency(&mut self) -> Option<Effect> {
+        if !self.shows_emergency() {
+            return None;
+        }
+        self.emergency_fired = true;
+        self.close_question();
+        Some(Effect::Emergency)
+    }
+
+    /// Whether the Emergency control shows: in a hidden session, by the
+    /// window's own reading or the engine's status, until it fired.
+    fn shows_emergency(&self) -> bool {
+        !self.emergency_fired
+            && (self.in_hidden_session
+                || self
+                    .status
+                    .as_ref()
+                    .is_some_and(|status| status.place == Place::Hidden))
     }
 
     /// Take in `update` and return the asks that follow from it.
     pub fn apply(&mut self, update: Update) -> Vec<Ask> {
-        if matches!(self.stage, Stage::Over(_)) {
-            // The window hung up and has its answer: nothing comes after it.
+        if matches!(self.stage, Stage::Over(_)) || self.emergency_fired {
+            // The window hung up and has its answer, or the emergency fired:
+            // nothing comes after it.
             return Vec::new();
         }
         match update {
@@ -303,6 +349,9 @@ impl Model {
     /// The person's answer to the question that waits: the apply or the
     /// withdrawal of a plan, or the check that follows a risk allowed.
     pub fn answer(&mut self, confirmed: bool) -> Option<Ask> {
+        if self.emergency_fired {
+            return None;
+        }
         self.question = None;
         match self.asking.take() {
             Some(Asking::Allow { risk, typed }) => {
@@ -619,6 +668,9 @@ impl Model {
     /// The page to draw now.
     #[must_use]
     pub fn page(&self) -> Page {
+        if self.emergency_fired {
+            return pages::ending_now_page();
+        }
         let mut page = match &self.stage {
             Stage::Over(page) => return (**page).clone(),
             Stage::Starting => busy_page(text::STARTING, ""),
@@ -642,6 +694,7 @@ impl Model {
             page.action = None;
         }
         page.question.clone_from(&self.question);
+        page.emergency = self.shows_emergency();
         page
     }
 }
@@ -671,3 +724,7 @@ mod recover_tests;
 #[cfg(test)]
 #[path = "model_deactivation_tests.rs"]
 mod deactivation_tests;
+
+#[cfg(test)]
+#[path = "model_emergency_tests.rs"]
+mod emergency_tests;
