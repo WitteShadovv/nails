@@ -300,12 +300,35 @@ fn a_file_of_bytes_reads_as_bytes_and_in_ranges_but_not_as_text() {
 #[test]
 fn a_mount_root_is_what_the_test_says_and_unknown_otherwise() {
     let fs = MockFilesystem::new();
-    assert_eq!(fs.is_mount_root(Path::new("/var")).unwrap(), None);
+    use crate::filesystem::MountRoot;
+    assert_eq!(
+        fs.mount_root(Path::new("/var")).unwrap(),
+        MountRoot::Entry(None)
+    );
     fs.mock_set_mount_root("/var", true);
     fs.mock_set_mount_root("/var/lib", false);
-    assert_eq!(fs.is_mount_root(Path::new("/var")).unwrap(), Some(true));
     assert_eq!(
-        fs.is_mount_root(Path::new("/var/lib")).unwrap(),
-        Some(false)
+        fs.mount_root(Path::new("/var")).unwrap(),
+        MountRoot::Entry(Some(true))
+    );
+    assert_eq!(
+        fs.mount_root(Path::new("/var/lib")).unwrap(),
+        MountRoot::Entry(Some(false))
+    );
+    fs.mock_set_mount_root_error("/var/lib/missing", std::io::ErrorKind::NotFound);
+    let error = fs.mount_root(Path::new("/var/lib/missing")).unwrap_err();
+    assert_eq!(error.io_kind(), Some(std::io::ErrorKind::NotFound));
+    // A link is one whatever else is said of it, and an automount point is
+    // one.
+    fs.mock_set_path_type("/var/run", crate::PathKind::Symlink);
+    fs.mock_set_mount_root("/var/run", true);
+    assert_eq!(
+        fs.mount_root(Path::new("/var/run")).unwrap(),
+        MountRoot::Link
+    );
+    fs.mock_set_automount("/boot/efi");
+    assert_eq!(
+        fs.mount_root(Path::new("/boot/efi")).unwrap(),
+        MountRoot::Automount
     );
 }

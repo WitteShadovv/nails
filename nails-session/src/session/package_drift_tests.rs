@@ -758,8 +758,8 @@ fn without_the_mount_table_a_copy_cannot_be_placed() {
     assert!(result.is_warn(), "{result:?}");
     assert!(
         result.message().contains(
-            "the mount table cannot be read, and the kernel does not say whether /var/lib/dpkg \
-             is a mount point"
+            "the mount table cannot be read, and the kernel does not say whether /var is a \
+             mount point"
         ),
         "{result:?}"
     );

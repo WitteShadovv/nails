@@ -5,7 +5,7 @@
 
 use super::RealFilesystem;
 use super::noatime::EntryType;
-use crate::filesystem::{DiskUsage, Filesystem, PatternScan};
+use crate::filesystem::{DiskUsage, Filesystem, MountRoot, PatternScan};
 use crate::{IoResultExt, NailsError, Result};
 use std::path::{Path, PathBuf};
 
@@ -36,22 +36,33 @@ pub(super) fn device_id(path: &Path) -> Result<u64> {
     std::fs::metadata(path).map(|meta| meta.dev()).at_path(path)
 }
 
-/// Whether `path` itself is the root of a mount, as `statx` says: `None` when
-/// the kernel has no `statx` or does not report the attribute.
-pub(super) fn is_mount_root(path: &Path) -> Result<Option<bool>> {
-    use rustix::fs::{AtFlags, CWD, StatxAttributes, StatxFlags, statx};
+/// What `path` itself is, as one `statx` says that follows no link and
+/// triggers no automount there: whether it is the root of a mount is `None`
+/// when the kernel has no `statx` or does not report the attribute.
+pub(super) fn mount_root(path: &Path) -> Result<MountRoot> {
+    use rustix::fs::{AtFlags, CWD, FileType, StatxAttributes, StatxFlags, statx};
 
     match statx(
         CWD,
         path,
         AtFlags::NO_AUTOMOUNT.union(AtFlags::SYMLINK_NOFOLLOW),
-        StatxFlags::empty(),
+        StatxFlags::TYPE,
     ) {
-        Ok(stat) => Ok(stat
-            .stx_attributes_mask
-            .contains(StatxAttributes::MOUNT_ROOT)
-            .then(|| stat.stx_attributes.contains(StatxAttributes::MOUNT_ROOT))),
-        Err(rustix::io::Errno::NOSYS) => Ok(None),
+        Ok(stat) => {
+            let says = |attribute| {
+                stat.stx_attributes_mask
+                    .contains(attribute)
+                    .then(|| stat.stx_attributes.contains(attribute))
+            };
+            if FileType::from_raw_mode(u32::from(stat.stx_mode)) == FileType::Symlink {
+                Ok(MountRoot::Link)
+            } else if says(StatxAttributes::AUTOMOUNT) == Some(true) {
+                Ok(MountRoot::Automount)
+            } else {
+                Ok(MountRoot::Entry(says(StatxAttributes::MOUNT_ROOT)))
+            }
+        }
+        Err(rustix::io::Errno::NOSYS) => Ok(MountRoot::Entry(None)),
         Err(e) => Err(NailsError::io(path, std::io::Error::from(e))),
     }
 }

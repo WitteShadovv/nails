@@ -100,13 +100,23 @@ impl Filesystem for MockFilesystem {
         self.read_file_bytes_impl(path)
     }
 
-    fn is_mount_root(&self, path: &Path) -> Result<Option<bool>> {
-        Ok(self
+    fn mount_root(&self, path: &Path) -> Result<crate::filesystem::MountRoot> {
+        if self.is_symlink_impl(path)? {
+            return Ok(crate::filesystem::MountRoot::Link);
+        }
+        match self
             .mount_roots
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .get(path)
-            .copied())
+        {
+            Some(Ok(mount_root)) => Ok(*mount_root),
+            Some(Err(kind)) => Err(crate::NailsError::io(
+                path,
+                std::io::Error::new(*kind, "Mock: statx fails here"),
+            )),
+            None => Ok(crate::filesystem::MountRoot::Entry(None)),
+        }
     }
 
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
