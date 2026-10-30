@@ -14,9 +14,11 @@
 //! - **Its limits**, on every start ([`limit`]): no core dump (the limit is 0,
 //!   soft and hard), not dumpable, which also keeps the operator's other
 //!   programs from attaching to it, and `no_new_privs`, so nothing it starts
-//!   gains privileges. The launcher sets the first and the last before it
-//!   starts the window, but `exec` makes every process dumpable again, so the
-//!   window sets all three itself.
+//!   afterwards gains privileges. The launcher sets the first and the last
+//!   before it starts the window, but `exec` makes every process dumpable
+//!   again, so the window sets all three itself. On a menu entry's start it
+//!   sets them only once it has started pkexec, which has to become root:
+//!   under `no_new_privs`, `execve` ignores a set-user-ID bit.
 //! - **Its environment**, on a menu entry's start
 //!   ([`harden_menu_entry_start`]). The launcher starts the window with the
 //!   environment of [`window_env`] and `/dev/null` as its output; a desktop
@@ -26,8 +28,8 @@
 //!   the same process): on the same allowlist, with its home and every XDG
 //!   directory in a directory of its own in the operator's runtime directory
 //!   (`/run/user/<uid>`, used only when it is the operator's, private and in
-//!   RAM), in `/`, with `/dev/null` as its standard streams and the limits
-//!   that `exec` keeps already set. Started again so, it finds its
+//!   RAM), in `/`, with `/dev/null` as its standard streams and its core
+//!   dumps already off, a limit `exec` keeps. Started again so, it finds its
 //!   environment to be the allowlist's own and goes on.
 
 use std::ffi::OsString;
@@ -59,13 +61,23 @@ pub fn name_neutrally() -> std::io::Result<()> {
 
 /// Close the ways into the window's memory: no core dump (limit 0, soft and
 /// hard, which every child inherits), not dumpable, and `no_new_privs`.
-/// Called on the main thread before the toolkit starts a thread of its own.
+/// Called on the main thread before the toolkit starts a thread of its own,
+/// and after pkexec started, if the window starts it.
 ///
 /// # Errors
 ///
 /// The first of the three settings that failed.
 pub fn limit() -> std::io::Result<()> {
-    use rustix::process::{DumpableBehavior, Resource, Rlimit};
+    no_core_dumps()?;
+    rustix::thread::set_no_new_privs(true)?;
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)?;
+    Ok(())
+}
+
+/// Turn off core dumps: a limit of 0, soft and hard, which `exec` keeps and
+/// every child inherits.
+fn no_core_dumps() -> std::io::Result<()> {
+    use rustix::process::{Resource, Rlimit};
     rustix::process::setrlimit(
         Resource::Core,
         Rlimit {
@@ -73,8 +85,6 @@ pub fn limit() -> std::io::Result<()> {
             maximum: Some(0),
         },
     )?;
-    rustix::thread::set_no_new_privs(true)?;
-    rustix::process::set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
     Ok(())
 }
 
@@ -89,7 +99,7 @@ pub fn limit() -> std::io::Result<()> {
 ///
 /// Why the window could not start itself again: its program cannot be found,
 /// the runtime directory cannot be used, its own directory cannot be made,
-/// a limit cannot be set or the `exec` failed.
+/// core dumps cannot be turned off or the `exec` failed.
 pub fn harden_menu_entry_start(args: &[OsString]) -> Result<(), String> {
     let uid = rustix::process::getuid().as_raw();
     let program = std::env::current_exe()
@@ -126,7 +136,10 @@ pub fn restart_on_allowlist(
         )
     })?;
     let vars = window_env::vars(pairs(env), runtime, &own);
-    limit().map_err(|error| format!("the window could not limit itself: {error}"))?;
+    // Not `no_new_privs` yet, which `exec` would keep as well: the window
+    // starts pkexec first.
+    no_core_dumps()
+        .map_err(|error| format!("the window could not turn off its core dumps: {error}"))?;
     let error = restart_command(program, args, &vars).exec();
     Err(format!("the window could not start itself again: {error}"))
 }
