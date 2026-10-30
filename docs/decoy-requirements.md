@@ -84,11 +84,13 @@ The decoy also has to be one the session can enter and leave:
     activation you run is refused until the decoy has that home or it is
     removed from the upper (the refusal names its path there).
 
-  A host whose mount table lists no selinuxfs does not run SELinux, even
-  where it keeps an `/etc/selinux/config` from SELinux packages installed
-  once or an empty `/sys/fs/selinux`: there a label is copied only where the
-  decoy has one, the hidden root is made as before, and the activation says
-  so in one line. `nails check` does not test any of this yet.
+  Elsewhere a label is copied only where the decoy has one, so a decoy
+  without labels gets the hidden root it got before. That includes a host
+  that keeps an empty `/sys/fs/selinux`, or an `/etc/selinux/config` that
+  sets `SELINUX=` or `SELINUXTYPE=` as SELinux packages installed once leave
+  it, while its mount table lists no selinuxfs: SELinux does not run there,
+  and the activation says so in one line. `nails check` does not test any of
+  this yet.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
