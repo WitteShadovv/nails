@@ -352,6 +352,7 @@ fn verdict_over(
         control: image(control, "0c", false),
         after: image(after, "0a", true),
         not_run: BTreeSet::new(),
+        control_login_records: BTreeSet::new(),
     };
     let verdict = decide(&scans, &policy(), &Catalog::from_rows(Vec::new()));
     let residue: BTreeSet<(Change, String)> = verdict
