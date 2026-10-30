@@ -272,7 +272,8 @@ can add to, and lists its decisions and warnings. The filesystems of these
 units are put in place after those of the fstab: one that is the parent of an
 fstab entry's mount point, both mounted in the decoy, hides that entry's
 filesystem in the hidden session, which shows the parent's directory there
-instead.
+instead. The hidden volume is bound again over such a parent, so it stays at
+its own path.
 
 An entry behind an automount (`x-systemd.automount`, often the ESP) that is
 bound read-only or overlaid keeps its automount off as well: the hidden
