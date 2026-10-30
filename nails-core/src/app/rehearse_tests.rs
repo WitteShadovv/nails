@@ -511,3 +511,70 @@ fn a_plant_with_an_overlay_file_is_planted() {
         channel(SystemLog, false),
     ]));
 }
+
+/// An environment in which every uid source names the account running the
+/// test, as `nails gui` (`NAILS_TARGET_UID`), pkexec (`PKEXEC_UID`), sudo and
+/// doas each would.
+fn every_uid_source() -> RuntimeEnv {
+    let me = nix::unistd::getuid().to_string();
+    RuntimeEnv {
+        nails_target_uid: Some(me.clone()),
+        pkexec_uid: Some(me.clone()),
+        sudo_uid: Some(me.clone()),
+        doas_uid: Some(me),
+        sudo_user: Some("someone".to_string()),
+        doas_user: Some("someone".to_string()),
+        ..RuntimeEnv::default()
+    }
+}
+
+/// A named account is the plant's one source: no uid the launcher, pkexec,
+/// sudo or doas set is left to win over it.
+#[test]
+fn a_named_account_is_the_only_source_of_the_plant_s_operator() {
+    let env = every_uid_source();
+    let named = operator_env(&env, Some("bob"));
+    for (key, value) in [
+        ("NAILS_TARGET_UID", None),
+        ("PKEXEC_UID", None),
+        ("SUDO_UID", None),
+        ("DOAS_UID", None),
+        ("SUDO_USER", None),
+        ("DOAS_USER", None),
+        ("NAILS_TARGET_USER", Some("bob")),
+    ] {
+        assert_eq!(named.lookup(key), value, "{key}");
+    }
+    assert_eq!(operator_env(&env, None), env, "no name changes nothing");
+}
+
+/// The named account wins over every uid source (here `root`, which every
+/// system has), and a name no account has is refused instead of falling back
+/// to the operator the environment names.
+#[test]
+fn the_named_account_is_planted_for_or_refused() {
+    let env = every_uid_source();
+    let root = named_operator(&operator_env(&env, Some("root")), "root")
+        .unwrap_or_else(|failure| panic!("{}", failure.message));
+    assert_eq!((root.name.as_str(), root.uid), ("root", 0));
+    let missing = "no-such-account-7f3a";
+    let refused = named_operator(&operator_env(&env, Some(missing)), missing)
+        .expect_err("a missing account is refused");
+    assert_eq!(refused.exit, ExitStatus::Usage);
+    assert_eq!(refused.code, "no_such_user");
+    assert!(refused.message.contains(missing), "{}", refused.message);
+}
+
+/// A plant for an account that does not exist is refused before anything is
+/// looked at or written, even on a root the attach gate would refuse.
+#[test]
+fn a_plant_for_a_missing_account_is_refused_first() {
+    let root = tempfile::tempdir().unwrap();
+    let Err(PlantError::Fail(failure)) =
+        rooted_at(root.path()).plant(&every_uid_source(), Some("no-such-account-7f3a"))
+    else {
+        panic!("planted, or refused for another reason");
+    };
+    assert_eq!(failure.code, "no_such_user");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}

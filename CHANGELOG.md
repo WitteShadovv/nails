@@ -432,6 +432,11 @@ of this changelog for that version becomes the release notes word for word, and
   refuses while an interrupted activation's soft-reboot may still come, and `emergency` on the
   decoy drops it, or powers off at once where it may still come. `emergency` in the hidden session
   still enqueues its soft-reboot directly, without waiting for anything.
+- `nails rehearse plant --user <name>` plants the canary for that account or for none. Run under
+  pkexec, the account pkexec named stood in for the one given, so the canary went into another
+  home and the scan that followed proved nothing about the home asked for. A name no account has is
+  now refused before anything is looked at (exit 2, `no_such_user`) instead of falling back to the
+  operator.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
