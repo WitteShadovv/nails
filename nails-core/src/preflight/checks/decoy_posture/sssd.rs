@@ -16,16 +16,26 @@
 //!   (an invocation marker or a populated cgroup);
 //! - one of its daemons runs: the monitor `sssd`, or a responder or back end
 //!   named `sssd_<name>`, read from `<root>/proc`;
-//! - its Kerberos ticket cache listens: the socket file is in place in `/run`
-//!   and `<root>/proc/net/unix` lists a socket listening on it.
-//!   `sssd-kcm.socket` only listens until a program asks for a ticket, and a
-//!   socket unit that runs no program leaves neither an invocation marker nor
-//!   a cgroup, so the listening socket is what shows it. That socket is where
-//!   every Kerberos ticket cache of the KCM kind listens, not only sssd's:
-//!   Heimdal's daemon, `kcm`, binds it itself, so while a process of that name
-//!   runs the socket counts as its and not as sssd's. A socket file that
-//!   nothing listens on, which a stopped socket leaves in `/run` until the
-//!   next boot, is no sign;
+//! - its Kerberos ticket cache may listen: the socket file is in place in
+//!   `/run`, and PID 1's socket table, `<root>/proc/1/net/unix`, lists a
+//!   socket listening on it or cannot tell. That table lists the sockets of
+//!   the network namespace systemd runs in, whichever one `nails` runs in. It
+//!   is read as bytes, since the kernel prints a socket's name byte for byte
+//!   and any process can bind one whose name is not text. It is read twice,
+//!   and the socket counts when either read lists it listening, since the
+//!   table is no snapshot: the kernel prints it a page at a time, and a socket
+//!   closed between two pages can make it skip a line. It cannot tell when it
+//!   cannot be read or does not begin with the header the kernel prints, as
+//!   when `/proc` hides other users' processes from a check that is not root,
+//!   and then the warning says that `sudo` can tell. `sssd-kcm.socket` only
+//!   listens until a program asks for a
+//!   ticket, and a socket unit that runs no program leaves neither an
+//!   invocation marker nor a cgroup, so the socket is what shows it. That
+//!   socket is where every Kerberos ticket cache of the KCM kind listens, not
+//!   only sssd's: Heimdal's daemon, `kcm`, binds it itself, so while a process
+//!   of that name runs the socket counts as its and not as sssd's. A socket
+//!   file the table shows nothing listening on, which a stopped socket leaves
+//!   in `/run` until the next boot, is no sign;
 //! - `/var/lib/sss` holds one of the nine files in [`STATE_FILES`], which sssd
 //!   writes there when it runs: its two configuration databases, the four
 //!   memory caches of its NSS responder, the database of its Kerberos ticket
@@ -62,6 +72,7 @@
 
 use super::loggers;
 use crate::Filesystem;
+use crate::next_step::{NextStep, sudo_line};
 use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -92,7 +103,15 @@ const DAEMON_PREFIX: &str = "sssd_";
 /// it.
 const KCM_SOCKET: &str = "run/.heim_org.h5l.kcm-socket";
 
-/// The paths a listening KCM socket is bound at, as `/proc/net/unix` names
+/// The socket table of PID 1's network namespace, relative to the root: the
+/// one systemd and the decoy's daemons listen in, whichever one `nails` runs
+/// in.
+const SOCKET_TABLE: &str = "proc/1/net/unix";
+
+/// The first line of the socket table, as the kernel prints it.
+const SOCKET_TABLE_HEADER: &[u8] = b"Num       RefCount Protocol Flags    Type St Inode Path";
+
+/// The paths a listening KCM socket is bound at, as the socket table names
 /// them: the path its daemon gave, in `/run` or in `/var/run`, which links
 /// to `/run`.
 const KCM_BOUND_AT: &[&str] = &[
@@ -100,7 +119,7 @@ const KCM_BOUND_AT: &[&str] = &[
     "/var/run/.heim_org.h5l.kcm-socket",
 ];
 
-/// The flag `/proc/net/unix` sets on a listening socket (`__SO_ACCEPTCON`).
+/// The flag the socket table sets on a listening socket (`__SO_ACCEPTCON`).
 const LISTENING: u32 = 1 << 16;
 
 /// The KCM daemons that are not sssd's, by process name: Heimdal's, which
@@ -127,7 +146,7 @@ const STATE_FILES: &[&str] = &[
 /// The warning for sssd in use on the decoy under `root`, or `None` when
 /// nothing shows it. `is_nixos` picks how its advice turns sssd off.
 pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Option<String> {
-    let signs = signs(fs, root);
+    let (signs, untold) = signs(fs, root);
     if signs.is_empty() {
         return None;
     }
@@ -136,17 +155,19 @@ pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -
          domain (Active Directory, FreeIPA): the domain controller records the hidden \
          session's logins and the account lookups sssd makes for it, out of NAILS's reach, \
          and sssd keeps caches under /var/lib/sss and logs under /var/log/sssd. Use a decoy \
-         that is not joined to a domain, and where nothing on it needs sssd, {}{}",
+         that is not joined to a domain, and where nothing on it needs sssd, {}{}{}",
         signs.join(", "),
         turn_off(is_nixos),
         delete(&left_behind(fs, root)),
+        sudo_hint(untold),
     ))
 }
 
 /// What shows sssd in use on the decoy under `root`, one phrase each: its
-/// active units (or, when none is, a daemon that runs), its listening ticket
-/// cache, and the first of its state files found.
-fn signs<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+/// active units (or, when none is, a daemon that runs), the socket of its
+/// ticket cache, and the first of its state files found. With them, whether
+/// the socket counts only because its table cannot tell whether it listens.
+fn signs<F: Filesystem>(fs: &F, root: &Path) -> (Vec<String>, bool) {
     // The process names are read once, and only when a sign needs them.
     let names = OnceCell::new();
     let running = || names.get_or_init(|| loggers::running_process_names(fs, root));
@@ -162,10 +183,12 @@ fn signs<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
     {
         signs.push(format!("{daemon} runs"));
     }
-    if kcm_listens(fs, root) && !other_kcm_runs(running()) {
-        signs.push(format!(
-            "its Kerberos ticket cache listens on /{KCM_SOCKET}"
-        ));
+    let mut untold = false;
+    if let Some(sign) = kcm_sign(fs, root)
+        && !other_kcm_runs(running())
+    {
+        untold = sign == KcmSign::Untold;
+        signs.push(sign.phrase());
     }
     if let Some(file) = STATE_FILES
         .iter()
@@ -173,30 +196,111 @@ fn signs<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
     {
         signs.push(format!("/{file} holds its state"));
     }
-    signs
+    (signs, untold)
 }
 
-/// Whether a ticket cache listens on the KCM socket of the decoy under `root`:
-/// its file is in place and `<root>/proc/net/unix` lists a socket listening
-/// there. A file that nothing listens on is what a stopped socket leaves.
-fn kcm_listens<F: Filesystem>(fs: &F, root: &Path) -> bool {
-    present(fs, &root.join(KCM_SOCKET))
-        && fs
-            .read_file_content(&root.join("proc/net/unix"))
-            .is_ok_and(|table| table.lines().any(listens_on_kcm))
+/// What PID 1's socket table says of the ticket cache's socket, when the
+/// socket counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KcmSign {
+    /// A read of the table lists a socket listening on it.
+    Listens,
+    /// The table cannot tell whether anything listens on it.
+    Untold,
 }
 
-/// Whether a line of `/proc/net/unix` is a socket listening at the KCM
+impl KcmSign {
+    /// The phrase that names it among the signs.
+    fn phrase(self) -> String {
+        match self {
+            KcmSign::Listens => format!("its Kerberos ticket cache listens on /{KCM_SOCKET}"),
+            KcmSign::Untold => format!(
+                "the socket of its Kerberos ticket cache, /{KCM_SOCKET}, is in place, and \
+                 /{SOCKET_TABLE} cannot tell whether it listens"
+            ),
+        }
+    }
+}
+
+/// The sign of the ticket cache's socket on the decoy under `root`: its file
+/// is in place, and PID 1's socket table lists a socket listening on it or
+/// cannot tell. `None` when the file is gone or the table shows nothing
+/// listening there, which is what a stopped socket leaves.
+fn kcm_sign<F: Filesystem>(fs: &F, root: &Path) -> Option<KcmSign> {
+    if !present(fs, &root.join(KCM_SOCKET)) {
+        return None;
+    }
+    match kcm_listening(fs, root) {
+        Some(false) => None,
+        Some(true) => Some(KcmSign::Listens),
+        None => Some(KcmSign::Untold),
+    }
+}
+
+/// The end of the advice when the socket counts only because its table cannot
+/// tell whether it listens: where `/proc` hides other users' processes, a
+/// check that is not root cannot read the table, and one run with `sudo` can.
+fn sudo_hint(untold: bool) -> String {
+    if !untold {
+        return String::new();
+    }
+    format!(
+        ". Where /proc hides other users' processes, {} can tell whether the ticket cache \
+         listens",
+        sudo_line(NextStep::Check)
+    )
+}
+
+/// Whether a socket listens at the KCM socket, as PID 1's socket table under
+/// `root` shows it. The table is no snapshot: the kernel prints it a page at a
+/// time, and a socket closed between two pages can make it skip a line, so it
+/// is read twice (see [`either_lists`]). `None` when the reads cannot tell.
+fn kcm_listening<F: Filesystem>(fs: &F, root: &Path) -> Option<bool> {
+    let read = || table_lists_kcm(fs, root);
+    either_lists(read(), read())
+}
+
+/// Two reads of the socket table taken together: a listener when either
+/// lists one, none only when both were read and list none, and `None`, cannot
+/// tell, otherwise.
+fn either_lists(first: Option<bool>, second: Option<bool>) -> Option<bool> {
+    match (first, second) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether one read of PID 1's socket table under `root` lists a socket
+/// listening at the KCM socket: `None` when the table cannot be read, or does
+/// not begin with the header the kernel prints, so it cannot tell.
+fn table_lists_kcm<F: Filesystem>(fs: &F, root: &Path) -> Option<bool> {
+    let table = fs.read_file_bytes(&root.join(SOCKET_TABLE)).ok()?;
+    let mut lines = table.split(|&byte| byte == b'\n');
+    if lines.next() != Some(SOCKET_TABLE_HEADER) {
+        return None;
+    }
+    Some(lines.any(listens_on_kcm))
+}
+
+/// Whether a line of the socket table is a socket listening at the KCM
 /// socket. Its fields are `Num RefCount Protocol Flags Type St Inode Path`,
-/// the flags in hex; a line whose path holds a space has more fields and is
-/// never the KCM socket.
-fn listens_on_kcm(line: &str) -> bool {
-    let fields: Vec<&str> = line.split_whitespace().collect();
+/// the flags in hex. The kernel prints a socket's name byte for byte, so a
+/// line need not be text, and a name that holds a space gives the line more
+/// fields; neither is the KCM socket.
+fn listens_on_kcm(line: &[u8]) -> bool {
+    let fields: Vec<&[u8]> = line
+        .split(u8::is_ascii_whitespace)
+        .filter(|field| !field.is_empty())
+        .collect();
     let &[_, _, _, flags, _, _, _, path] = fields.as_slice() else {
         return false;
     };
-    u32::from_str_radix(flags, 16).is_ok_and(|flags| flags & LISTENING != 0)
-        && KCM_BOUND_AT.contains(&path)
+    std::str::from_utf8(flags)
+        .ok()
+        .and_then(|flags| u32::from_str_radix(flags, 16).ok())
+        .is_some_and(|flags| flags & LISTENING != 0)
+        && KCM_BOUND_AT.iter().any(|bound| bound.as_bytes() == path)
 }
 
 /// Whether a KCM daemon that is not sssd's runs among `running`, the process
