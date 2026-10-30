@@ -1,0 +1,16 @@
+{
+  "command": "config",
+  "data": {
+    "changes": [
+      {
+        "after": null,
+        "before": "fresh-home",
+        "key": "persona.mode"
+      }
+    ],
+    "path": "/mnt/data/config/nails.toml",
+    "written": true
+  },
+  "ok": true,
+  "schema_version": 2
+}
