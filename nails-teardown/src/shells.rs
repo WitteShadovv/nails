@@ -12,8 +12,8 @@
 //! the same before the way back or the power-off. A SIGKILLed shell runs no handler and writes
 //! nothing. Non-interactive shells
 //! (a service's script, an `sh -c` wrapper, a pipeline subshell) keep no
-//! history and are left alone, as is the teardown's own invocation, whose shell
-//! is killed last, after the output is written ([`kill_invoking_shells`]).
+//! history and are left alone. The shells of the teardown's own invocation (its
+//! ancestors and those in its session) die last ([`kill_invoking_shells`]).
 
 use crate::proc::{self, Invocation, ProcessHandle};
 
@@ -82,8 +82,9 @@ fn in_spared_unit(pid: u32, spared_units: &[String]) -> bool {
             .is_some_and(|unit| spared_units.iter().any(|s| s == &unit))
 }
 
-/// SIGKILL every interactive shell outside `invocation` and `spared_units`.
-/// Returns handles on the shells signalled, to wait for their exit.
+/// SIGKILL every interactive shell but those `invocation` was started from
+/// ([`Invocation::is_invoking`]) and those in `spared_units`. Returns handles
+/// on the shells signalled, to wait for their exit.
 pub fn kill_interactive_shells(
     invocation: &Invocation,
     spared_units: &[String],
@@ -91,7 +92,7 @@ pub fn kill_interactive_shells(
     let mut killed = Vec::new();
     for pid in proc::pids() {
         let stat = proc::stat(pid);
-        if pid == 1 || invocation.contains(pid, stat.as_ref()) || !is_interactive_shell(pid) {
+        if pid == 1 || invocation.is_invoking(pid, stat.as_ref()) || !is_interactive_shell(pid) {
             continue;
         }
         if in_spared_unit(pid, spared_units) {
@@ -106,10 +107,12 @@ pub fn kill_interactive_shells(
     killed
 }
 
-/// SIGKILL the interactive shells of this process's own invocation: its
-/// ancestry and session. Emergency calls it as its very last step, after every
-/// line of output is flushed. Only shells die, so `sudo` and a pipe reader keep
-/// relaying what was already written.
+/// SIGKILL the interactive shells this process was started from: those among
+/// its ancestors and in its session. [`kill_all_interactive_shells`] calls it
+/// once every other interactive shell is gone. A shell that leads its
+/// terminal's session hangs up the terminal's foreground job as it dies:
+/// `sudo` passes the SIGHUP on to its command, which the emergency ignores,
+/// and a pipe reader there that does not ignore it ends.
 pub fn kill_invoking_shells(spared_units: &[String]) -> Vec<u32> {
     let invocation = Invocation::current();
     let own = std::process::id();
@@ -119,9 +122,10 @@ pub fn kill_invoking_shells(spared_units: &[String]) -> Vec<u32> {
             continue;
         }
         let stat = proc::stat(pid);
-        let in_invocation = invocation.ancestry.contains(&pid)
-            || (invocation.sid != 0 && stat.is_some_and(|s| s.sid == invocation.sid));
-        if !in_invocation || !is_interactive_shell(pid) || in_spared_unit(pid, spared_units) {
+        if !invocation.is_invoking(pid, stat.as_ref())
+            || !is_interactive_shell(pid)
+            || in_spared_unit(pid, spared_units)
+        {
             continue;
         }
         if ProcessHandle::open(pid).is_some_and(|h| h.kill()) {
