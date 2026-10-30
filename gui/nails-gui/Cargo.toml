@@ -86,6 +86,8 @@ slint-build = "=1.18.1"
 # queries the UI tests make. It does not follow semver, so it is pinned with
 # the toolkit.
 i-slint-backend-testing = "=1.18.1"
+# The golden images of tests/golden.rs, already in the toolkit's graph.
+png = "=0.18.1"
 
 # The UI tests query the element tree, which only the `testing` feature
 # compiles in; without it they are not built.
@@ -144,3 +146,8 @@ required-features = ["testing"]
 [[test]]
 name = "settings_wired"
 required-features = ["testing"]
+
+# Draws the window with the software renderer on a platform of its own, not
+# the headless one, so it needs no element tree.
+[[test]]
+name = "golden"
