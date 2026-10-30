@@ -601,13 +601,20 @@ is in use on the decoy:
 
 - one of its service units is active, or one of its daemons runs (`sssd`, or
   a responder or back end named `sssd_<name>`);
-- its Kerberos ticket cache listens: the socket file
-  `/run/.heim_org.h5l.kcm-socket` (`sssd-kcm.socket`) is in place and
-  `/proc/net/unix` lists a socket listening on it. That socket is where every
-  ticket cache of the KCM kind listens, so while Heimdal's `kcm` daemon runs,
-  the socket counts as its and not as sssd's. A socket file that nothing
-  listens on, which a stopped socket leaves until the next boot, does not
-  count;
+- its Kerberos ticket cache may listen: the socket file
+  `/run/.heim_org.h5l.kcm-socket` (`sssd-kcm.socket`) is in place, and PID 1's
+  socket table, `/proc/1/net/unix`, lists a socket listening on it in either
+  of two reads, cannot be read, or does not begin with the header the kernel
+  writes. That table lists the sockets of the network namespace systemd runs
+  in, whichever one `nails check` runs in. It is read twice because it is no
+  snapshot: the kernel writes it a page at a time, and a socket closed between
+  two pages can make one read skip a line. Where `/proc` hides other users'
+  processes from an unprivileged `nails check`, the table cannot be read, and
+  the warning says that `nails check` run with sudo can tell.
+  That socket is where every ticket cache of the KCM kind listens, so while
+  Heimdal's `kcm` daemon runs, the socket counts as its and not as sssd's. A
+  socket file that the table shows nothing listening on, which a stopped
+  socket leaves until the next boot, does not count;
 - `/var/lib/sss` holds one of nine files sssd writes when it runs: its two
   configuration databases (`db/config.ldb`, `db/config_kcm.ldb`), the four
   memory caches of its NSS responder (`mc/passwd`, `mc/group`,
@@ -647,8 +654,10 @@ the two `systemctl` commands.
 Stopping sssd leaves those of the nine it wrote in place until they are
 deleted, and each of them keeps the warning, so the warning names the ones it
 finds and the `rm` that deletes them. The socket file stays in `/run` until the
-next boot, but once `sssd-kcm.socket` is stopped nothing listens on it and it
-no longer counts, so nothing here deletes it. The rest of sssd's state under
+next boot, but once `sssd-kcm.socket` is stopped, PID 1's socket table shows
+nothing listening on it and it no longer counts, so nothing here deletes it.
+Where that table cannot be read, the socket file counts until the next boot.
+The rest of sssd's state under
 `/var/lib/sss`, such as the cache of each domain, neither keeps the warning nor
 goes with that `rm`: the warning can clear while it is still on the decoy disk.
 Deleting the nine files once sssd is stopped is safe: sssd builds its

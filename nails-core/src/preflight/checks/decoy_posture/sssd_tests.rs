@@ -4,6 +4,7 @@
 use super::*;
 use crate::RealFilesystem;
 use crate::filesystem::{MockFilesystem, PathKind};
+use crate::next_step::{NextStep, sudo_line};
 use std::path::PathBuf;
 
 /// Mark a systemd unit active by creating its runtime invocation marker, a
@@ -31,15 +32,15 @@ fn run_processes(fs: &MockFilesystem, comms: &[&str]) {
     fs.mock_set_directory_contents(Path::new("/proc"), pids);
 }
 
-/// The first line of `/proc/net/unix`.
+/// The first line of the socket table.
 const UNIX_HEADER: &str = "Num       RefCount Protocol Flags    Type St Inode Path";
 
-/// A line of `/proc/net/unix` for a stream socket listening at `path`.
+/// A line of the socket table for a stream socket listening at `path`.
 fn listening(path: &str) -> String {
     format!("0000000000000000: 00000002 00000000 00010000 0001 01 23456 {path}")
 }
 
-/// `/proc/net/unix` with `lines` below its header.
+/// The socket table with `lines` below its header.
 fn unix_table(lines: &[String]) -> String {
     std::iter::once(UNIX_HEADER.to_string())
         .chain(lines.iter().cloned())
@@ -48,14 +49,18 @@ fn unix_table(lines: &[String]) -> String {
 }
 
 /// Put the ticket cache's socket file in place on `fs` and list `lines` in
-/// its `/proc/net/unix`.
+/// PID 1's socket table.
 fn kcm_socket_with(fs: &MockFilesystem, lines: &[String]) {
     fs.mock_set_path_type("/run/.heim_org.h5l.kcm-socket", PathKind::File);
-    fs.mock_add_file("/proc/net/unix", &unix_table(lines));
+    fs.mock_add_file("/proc/1/net/unix", &unix_table(lines));
 }
 
 /// The phrase that names a listening ticket cache.
 const KCM_LISTENS: &str = "its Kerberos ticket cache listens on /run/.heim_org.h5l.kcm-socket";
+
+/// The phrase that names a ticket cache socket the table cannot tell about.
+const KCM_UNTOLD: &str = "the socket of its Kerberos ticket cache, /run/.heim_org.h5l.kcm-socket, \
+                          is in place, and /proc/1/net/unix cannot tell whether it listens";
 
 /// The finding for the decoy at `/` on `fs`, outside NixOS.
 fn finding(fs: &MockFilesystem) -> Option<String> {
@@ -239,7 +244,7 @@ fn the_listening_ticket_cache_alone_warns_as_on_fedora() {
 fn a_ticket_cache_socket_nothing_listens_on_is_no_sign() {
     // What a stopped socket leaves in /run until the next boot.
     let fs = MockFilesystem::new();
-    fs.mock_set_path_type("/run/.heim_org.h5l.kcm-socket", PathKind::File);
+    kcm_socket_with(&fs, &[]);
     assert_eq!(finding(&fs), None);
 
     // The table lists other listeners, a connection accepted on the socket,
@@ -260,10 +265,95 @@ fn a_ticket_cache_socket_nothing_listens_on_is_no_sign() {
     // A listener whose socket file is gone is out of every client's reach.
     let fs = MockFilesystem::new();
     fs.mock_add_file(
-        "/proc/net/unix",
+        "/proc/1/net/unix",
         &unix_table(&[listening("/run/.heim_org.h5l.kcm-socket")]),
     );
     assert_eq!(finding(&fs), None);
+}
+
+#[test]
+fn a_socket_table_that_cannot_tell_counts_the_socket() {
+    // A missing table, one that does not begin with the kernel's header and
+    // an empty one cannot show that nothing listens, so the socket counts.
+    let missing = MockFilesystem::new();
+    missing.mock_set_path_type("/run/.heim_org.h5l.kcm-socket", PathKind::File);
+    let unknown = MockFilesystem::new();
+    unknown.mock_set_path_type("/run/.heim_org.h5l.kcm-socket", PathKind::File);
+    unknown.mock_add_file(
+        "/proc/1/net/unix",
+        &format!(
+            "Num RefCount Flags Path\n{}\n",
+            listening("/run/systemd/journal/stdout")
+        ),
+    );
+    let empty = MockFilesystem::new();
+    empty.mock_set_path_type("/run/.heim_org.h5l.kcm-socket", PathKind::File);
+    empty.mock_add_file("/proc/1/net/unix", "");
+    for fs in [missing, unknown, empty] {
+        let message = finding(&fs).expect("a table that cannot tell must warn");
+        assert!(
+            message.starts_with(&format!("sssd is in use on the decoy ({KCM_UNTOLD}). ")),
+            "{message}"
+        );
+        // The socket may be live, so the advice never deletes it, and it says
+        // who can read the table where /proc hides it.
+        assert!(
+            message.ends_with(&format!(
+                "{DISABLE}. Where /proc hides other users' processes, {} can tell whether \
+                 the ticket cache listens",
+                sudo_line(NextStep::Check)
+            )),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn two_reads_of_the_socket_table_count_a_listener_either_shows() {
+    // The table is no snapshot, and a socket closed between two of its pages
+    // can make one read skip the listener's line.
+    for (first, second, both) in [
+        (Some(true), Some(true), Some(true)),
+        (Some(true), Some(false), Some(true)),
+        (Some(false), Some(true), Some(true)),
+        (Some(true), None, Some(true)),
+        (None, Some(true), Some(true)),
+        (Some(false), Some(false), Some(false)),
+        (Some(false), None, None),
+        (None, Some(false), None),
+        (None, None, None),
+    ] {
+        assert_eq!(either_lists(first, second), both, "{first:?}, {second:?}");
+    }
+}
+
+#[test]
+fn a_socket_name_that_is_not_text_hides_no_listener() {
+    // The kernel prints an abstract socket's name byte for byte, and any
+    // process can bind one whose name is not text: the table is read as
+    // bytes, so such a line hides neither a listener nor the lack of one.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("run")).unwrap();
+    std::fs::create_dir_all(root.join("proc/1/net")).unwrap();
+    std::fs::write(root.join(KCM_SOCKET), b"").unwrap();
+    let table = root.join(SOCKET_TABLE);
+    let mut bytes = unix_table(&[]).into_bytes();
+    bytes.extend_from_slice(
+        b"0000000000000000: 00000002 00000000 00010000 0001 01 23458 @\xff\xfe\n",
+    );
+    std::fs::write(&table, &bytes).unwrap();
+    assert_eq!(
+        sssd_finding(&RealFilesystem, root, false),
+        None,
+        "nothing listens on the socket"
+    );
+
+    bytes.extend_from_slice(listening("/run/.heim_org.h5l.kcm-socket").as_bytes());
+    bytes.push(b'\n');
+    std::fs::write(&table, &bytes).unwrap();
+    let message = sssd_finding(&RealFilesystem, root, false).expect("the listener must show");
+    assert!(message.contains(KCM_LISTENS), "{message}");
 }
 
 #[test]
@@ -301,15 +391,27 @@ fn only_a_daemon_named_kcm_takes_the_socket_from_sssd() {
 
 #[test]
 fn a_line_of_the_socket_table_counts_only_as_a_listener_at_the_kcm_socket() {
-    assert!(listens_on_kcm(&listening("/run/.heim_org.h5l.kcm-socket")));
-    assert!(listens_on_kcm(&listening(
-        "/var/run/.heim_org.h5l.kcm-socket"
-    )));
+    assert!(listens_on_kcm(
+        listening("/run/.heim_org.h5l.kcm-socket").as_bytes()
+    ));
+    assert!(listens_on_kcm(
+        listening("/var/run/.heim_org.h5l.kcm-socket").as_bytes()
+    ));
     // Any listening flag counts, whatever else the flags hold.
     assert!(listens_on_kcm(
-        "0000000000000000: 00000002 00000000 00030000 0001 01 23456 \
-         /run/.heim_org.h5l.kcm-socket"
+        b"0000000000000000: 00000002 00000000 00030000 0001 01 23456 \
+          /run/.heim_org.h5l.kcm-socket"
     ));
+    // Bytes that are not text are a name of their own, never the socket's.
+    for line in [
+        &b"0000000000000000: 00000002 00000000 00010000 0001 01 23456 @\xff"[..],
+        b"0000000000000000: 00000002 00000000 00010000 0001 01 23456 \
+          /run/.heim_org.h5l.kcm-socket\xff",
+        b"0000000000000000: 00000002 00000000 0001\xff000 0001 01 23456 \
+          /run/.heim_org.h5l.kcm-socket",
+    ] {
+        assert!(!listens_on_kcm(line), "{line:?}");
+    }
     for line in [
         UNIX_HEADER.to_string(),
         String::new(),
@@ -321,7 +423,7 @@ fn a_line_of_the_socket_table_counts_only_as_a_listener_at_the_kcm_socket() {
         // An unbound listener has no path.
         "0000000000000000: 00000002 00000000 00010000 0001 01 23456".to_string(),
     ] {
-        assert!(!listens_on_kcm(&line), "{line:?}");
+        assert!(!listens_on_kcm(line.as_bytes()), "{line:?}");
     }
 }
 
@@ -512,14 +614,14 @@ fn the_probes_leave_the_decoy_access_times_alone() {
     std::fs::create_dir_all(state.join("db")).unwrap();
     std::fs::create_dir_all(state.join("mc")).unwrap();
     std::fs::create_dir_all(root.join("run")).unwrap();
-    std::fs::create_dir_all(root.join("proc/net")).unwrap();
+    std::fs::create_dir_all(root.join("proc/1/net")).unwrap();
     std::fs::write(state.join("db/config.ldb"), b"ldb").unwrap();
     std::fs::write(state.join("mc/cache"), b"map").unwrap();
     // A state file that is a link: counted as itself, never followed.
     std::os::unix::fs::symlink("cache", state.join("mc/passwd")).unwrap();
     std::fs::write(root.join("run/.heim_org.h5l.kcm-socket"), b"").unwrap();
     std::fs::write(
-        root.join("proc/net/unix"),
+        root.join(SOCKET_TABLE),
         unix_table(&[listening("/run/.heim_org.h5l.kcm-socket")]),
     )
     .unwrap();
@@ -576,7 +678,7 @@ fn following_the_advice_clears_the_warning() {
     std::fs::write(cgroup.join("cgroup.events"), "populated 1\nfrozen 0\n").unwrap();
     for dir in [
         "run",
-        "proc/net",
+        "proc/1/net",
         "var/lib/sss/db",
         "var/lib/sss/mc",
         "var/lib/sss/secrets",
@@ -587,7 +689,7 @@ fn following_the_advice_clears_the_warning() {
     for file in std::iter::once(&KCM_SOCKET).chain(STATE_FILES) {
         std::fs::write(root.join(file), b"").unwrap();
     }
-    let table = root.join("proc/net/unix");
+    let table = root.join(SOCKET_TABLE);
     std::fs::write(
         &table,
         unix_table(&[listening("/run/.heim_org.h5l.kcm-socket")]),
