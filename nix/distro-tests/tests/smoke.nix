@@ -30,7 +30,10 @@
 # fails after it. After the second session, which pushes the kernel's process
 # numbers far on, the getty the decoy starts again carries a number in the
 # power-of-two range the decoy's fresh boot gave it, and logind a number below
-# the one the session pushed the counter to.
+# the one the session pushed the counter to. Each entry ends the decoy's
+# unattended-upgrades shutdown helper on logind's shutdown signal, as an
+# ordinary shutdown does: the unit does not fail at the switch, and its log on
+# the decoy disk gains no stop line.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -447,6 +450,34 @@ distroVm.buildVmTest {
             assert problem is None, problem
 
 
+    # unattended-upgrades' shutdown helper (Debian, Ubuntu) ends on logind's
+    # shutdown signal, which a switch sends as `systemctl soft-reboot` does.
+    # Stopped without it, the decoy's copy fails when the bus stops under it,
+    # or writes a stop line to its log on the decoy disk that an ordinary
+    # shutdown never writes.
+    uu_log = "/var/log/unattended-upgrades/unattended-upgrades-shutdown.log"
+    uu_stop_line = "SIGTERM or SIGHUP received"
+
+
+    def uu_stop_lines():
+        # The helper's stop lines in its log on the decoy disk; 0 without a log.
+        _, out = vm.execute(
+            f"grep -c -F {shlex.quote(uu_stop_line)} {uu_log} 2>/dev/null || true"
+        )
+        return int(out.strip() or "0")
+
+
+    def assert_uu_ended_on_logind(where):
+        # Right after an entry: the decoy's copy of the unit did not fail when
+        # the switch stopped it (the runtime journal still holds that stop).
+        out = vm.succeed(
+            "timeout 30 journalctl -b -u unattended-upgrades.service --no-pager -o cat"
+        )
+        assert "Failed with result" not in out, (
+            f"{where}: unattended-upgrades.service failed at the switch:\n{out}"
+        )
+
+
     def assert_quiet_kernel_log(where):
         # Neither PID 1's warning that a session drop-in is not readable by
         # all (which names the file), nor a failed unmount of the hidden
@@ -677,11 +708,13 @@ distroVm.buildVmTest {
         vm.succeed("rm -f /mnt/data/reports/activation-residue-*.json")
 
     with subtest("activation soft-reboots into the whole-root overlay"):
+        decoy_uu_stops = uu_stop_lines()
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
         session.assert_hidden_root(vm)
         check_failed_units("in the first hidden session", "hiddenSession")
+        assert_uu_ended_on_logind("the first entry")
         if blk_availability:
             assert_guarded_blk_availability("the first session")
         assert_quiet_kernel_log("the first session")
@@ -777,6 +810,9 @@ distroVm.buildVmTest {
         )
         assert_gpt_auto_masked("after the emergency", masked=False)
         assert_quiet_kernel_log("after the emergency")
+        assert uu_stop_lines() == decoy_uu_stops, (
+            f"the first entry wrote a stop line to {uu_log} on the decoy disk"
+        )
 
     with subtest("a second session ends with deactivate"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
@@ -798,6 +834,7 @@ distroVm.buildVmTest {
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
         check_failed_units("in the second hidden session", "hiddenSession")
+        assert_uu_ended_on_logind("the second entry")
         vm.succeed("mountpoint -q /mnt/data && test -s /mnt/data/activate-2.log")
         if blk_availability:
             # The unit runs in the hidden session too; its stop stays cleared
@@ -825,6 +862,9 @@ distroVm.buildVmTest {
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
         check_failed_units("on the decoy after deactivate", "afterReturn")
+        assert uu_stop_lines() == decoy_uu_stops, (
+            f"the second entry wrote a stop line to {uu_log} on the decoy disk"
+        )
         vm.fail("mountpoint -q /mnt/data")
         vm.fail("test -e /run/overlay-runtime")
         # A LUKS-backed hidden root's mapping closed itself (a loop-backed one
