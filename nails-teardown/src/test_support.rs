@@ -113,6 +113,45 @@ pub fn stage_pid_counter(root: &Path) {
     }
 }
 
+/// Stage below `root` what the way back reads to set the process-number
+/// counter by a measure, and return the record of an entry it measures by:
+/// the counter of [`stage_pid_counter`], and a procfs in which PID 1 runs in
+/// `root` and the hidden start ran a getty on tty1 numbered 9150. The record
+/// has the decoy's getty at 600 and the switch at 9031, so
+/// [`crate::whole_root::fresh_pids::counter`] measures 481.
+///
+/// # Panics
+///
+/// When a file cannot be written.
+pub fn stage_pid_measure(root: &Path) -> crate::whole_root::fresh_pids::Record {
+    use crate::whole_root::fresh_pids::{Anchor, Record};
+    stage_pid_counter(root);
+    let proc = root.join("proc");
+    let getty = proc.join("9150");
+    std::fs::create_dir_all(&getty).expect("create the procfs stand-in");
+    std::fs::write(
+        getty.join("stat"),
+        "9150 (agetty) S 1 9150 9150 1025 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0\n",
+    )
+    .expect("write the getty's stat");
+    std::fs::write(getty.join("comm"), "agetty\n").expect("write the getty's comm");
+    for link in [proc.join("1/root"), getty.join("root")] {
+        if std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink(root, link).expect("link the root");
+        }
+    }
+    Record {
+        floor: Some(388),
+        anchors: vec![Anchor {
+            comm: "agetty".to_string(),
+            tty: 0x0401,
+            pid: 600,
+        }],
+        at_switch: Some(9031),
+        counter: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{copy_executable, write_executable};
