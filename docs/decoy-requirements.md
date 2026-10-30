@@ -50,8 +50,8 @@ The decoy also has to be one the session can enter and leave:
   can name the VPN that made it, and a VPN app's table that blocks all traffic
   outside its tunnel keeps the decoy offline. Without `iw` such a Wi-Fi
   interface makes the way back power off instead of returning, as does every
-  link, MAC address, policy-routing rule or nftables table of the session's
-  that the way back sees and cannot undo (the network settings and the
+  link, MAC address, policy-routing rule or nftables table it sets out to undo
+  that is still the session's afterwards (the network settings and the
   hostname do not count). A decoy that runs iwd needs `iw`: a session that
   runs iwd as well ends in a power-off without it, as iwd makes its own
   interface in place of the decoy's by default when it starts.
