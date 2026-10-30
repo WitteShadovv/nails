@@ -139,7 +139,7 @@ pub struct RequiredUnitView {
     /// requires the unit).
     pub action: &'static str,
     /// Why: `required_at_boot` for a skip; for a mask `device_absent`,
-    /// `undetermined` or `conflicting_lines`.
+    /// `undetermined`, `conflicting_lines` or `skip_undone`.
     pub reason: &'static str,
     /// The device that was not there, for `device_absent`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,6 +175,7 @@ fn required_units(plan: &Plan, run: &Path, switched: bool) -> Vec<RequiredUnitVi
             MaskCause::DeviceAbsent => "device_absent",
             MaskCause::Undetermined => "undetermined",
             MaskCause::ConflictingLines => "conflicting_lines",
+            MaskCause::SkipUndone => "skip_undone",
         },
         device: mask.device.clone(),
     });
