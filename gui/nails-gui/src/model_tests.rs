@@ -363,11 +363,9 @@ fn a_hidden_session_says_how_long_it_has_run() {
         page.facts,
         vec![("Hidden volume".to_string(), "/mnt/data".to_string())]
     );
-    assert_eq!(
-        page.fix,
-        "Deactivate from a terminal: sudo /mnt/data/nails deactivate"
-    );
-    assert_eq!(page.action, None);
+    // Its way out is the window's own Deactivate…, with no terminal line.
+    assert_eq!(page.fix, "");
+    assert_eq!(page.action, Some(text::DEACTIVATE));
 }
 
 #[test]
@@ -393,6 +391,7 @@ fn a_hidden_session_without_a_way_back_names_the_power_button() {
     );
     assert_eq!(page.fix, text::HOLD_POWER_BUTTON);
     assert!(page.urgent);
+    assert_eq!(page.action, None, "no way back to deactivate with");
 }
 
 #[test]

@@ -14,15 +14,16 @@
 //! interrupted activation and a record that cannot be read come first, each
 //! with the one action that deals with it, Clean Up and Reset Record (both
 //! `nails recover`), after which the status and the check run again. A
-//! hidden session's page is its status. Anything that ends the session gets
-//! a page of its own that says what happened, what was not changed and what
-//! fixes it.
+//! hidden session's page is its status, whose action deactivates
+//! ([`deactivation`]). Anything that ends the session gets a page of its own
+//! that says what happened, what was not changed and what fixes it.
 //!
 //! An operation the engine confirms first goes through a plan: the screen
 //! that asks for it gives the [`Asker`] that words the question once the plan
 //! holds ([`Model::plan`]), and [`Model::answer`] turns the person's answer
-//! into the apply or the withdrawal. An activation is such an operation too,
-//! whose question the model words itself.
+//! into the apply or the withdrawal. An activation and a deactivation are
+//! such operations too, whose questions the model words itself; a
+//! deactivation's offers a second action ([`Model::alternative`]).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -36,9 +37,11 @@ use crate::text;
 use crate::worker::{Ask, Failure, Kind, Update};
 
 pub mod activation;
+pub mod deactivation;
 mod pages;
 
 use activation::{Activation, Outcome, Risk};
+use deactivation::{Applied, Deactivation, Ending};
 use pages::{busy_page, join, recovered};
 
 /// One check as a page shows it.
@@ -82,6 +85,9 @@ pub struct Question {
     pub prompt: Option<String>,
     /// Whether the button waits for that word still.
     pub locked: bool,
+    /// The label of a second action beside the confirming one, when the
+    /// question offers two (a deactivation's two endings).
+    pub alternative: Option<String>,
 }
 
 /// What a screen that asks for a plan says once the plan holds.
@@ -165,6 +171,8 @@ enum PlanFor {
     Screen(Asker),
     /// The activation.
     Activation,
+    /// A deactivation, whose question offers both endings.
+    Deactivation,
 }
 
 /// What the open question asks.
@@ -191,6 +199,7 @@ pub struct Model {
     notice: Option<String>,
     allowed: BTreeSet<Risk>,
     activation: Option<Activation>,
+    deactivation: Option<Deactivation>,
     hung_up: bool,
 }
 
@@ -216,6 +225,7 @@ impl Model {
             notice: None,
             allowed: BTreeSet::new(),
             activation: None,
+            deactivation: None,
             hung_up: false,
         }
     }
@@ -255,12 +265,13 @@ impl Model {
                 self.close_question();
                 let activation = matches!(self.plan_for, Some(PlanFor::Activation));
                 self.plan_for = None;
-                // An activation whose plan was gone never started, and what
-                // was allowed for it goes with it: the check that ran with
-                // it runs again from the status.
+                // An activation or a deactivation whose plan was gone never
+                // started, and what was allowed for an activation goes with
+                // it: the check that ran with it runs again from the status.
                 if matches!(self.activation, Some(Activation::Running { .. })) {
                     self.activation = None;
                 }
+                self.deactivation = None;
                 if activation && self.forget_allowed() {
                     return vec![Ask::Status];
                 }
@@ -268,9 +279,11 @@ impl Model {
             }
             Update::Ended(failure) => {
                 self.running = None;
-                if matches!(self.activation, Some(Activation::PastThePoint)) {
-                    // The switch ends the session with the decoy's: the
-                    // page stays as it is.
+                if matches!(self.activation, Some(Activation::PastThePoint))
+                    || matches!(self.deactivation, Some(Deactivation::Ending { .. }))
+                {
+                    // The switch ends the session with the decoy's, or with
+                    // the hidden one: the page stays as it is.
                     return Vec::new();
                 }
                 self.close_question();
@@ -312,9 +325,30 @@ impl Model {
                 if activation {
                     self.activation = Some(Activation::started());
                 }
+                if matches!(self.plan_for, Some(PlanFor::Deactivation)) {
+                    // Power Off, on the plan of a return: the plan of a
+                    // power-off replaces it, and is applied once it holds.
+                    self.deactivation = Some(Deactivation::Replanning);
+                    return Some(Ask::Plan(Plan::Deactivate(Ending::PowerOff.args())));
+                }
                 Some(Ask::Apply)
             }
         }
+    }
+
+    /// The person chose the open question's second action: a deactivation's
+    /// return to the decoy, which applies the plan that holds.
+    pub fn alternative(&mut self) -> Option<Ask> {
+        let offered = self
+            .question
+            .as_ref()
+            .is_some_and(|question| question.alternative.is_some());
+        if !offered || !matches!(self.plan_for, Some(PlanFor::Deactivation)) {
+            return None;
+        }
+        self.close_question();
+        self.deactivation = Some(Deactivation::ending(Ending::Return));
+        Some(Ask::Apply)
     }
 
     /// What the page's main action does, while the page has one.
@@ -328,6 +362,15 @@ impl Model {
                 self.notice = None;
                 Some(Effect::Ask(Ask::Plan(Plan::Activate(
                     activation::activate_args(&self.allowed),
+                ))))
+            }
+            text::DEACTIVATE => {
+                // The plan of a return names what the return would not put
+                // back, which the question shows beside both endings.
+                self.plan_for = Some(PlanFor::Deactivation);
+                self.notice = None;
+                Some(Effect::Ask(Ask::Plan(Plan::Deactivate(
+                    Ending::Return.args(),
                 ))))
             }
             text::CANCEL => self.cancel(),
@@ -443,6 +486,20 @@ impl Model {
                 };
                 activation::activate_question(plan, &self.allowed, in_decoy_home)
             }
+            (Some(PlanFor::Deactivation), PlanData::Deactivate(plan)) => {
+                if self.deactivation == Some(Deactivation::Replanning) && plan.poweroff {
+                    // The person chose to power off already.
+                    self.deactivation = Some(Deactivation::ending(Ending::PowerOff));
+                    return vec![Ask::Apply];
+                }
+                if self.deactivation.is_some() || plan.poweroff {
+                    // Not the plan the window asked for: drop it.
+                    self.deactivation = None;
+                    self.plan_for = None;
+                    return vec![Ask::Withdraw];
+                }
+                deactivation::question(plan)
+            }
             (Some(PlanFor::Screen(asker)), data) => asker(data),
             // No screen waits for this plan: drop it at once.
             _ => {
@@ -503,9 +560,26 @@ impl Model {
                 self.close_question();
                 self.activation_answered(value)
             }
+            Kind::Apply if matches!(self.plan_for, Some(PlanFor::Deactivation)) => {
+                self.plan_for = None;
+                self.close_question();
+                match deactivation::applied(value) {
+                    Applied::Enqueued(enqueued) => {
+                        self.deactivation = Some(enqueued);
+                        Vec::new()
+                    }
+                    Applied::Failed(message) => {
+                        self.deactivation = None;
+                        self.notice = (!message.is_empty()).then_some(message);
+                        vec![Ask::Status]
+                    }
+                }
+            }
             Kind::Plan | Kind::Apply => {
                 self.plan_for = None;
                 self.close_question();
+                // A plan that settled instead of holding switches nothing.
+                self.deactivation = None;
                 self.notice = value["error"]["message"].as_str().map(text::sentence);
                 vec![Ask::Status]
             }
@@ -553,9 +627,10 @@ impl Model {
             }
             Stage::Unreadable(why) => self.unreadable_page(why),
             Stage::Ended(failure) => self.failure_page(failure),
-            Stage::Connected => match &self.activation {
-                Some(activation) => activation.page(),
-                None => self.session_page(),
+            Stage::Connected => match (&self.activation, self.deactivation) {
+                (Some(activation), _) => activation.page(),
+                (None, Some(deactivation)) => deactivation.page(),
+                (None, None) => self.session_page(),
             },
         };
         if let Some(notice) = &self.notice {
@@ -592,3 +667,7 @@ mod activation_tests;
 #[cfg(test)]
 #[path = "model_recover_tests.rs"]
 mod recover_tests;
+
+#[cfg(test)]
+#[path = "model_deactivation_tests.rs"]
+mod deactivation_tests;

@@ -137,20 +137,24 @@ of this changelog for that version becomes the release notes word for word, and
   withdrawn, or a recovery ran, the window forgets the risk and checks again without it. The page of
   an interrupted activation offers Clean Up, and that of a record that cannot be read on the decoy
   Reset Record, both `nails recover`; the window then says what the recovery did, without naming a
-  device, and checks again. Every control and row is a Tab stop with an accessible name. The
-  window's own names are neutral: its title is "Session", and its app id, its program
-  (`<hidden-root>/gui/bin/session`), its process name and the application name a screen reader reads
-  are all `session`. Its command line is its name alone, `session` (`session --engine -` once a menu
-  entry's start ran again), so a log that quotes it, such as dbus-daemon's line for a service the
-  window's bus traffic starts, names no place. Its toolkit starts no program, on X11 or on Wayland:
-  its winit backend is a patched copy of Slint's (`gui/patches/i-slint-backend-winit`) that builds
-  winit without sctk-adwaita. winit still builds its Wayland client-side frame and hides it, since
-  the window has no frame, but that frame is now smithay's fallback frame, which starts no program,
-  where sctk-adwaita's ran `dbus-send`, `gsettings` and `fc-match`. The copy also reads the settings
-  portal without starting it, and `just vet gui` holds it to the published crate plus its patch,
-  byte for byte. A process list still shows `nails` while the window is open: the helper runs as
-  `<hidden-root>/nails helper --stdio`. Its tests run without a display, on Slint's testing
-  platform.
+  device, and checks again. A hidden session's page deactivates: Deactivate… asks with what the
+  return to the decoy would not put back, in the engine's words, and offers both endings, Power Off,
+  the suggested one, and Return to Decoy; Power Off asks the engine for the plan of a power-off and
+  applies it without asking again. The page then reads "Ending the Hidden Session", takes no input
+  and, where the hidden volume could not be marked to close, says so without naming its device.
+  Every control and row is a Tab stop with an accessible name. The window's own names are neutral:
+  its title is "Session", and its app id, its program (`<hidden-root>/gui/bin/session`), its process
+  name and the application name a screen reader reads are all `session`. Its command line is its
+  name alone, `session` (`session --engine -` once a menu entry's start ran again), so a log that
+  quotes it, such as dbus-daemon's line for a service the window's bus traffic starts, names no
+  place. Its toolkit starts no program, on X11 or on Wayland: its winit backend is a patched copy of
+  Slint's (`gui/patches/i-slint-backend-winit`) that builds winit without sctk-adwaita. winit still
+  builds its Wayland client-side frame and hides it, since the window has no frame, but that frame
+  is now smithay's fallback frame, which starts no program, where sctk-adwaita's ran `dbus-send`,
+  `gsettings` and `fc-match`. The copy also reads the settings portal without starting it, and `just
+  vet gui` holds it to the published crate plus its patch, byte for byte. A process list still shows
+  `nails` while the window is open: the helper runs as `<hidden-root>/nails helper --stdio`. Its
+  tests run without a display, on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
