@@ -201,6 +201,64 @@ fn reading_the_fstab_in_a_root_leaves_its_atime_on_a_relatime_fs() {
 }
 
 #[test]
+fn deciding_the_decoy_s_own_units_leaves_the_atimes_of_their_directories() {
+    let _ = Rerun::new(test_path!(
+        deciding_the_decoy_s_own_units_leaves_the_atimes_of_their_directories
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // `nails check` and the readiness report read the decoy root's own
+        // unit directories. strictatime: every listing updates atime, which
+        // the control below proves for this filesystem.
+        use nails_core::session::{checks, mount_units};
+        let decoy = ScratchTmpfs::strictatime();
+        let run = ScratchTmpfs::new("");
+        let units = decoy.mkdir("etc/systemd/system");
+        let wants = decoy.mkdir("etc/systemd/system/local-fs.target.wants");
+        let dropins = decoy.mkdir("etc/systemd/system/srv-native.mount.d");
+        let control = decoy.mkdir("control");
+        let unit = units.join("srv-native.mount");
+        std::fs::write(
+            &unit,
+            "[Mount]\nWhat=/dev/disk/by-id/nails-test-no-such-disk\nWhere=/srv/native\nType=ext4\n",
+        )
+        .unwrap();
+        let dropin = dropins.join("50-own.conf");
+        std::fs::write(&dropin, "[Mount]\nOptions=noatime\n").unwrap();
+        std::os::unix::fs::symlink("../srv-native.mount", wants.join("srv-native.mount")).unwrap();
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for dir in [&units, &wants, &dropins, &control] {
+            set_dir_atime(dir, old);
+        }
+        for file in [&unit, &dropin] {
+            std::fs::File::open(file)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_accessed(old))
+                .unwrap();
+        }
+        let atime = |p: &Path| std::fs::metadata(p).unwrap().accessed().unwrap();
+
+        assert_eq!(std::fs::read_dir(&control).unwrap().count(), 0);
+        assert_ne!(
+            atime(&control),
+            old,
+            "control: a plain listing updates atime on this filesystem"
+        );
+
+        let dirs = mount_units::UnitDirs {
+            root: decoy.path(),
+            run: run.path(),
+        };
+        let decisions = checks::decoy_units(dirs, &[], &[], Path::new("/mnt/data"));
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
+        assert_eq!(decisions[0].masked_units(), ["srv-native.mount"]);
+        for path in [&units, &wants, &dropins, &unit, &dropin] {
+            assert_eq!(atime(path), old, "{} was stamped", path.display());
+        }
+    });
+}
+
+#[test]
 fn the_mount_queries_answer_for_the_mount_a_lookup_reaches() {
     let _ = Rerun::new(test_path!(
         the_mount_queries_answer_for_the_mount_a_lookup_reaches
