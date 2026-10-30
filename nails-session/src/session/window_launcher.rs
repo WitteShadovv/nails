@@ -12,13 +12,17 @@
 //!   pkexec for the engine's root helper and nothing else (`pkexec <engine>
 //!   helper --stdio`), and talks to it over that pipe, as it talks to the
 //!   helper that `nails gui` starts;
-//! - the action matches exactly that command. pkexec takes the action whose
+//! - the action is that command's. pkexec takes the action whose
 //!   `org.freedesktop.policykit.exec.path` is the program it runs (its real
 //!   path, from polkit 127 on) and, where the action sets
 //!   `org.freedesktop.policykit.exec.argv1`, whose first argument is that one.
-//!   Its dialog then says "Session needs your password each time it opens."
-//!   instead of naming the engine's path. Like pkexec's own action, it asks for
-//!   an administrator's password every time.
+//!   It looks at no argument after the first, so the action also matches
+//!   `<engine> helper` with more arguments; the helper, started by pkexec,
+//!   refuses any but `--stdio` before it does anything, so the one command
+//!   the dialog covers is `<engine> helper --stdio`. The dialog says "Session
+//!   needs your password each time it opens." instead of naming the engine's
+//!   path. Like pkexec's own action, it asks for an administrator's password
+//!   every time.
 //!
 //! Where they go depends on the family. A Debian, Ubuntu, Fedora or Arch root
 //! reads both from `/usr/share`, for every account. NixOS reads desktop

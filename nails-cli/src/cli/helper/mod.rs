@@ -12,10 +12,13 @@
 //! requests from the pipe and only frames go out on it: before it serves, it
 //! moves the pipe off its standard input and output, which then lead to
 //! `/dev/null`, so no line a command or a child process prints can reach the
-//! window. It reads its configuration from its own `--config`, never from a
-//! path the window names; the paths an operation takes (a discard target, an
-//! offline image, the volume init lays out) reach the engine as the CLI's
-//! arguments do, after the decoder has checked their shape.
+//! window. It reads no configuration a window names: started by `nails gui`
+//! it reads the launcher's own (`--config` included), and started by pkexec
+//! it takes no argument but `--stdio` (the dialog of its polkit action shows
+//! none, see `main_guard::refuse_helper_options_under_pkexec`) and reads the
+//! configuration beside the engine. The paths an operation takes (a discard
+//! target, an offline image, the volume init lays out) reach the engine as
+//! the CLI's arguments do, after the decoder has checked their shape.
 //!
 //! The helper is built only with the `gui` cargo feature, so a release built
 //! without it has no such command and no root interface for a window.
