@@ -120,8 +120,8 @@ and the transition step before anything else is initialised.
   turns results into the documented exit codes. It contains no activation logic:
   it builds a request, hands it to the library, and formats what comes back.
 - **`nails-core`** ties the areas together: the manager (enter, leave,
-  recover, discard), the pre-flight registry and the checks that need
-  several areas, and `status`. It re-exports every module of the crates below
+  recover, discard), the settings writer behind `config set`, the pre-flight
+  registry and the checks that need several areas, and `status`. It re-exports every module of the crates below
   under its own name (`nails_core::config`, `nails_core::verify`, …), so the
   CLI talks to one library.
 - **`nails-forensics`** looks for traces and never makes or removes them:
@@ -138,7 +138,7 @@ and the transition step before anything else is initialised.
   builder and the backend chain resolver.
 - **`nails-base`** is the foundation every library crate reads: the error type,
   the `Filesystem` and process seams (with the host-command resolver),
-  configuration, state, the artifact registry, the attach gate (with the
+  configuration (with the edit of `nails.toml` that keeps its comments), state, the artifact registry, the attach gate (with the
   judge of whether the hidden root lives on the decoy's own storage), logging,
   output, notifications and the pre-flight framework. It also holds the
   `/etc/fstab` and `/etc/crypttab` parsers, the walk of the block-device

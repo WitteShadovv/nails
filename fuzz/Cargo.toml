@@ -37,6 +37,8 @@ nails-session = { path = "../nails-session" }
 nails-teardown = { path = "../nails-teardown" }
 # The model of a Nix store database row the nix_db target reads a dump with.
 serde_json = "1.0"
+# The strict reading of nails.toml the config_edit target compares an edit by.
+toml = "1.1"
 
 # The lint policy of the workspace (Cargo.toml's [workspace.lints]), which a
 # workspace of its own does not inherit: no unsafe code.
@@ -84,6 +86,13 @@ bench = false
 [[bin]]
 name = "os_release"
 path = "fuzz_targets/os_release.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_edit"
+path = "fuzz_targets/config_edit.rs"
 test = false
 doc = false
 bench = false

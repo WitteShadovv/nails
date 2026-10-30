@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/config.schema.json",
   "title": "NAILS config --json",
-  "description": "Machine-readable config envelope (contract version 2): one document for `config path`, `config show` or `config validate`. The data shape differs by subcommand (path/exists, the effective configuration with its sources, or path/valid), so data is validated only as an object; the envelope frame and the error body are strict. `config show --example --json` is a usage error. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
+  "description": "Machine-readable config envelope (contract version 2): one document for `config path`, `config show`, `config validate`, `config set` or `config unset`. The data shape differs by subcommand (path/exists, the effective configuration with its sources, path/valid, or for set and unset the file, whether it was written and each key's value before and after), so data is validated only as an object, except the data of set and unset, which is strict; the envelope frame and the error body are strict. `config show --example --json` is a usage error, and so is a key or a value set or unset does not take (exit 2). Set and unset refuse a file that is not on the volume nails runs from, a link or another filesystem on the way to it, a volume with no NAILS layout and, in a hidden session, a change of the hidden volume root or the state file (exit 4); a file that cannot be read or would not be valid is the error `config` (exit 3); a write that failed is exit 1. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -28,5 +28,56 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["data"],
+        "properties": { "data": { "type": "object", "required": ["written"] } }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "description": "The data of `config set` and `config unset`.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "written", "changes"],
+            "properties": {
+              "path": {
+                "description": "The file that was changed, or that would have been.",
+                "type": "string",
+                "pattern": "^/"
+              },
+              "written": {
+                "description": "Whether the file was written: false when every key already held what was asked.",
+                "type": "boolean"
+              },
+              "changes": {
+                "description": "One entry per key named, in the order given.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["key", "before", "after"],
+                  "properties": {
+                    "key": {
+                      "description": "The key, as docs/configuration.md lists it.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "before": {
+                      "description": "The value the file held, as JSON; null where the file did not set the key."
+                    },
+                    "after": {
+                      "description": "The value the file holds; null where it no longer sets the key, so its default applies."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -80,7 +80,19 @@ impl LoadedConfig {
                 NailsError::io(path, e)
             }
         })?;
-        let parsed = parse_config_file(path, &contents)?;
+        Self::parse(path, &contents)
+    }
+
+    /// Check `contents` as the file at `path`, strictly: what [`load`](Self::load)
+    /// does once it has read the file, which `config validate` reports and the
+    /// settings writer runs on the text it is about to write.
+    ///
+    /// # Errors
+    ///
+    /// `NailsError::ConfigError` or `NailsError::UnsafeConfigPath`, as
+    /// described on [`Config::load`].
+    pub fn parse(path: &Path, contents: &str) -> Result<Self> {
+        let parsed = parse_config_file(path, contents)?;
 
         Ok(Self {
             config: parsed.config,

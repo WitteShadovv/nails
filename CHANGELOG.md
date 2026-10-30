@@ -23,6 +23,26 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
+  `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
+  its order and every other key stay as they were, a value already set as asked is not rewritten
+  (and then nothing is written), a new key goes after the keys of its table, or into a new table
+  below the comments that end the file, such as the template `init` writes, and a removed key's
+  comments stay. The result is checked as `config validate` checks a file before it replaces the
+  old one at once: a new file in the same directory with the old one's owner and mode (root's
+  alone for a new file), flushed and renamed over it, under a lock on the directory, so two changes
+  at the same time both land. A setting is written only on the volume the running binary lies on:
+  the directory `nails` runs from must pass the attach gate and hold the NAILS layout, and the
+  kernel refuses a link or another filesystem on the way as it opens the file, so a `--config` file
+  on any other volume, the decoy's included, a link at the file, a file with a second name and a
+  mount inside the volume are refused (exit 4) and nothing is read or written. In a hidden session the
+  hidden volume root and the state file cannot change, since the way back reads the session's
+  state there. A key or value the file does not take is a usage error (exit 2), and a file that
+  would not be valid is the error `config` (exit 3). Both take `--json`, and
+  `docs/schemas/config.schema.json` describes their data. `init`'s next steps name `config set`
+  inside a hidden session instead of a `.new` file moved into place, and so does the README. A new
+  fuzz target, `config_edit`, checks that an edit keeps every comment and every key it does not
+  name.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
