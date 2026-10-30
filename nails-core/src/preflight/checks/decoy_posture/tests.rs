@@ -835,9 +835,9 @@ fn an_argv0_without_a_matching_comm_still_counts() {
 
 #[test]
 fn kdump_service_is_refused_without_a_loaded_crash_kernel() {
-    // Ubuntu arms kdump-tools by default (24.10+). The crash kernel may not be
-    // loaded when check runs, but the active service loads it again in the
-    // hidden session, which starts the decoy's units.
+    // Ubuntu arms kdump-tools by default (24.10+). An active unit counts even
+    // with no crash kernel loaded yet: its marker does not tell whether it is
+    // still loading one.
     for unit in ["kdump-tools.service", "kdump.service"] {
         let fs = amnesic_decoy();
         fs.mock_add_file(KEXEC_CRASH_LOADED, "0\n");
@@ -897,6 +897,151 @@ fn an_exited_kdump_unit_is_seen_by_the_marker_systemd_leaves() {
             "{unit}: {result:?}"
         );
     }
+}
+
+/// Make `rel` under `root` a symlink to `target`, as `systemctl enable` and
+/// `systemctl mask` make their links.
+fn link(root: &Path, rel: &str, target: &str) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, path).unwrap();
+}
+
+#[test]
+fn an_enabled_kdump_unit_that_is_stopped_is_refused() {
+    // `systemctl stop kdump-tools` unloads the crash kernel and leaves the
+    // unit enabled. The soft-reboot into the hidden session starts the decoy's
+    // enabled units, so the unit loads the crash kernel again there.
+    for (unit, wants) in [
+        ("kdump-tools.service", "basic.target.wants"),
+        ("kdump.service", "multi-user.target.wants"),
+    ] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        write(
+            root,
+            &format!("usr/lib/systemd/system/{unit}"),
+            "[Service]\nType=oneshot\nRemainAfterExit=yes\n",
+        );
+        let check = DecoyPersistenceCheck::new(false, false).with_root(root);
+        assert!(!check.run(&RealFilesystem).unwrap().is_fail(), "{unit}");
+
+        link(
+            root,
+            &format!("etc/systemd/system/{wants}/{unit}"),
+            &format!("/usr/lib/systemd/system/{unit}"),
+        );
+        let result = check.run(&RealFilesystem).unwrap();
+        assert!(result.is_fail(), "{unit}: {result:?}");
+        assert!(
+            result.message().contains(&format!("({unit} is enabled)")),
+            "{unit}: {result:?}"
+        );
+        let remediation = result.remediation().unwrap();
+        assert!(
+            remediation.contains("systemctl disable --now"),
+            "{remediation}"
+        );
+    }
+}
+
+#[test]
+fn a_kdump_unit_counts_as_enabled_by_any_link_that_pulls_it_in() {
+    // A link in a .wants, .requires or .upholds directory of any unit
+    // directory systemd reads, whatever unit the directory belongs to.
+    for rel in [
+        "etc/systemd/system/sysinit.target.wants/kdump-tools.service",
+        "run/systemd/system/multi-user.target.requires/kdump-tools.service",
+        "usr/lib/systemd/system/basic.target.wants/kdump-tools.service",
+        "lib/systemd/system/default.target.upholds/kdump-tools.service",
+    ] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        link(root, rel, "/lib/systemd/system/kdump-tools.service");
+        let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
+        assert!(
+            finding
+                .as_deref()
+                .is_some_and(|f| f.contains("(kdump-tools.service is enabled)")),
+            "{rel}: {finding:?}"
+        );
+    }
+    // systemd takes only links from those directories, and only those
+    // directories pull a unit in: a drop-in directory does not.
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/system/basic.target.wants/kdump-tools.service",
+        "",
+    );
+    link(
+        root,
+        "etc/systemd/system/basic.target.d/kdump-tools.service",
+        "/lib/systemd/system/kdump-tools.service",
+    );
+    let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
+    assert!(finding.is_none(), "{finding:?}");
+}
+
+#[test]
+fn a_kdump_unit_masked_in_etc_is_not_enabled_by_a_stale_link() {
+    // `systemctl mask kdump-tools` without `disable` leaves the wants link; the
+    // mask in /etc/systemd/system keeps the unit from starting anywhere.
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    link(
+        root,
+        "etc/systemd/system/basic.target.wants/kdump-tools.service",
+        "/lib/systemd/system/kdump-tools.service",
+    );
+    link(root, "etc/systemd/system/kdump-tools.service", "/dev/null");
+    let result = DecoyPersistenceCheck::new(false, false)
+        .with_root(root)
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(!result.is_fail(), "{result:?}");
+    assert!(DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root).is_none());
+
+    // A mask that lives only in /run is not taken for one, and neither is an
+    // admin unit file that is no link to /dev/null.
+    for (rel, target) in [
+        ("run/systemd/system/kdump-tools.service", "/dev/null"),
+        (
+            "etc/systemd/system/kdump-tools.service",
+            "/lib/systemd/system/kdump-tools.service",
+        ),
+    ] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        link(
+            root,
+            "etc/systemd/system/basic.target.wants/kdump-tools.service",
+            "/lib/systemd/system/kdump-tools.service",
+        );
+        link(root, rel, target);
+        let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
+        assert!(finding.is_some(), "{rel} -> {target}");
+    }
+}
+
+#[test]
+fn a_loaded_crash_kernel_and_an_enabled_active_unit_are_named_together() {
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    write(root, "sys/kernel/kexec_crash_loaded", "1\n");
+    link(
+        root,
+        "etc/systemd/system/basic.target.wants/kdump-tools.service",
+        "/lib/systemd/system/kdump-tools.service",
+    );
+    mark_active(root, "kdump-tools.service");
+    let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root).unwrap();
+    assert!(
+        finding
+            .contains("(a crash kernel is loaded and kdump-tools.service is enabled and active)"),
+        "{finding}"
+    );
 }
 
 #[test]

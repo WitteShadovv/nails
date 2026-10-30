@@ -44,7 +44,7 @@ const SYSLOG_ALIAS: &str = "syslog.service";
 /// The unit directories an alias link is looked for in, relative to the root,
 /// in the order systemd reads them: the administrator's, the runtime ones, the
 /// packages'.
-const UNIT_DIRS: &[&str] = &[
+pub(super) const UNIT_DIRS: &[&str] = &[
     "etc/systemd/system",
     "run/systemd/system",
     "usr/lib/systemd/system",

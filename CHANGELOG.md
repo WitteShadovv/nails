@@ -469,10 +469,12 @@ of this changelog for that version becomes the release notes word for word, and
   during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
   the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the
   overlay. kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` or
-  `kdump-tools.service` or `kdump.service` is active, and Ubuntu arms kdump-tools by default from
-  24.10. A `kexec_crash_loaded` that cannot be read or holds anything but `0` or `1` is refused the
-  same way. `--allow-persistent-decoy` accepts it for one run, with a warning. `nails status` shows
-  an armed kdump on the decoy, and `status --json` carries it as `decoy_kdump_armed`.
+  `kdump-tools.service` or `kdump.service` is enabled or active, and Ubuntu arms kdump-tools by
+  default from 24.10. An enabled unit counts even when it is stopped: the soft-reboot into the
+  hidden session starts it again, and it loads the crash kernel there. A `kexec_crash_loaded` that
+  cannot be read or holds anything but `0` or `1` is refused the same way.
+  `--allow-persistent-decoy` accepts it for one run, with a warning. `nails status` shows an armed
+  kdump on the decoy, and `status --json` carries it as `decoy_kdump_armed`.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On
