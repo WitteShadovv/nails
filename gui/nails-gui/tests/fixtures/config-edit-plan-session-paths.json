@@ -1,0 +1,10 @@
+{
+  "command": "config",
+  "error": {
+    "code": "session_paths",
+    "message": "`state_file_path` cannot change while a hidden session runs, is entering or was left behind by an interrupted entry: the way back to the decoy finds the session's state where the session recorded it. Make this change on another machine, with the hidden volume mounted there. Nothing was written.",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}

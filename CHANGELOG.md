@@ -197,8 +197,15 @@ of this changelog for that version becomes the release notes word for word, and
   the question says what goes (every path the discard deletes from the hidden volume) or what is
   written, and a discard of a folder that holds a home, or of `/nix`, acts only once the folder is
   typed. Both are offered only where the window's own reading of the mount table agrees with the
-  engine's status that this is the decoy. Every control and row is a Tab
-  stop with an accessible name. The window's own names are neutral: its title is "Session", and its
+  engine's status that this is the decoy. In a hidden session the tools also show the settings
+  (`nails config show`): each key a value can be set for, its value and where it comes from. A
+  key's page offers its states or options, or a field for a number, a path, a flake or a list of
+  names, and Use the Default… where the settings file sets it. A change goes through the plan of
+  `config set` or `config unset`, its token and its apply: the question names each key with its
+  value before and after, a file that changed before Save writes nothing and is read again, and an
+  answer the window does not expect changes nothing more. The hidden volume and the record cannot
+  move during a hidden session, so their pages say why and offer no change. Every control and row
+  is a Tab stop with an accessible name. The window's own names are neutral: its title is "Session", and its
   app id, its program (`<hidden-root>/gui/bin/session`), its process name and the application name a
   screen reader reads are all `session`. Its command line is its name alone, `session` (`session
   --engine -` once a menu entry's start ran again), so a log that quotes it, such as dbus-daemon's

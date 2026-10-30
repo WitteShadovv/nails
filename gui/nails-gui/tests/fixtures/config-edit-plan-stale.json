@@ -1,0 +1,16 @@
+{
+  "command": "config",
+  "data": {
+    "changes": [
+      {
+        "after": 3000,
+        "before": null,
+        "key": "minimum_space_mb"
+      }
+    ],
+    "path": "/mnt/data/config/nails.toml",
+    "token": "cccccccccccccccccccccccccccccccc"
+  },
+  "ok": true,
+  "schema_version": 2
+}

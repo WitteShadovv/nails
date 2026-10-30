@@ -121,8 +121,11 @@ fn a_settled_session_page_offers_the_tools_of_its_side() {
     assert_eq!(model.page().links[2].title, text::DISCARD);
     assert_eq!(model.page().links[2].subtitle, text::DISCARD_WHAT);
     // The engine refuses a discard in a hidden session, and the window
-    // withholds Set Up there: the engine would run it.
-    assert_eq!(tools(&hidden()), [ToolKind::Verify, ToolKind::Rehearsal]);
+    // withholds Set Up there: the engine would run it. Settings change there.
+    assert_eq!(
+        tools(&hidden()),
+        [ToolKind::Verify, ToolKind::Rehearsal, ToolKind::Settings]
+    );
 
     // None while the check runs, nor while anything runs.
     let mut model = Model::new(Some(PathBuf::from("/mnt/data/nails")), false);
@@ -1046,7 +1049,10 @@ fn discard_and_set_up_fail_closed_where_the_two_readings_disagree() {
     model.apply(status("decoy", Value::Null));
     model.apply(ready());
     let tools: Vec<ToolKind> = model.page().links.iter().map(|link| link.tool).collect();
-    assert_eq!(tools, [ToolKind::Verify, ToolKind::Rehearsal]);
+    assert_eq!(
+        tools,
+        [ToolKind::Verify, ToolKind::Rehearsal, ToolKind::Settings]
+    );
 
     // A status that turns to a hidden session under an open tool.
     let mut model = decoy();
