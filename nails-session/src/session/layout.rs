@@ -67,9 +67,12 @@ impl Layout {
 
     /// Where the hidden session holds the decoy filesystem at `target`.
     pub fn carried(&self, target: &Path) -> PathBuf {
-        self.hidden_root
-            .join("root/decoy")
-            .join(escape_path(target))
+        self.carried_dir().join(escape_path(target))
+    }
+
+    /// The directory the carried decoy filesystems are mounted in.
+    pub fn carried_dir(&self) -> PathBuf {
+        self.hidden_root.join("root/decoy")
     }
 
     /// The upper of `path` in the hidden root (where a hidden file at `path`

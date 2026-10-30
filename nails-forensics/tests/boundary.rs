@@ -26,6 +26,7 @@ const TEARDOWN_ALLOWED: &[&str] = &[
     "whole_root::nextroot::is_mount_point",
     "whole_root::transition::DROPIN_DIR",
     "whole_root::transition::DROPIN_NAME",
+    "whole_root::transition::QUIET_MOUNTS_TEXT",
     "whole_root::transition::STOP_GUARD_NAME",
     "whole_root::transition::runtime_guards",
     "whole_root::transition::stop_guard_dir",

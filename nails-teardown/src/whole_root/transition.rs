@@ -202,15 +202,82 @@ pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Remove the drop-in and the stop guards under `run`, with each of their
-/// directories that is left empty, unless `kept` (the `/run` snapshot taken
-/// before the entry) lists it: a drop-in directory the decoy had already
-/// keeps whatever else it holds, and only the files NAILS wrote go. Returns
-/// whether a file went, which PID 1 keeps loaded until its next reload.
+/// The drop-in text that keeps PID 1 quiet about a mount unit's start and
+/// stop. PID 1 logs a job's start and end at the info level (`Unmounting
+/// /mnt/data/root/decoy/boot...` among them) and shows them on the console;
+/// for a unit whose `LogLevelMax=` is below the info level it does neither,
+/// nor logs the unit's `Deactivated successfully.`. A failure, logged as a
+/// warning or an error, still shows.
+pub const QUIET_MOUNTS_TEXT: &str = "[Mount]\nLogLevelMax=notice\n";
+
+/// Whether `prefix` names the mount units [`install_quiet_mounts`] quiets: a
+/// unit name ending in `-.mount`, which systemd reads the drop-ins of for
+/// every mount unit whose name starts with it up to the dash.
+fn is_mount_prefix(prefix: &str) -> bool {
+    runtime_units::valid_unit_name(prefix)
+        && prefix.len() > "-.mount".len()
+        && prefix.ends_with("-.mount")
+}
+
+/// Install [`QUIET_MOUNTS_TEXT`] for the mount units `prefix` names
+/// (`mnt-data-root-decoy-.mount`: every mount below `/mnt/data/root/decoy`)
+/// under `run`, readable by all ([`plan::SERVICE_CONFIG_MODE`]), as
+/// [`STOP_GUARD_NAME`] in the prefix's drop-in directory. The hidden PID 1
+/// loads it when it starts; [`remove_dropin`] removes it.
+pub fn install_quiet_mounts(run: &Path, prefix: &str) -> io::Result<PathBuf> {
+    if !is_mount_prefix(prefix) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{prefix} is no prefix of mount units"),
+        ));
+    }
+    let dir = run.join(stop_guard_dir(prefix));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(STOP_GUARD_NAME);
+    plan::write_atomic_with_mode(
+        &path,
+        QUIET_MOUNTS_TEXT.as_bytes(),
+        plan::SERVICE_CONFIG_MODE,
+    )?;
+    Ok(path)
+}
+
+/// The drop-in directories below `run`, relative to it, that hold a
+/// [`QUIET_MOUNTS_TEXT`] of [`install_quiet_mounts`]: a prefix of mount
+/// units whose [`STOP_GUARD_NAME`] is that text, whichever prefix the entry
+/// quieted.
+fn quiet_mount_dirs(run: &Path) -> Vec<PathBuf> {
+    let units = Path::new(runtime_units::RUNTIME_UNIT_DIR);
+    let Ok(entries) = std::fs::read_dir(run.join(units)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let prefix = name.strip_suffix(".d")?;
+            let ours = std::fs::read(entry.path().join(STOP_GUARD_NAME))
+                .is_ok_and(|text| text == QUIET_MOUNTS_TEXT.as_bytes());
+            (is_mount_prefix(prefix) && ours).then(|| units.join(&name))
+        })
+        .collect()
+}
+
+/// Remove the drop-in, the stop guards and the quieted mount units' drop-in
+/// under `run`, with each of their directories that is left empty, unless
+/// `kept` (the `/run` snapshot taken before the entry) lists it: a drop-in
+/// directory the decoy had already keeps whatever else it holds, and only
+/// the files NAILS wrote go. Returns whether a file went, which PID 1 keeps
+/// loaded until its next reload.
 pub fn remove_dropin(run: &Path, kept: &Snapshot) -> bool {
     let files = runtime_guards()
         .map(|(unit, _)| (stop_guard_dir(unit), STOP_GUARD_NAME))
-        .chain(std::iter::once((PathBuf::from(DROPIN_DIR), DROPIN_NAME)));
+        .chain(std::iter::once((PathBuf::from(DROPIN_DIR), DROPIN_NAME)))
+        .chain(
+            quiet_mount_dirs(run)
+                .into_iter()
+                .map(|dir| (dir, STOP_GUARD_NAME)),
+        );
     let mut removed = false;
     for (dir, name) in files {
         removed |= std::fs::remove_file(run.join(&dir).join(name)).is_ok();
