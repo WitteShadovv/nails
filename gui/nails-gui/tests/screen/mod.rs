@@ -202,6 +202,25 @@ impl Screen {
             .dispatch_event(WindowEvent::KeyReleased { text });
     }
 
+    /// Hold `key` down: its press, `repeats` of the repeated presses a
+    /// keyboard sends while a key stays down, `gap_ms` of mocked time apart,
+    /// and its release.
+    pub fn hold_key(&self, key: Key, repeats: usize, gap_ms: u64) {
+        let text: slint::SharedString = key.into();
+        self.window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        for _ in 0..repeats {
+            self.wait_ms(gap_ms);
+            self.window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressRepeated { text: text.clone() });
+        }
+        self.window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    }
+
     /// The accessible label of the control that has the keyboard focus.
     pub fn focused(&self) -> String {
         // A field names itself when its focus changes, in a handler Slint
