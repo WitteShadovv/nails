@@ -23,7 +23,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         preflight: Probe::Check("pending-offline-update"),
         preflight_blocks: true,
         verify: Probe::None(
-            "an update staged on the decoy is the decoy's own state, not a trace of a session, and one a session staged sits in the upper, where activation finds it",
+            "a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses",
         ),
         mitigation: "Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`.",
         doc_anchor: "decoy-requirements.md#pending-offline-updates",
@@ -43,7 +43,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: false,
         verify: Probe::None(
-            "the domain controller keeps its records on the controller, out of reach of any scan of this computer",
+            "the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot",
         ),
         mitigation: "NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it.",
         doc_anchor: "decoy-requirements.md#decoys-joined-to-a-domain",
