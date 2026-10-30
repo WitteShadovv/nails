@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer options ClusterFuzzLite reads for this target: an input needs room
+# for the four bytes of its log's length and four pages of 64 KiB, the largest
+# SQLite writes, which one page of hostile cells and a header with its files
+# need.
+[libfuzzer]
+max_len = 262148

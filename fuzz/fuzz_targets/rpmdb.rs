@@ -17,6 +17,14 @@
 //! - each directory its packages record, resolved through the links they
 //!   record, is a path shorter than `PATH_MAX` with no link on its way: it
 //!   resolves to itself.
+//!
+//! The seeds hold a page whose cell pointers all name one cell, cells that
+//! overlap, a header whose files all lie in one long directory, and links
+//! that point at each other on the way to a package's file: inputs the
+//! readers refuse or keep small, the first three of which once took hundreds
+//! of MB, and rpm's own database of Fedora's directory links. libFuzzer
+//! fails an input that takes more memory than it allows, and
+//! `fuzz/options/rpmdb.options` gives inputs room for pages of 64 KiB.
 
 #![no_main]
 
