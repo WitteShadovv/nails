@@ -301,6 +301,48 @@ fn the_measured_counter_never_goes_below_the_floor() {
     assert_eq!(counter(&record, &fake.proc()), Some(1));
 }
 
+#[test]
+fn an_anchor_may_sit_up_to_the_span_above_the_floor() {
+    // A decoy whose userspace begins at 1500 anchors on its getty at 1600, and
+    // on one exactly the span above, but not one further up.
+    let fake = FakeProc::with(&[
+        (1500, "systemd-journal", 0, BOOT),
+        (1600, "agetty", TTY1, BOOT),
+        (1500 + ANCHOR_SPAN, "systemd-logind", 0, BOOT),
+    ]);
+    assert_eq!(
+        record(&fake.proc()).anchors,
+        [getty(TTY1, 1600), logind(1500 + ANCHOR_SPAN)]
+    );
+}
+
+#[test]
+fn a_start_is_measured_up_to_the_span_and_only_above_the_switch() {
+    // The decoy's getty had 6000, the hidden start began at 10000 and gave its
+    // own the span's worth of numbers on: measured. One number more is not,
+    // nor is a copy with the switch's own number.
+    let mut record = Record {
+        floor: Some(1000),
+        anchors: vec![getty(TTY1, 6000)],
+        at_switch: Some(10_000),
+        counter: None,
+    };
+    let fake = FakeProc::with(&[(10_000 + START_SPAN, "agetty", TTY1, BOOT)]);
+    assert_eq!(
+        counter(&record, &fake.proc()),
+        Some(6000 - START_SPAN),
+        "the span used up"
+    );
+    record.at_switch = Some(10_000 - 1);
+    assert_eq!(
+        counter(&record, &fake.proc()),
+        None,
+        "one more than the span"
+    );
+    record.at_switch = Some(10_000 + START_SPAN);
+    assert_eq!(counter(&record, &fake.proc()), None, "no number used");
+}
+
 /// [`Places`] under `dir`, with the counter at `now` (none when `None`) and
 /// this process in PID 1's PID namespace when `same`.
 fn places(dir: &Path, now: Option<&str>, same: bool) -> Places {
