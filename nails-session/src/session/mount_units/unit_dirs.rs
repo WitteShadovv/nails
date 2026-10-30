@@ -87,6 +87,11 @@ impl Unlisted {
     }
 }
 
+/// Whether `base` and `dir` name a directory generators write to.
+fn generator_dir(base: Base, dir: &str) -> bool {
+    base == Base::Run && dir.starts_with("systemd/generator")
+}
+
 /// How systemd would load a unit, as far as NAILS can tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Load {
@@ -96,8 +101,14 @@ pub(super) enum Load {
     Missing,
     /// A file of it cannot be read, or systemd refuses it.
     Unreadable,
-    /// Its assignments, its drop-ins' after its file's.
-    Loaded(UnitFile),
+    /// It loads.
+    Loaded {
+        /// Its assignments, its drop-ins' after its file's.
+        unit: UnitFile,
+        /// Whether its file is in a generator directory: a generator made
+        /// it.
+        generated: bool,
+    },
 }
 
 impl UnitDirs<'_> {
@@ -170,14 +181,14 @@ impl UnitDirs<'_> {
             }
             match Self::read_file(root, &path) {
                 Ok(Some(bytes)) => {
-                    fragment = Some(bytes);
+                    fragment = Some((bytes, generator_dir(base, dir)));
                     break;
                 }
                 Ok(None) => {}
                 Err(()) => return Load::Unreadable,
             }
         }
-        let Some(fragment) = fragment else {
+        let Some((fragment, generated)) = fragment else {
             return Load::Missing;
         };
         if fragment.is_empty() {
@@ -220,6 +231,6 @@ impl UnitDirs<'_> {
                 Err(_) => return Load::Unreadable,
             }
         }
-        Load::Loaded(unit)
+        Load::Loaded { unit, generated }
     }
 }
