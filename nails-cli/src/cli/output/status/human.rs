@@ -27,6 +27,10 @@ fn required_unit_line(unit: &RequiredUnitView) -> String {
         "skip_undone" => {
             format!("masked, as a drop-in of the decoy's would undo its skip; {UNREACHED}")
         }
+        "pulls_in_mount" => format!(
+            "masked, as its skip would pull in a decoy mount the session does not keep off; \
+             {UNREACHED}"
+        ),
         _ => "masked, as the fstab lines or unit files for it disagree; where the one the hidden \
               systemd reads has a boot target require it, that target is not reached"
             .to_string(),
