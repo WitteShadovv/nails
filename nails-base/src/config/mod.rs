@@ -9,6 +9,7 @@
 //! default. [`LoadedConfig`] records where each effective value came from, and
 //! [`ConfigBuilder`] constructs a [`Config`] programmatically. Both reject an
 //! unsafe path (see [`Config::validate_paths`] and [`PathProblem`]).
+//! [`edit`] changes settings in the file without rewriting the rest of it.
 //!
 //! # Example
 //!
@@ -24,6 +25,7 @@
 //! ```
 
 pub mod backend_watch;
+pub mod edit;
 pub mod persona;
 pub mod session_mounts;
 
