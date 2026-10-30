@@ -36,6 +36,7 @@
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 pub mod mountinfo;
+pub mod pinned_dir;
 pub mod real;
 pub mod safe_path;
 mod traits;
@@ -47,6 +48,7 @@ pub use mountinfo::{
     MountEntry, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
     read_mountinfo,
 };
+pub use pinned_dir::PinnedDir;
 pub use real::RealFilesystem;
 pub use safe_path::SafeRoot;
 pub use traits::*;
