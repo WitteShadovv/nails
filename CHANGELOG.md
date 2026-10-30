@@ -103,22 +103,28 @@ of this changelog for that version becomes the release notes word for word, and
   software renderer: no GL, no shader cache). It is not part of the release yet. It opens on the
   socket `nails gui` hands it, and from a hidden session's menu entry, which starts it with
   `--engine <hidden-root>/nails`, it asks pkexec for that engine's helper itself; only where `/` is
-  the overlay of a hidden session on that engine's volume, so pkexec never runs on the decoy.
-  Started any other way it opens nothing and prints the line that opens it. It refuses a helper of
-  another release or protocol with a page that says so before it sends anything, and reads each
-  frame strictly and with a size limit. Its pages: the decoy's check, which runs when the window
-  opens and shows each check as it finishes, then the verdict with each problem and its fix; a
-  hidden session's status; a page for a status the engine could not build, such as settings it
-  cannot read, which names no place; and a page for each way a session can end (another release, a
-  refused request, a lost connection, an answer it cannot read, a password pkexec could not get). A
-  dismissed password dialog closes it. Its client and worker already run an operation the engine
-  confirms first as a plan and its apply, and the question dialog for the answer, which sends the
-  plan's token back or withdraws the plan at once, keeps the keyboard until it is answered and
-  Escape cancels it, is ready for the operation pages to come, though no page opens it yet. Every
-  control and row is a Tab stop with an accessible name. The names a window list, a process list or
-  an accessibility tool shows are neutral: the title is "Session", and the app id, the program
-  (`<hidden-root>/gui/bin/session`), the process name and the application name a screen reader reads
-  are all `session`. Its tests run without a display, on Slint's testing platform.
+  the overlay of a hidden session on that engine's volume, so pkexec never runs on the decoy. There
+  it first gives itself the launcher's environment, which a desktop's start does not: before its
+  toolkit starts it starts itself again, as the same process, on the launcher's allowlist, with its
+  home and XDG directories in a directory of its own in the operator's runtime directory (refused
+  unless it is private and in RAM), in `/` and with `/dev/null` as its standard streams. However it
+  starts, it turns off its core dumps (a limit of 0), makes itself not dumpable and sets
+  `no_new_privs` before it opens. Started any other way it opens nothing and prints the line that
+  opens it. It refuses a helper of another release or protocol with a page that says so before it
+  sends anything, and reads each frame strictly and with a size limit. Its pages: the decoy's check,
+  which runs when the window opens and shows each check as it finishes, then the verdict with each
+  problem and its fix; a hidden session's status; a page for a status the engine could not build,
+  such as settings it cannot read, which names no place; and a page for each way a session can end
+  (another release, a refused request, a lost connection, an answer it cannot read, a password
+  pkexec could not get). A dismissed password dialog closes it. Its client and worker already run an
+  operation the engine confirms first as a plan and its apply, and the question dialog for the
+  answer, which sends the plan's token back or withdraws the plan at once, keeps the keyboard until
+  it is answered and Escape cancels it, is ready for the operation pages to come, though no page
+  opens it yet. Every control and row is a Tab stop with an accessible name. The names a window
+  list, a process list or an accessibility tool shows are neutral: the title is "Session", and the
+  app id, the program (`<hidden-root>/gui/bin/session`), the process name and the application name a
+  screen reader reads are all `session`. Its tests run without a display, on Slint's testing
+  platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
