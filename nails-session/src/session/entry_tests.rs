@@ -498,3 +498,108 @@ fn a_shared_home_entry_walks_only_as_far_as_the_upper_holds_the_way_to_the_home(
     persona_home(&paths, &inputs, &layout, &[]).unwrap();
     assert_eq!(ctime(&upper_home), before);
 }
+
+/// The entry's own reading of the decoy's process numbers against a real
+/// procfs, and the way back's measure and counter after it: the test runs as
+/// PID 1 of a PID namespace of its own, so the processes it starts are all the
+/// userspace there is, and the counter it sets is that namespace's.
+mod kernel_tests {
+    use super::*;
+    use nails_base::test_support::{Rerun, skip_host};
+    use nails_teardown::whole_root::fresh_pids::{self, Anchor, Lowered, Places};
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command, Stdio};
+
+    /// A process named `comm` that sleeps until the namespace ends: `sleep`
+    /// run through a link of that name, which the kernel names it after.
+    fn start(dir: &Path, sleep: &Path, comm: &str) -> Child {
+        let link = dir.join(comm);
+        if std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink(sleep, &link).unwrap();
+        }
+        Command::new(&link)
+            .arg0("sleep")
+            .arg("600")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// End `child` and reap it.
+    fn stop(mut child: Child) {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    /// Use up `count` process numbers with processes that end at once.
+    fn use_up(sleep: &Path, count: usize) {
+        for _ in 0..count {
+            let status = Command::new(sleep).arg("0").status().unwrap();
+            assert!(status.success());
+        }
+    }
+
+    #[test]
+    fn the_entry_reads_the_process_numbers_of_the_running_system() {
+        let _ = Rerun::new(nails_base::test_path!(
+            the_entry_reads_the_process_numbers_of_the_running_system
+        ))
+        .in_pid_ns()
+        .run(|| {
+            let Some(sleep) = nails_teardown::whole_root::tools::find(None, "sleep") else {
+                skip_host("no sleep in the system directories");
+            };
+            let places = Places::system();
+            let Some(before) = places.current() else {
+                skip_host("this kernel has no ns_last_pid (CONFIG_CHECKPOINT_RESTORE)");
+            };
+            let dir = tempfile::tempdir().unwrap();
+            // The decoy's userspace: its journal, the floor, and further on
+            // its getty.
+            let journal = start(dir.path(), &sleep, "systemd-journal");
+            use_up(&sleep, 50);
+            let getty = start(dir.path(), &sleep, "agetty");
+            let tty = nails_teardown::proc::stat(getty.id()).unwrap().tty;
+            let mut record = RealEntryHost.pid_record();
+            assert!(journal.id() > before);
+            assert_eq!(record.floor, Some(journal.id()));
+            assert_eq!(
+                record.anchors,
+                [Anchor {
+                    comm: "agetty".to_string(),
+                    tty,
+                    pid: getty.id(),
+                }]
+            );
+
+            // The switch, and a hidden start whose getty follows it.
+            record.at_switch = places.current();
+            let hidden = start(dir.path(), &sleep, "agetty");
+            let used = hidden.id() - record.at_switch.unwrap();
+            record.counter = fresh_pids::counter(&record, Path::new("/proc"));
+            assert_eq!(record.counter, Some(getty.id() - used));
+
+            // The hidden session runs on and stops; the way back sets the
+            // counter, and the next process gets a number below where it was.
+            use_up(&sleep, 20);
+            stop(hidden);
+            let reached = places.current().unwrap();
+            let target = record.way_back_counter().unwrap();
+            assert_eq!(
+                fresh_pids::lower(Some(target), &places),
+                Lowered::Set(target)
+            );
+            let next = start(dir.path(), &sleep, "agetty");
+            assert!(
+                target < next.id() && next.id() <= reached,
+                "{target} < {} <= {reached}",
+                next.id()
+            );
+            for child in [journal, getty, next] {
+                stop(child);
+            }
+        });
+    }
+}
