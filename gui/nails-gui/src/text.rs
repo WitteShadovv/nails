@@ -14,6 +14,10 @@ use std::path::Path;
 
 use crate::launch;
 
+mod tools;
+
+pub use tools::*;
+
 /// The window's title, the same on every page and on the decoy: it names
 /// nothing about NAILS.
 pub const WINDOW_TITLE: &str = "Session";
