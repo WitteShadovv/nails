@@ -130,13 +130,15 @@ of this changelog for that version becomes the release notes word for word, and
   run with a flag (a decoy that keeps a persistent record, `--allow-persistent-decoy`) offers "Allow
   for This Activation…", whose button acts only once the word "allow" is typed; the window then
   checks again with the flag, names the risk on the page and in the question, and gives the flag to
-  that one activation, storing nothing. The page of an interrupted activation offers Clean Up, and
-  that of a record that cannot be read on the decoy Reset Record, both `nails recover`; the window
-  then says what the recovery did, without naming a device, and checks again. Every control and row
-  is a Tab stop with an accessible name. The names a window list, a process list or an accessibility
-  tool shows are neutral: the title is "Session", and the app id, the program
-  (`<hidden-root>/gui/bin/session`), the process name and the application name a screen reader reads
-  are all `session`. Its tests run without a display, on Slint's testing platform.
+  that one activation, storing nothing: once its apply is answered or its plan withdrawn, or a
+  recovery ran, the window forgets the risk and checks again without it. The page of an interrupted
+  activation offers Clean Up, and that of a record that cannot be read on the decoy Reset Record,
+  both `nails recover`; the window then says what the recovery did, without naming a device, and
+  checks again. Every control and row is a Tab stop with an accessible name. The names a window
+  list, a process list or an accessibility tool shows are neutral: the title is "Session", and the
+  app id, the program (`<hidden-root>/gui/bin/session`), the process name and the application name a
+  screen reader reads are all `session`. Its tests run without a display, on Slint's testing
+  platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

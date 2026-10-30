@@ -253,10 +253,16 @@ impl Model {
             Update::Withdrawn => {
                 self.running = None;
                 self.close_question();
+                let activation = matches!(self.plan_for, Some(PlanFor::Activation));
                 self.plan_for = None;
-                // An activation whose plan was gone never started.
+                // An activation whose plan was gone never started, and what
+                // was allowed for it goes with it: the check that ran with
+                // it runs again from the status.
                 if matches!(self.activation, Some(Activation::Running { .. })) {
                     self.activation = None;
+                }
+                if activation && self.forget_allowed() {
+                    return vec![Ask::Status];
                 }
                 Vec::new()
             }
@@ -294,10 +300,16 @@ impl Model {
                 Some(Ask::Check(activation::check_args(&self.allowed)))
             }
             Some(Asking::Plan) | None => {
+                let activation = matches!(self.plan_for, Some(PlanFor::Activation));
                 if !confirmed {
+                    // The status that follows a withdrawal runs the check
+                    // again, without what was allowed for this activation.
+                    if activation {
+                        self.forget_allowed();
+                    }
                     return Some(Ask::Withdraw);
                 }
-                if matches!(self.plan_for, Some(PlanFor::Activation)) {
+                if activation {
                     self.activation = Some(Activation::started());
                 }
                 Some(Ask::Apply)
@@ -387,6 +399,19 @@ impl Model {
         self.asking = None;
     }
 
+    /// Forget the risks allowed, which hold for one activation: it was
+    /// answered or withdrawn, or a recovery ran. A check that ran with them
+    /// no longer stands, so it runs again once a status is in. Whether
+    /// anything was allowed.
+    fn forget_allowed(&mut self) -> bool {
+        if self.allowed.is_empty() {
+            return false;
+        }
+        self.allowed.clear();
+        self.check = Check::NotRun;
+        true
+    }
+
     fn event(&mut self, event: &Event) {
         if let Some(activation) = &mut self.activation {
             activation.event(event);
@@ -467,7 +492,9 @@ impl Model {
             }
             Kind::Recover => {
                 self.notice = Some(recovered(value));
-                // What it left is the status's to say, and then the check's.
+                // What it left is the status's to say, and then the check's,
+                // which runs without anything allowed before.
+                self.forget_allowed();
                 self.check = Check::NotRun;
                 vec![Ask::Status]
             }
@@ -487,6 +514,8 @@ impl Model {
 
     /// The helper's answer to an activation's apply.
     fn activation_answered(&mut self, value: &serde_json::Value) -> Vec<Ask> {
+        // Whatever it says, what was allowed held for this activation only.
+        self.forget_allowed();
         let outcome = activation::outcome(value);
         if outcome == Outcome::Entering {
             // The switch is under way: Logging Out, whether the point of no
