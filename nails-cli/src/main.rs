@@ -61,6 +61,14 @@ fn run(core_dump_error: Option<std::io::Error>) -> std::process::ExitCode {
     let runtime_env = nails_core::RuntimeEnv::from_process_env();
     nails_core::runtime_env::install(runtime_env.clone());
 
+    // The window's helper started by pkexec takes no argument but `--stdio`,
+    // refused before anything reads a configuration it could name.
+    if let Some(status) =
+        nails::cli::main_guard::refuse_helper_options_under_pkexec(&cli.command, &runtime_env)
+    {
+        return status.to_exit_code();
+    }
+
     // Resolve verbosity, colour and ASCII once, before anything prints.
     let settings = OutputSettings::detect(&cli.global, &runtime_env);
     settings.install();
