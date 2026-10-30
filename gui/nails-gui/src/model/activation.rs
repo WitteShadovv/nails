@@ -28,6 +28,16 @@
 //! - **Past the point of no return** the page is "Logging Out" and takes no
 //!   input at all. The switch ends the window with the decoy's session, so a
 //!   pipe that closes from then on is no failure.
+//! - **A switch that never comes.** The engine says when the logout will not
+//!   come: past the point of no return it reports the activation finished
+//!   without success (the soft-reboot could not be enqueued, and the entry
+//!   was rolled back), and its answer says why. The page then leaves Logging
+//!   Out at once. Once the soft-reboot is enqueued the engine has nothing
+//!   more to say, since systemd runs the switch; it stops the decoy's
+//!   programs, this window's with them, within seconds. So a window still
+//!   there [a minute later](super::SWITCH_OVERDUE) gives the person a way
+//!   out: its Close works again, and the page says how to see where things
+//!   stand. The same holds when the helper went away before it said either.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -154,6 +164,10 @@ pub enum Activation {
     /// Past its point of no return: the switch follows, whatever the window
     /// does.
     PastThePoint,
+    /// Past its point of no return, the engine said the soft-reboot could
+    /// not be enqueued: the switch never comes, and the answer that follows
+    /// says why.
+    NotEnqueued,
 }
 
 impl Activation {
@@ -176,6 +190,9 @@ impl Activation {
                 }
             }
             Event::PointOfNoReturn => *self = Activation::PastThePoint,
+            Event::Finished { success: false } if *self == Activation::PastThePoint => {
+                *self = Activation::NotEnqueued;
+            }
             _ => {}
         }
     }
@@ -232,6 +249,13 @@ impl Activation {
             Activation::PastThePoint => Page {
                 heading: text::LOGGING_OUT.to_string(),
                 description: text::LOG_IN_AGAIN.to_string(),
+                urgent: true,
+                no_input: true,
+                ..Page::default()
+            },
+            Activation::NotEnqueued => Page {
+                heading: text::ACTIVATION_FAILED.to_string(),
+                description: text::LOGOUT_NOT_ASKED.to_string(),
                 urgent: true,
                 no_input: true,
                 ..Page::default()
