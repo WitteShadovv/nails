@@ -76,7 +76,7 @@ pub mod unit_dirs;
 pub mod unit_file;
 
 use super::fstab::{FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit};
-use super::policy::{self, Decision, KeptOff, Present, Units, Unreached, Unskippable};
+use super::policy::{self, Decision, KeptOff, Origin, Present, Units, Unreached, Unskippable};
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::plan::{MaskCause, Skip};
 use nails_teardown::whole_root::runtime_units::valid_unit_name;
@@ -132,6 +132,20 @@ pub struct NativeUnit {
     /// The target that requires it, when one links it in its `.requires`
     /// directory; `None` when targets only want it.
     pub required_by: Option<String>,
+    /// Whether every link that requires it is in a generator directory: a
+    /// generator, not an installed unit file, has the target require it.
+    pub required_by_generator: bool,
+}
+
+impl NativeUnit {
+    /// Where the unit and what requires it come from ([`Origin`]).
+    pub fn origin(&self) -> Origin {
+        if self.required_by.is_some() && self.required_by_generator {
+            Origin::Generated
+        } else {
+            Origin::Installed
+        }
+    }
 }
 
 /// The targets a directory of links named `name` pulls units into, and
@@ -176,7 +190,7 @@ pub fn read(dirs: UnitDirs<'_>) -> Result<Vec<NativeUnit>, Unlisted> {
     }
     for (link, targets, required) in links {
         let required_by = required.then_some(targets);
-        for name in dirs.list(&link)? {
+        for (name, generated) in dirs.list_marked(&link)? {
             if !valid_unit_name(&name)
                 || ![".mount", ".swap", ".automount"]
                     .iter()
@@ -186,6 +200,13 @@ pub fn read(dirs: UnitDirs<'_>) -> Result<Vec<NativeUnit>, Unlisted> {
             }
             match units.iter_mut().find(|unit| unit.name == name) {
                 Some(unit) => {
+                    if required_by.is_some() {
+                        unit.required_by_generator = if unit.required_by.is_none() {
+                            generated
+                        } else {
+                            unit.required_by_generator && generated
+                        };
+                    }
                     if unit.required_by.is_none() {
                         unit.required_by = required_by.clone();
                     }
@@ -193,6 +214,7 @@ pub fn read(dirs: UnitDirs<'_>) -> Result<Vec<NativeUnit>, Unlisted> {
                 None => units.push(NativeUnit {
                     name,
                     required_by: required_by.clone(),
+                    required_by_generator: required_by.is_some() && generated,
                 }),
             }
         }
@@ -514,6 +536,7 @@ fn mask(
     units: Vec<String>,
     reason: &'static str,
     required: Option<&String>,
+    origin: Origin,
 ) -> Decision {
     Decision::Mask {
         target,
@@ -522,7 +545,7 @@ fn mask(
         unreached: required.map(|boot| Unreached {
             target: boot.clone(),
             cause: Unskippable::Unread,
-            native: true,
+            origin,
         }),
     }
 }
@@ -609,12 +632,19 @@ fn decide_one(
             vec![name.to_string()],
             "its name is not the escape of a path",
             required,
+            native.origin(),
         )];
     };
     let unit = match dirs.load(name) {
         Load::Masked => return Vec::new(),
         Load::Missing | Load::Unreadable => {
-            return vec![mask(path, vec![name.to_string()], UNREADABLE, required)];
+            return vec![mask(
+                path,
+                vec![name.to_string()],
+                UNREADABLE,
+                required,
+                native.origin(),
+            )];
         }
         Load::Loaded { unit, generated } => {
             if generated
@@ -644,6 +674,7 @@ fn decide_one(
                     vec![mount_name, name.to_string()],
                     "the unit files of the mount behind it cannot be read",
                     required,
+                    native.origin(),
                 )];
             }
         }
@@ -660,7 +691,7 @@ fn decide_one(
             if automount {
                 kept.push(name.to_string());
             }
-            return vec![mask(path, kept, reason, required)];
+            return vec![mask(path, kept, reason, required, native.origin())];
         }
     };
     let units = Units {
@@ -669,7 +700,7 @@ fn decide_one(
         required_by: native.required_by.clone(),
         // What NAILS cannot tell is masked with the skip ([`kept_off`]).
         checkers: pulled_in(dirs, &mount_name).unwrap_or_default(),
-        native: true,
+        origin: native.origin(),
     };
     let decision = policy::decide_units(&entry, &units, mounts, hidden_root, present);
     let placed = matches!(
@@ -695,7 +726,7 @@ fn decide_one(
             reason,
         }
     } else {
-        mask(path, vec![automount], reason, None)
+        mask(path, vec![automount], reason, None, native.origin())
     };
     vec![decision, off]
 }

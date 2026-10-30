@@ -219,16 +219,18 @@ waits for its device, so an entry whose device is not there at activation (NAILS
 also asks systemd whether the device's unit is active, at `nails check` as at
 activation) is masked instead as well; attach the device, or give the entry
 `nofail` (for a unit file of the decoy's own, install it with `WantedBy=` rather
-than `RequiredBy=`). For either mask `nails check` and `nails activate` warn
-that the hidden session will not reach the unit's target. A device that is gone
-by the switch has its units masked then. An entry with `nofail` is masked: its
-target only wants it. In the session `nails status` lists each unit a target
-requires that is kept off, skipped or masked, with why (`required_units` in
-`status --json`): its device was not there at activation or at the switch, NAILS
-could not tell what it is or pulls in, or the fstab lines or unit files the
-hidden systemd may read for it disagree, which `nails check` and
-`nails activate` warn of as well. Status reads them from the session plan in
-`/run`, which is RAM.
+than `RequiredBy=`; for a unit a generator makes and requires, such as a
+`systemd.mount-extra=` of the kernel command line, give that line `nofail`, or
+run `systemctl daemon-reload` if the line is gone). For either mask
+`nails check` and `nails activate` warn that the hidden session will not reach
+the unit's target. A device that is gone by the switch has its units masked
+then. An entry with `nofail` is masked: its target only wants it. In the session
+`nails status` lists each unit a target requires that is kept off, skipped or
+masked, with why (`required_units` in `status --json`): its device was not there
+at activation or at the switch, NAILS could not tell what it is or pulls in, or
+the fstab lines or unit files the hidden systemd may read for it disagree, which
+`nails check` and `nails activate` warn of as well. Status reads them from the
+session plan in `/run`, which is RAM.
 
 The hidden systemd also starts the mount, swap and automount units a target
 pulls in outside the fstab: a mount unit installed for a target (NixOS's
