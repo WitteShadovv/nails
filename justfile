@@ -512,17 +512,21 @@ mutants_in_diff_options := "--all-features --cargo-arg=--locked --timeout 120"
 # when it runs out, the mutants tested by then are still reported, and the
 # recipe fails, since the rest were never tested. The report goes to
 # target/mutants/mutants.out, with the survivors in the job summary. Each test
-# binary runs through ci/mutants_guard.py, which caps what each process may
-# allocate and kills the binary when it outlives the signal that ends its test
-# run, so that a mutant which makes a loop endless in the binary neither fills
-# the runner's memory nor outlives its run.
+# binary runs through ci/mutants_guard.py: each process of the test run may
+# allocate 4 GiB at most, the binary's process group gets the signal that ends
+# the run, and once the binary has ended every process it started is killed,
+# one that left the group for one or a session of its own too (the workspace's
+# process runner starts its children so), although such a process gets no
+# signal before. A mutant that makes a loop endless thus does not outlive its
+# test run, nor fill the runner's memory alone.
 mutants-in-diff diff shard="0" shards="1" minutes="":
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p target/mutants
     # cargo runs each test binary through its target runner: the guard caps
-    # what the binary may allocate and kills it when it ignores the signal
-    # that ends its test run.
+    # what each process may allocate, kills the binary's process group when
+    # it outlives the signal that ends its test run, and kills what the
+    # binary started once it has ended.
     host=$(rustc --print host-tuple)
     host=${host^^}
     export "CARGO_TARGET_${host//-/_}_RUNNER=python3 -I {{ justfile_directory() }}/ci/mutants_guard.py"
