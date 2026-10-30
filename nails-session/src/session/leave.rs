@@ -18,21 +18,38 @@ use super::layout::Paths;
 use crate::error::{NailsError, Result};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use nails_teardown::whole_root::nextroot;
-use nails_teardown::whole_root::plan::Plan;
-use nails_teardown::whole_root::{disk_guard, network, ret, tools};
+use nails_teardown::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
+use nails_teardown::whole_root::{disk_guard, logind, network, ret, tools};
 use rustix::mount::UnmountFlags;
 use std::path::{Path, PathBuf};
 
 /// Enqueues a systemd target: tests replace it.
 pub trait TargetHost {
-    /// Enqueue `target`. An error means it is known not to have been taken.
+    /// Enqueue `target`. An error means it is known not to have been taken:
+    /// nothing is left that would start it later.
     fn start_target(&self, target: &str) -> Result<()>;
+    /// Refuse to end the session while a program blocks shutdown outright:
+    /// it is in the middle of something the switch would cut short.
+    fn may_switch(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
-/// The real host, through the plan's `systemctl`.
+/// The real host, through the plan's `systemctl` and the system's `busctl`.
 #[derive(Debug, Clone)]
 pub struct RealTargetHost {
-    systemctl: Option<std::path::PathBuf>,
+    systemctl: Option<PathBuf>,
+    busctl: Option<PathBuf>,
+    /// The session plan, which a soft-reboot waits on only while it is armed.
+    plan: PathBuf,
+    /// What kills the interactive shells around the soft-reboot: the entry's
+    /// does, the way back's does not.
+    kill_shells: Option<fn()>,
+}
+
+/// SIGKILL every interactive shell on the decoy, the invocation's own last.
+fn kill_decoy_shells() {
+    nails_teardown::shells::kill_all_interactive_shells(&[]);
 }
 
 impl RealTargetHost {
@@ -40,29 +57,91 @@ impl RealTargetHost {
     pub fn for_plan(plan: Option<&Plan>) -> Self {
         Self {
             systemctl: tools::find(plan.and_then(|p| p.tools.systemctl.as_deref()), "systemctl"),
+            busctl: tools::find(plan.and_then(|p| p.tools.busctl.as_deref()), logind::BUSCTL),
+            plan: Path::new(RUNTIME_DIR).join(PLAN_NAME),
+            kill_shells: None,
+        }
+    }
+
+    /// The host of an entry, which kills the decoy's interactive shells
+    /// around its soft-reboot. Stopping a login session sends its shells
+    /// SIGHUP, on which bash writes its history (on the decoy: to the decoy
+    /// disk), and the switch stops them the moment PID 1 holds its job. So
+    /// the shells die right before logind is asked, then again between two
+    /// looks while logind holds the soft-reboot back (the desktop runs on
+    /// meanwhile, and a shell opened then lives about a tenth of a second,
+    /// too short to have anything to write), and once more when PID 1 holds
+    /// the job.
+    pub fn killing_shells(mut self) -> Self {
+        self.kill_shells = Some(kill_decoy_shells);
+        self
+    }
+
+    /// The soft-reboot of the entry or of the way back, through logind as
+    /// `systemctl soft-reboot` does ([`logind::request_soft_reboot`]): the
+    /// programs waiting for its shutdown signal end on it first. `Ok` once
+    /// PID 1 holds the job. While it waits, an activation stays the plan's
+    /// owner, so `status` reports the entry under way and `recover` leaves it
+    /// alone; once the plan is no longer armed (an emergency on the decoy took
+    /// the entry down), the wait is called off.
+    fn soft_reboot(&self, systemctl: &Path) -> Result<()> {
+        let kill_shells = || {
+            if let Some(kill) = self.kill_shells {
+                kill();
+            }
+        };
+        kill_shells();
+        let mut wanted = || match Plan::load(&self.plan) {
+            Ok(plan) if plan.armed.is_some() => {
+                kill_shells();
+                logind::Wanted::Yes
+            }
+            _ => logind::Wanted::No("the switch was called off".to_string()),
+        };
+        match logind::request_soft_reboot(
+            systemctl,
+            self.busctl.as_deref(),
+            logind::Waits::SWITCH,
+            &mut wanted,
+        ) {
+            logind::Request::Queued => {
+                kill_shells();
+                Ok(())
+            }
+            logind::Request::Refused(why) | logind::Request::Held(why) => Err(
+                NailsError::InvalidState(format!("the soft-reboot was not started: {why}")),
+            ),
         }
     }
 }
 
 impl TargetHost for RealTargetHost {
+    fn may_switch(&self) -> Result<()> {
+        let blocked = logind::blocking(self.busctl.as_deref(), self.systemctl.as_deref());
+        let why = blocked.refusal();
+        match (blocked, why) {
+            (logind::Blocking::By(_), Some(why)) => Err(NailsError::InvalidState(format!(
+                "{why}: the switch would cut it short. Let it finish, then try again"
+            ))),
+            (logind::Blocking::Unknown, Some(why)) => Err(NailsError::InvalidState(format!(
+                "{why}, and the switch would cut such a program short. Try again once logind \
+                 answers"
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     fn start_target(&self, target: &str) -> Result<()> {
         let systemctl = self
             .systemctl
             .as_deref()
             .ok_or_else(|| NailsError::InvalidState("systemctl not found".to_string()))?;
-        // The soft-reboot of the entry and of the way back goes through
-        // logind, as `systemctl soft-reboot` does, so the programs waiting
-        // for the shutdown signal end on it first; a power-off is enqueued
-        // with PID 1 directly.
-        let outcome = if target == tools::SOFT_REBOOT_TARGET {
-            tools::soft_reboot(systemctl)
-        } else {
-            tools::start_target(systemctl, target)
-        };
-        // A call cut short (by the very stop it enqueued, typically) counts
-        // as enqueued: undoing a prepared next root while PID 1 may already
-        // be switching into it would leave it switching into an empty one.
-        match outcome {
+        if target == tools::SOFT_REBOOT_TARGET {
+            return self.soft_reboot(systemctl);
+        }
+        // A power-off is enqueued with PID 1 directly. A call cut short (by
+        // the very stop it enqueued, typically) counts as enqueued.
+        match tools::start_target(systemctl, target) {
             tools::Outcome::Done | tools::Outcome::Unknown => Ok(()),
             tools::Outcome::Refused => Err(NailsError::InvalidState(format!(
                 "systemctl could not enqueue {target}"
@@ -227,14 +306,21 @@ pub fn leave(
     to: LeaveTo,
     host: &dyn TargetHost,
 ) -> Result<LeaveReport> {
+    // Before anything is prepared for the switch, so a refusal leaves the
+    // session as it was.
+    host.may_switch()?;
     if to == LeaveTo::Poweroff {
         host.start_target("poweroff.target")?;
         return Ok(LeaveReport::default());
     }
     let unmounted = unmount_session_disks(paths, plan);
     let nextroot = paths.nextroot();
-    ret::mount_decoy_root(plan, &nextroot, &paths.run)
-        .map_err(|e| NailsError::InvalidState(e.to_string()))?;
+    if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run) {
+        return Err(still_unmounted(
+            NailsError::InvalidState(e.to_string()),
+            &unmounted,
+        ));
+    }
     let deferred = ret::close_backend_deferred(plan);
     let armed = ret::arm_leave(plan, &paths.plan())
         .map_err(|e| NailsError::InvalidState(e.to_string()))
@@ -243,12 +329,31 @@ pub fn leave(
         nextroot::detach_tree(&nextroot);
         plan.armed = None;
         let _ = plan.write_atomic(&paths.plan());
-        return Err(e);
+        return Err(still_unmounted(e, &unmounted));
     }
     Ok(LeaveReport {
         deferred,
         unmounted,
     })
+}
+
+/// `error` of a way back that did not start, which leaves the session running
+/// without the disks it unmounted for the switch (`unmounted`): it says so,
+/// naming them.
+fn still_unmounted(error: NailsError, unmounted: &[PathBuf]) -> NailsError {
+    if unmounted.is_empty() {
+        return error;
+    }
+    let list: Vec<String> = unmounted.iter().map(|p| p.display().to_string()).collect();
+    let note = format!(
+        "The session goes on, but the disks it had mounted stay unmounted ({}): mount them \
+         again to use them",
+        list.join(", ")
+    );
+    match error {
+        NailsError::InvalidState(why) => NailsError::InvalidState(format!("{why}. {note}")),
+        other => NailsError::InvalidState(format!("{other}. {note}")),
+    }
 }
 
 #[cfg(test)]
@@ -269,33 +374,179 @@ mod tests {
         plan
     }
 
+    /// A real host on a stand-in `systemctl` that records its calls in
+    /// `calls` and answers `soft-reboot` with `soft_reboot` (shell code), and
+    /// an armed plan.
+    fn real_host(dir: &Path, soft_reboot: &str) -> RealTargetHost {
+        let d = dir.display();
+        let systemctl = dir.join("systemctl");
+        nails_base::test_support::write_executable(
+            &systemctl,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {d}/calls\n\
+                 case \"$*\" in\n\
+                 '--no-wall soft-reboot') {soft_reboot} ;;\n\
+                 list-jobs*) [ -e {d}/job ] \
+                 && echo '7 soft-reboot.target start waiting'; exit 0 ;;\n\
+                 esac\nexit 0\n"
+            ),
+            0o755,
+        );
+        let plan_path = dir.join("plan.json");
+        let mut armed = plan();
+        armed.armed = Some(nails_teardown::whole_root::plan::Arm::now(
+            nails_teardown::whole_root::plan::Direction::Leave,
+        ));
+        armed.write_atomic(&plan_path).unwrap();
+        RealTargetHost {
+            systemctl: Some(systemctl),
+            busctl: None,
+            plan: plan_path,
+            kill_shells: None,
+        }
+    }
+
+    fn calls(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.starts_with("list-jobs"))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// The real host asks logind for the soft-reboot, as `systemctl
-    /// soft-reboot` does, and enqueues a power-off with PID 1 directly.
+    /// soft-reboot` does, and returns once PID 1 holds the job; a power-off
+    /// it enqueues with PID 1 directly.
     #[test]
     fn the_real_host_soft_reboots_through_logind_and_powers_off_directly() {
         let dir = tempfile::tempdir().unwrap();
-        let calls = dir.path().join("calls");
-        let systemctl = dir.path().join("systemctl");
-        nails_base::test_support::write_executable(
-            &systemctl,
-            format!("#!/bin/sh\necho \"$*\" >> {}\n", calls.display()),
-            0o755,
+        let host = real_host(
+            dir.path(),
+            &format!("touch {}/job; exit 0", dir.path().display()),
         );
-        let mut plan = plan();
-        plan.tools.systemctl = Some(systemctl);
-        let host = RealTargetHost::for_plan(Some(&plan));
         host.start_target(tools::SOFT_REBOOT_TARGET).unwrap();
         host.start_target("poweroff.target").unwrap();
         assert_eq!(
-            std::fs::read_to_string(&calls)
-                .unwrap()
-                .lines()
-                .collect::<Vec<_>>(),
+            calls(dir.path()),
             [
                 "--no-wall soft-reboot",
                 "start --no-block --job-mode=replace-irreversibly -- poweroff.target",
             ]
         );
+    }
+
+    static KILLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_kill() {
+        KILLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The entry's host kills the decoy's interactive shells right before it
+    /// asks logind, again between two looks while logind holds the
+    /// soft-reboot back, and once more when PID 1 holds the job; the way
+    /// back's host kills none.
+    #[test]
+    fn the_entry_kills_the_shells_until_pid_1_holds_the_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().display();
+        let mut host = real_host(dir.path(), "exit 0");
+        // PID 1 holds the job from the third look on.
+        nails_base::test_support::write_executable(
+            host.systemctl.as_deref().unwrap(),
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {d}/calls\n\
+                 case \"$*\" in\n\
+                 list-jobs*) n=$(cat {d}/polls 2>/dev/null || echo 0)\n\
+                 echo $((n + 1)) > {d}/polls\n\
+                 [ \"$n\" -ge 2 ] && echo '7 soft-reboot.target start waiting'; exit 0 ;;\n\
+                 esac\nexit 0\n"
+            ),
+            0o755,
+        );
+        assert!(RealTargetHost::for_plan(None).kill_shells.is_none());
+        assert!(
+            RealTargetHost::for_plan(None)
+                .killing_shells()
+                .kill_shells
+                .is_some()
+        );
+        host.kill_shells = Some(count_kill);
+        host.start_target(tools::SOFT_REBOOT_TARGET).unwrap();
+        // Before, at the two looks without a job, and once it is there.
+        assert_eq!(KILLS.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(calls(dir.path()), ["--no-wall soft-reboot"]);
+    }
+
+    /// A way back that did not start says that the disks it unmounted for the
+    /// switch stay unmounted.
+    #[test]
+    fn a_way_back_that_did_not_start_names_the_disks_it_unmounted() {
+        let error = NailsError::InvalidState("the soft-reboot was not started: no".into());
+        assert_eq!(
+            still_unmounted(error, &[]).to_string(),
+            "Invalid state: the soft-reboot was not started: no"
+        );
+        let error = NailsError::InvalidState("the soft-reboot was not started: no".into());
+        let named = still_unmounted(
+            error,
+            &[PathBuf::from("/mnt/usb/inner"), PathBuf::from("/mnt/usb")],
+        );
+        assert_eq!(
+            named.to_string(),
+            "Invalid state: the soft-reboot was not started: no. The session goes on, but the \
+             disks it had mounted stay unmounted (/mnt/usb/inner, /mnt/usb): mount them again \
+             to use them"
+        );
+    }
+
+    /// A soft-reboot logind refuses is an error that says why, and nothing is
+    /// enqueued in its place.
+    #[test]
+    fn a_soft_reboot_logind_refuses_is_an_error_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = real_host(dir.path(), "echo 'Operation denied' >&2; exit 1");
+        let error = host.start_target(tools::SOFT_REBOOT_TARGET).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            NailsError::InvalidState(
+                "the soft-reboot was not started: Operation denied".to_string()
+            )
+            .to_string()
+        );
+        assert_eq!(calls(dir.path()), ["--no-wall soft-reboot"]);
+    }
+
+    /// A program that blocks shutdown outright refuses the way back before
+    /// anything is prepared for it: no plan armed, nothing enqueued.
+    #[test]
+    fn a_program_that_blocks_shutdown_refuses_the_way_back_before_anything_is_prepared() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = real_host(dir.path(), "exit 0");
+        let busctl = dir.path().join("busctl");
+        nails_base::test_support::write_executable(
+            &busctl,
+            "#!/bin/sh\necho '{\"type\":\"a(ssssuu)\",\"data\":[[[\"shutdown\",\"apt\",\
+             \"Installing\",\"block\",0,4242]]]}'\n",
+            0o755,
+        );
+        host.busctl = Some(busctl);
+        let paths = Paths {
+            root: dir.path().join("root"),
+            run: dir.path().join("run"),
+        };
+        let mut session = plan();
+        for to in [LeaveTo::Decoy, LeaveTo::Poweroff] {
+            let error = leave(&paths, &mut session, to, &host).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("apt blocks shutdown (Installing, PID 4242)"),
+                "{error}"
+            );
+        }
+        assert!(session.armed.is_none());
+        assert!(calls(dir.path()).is_empty());
     }
 
     #[test]

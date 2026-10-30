@@ -82,6 +82,14 @@ impl<F: Filesystem> NailsManager<F> {
         saved
     }
 
+    /// Write `state_file` back whole, as it was loaded before a change that
+    /// did not happen after all.
+    pub(crate) fn restore_state_file(&mut self, state_file: StateFile) -> Result<()> {
+        let saved = self.save_state_file(&state_file);
+        *self.cached_state.borrow_mut() = Some(state_file);
+        saved
+    }
+
     fn save_state_file(&self, state_file: &StateFile) -> Result<()> {
         let state_dir = self
             .state_file_path

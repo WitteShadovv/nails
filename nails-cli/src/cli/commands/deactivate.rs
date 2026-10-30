@@ -166,7 +166,8 @@ fn lock_and_leave(
         Ok(locked) => locked,
         Err(error) => return super::report_lock_error(error, "deactivate", settings.is_json()),
     };
-    leave_and_report(settings, to, warnings, |to| locked.leave(to))
+    let may = locked.may_leave();
+    leave_and_report(settings, to, warnings, may, |to| locked.leave(to))
 }
 
 /// Write each of the `warnings` before the question, on `out` (stderr, as
@@ -181,7 +182,9 @@ fn write_warnings(settings: &OutputSettings, warnings: &[String], out: &mut impl
 /// Commit the way back with `leave` and report it, returning the status to
 /// exit with.
 ///
-/// A person reads the result before the switch, which stops the terminal: the
+/// A way back that may not start (`may`: a program blocks shutdown) is
+/// reported before anything else, so no line announces a switch that does not
+/// come. A person reads the result before the switch, which stops the terminal: the
 /// lines come first, and a failure to prepare or enqueue it follows them on
 /// stderr. Under `--json` the one envelope reports the outcome instead, so it
 /// is printed only once the soft-reboot (or the power-off) is enqueued: a
@@ -195,9 +198,18 @@ fn leave_and_report(
     settings: &OutputSettings,
     to: LeaveTo,
     mut warnings: Vec<String>,
+    may: Result<(), NailsError>,
     leave: impl FnOnce(LeaveTo) -> Result<LeaveReport, NailsError>,
 ) -> ExitStatus {
     let json = settings.is_json();
+    if let Err(e) = may {
+        return report_error(
+            json,
+            "deactivate",
+            ExitStatus::Failed,
+            deactivate_error_body(&e),
+        );
+    }
     let poweroff = to == LeaveTo::Poweroff;
     if !json {
         let style = settings.stdout_style();

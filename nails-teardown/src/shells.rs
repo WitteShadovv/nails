@@ -6,9 +6,10 @@
 //! An interactive shell keeps its history in memory and writes it out when it
 //! exits, and stopping a login session sends it SIGHUP, on which bash writes.
 //! `activate` therefore SIGKILLs every interactive shell (root's included) on
-//! the decoy right before it starts the soft-reboot, so the activation command
-//! never reaches a decoy history file, and `emergency` does the same before the
-//! way back or the power-off. A SIGKILLed shell runs no handler and writes
+//! the decoy right before it asks logind for the soft-reboot, again while
+//! logind holds it back and once more when PID 1 holds its job, so the
+//! activation command never reaches a decoy history file, and `emergency` does
+//! the same before the way back or the power-off. A SIGKILLed shell runs no handler and writes
 //! nothing. Non-interactive shells
 //! (a service's script, an `sh -c` wrapper, a pipeline subshell) keep no
 //! history and are left alone, as is the teardown's own invocation, whose shell
@@ -131,8 +132,9 @@ pub fn kill_invoking_shells(spared_units: &[String]) -> Vec<u32> {
 }
 
 /// SIGKILL every interactive shell, the invocation's own last. Called just
-/// before a soft-reboot or power action is enqueued: stopping a login session
-/// sends its shells SIGHUP, on which bash writes its history.
+/// before a soft-reboot or power action is asked for (and, by an activation,
+/// until PID 1 holds its job): stopping a login session sends its shells
+/// SIGHUP, on which bash writes its history.
 pub fn kill_all_interactive_shells(spared_units: &[String]) {
     let invocation = Invocation::current();
     let _ = kill_interactive_shells(&invocation, spared_units);

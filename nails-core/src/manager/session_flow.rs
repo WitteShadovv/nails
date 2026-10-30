@@ -145,6 +145,10 @@ pub enum RecoverError {
     /// An activation is entering the hidden root right now: its soft-reboot
     /// comes next, and recovering would pull its next root from under it.
     Entering,
+    /// The activation is gone, but its soft-reboot may still come: PID 1 has
+    /// started it, logind holds it and cannot drop it (systemd 256 and
+    /// older), or logind does not answer.
+    Switching,
     /// The recovery itself failed (the record could not be written).
     Failed(NailsError),
 }
@@ -162,6 +166,10 @@ impl std::fmt::Display for RecoverError {
             RecoverError::Entering => {
                 f.write_str("an activation is entering the hidden root right now")
             }
+            RecoverError::Switching => f.write_str(
+                "the interrupted activation's soft-reboot may still come: PID 1 has started it, \
+                 logind holds it and cannot drop it, or logind does not answer",
+            ),
             RecoverError::Failed(error) => write!(f, "{error}"),
         }
     }
@@ -528,7 +536,13 @@ impl<F: Filesystem> NailsManager<F> {
         target: &dyn TargetHost,
         entry_host: &dyn EntryHost,
     ) -> Result<()> {
-        let enqueued = target.start_target(nails_teardown::whole_root::tools::SOFT_REBOOT_TARGET);
+        // A program that blocks shutdown refuses the switch before anything
+        // of it happens: before the decoy's shells die and before logind
+        // tells every program waiting for its signal that the system goes
+        // down.
+        let enqueued = target.may_switch().and_then(|()| {
+            target.start_target(nails_teardown::whole_root::tools::SOFT_REBOOT_TARGET)
+        });
         if enqueued.is_err() {
             entry::rollback(&machine.paths);
             let _ = entry_host.daemon_reload();
@@ -575,9 +589,17 @@ impl<F: Filesystem> NailsManager<F> {
         };
         // Leaving is a new switch: supersede the last one's refusal, if any.
         self.forget_refused_switch(&machine.paths);
+        let before = crate::StateFile::load(&self.state_file_path).ok();
         self.force_state(SystemState::Inactive)?;
         rustix::fs::sync();
-        crate::session::leave(&machine.paths, &mut plan, to, host)
+        let left = crate::session::leave(&machine.paths, &mut plan, to, host);
+        if left.is_err()
+            && let Some(before) = before
+        {
+            // Nothing was started: the session goes on, and so does its record.
+            let _ = self.restore_state_file(before);
+        }
+        left
     }
 
     /// Remove the leftovers of an interrupted entry on the decoy. Refused in
@@ -607,6 +629,11 @@ impl<F: Filesystem> NailsManager<F> {
                 Ok(SessionRecovery::Clean)
             }
             SessionView::Interrupted { .. } => {
+                // A soft-reboot still to come would switch after the leftovers
+                // went: into a plain soft-reboot of the decoy.
+                if !host.drop_pending_switch() {
+                    return Err(RecoverError::Switching);
+                }
                 let paths = &machine.paths;
                 let plan = nails_teardown::whole_root::plan::Plan::load(&paths.plan()).ok();
                 let remaining = entry::rollback(paths);

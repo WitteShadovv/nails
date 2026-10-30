@@ -84,6 +84,14 @@ fn recover_error(error: &RecoverError) -> (ExitStatus, ErrorBody) {
                 sudo_line(Step::Recover)
             )),
         ),
+        RecoverError::Switching => (
+            ExitStatus::InvalidState,
+            body.with_hint(format!(
+                "Wait for that soft-reboot (at most the decoy's InhibitDelayMaxSec), then run \
+                 `{}`.",
+                sudo_line(Step::Status)
+            )),
+        ),
         RecoverError::Failed(cause) => (
             ExitStatus::Failed,
             ErrorBody::new("recover_failed", cause.to_string()),
@@ -168,6 +176,27 @@ mod tests {
             body.message
         );
         assert!(!body.message.contains("emergency"), "{}", body.message);
+    }
+
+    /// While the interrupted activation's soft-reboot may still come, recover
+    /// leaves its leftovers for it and says to wait for it, then look.
+    #[test]
+    fn a_refusal_while_a_soft_reboot_still_comes_says_to_wait_and_look() {
+        let (status, body) = recover_error(&RecoverError::Switching);
+        assert_eq!(status, ExitStatus::InvalidState);
+        assert_eq!(body.code, "invalid_state");
+        assert!(body.next.is_none(), "{:?}", body.next);
+        assert!(
+            body.message
+                .starts_with("the interrupted activation's soft-reboot may still come"),
+            "{}",
+            body.message
+        );
+        assert!(
+            body.message.contains("Wait for that soft-reboot") && body.message.contains(" status`"),
+            "{}",
+            body.message
+        );
     }
 
     /// A recovery that failed is a plain failure, with no next step.

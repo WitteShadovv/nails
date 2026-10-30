@@ -35,8 +35,10 @@ fn phases(report: &HotReport) -> Vec<&'static str> {
     report.phases.iter().map(|(name, _)| *name).collect()
 }
 
-/// On the decoy side a requested power action follows the cleanup at once;
-/// only a decoy that keeps running is reloaded after it.
+/// On the decoy side a requested power action follows the cleanup at once,
+/// and the soft-reboot logind may still hold for the entry is dropped only
+/// after it; a decoy that keeps running drops it first, and is reloaded after
+/// the cleanup.
 #[test]
 fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
     // This test process does not run in the plan's overlay root.
@@ -48,6 +50,7 @@ fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
         phases(&report),
         [
             "signal-activation",
+            "drop-soft-reboot",
             "detach-nextroot",
             "remove-runtime",
             "reload"
@@ -63,11 +66,41 @@ fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
                 "detach-nextroot",
                 "remove-runtime",
                 "kill-shells",
-                "enqueue"
+                "enqueue",
+                "drop-soft-reboot"
             ],
             "{finish:?}"
         );
     }
+}
+
+/// A soft-reboot of the entry that logind cannot drop, or that PID 1 has
+/// started, would restart the decoy's userspace, and PID 1 runs it as soon as
+/// a power action next to it: a decoy-side emergency then powers off, or
+/// reboots as asked, at once, past PID 1's queue.
+#[test]
+fn a_soft_reboot_that_may_still_come_forces_the_power_action() {
+    use logind::Pending;
+    assert_eq!(decoy_escape(Finish::Return, Pending::Nothing), None);
+    assert_eq!(decoy_escape(Finish::Poweroff, Pending::Nothing), None);
+    let (finish, why) = decoy_escape(Finish::Return, Pending::Held).unwrap();
+    assert_eq!(finish, Finish::Poweroff);
+    assert!(
+        why.contains("cannot drop") && why.ends_with("powering off at once, before it can run")
+    );
+    let (finish, why) = decoy_escape(Finish::Return, Pending::Started).unwrap();
+    assert_eq!(finish, Finish::Poweroff);
+    assert!(why.starts_with("PID 1 has started"), "{why}");
+    let (finish, why) = decoy_escape(Finish::Reboot, Pending::Held).unwrap();
+    assert_eq!(finish, Finish::Reboot);
+    assert!(
+        why.ends_with("rebooting at once, before it can run"),
+        "{why}"
+    );
+    assert_eq!(
+        decoy_escape(Finish::Poweroff, Pending::Started).map(|(finish, _)| finish),
+        Some(Finish::Poweroff)
+    );
 }
 
 #[test]
@@ -204,6 +237,35 @@ impl Interrupted {
     fn calls(&self) -> String {
         std::fs::read_to_string(self.dir.path().join("systemctl-calls")).unwrap_or_default()
     }
+}
+
+/// The drop asks PID 1 whether it holds a soft-reboot for the entry, then,
+/// as the entry recorded no `busctl` here, whether logind runs: logind may
+/// hold the soft-reboot unless PID 1 says it does not run.
+#[test]
+fn the_entry_s_soft_reboot_counts_as_held_unless_logind_says_otherwise() {
+    let scratch = Interrupted::new();
+    let mut report = HotReport::new(Side::Decoy, Finish::Return);
+    assert_eq!(
+        drop_switch(&scratch.plan, &scratch.host, &mut report),
+        logind::Pending::Held
+    );
+    assert_eq!(
+        scratch.calls(),
+        "list-jobs --plain --no-legend --full\n\
+         show --property=ActiveState --value systemd-logind.service\n"
+    );
+
+    let scratch = Interrupted::new();
+    write_executable(
+        scratch.plan.tools.systemctl.as_deref().unwrap(),
+        "#!/bin/sh\ncase \"$*\" in show*) echo inactive ;; esac\n",
+        0o755,
+    );
+    assert_eq!(
+        drop_switch(&scratch.plan, &scratch.host, &mut report),
+        logind::Pending::Nothing
+    );
 }
 
 /// On the decoy, with nothing enqueued, the cleanup undoes the masks and the
