@@ -530,6 +530,36 @@ fn a_scan_without_a_token_source_is_refused() {
     assert!(stderr.contains("no rehearsal state"), "{stderr}");
 }
 
+/// A plant for a named account plants for that account or for nobody: with
+/// every uid source naming another (the launcher's `NAILS_TARGET_UID`,
+/// pkexec's `PKEXEC_UID`, sudo's), a name no account has is refused before
+/// anything is looked at, and nothing is written.
+#[test]
+fn plant_for_a_missing_account_is_refused_whoever_else_the_environment_names() {
+    let harness = Harness::new();
+    let uid = nix::unistd::getuid().to_string();
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .env("NAILS_TARGET_UID", &uid)
+        .env("PKEXEC_UID", &uid)
+        .env("SUDO_UID", &uid)
+        .arg("--no-log-file")
+        .arg("--config")
+        .arg(&harness.config)
+        .args([
+            "--json",
+            "rehearse",
+            "plant",
+            "--user",
+            "no-such-account-7f3a",
+        ])
+        .output()
+        .expect("run nails");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let value = json(&output);
+    assert_eq!(value["error"]["code"], "no_such_user", "{value}");
+    assert!(!harness.dir.path().join("hidden/rehearse").exists());
+}
+
 #[test]
 fn plant_on_a_folder_is_refused_by_the_attach_gate() {
     let harness = Harness::new();

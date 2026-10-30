@@ -181,6 +181,43 @@ pub fn next_step(rehearsal: Option<&RehearsalView>, here: &Here) -> String {
     }
 }
 
+/// The environment a plant resolves its operator from, and alerts with: the
+/// caller's own, or, when `user` names an account, one in which that name is
+/// the only source. Every uid source is cleared, the ones `nails gui` and
+/// pkexec set as well (`NAILS_TARGET_UID`, `PKEXEC_UID`), because any of them
+/// would win over a name, and so are the other names.
+pub(crate) fn operator_env(env: &RuntimeEnv, user: Option<&str>) -> RuntimeEnv {
+    let mut env = env.clone();
+    if let Some(user) = user {
+        env.nails_target_uid = None;
+        env.pkexec_uid = None;
+        env.sudo_uid = None;
+        env.doas_uid = None;
+        env.nails_target_user = Some(user.to_string());
+        env.sudo_user = None;
+        env.doas_user = None;
+    }
+    env
+}
+
+/// The account `user` names, resolved from `env` as [`operator_env`] makes
+/// it. A name no account has is refused rather than replaced by whoever else
+/// the environment or the active seat names: a plant for the wrong home would
+/// make the later scan prove nothing about the one asked for.
+pub(crate) fn named_operator(env: &RuntimeEnv, user: &str) -> Result<TargetUser, RehearseFailure> {
+    match TargetUser::resolve_with(env) {
+        Ok(operator) if operator.name == user => Ok(operator),
+        _ => Err(RehearseFailure::new(
+            ExitStatus::Usage,
+            "no_such_user",
+            format!(
+                "no account is named {user}: name an account of this system, or leave out \
+                 --user to plant for the account that ran this"
+            ),
+        )),
+    }
+}
+
 /// The rehearsal service for a resolved configuration.
 pub struct Rehearsal {
     config: Config,
@@ -218,8 +255,16 @@ impl Rehearsal {
         })
     }
 
-    /// Plant a canary in the active hidden session.
+    /// Plant a canary in the active hidden session, for the account `user`
+    /// names, or for the operator the environment names.
     pub fn plant(&self, env: &RuntimeEnv, user: Option<&str>) -> Result<PlantOutcome, PlantError> {
+        // A named account is looked up first, before anything is touched: a
+        // name no account has is refused, never replaced by the operator.
+        let operator_env = operator_env(env, user);
+        let named = match user {
+            Some(user) => Some(named_operator(&operator_env, user).map_err(PlantError::Fail)?),
+            None => None,
+        };
         let hidden_root = &self.config.hidden_volume_root;
         match HiddenRoot::assess(&RealFilesystem, hidden_root) {
             Ok(Assessment::Refused(refusal)) => return Err(PlantError::Refused(Box::new(refusal))),
@@ -311,12 +356,7 @@ impl Rehearsal {
                 )));
             }
         };
-        let mut operator_env = env.clone();
-        if let Some(user) = user {
-            operator_env.sudo_user = Some(user.to_string());
-            operator_env.sudo_uid = None;
-        }
-        let operator = TargetUser::resolve_with(&operator_env).ok();
+        let operator = named.or_else(|| TargetUser::resolve_with(&operator_env).ok());
         let hidden = hidden_root
             .canonicalize()
             .unwrap_or_else(|_| hidden_root.clone());
