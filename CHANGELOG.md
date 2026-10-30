@@ -31,7 +31,8 @@ of this changelog for that version becomes the release notes word for word, and
   and answers each with the envelope and exit code the CLI gives for the same command under
   `--json`, with the progress of `check` streamed as events. It serves `status`, `check`, `config
   path`, `config show` and `config validate` (of its own configuration only, never a path the
-  window names), `discard`, `activate`, `deactivate` (both endings), `emergency`, `recover`,
+  window names: started by pkexec it takes no argument but `--stdio` and reads the configuration
+  beside the engine, started by `nails gui` it reads the launcher's), `discard`, `activate`, `deactivate` (both endings), `emergency`, `recover`,
   `verify`, each step of `rehearse`, and `init`. What the CLI confirms, and `init`, runs as a plan
   and an apply: the plan says what the apply would do (a discard and an activation also take the
   state lock) and hands out a single-use token, and only the next request, an apply carrying that
@@ -58,10 +59,12 @@ of this changelog for that version becomes the release notes word for word, and
   terminal, or the shell being killed, signals neither.
 - The way into the coming window from a hidden session's menu. A build with the `gui` cargo feature
   whose window program lies at `<hidden-root>/gui/bin/nails-gui` writes, at every activation, a menu
-  entry "Session" that starts the window as whoever clicks it, and a polkit action that matches
-  only the helper the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its
-  password dialog reads "Session needs your password each time it opens." instead of naming the
-  binary, and it asks for an administrator's password every time. Both go into the hidden root's
+  entry "Session" that starts the window as whoever clicks it, and a polkit action for the helper
+  the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its password dialog reads
+  "Session needs your password each time it opens." instead of naming the binary, and it asks for
+  an administrator's password every time. The action matches the engine and its first argument
+  only, so the helper, started by pkexec, refuses any argument but `--stdio` and exits 2: the
+  dialog never covers a command line it does not show. Both go into the hidden root's
   upper and never onto the decoy: on Debian, Ubuntu, Fedora and Arch into `/usr/share/applications`
   and `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into the operator's
   `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and later). Every
