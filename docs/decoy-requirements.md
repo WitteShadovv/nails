@@ -392,6 +392,11 @@ logind.
   drop-in that sets `Storage=persistent` is caught too.
 - Remove or disable `rsyslog`, any other syslog daemon and `auditd` if
   installed.
+- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off.
+  With it, the decoy installs its pending updates at every activation, as at
+  every shutdown: they land on the decoy disk, and the switch waits for them
+  (logind for up to 30 seconds, then the helper's own stop until the update
+  ends, at most 30 minutes).
 - If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
@@ -409,6 +414,11 @@ logind.
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable the syslog daemon (`rsyslog`, `syslog-ng`,
   `inetutils-syslogd`, `busybox-syslogd`, `sysklogd`) and `auditd`.
+- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off.
+  With it, the decoy installs its pending updates at every activation, as at
+  every shutdown: they land on the decoy disk, and the switch waits for them
+  (logind for up to 30 seconds, then the helper's own stop until the update
+  ends, at most 30 minutes).
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
