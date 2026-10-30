@@ -1,0 +1,2 @@
+PRUNEPATHS = "/mnt"
+PRUNEPATHS = "/tmp"

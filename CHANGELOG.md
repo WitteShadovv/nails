@@ -46,6 +46,35 @@ of this changelog for that version becomes the release notes word for word, and
   inside a hidden session instead of a `.new` file moved into place, and so does the README. A new
   fuzz target, `config_edit`, checks that an edit keeps every comment and every key it does not
   name.
+- `nails check` and activation refuse an updatedb that would list the hidden volume in the
+  decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
+  `services.locate`) writes the name of every file it finds into a database on the decoy disk,
+  and a run while the volume is mounted on the decoy writes every name on the volume there. The
+  check refuses while one runs now (a service the system manager shows active, or a process, one
+  started by hand included) or is scheduled, and does not skip the volume; no flag lifts the
+  refusal. Scheduled are a service that runs updatedb and that an enabled or active timer or path
+  unit starts, or that is enabled itself (as `systemctl add-wants` makes it, which also runs it at
+  the soft-reboot back to the decoy), for the system manager and for users' managers, read from
+  every directory systemd loads units from, and a cron job: `/etc/crontab`, `/etc/cron.d`, root's
+  and the users' crontabs, `/etc/anacrontab` and the `/etc/cron.{hourly,daily,weekly,monthly}`
+  scripts, each command read as the shell splits it. It reads `/etc/updatedb.conf`, or the file
+  `--config-file` names, as plocate and mlocate read it, with the options of each run's command
+  line on top as updatedb reads them (`--prunepaths` replaces the file's list, `--add-prunepaths`
+  adds to it, `--database-root` starts the scan elsewhere, a relative path resolved where updatedb
+  runs), a service's commands from its unit file and drop-ins as systemd reads them. It judges
+  the hidden root where its links lead and every other mount of its filesystem: updatedb skips it
+  for a `PRUNEPATHS` entry that is exactly a directory on the way to it, a `PRUNENAMES` entry that
+  names one, or a `PRUNEFS` entry that is the type of a filesystem mounted on the way. The check
+  passes naming the rule that skips the volume, and warns where it cannot tell (an
+  `/etc/updatedb.conf` it cannot read or that updatedb refuses, a command or option it does not
+  follow, findutils' updatedb, a unit directory, crontab or cron script it cannot read) and where
+  only a person starts an updatedb that does not skip it. The fix it prints names the directory
+  the volume is mounted in, never a mount point of the volume: on NixOS
+  `services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];`, or a plain list where the
+  configuration sets its own, which the check of the decoy's `/etc/nixos` does not refuse, and
+  elsewhere `PRUNEPATHS`, or masking the timer or service, or removing the cron job it found.
+  Fedora installs and enables plocate by default, and the default `PRUNEPATHS` of Debian 13,
+  Ubuntu 26.04, Fedora 44 and NixOS do not skip `/mnt`.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

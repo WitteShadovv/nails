@@ -65,6 +65,8 @@ mod coredump;
 mod loggers;
 mod sssd;
 mod sudo_logging;
+// The locate-database check reads the decoy's units the same way.
+pub(in crate::preflight::checks) use loggers::unit_active;
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
 /// `/proc/self/mountinfo`, the authoritative mount table.
