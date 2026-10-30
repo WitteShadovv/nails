@@ -183,6 +183,47 @@ fn moving_off_the_button_cancels_even_a_full_hold() {
 }
 
 #[test]
+fn another_buttons_release_ends_the_press_for_good() {
+    use slint::ComponentHandle;
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let screen = hidden();
+    let button = control(&screen);
+    let (at, size) = (button.absolute_position(), button.size());
+    let middle = screen.middle(&button);
+    let off = LogicalPosition::new(middle.x, 300.0);
+    let beside = LogicalPosition::new(at.x + size.width + 4.0, middle.y);
+    // Held, then the right button pressed and let go on it: the toolkit's
+    // hold on the pointer ends there, with no cancel for the left press.
+    screen.press_at(middle);
+    for event in [
+        WindowEvent::PointerPressed {
+            position: middle,
+            button: PointerEventButton::Right,
+        },
+        WindowEvent::PointerReleased {
+            position: middle,
+            button: PointerEventButton::Right,
+        },
+    ] {
+        screen.window.window().dispatch_event(event);
+    }
+    // The left button let go off it, where its release goes elsewhere.
+    screen.move_to(off);
+    screen.release_at(off);
+    assert_eq!(screen.emergencies(), 0);
+    // Long after, a press beside it let go on it is no hold of its own.
+    screen.wait_ms(1100);
+    screen.press_at(beside);
+    screen.move_to(middle);
+    screen.release_at(middle);
+    assert_eq!(screen.emergencies(), 0, "the old press was over");
+    assert_eq!(label(&screen), text::EMERGENCY);
+    // A hold of its own still ends the session.
+    hold(&screen, 1100, None);
+    assert_ended(&screen);
+}
+
+#[test]
 fn a_press_beside_it_let_go_on_it_does_nothing() {
     let screen = hidden();
     let button = control(&screen);
