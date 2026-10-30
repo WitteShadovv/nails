@@ -398,7 +398,7 @@ fn a_list_entry_could_not_read_is_left_alone() {
         ["IPv4 rules", "IPv6 rules", "firewall tables"]
     );
     // A missing tool is no failure: the way back cannot see what it left.
-    assert!(kept.failed().is_empty(), "{kept:?}");
+    assert!(!kept.failed(), "{kept:?}");
 }
 
 /// A part whose tool is there but cannot list it now is unverified, not left
@@ -417,10 +417,7 @@ fn a_list_that_cannot_be_read_on_the_way_back_is_unverified() {
 
     assert!(kept.unknown.is_empty(), "{kept:?}");
     assert_eq!(kept.unverified, ["IPv6 rules", "firewall tables"]);
-    assert_eq!(
-        kept.failed(),
-        ["IPv6 rules unverified", "firewall tables unverified"]
-    );
+    assert!(kept.failed());
 }
 
 #[test]

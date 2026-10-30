@@ -29,10 +29,10 @@
 # the change when its driver refuses it while the device is up, and sets the
 # hostname back. When a device's address still cannot be set back, the way back
 # powers off instead of returning (a device keeps its current MAC address when
-# the decoy's profile sets none), with one line on the console that says so;
-# a device plugged in during the session is a new link and keeps the random
-# address, and nothing tells you so. When the random address
-# must never reach the decoy, end a session that used this module with
+# the decoy's profile sets none), and nothing on the screen says why. A device
+# plugged in during the session is a new link and keeps the random address,
+# and nothing tells you so. When the random address must never reach the
+# decoy, end a session that used this module with
 # `nails deactivate --poweroff` (or `nails emergency --poweroff`).
 
 { config, lib, ... }:

@@ -258,36 +258,24 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// What the session left in the kernel that the way back set out to undo
-    /// and could not, or cannot tell it did, one phrase each: a device's
-    /// changed MAC address, a link, a policy-routing rule or a firewall table
-    /// still there, and each unverified part. A tool that is missing counts
-    /// here only through what it left that the way back can see without it
-    /// (a changed address, a link still there); a part it cannot see then
-    /// (rules without `ip`, tables without `nft`) is unknown and not in it,
-    /// as are the network settings and the hostname. Empty when all of it is
-    /// back. The transition powers off instead of returning when it is not:
-    /// that state lives only in the kernel, where a power-off erases it and a
-    /// return hands it to the decoy (a changed MAC address can reach a DHCP
-    /// lease on its disk).
-    pub fn failed(&self) -> Vec<String> {
-        let addresses = self
-            .addresses
-            .iter()
-            .map(|name| format!("the MAC address of {name}"));
-        let links = self.links.iter().map(|name| format!("link {name}"));
-        let rules = self.rules.iter().map(|rule| format!("rule {rule}"));
-        let tables = self.tables.iter().map(|table| format!("table {table}"));
-        let unverified = self
-            .unverified
-            .iter()
-            .map(|part| format!("{part} unverified"));
-        addresses
-            .chain(links)
-            .chain(rules)
-            .chain(tables)
-            .chain(unverified)
-            .collect()
+    /// Whether the session left something in the kernel that the way back set
+    /// out to undo and could not, or cannot tell it did: a device's changed
+    /// MAC address, a link, a policy-routing rule or a firewall table still
+    /// there, or an unverified part. A tool that is missing counts here only
+    /// through what it left that the way back can see without it (a changed
+    /// address, a link still there); a part it cannot see then (rules without
+    /// `ip`, tables without `nft`) is unknown and does not count, and neither
+    /// do the network settings, the hostname and the per-link runtime state.
+    /// The transition powers off instead of returning when it did: that state
+    /// lives only in the kernel, where a power-off erases it and a return
+    /// hands it to the decoy (a changed MAC address can reach a DHCP lease on
+    /// its disk).
+    pub fn failed(&self) -> bool {
+        !(self.addresses.is_empty()
+            && self.links.is_empty()
+            && self.rules.is_empty()
+            && self.tables.is_empty()
+            && self.unverified.is_empty())
     }
 }
 

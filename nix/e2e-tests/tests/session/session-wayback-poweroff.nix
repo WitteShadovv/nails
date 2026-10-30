@@ -11,15 +11,17 @@
 #   1. A session that makes a dummy link, which the way back deletes, returns
 #      to the decoy with `deactivate` as before, without the link: a way back
 #      that undoes everything never powers off.
-#   2. A session that loads `ipip`: `deactivate` powers the machine off, the
-#      console shows the one line that names `tunl0`, and the next cold boot
-#      is the plain decoy without it.
+#   2. A session that loads `ipip`: `deactivate` powers the machine off, with
+#      nothing on the console that says why, and the next cold boot is the
+#      plain decoy without it.
 #   3. The same with a plain `emergency`, which returns through the same way
-#      back: it powers off too.
+#      back: it powers off too, as quietly.
 #
-# The way back writes its line to `/dev/console`, the kernel's last `console=`.
-# The test VMs name the serial port first and the screen last, so the node
-# swaps them: the line then reaches the serial log the driver reads.
+# A line written to `/dev/console`, the kernel's last `console=`, shows on the
+# screen, where it would tell anyone watching that a hidden session had just
+# ended. The test VMs name the serial port first and the screen last, so the
+# node swaps them: `/dev/console` is then the serial log the driver reads, and
+# the test finds no line there that names the way back or the decoy.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -53,12 +55,8 @@ in
     ${testHelpers.canonicalDeactivateFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
-    #: The one console line of a way back that powers off over tunl0.
-    POWER_OFF_LINE = (
-        re.escape("The way back could not undo the session's network changes (")
-        + r"[^)]*link tunl0[^)]*"
-        + re.escape("): powering off instead of returning to the decoy")
-    )
+    #: What a line that says why the machine powers off would name.
+    WHY = re.compile(r"way back|decoy", re.IGNORECASE)
 
 
     def assert_cold_decoy(where):
@@ -88,6 +86,13 @@ in
         )
 
 
+    def assert_nothing_says_why(since):
+        """No console line since index `since` of the console log says why the
+        machine powered off."""
+        why = [line for line in machine.full_console_log[since:] if WHY.search(line)]
+        assert not why, f"the console says why the machine powered off: {why}"
+
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.fail("test -e /sys/class/net/tunl0")
@@ -103,22 +108,18 @@ in
 
     with subtest("deactivate powers off when the way back cannot delete a link"):
         enter_with_tunl0("activate-deactivate")
+        since = len(machine.full_console_log)
         leave_detached(f"nails --config {CONFIG} deactivate -y")
-        # The way back writes this line straight to /dev/console, not through journald,
-        # and the machine powers off right after, so no file under /run is left to wait on.
-        # sync-lint: allow console-wait -- a direct /dev/console write, see above
-        machine.wait_for_console_text(POWER_OFF_LINE, timeout=300)
         session.wait_for_power_off(machine, 300)
+        assert_nothing_says_why(since)
         assert_cold_decoy("after deactivate")
 
     with subtest("a plain emergency powers off when the way back cannot delete a link"):
         enter_with_tunl0("activate-emergency")
+        since = len(machine.full_console_log)
         leave_detached(f"nails --config {CONFIG} emergency")
-        # The way back writes this line straight to /dev/console, not through journald,
-        # and the machine powers off right after, so no file under /run is left to wait on.
-        # sync-lint: allow console-wait -- a direct /dev/console write, see above
-        machine.wait_for_console_text(POWER_OFF_LINE, timeout=300)
         session.wait_for_power_off(machine, 300)
+        assert_nothing_says_why(since)
         assert_cold_decoy("after emergency")
   '';
 }
