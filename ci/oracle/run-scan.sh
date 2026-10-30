@@ -42,12 +42,17 @@
 # the restore channel is carved per detected filesystem (btrfs restore for the
 # synthetic btrfs images, debugfs rdump for the ext4 decoy roots). A raw is a
 # bare filesystem image, or a whole-disk image with exactly one btrfs or
-# ext{2,3,4} partition. The bulk_extractor and plaso channels take the image
-# itself and run the same either way, but plaso has to open its file system:
-# it cannot open btrfs, so a btrfs image runs no timeline (above), and
-# log2timeline, run unattended without --partitions, stops on a whole-disk
-# image with more than one partition of any kind, which fails the plaso
-# channel (see ci/oracle/README.md).
+# ext{2,3,4} partition, the root. The other partitions of a whole disk are
+# carved too: a vfat partition (an EFI system partition) through a read-only
+# mount of a read-only loop device, and a small partition holding no
+# filesystem (a BIOS boot partition) as one file holding its bytes. A
+# partition with any other filesystem stops the run, since its files would go
+# uncompared (ci/oracle/partitions.sh). The bulk_extractor and plaso channels
+# take the image itself and run the same either way, but plaso has to open its
+# file system: it cannot open btrfs, so a btrfs image runs no timeline
+# (above), and log2timeline, run unattended without --partitions, stops on a
+# whole-disk image with more than one partition of any kind, which fails the
+# plaso channel (see ci/oracle/README.md).
 #
 #   sudo run-scan.sh <workdir>
 #   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
@@ -108,7 +113,7 @@ if [ -n "$images_src" ]; then
     [ -f "$images_src/$label.raw" ] \
       || { echo "run-scan: ORACLE_IMAGES_DIR set but $label.raw is missing in $images_src" >&2; exit 2; }
   done
-  for t in blkid debugfs mmls losetup dd cmp; do
+  for t in blkid debugfs mmls losetup dd cmp mount umount; do
     command -v "$t" >/dev/null \
       || { echo "run-scan: missing required tool for pre-built images: $t" >&2; exit 1; }
   done
@@ -215,62 +220,10 @@ plaso_label() {
 # file, a directory or a symlink). btrfs and ext4 land the same shape there;
 # only the carving tool differs.
 
-# partition_slots <image>: one "<byte-offset> <byte-size>" line per partition
-# of any kind in the partition table of a whole-disk image, and nothing for an
-# image with no partition table. mmls lists the partitions in the units it
-# names, each in a numbered slot, which its meta entries and unallocated gaps
-# lack. mawk-safe: %.0f, not %d, for byte counts past 2^31.
-partition_slots() {
-  local table
-  table=$(mmls "$1" 2>/dev/null) || return 0
-  awk '
-    BEGIN { unit = 512 }
-    /^Units are in [0-9]+-byte sectors/ { unit = $4 + 0 }
-    $1 ~ /^[0-9]+:$/ && $2 ~ /^[0-9]+(:[0-9]+)?$/ {
-      printf "%.0f %.0f\n", ($3 + 0) * unit, ($5 + 0) * unit
-    }' <<<"$table"
-}
-
-# fs_partitions <image>: one "<fstype> <byte-offset> <byte-size>" line per
-# partition of a whole-disk image that holds a filesystem blkid recognises, and
-# nothing for an image with no partition table. mmls's descriptions are only
-# the GPT partition names or the MBR type, so blkid probes each partition's own
-# superblock for the type (it honours -O and -S only in its low-level mode, -p).
-fs_partitions() {
-  local img=$1 start size t
-  while read -r start size; do
-    t=$(blkid -p -o value -s TYPE -O "$start" -S "$size" "$img" 2>/dev/null || true)
-    if [ -n "$t" ]; then printf '%s %s %s\n' "$t" "$start" "$size"; fi
-  done < <(partition_slots "$img")
-}
-
-# detect_fs <image>: print "<fstype> <byte-offset> <byte-size>" for the
-# filesystem to carve, or fail with the reason. A bare filesystem image is
-# carved whole (offset 0, size 0 for the whole image). A whole-disk image must
-# hold exactly one btrfs or ext{2,3,4} partition: with none there is nothing
-# this scan can carve, and with several (a separate /boot or /home) the root
-# cannot be told apart safely, so the caller scans the root filesystem's own
-# image instead.
-detect_fs() {
-  local img=$1 t parts carvable found
-  t=$(blkid -o value -s TYPE "$img" 2>/dev/null || true)
-  if [ -n "$t" ]; then
-    printf '%s 0 0\n' "$t"
-    return 0
-  fi
-  parts=$(fs_partitions "$img")
-  carvable=$(awk '$1 ~ /^(btrfs|ext[234])$/' <<<"$parts")
-  found=$(awk 'NF { printf "%s%s at byte %s", (n++ ? ", " : ""), $1, $2 }' <<<"$parts")
-  if [ -z "$carvable" ]; then
-    echo "run-scan: $img holds no btrfs or ext{2,3,4} filesystem, bare or in a partition (${found:-no filesystem or partition table recognised}); failing closed. Add a carver for its filesystem (see ci/oracle/README.md) or scan a btrfs or ext{2,3,4} image." >&2
-    return 1
-  fi
-  if [ "$(wc -l <<<"$carvable")" -ne 1 ]; then
-    echo "run-scan: $img has more than one btrfs or ext{2,3,4} partition ($found), and a /boot or /home cannot be told apart from the root safely; failing closed. Scan the root filesystem's own image instead (for example cut out of the disk with dd)." >&2
-    return 1
-  fi
-  printf '%s\n' "$carvable"
-}
+# partition_slots, fs_partitions, detect_fs and partition_plan: what the
+# partitions of a whole-disk image hold, and which of them is the root.
+# shellcheck source=ci/oracle/partitions.sh
+. "$here/partitions.sh"
 
 # The read-only loop device a btrfs partition is carved through, detached by
 # the EXIT trap if the carve stops the run.
@@ -326,6 +279,59 @@ carve_restore() {
       exit 1
       ;;
   esac
+}
+
+# The read-only loop device and the mount point a vfat partition is carved
+# through, undone by the EXIT trap if the carve stops the run.
+vfat_loop=""
+vfat_mnt=""
+
+# carve_vfat <image> <byte-offset> <byte-size> <dest>: copy every directory and
+# file of the vfat filesystem at <byte-offset> into the new <dest>. No carver
+# here reads vfat offline, so it is mounted read-only from a read-only loop
+# device, through which the kernel cannot write to the image. vfat keeps no
+# owner, mode or link of its own, so the copy holds what the restore channel
+# compares: the names, the directories and what each file holds.
+carve_vfat() {
+  local img=$1 off=$2 size=$3 dest=$4
+  vfat_loop=$(losetup -r -o "$off" --sizelimit "$size" --show -f "$img")
+  vfat_mnt=$(mktemp -d)
+  mount -t vfat -o ro,nosuid,nodev,noexec,utf8 "$vfat_loop" "$vfat_mnt"
+  mkdir "$dest"
+  cp -a "$vfat_mnt/." "$dest/"
+  umount "$vfat_mnt"
+  rmdir "$vfat_mnt"
+  vfat_mnt=""
+  losetup -d "$vfat_loop"
+  vfat_loop=""
+}
+
+# carve_other_partitions <image> <dest> <root-offset>: carve every partition of
+# a whole-disk image but the root at <root-offset> into <dest> as well, each at
+# a top-level name of its own from its place n in the partition table
+# (partition_plan): a vfat partition into the directory partition-<n>-vfat,
+# and a partition holding no filesystem into the file partition-<n>, which
+# holds its bytes. So the restore channel compares every partition, and a
+# partition no carver reads stops the run (partition_plan says why), as does a
+# root that already holds the name a partition would take.
+carve_other_partitions() {
+  local img=$1 dest=$2 root_off=$3 plan n start size kind name
+  plan=$(partition_plan "$img" "$root_off") || exit 1
+  while read -r n start size kind; do
+    [ -n "$n" ] || continue
+    if [ "$kind" = vfat ]; then name="partition-$n-vfat"; else name="partition-$n"; fi
+    if [ -e "$dest/$name" ] || [ -L "$dest/$name" ]; then
+      echo "run-scan: the root filesystem of $img holds /$name, where partition $n would be carved; failing closed" >&2
+      exit 1
+    fi
+    case "$kind" in
+      vfat) carve_vfat "$img" "$start" "$size" "$dest/$name" ;;
+      raw)
+        dd if="$img" of="$dest/$name" iflag=skip_bytes,count_bytes \
+          skip="$start" count="$size" bs=1M status=none
+        ;;
+    esac
+  done <<<"$plan"
 }
 
 # --- The Nix store database's rows. -----------------------------------------
@@ -391,11 +397,16 @@ dump_nix_db() {
 # mounted. Only bulk_extractor reads free space, so only it sees the
 # sentinels; the restore carve and plaso read the copy as they would read
 # after.raw. before.raw, control.raw and the retained after.raw are never
-# touched. The EXIT trap detaches a carve's loop device; no global
-# `losetup -D` is ever run.
+# touched. The EXIT trap detaches a carve's loop device and unmounts a vfat
+# carve; no global `losetup -D` is ever run.
 # shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below
 cleanup() {
   if [ -n "$carve_loop" ]; then losetup -d "$carve_loop" 2>/dev/null || true; fi
+  if [ -n "$vfat_mnt" ]; then
+    umount "$vfat_mnt" 2>/dev/null || true
+    rmdir "$vfat_mnt" 2>/dev/null || true
+  fi
+  if [ -n "$vfat_loop" ]; then losetup -d "$vfat_loop" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 
@@ -505,6 +516,8 @@ for label in "${LABELS[@]}"; do
   rm -rf "$dest" "$dest.sha256"
   mkdir -p "$dest"
   carve_restore "$img" "$dest" "$fstype" "$off" "$size"
+  # A root in a partition: the disk's other partitions are carved too.
+  if [ "$off" -gt 0 ]; then carve_other_partitions "$img" "$dest" "$off"; fi
   # A carver's exit status does not prove it read the tree, so check the carve
   # itself: every image carries the canary's file.
   if [ ! -f "$dest$canary_file" ]; then

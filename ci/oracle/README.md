@@ -155,9 +155,30 @@ local run without docker can read what the other channels found.
 `run-scan.sh` carves the file tree with `btrfs restore` for btrfs (snapshots and
 symlinks included) and `debugfs rdump` for ext{2,3,4}. An image is a bare
 filesystem, or a whole-disk image with exactly one btrfs or ext{2,3,4}
-partition (plaso also needs it to be the only partition: see below). A disk
-with several (a separate `/boot` or `/home`) fails the run, because the root
-cannot be told apart safely: scan the root filesystem's own image instead.
+partition, the root. A disk with several (a separate `/boot` or `/home`) fails
+the run, because the root cannot be told apart safely: scan the root
+filesystem's own image instead.
+
+The other partitions of a whole-disk image are carved as well, so that the
+restore channel compares every partition. Each goes to a top-level name of
+its own, from its place n in the partition table
+(`ci/oracle/partitions.sh`):
+
+- a vfat partition, an EFI system partition, into `/partition-<n>-vfat/`. No
+  carver here reads vfat offline, so it is mounted read-only from a read-only
+  loop device, through which the kernel cannot write to the image, and its
+  directories and files are copied;
+- a partition holding no filesystem blkid recognises, a BIOS boot partition,
+  into the one file `/partition-<n>`, which holds its bytes, so the partition
+  is compared whole. One larger than 64 MiB stops the run.
+
+A partition holding any other filesystem, one blkid cannot tell (two
+signatures, say), and a root that already holds the name a partition would
+take each stop the run, since that partition's files would go uncompared
+while the verdict passes. plaso also needs the root to be the only partition
+(see below), so on ext{2,3,4} a disk with more partitions fails the plaso
+channel. What lies outside the partitions, the partition table and space no
+partition covers, only bulk_extractor reads.
 
 A carve must report no error and must hold the canary's file
 (`/var/lib/nails-oracle/canary.txt` on the synthetic images,
@@ -239,8 +260,10 @@ copy of the paused disk, and a reset boots it again.
 
 Fedora is not admitted yet, so the driver runs a test-only build of the
 release binary in which only the Fedora row of the family table is admitted.
-That build is never released. The images say what a session leaves on a
-Fedora 44 Cloud decoy, not that NAILS supports Fedora.
+That build is never released. The verdict on the images says what the
+oracle's channels see of a session on a Fedora 44 Cloud decoy, with what they
+do not see listed under [What it does not see](#what-it-does-not-see), not
+that NAILS supports Fedora.
 
 Before the first image the driver makes the decoy's journal volatile and masks
 auditd (the posture NAILS requires), creates `/mnt/data` and writes the
@@ -259,8 +282,12 @@ images stores `/var/log/wtmp`: its size and which of its bytes btrfs keeps
 inline, compressed or plain (`btrfs-file-extents.sh`, which reads the image
 through a read-only loop device mounted read-only).
 
-Two things read differently from the ext4 images:
+Three things read differently from the ext4 images:
 
+- The disk holds three partitions, and the restore channel compares each (see
+  [Carving the restore channel](#carving-the-restore-channel)): the BIOS boot
+  partition whole as `/partition-1`, the EFI system partition's files under
+  `/partition-2-vfat`, and the btrfs root at `/`.
 - `btrfs restore` recovers the top level of the filesystem, so a file is keyed
   by its path there: the root subvolume's `/etc/fstab` reads as
   `/root/etc/fstab`, while `/var` and `/home`, subvolumes of the same name at

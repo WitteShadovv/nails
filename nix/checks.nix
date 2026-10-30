@@ -167,9 +167,11 @@ in
   # planner's tests scan (default.nix, the tests tree and the checked-in
   # weights) and the helper library and batched scenarios the E2E
   # synchronisation lint scans. git is a tool because changes.py shells out to
-  # it and its tests build throwaway repositories, and e2fsprogs and btrfs-progs
+  # it and its tests build throwaway repositories, e2fsprogs and btrfs-progs
   # because the oracle's free-space planting is tested on ext4 and btrfs images
-  # it makes and checks.
+  # it makes and checks, and util-linux, sleuthkit and dosfstools because the
+  # oracle's choice of how to compare each partition of a disk is tested on GPT
+  # disk images it builds.
   ci-python = lint "ci-python" {
     files = fs.unions [
       ../ci
@@ -194,6 +196,9 @@ in
       pkgs.git
       pkgs.e2fsprogs
       pkgs.btrfs-progs
+      pkgs.util-linux
+      pkgs.sleuthkit
+      pkgs.dosfstools
     ];
     script = ''
       # ruff and mypy write their caches under HOME; the copied source is the
