@@ -17,7 +17,7 @@ pub const NOT_VISIBLE: &[&str] = &[
     "blocks discarded with TRIM: they read back as zeros here even where the flash still holds them",
     "disks and partitions not mounted while the scan runs (a second disk, an unused swap partition) unless named with --device",
     "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, an f2fs made with compression): this raw plaintext scan cannot match it, so such storage is reported not checked. A mounted device is judged by its mount, an image or an unmounted --device by its superblock (a whole disk partition by partition), and an encrypted container, or storage on which the scan identifies no filesystem, is reported not checked too",
-    "a canary stored encrypted or compressed file by file (in an eCryptfs folder, an encrypted directory of an ext4 or f2fs, a compressed NTFS folder, or a vault a FUSE tool such as gocryptfs, CryFS or EncFS encrypts): this raw plaintext scan cannot match it either. A device that holds the folder of an eCryptfs mount (a whole disk too), an ext4 or f2fs with the encrypt feature, and an NTFS (or any fuseblk mount) are reported not checked, but these escape it: an eCryptfs folder not mounted during the scan, one whose mount or filesystem was moved or detached after it was mounted (mount --move, umount -l), every eCryptfs folder in an --offline scan, which reads no mount table, and a FUSE tool's vault",
+    "a canary stored encrypted or compressed file by file (in an eCryptfs folder, an encrypted directory of an ext4 or f2fs, a compressed NTFS folder, or a vault a FUSE tool such as gocryptfs, CryFS or EncFS encrypts): this raw plaintext scan cannot match it either. A device that holds the folder of an eCryptfs mount (a whole disk too), an ext4 or f2fs with the encrypt feature, and an NTFS (or any fuseblk mount) are reported not checked, but these escape it: an eCryptfs folder not mounted during the scan, one whose mount or filesystem was moved or detached after it was mounted (mount --move, umount -l), every eCryptfs folder in an --offline scan, which reads no mount table, a device a program serves from a folder's storage (an NBD or ublk device), one that reaches a folder's image file by another path (a hard link, another mount of its filesystem), and a FUSE tool's vault",
     "anything outside the decrypted mapping: the encryption header area and other partitions of the same disk",
     "firmware storage (EFI variables, pstore) and RAM",
 ];
@@ -135,8 +135,8 @@ impl ScanTarget {
     /// identified from its raw superblock and partition table instead. Mounted
     /// or not, a device that holds the folder of an eCryptfs mount some other
     /// way (a whole disk with that filesystem in a partition, a device below
-    /// it), which `fs` reads from sysfs, is a blind spot too, and so is one of
-    /// which the scan cannot tell whether it does.
+    /// or above it), which `fs` reads from sysfs, is a blind spot too, and so
+    /// is one of which the scan cannot tell whether it does.
     pub fn classified<F: Filesystem>(fs: &F, device: PathBuf, mounts: &[MountEntry]) -> Self {
         let canonical = device
             .canonicalize()
