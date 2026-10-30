@@ -28,7 +28,8 @@
 #   - the entry's own command, run as the desktop runs it on an X server of
 #     the test's, opens the window, which starts the helper through pkexec:
 #     the helper runs as root, the window's child, and keeps its session
-#     with the window until the window closes;
+#     with the window until the window closes; the window's command line,
+#     once it started itself again, names no path;
 #   - both files lie on the hidden volume, and the decoy root, mounted
 #     read-only beside the session, has neither;
 #   - the helper plans a deactivation with its token for each ending;
@@ -113,6 +114,7 @@ in
     };
 
   testScript = _: ''
+    import base64
     import json
     import shlex
 
@@ -330,6 +332,10 @@ in
         assert field(helper, "Uid") == "0", "the helper does not run as root"
         assert field(helper, "NoNewPrivs") == "0", "pkexec ran under no_new_privs"
         assert field(window, "NoNewPrivs") == "1", "the window did not limit itself"
+        # Started again by its name alone, with the engine on its standard
+        # input: a log that quotes its command line names no place.
+        cmdline = base64.b64decode(machine.succeed(f"base64 -w0 /proc/{window}/cmdline"))
+        assert cmdline == b"session\x00--engine\x00-\x00", cmdline
         # The window took the helper's hello and keeps the session: a window
         # that refused it, or could not open, would have closed its end of
         # the pair, and the helper would have ended with it.

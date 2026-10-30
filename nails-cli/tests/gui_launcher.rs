@@ -7,7 +7,8 @@
 //!
 //! Each test lays out a bundle the way a hidden volume holds one: the engine
 //! (a link to the binary under test) and, beside it, `gui/bin/session`,
-//! here a shell script that plays the window and records what it got. The
+//! here a shell script that plays the window and records what it got (or a
+//! link to the shell itself, whose command line is the one it was given). The
 //! launcher runs without root (the test build does not enforce the root gate)
 //! as the operator itself, so the drop is to the account it already has; its
 //! checks still run. The operator's runtime directory is a private directory
@@ -72,6 +73,17 @@ impl Bundle {
         std::fs::create_dir(&runtime).unwrap();
         std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
         Self { dir, runtime_base }
+    }
+
+    /// A bundle whose window is the shell itself, reading the pair as its
+    /// script: a program of its own, not a script, so its command line is
+    /// the one the launcher gave it.
+    fn with_shell_window() -> Self {
+        let bundle = Self::new(None);
+        let bin = bundle.dir.path().join("gui/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", bin.join("session")).unwrap();
+        bundle
     }
 
     fn engine(&self) -> PathBuf {
@@ -495,4 +507,28 @@ fn the_window_never_runs_as_root_and_needs_its_program() {
     let (exit, envelope) = bundle.launch(&[("NAILS_TEST_ADMIT_WINDOW", "1")]);
     assert_eq!(exit, 1, "{envelope}");
     assert_eq!(envelope["error"]["code"], "window_missing");
+}
+
+#[test]
+fn the_window_starts_by_its_name_alone() {
+    let bundle = Bundle::with_shell_window();
+    let (exit, envelope) = bundle.launch(&[("NAILS_TEST_ADMIT_WINDOW", "1")]);
+    assert_eq!(exit, 0, "{envelope}");
+    let started = Started::from(&bundle, &envelope);
+    let (helper, window) = (started.helper, started.window);
+    // The window's whole command line is its name: no path for a log that
+    // quotes it, dbus-daemon's at an activation the window starts, say.
+    let cmdline = std::fs::read(format!("/proc/{window}/cmdline"));
+    let comm = std::fs::read_to_string(format!("/proc/{window}/comm"));
+    // The shell reads the pair for commands until it ends: end it here,
+    // after the reads, so a failed assertion leaves nothing behind.
+    if comm.is_ok_and(|comm| comm.trim_end() == "session") {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(window).unwrap()),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+    assert_eq!(cmdline.unwrap(), b"session\0", "the window's command line");
+    // Its end closed with it: the helper ends too.
+    wait_until_ended(helper);
 }
