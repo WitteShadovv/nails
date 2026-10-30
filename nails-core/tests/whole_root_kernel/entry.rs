@@ -18,7 +18,7 @@ use nails_teardown::whole_root::plan::{
     UTAB_MOUNTS_NAME, unix_now,
 };
 use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
-use nails_teardown::whole_root::{carry, nextroot, runtime_units};
+use nails_teardown::whole_root::{carry, fresh_pids, nextroot, runtime_units};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +33,8 @@ struct FakeHost {
     cancel_at_reload: bool,
     /// The files that stand for the kernel's helper paths.
     helpers: Vec<PathBuf>,
+    /// The decoy's process numbers, as the entry reads them.
+    pids: fresh_pids::Record,
 }
 
 impl EntryHost for FakeHost {
@@ -75,6 +77,9 @@ impl EntryHost for FakeHost {
     fn kernel_settings(&self) -> Vec<KernelSetting> {
         let paths: Vec<&str> = self.helpers.iter().filter_map(|p| p.to_str()).collect();
         kernel_helpers::read(&paths)
+    }
+    fn pid_record(&self) -> fresh_pids::Record {
+        self.pids.clone()
     }
 }
 
@@ -768,6 +773,57 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         );
         assert!(Plan::load(&paths.plan()).unwrap().entered_at.is_some());
         assert_utab(&world, &carried);
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter() {
+    // The way back numbers the decoy's units by what the entry read in the
+    // decoy before anything ran and by the counter the switch handed over.
+    let _ = Rerun::new(test_path!(
+        the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let paths = world.paths();
+        let host = FakeHost {
+            pids: fresh_pids::Record {
+                floor: Some(388),
+                anchors: vec![fresh_pids::Anchor {
+                    comm: "agetty".to_string(),
+                    tty: 0x0401,
+                    pid: 600,
+                }],
+                ..fresh_pids::Record::default()
+            },
+            ..FakeHost::default()
+        };
+        let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
+        assert_eq!(entry.plan.pids, host.pids);
+        assert_eq!(Plan::load(&paths.plan()).unwrap().pids, host.pids);
+
+        let counter = tempfile::tempdir().unwrap();
+        nails_teardown::test_support::stage_pid_counter(counter.path());
+        let env = Env {
+            run: paths.run.clone(),
+            nextroot: paths.nextroot(),
+            runtime_dir: paths.runtime(),
+            kmsg: paths.run.join("no-kmsg"),
+            systemctl: None,
+            pid_places: Some(fresh_pids::Places::under(counter.path())),
+            now: unix_now(),
+            mounts: read_mountinfo().unwrap(),
+        };
+        assert_eq!(transition::run(&env), Outcome::Entered);
+        assert_eq!(
+            Plan::load(&paths.plan()).unwrap().pids,
+            fresh_pids::Record {
+                at_switch: Some(1625),
+                ..host.pids.clone()
+            }
+        );
         entry::rollback(&paths);
     });
 }
