@@ -21,7 +21,7 @@
 # screen, where it would tell anyone watching that a hidden session had just
 # ended. The test VMs name the serial port first and the screen last, so the
 # node swaps them: `/dev/console` is then the serial log the driver reads, and
-# the test finds no line there that names the way back or the decoy.
+# the test finds no line there that says why the machine powered off.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -55,8 +55,11 @@ in
     ${testHelpers.canonicalDeactivateFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
-    #: What a line that says why the machine powers off would name.
-    WHY = re.compile(r"way back|decoy", re.IGNORECASE)
+    #: What a line that says why the machine powers off would say: the way
+    #: back's own name, or that it powers off instead of returning. The word
+    #: "decoy" cannot be looked for: PID 1's own lines name the mount points
+    #: below /mnt/data/root/decoy as it unmounts them at every switch.
+    WHY = re.compile(r"way back|powering off instead", re.IGNORECASE)
 
 
     def assert_cold_decoy(where):
