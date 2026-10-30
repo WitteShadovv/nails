@@ -19,7 +19,7 @@
 //!    base directory;
 //! 4. start both ends of one socket pair ([`spawn`]): `<root>/nails helper
 //!    --stdio`, still root, on one end, and the window's program
-//!    (`<root>/gui/bin/nails-gui`) on the other, dropped to the operator with
+//!    (`<root>/gui/bin/session`) on the other, dropped to the operator with
 //!    the environment of [`window_env`] and nothing else.
 //!
 //! Both start a session of their own, so the terminal the line was typed in
@@ -50,7 +50,9 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 pub(crate) const COMMAND: &str = "gui";
 
 /// Where the window's program lies, relative to the directory of the engine.
-const WINDOW_PROGRAM: &str = "gui/bin/nails-gui";
+/// Its file name is the window's neutral app id, which a process list and an
+/// accessibility tool show.
+const WINDOW_PROGRAM: &str = "gui/bin/session";
 
 /// Why the window did not open: the exit status and the error to report.
 #[derive(Debug)]

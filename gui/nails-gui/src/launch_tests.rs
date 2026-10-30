@@ -16,7 +16,7 @@ const HIDDEN: &str = "\
 ";
 
 fn program(root: &str) -> PathBuf {
-    Path::new(root).join("gui/bin/nails-gui")
+    Path::new(root).join("gui/bin/session")
 }
 
 #[test]
@@ -31,10 +31,10 @@ fn the_install_root_is_two_levels_above_the_gui_directory() {
         Some(PathBuf::from("/mnt/data"))
     );
     for elsewhere in [
-        "/usr/bin/nails-gui",
-        "/nails-gui",
-        "/target/debug/nails-gui",
-        "nails-gui",
+        "/usr/bin/session",
+        "/session",
+        "/target/debug/session",
+        "session",
     ] {
         assert_eq!(install_root(Path::new(elsewhere)), None, "{elsewhere}");
     }
@@ -135,12 +135,7 @@ fn the_menu_entrys_engine_gets_pkexec_only_in_a_hidden_session_of_its_volume() {
     }
     // Where the window lies does not matter, the engine's volume does.
     assert!(matches!(
-        decide(
-            engine(),
-            None,
-            Path::new("/usr/bin/nails-gui"),
-            Some(HIDDEN)
-        ),
+        decide(engine(), None, Path::new("/usr/bin/session"), Some(HIDDEN)),
         Start::Pkexec { .. }
     ));
     for (engine, mountinfo) in [

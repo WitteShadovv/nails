@@ -23,12 +23,14 @@
 //! - [`envelope`] reads the envelopes the window shows; [`model`] turns them
 //!   into the page the window draws, with the words of [`text`]; [`ui`]
 //!   draws the page in the Slint window and wires its controls.
+//! - [`process`] is what the window's own process shows to whoever lists it.
 
 pub mod client;
 pub mod envelope;
 pub mod frames;
 pub mod launch;
 pub mod model;
+pub mod process;
 pub mod text;
 pub mod ui;
 pub mod worker;

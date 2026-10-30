@@ -20,7 +20,7 @@
 //!   opens nothing: no display, no session bus, no pkexec. It names the
 //!   launcher's line on its standard error and exits.
 //!
-//! The launcher starts the window from `<root>/gui/bin/nails-gui`, beside the
+//! The launcher starts the window from `<root>/gui/bin/session`, beside the
 //! engine at `<root>/nails`, so that is the engine a page names when the
 //! window was not told one.
 
