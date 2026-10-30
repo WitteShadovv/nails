@@ -55,6 +55,11 @@ pub struct ActivateOptions {
     /// `--allow-discards` expert flag): the backend-detect check then warns
     /// instead of refusing.
     pub allow_discards: bool,
+    /// The window's launcher, which the entry writes into the hidden root: its
+    /// menu entry and the polkit action of its helper. Only a build with the
+    /// window sets it, and only when the window's program lies beside the
+    /// engine.
+    pub window_launcher: Option<crate::session::WindowLauncher>,
 }
 
 impl ActivateOptions {
@@ -67,6 +72,7 @@ impl ActivateOptions {
             binary: std::env::current_exe().unwrap_or_default(),
             allow_decoy_storage: self.allow_decoy_storage,
             allow_discards: self.allow_discards,
+            window_launcher: self.window_launcher.clone(),
         }
     }
 }
@@ -389,11 +395,16 @@ mod tests {
     fn enter_options_carries_every_activate_flag_through() {
         // Each CLI flag must map to its entry option; the stubbed
         // `Default::default()` would drop all four to false.
+        let launcher = crate::session::WindowLauncher {
+            engine: std::path::PathBuf::from("/mnt/data/nails"),
+            window: std::path::PathBuf::from("/mnt/data/gui/bin/session"),
+        };
         let options = ActivateOptions {
             overlay_only: true,
             allow_persistent_decoy: true,
             allow_decoy_storage: true,
             allow_discards: true,
+            window_launcher: Some(launcher.clone()),
         };
         let entry = options.enter_options();
         assert!(entry.overlay_only, "overlay_only -> overlay_only");
@@ -406,6 +417,11 @@ mod tests {
             "allow_decoy_storage -> allow_decoy_storage"
         );
         assert!(entry.allow_discards, "allow_discards -> allow_discards");
+        assert_eq!(
+            entry.window_launcher,
+            Some(launcher),
+            "window_launcher -> window_launcher"
+        );
     }
 
     #[test]
@@ -418,6 +434,7 @@ mod tests {
         assert!(!entry.allow_persistent_decoy);
         assert!(!entry.allow_decoy_storage);
         assert!(!entry.allow_discards);
+        assert_eq!(entry.window_launcher, None);
     }
 
     #[test]

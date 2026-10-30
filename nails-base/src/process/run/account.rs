@@ -16,7 +16,14 @@
 //! has no controlling terminal: a root shell's terminal is out of reach of a
 //! process the operator's account can trace. And it sets `no_new_privs`, so
 //! nothing it executes can gain privileges again (a setuid program included).
-//! The new session is also the process group a deadline kills.
+//! The new session is also the process group a deadline kills. Every
+//! descriptor above the standard three is closed at the `exec`, so nothing
+//! root opened and left inheritable reaches the account.
+//!
+//! [`leave_session_before_exec`] is the same session and descriptor step
+//! without a drop, for a child that stays root but must outlive the terminal
+//! it was started from and hold nothing it did not open itself (a lock its
+//! caller's caller took, say, which a long-lived child would otherwise keep).
 
 use std::io;
 
@@ -32,16 +39,61 @@ pub struct Account {
 
 /// Arrange for `child` to drop to `account` after the fork and before `exec`.
 #[allow(unsafe_code)]
-pub(super) fn drop_before_exec(child: &mut std::process::Command, account: Account) {
+pub fn drop_before_exec(child: &mut std::process::Command, account: Account) {
     use std::os::unix::process::CommandExt;
     // SAFETY: the hook runs in the forked child before exec. It makes only the
     // getuid(2), geteuid(2), getgid(2), getegid(2), setgroups(2), setgid(2),
-    // setuid(2), setsid(2) and prctl(2) system calls on integers copied into
-    // the closure: no allocation, no lock, nothing that is not
-    // async-signal-safe.
+    // setuid(2), setsid(2), prctl(2) and close_range(2) system calls on
+    // integers copied into the closure: no allocation, no lock, nothing that
+    // is not async-signal-safe.
     unsafe {
         child.pre_exec(move || drop_to(account));
     }
+}
+
+/// Arrange for `child` to start a session of its own after the fork and before
+/// `exec`, keeping its account, and to inherit no descriptor above the
+/// standard three.
+///
+/// A session leader has no controlling terminal, and it is in no process group
+/// the terminal or the shell it was started from can signal: when that terminal
+/// closes, or the shell is killed, the hangup and the group's signals never
+/// reach it.
+#[allow(unsafe_code)]
+pub fn leave_session_before_exec(child: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the hook runs in the forked child before exec and makes only the
+    // setsid(2) and close_range(2) system calls on constants: no allocation,
+    // no lock, nothing that is not async-signal-safe.
+    unsafe {
+        child.pre_exec(|| {
+            if nix::libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            seal_descriptors()
+        });
+    }
+}
+
+/// Mark every descriptor above 2 close-on-exec (`close_range(2)`, Linux
+/// 5.11). They are marked rather than closed so the pipe the standard library
+/// reports a failed `exec` on still works. Called only between fork and exec.
+#[allow(unsafe_code)]
+fn seal_descriptors() -> io::Result<()> {
+    use nix::libc;
+    // SAFETY: one system call on constants (see the callers).
+    let sealed = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            3,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        )
+    };
+    if sealed != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Drop the calling process to `account`.
@@ -52,8 +104,9 @@ pub(super) fn drop_before_exec(child: &mut std::process::Command, account: Accou
 /// root back afterwards. An unprivileged process cannot change its account, so
 /// it can only already be `account`. Either way the result is checked, and a
 /// process that is not `account` afterwards fails with `EPERM`. Then the
-/// process starts a session of its own and sets `no_new_privs`; a failure of
-/// either fails the start too.
+/// process starts a session of its own, sets `no_new_privs` and marks every
+/// descriptor above 2 close-on-exec ([`seal_descriptors`]); a failure of any
+/// of them fails the start too.
 #[allow(unsafe_code)]
 fn drop_to(account: Account) -> io::Result<()> {
     use nix::libc;
@@ -77,7 +130,7 @@ fn drop_to(account: Account) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
     }
-    Ok(())
+    seal_descriptors()
 }
 
 #[cfg(test)]
@@ -164,6 +217,64 @@ mod tests {
                 .map(|line| line.split_whitespace().collect::<Vec<_>>()),
             Some(vec!["NoNewPrivs:", "1"]),
             "{stdout}"
+        );
+    }
+
+    /// A descriptor the caller left inheritable never reaches the account.
+    #[test]
+    fn the_child_inherits_no_descriptor_above_the_standard_three() {
+        use std::os::fd::AsRawFd;
+        let file = std::fs::File::open("/dev/null").unwrap();
+        // dup(2) leaves the copy inheritable (no close-on-exec).
+        let inheritable = nix::unistd::dup(&file).unwrap();
+        let fd = inheritable.as_raw_fd();
+        let (ok, stdout, stderr) = RealProcessRunner
+            .run_text(&shell_as(
+                &format!("if [ -e /proc/self/fd/{fd} ]; then echo open; else echo closed; fi"),
+                this_account(),
+            ))
+            .unwrap();
+        assert!(ok, "{stderr}");
+        assert_eq!(stdout.trim(), "closed", "descriptor {fd} reached the child");
+    }
+
+    /// A child that only leaves the session keeps its account and leads a
+    /// session of its own, with no controlling terminal.
+    #[test]
+    fn a_child_that_leaves_the_session_leads_one_of_its_own() {
+        let mut child = std::process::Command::new("/bin/sh");
+        child
+            .arg("-c")
+            .arg("set -- $(cut -d' ' -f6,7 /proc/self/stat); echo \"$$ $1 $2 $(id -u)\"");
+        super::super::leave_session_before_exec(&mut child);
+        let output = child.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let ids: Vec<&str> = stdout.split_whitespace().collect();
+        assert_eq!(ids[0], ids[1], "the shell leads its own session: {stdout}");
+        assert_eq!(ids[2], "0", "no controlling terminal: {stdout}");
+        assert_eq!(ids[3], this_account().uid.to_string(), "{stdout}");
+    }
+
+    /// A child that leaves the session, as root's long-lived helper does,
+    /// inherits no descriptor either: not a lock its caller's caller holds.
+    #[test]
+    fn a_child_that_leaves_the_session_inherits_no_descriptor_above_the_standard_three() {
+        use std::os::fd::AsRawFd;
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let inheritable = nix::unistd::dup(&file).unwrap();
+        let fd = inheritable.as_raw_fd();
+        let mut child = std::process::Command::new("/bin/sh");
+        child.arg("-c").arg(format!(
+            "if [ -e /proc/self/fd/{fd} ]; then echo open; else echo closed; fi"
+        ));
+        super::super::leave_session_before_exec(&mut child);
+        let output = child.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "closed",
+            "descriptor {fd} reached the child"
         );
     }
 

@@ -1,0 +1,10 @@
+{
+  "command": "config",
+  "error": {
+    "code": "config_off_volume",
+    "message": "/tmp/off-volume.toml is not on the volume nails runs from, /mnt/data: a setting is written only to the configuration beside nails on its volume. Nothing was written.",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}

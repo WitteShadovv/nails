@@ -1,0 +1,82 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Starting the helper and the window on the two ends of one socket pair.
+//!
+//! The helper is the engine itself (`<root>/nails helper --stdio`), still
+//! root, with its end of the pair as its standard input and output; the
+//! window gets the other end as its standard input, which it reads and
+//! writes. Neither inherits anything else from the launcher: their other
+//! standard streams lead to `/dev/null`, so nothing either prints can reach a
+//! terminal or a log a desktop keeps, and both start in `/`.
+//!
+//! Each leads a session of its own from before its `exec`: no controlling
+//! terminal, and no process group the launching terminal or shell can
+//! signal. The window is besides dropped to the operator's account, with no
+//! supplementary groups, `no_new_privs`, no inherited descriptor above the
+//! standard three, and the zero core-dump limit the launcher set for itself
+//! at start (`main`). Its command line is its name alone, `session`: every
+//! log that quotes it (dbus-daemon's line for a service the window's bus
+//! traffic starts, say) names no place.
+
+use std::ffi::OsString;
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use nails_core::process::run::{Account, drop_before_exec, leave_session_before_exec};
+
+/// The window to start.
+#[derive(Debug, Clone)]
+pub(super) struct Window {
+    /// Its program.
+    pub(super) program: PathBuf,
+    /// The account it runs as.
+    pub(super) account: Account,
+    /// Its whole environment.
+    pub(super) vars: Vec<(OsString, OsString)>,
+}
+
+/// Start the helper (`engine` with `helper_args`) and then `window`, and
+/// return their process ids. The launcher keeps neither end of the pair, so
+/// when one of them ends the other reads the end of its pipe: a window that
+/// fails to start leaves a helper that ends at once.
+pub(super) fn start(
+    engine: &Path,
+    helper_args: &[OsString],
+    window: Window,
+) -> std::io::Result<(u32, u32)> {
+    let (helper_end, window_end) = UnixStream::pair()?;
+
+    let mut command = Command::new(engine);
+    command
+        .args(helper_args)
+        .current_dir("/")
+        .stdin(Stdio::from(OwnedFd::from(helper_end.try_clone()?)))
+        .stdout(Stdio::from(OwnedFd::from(helper_end)))
+        .stderr(Stdio::null());
+    leave_session_before_exec(&mut command);
+    let helper = command.spawn();
+    // The launcher's copies of the helper's end go with the command.
+    drop(command);
+    let helper = helper?;
+
+    let mut child = Command::new(&window.program);
+    child
+        .arg0(nails_core::session::window_launcher::APP_ID)
+        .env_clear()
+        .envs(window.vars)
+        .current_dir("/")
+        .stdin(Stdio::from(OwnedFd::from(window_end)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    drop_before_exec(&mut child, window.account);
+    // The command holds the window's end until it is dropped here, whether
+    // the start succeeded or not.
+    let started = child.spawn();
+    drop(child);
+    let window = started?;
+    Ok((helper.id(), window.id()))
+}

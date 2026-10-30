@@ -1,0 +1,196 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// The Emergency control of a hidden session's header bar. It ends the
+// session at once, so no single click does it.
+//
+// With the pointer: press and hold. A bar fills in about a second, the
+// window's own countdown; releasing once it is full ends the session, and
+// releasing before, or moving off the button, cancels. Only a press on the
+// control counts: one made beside it and released on it does nothing. A
+// short click says to hold it, for two seconds. With the keyboard (it is a Tab stop, and never
+// where the focus starts): Return or Space asks for a second press, with no
+// time limit, and the second press ends the session (a key held down is one
+// press, however long it repeats); Escape, or the focus
+// moving on, cancels. A screen reader's activate action takes the same two
+// steps. Each change of its label is announced at once.
+//
+// It decides on the input event itself, from the time of the press, so
+// nothing the window has queued delays it. The window puts it above an open
+// question, which keeps everything else out of reach.
+//
+// Its labels are the window's words for it (src/text.rs names them too).
+
+import { Adw } from "theme.slint";
+
+export component EmergencyButton {
+    // The gesture is complete: end the session.
+    callback fired();
+
+    // How long the pointer holds it.
+    property <duration> hold: 1000ms;
+    // The pointer pressed it and has not let go or lost it since: only the
+    // release of a press of its own counts.
+    property <bool> down;
+    // When the pointer pressed it.
+    property <duration> pressed-at;
+    // The pointer moved off since its press.
+    property <bool> moved-off;
+    property <bool> holding: touch.pressed && !root.moved-off;
+    // The hold's bar, from 0 to 1.
+    property <float> progress: root.holding ? min(1, (animation-tick() - root.pressed-at) / root.hold) : 0;
+    // The keyboard's first press was taken.
+    property <bool> armed;
+    // A press too short: the hint shows for a while.
+    property <bool> hinting;
+    property <bool> focus-visible;
+    property <string> label: root.holding ? (root.progress >= 1 ? "Release to End" : "Keep Holding")
+        : root.armed ? "Press Enter Again to End Now"
+        : root.hinting ? "Hold to End the Session"
+        : "Emergency";
+
+    min-width: max(44px, ceil(label-text.preferred-width / 1px) * 1px + 24px);
+    preferred-width: self.min-width;
+    min-height: 44px;
+    preferred-height: 44px;
+    forward-focus: focus;
+
+    accessible-role: button;
+    accessible-enabled: true;
+    accessible-label: root.label;
+    accessible-description: "Press and hold to end the hidden session now";
+    accessible-live-region: AccessibleLiveness.assertive;
+    accessible-action-default => {
+        root.step();
+    }
+
+    // The keyboard's two presses, and a screen reader's two actions.
+    function step() {
+        if (root.armed) {
+            root.armed = false;
+            root.fired();
+        } else {
+            root.armed = true;
+            root.hinting = false;
+        }
+    }
+
+    Rectangle {
+        border-radius: Adw.button-radius;
+        clip: true;
+        background: touch.pressed ? Adw.destructive-button-active : touch.has-hover ? Adw.destructive-button-hover : Adw.destructive-button-bg;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width * root.progress;
+            height: parent.height;
+            background: Adw.destructive-button-active;
+        }
+    }
+
+    label-text := Text {
+        width: root.width;
+        height: root.height;
+        text: root.label;
+        font-weight: Adw.weight-bold;
+        color: Adw.destructive;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            // A cancel names no button: the press it took away was this one.
+            if (event.kind == PointerEventKind.cancel) {
+                root.down = false;
+                return;
+            }
+            // Any release ends the toolkit's hold on the pointer, also one of
+            // another button, and no cancel follows it: the left button's
+            // later release reaches whatever lies under the pointer then. So
+            // every release ends the press, and only a press of its own,
+            // released with nothing in between, counts.
+            if (event.kind == PointerEventKind.up && event.button != PointerEventButton.left) {
+                root.down = false;
+                return;
+            }
+            if (event.button != PointerEventButton.left) {
+                return;
+            }
+            if (event.kind == PointerEventKind.down) {
+                root.down = true;
+                root.pressed-at = animation-tick();
+                root.moved-off = false;
+                root.armed = false;
+                root.hinting = false;
+            } else if (event.kind == PointerEventKind.up) {
+                // The toolkit hands every release to the control under the
+                // pointer: one of a press made elsewhere, on the header bar
+                // beside it, say, is no gesture.
+                if (!root.down) {
+                    return;
+                }
+                root.down = false;
+                if (root.moved-off) {
+                    return;
+                }
+                if (animation-tick() - root.pressed-at >= root.hold) {
+                    root.fired();
+                } else {
+                    root.hinting = true;
+                }
+            }
+        }
+        moved => {
+            if (self.pressed && (self.mouse-x < 0 || self.mouse-y < 0 || self.mouse-x > self.width || self.mouse-y > self.height)) {
+                root.moved-off = true;
+            }
+        }
+    }
+
+    Timer {
+        interval: 2s;
+        running: root.hinting;
+        triggered => {
+            root.hinting = false;
+        }
+    }
+
+    focus := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == Key.Space) {
+                // A key held down repeats its press: that is still one press,
+                // and the second step needs a press of its own.
+                if (!event.repeat) {
+                    root.step();
+                }
+                return accept;
+            }
+            if (event.text == Key.Escape && root.armed) {
+                root.armed = false;
+                return accept;
+            }
+            reject
+        }
+        focus-gained(reason) => {
+            root.focus-visible = reason == FocusReason.tab-navigation;
+            Adw.focused-label = "Emergency";
+        }
+        focus-lost(reason) => {
+            root.armed = false;
+            if (Adw.focused-label == "Emergency") {
+                Adw.focused-label = "";
+            }
+        }
+    }
+
+    if focus.has-focus && root.focus-visible: Rectangle {
+        border-radius: Adw.button-radius;
+        border-width: 2px;
+        border-color: Adw.focus-ring;
+    }
+}

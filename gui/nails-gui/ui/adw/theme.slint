@@ -1,0 +1,66 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// The design tokens of the window's widget set, in the style of GNOME's
+// Adwaita: the sizes, radii and colours libadwaita's stylesheet uses, for a
+// light and a dark scheme. Colours that GNOME draws with alpha keep it, so
+// they compose over the surface they sit on.
+
+export global Adw {
+    // Dark scheme; the window follows the desktop's setting.
+    in-out property <bool> dark: false;
+
+    // The accessible label of the control that has the keyboard focus, or
+    // empty. The headless tests read it to follow the Tab order.
+    in-out property <string> focused-label;
+
+    // Typography: GNOME's interface font at its default size. fontconfig falls
+    // back to the system's sans-serif where it is not installed.
+    out property <string> font-family: "Adwaita Sans";
+    out property <length> font-size: 11pt;
+    out property <length> font-size-small: font-size / 1.2;
+    out property <length> font-size-title: font-size * 1.36;
+    out property <int> weight-regular: 400;
+    out property <int> weight-bold: 700;
+    out property <int> weight-title: 800;
+
+    // Geometry. The window has square corners: the software renderer cannot
+    // draw a transparent window edge on every compositor.
+    out property <length> button-radius: 9px;
+    out property <length> card-radius: 12px;
+    out property <length> alert-radius: 18px;
+
+    // Accent and status colours.
+    out property <color> accent-bg: #3584e4;
+    out property <color> accent-fg: #ffffff;
+    out property <color> accent: dark ? #81d0ff : #0461be;
+    out property <color> destructive: dark ? #ff938c : #c30000;
+    out property <color> success: dark ? #78e9ab : #1b8553;
+    out property <color> warning: dark ? #f8e45c : #9c6e03;
+
+    // Surfaces.
+    out property <color> window-bg: dark ? #222226 : #fafafb;
+    out property <color> window-fg: dark ? #ffffff : #000006cc;
+    out property <color> window-fg-dim: dark ? #ffffff8c : #00000670;
+    out property <color> card-bg: dark ? #ffffff14 : #ffffff;
+    out property <color> card-fg: dark ? #ffffff : #000006cc;
+    out property <color> card-shade: dark ? #0000065c : #00000612;
+    out property <color> dialog-bg: dark ? #36363a : #fafafb;
+    out property <color> dialog-fg: dark ? #ffffff : #000006cc;
+    out property <color> dimming: dark ? #00000680 : #00000624;
+    out property <color> outline: dark ? #ffffff12 : #00000612;
+    out property <color> focus-ring: dark ? #71b0ffa1 : #0461be80;
+
+    // Buttons: a tint of the foreground, the accent for the suggested action,
+    // a tint of the destructive colour for a destructive one.
+    out property <color> button-bg: dark ? #ffffff1a : #00000614;
+    out property <color> button-hover: dark ? #ffffff26 : #0000061f;
+    out property <color> button-active: dark ? #ffffff4d : #0000063d;
+    out property <color> suggested-hover: #4990e7;
+    out property <color> suggested-active: #2a6ab8;
+    out property <color> destructive-button-bg: dark ? #f4777133 : #c3000026;
+    out property <color> destructive-button-hover: dark ? #f4777144 : #c3000033;
+    out property <color> destructive-button-active: dark ? #f4777177 : #c3000059;
+
+    out property <duration> transition: 200ms;
+}

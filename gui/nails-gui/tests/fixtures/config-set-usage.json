@@ -1,0 +1,10 @@
+{
+  "command": "config",
+  "error": {
+    "code": "usage",
+    "message": "`minimum_space_mb` takes a whole number from 0 to 9223372036854775807, not \"plenty\"",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}

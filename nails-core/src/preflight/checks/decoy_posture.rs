@@ -157,6 +157,19 @@ impl DecoyPersistenceCheck {
         !Self::log_blockers(fs, Path::new("/")).is_empty()
     }
 
+    /// Read-only probe: each way the decoy keeps a record of a hidden session
+    /// that this check refuses, one sentence with its fix each, or none on an
+    /// amnesic decoy: the persistent log and audit stores and an armed kdump.
+    /// The window's launcher refuses to open on a decoy with any, and names
+    /// them. Performs no writes.
+    pub fn persistence_findings<F: Filesystem>(fs: &F) -> Vec<String> {
+        let root = Path::new("/");
+        Self::log_blockers(fs, root)
+            .into_iter()
+            .chain(Self::kdump_finding(fs, root))
+            .collect()
+    }
+
     /// Read-only probe: whether kdump is armed on the decoy, or its state
     /// cannot be read (which the pre-flight check refuses as if armed). Shared
     /// with `status`. Independent of the operator override, and performs no

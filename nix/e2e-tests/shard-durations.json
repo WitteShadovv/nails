@@ -53,6 +53,8 @@
   "session-readme-captures": 20,
   "session-refused-switch": 45,
   "session-sleep-guard": 72,
+  "session-window-emergency": 80,
+  "session-window-launcher": 90,
   "shell-history-fish": 31,
   "shell-history-zsh": 34,
   "smoke-verify-config": 20,

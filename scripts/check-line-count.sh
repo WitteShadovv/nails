@@ -19,7 +19,9 @@ for dir in "${side_workspaces[@]}"; do
     exit 1
   fi
 done
-find nails-* "${side_workspaces[@]}" -name target -prune -o -name '*.rs' -print0 | LC_ALL=C sort -z |
+# gui/patches holds copies of third-party crates (see gui/Cargo.toml): their
+# files are their authors', not the project's, and these limits leave them out.
+find nails-* "${side_workspaces[@]}" \( -name target -o -path gui/patches \) -prune -o -name '*.rs' -print0 | LC_ALL=C sort -z |
   xargs -0 -r awk -v warn=500 -v fail=850 -v test_warn=1500 '
     FNR == 1 { files[++count] = FILENAME }
     !/^[ \t]*(\/\/.*)?$/ { lines[FILENAME]++ }

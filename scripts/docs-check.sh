@@ -48,6 +48,17 @@ if [ "${#all_docs[@]}" -eq 0 ]; then
   echo "docs-check: no Markdown files found" >&2
   exit 1
 fi
+# gui/patches holds copies of third-party crates (see gui/Cargo.toml), whose
+# Markdown is theirs: a crate's README links into its API with rustdoc's
+# paths, which no file check can resolve.
+own_docs=()
+for doc in "${all_docs[@]}"; do
+  case "${doc#./}" in
+    gui/patches/*) continue ;;
+  esac
+  own_docs+=("$doc")
+done
+all_docs=("${own_docs[@]}")
 
 # The retired-name guard skips the changelog (matched by base name, so a `./`
 # prefix from the filesystem walk does not slip past it).

@@ -100,51 +100,48 @@ fn sudo_uid_resolves_passwd_home_and_primary_gid_ignoring_home_env() {
 }
 
 #[test]
-fn uid_precedence_is_target_then_sudo_then_pkexec_then_doas() {
+fn uid_precedence_is_target_then_pkexec_then_sudo_then_doas() {
     let passwd = FakePasswd::default()
         .with_user(10, 10, "target", "/home/target", "/bin/sh")
         .with_user(20, 20, "sudo", "/home/sudo", "/bin/sh")
         .with_user(30, 30, "pkexec", "/home/pkexec", "/bin/sh")
         .with_user(40, 40, "doas", "/home/doas", "/bin/sh");
+    let name = |env: &FakeEnv| resolve_from(env, &passwd, &no_session()).unwrap().name;
 
     let all = FakeEnv::default()
         .with(ENV_TARGET_UID, "10")
         .with(ENV_SUDO_UID, "20")
         .with(ENV_PKEXEC_UID, "30")
         .with(ENV_DOAS_UID, "40");
-    assert_eq!(
-        resolve_from(&all, &passwd, &no_session()).unwrap().name,
-        "target"
-    );
+    assert_eq!(name(&all), "target");
 
     let no_target = FakeEnv::default()
         .with(ENV_SUDO_UID, "20")
         .with(ENV_PKEXEC_UID, "30")
         .with(ENV_DOAS_UID, "40");
-    assert_eq!(
-        resolve_from(&no_target, &passwd, &no_session())
-            .unwrap()
-            .name,
-        "sudo"
-    );
+    assert_eq!(name(&no_target), "pkexec");
 
-    let only_pkexec_doas = FakeEnv::default()
-        .with(ENV_PKEXEC_UID, "30")
+    let only_sudo_doas = FakeEnv::default()
+        .with(ENV_SUDO_UID, "20")
         .with(ENV_DOAS_UID, "40");
-    assert_eq!(
-        resolve_from(&only_pkexec_doas, &passwd, &no_session())
-            .unwrap()
-            .name,
-        "pkexec"
-    );
+    assert_eq!(name(&only_sudo_doas), "sudo");
 
     let only_doas = FakeEnv::default().with(ENV_DOAS_UID, "40");
-    assert_eq!(
-        resolve_from(&only_doas, &passwd, &no_session())
-            .unwrap()
-            .name,
-        "doas"
-    );
+    assert_eq!(name(&only_doas), "doas");
+}
+
+/// pkexec of polkit 127 and later sets `SUDO_UID` beside `PKEXEC_UID`. The
+/// account pkexec names is the operator, whatever `SUDO_UID` and `SUDO_USER`
+/// say (here a stale value that names root).
+#[test]
+fn pkexec_setting_sudo_uid_too_still_names_the_pkexec_caller() {
+    let passwd = operator_passwd().with_user(0, 0, "root", "/root", "/bin/sh");
+    let env = FakeEnv::default()
+        .with(ENV_PKEXEC_UID, "1000")
+        .with(ENV_SUDO_UID, "0")
+        .with(ENV_SUDO_USER, "root");
+    let user = resolve_from(&env, &passwd, &no_session()).unwrap();
+    assert_eq!((user.uid, user.name.as_str()), (1000, "operator"));
 }
 
 #[test]

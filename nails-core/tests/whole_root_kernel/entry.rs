@@ -5,6 +5,7 @@
 //! mounts: a decoy root with a separate `/home` and an ESP, the fstab
 //! policy, the drop-in, and the transition that consumes it.
 
+use nails_core::session::WindowLauncher;
 use nails_core::session::entry::{self, EntryHost, EntryInputs};
 use nails_core::session::labels::Labels;
 use nails_core::session::layout::Paths;
@@ -187,6 +188,7 @@ impl World {
             rebuild_space_mb: 0,
             read_only_disks: false,
             accepted_decoy_storage: None,
+            window_launcher: None,
         }
     }
 }
@@ -1643,6 +1645,102 @@ fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
         assert_eq!(report.side, Side::Decoy);
         assert!(report.remaining.is_empty(), "{:?}", report.remaining);
         assert!(nextroot::is_noexec(&paths.run).unwrap());
+    });
+}
+
+/// The window's launcher of the hidden session, as the entry writes it:
+/// for a build with the window, `WindowLauncher` names the engine and the
+/// window's program on the hidden volume.
+fn launcher_on(world: &World) -> WindowLauncher {
+    WindowLauncher {
+        engine: world.hidden.path().join("nails"),
+        window: world.hidden.path().join("gui/bin/session"),
+    }
+}
+
+#[test]
+fn the_window_s_launcher_lands_in_the_root_upper_and_nowhere_on_the_decoy() {
+    let _ = Rerun::new(test_path!(
+        the_window_s_launcher_lands_in_the_root_upper_and_nowhere_on_the_decoy
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        // A decoy with a desktop: its menu directory exists, polkit's not.
+        world.decoy.mkdir("usr/share/applications");
+        let paths = world.paths();
+        let launcher = launcher_on(&world);
+        let mut inputs = world.inputs();
+        inputs.window_launcher = Some(&launcher);
+
+        let entry = entry::prepare(&paths, &inputs, &FakeHost::default()).expect("the entry");
+
+        let upper = world.hidden.path().join("root/upper");
+        let menu = std::fs::read_to_string(upper.join("usr/share/applications/session.desktop"))
+            .expect("the menu entry in the root upper");
+        let engine = launcher.engine.display().to_string();
+        let window = launcher.window.display().to_string();
+        assert!(
+            menu.contains(&format!("Exec=\"{window}\" --engine \"{engine}\"\n")),
+            "{menu}"
+        );
+        let action =
+            std::fs::read_to_string(upper.join("usr/share/polkit-1/actions/session.open.policy"))
+                .expect("the action in the root upper");
+        assert!(
+            action.contains(&format!(
+                "<annotate key=\"org.freedesktop.policykit.exec.path\">{engine}</annotate>"
+            )),
+            "{action}"
+        );
+        // The hidden session reads both where it reads any other.
+        assert!(
+            paths
+                .nextroot()
+                .join("usr/share/polkit-1/actions/session.open.policy")
+                .is_file()
+        );
+        // The decoy has neither.
+        let decoy = world.decoy.path();
+        assert_eq!(
+            std::fs::read_dir(decoy.join("usr/share/applications"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(decoy.join("usr/share/polkit-1").symlink_metadata().is_err());
+        assert!(entry.plan.armed.is_some());
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn a_launcher_that_cannot_be_written_never_fails_the_entry() {
+    let _ = Rerun::new(test_path!(
+        a_launcher_that_cannot_be_written_never_fails_the_entry
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        // No directory can be made below a file.
+        std::fs::write(world.decoy.path().join("usr/share"), "").unwrap();
+        let paths = world.paths();
+        let launcher = launcher_on(&world);
+        let mut inputs = world.inputs();
+        inputs.window_launcher = Some(&launcher);
+
+        let entry = entry::prepare(&paths, &inputs, &FakeHost::default())
+            .expect("the entry, with the launcher left out");
+
+        assert!(entry.plan.armed.is_some());
+        let upper = world.hidden.path().join("root/upper");
+        assert!(!upper.join("usr/share/applications").exists());
+        assert!(!upper.join("usr/share/polkit-1").exists());
+        assert_eq!(
+            std::fs::read_to_string(world.decoy.path().join("usr/share")).unwrap(),
+            ""
+        );
+        entry::rollback(&paths);
     });
 }
 

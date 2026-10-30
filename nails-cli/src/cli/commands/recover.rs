@@ -12,9 +12,12 @@
 //! manager and resets the state. It also closes the hidden backend's
 //! device-mapper devices where nothing uses them, so the key leaves RAM, and
 //! reports any it had to leave open because they are in use (the hidden volume
-//! mounted on the decoy). It never reboots. In the hidden session it
-//! refuses and points at `deactivate`; while an activation is entering it
-//! refuses and says to wait for that activation's soft-reboot.
+//! mounted on the decoy). On the plain decoy it resets the record on the
+//! hidden volume when that record still says a session is active, or cannot
+//! be read or trusted, which leaves activation refusing until it is reset.
+//! It never reboots. In the hidden session it refuses and points at
+//! `deactivate`; while an activation is entering it refuses and says to wait
+//! for that activation's soft-reboot.
 
 use std::path::Path;
 
@@ -101,10 +104,13 @@ fn recover_error(error: &RecoverError) -> (ExitStatus, ErrorBody) {
 
 /// The human report: the outcome, each mount left behind, each backend device.
 fn human_lines(data: &RecoverData, style: Style) -> Vec<String> {
-    let headline = if data.outcome == "clean" {
-        "Nothing to recover: no interrupted activation"
-    } else {
-        "Removed the interrupted activation's next root and runtime files"
+    let headline = match data.outcome {
+        "clean" => "Nothing to recover: no interrupted activation",
+        "record_reset" => {
+            "The record on the hidden volume could not be read or trusted. It was reset: no \
+             hidden session is active"
+        }
+        _ => "Removed the interrupted activation's next root and runtime files",
     };
     let mut lines = vec![style.marked(Mark::Pass, headline)];
     for mount in &data.remaining_mounts {
@@ -218,6 +224,18 @@ mod tests {
         assert_eq!(
             human_lines(&data, ASCII),
             vec!["[PASS] Nothing to recover: no interrupted activation"]
+        );
+    }
+
+    #[test]
+    fn a_reset_record_says_so_in_one_line() {
+        let data = recover_data(&SessionRecovery::RecordReset);
+        assert_eq!(
+            human_lines(&data, ASCII),
+            vec![
+                "[PASS] The record on the hidden volume could not be read or trusted. It was \
+                 reset: no hidden session is active"
+            ]
         );
     }
 

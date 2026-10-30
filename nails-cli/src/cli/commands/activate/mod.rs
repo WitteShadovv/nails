@@ -127,7 +127,22 @@ fn activate_options(args: &ActivateArgs) -> ActivateOptions {
         allow_persistent_decoy: args.allow_persistent_decoy,
         allow_decoy_storage: args.allow_decoy_storage,
         allow_discards: args.allow_discards,
+        window_launcher: window_launcher(),
     }
+}
+
+/// The window's launcher the entry writes into the hidden root: from a build
+/// with the window, when the window's program lies beside this binary.
+#[cfg(feature = "gui")]
+fn window_launcher() -> Option<nails_core::session::WindowLauncher> {
+    let engine = std::env::current_exe().ok()?;
+    crate::cli::gui::hidden_launcher(&engine)
+}
+
+/// A build without the window writes no launcher for it.
+#[cfg(not(feature = "gui"))]
+fn window_launcher() -> Option<nails_core::session::WindowLauncher> {
+    None
 }
 
 /// Execute the activate command.
@@ -148,15 +163,60 @@ pub fn execute(
     args: &ActivateArgs,
     config_override: Option<&std::path::Path>,
 ) -> ExitStatus {
-    let json = settings.is_json();
     if args.dry_run {
         return super::check::execute(settings, env, &dry_run_check_args(args), config_override);
     }
-
-    let mut loaded = match super::load_config_or_report(config_override, "activate", json) {
-        Ok(loaded) => loaded,
+    let begun = match begin(settings, env, args, config_override) {
+        Ok(begun) => begun,
         Err(status) => return status,
     };
+    // Shown under -q too: every opt-in protection keeps its default without
+    // the file, which a scripted `-y -q` activation must not hide.
+    if let Some(notice) = &begun.defaults_notice {
+        crate::cli::output::eprintln_tolerating_broken_pipe(notice);
+    }
+    if !args.yes
+        && let Some(status) = stop_status(confirm_logout(
+            settings,
+            begun.locked.accepted(),
+            &begun.locked.entry_advisories(),
+        ))
+    {
+        return report_cancelled(settings, status);
+    }
+    finish(settings, begun.locked, || {})
+}
+
+/// An activation past its gates and holding the state lock, waiting for the
+/// operator's confirmation.
+pub(crate) struct Begun {
+    /// The handle that enters and commits, holding the lock until dropped.
+    pub(crate) locked: LockedActivation,
+    /// The warning the attach gate raised for a risk the operator allowed,
+    /// already printed on stderr.
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+    pub(crate) warning: Option<String>,
+    /// The line saying no configuration file was found, which the caller
+    /// shows before it asks.
+    pub(crate) defaults_notice: Option<String>,
+}
+
+/// The part of an activation before its confirmation: the configuration, the
+/// gates and the state lock.
+///
+/// # Errors
+///
+/// The status to exit with when the activation ended before the lock, its
+/// result already reported: [`ExitStatus::Ok`] when the session was already
+/// active, otherwise every refusal [`execute`] names but a pre-flight check's.
+pub(crate) fn begin(
+    settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+    args: &ActivateArgs,
+    config_override: Option<&std::path::Path>,
+) -> Result<Begun, ExitStatus> {
+    let json = settings.is_json();
+    let mut loaded = super::load_config_or_report(config_override, "activate", json)?;
     let defaults_notice = defaults_notice(&loaded);
     loaded.apply_cli_overrides(&CliOverrides {
         nixos_flake: args.nixos_flake.clone(),
@@ -164,7 +224,7 @@ pub fn execute(
     let config = loaded.into_config();
 
     if !args.yes && !std::io::stdin().is_terminal() {
-        return report_error(
+        return Err(report_error(
             json,
             "activate",
             ExitStatus::Usage,
@@ -172,61 +232,63 @@ pub fn execute(
                 "needs_confirmation",
                 "activate logs you out and needs confirmation, but stdin is not a terminal; pass -y/--yes to run non-interactively",
             ),
-        );
+        ));
     }
 
     let options = activate_options(args);
     let ready = match activate::prepare(env, config, settings.verbosity, &options) {
         Prepared::AlreadyActive => {
             print_result(settings, &ActivateResult::AlreadyActive, 0.0);
-            return ExitStatus::Ok;
+            return Err(ExitStatus::Ok);
         }
         Prepared::Unsupported(error) => {
             // Refused before the state lock: nothing was written to the hidden
             // volume. Reported exactly as the late path would, and exits 8.
             print_result(settings, &ActivateResult::Failed(&error), 0.0);
-            return ExitStatus::Unsupported;
+            return Err(ExitStatus::Unsupported);
         }
-        Prepared::Refused(refusal) => return report_refusal(json, "activate", &refusal),
+        Prepared::Refused(refusal) => return Err(report_refusal(json, "activate", &refusal)),
         Prepared::AttachError(e) => {
-            return report_error(
+            return Err(report_error(
                 json,
                 "activate",
                 ExitStatus::PreflightRefused,
                 ErrorBody::new("preflight", e.to_string()),
-            );
+            ));
         }
         Prepared::Proceed(ready) => ready,
     };
 
     // The attach gate raised a warning the operator overrode: show it before
     // taking the lock (the lock itself writes nothing to report).
-    if let Some(warning) = ready.warning() {
+    let warning = ready.warning().map(str::to_string);
+    if let Some(warning) = &warning {
         crate::cli::output::eprintln_tolerating_broken_pipe(&format!("warning: {warning}"));
     }
 
     // The lock step takes the state lock and, holding it, refuses a state
     // file it cannot trust; the handle it hands out holds the lock until it
     // is dropped, after the commit.
-    let mut locked = match ready.lock() {
-        Ok(locked) => locked,
-        Err(error) => return super::report_lock_error(error, "activate", json),
-    };
+    let locked = ready
+        .lock()
+        .map_err(|error| super::report_lock_error(error, "activate", json))?;
+    Ok(Begun {
+        locked,
+        warning,
+        defaults_notice,
+    })
+}
 
-    // Shown under -q too: every opt-in protection keeps its default without
-    // the file, which a scripted `-y -q` activation must not hide.
-    if let Some(notice) = defaults_notice {
-        crate::cli::output::eprintln_tolerating_broken_pipe(&notice);
-    }
-    if !args.yes
-        && let Some(status) = stop_status(confirm_logout(
-            settings,
-            locked.accepted(),
-            &locked.entry_advisories(),
-        ))
-    {
-        return report_cancelled(settings, status);
-    }
+/// The part of an activation after its confirmation: the residue baseline, the
+/// entry and, past the point of no return, the commit, reported as
+/// [`execute`] reports them. `at_point_of_no_return` runs once the entry is
+/// recorded and nothing cancels it any more, right before the commit.
+pub(crate) fn finish(
+    settings: &OutputSettings,
+    mut locked: LockedActivation,
+    at_point_of_no_return: impl FnOnce(),
+) -> ExitStatus {
+    let json = settings.is_json();
     // Ctrl+C sets a flag that every step from here on reads (see
     // nails_core::cancel). At the prompt it ends the activation at once;
     // during the residue baseline, before the entry begins.
@@ -265,6 +327,7 @@ pub fn execute(
             };
         }
     };
+    at_point_of_no_return();
     // The point of no return: kill the decoy's shells so none writes the
     // activation command to its history, then enqueue the soft-reboot. The
     // time reported is the one the state file records, which `status` shows

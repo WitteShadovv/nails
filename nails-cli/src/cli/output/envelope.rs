@@ -52,6 +52,9 @@ fn envelope_slot() -> MutexGuard<'static, bool> {
 /// ends with exit 130: the signal came before the result, which may be a
 /// failure the signal itself caused (a child killed by the same Ctrl+C).
 pub(crate) fn print_envelope_line(line: &str) -> bool {
+    if let Some(captured) = capture_line(line) {
+        return captured;
+    }
     let mut printed = envelope_slot();
     if *printed {
         return false;
@@ -64,6 +67,59 @@ pub(crate) fn print_envelope_line(line: &str) -> bool {
     }
     super::println_tolerating_broken_pipe(line);
     true
+}
+
+#[cfg(feature = "gui")]
+thread_local! {
+    /// The envelope of the command running on this thread under [`capture`]:
+    /// `None` outside a capture, `Some(None)` before it printed one.
+    static CAPTURED: std::cell::RefCell<Option<Option<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Take `line` into the capture running on this thread, if there is one:
+/// `Some(true)` when it is the capture's first envelope, `Some(false)` for a
+/// second, which is dropped, and `None` outside a capture.
+#[cfg(feature = "gui")]
+fn capture_line(line: &str) -> Option<bool> {
+    CAPTURED.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let captured = slot.as_mut()?;
+        if captured.is_some() {
+            return Some(false);
+        }
+        *captured = Some(line.to_string());
+        Some(true)
+    })
+}
+
+/// Without the window's helper nothing captures an envelope.
+#[cfg(not(feature = "gui"))]
+fn capture_line(_line: &str) -> Option<bool> {
+    None
+}
+
+/// Run `command`, one command handler under `--json`, and take the envelope
+/// it prints instead of printing it: the window's helper answers with the
+/// envelope the CLI's own code builds for the same command. The capture holds
+/// one envelope, as a process does, and leaves the process's own slot alone,
+/// so the helper can run one command after another. Only what is printed on
+/// this thread is captured.
+#[cfg(feature = "gui")]
+pub(crate) fn capture<R>(command: impl FnOnce() -> R) -> (R, Option<String>) {
+    struct Restore(Option<Option<String>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            CAPTURED.with(|slot| *slot.borrow_mut() = outer);
+        }
+    }
+    let outer = CAPTURED.with(|slot| slot.borrow_mut().replace(None));
+    let restore = Restore(outer);
+    let result = command();
+    let line = CAPTURED.with(|slot| slot.borrow_mut().take()).flatten();
+    drop(restore);
+    (result, line)
 }
 
 /// Report a SIGINT or SIGTERM as `cancel`, the serialized cancel envelope of

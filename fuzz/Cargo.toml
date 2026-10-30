@@ -5,8 +5,8 @@
 # read text and data NAILS does not control: the kernel's and libmount's mount
 # tables, the kernel's compressed config, a decoy's fstab, crypttab, os-release,
 # package databases, the rows of its Nix store database the forensic oracle
-# reads, systemd, display-manager and NixOS configuration, udev's records, and
-# raw disks.
+# reads, systemd, display-manager and NixOS configuration, udev's records, raw
+# disks, and the requests a window sends the engine's root helper.
 # docs/testing-strategy.md says how to run a target; .clusterfuzzlite/ builds
 # them for CI.
 #
@@ -28,6 +28,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 # The anonymous in-memory file the raw-disk targets read from.
 rustix = { version = "1", features = ["fs"] }
+# The window protocol, whose request decoder the helper_request target reads.
+nails-api = { path = "../nails-api" }
 nails-base = { path = "../nails-base", features = ["test-support"] }
 nails-core = { path = "../nails-core" }
 nails-forensics = { path = "../nails-forensics" }
@@ -170,6 +172,13 @@ bench = false
 # Line numbers in a crash's stack trace.
 [profile.release]
 debug = 1
+
+[[bin]]
+name = "helper_request"
+path = "fuzz_targets/helper_request.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "rpmdb"

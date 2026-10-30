@@ -20,6 +20,30 @@ path = "gui/**"
 SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
 SPDX-License-Identifier = "GPL-3.0-only"
 
+# gui/patches/i-slint-backend-winit is Slint's own crate of that name as
+# SixtyFPS GmbH publishes it, with changes of the window's, each marked
+# "NAILS:" in place (see gui/Cargo.toml). SixtyFPS offers it under GPL-3.0-only or under
+# licences of its own, and the window takes it, as it takes all of Slint,
+# under GPL-3.0-only. The override leaves the copied files as they were
+# published: their headers name every licence on offer, whose texts the copy
+# keeps in its own LICENSES directory. The last matching table wins, so these
+# stay below the gui/ one, and the table of the files the change touches
+# below that of the copy.
+[[annotations]]
+path = "gui/patches/i-slint-backend-winit/**"
+precedence = "override"
+SPDX-FileCopyrightText = "SixtyFPS GmbH <info@slint.dev>"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
+path = [
+    "gui/patches/i-slint-backend-winit/Cargo.toml",
+    "gui/patches/i-slint-backend-winit/xdg_desktop_settings.rs",
+]
+precedence = "override"
+SPDX-FileCopyrightText = ["SixtyFPS GmbH <info@slint.dev>", "2026 WitteShadovv"]
+SPDX-License-Identifier = "GPL-3.0-only"
+
 # The EFF "large" diceware word list is third-party data under its own licence,
 # not the project's. The last matching table wins, so this one must stay below
 # the catch-all.
