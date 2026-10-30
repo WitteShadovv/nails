@@ -8,8 +8,10 @@
 #
 # The engine here is the static musl `nails` with that feature, run from the
 # hidden volume as an operator runs it (sudo from testuser), with the gui
-# workspace's binary in place of the window. In the hidden session the test
-# shows:
+# workspace's binary in place of the window. A driver plays the window
+# (helper_driver.py): it activates through the helper, sees each step and
+# the point of no return come before the answer, and comes back the same way.
+# In the hidden session the test shows:
 #
 #   - the entry, valid for desktop-file-validate, runs the window with the
 #     engine whose helper it starts;
@@ -24,7 +26,11 @@
 #     `<engine> helper --stdio --config <file>`; the helper refuses that one
 #     and starts nothing;
 #   - both files lie on the hidden volume, and the decoy root, mounted
-#     read-only beside the session, has neither.
+#     read-only beside the session, has neither;
+#   - the helper plans a deactivation with its token for each ending;
+#   - `sudo <engine> gui` opens the window: its own directory in the
+#     operator's runtime directory, handed over by root, and the window as
+#     the operator with no supplementary group and no_new_privs.
 #
 # After the way back the decoy has neither file and polkit no such action, and
 # the decoy disk image, read from the host after a power-off, holds none of
@@ -69,7 +75,10 @@ in
           });
         '';
       };
-      environment.systemPackages = [ pkgs.desktop-file-utils ];
+      environment.systemPackages = [
+        pkgs.desktop-file-utils
+        pkgs.python3
+      ];
       system.extraDependencies = [
         windowEngine
         packages.nails-gui
@@ -84,6 +93,12 @@ in
     from nails_e2e import session
 
     CONFIG = "/mnt/data/config/nails.toml"
+    DRIVER = "python3 -P ${./../../lib/helper_driver.py}"
+    # The window's helper as the window starts it on the decoy: sudo from the
+    # operator's account.
+    HELPER = f"su testuser -c 'sudo /mnt/data/nails --config {CONFIG} helper --stdio'"
+    # The marker of the driver's lines on the serial console.
+    FRAME = "HELPER-FRAME "
     UPPER = "/mnt/data/root/upper"
     PEEK = "/run/decoy-peek"
     ENTRY = "/home/testuser/.local/share/applications/session.desktop"
@@ -104,6 +119,25 @@ in
         machine.succeed("pkaction --action-id org.freedesktop.policykit.exec")
         out = machine.fail("pkaction --action-id session.open 2>&1")
         assert "No action with action id session.open" in out, out
+
+
+    def frames(lines):
+        """The helper's frames among `lines`, as the driver wrote them."""
+        return [json.loads(line) for line in lines if line.strip()]
+
+
+    def console_frames(since):
+        """The frames the driver wrote to the serial console after `since`."""
+        found = []
+        for line in machine.full_console_log[since:]:
+            if FRAME in line:
+                found.append(json.loads(line.split(FRAME, 1)[1].strip()))
+        return found
+
+
+    def answers(found):
+        """The result frames among `found`, in order."""
+        return [frame["result"] for frame in found if "result" in frame]
 
 
     def peek_decoy(decoy_dev, command):
@@ -140,18 +174,39 @@ in
         machine.succeed(f"test ! -e {ENTRY} && test ! -e {ACTION}")
         no_such_action()
 
-    with subtest("activate through sudo as the operator"):
-        activate_log = "/mnt/data/activate.log"
+    with subtest("activate through the window's helper: each step, then the point of no return"):
+        # The frames land on the hidden volume as they come, before the
+        # switch stops the driver.
+        activation = "/mnt/data/helper-activate"
         session.follow_soft_reboot(
             machine,
-            f"su testuser -c 'sudo /mnt/data/nails --config {CONFIG} activate -y --overlay-only' "
-            f"> {activate_log} 2>&1",
+            f"{DRIVER} {activation}.jsonl {activation}.err activate -- {HELPER}",
             "activate",
         )
-        activation = machine.succeed(f"cat {activate_log}")
-        print(activation)
-        assert "launcher was not written" not in activation, activation
         session.assert_hidden_root(machine, UPPER)
+        found = frames(machine.succeed(f"cat {activation}.jsonl").splitlines())
+        stderr = machine.succeed(f"cat {activation}.err")
+        print(stderr)
+        assert "launcher was not written" not in stderr, stderr
+        events = [frame["event"]["event"]["type"] for frame in found if "event" in frame]
+        print(events)
+        assert "step" in events and "check" in events, events
+        results = answers(found)
+        # The hello, the plan with its token, and the apply: entering, after
+        # the point of no return, which comes after every step.
+        assert len(results) == 3, results
+        plan, applied = results[1], results[2]
+        assert plan["envelope"]["data"]["builds_hidden_system"] is False, plan
+        assert len(plan["envelope"]["data"]["token"]) == 32, plan
+        assert applied["exit"] == 0, applied
+        assert applied["envelope"]["command"] == "activate", applied
+        assert applied["envelope"]["data"]["status"].startswith("entering"), applied
+        # The point of no return comes after the last step and before the
+        # answer, which is the last frame.
+        point = events.index("point_of_no_return")
+        assert "step" not in events[point:], events
+        assert "result" in found[-1], found
+        assert found[-1]["result"] == applied, found
 
     with subtest("the entry runs the window with the engine whose helper it starts"):
         entry = machine.succeed(f"cat {ENTRY}")
@@ -213,15 +268,80 @@ in
         machine.succeed(f"test -f {UPPER}{ENTRY} && test -f {UPPER}{ACTION}")
         peek_decoy(decoy_dev, f"test ! -e {PEEK}{ENTRY} && test ! -e {PEEK}{ACTION}")
 
+    with subtest("the helper plans a deactivation for each ending, with its token"):
+        found = frames(
+            machine.succeed(f"{DRIVER} /dev/stdout /tmp/plans.err plans -- {HELPER}").splitlines()
+        )
+        results = answers(found)
+        assert len(results) == 4, results
+        for result, poweroff in ((results[1], False), (results[2], True)):
+            assert result["exit"] == 0, result
+            data = result["envelope"]["data"]
+            assert data["poweroff"] is poweroff, data
+            assert isinstance(data["warnings"], list), data
+            assert len(data["token"]) == 32, data
+        assert results[1]["envelope"]["data"]["token"] != results[2]["envelope"]["data"]["token"]
+
+    with subtest("sudo <engine> gui opens the window as the operator, in its own directory"):
+        machine.succeed("loginctl enable-linger testuser")
+        uid = machine.succeed("id -u testuser").strip()
+        gid = machine.succeed("id -g testuser").strip()
+        machine.wait_until_succeeds(f"findmnt -no FSTYPE /run/user/{uid} | grep -qx tmpfs", timeout=60)
+        # A bundle whose window writes, with shell builtins alone, what it
+        # runs as into its home: the directory the launcher made for it.
+        probe = "/mnt/data/probe"
+        machine.succeed(
+            f"mkdir -p {probe}/gui/bin && cp /mnt/data/nails {probe}/nails && "
+            f"cat > {probe}/gui/bin/nails-gui <<'EOF'\n"
+            "#!/bin/sh\n"
+            "while read -r key rest; do case $key in "
+            "Uid:|Gid:|Groups:|NoNewPrivs:) echo \"$key $rest\";; esac; "
+            "done < /proc/self/status > \"$HOME/status\"\n"
+            "echo done >> \"$HOME/status\"\n"
+            "EOF\n"
+            f"chmod 0755 {probe}/gui/bin/nails-gui"
+        )
+        opened = json.loads(
+            machine.succeed(f"su testuser -c 'sudo {probe}/nails --config {CONFIG} --json gui'")
+        )
+        print(opened)
+        assert opened["ok"] is True, opened
+        machine.wait_until_succeeds(f"grep -qx done /run/user/{uid}/*/status", timeout=60)
+        own = machine.succeed(f"dirname /run/user/{uid}/*/status").strip()
+        owner = machine.succeed(f"stat -c '%U %a' {own}").strip()
+        assert owner == "testuser 700", owner
+        status = machine.succeed(f"cat {own}/status").splitlines()
+        print(status)
+        for line in (
+            f"Uid: {uid} {uid} {uid} {uid}",
+            f"Gid: {gid} {gid} {gid} {gid}",
+            "Groups:",
+            "NoNewPrivs: 1",
+        ):
+            assert line in [" ".join(entry.split()) for entry in status], (line, status)
+
     with subtest("after the way back the decoy has neither file, and polkit no action"):
-        # The same build from the store, as the other session tests run the way
-        # back, so nothing on the hidden volume is busy when it closes.
+        # The way back through the helper of the same build from the store,
+        # as the other session tests run the way back, so nothing on the
+        # hidden volume is busy when it closes. Its frames go to the serial
+        # console, which outlives the switch.
+        since = len(machine.full_console_log)
+        store_helper = (
+            f"su testuser -c 'sudo ${windowEngine}/bin/nails --config {CONFIG} helper --stdio'"
+        )
         session.follow_soft_reboot(
             machine,
-            f"su testuser -c 'sudo ${windowEngine}/bin/nails --config {CONFIG} deactivate -y'",
+            f"{DRIVER} /dev/ttyS0 /dev/ttyS0 {FRAME.strip()} deactivate -- {store_helper}",
             "deactivate",
         )
         session.assert_decoy_root(machine)
+        results = answers(console_frames(since))
+        print(results)
+        assert len(results) == 3, results
+        plan, applied = results[1], results[2]
+        assert plan["envelope"]["data"]["poweroff"] is False, plan
+        assert applied["exit"] == 0, applied
+        assert applied["envelope"]["data"]["status"] == "return_requested", applied
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
         machine.succeed(f"test ! -e {ENTRY} && test ! -e {ACTION}")
         no_such_action()
