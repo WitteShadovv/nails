@@ -176,6 +176,16 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// table has shown a volume mounted there.
     fn device_id(&self, path: &Path) -> Result<u64>;
 
+    /// The inode number of the file `path` names, its symlinks followed as
+    /// `stat` follows them, or `None` when nothing is there.
+    ///
+    /// Unlike [`path_exists`](Self::path_exists), a lookup that fails for any
+    /// reason but a missing path is an error, so a caller that must fail
+    /// closed can tell "not there" from "cannot tell". The namespace files of
+    /// two processes, such as `/proc/<pid>/ns/mnt`, give one inode exactly
+    /// when the two share that namespace.
+    fn inode(&self, path: &Path) -> Result<Option<u64>>;
+
     /// The device (`st_dev`) of the file the loop device `node` is bound to,
     /// as the loop driver recorded it when the file was attached
     /// (`LOOP_GET_STATUS64`'s `lo_device`).

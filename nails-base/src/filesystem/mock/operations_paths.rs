@@ -34,6 +34,30 @@ impl MockFilesystem {
         Ok(hasher.finish() | 1)
     }
 
+    pub(super) fn inode_impl(&self, path: &Path) -> Result<Option<u64>> {
+        if let Some(answer) = self
+            .inodes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+            .copied()
+        {
+            return answer
+                .map(Some)
+                .map_err(|kind| crate::NailsError::io(path, std::io::Error::from(kind)));
+        }
+        if !self.path_exists_impl(path)? {
+            return Ok(None);
+        }
+        // Default: a stable, per-path distinct inode. A test that wants two
+        // paths to name one file maps them onto one with `mock_set_inode`.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        path.hash(&mut hasher);
+        Ok(Some(hasher.finish() | 1))
+    }
+
     pub(super) fn loop_backing_device_impl(&self, node: &Path) -> Result<u64> {
         self.loop_backing_devices
             .lock()

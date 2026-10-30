@@ -56,6 +56,15 @@ pub(super) fn is_mount_root(path: &Path) -> Result<Option<bool>> {
     }
 }
 
+pub(super) fn inode(path: &Path) -> Result<Option<u64>> {
+    use std::os::unix::fs::MetadataExt;
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(Some(meta.ino())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).at_path(path),
+    }
+}
+
 pub(super) fn is_symlink(path: &Path) -> Result<bool> {
     Ok(path.is_symlink())
 }

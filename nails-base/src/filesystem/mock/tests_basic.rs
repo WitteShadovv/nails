@@ -309,3 +309,26 @@ fn a_mount_root_is_what_the_test_says_and_unknown_otherwise() {
         Some(false)
     );
 }
+
+#[test]
+fn inode_reports_a_set_inode_an_error_or_a_distinct_default() {
+    let fs = MockFilesystem::new();
+    let file = Path::new("/a/file");
+    let other = Path::new("/a/other");
+    assert_eq!(fs.inode(file).unwrap(), None, "nothing is there");
+
+    fs.mock_set_path_type("/a/file", PathKind::File);
+    fs.mock_set_path_type("/a/other", PathKind::File);
+    let first = fs.inode(file).unwrap().expect("a path that exists has one");
+    assert_eq!(fs.inode(file).unwrap(), Some(first), "stable");
+    assert_ne!(fs.inode(other).unwrap(), Some(first), "distinct per path");
+
+    fs.mock_set_inode(other, first);
+    assert_eq!(fs.inode(other).unwrap(), Some(first));
+
+    fs.mock_set_inode_error(file, std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        fs.inode(file).unwrap_err().io_kind(),
+        Some(std::io::ErrorKind::PermissionDenied)
+    );
+}

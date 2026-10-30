@@ -32,10 +32,22 @@
 //!   ticket, and a socket unit that runs no program leaves neither an
 //!   invocation marker nor a cgroup, so the socket is what shows it. That
 //!   socket is where every Kerberos ticket cache of the KCM kind listens, not
-//!   only sssd's: Heimdal's daemon, `kcm`, binds it itself, so while a process
-//!   of that name runs the socket counts as its and not as sssd's. A socket
-//!   file the table shows nothing listening on, which a stopped socket leaves
-//!   in `/run` until the next boot, is no sign;
+//!   only sssd's: Heimdal's daemon, `kcm`, binds it itself. So the socket is
+//!   no sign either on a decoy that is not NixOS where none of the unit
+//!   directories in [`UNIT_PATH`] may hold a unit file of `sssd-kcm.socket`
+//!   and a process whose `comm` is `kcm` runs as root in PID 1's mount
+//!   namespace, as Heimdal's daemon does. A directory a symlink leads to, as
+//!   `/lib` on a merged `/usr`, or one a lookup on the way to fails, may hold
+//!   one, since the check follows no link and cannot rule it out; NixOS's
+//!   unit directories are links into the Nix store, so there the socket
+//!   always counts. Any process can give itself that name, so only a root one
+//!   counts, its real and effective user read from the `Uid:` line of its
+//!   status: the owner of its `/proc` directory would be no sign, since a
+//!   process that makes itself not dumpable has root own it. A root process
+//!   in a container without a user namespace of its own is root there too,
+//!   but its mount namespace, whose `/run` its daemon serves, is not PID 1's.
+//!   A socket file the table shows nothing listening on, which a stopped
+//!   socket leaves in `/run` until the next boot, is no sign;
 //! - `/var/lib/sss` holds one of the nine files in [`STATE_FILES`], which sssd
 //!   writes there when it runs: its two configuration databases, the four
 //!   memory caches of its NSS responder, the database of its Kerberos ticket
@@ -68,13 +80,13 @@
 //! Every probe reads metadata, or files under `/proc`, `/run` and `/sys`;
 //! nothing on the decoy disk is opened or listed, so no access time there
 //! changes. A symlink in the last place of a path is never followed, which
-//! would update its access time. Nothing here writes.
+//! would update its access time, and a unit directory a symlink leads to,
+//! such as `/lib` on a merged `/usr` or `/etc/systemd/system` on NixOS, is not
+//! looked in. Nothing here writes.
 
 use super::loggers;
 use crate::Filesystem;
 use crate::next_step::{NextStep, sudo_line};
-use std::cell::OnceCell;
-use std::collections::BTreeSet;
 use std::path::Path;
 
 /// sssd's service units: its monitor, its Kerberos ticket cache and the
@@ -122,9 +134,31 @@ const KCM_BOUND_AT: &[&str] = &[
 /// The flag the socket table sets on a listening socket (`__SO_ACCEPTCON`).
 const LISTENING: u32 = 1 << 16;
 
-/// The KCM daemons that are not sssd's, by process name: Heimdal's, which
-/// binds the socket itself and so runs while the socket is its.
-const OTHER_KCM_DAEMONS: &[&str] = &["kcm"];
+/// The unit through which sssd listens on the KCM socket.
+const KCM_SOCKET_UNIT: &str = "sssd-kcm.socket";
+
+/// The unit directories a unit file of `sssd-kcm.socket` is looked for in,
+/// relative to the root: those systemd's system manager loads unit files
+/// from, in the order it reads them, and `/lib/systemd/system`, which systemd
+/// built for a split `/usr` reads too.
+const UNIT_PATH: &[&str] = &[
+    "etc/systemd/system.control",
+    "run/systemd/system.control",
+    "run/systemd/transient",
+    "run/systemd/generator.early",
+    "etc/systemd/system",
+    "etc/systemd/system.attached",
+    "run/systemd/system",
+    "run/systemd/system.attached",
+    "run/systemd/generator",
+    "usr/local/lib/systemd/system",
+    "usr/lib/systemd/system",
+    "lib/systemd/system",
+    "run/systemd/generator.late",
+];
+
+/// The `comm` of Heimdal's KCM daemon, which binds the KCM socket itself.
+const HEIMDAL_KCM: &str = "kcm";
 
 /// Files sssd writes under `/var/lib/sss` when it runs, relative to the root:
 /// the configuration database of the monitor and that of sssd-kcm, the memory
@@ -146,7 +180,7 @@ const STATE_FILES: &[&str] = &[
 /// The warning for sssd in use on the decoy under `root`, or `None` when
 /// nothing shows it. `is_nixos` picks how its advice turns sssd off.
 pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Option<String> {
-    let (signs, untold) = signs(fs, root);
+    let (signs, untold) = signs(fs, root, is_nixos);
     if signs.is_empty() {
         return None;
     }
@@ -167,10 +201,8 @@ pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -
 /// active units (or, when none is, a daemon that runs), the socket of its
 /// ticket cache, and the first of its state files found. With them, whether
 /// the socket counts only because its table cannot tell whether it listens.
-fn signs<F: Filesystem>(fs: &F, root: &Path) -> (Vec<String>, bool) {
-    // The process names are read once, and only when a sign needs them.
-    let names = OnceCell::new();
-    let running = || names.get_or_init(|| loggers::running_process_names(fs, root));
+/// `is_nixos` says whether the decoy is NixOS (see [`heimdal_serves_kcm`]).
+fn signs<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> (Vec<String>, bool) {
     let mut signs: Vec<String> = UNITS
         .iter()
         .filter(|unit| loggers::unit_active(fs, root, unit))
@@ -179,14 +211,14 @@ fn signs<F: Filesystem>(fs: &F, root: &Path) -> (Vec<String>, bool) {
     // A daemon matters on its own only where no unit shows it: one started
     // outside systemd, or by a systemd that left no marker.
     if signs.is_empty()
-        && let Some(daemon) = running().iter().find(|name| is_daemon(name))
+        && let Some(daemon) = loggers::running_process_names(fs, root)
+            .into_iter()
+            .find(|name| is_daemon(name))
     {
         signs.push(format!("{daemon} runs"));
     }
     let mut untold = false;
-    if let Some(sign) = kcm_sign(fs, root)
-        && !other_kcm_runs(running())
-    {
+    if let Some(sign) = kcm_sign(fs, root, is_nixos) {
         untold = sign == KcmSign::Untold;
         signs.push(sign.phrase());
     }
@@ -223,18 +255,20 @@ impl KcmSign {
 }
 
 /// The sign of the ticket cache's socket on the decoy under `root`: its file
-/// is in place, and PID 1's socket table lists a socket listening on it or
-/// cannot tell. `None` when the file is gone or the table shows nothing
-/// listening there, which is what a stopped socket leaves.
-fn kcm_sign<F: Filesystem>(fs: &F, root: &Path) -> Option<KcmSign> {
+/// is in place, PID 1's socket table lists a socket listening on it or cannot
+/// tell, and Heimdal's daemon does not serve it. `None` when the file is gone,
+/// when the table shows nothing listening there, which is what a stopped
+/// socket leaves, or when the socket is Heimdal's.
+fn kcm_sign<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Option<KcmSign> {
     if !present(fs, &root.join(KCM_SOCKET)) {
         return None;
     }
-    match kcm_listening(fs, root) {
-        Some(false) => None,
-        Some(true) => Some(KcmSign::Listens),
-        None => Some(KcmSign::Untold),
-    }
+    let sign = match kcm_listening(fs, root) {
+        Some(false) => return None,
+        Some(true) => KcmSign::Listens,
+        None => KcmSign::Untold,
+    };
+    (!heimdal_serves_kcm(fs, root, is_nixos)).then_some(sign)
 }
 
 /// The end of the advice when the socket counts only because its table cannot
@@ -303,12 +337,108 @@ fn listens_on_kcm(line: &[u8]) -> bool {
         && KCM_BOUND_AT.iter().any(|bound| bound.as_bytes() == path)
 }
 
-/// Whether a KCM daemon that is not sssd's runs among `running`, the process
-/// names: then the KCM socket is its.
-fn other_kcm_runs(running: &BTreeSet<String>) -> bool {
-    OTHER_KCM_DAEMONS
+/// Whether the KCM socket is Heimdal's and not sssd's. Never on NixOS, whose
+/// unit directories are links into the Nix store; elsewhere only when no unit
+/// directory may hold a unit file of `sssd-kcm.socket` and a process whose
+/// `comm` is `kcm` runs as root in PID 1's mount namespace.
+fn heimdal_serves_kcm<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> bool {
+    !is_nixos
+        && !UNIT_PATH.iter().any(|dir| may_hold_kcm_unit(fs, root, dir))
+        && host_root_kcm_runs(fs, root)
+}
+
+/// Whether the unit directory `dir`, relative to `root`, may hold a unit file
+/// of `sssd-kcm.socket`: the file is there, as a file or a link, or the check
+/// cannot rule it out, because a symlink leads to the directory or a lookup
+/// on the way fails. Each component is looked at from the top down, and only
+/// one that is no link is looked into, so no link is followed.
+fn may_hold_kcm_unit<F: Filesystem>(fs: &F, root: &Path, dir: &str) -> bool {
+    let mut path = root.to_path_buf();
+    for component in Path::new(dir).components() {
+        path.push(component);
+        match lookup(fs, &path) {
+            Lookup::Missing => return false,
+            Lookup::Found => {}
+            Lookup::Link | Lookup::Failed => return true,
+        }
+    }
+    lookup(fs, &path.join(KCM_SOCKET_UNIT)) != Lookup::Missing
+}
+
+/// What a lookup of a path finds, a symlink in its last place not followed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lookup {
+    /// Nothing is there.
+    Missing,
+    /// A file or a directory that is no link.
+    Found,
+    /// A symlink, which is not followed.
+    Link,
+    /// The lookup failed, so the check cannot tell.
+    Failed,
+}
+
+/// Look `path` up with lstat and, when it is no link, with stat, which then
+/// looks at the same file and tells a missing path from a failed lookup.
+fn lookup<F: Filesystem>(fs: &F, path: &Path) -> Lookup {
+    match fs.is_symlink(path) {
+        Ok(true) => Lookup::Link,
+        Err(_) => Lookup::Failed,
+        Ok(false) => match fs.inode(path) {
+            Ok(Some(_)) => Lookup::Found,
+            Ok(None) => Lookup::Missing,
+            Err(_) => Lookup::Failed,
+        },
+    }
+}
+
+/// Whether a process whose `comm` is `kcm` runs as root in PID 1's mount
+/// namespace under `<root>/proc`: the `Uid:` line of its status gives 0 as
+/// its real and effective user, and its `ns/mnt` gives the inode PID 1's
+/// does. Both are read on procfs, and a check that cannot read PID 1's finds
+/// none.
+fn host_root_kcm_runs<F: Filesystem>(fs: &F, root: &Path) -> bool {
+    let proc = root.join("proc");
+    let Ok(Some(host)) = fs.inode(&proc.join("1/ns/mnt")) else {
+        return false;
+    };
+    let Ok(entries) = fs.list_directory(&proc) else {
+        return false;
+    };
+    entries
         .iter()
-        .any(|daemon| running.contains(*daemon))
+        .filter(|entry| is_pid_dir(entry))
+        .any(|entry| {
+            fs.read_file_content(&entry.join("comm"))
+                .is_ok_and(|comm| comm.trim_end_matches('\n') == HEIMDAL_KCM)
+                && fs
+                    .read_file_content(&entry.join("status"))
+                    .is_ok_and(|status| runs_as_root(&status))
+                && fs
+                    .inode(&entry.join("ns/mnt"))
+                    .is_ok_and(|mnt| mnt == Some(host))
+        })
+}
+
+/// Whether a process's status gives root as its real and effective user, the
+/// first two numbers of its `Uid:` line.
+fn runs_as_root(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .is_some_and(|uids| {
+            let mut uids = uids.split_whitespace();
+            uids.next() == Some("0") && uids.next() == Some("0")
+        })
+}
+
+/// Whether `entry`, under `<root>/proc`, is the directory of a process: its
+/// name is a number.
+fn is_pid_dir(entry: &Path) -> bool {
+    entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// The state files sssd leaves behind when it stops, as paths on the decoy

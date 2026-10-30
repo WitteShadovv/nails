@@ -143,6 +143,11 @@ pub struct MockFilesystem {
     /// and only reads as unattached when a test maps it onto `/`'s id with
     /// [`mock_set_device_id`](Self::mock_set_device_id).
     pub(super) device_ids: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    /// Answers of [`Filesystem::inode`](crate::Filesystem::inode) a test set,
+    /// keyed by path: an inode, or the kind of error the lookup fails with. An
+    /// unset path that exists gets a per-path distinct inode (see
+    /// [`MockFilesystem::inode_impl`]), and one that does not, none.
+    pub(super) inodes: Arc<Mutex<HashMap<PathBuf, std::result::Result<u64, std::io::ErrorKind>>>>,
     /// Backing-file devices reported by
     /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device),
     /// keyed by loop device node. An unset node cannot be read.
@@ -203,6 +208,7 @@ impl MockFilesystem {
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
             device_ids: Arc::new(Mutex::new(HashMap::new())),
+            inodes: Arc::new(Mutex::new(HashMap::new())),
             loop_backing_devices: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
@@ -271,6 +277,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.device_ids
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.inodes
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
