@@ -35,12 +35,14 @@
 //! ([`Selinuxfs::NotMounted`]) does not run it: it keeps the configuration
 //! file of packages installed once, or boots with SELinux off, and no policy
 //! reads a label there. Such a host, and one whose facts report no SELinux,
-//! copies on a best effort basis: a decoy directory without a label (the usual
-//! case there) or none at all, a filesystem without extended attributes, or a
-//! link or a file in place of an upper directory leaves the upper as it was,
-//! so such a host gets the same hidden root as before. Any other failure is an
-//! error either way. The activation says so in one line on a host that is
-//! configured for SELinux but does not run it ([`configured_but_not_running`]).
+//! copies on a best effort basis: a label the decoy directory has is copied
+//! there too, but a decoy directory without a label (the usual case there) or
+//! none at all, a filesystem without extended attributes, or a link or a file
+//! in place of an upper directory leaves the upper as it was, so a decoy
+//! without labels gets the same hidden root there as before. Any other failure
+//! is an error either way. The activation says so in one line on a host that
+//! is configured for SELinux but does not run it
+//! ([`configured_but_not_running`]).
 //!
 //! # Where the copies go
 //!
