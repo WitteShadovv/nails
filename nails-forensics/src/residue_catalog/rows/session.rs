@@ -215,7 +215,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         },
         mitigation: "Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now, or that a timer, path unit, enabled service or cron job the check reads starts, does not skip it; the docs name what the check does not read.",
         doc_anchor: "decoy-requirements.md#the-locate-database",
-        e2e: E2e::None("the refusal and its fixes are unit tested"),
+        e2e: E2e::Test("locate-database"),
         residual: false,
         conclusion: None,
     },
