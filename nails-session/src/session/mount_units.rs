@@ -22,13 +22,15 @@
 //! (`/etc/systemd/system`, `/usr/local/lib/systemd/system`,
 //! `/usr/lib/systemd/system`, `/lib/systemd/system`) and of `/run`
 //! (`/run/systemd/system` and the generator directories the decoy's start
-//! filled), less those the fstab generator made from an fstab line the fstab
-//! policy decides: a unit whose file is in a generator directory and says
-//! `SourcePath=/etc/fstab`, and whose name is the one such a line's mount
-//! point, automount or swap device makes. A copy of a generated unit
-//! elsewhere (`systemctl edit --full` writes one to `/etc/systemd/system`,
-//! which outranks the generator's) is decided like any other unit, and so is
-//! a generated unit no decided line makes. Each is read from the first unit
+//! filled), less those the fstab generator made from an fstab line whose
+//! decision keeps them off or puts their mount point in place: a unit whose
+//! file is in a generator directory and says `SourcePath=/etc/fstab`, and
+//! that the fstab policy masks, skips, binds or overlays. A copy of a
+//! generated unit elsewhere (`systemctl edit --full` writes one to
+//! `/etc/systemd/system`, which outranks the generator's) is decided like any
+//! other unit, and so is a generated unit of a line the policy leaves as it
+//! is (its drop-ins, or a link to a `noauto` line's unit, can make it mount a
+//! disk) or of no line at all. Each is read from the first unit
 //! directory in systemd's order that has it, with its drop-ins, those of its
 //! name's prefixes (`srv-.mount.d`) and of its type (`mount.d`) included
 //! ([`unit_dirs`], [`unit_file`]); a `.requires` link says a target requires
@@ -73,7 +75,7 @@
 pub mod unit_dirs;
 pub mod unit_file;
 
-use super::fstab::{FstabEntry, escape_path, is_virtual_type};
+use super::fstab::{FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit};
 use super::policy::{self, Decision, KeptOff, Present, Units, Unreached, Unskippable};
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::plan::{MaskCause, Skip};
@@ -470,33 +472,46 @@ fn mounted_at<'a>(mounts: &'a [MountEntry], target: &Path) -> Option<&'a MountEn
     mounts.iter().rev().find(|m| m.mount_point == target)
 }
 
-/// The units the fstab generator makes for `fstab`: each line's mount or
-/// swap unit, and its automount.
-fn fstab_units(fstab: &[FstabEntry]) -> Vec<String> {
-    fstab
-        .iter()
-        .flat_map(|entry| {
-            let units = Units::of(entry);
-            units.unit.into_iter().chain(units.automount)
-        })
-        .collect()
+/// The units the fstab policy's `decisions` keep from starting or put in
+/// place: those they mask or skip, and the mount and automount units of a
+/// mount point they bind or overlay, which the hidden systemd finds taken. A
+/// line the policy leaves as it is covers no unit: its unit may differ from
+/// the line (a drop-in, a link to a `noauto` line's unit) and is decided as
+/// a unit of its own.
+fn covered_units(decisions: &[Decision]) -> Vec<String> {
+    let mut units = Vec::new();
+    for decision in decisions {
+        match decision {
+            Decision::ReadOnlyBind { target } | Decision::Overlay { target } => {
+                units.push(mount_unit(target));
+                units.push(automount_unit(target));
+            }
+            Decision::Mask { units: masked, .. } => units.extend(masked.iter().cloned()),
+            Decision::Skip { skip, masked, .. } => {
+                units.extend(skip.units.iter().cloned());
+                units.extend(masked.iter().cloned());
+            }
+            Decision::Leave { .. } | Decision::Refuse { .. } => {}
+        }
+    }
+    units
 }
 
 /// Decide each of `units` as an fstab line with what its files say would be
-/// decided (see the module docs). `fstab` holds the lines the fstab policy
-/// decides, `mounts` is the decoy's live mount table, with the mount points
+/// decided (see the module docs). `fstab_decisions` are the fstab policy's
+/// decisions, `mounts` is the decoy's live mount table, with the mount points
 /// as the decoy sees them, `present` tells whether a device is there now,
 /// and `sys` is the sysfs the decoy's zram devices show in.
 pub fn decide(
     dirs: UnitDirs<'_>,
     units: &[NativeUnit],
-    fstab: &[FstabEntry],
+    fstab_decisions: &[Decision],
     mounts: &[MountEntry],
     hidden_root: &Path,
     present: Present<'_>,
     sys: &Path,
 ) -> Vec<Decision> {
-    let from_fstab = fstab_units(fstab);
+    let from_fstab = covered_units(fstab_decisions);
     let mut decisions: Vec<Decision> = Vec::new();
     for unit in units {
         for decision in decide_one(dirs, unit, &from_fstab, mounts, hidden_root, present, sys) {
@@ -508,8 +523,8 @@ pub fn decide(
     decisions
 }
 
-/// The decisions for one unit: none for one the fstab generator made from
-/// one of the lines that make `from_fstab`, which the fstab policy decides.
+/// The decisions for one unit: none for one the fstab generator made that a
+/// decision of the fstab policy keeps off or puts in place (`from_fstab`).
 fn decide_one(
     dirs: UnitDirs<'_>,
     native: &NativeUnit,

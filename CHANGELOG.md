@@ -391,17 +391,18 @@ of this changelog for that version becomes the release notes word for word, and
   unit linked in a target's `.wants`, `.requires` or `.upholds` directory (also those for every
   target and for a prefix of its name) of the hidden root and of `/run`, with its drop-ins (those
   for a prefix of its name and for its type included), except those the fstab generator made from a
-  line the fstab policy decides (a copy of such a unit in `/etc/systemd/system`, as
-  `systemctl edit --full` makes, is decided as a unit of its own): a filesystem the decoy has
-  mounted now is bound read-only or overlaid, one not mounted now is skipped or masked, and the
-  automount of a filesystem put in place is kept off. RAM and kernel filesystems are left to the
-  hidden systemd, and so is a zram swap whose zram device has no backing device. One with a backing
-  device is kept off like disk swap. A unit whose files cannot be read, or that names its source by
-  a specifier, is masked, and a directory of unit links that cannot be listed refuses the
-  activation. A mount unit that only another unit pulls in is not decided. `nails check` lists the
-  decisions with the fstab's. A mask now also goes into `/run/systemd/system.control`: in
-  `/run/systemd/system` alone it lost to a unit in `/etc/systemd/system`, where NixOS installs every
-  unit, so the hidden systemd started such a unit masked there all the same.
+  line whose decision keeps them off or puts their mount point in place (a copy of such a unit in
+  `/etc/systemd/system`, as `systemctl edit --full` makes, is decided as a unit of its own, and so
+  is the unit of a line the policy leaves as it is): a filesystem the decoy has mounted now is bound
+  read-only or overlaid, one not mounted now is skipped or masked, and the automount of a filesystem
+  put in place is kept off. RAM and kernel filesystems are left to the hidden systemd, and so is a
+  zram swap whose zram device has no backing device. One with a backing device is kept off like disk
+  swap. A unit whose files cannot be read, or that names its source by a specifier, is masked, and a
+  directory of unit links that cannot be listed refuses the activation. A mount unit that only
+  another unit pulls in is not decided. `nails check` lists the decisions with the fstab's. A mask
+  now also goes into `/run/systemd/system.control`: in `/run/systemd/system` alone it lost to a unit
+  in `/etc/systemd/system`, where NixOS installs every unit, so the hidden systemd started such a
+  unit masked there all the same.
 - A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
   keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
   fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
@@ -426,8 +427,10 @@ of this changelog for that version becomes the release notes word for word, and
 - An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
   reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
   left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and
-  the attach gate did not count its device among the storage the decoy uses. The older automount
-  spelling `comment=systemd.automount` counts as an automount, as it does for systemd.
+  the attach gate did not count its device among the storage the decoy uses. The same held for a
+  `noauto` entry that names a unit to pull it in with `x-systemd.wanted-by=` or
+  `x-systemd.required-by=`, which the generator links there whatever `noauto` says. The older
+  automount spelling `comment=systemd.automount` counts as an automount, as it does for systemd.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root

@@ -30,7 +30,7 @@
 //! directly. `systemd-version` judges the version it is built with; the others
 //! read the live system in `run`.
 
-use super::fstab::{FstabEntry, parse_in_root, read_in_root as read_fstab};
+use super::fstab::{parse_in_root, read_in_root as read_fstab};
 use super::layout::Paths;
 use super::mount_units;
 use super::policy::{self, Decision};
@@ -353,11 +353,11 @@ pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult 
 /// The decisions for the decoy's mount, swap and automount units outside its
 /// fstab ([`mount_units`]), read in `dirs` (the decoy root and its `/run`),
 /// as activation decides them: the refusal of the entry when a directory of
-/// their links cannot be listed. `fstab` holds the decoy's fstab lines,
-/// which the fstab policy decides.
+/// their links cannot be listed. `fstab_decisions` are the fstab policy's
+/// decisions for the decoy's fstab.
 pub fn decoy_units(
     dirs: mount_units::UnitDirs<'_>,
-    fstab: &[FstabEntry],
+    fstab_decisions: &[Decision],
     mounts: &[MountEntry],
     hidden_root: &Path,
 ) -> Vec<Decision> {
@@ -365,7 +365,7 @@ pub fn decoy_units(
         Ok(units) => mount_units::decide(
             dirs,
             &units,
-            fstab,
+            fstab_decisions,
             mounts,
             hidden_root,
             &policy::device_present,
@@ -424,7 +424,8 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
             root: &self.root,
             run: &run,
         };
-        decisions.extend(decoy_units(dirs, &entries, &mounts, &self.hidden_root));
+        let native = decoy_units(dirs, &decisions, &mounts, &self.hidden_root);
+        decisions.extend(native);
         let (_, unskipped) = mount_units::kept_off(dirs, &entries, &decisions);
         Ok(judge_fstab(&decisions, &unskipped))
     }
