@@ -1,0 +1,10 @@
+{
+  "command": "config",
+  "error": {
+    "code": "plan_stale",
+    "message": "/mnt/data/config/nails.toml changed after the change was planned; plan it again. Nothing was written.",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}

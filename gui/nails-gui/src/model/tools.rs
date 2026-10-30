@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The window's tools: Verify, Rehearsal, Discard Hidden Changes and Set Up
-//! Hidden Volume, each a page of its own over the session's page.
+//! The window's tools: Verify, Rehearsal, Settings, Discard Hidden Changes
+//! and Set Up Hidden Volume, each a page of its own over the session's page.
 //!
 //! A row of the session's page opens a tool, once that page settled: Verify
-//! and Rehearsal on both sides, Discard Hidden Changes and Set Up Hidden
-//! Volume on the decoy only. The engine refuses a discard in a hidden
+//! and Rehearsal on both sides, Settings in a hidden session, where settings
+//! change, and Discard Hidden Changes and Set Up Hidden Volume on the decoy
+//! only. The engine refuses a discard in a hidden
 //! session, whose system it would change under it; it would run a set up
 //! there, on the volume the session runs from, so the window is what keeps
 //! Set Up off a hidden session's page. The window offers both only where its
@@ -19,6 +20,9 @@
 //! - **Verify** ([`verify`]) and each step of the **rehearsal**
 //!   ([`rehearsal`]) are requests of their own, as their CLI commands ask
 //!   nothing first.
+//! - **Settings** ([`settings`]) reads them with `config show`, and changes
+//!   one through a plan, its token and its apply, as `config set` and
+//!   `config unset` do.
 //! - **Discard** ([`discard`]) and **Set Up** ([`init`]) go through a plan,
 //!   its token and its apply: the plan's answer words the question, and only
 //!   the person's yes sends the apply with the plan's token. A discard whose
@@ -40,6 +44,7 @@ use crate::worker::{Ask, Kind};
 mod discard;
 mod init;
 mod rehearsal;
+mod settings;
 mod verify;
 
 pub use discard::{canonical_folder, holds_a_home, valid_folder};
@@ -55,6 +60,8 @@ pub enum ToolKind {
     Discard,
     /// Lay out the hidden volume.
     SetUp,
+    /// See and change the settings.
+    Settings,
 }
 
 impl ToolKind {
@@ -68,7 +75,7 @@ impl ToolKind {
                 ToolKind::Discard,
                 ToolKind::SetUp,
             ],
-            Place::Hidden => &[ToolKind::Verify, ToolKind::Rehearsal],
+            Place::Hidden => &[ToolKind::Verify, ToolKind::Rehearsal, ToolKind::Settings],
             Place::Activating | Place::Unknown => &[],
         }
     }
@@ -81,6 +88,7 @@ impl ToolKind {
             ToolKind::Rehearsal => text::REHEARSAL,
             ToolKind::Discard => text::DISCARD,
             ToolKind::SetUp => text::SET_UP,
+            ToolKind::Settings => text::SETTINGS,
         }
     }
 
@@ -92,6 +100,7 @@ impl ToolKind {
             ToolKind::Rehearsal => text::REHEARSAL_WHAT,
             ToolKind::Discard => text::DISCARD_WHAT,
             ToolKind::SetUp => text::SET_UP_ROW,
+            ToolKind::Settings => text::SETTINGS_ROW,
         }
     }
 }
@@ -114,6 +123,7 @@ pub(super) enum Tool {
     Rehearsal(rehearsal::Rehearsal),
     Discard(discard::Discard),
     SetUp(init::SetUp),
+    Settings(settings::Settings),
 }
 
 impl Tool {
@@ -123,6 +133,7 @@ impl Tool {
             Tool::Rehearsal(_) => ToolKind::Rehearsal,
             Tool::Discard(_) => ToolKind::Discard,
             Tool::SetUp(_) => ToolKind::SetUp,
+            Tool::Settings(_) => ToolKind::Settings,
         }
     }
 }
@@ -231,6 +242,10 @@ impl Model {
             }
             ToolKind::Discard => (Tool::Discard(discard::Discard::default()), None),
             ToolKind::SetUp => (Tool::SetUp(init::SetUp::default()), None),
+            ToolKind::Settings => {
+                let (settings, first) = settings::Settings::open();
+                (Tool::Settings(settings), Some(first))
+            }
         };
         self.tool = Some(tool);
         first
@@ -240,6 +255,12 @@ impl Model {
     /// question waits, and ask for the status that brings it up to date.
     pub fn back(&mut self) -> Option<Ask> {
         if self.question.is_some() || self.running.is_some() {
+            return None;
+        }
+        // A setting's page goes back to the list of settings first.
+        if let Some(Tool::Settings(settings)) = &mut self.tool
+            && settings.back()
+        {
             return None;
         }
         let tool = self.tool.take()?;
@@ -252,7 +273,7 @@ impl Model {
                 self.planted_here = rehearsal.planted_here();
                 false
             }
-            Tool::Verify(_) => false,
+            Tool::Verify(_) | Tool::Settings(_) => false,
         };
         if changed {
             // What the check found may have changed with it.
@@ -263,9 +284,28 @@ impl Model {
 
     /// What the person typed so far into the open tool's field.
     pub fn edited(&mut self, typed: &str) {
-        if let Some(Tool::Discard(discard)) = &mut self.tool {
-            discard.edited(typed);
+        match &mut self.tool {
+            Some(Tool::Discard(discard)) => discard.edited(typed),
+            Some(Tool::Settings(settings)) => settings.edited(typed),
+            _ => {}
         }
+    }
+
+    /// The person picked row `index` of the open tool's rows: a setting, or
+    /// a state or an option of one.
+    pub fn choose(&mut self, index: usize) -> Option<Ask> {
+        if self.question.is_some() || self.running.is_some() {
+            return None;
+        }
+        let hidden = self.context().hidden;
+        let Some(Tool::Settings(settings)) = &mut self.tool else {
+            return None;
+        };
+        let ask = settings.choose(index, hidden)?;
+        if matches!(ask, Ask::Plan(_)) {
+            self.plan_for = Some(PlanFor::Tool);
+        }
+        Some(ask)
     }
 
     /// What the page's second action does, while the page has one.
@@ -305,6 +345,7 @@ impl Model {
             Tool::Rehearsal(rehearsal) => rehearsal.page(&cx),
             Tool::Discard(discard) => discard.page(&cx),
             Tool::SetUp(set_up) => set_up.page(&cx),
+            Tool::Settings(settings) => settings.page(&cx),
         })
     }
 
@@ -318,6 +359,7 @@ impl Model {
             Tool::Discard(discard) if !hidden => discard.action(label),
             Tool::SetUp(set_up) if !hidden => set_up.action(label, root.as_deref()),
             Tool::Discard(_) | Tool::SetUp(_) => None,
+            Tool::Settings(settings) => settings.action(label, hidden),
         }?;
         if matches!(ask, Ask::Plan(_)) {
             self.plan_for = Some(PlanFor::Tool);
@@ -328,7 +370,7 @@ impl Model {
     /// Whether the answer of a `kind` request is the open tool's.
     pub(super) fn answers_tool(&self, kind: Kind) -> bool {
         match kind {
-            Kind::Verify | Kind::Rehearse => self.tool.is_some(),
+            Kind::Verify | Kind::Rehearse | Kind::Config => self.tool.is_some(),
             Kind::Plan | Kind::Apply => matches!(self.plan_for, Some(PlanFor::Tool)),
             Kind::Status | Kind::Check | Kind::Recover => false,
         }
@@ -346,6 +388,7 @@ impl Model {
             Some(Tool::Rehearsal(rehearsal)) => rehearsal.answered(answer),
             Some(Tool::Discard(discard)) => discard.answered(kind, answer),
             Some(Tool::SetUp(set_up)) => set_up.answered(kind, answer),
+            Some(Tool::Settings(settings)) => return settings.answered(kind, answer),
             None => {}
         }
         Vec::new()
@@ -358,6 +401,9 @@ impl Model {
         match (self.tool.as_ref()?, data) {
             (Tool::Discard(_), PlanData::Discard(plan)) => Some(discard::question(plan)),
             (Tool::SetUp(_), PlanData::Init(plan)) => Some((init::question(plan), None)),
+            (Tool::Settings(settings), PlanData::ConfigEdit(plan)) => {
+                settings.question(plan).map(|question| (question, None))
+            }
             _ => None,
         }
     }
@@ -372,3 +418,7 @@ impl Model {
 #[cfg(test)]
 #[path = "tools_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tools_settings_tests.rs"]
+mod settings_tests;

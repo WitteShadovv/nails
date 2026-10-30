@@ -8,8 +8,8 @@
 mod support;
 
 use nails_api::protocol::{
-    ActivateArgs, CheckArgs, DeactivateArgs, DiscardPlanArgs, ErrorCode, Frame, Hello, InitArgs,
-    Op, PROTOCOL_VERSION, ProtocolError, RELEASE, Token,
+    ActivateArgs, CheckArgs, ConfigEditArgs, DeactivateArgs, DiscardPlanArgs, ErrorCode, Frame,
+    Hello, InitArgs, Op, PROTOCOL_VERSION, ProtocolError, RELEASE, Token,
 };
 use nails_api::{CheckOutcome, Event};
 use nails_gui::client::{Answer, Client, ClientError, Plan, PlanAnswer, PlanData, ours};
@@ -335,6 +335,14 @@ fn every_kind_of_plan_applies_with_its_own_apply() {
             }),
             json!({"path": "/mnt/data", "hardware_config": null, "skipped": "no NixOS", "warnings": [], "token": token()}),
         ),
+        (
+            Plan::ConfigEdit(ConfigEditArgs {
+                set: Vec::new(),
+                unset: vec!["persona.mode".to_string()],
+            }),
+            json!({"path": "/mnt/data/config/nails.toml", "changes": [
+                {"key": "persona.mode", "before": "fresh-home", "after": null}], "token": token()}),
+        ),
     ];
     for (plan, data) in plans {
         let answer = data.clone();
@@ -356,6 +364,7 @@ fn every_kind_of_plan_applies_with_its_own_apply() {
             Plan::Activate(_) => Op::ActivateApply(Token { token: token() }),
             Plan::Deactivate(_) => Op::DeactivateApply(Token { token: token() }),
             Plan::Init(_) => Op::InitApply(Token { token: token() }),
+            Plan::ConfigEdit(_) => Op::ConfigEditApply(Token { token: token() }),
             Plan::Discard(_) => unreachable!(),
         };
         assert_eq!(ops[2], expected);

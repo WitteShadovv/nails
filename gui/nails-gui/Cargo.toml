@@ -136,3 +136,11 @@ required-features = ["testing"]
 [[test]]
 name = "emergency_long_request"
 required-features = ["testing"]
+
+[[test]]
+name = "settings"
+required-features = ["testing"]
+
+[[test]]
+name = "settings_wired"
+required-features = ["testing"]
