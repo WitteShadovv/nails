@@ -328,9 +328,9 @@ pub struct Plan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernel_settings: Vec<crate::whole_root::kernel_helpers::KernelSetting>,
     /// What the session measures to set the kernel's process-number counter
-    /// back on the way back, so the decoy's units get the numbers its own boot
-    /// gave them (see [`crate::whole_root::fresh_pids`]). Absent from a plan
-    /// written before it was recorded: the numbers then continue.
+    /// back on the way back, so the decoy's getty gets about the number its
+    /// own boot gave it (see [`crate::whole_root::fresh_pids`]). Absent from a
+    /// plan written before it was recorded: the numbers then continue.
     #[serde(
         default,
         skip_serializing_if = "crate::whole_root::fresh_pids::Record::is_empty"
