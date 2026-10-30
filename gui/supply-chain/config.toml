@@ -24,7 +24,7 @@ url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/
 
 [policy.i-slint-backend-winit]
 audit-as-crates-io = true
-notes = "The window builds gui/patches/i-slint-backend-winit, a copy of this crate as Slint publishes it at 1.18.1 with two changes of the project's own, each marked NAILS: in place: its wayland feature no longer turns on winit's sctk-adwaita window decorations, and its reads of the settings portal carry NO_AUTO_START. It is audited as the crates.io crate it copies, so the exemption of 1.18.1 stands for Slint's code, and the changes are reviewed as the project's own code is."
+notes = "The window builds gui/patches/i-slint-backend-winit, a copy of this crate as Slint publishes it at 1.18.1 with two changes of the project's own, each marked NAILS: in place: its wayland feature no longer turns on winit's sctk-adwaita window decorations, and its reads of the settings portal carry NO_AUTO_START. It is audited as the crates.io crate it copies, so the exemption of 1.18.1 stands for Slint's code, and the changes are reviewed as the project's own code is. cargo-vet does not see what the copy holds: just vet gui also builds the gui-patches flake check, which fails unless the copy is the published crate, by its checksum in gui/patches/i-slint-backend-winit.sha256, with gui/patches/i-slint-backend-winit.patch applied, byte for byte."
 
 [[exemptions.accesskit]]
 version = "0.24.1"
