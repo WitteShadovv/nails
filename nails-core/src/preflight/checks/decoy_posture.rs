@@ -52,7 +52,7 @@
 //! test asserts the mock records no write operation after a run.
 
 use super::super::{CheckResult, PreFlightCheck};
-use super::journald_storage::journald_persists_to_decoy_at;
+use super::journald_storage::journald_persistence_at;
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
@@ -119,15 +119,21 @@ impl DecoyPersistenceCheck {
     /// (journald, syslog, audit). The other blocker is [`Self::kdump_finding`].
     fn log_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
         let mut out = Vec::new();
-        if journald_persists_to_decoy_at(fs, root) {
-            out.push(
+        match journald_persistence_at(fs, root) {
+            Ok(false) => {}
+            Ok(true) => out.push(
                 "systemd-journald keeps a persistent journal on the decoy disk \
                  (/var/log/journal); set Storage=volatile under [Journal] in \
                  /etc/systemd/journald.conf or in a drop-in such as \
                  /etc/systemd/journald.conf.d/50-volatile.conf (drop-ins override \
                  the main file)"
                     .to_string(),
-            );
+            ),
+            Err(unread) => out.push(format!(
+                "NAILS cannot tell where systemd-journald keeps the journal, so it counts as \
+                 persistent: {unread}; {}",
+                unread.advice()
+            )),
         }
         out.extend(loggers::active_logger_blockers(fs, root));
         out

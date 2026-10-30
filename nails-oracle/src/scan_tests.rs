@@ -941,3 +941,20 @@ fn load_allowlist_parses_a_file_and_errors_on_a_missing_one() {
         "a missing allowlist file is an error"
     );
 }
+
+/// `present` tells a missing path, a tool that did not run, from one that
+/// cannot be looked up: a path below a regular file is an error, never
+/// absent, so a scan never reads such a tool's output as missing.
+#[test]
+fn present_tells_a_missing_path_from_one_that_cannot_be_looked_up() {
+    let dir = TmpDir::new();
+    let file = dir.path().join("file");
+    std::fs::write(&file, "").unwrap();
+    std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("dangling")).unwrap();
+
+    assert!(present(&file).unwrap());
+    assert!(present(&dir.path().join("dangling")).unwrap());
+    assert!(!present(&dir.path().join("missing")).unwrap());
+    let err = present(&file.join("below")).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::NotADirectory, "{err}");
+}

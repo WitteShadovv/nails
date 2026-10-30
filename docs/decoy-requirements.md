@@ -156,6 +156,20 @@ systemd 259, which persists when `/var/log/journal` exists on disk, and from
 `/usr/lib/systemd/journald.conf` documents. A systemd whose version cannot be
 read counts as persistent.
 
+Keep every main file and drop-in a regular file. systemd lists a drop-in by
+its name alone, so a directory or a link to `/dev/null` with a drop-in's name
+shadows the drop-in of that name below it, and the systemd releases do not read
+such an entry alike: from systemd 260 a directory or a device there leaves the
+whole configuration unread, the main file included. NAILS counts such a
+configuration, and one with a file it cannot read, as persistent whatever
+release runs, and names the entry: journald reads these files when it starts,
+and an update can bring 260 before it next does, at the latest when the decoy
+starts again after the way back. To mask a vendor
+drop-in, put an empty file of its name in `/etc/systemd/journald.conf.d/`. The
+same goes for logind's and systemd-coredump's configuration: `sleep-policy`
+then warns that the host may suspend an active session, and
+`decoy-persistence` that core dumps may reach the disk.
+
 NAILS reads the credential from the copy journald received, in
 `/run/credentials/systemd-journald.service/`, which only root can read. An
 unprivileged `nails check` or `nails status` cannot read it, so there the

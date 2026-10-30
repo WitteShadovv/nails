@@ -14,8 +14,13 @@ fn write(root: &Path, rel: &str, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-fn values(root: &Path, key: &str) -> Vec<String> {
+fn read(root: &Path) -> Result<Vec<Assignment>, Unread> {
     section_assignments(&RealFilesystem, root, "journald.conf", "Journal")
+}
+
+fn values(root: &Path, key: &str) -> Vec<String> {
+    read(root)
+        .expect("the configuration is read")
         .into_iter()
         .filter(|a| a.key == key)
         .map(|a| a.value)
@@ -172,7 +177,10 @@ fn malformed_header_stops_the_file() {
 #[test]
 fn missing_config_yields_nothing() {
     let tmp = tempfile::tempdir().unwrap();
-    assert!(config_files(&RealFilesystem, tmp.path(), "journald.conf").is_empty());
+    assert_eq!(
+        config_files(&RealFilesystem, tmp.path(), "journald.conf"),
+        Ok(vec![])
+    );
     assert!(!config_present(
         &RealFilesystem,
         tmp.path(),
@@ -214,7 +222,7 @@ fn drop_in_overrides_main_file() {
         "usr/lib/systemd/journald.conf.d/50-volatile.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    let all = section_assignments(&RealFilesystem, root, "journald.conf", "Journal");
+    let all = read(root).unwrap();
     assert_eq!(last_value(&all, "Storage"), Some("volatile"));
 }
 
@@ -244,6 +252,294 @@ fn etc_drop_in_shadows_same_named_lower_ones() {
     );
 }
 
+/// What puts an entry at a path.
+type Make = fn(&Path);
+
+/// The entries that are no regular file, by what makes one at a path: a
+/// directory, a link to `/dev/null` (a device), and a link to itself, which
+/// cannot be followed. A FIFO or a socket takes the directory's way.
+fn not_regular() -> [(&'static str, Make); 3] {
+    [
+        ("a directory", |path| fs::create_dir(path).unwrap()),
+        ("a link to /dev/null", |path| {
+            std::os::unix::fs::symlink("/dev/null", path).unwrap()
+        }),
+        ("a link to itself", |path| {
+            std::os::unix::fs::symlink(path.file_name().unwrap(), path).unwrap()
+        }),
+    ]
+}
+
+fn unread(path: PathBuf, cause: UnreadCause) -> Result<Vec<Assignment>, Unread> {
+    Err(Unread { path, cause })
+}
+
+/// systemd lists a drop-in by its name whatever is there, so an entry that is
+/// no regular file shadows the drop-in of that name below it, and then no
+/// release reads on alike: up to 259 `/dev/null` reads as empty while a
+/// directory stops the reading, from 260 a directory or a device leaves none
+/// of the configuration read, and from 258 a link that cannot be followed is
+/// not listed, so the drop-in below it is read. The configuration is unread,
+/// whatever the files around it set; NAILS used to pass over a directory and
+/// read the drop-in below it.
+#[test]
+fn an_entry_that_is_no_regular_file_leaves_the_configuration_unread() {
+    for (what, make) in not_regular() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "etc/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        write(
+            root,
+            "usr/lib/systemd/journald.conf.d/50-x.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        write(
+            root,
+            "etc/systemd/journald.conf.d/90-z.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        let entry = root.join("etc/systemd/journald.conf.d/50-x.conf");
+        make(&entry);
+        assert_eq!(
+            read(root),
+            unread(entry.clone(), UnreadCause::NotRegular),
+            "{what}"
+        );
+        assert_eq!(
+            config_files(&RealFilesystem, root, "journald.conf"),
+            Err(Unread {
+                path: entry,
+                cause: UnreadCause::NotRegular
+            }),
+            "{what}"
+        );
+        assert!(
+            config_present(&RealFilesystem, root, "journald.conf"),
+            "{what}"
+        );
+    }
+}
+
+/// Only the entry that wins a name counts: systemd never opens what a drop-in
+/// shadows, so an entry below it that is no regular file changes nothing.
+#[test]
+fn a_drop_in_shadows_an_entry_below_it_that_is_no_regular_file() {
+    for (what, make) in not_regular() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "etc/systemd/journald.conf.d/50-x.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        let below = root.join("usr/lib/systemd/journald.conf.d/50-x.conf");
+        fs::create_dir_all(below.parent().unwrap()).unwrap();
+        make(&below);
+        assert_eq!(values(root, "Storage"), vec!["volatile"], "{what}");
+    }
+}
+
+/// systemd 260 and later open every drop-in before they parse one, so an
+/// entry that is no regular file leaves the configuration unread even behind
+/// a line that stops the reading before it comes.
+#[test]
+fn an_entry_behind_a_refused_line_still_leaves_the_configuration_unread() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/journald.conf.d/10-a.conf",
+        "[Journal]\nStorage=volatile\n[Broken\n",
+    );
+    let entry = root.join("etc/systemd/journald.conf.d/50-x.conf");
+    fs::create_dir(&entry).unwrap();
+    assert_eq!(read(root), unread(entry, UnreadCause::NotRegular));
+}
+
+/// A link to a path that does not exist is the one entry every release reads
+/// alike: its open fails with ENOENT, which systemd skips, so it shadows the
+/// drop-in of its name below it, adds nothing, and the reading goes on.
+#[test]
+fn a_link_that_leads_nowhere_shadows_and_adds_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/journald.conf",
+        "[Journal]\nStorage=persistent\n",
+    );
+    write(
+        root,
+        "usr/lib/systemd/journald.conf.d/50-x.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    write(
+        root,
+        "usr/lib/systemd/journald.conf.d/90-z.conf",
+        "[Journal]\nCompress=no\n",
+    );
+    let dropins = root.join("etc/systemd/journald.conf.d");
+    fs::create_dir_all(&dropins).unwrap();
+    std::os::unix::fs::symlink("nowhere.conf", dropins.join("50-x.conf")).unwrap();
+    assert_eq!(values(root, "Storage"), vec!["persistent"]);
+    assert_eq!(values(root, "Compress"), vec!["no"]);
+}
+
+/// A main file that is no regular file is not read alike either: up to 259 a
+/// directory fails the read before any drop-in and `/dev/null` reads as
+/// empty, and from 260 either leaves the whole configuration unread. NAILS
+/// counts it unread, where it went on to the main file below a directory.
+#[test]
+fn a_main_file_that_is_no_regular_file_leaves_the_configuration_unread() {
+    for (what, make) in not_regular() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "usr/lib/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        write(
+            root,
+            "etc/systemd/journald.conf.d/50-x.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        let main = root.join("etc/systemd/journald.conf");
+        make(&main);
+        assert_eq!(read(root), unread(main, UnreadCause::NotRegular), "{what}");
+    }
+}
+
+/// A main file that is a link leading nowhere is none: systemd's open fails
+/// with ENOENT and it takes the main file of the next directory.
+#[test]
+fn a_main_file_link_that_leads_nowhere_is_passed_over() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "usr/lib/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs::create_dir_all(root.join("etc/systemd")).unwrap();
+    std::os::unix::fs::symlink("nowhere.conf", root.join("etc/systemd/journald.conf")).unwrap();
+    assert_eq!(values(root, "Storage"), vec!["volatile"]);
+}
+
+/// systemd reads its configuration as root. A file or a drop-in directory
+/// that NAILS cannot read, as an unprivileged `check` cannot read one that
+/// only root may, leaves the configuration unread, where such a file used to
+/// add nothing. A file behind a line that stops the reading is read by
+/// neither. Skips as root, who reads every file.
+#[test]
+fn a_file_nails_cannot_read_leaves_the_configuration_unread() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let dropins = root.join("etc/systemd/journald.conf.d");
+    let file = dropins.join("50-x.conf");
+    write(
+        root,
+        "etc/systemd/journald.conf.d/50-x.conf",
+        "[Journal]\nStorage=persistent\n",
+    );
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&file).is_ok() {
+        eprintln!("skipping: this user reads a file of mode 000");
+        return;
+    }
+    write(
+        root,
+        "etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    assert_eq!(read(root), unread(file.clone(), UnreadCause::CannotRead));
+
+    write(
+        root,
+        "etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n[Broken\n",
+    );
+    assert_eq!(values(root, "Storage"), vec!["volatile"]);
+
+    fs::set_permissions(&dropins, fs::Permissions::from_mode(0o000)).unwrap();
+    let listed = read(root);
+    fs::set_permissions(&dropins, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(listed, unread(dropins, UnreadCause::CannotRead));
+
+    // A main file in a directory NAILS may not search cannot be looked up.
+    let conf_dir = root.join("etc/systemd");
+    fs::set_permissions(&conf_dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let looked_up = read(root);
+    fs::set_permissions(&conf_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        looked_up,
+        unread(conf_dir.join("journald.conf"), UnreadCause::CannotRead)
+    );
+}
+
+/// A file that is gone by the time it is read adds nothing, as systemd skips
+/// a file whose open fails with ENOENT, and the reading goes on: the
+/// in-memory double lists such a file and holds nothing for it.
+#[test]
+fn a_file_gone_when_it_is_read_adds_nothing() {
+    let fs = crate::MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=persistent\n",
+    );
+    let gone = "/etc/systemd/journald.conf.d/50-x.conf";
+    let last = "/etc/systemd/journald.conf.d/90-z.conf";
+    fs.mock_set_directory_contents(
+        Path::new("/etc/systemd/journald.conf.d"),
+        vec![PathBuf::from(gone), PathBuf::from(last)],
+    );
+    fs.mock_set_path_type(gone, crate::filesystem::PathKind::File);
+    fs.mock_add_file(last, "[Journal]\nStorage=volatile\n");
+    let storage = |value: &str| Assignment {
+        key: "Storage".to_string(),
+        value: value.to_string(),
+    };
+    assert_eq!(
+        section_assignments(&fs, Path::new("/"), "journald.conf", "Journal"),
+        Ok(vec![storage("persistent"), storage("volatile")])
+    );
+}
+
+/// An unread configuration names its entry, and says what to do about it.
+#[test]
+fn an_unread_configuration_names_its_entry_and_what_to_do() {
+    let path = PathBuf::from("/etc/systemd/journald.conf.d/50-x.conf");
+    let not_regular = Unread {
+        path: path.clone(),
+        cause: UnreadCause::NotRegular,
+    };
+    assert_eq!(
+        not_regular.to_string(),
+        "/etc/systemd/journald.conf.d/50-x.conf is not a regular file"
+    );
+    assert!(
+        not_regular.advice().ends_with(
+            "put a regular file there (an empty one masks a vendor file of the same name)"
+        ),
+        "{}",
+        not_regular.advice()
+    );
+    let cannot_read = Unread {
+        path,
+        cause: UnreadCause::CannotRead,
+    };
+    assert_eq!(
+        cannot_read.to_string(),
+        "NAILS cannot read /etc/systemd/journald.conf.d/50-x.conf"
+    );
+    assert_eq!(cannot_read.advice(), "run the command again with sudo");
+}
+
 #[test]
 fn drop_ins_are_ordered_by_file_name_across_directories() {
     let tmp = tempfile::tempdir().unwrap();
@@ -263,7 +559,7 @@ fn drop_ins_are_ordered_by_file_name_across_directories() {
         "run/systemd/journald.conf.d/50-m.conf",
         "[Journal]\nStorage=none\n",
     );
-    // Hidden files, other suffixes and directories are not drop-ins.
+    // Hidden names and other suffixes are no drop-ins, whatever is there.
     write(
         root,
         "etc/systemd/journald.conf.d/99-off.conf.disabled",
@@ -274,7 +570,8 @@ fn drop_ins_are_ordered_by_file_name_across_directories() {
         "etc/systemd/journald.conf.d/.99-hidden.conf",
         "[Journal]\nStorage=auto\n",
     );
-    fs::create_dir_all(root.join("etc/systemd/journald.conf.d/99-dir.conf")).unwrap();
+    fs::create_dir_all(root.join("etc/systemd/journald.conf.d/.99-dir.conf")).unwrap();
+    fs::create_dir_all(root.join("etc/systemd/journald.conf.d/99-dir.conf.d")).unwrap();
     assert_eq!(
         values(root, "Storage"),
         vec!["persistent", "none", "volatile"]
@@ -295,7 +592,7 @@ fn last_assignment_wins_within_and_across_files() {
         "etc/systemd/journald.conf.d/10-a.conf",
         "[Journal]\nStorage=none\nStorage=volatile\n",
     );
-    let all = section_assignments(&RealFilesystem, root, "journald.conf", "Journal");
+    let all = read(root).unwrap();
     assert_eq!(last_value(&all, "Storage"), Some("volatile"));
     assert_eq!(last_value(&all, "Missing"), None);
 }
@@ -345,10 +642,7 @@ fn a_latin1_comment_does_not_hide_a_later_assignment() {
     // ...but the config read keeps the valid lines, so the assignment below
     // the Latin-1 comment is seen.
     assert_eq!(
-        last_value(
-            &section_assignments(&RealFilesystem, root, "journald.conf", "Journal"),
-            "Storage"
-        ),
+        last_value(&read(root).unwrap(), "Storage"),
         Some("persistent")
     );
 }

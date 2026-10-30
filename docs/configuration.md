@@ -463,9 +463,11 @@ watcher) and holds logind inhibitors for the life of the session:
   `handle-lid-switch` **block** inhibitor, which logind always honours: a
   closed lid then does nothing at all, neither suspend nor lock the screen. A
   lid switch set to `lock`, `ignore` or `poweroff` is left to logind and keeps
-  working. A laptop kept running with the lid shut can overheat, so still set
-  the lid switch to `lock`. Both inhibitors are released together at the way
-  back.
+  working, unless NAILS cannot read logind's configuration the way logind does
+  (a drop-in that is no regular file, or a file it cannot read): the guard then
+  takes the lid switch too. A laptop kept running with the lid shut can
+  overheat, so still set the lid switch to `lock`. Both inhibitors are released
+  together at the way back.
 - `teardown` — hold a sleep **delay** inhibitor and, on the host's
   `PrepareForSleep` signal, power the machine off within logind's
   `InhibitDelayMaxSec` window (default 5s) instead of letting it sleep with the

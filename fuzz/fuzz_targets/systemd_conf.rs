@@ -50,7 +50,9 @@ fuzz_target!(|data: &[u8]| {
 
     for (name, section) in CONFIGS {
         let fs = stage(name, &parts[0], local, vendor);
+        // Every staged file is a regular one, so the configuration is read.
         let read: Vec<(String, String)> = section_assignments(&fs, Path::new("/"), name, section)
+            .expect("a configuration of regular files is read")
             .into_iter()
             .map(|assignment| (assignment.key, assignment.value))
             .collect();
