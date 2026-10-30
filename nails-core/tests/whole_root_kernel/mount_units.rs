@@ -8,6 +8,7 @@
 
 use super::entry_kernel_tests::{FakeHost, World};
 use nails_core::session::entry;
+use nails_core::session::fstab::escape_path;
 use nails_core::session::policy::Decision;
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
@@ -202,6 +203,77 @@ fn a_filesystem_of_a_unit_outside_the_fstab_mounted_now_is_overlaid() {
                 .hidden_path()
                 .join("root/mounts/srv-layered/upper/hidden-file")
                 .exists()
+        );
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn a_unit_s_filesystem_at_a_parent_of_the_hidden_volume_leaves_the_volume_in_view() {
+    // The decoy mounts a filesystem of its own, by a unit outside its fstab,
+    // at the parent of the hidden volume's mount point. Its overlay goes in
+    // after the hidden volume's bind; the volume is bound again over it, so
+    // the hidden session finds it at its own path.
+    let _ = Rerun::new(test_path!(
+        a_unit_s_filesystem_at_a_parent_of_the_hidden_volume_leaves_the_volume_in_view
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let decoy = world.decoy.path();
+        let hidden = world.hidden_path().to_path_buf();
+        std::fs::write(hidden.join("hidden-marker"), "hidden").unwrap();
+        let parent = hidden.parent().unwrap().to_path_buf();
+        let layers = ScratchTmpfs::new("");
+        for dir in ["lower", "upper", "work"] {
+            layers.mkdir(dir);
+        }
+        let mount_point = world
+            .decoy
+            .mkdir(parent.strip_prefix("/").unwrap().to_str().unwrap());
+        nextroot::mount_overlay(
+            &layers.path().join("lower"),
+            &layers.path().join("upper"),
+            &layers.path().join("work"),
+            &mount_point,
+        )
+        .unwrap();
+        let unit = format!("{}.mount", escape_path(&parent));
+        write(
+            decoy,
+            &format!("etc/systemd/system/{unit}"),
+            "[Mount]\nWhat=overlay\nType=overlay\n\
+             Options=lowerdir=/x,upperdir=/y,workdir=/z\n",
+        );
+        link(
+            decoy,
+            &format!("etc/systemd/system/multi-user.target.wants/{unit}"),
+            &format!("../{unit}"),
+        );
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        let mounts = &entry.plan.policy_mounts;
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.target == parent && m.kind == PolicyMountKind::Overlay),
+            "{mounts:?}"
+        );
+        assert_eq!(
+            mounts
+                .iter()
+                .filter(|m| m.kind == PolicyMountKind::HiddenVolume)
+                .count(),
+            1,
+            "{mounts:?}"
+        );
+        let inside = paths.nextroot().join(hidden.strip_prefix("/").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(inside.join("hidden-marker")).unwrap(),
+            "hidden"
         );
         entry::rollback(&paths);
     });
