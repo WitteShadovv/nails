@@ -645,7 +645,7 @@ notes = "Not audited by this project, and no imported audit covers 0.12.0. It is
 [[exemptions.hashbrown]]
 version = "0.14.2"
 criteria = "safe-to-deploy"
-notes = "Not audited by this project: 0.14.2 is the base of the imported delta audits that reach 0.14.5, 0.15.5, 0.16.1, 0.17.1, the version in the lock, and this exemption stands for 0.14.2 itself. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust)."
+notes = "Not audited by this project: 0.14.2 is the base of the imported delta audits that reach 0.14.5, 0.15.5, 0.16.1 and 0.17.1, the versions in the lock, and this exemption stands for 0.14.2 itself. Of those, 0.14.5 runs at build time only, through slint-macros (the macros of slint, the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), while the window links 0.15.5, 0.16.1 and 0.17.1 at run time through slint."
 
 [[exemptions.hermit-abi]]
 version = "0.3.1"
@@ -1065,7 +1065,7 @@ notes = "Not audited by this project, and no imported audit covers 8.0.0. It is 
 [[exemptions.num_enum]]
 version = "0.7.6"
 criteria = "safe-to-deploy"
-notes = "Not audited by this project, and no imported audit covers 0.7.6. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+notes = "Not audited by this project, and no imported audit covers 0.7.6. No Linux build of the window links it: on Linux it runs at build time only, through slint-macros (the macros of slint, the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), by way of i-slint-compiler. Only a build for Android would link it, through winit. Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.num_enum_derive]]
 version = "0.7.6"
@@ -1270,7 +1270,7 @@ notes = "Not audited by this project, and no imported audit covers 0.2.17. It is
 [[exemptions.pin-utils]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
-notes = "Not audited by this project, and no imported audit covers 0.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+notes = "Not audited by this project, and no imported audit covers 0.1.1. No Linux build of the window links it: on Linux it runs at build time only, by way of spin_on, through slint-macros (the macros of slint, the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Only a build with Slint's Skia renderer, which the window leaves out, would link it. Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.pin-weak]]
 version = "1.1.0"
@@ -1605,7 +1605,7 @@ notes = "Not audited by this project, and no imported audit covers 0.4.8. It is 
 [[exemptions.spin_on]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
-notes = "Not audited by this project, and no imported audit covers 0.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+notes = "Not audited by this project, and no imported audit covers 0.1.1. No Linux build of the window links it: on Linux it runs at build time only, through slint-macros (the macros of slint, the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Only a build with Slint's Skia renderer, which the window leaves out, would link it. Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.spirv]]
 version = "0.2.0+1.5.4"
