@@ -39,7 +39,14 @@ struct Helper {
 impl Helper {
     /// Start the helper on `config` and read its hello.
     fn start(config: &Path) -> Self {
+        Self::start_with(config, &[])
+    }
+
+    /// [`start`](Self::start) with the variables `vars` set, as the launcher
+    /// sets `NAILS_TARGET_UID` for its helper.
+    fn start_with(config: &Path, vars: &[(&str, &str)]) -> Self {
         let mut child = Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+            .envs(vars.iter().copied())
             .arg("--no-log-file")
             .arg("--config")
             .arg(config)
@@ -66,7 +73,12 @@ impl Helper {
 
     /// Start the helper and complete the handshake.
     fn greeted(config: &Path) -> Self {
-        let mut helper = Self::start(config);
+        Self::greeted_with(config, &[])
+    }
+
+    /// [`greeted`](Self::greeted) with the variables `vars` set.
+    fn greeted_with(config: &Path, vars: &[(&str, &str)]) -> Self {
+        let mut helper = Self::start_with(config, vars);
         let (exit, envelope) = helper.result(Op::Hello(ours()));
         assert_eq!(exit, 0);
         assert_eq!(envelope["data"], serde_json::to_value(ours()).unwrap());
@@ -452,6 +464,27 @@ fn the_helper_answers_as_the_cli_does_where_no_session_or_volume_is_needed() {
         assert_eq!(helper.result(Op::Recover), cli_json(&config, &["recover"]));
     }
     assert_eq!(helper.close(), 0);
+}
+
+/// The account a plant names is the one planted for: the operator the
+/// launcher names its helper with (`NAILS_TARGET_UID`) never stands in for it,
+/// and a name no account has is refused as the CLI refuses it.
+#[test]
+fn a_plant_for_a_named_account_is_never_planted_for_the_launcher_s_operator() {
+    let (_dir, config) = scratch_config();
+    let uid = nix::unistd::getuid().to_string();
+    let mut helper = Helper::greeted_with(&config, &[("NAILS_TARGET_UID", uid.as_str())]);
+    let missing = "no-such-account-7f3a";
+    let answer = helper.result(Op::RehearsePlant(nails_api::protocol::RehearsePlantArgs {
+        user: Some(missing.to_string()),
+    }));
+    assert_eq!(answer.0, 2, "{}", answer.1);
+    assert_eq!(answer.1["error"]["code"], "no_such_user", "{}", answer.1);
+    assert_eq!(
+        answer,
+        cli_json(&config, &["rehearse", "plant", "--user", missing])
+    );
+    helper.close();
 }
 
 /// A live verify answers with the verify envelope and the exit its verdict
