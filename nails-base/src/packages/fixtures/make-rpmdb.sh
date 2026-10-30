@@ -17,6 +17,14 @@
 # Each package has a file in /usr/share/<name> and a program in /usr/bin,
 # both named after its version, a configuration file in /etc, a ghost log in
 # /var/log and its own directory.
+#
+# The links fixtures record files through a directory link, as Fedora does:
+# its filesystem package installs /lib as a link to usr/lib (and /bin, /sbin,
+# /lib64 and /var/run as links too), and its kernel packages record their
+# modules below /lib/modules, which rpm installs into /usr/lib/modules:
+#
+#   decoy:   filesystem 3.18-1, kernel-modules 6.17.1-200.fc44 (both x86_64)
+#   hidden:  kernel-modules 6.18.0-200.fc44 installed, 6.17.1 removed
 set -euo pipefail
 
 out=$(realpath "$1")
@@ -55,6 +63,76 @@ SPEC
   find "$work/top/RPMS" -name "$name-$version-$release.*.rpm"
 }
 
+# Build the package of the spec file $1, named $2-$3-$4.$5.
+build() {
+  rpmbuild --quiet --define "_topdir $work/top" --define "_dbpath $work/build-db" --define "_buildhost fixtures" \
+    --define "source_date_epoch_from_changelog 0" -bb "$1" >/dev/null
+  find "$work/top/RPMS" -name "$2-$3-$4.$5.rpm"
+}
+
+filesystem() {
+  cat > "$work/filesystem.spec" <<'SPEC'
+Name: filesystem
+Version: 3.18
+Release: 1
+Summary: A package of the NAILS fixtures
+License: GPL-3.0-or-later
+BuildArch: x86_64
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+%description
+The directory layout of a Fedora system, its links in /usr merged.
+%install
+mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/lib %{buildroot}/usr/lib64 %{buildroot}/usr/sbin
+mkdir -p %{buildroot}/run %{buildroot}/var
+ln -snf usr/bin %{buildroot}/bin
+ln -snf usr/sbin %{buildroot}/sbin
+ln -snf usr/lib %{buildroot}/lib
+ln -snf usr/lib64 %{buildroot}/lib64
+ln -snf ../run %{buildroot}/var/run
+%files
+/bin
+/lib
+/lib64
+/sbin
+%dir /run
+%dir /usr
+%dir /usr/bin
+%dir /usr/lib
+%dir /usr/lib64
+%dir /usr/sbin
+%dir /var
+/var/run
+SPEC
+  build "$work/filesystem.spec" filesystem 3.18 1 x86_64
+}
+
+kernel_modules() { # version
+  local version=$1 kver=$1-200.fc44.x86_64
+  cat > "$work/kernel-modules-$version.spec" <<SPEC
+Name: kernel-modules
+Version: $version
+Release: 200.fc44
+Summary: A package of the NAILS fixtures
+License: GPL-3.0-or-later
+BuildArch: x86_64
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+%description
+A kernel's modules, recorded below /lib/modules as Fedora records them.
+%install
+mkdir -p %{buildroot}/lib/modules/$kver/kernel/drivers/nails
+echo nails > %{buildroot}/lib/modules/$kver/kernel/drivers/nails/nails.ko.xz
+%files
+%dir /lib/modules/$kver
+%dir /lib/modules/$kver/kernel
+%dir /lib/modules/$kver/kernel/drivers
+%dir /lib/modules/$kver/kernel/drivers/nails
+/lib/modules/$kver/kernel/drivers/nails/nails.ko.xz
+SPEC
+  build "$work/kernel-modules-$version.spec" kernel-modules "$version" 200.fc44 x86_64
+}
+
 export SOURCE_DATE_EPOCH=1767225600
 rpmdb() { rpm --define "_db_backend sqlite" --dbpath "$1" "${@:2}" --justdb --nodeps \
   --noscripts --notriggers; }
@@ -82,8 +160,17 @@ cp -a "$shared" "$work/hidden"
 rpmdb "$work/hidden" -U --ignorearch --ignoreos "$alpha11"
 rpmdb "$work/hidden" -i --ignorearch --ignoreos "$epsilon"
 
+layout=$(filesystem)
+modules1=$(kernel_modules 6.17.1)
+modules2=$(kernel_modules 6.18.0)
+rpm --define "_db_backend sqlite" --dbpath "$work/links-decoy" --initdb
+rpmdb "$work/links-decoy" -i --ignorearch --ignoreos "$layout" "$modules1"
+cp -a "$work/links-decoy" "$work/links-hidden"
+rpmdb "$work/links-hidden" -i --ignorearch --ignoreos "$modules2"
+rpmdb "$work/links-hidden" -e kernel-modules-6.17.1-200.fc44.x86_64
+
 mkdir -p "$out"
-for side in shared decoy hidden; do
+for side in shared decoy hidden links-decoy links-hidden; do
   wal=$work/$side/rpmdb.sqlite-wal
   if [ -s "$wal" ]; then echo "the log of $side is not empty" >&2; exit 1; fi
   cp "$work/$side/rpmdb.sqlite" "$out/rpmdb-$side.sqlite"
