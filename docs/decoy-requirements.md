@@ -44,14 +44,17 @@ The decoy also has to be one the session can enter and leave:
   decoy's own firewall tables and the way back deletes the ones a session
   added, and, on a machine with a Wi-Fi interface, `iw`, with which the way
   back deletes a Wi-Fi interface a session added on one of the decoy's radios
-  (a monitor or access point interface). Without `nft` every nftables table a
-  session adds stays on the decoy until power-off: root lists it with
-  `nft list tables`, a table's name can name the VPN that made it, and a VPN
-  app's table that blocks all traffic outside its tunnel keeps the decoy
-  offline. Without `iw` such a Wi-Fi interface makes the way back power off
-  instead of returning, as does every link, MAC address, policy-routing rule
-  or nftables table of the session's that the way back sees and cannot undo
-  (the network settings and the hostname do not count).
+  (a monitor or access point interface, or the one iwd makes in place of the
+  decoy's). Without `nft` every nftables table a session adds stays on the
+  decoy until power-off: root lists it with `nft list tables`, a table's name
+  can name the VPN that made it, and a VPN app's table that blocks all traffic
+  outside its tunnel keeps the decoy offline. Without `iw` such a Wi-Fi
+  interface makes the way back power off instead of returning, as does every
+  link, MAC address, policy-routing rule or nftables table of the session's
+  that the way back sees and cannot undo (the network settings and the
+  hostname do not count). A decoy that runs iwd needs `iw`: a session that
+  runs iwd as well ends in a power-off without it, as iwd makes its own
+  interface in place of the decoy's by default when it starts.
   `nails check` and activation warn and name the package to install; they do
   not refuse, since a stock NixOS decoy has no `nft`. NAILS looks for both
   where the way back does, never in `PATH`: in `/run/current-system/sw/bin`
