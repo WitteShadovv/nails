@@ -142,6 +142,76 @@ pub struct InitArgs {
     pub no_hardware_config: bool,
 }
 
+/// The changes a configuration plan makes: the keys to set, each with its
+/// value, and the keys to remove so their defaults apply, as `nails config
+/// set` and `nails config unset` take them. A window's settings screen sends
+/// every key it changes in one plan, which writes them together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigEditArgs {
+    /// The keys to set.
+    #[serde(default)]
+    pub set: Vec<SettingArg>,
+    /// The keys to remove.
+    #[serde(default)]
+    pub unset: Vec<String>,
+}
+
+/// One key and the value to give it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingArg {
+    /// The key as docs/configuration.md lists it (`persona.mode`).
+    pub key: String,
+    /// Its value.
+    pub value: SettingValue,
+}
+
+/// A value for a key, as JSON writes it: a boolean, a whole number, a
+/// string, or a list of strings. The engine checks it against what the key
+/// takes, as the CLI does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SettingValue {
+    /// `true` or `false`.
+    Bool(bool),
+    /// A whole number.
+    Integer(u64),
+    /// A string: a path, a flake reference or a choice.
+    Text(String),
+    /// A list of strings (`persona.mask_inherited`).
+    List(Vec<String>),
+}
+
+/// The data of the answer to [`super::Op::ConfigEditPlan`] when the change
+/// writes the file: the file, what each key holds before and after, and the
+/// token that writes it. (A change the file already holds answers with the
+/// envelope `nails config set` prints, which says nothing was written, and
+/// there is no token.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigEditPlanData {
+    /// The file the apply writes.
+    pub path: String,
+    /// One entry per key named, in the order given.
+    pub changes: Vec<ConfigChange>,
+    /// The token the apply request carries back.
+    pub token: String,
+}
+
+/// One key's value as the file writes it, before and after a change: `None`
+/// where the file does not set it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigChange {
+    /// The key.
+    pub key: String,
+    /// The value the file holds now.
+    pub before: Option<serde_json::Value>,
+    /// The value the file holds after the apply.
+    pub after: Option<serde_json::Value>,
+}
+
 /// The token of a plan, which its apply request carries back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

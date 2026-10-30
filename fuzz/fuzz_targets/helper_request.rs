@@ -11,7 +11,9 @@
 //! request follows the protocol's version and has arguments of the shape the
 //! protocol states, checked here on their own rather than by the decoder's
 //! own validation (every path absolute with no control character, a token of
-//! 32 lowercase hexadecimal digits, no two options the CLI refuses together),
+//! 32 lowercase hexadecimal digits, no two options the CLI refuses together,
+//! a configuration change naming 1 to 32 keys of a setting's shape, each once,
+//! with bounded values free of control characters),
 //! and that an accepted request, written back as the window writes it, is
 //! read again as the same request, or refused as too long where the written
 //! form, which names every field, no longer fits.
@@ -20,7 +22,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use nails_api::protocol::{
-    ErrorCode, MAX_LINE_BYTES, Op, PROTOCOL_VERSION, RehearseScanArgs, VerifyArgs, decode_request,
+    ConfigEditArgs, ErrorCode, MAX_LINE_BYTES, Op, PROTOCOL_VERSION, RehearseScanArgs,
+    SettingValue, VerifyArgs, decode_request,
 };
 
 /// A path the helper may hand the engine.
@@ -56,6 +59,45 @@ fn scan_ok(args: &RehearseScanArgs) -> bool {
         && args.token_file.as_deref().is_none_or(path_ok)
 }
 
+/// A key of a setting's shape: lowercase letters, digits and `_`, with at
+/// most one `.` between a table and its key, at most 64 bytes.
+fn key_ok(key: &str) -> bool {
+    let parts: Vec<&str> = key.split('.').collect();
+    key.len() <= 64
+        && parts.len() <= 2
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        })
+}
+
+fn text_ok(text: &str) -> bool {
+    text.len() <= 4096 && !text.chars().any(char::is_control)
+}
+
+fn config_edit_ok(args: &ConfigEditArgs) -> bool {
+    let keys: Vec<&str> = args
+        .set
+        .iter()
+        .map(|setting| setting.key.as_str())
+        .chain(args.unset.iter().map(String::as_str))
+        .collect();
+    let values_ok = args.set.iter().all(|setting| match &setting.value {
+        SettingValue::Text(text) => text_ok(text),
+        SettingValue::List(texts) => texts.len() <= 64 && texts.iter().all(|text| text_ok(text)),
+        SettingValue::Bool(_) | SettingValue::Integer(_) => true,
+    });
+    (1..=32).contains(&keys.len())
+        && keys.iter().all(|key| key_ok(key))
+        && keys
+            .iter()
+            .enumerate()
+            .all(|(index, key)| !keys[..index].contains(key))
+        && values_ok
+}
+
 /// Whether `op` has the shape the protocol states for its arguments.
 fn shaped(op: &Op) -> bool {
     match op {
@@ -87,10 +129,12 @@ fn shaped(op: &Op) -> bool {
                 && args.hardware_config.as_deref().is_none_or(path_ok)
                 && !(args.no_hardware_config && args.hardware_config.is_some())
         }
+        Op::ConfigEditPlan(args) => config_edit_ok(args),
         Op::DiscardApply(token)
         | Op::ActivateApply(token)
         | Op::DeactivateApply(token)
-        | Op::InitApply(token) => token_ok(&token.token),
+        | Op::InitApply(token)
+        | Op::ConfigEditApply(token) => token_ok(&token.token),
         Op::Status
         | Op::ConfigPath
         | Op::ConfigValidate

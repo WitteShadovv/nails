@@ -11,21 +11,24 @@
 //! of printing ([`captured`]). So the two front ends cannot describe one
 //! outcome differently.
 //!
-//! An operation the CLI confirms, and init, run in two requests (the discard
-//! here, activate and deactivate in [`switch`], init in [`maintain`]). The
-//! plan keeps what the apply needs (for a discard and an activation, the
-//! exclusive state lock too) behind a single-use token drawn from the kernel's
-//! random source; the apply carrying that token runs exactly that plan. Any
-//! other request withdraws the plan and releases its lock, so a plan never
-//! outlives the next request.
+//! An operation the CLI confirms, init, and a change of the configuration
+//! run in two requests (the discard and the configuration change here,
+//! activate and deactivate in [`switch`], init in [`maintain`]). The plan
+//! keeps what the apply needs (for a discard and an activation, the exclusive
+//! state lock too) behind a single-use token drawn from the kernel's random
+//! source; the apply carrying that token runs exactly that plan. Any other
+//! request withdraws the plan and releases its lock, so a plan never outlives
+//! the next request. A configuration plan holds no lock: its apply writes only
+//! while the file is still what the plan read.
 
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use nails_api::protocol::{
-    CheckArgs, ConfigShowArgs, DiscardPlanArgs, DiscardPlanData, ErrorCode, Op, ProtocolError,
-    TOKEN_HEX_DIGITS,
+    CheckArgs, ConfigChange, ConfigEditArgs, ConfigEditPlanData, ConfigShowArgs, DiscardPlanArgs,
+    DiscardPlanData, ErrorCode, Op, ProtocolError, SettingValue, TOKEN_HEX_DIGITS,
 };
+use nails_core::app::config_edit;
 use nails_core::app::discard_upper::{DiscardData, LockedDiscard};
 use nails_core::reporter::{EventReporter, progress};
 use nails_core::{NailsError, ResetUpperPlan, RuntimeEnv};
@@ -47,6 +50,8 @@ pub(crate) enum Planned {
     Deactivate(Box<switch::PlannedDeactivation>),
     /// An init whose preconditions held.
     Init(crate::cli::args::InitArgs),
+    /// A configuration change, checked against the file as it was read.
+    ConfigEdit(Box<config_edit::Plan>),
 }
 
 /// A discard planned for the window.
@@ -178,6 +183,11 @@ impl Dispatch for Engine<'_> {
             Op::InitPlan(args) => self.init_plan(&args),
             Op::InitApply(_) => match planned {
                 Some(Planned::Init(args)) => maintain::init_apply(&args),
+                _ => bad_token(),
+            },
+            Op::ConfigEditPlan(args) => self.config_edit_plan(&args),
+            Op::ConfigEditApply(_) => match planned {
+                Some(Planned::ConfigEdit(plan)) => config_edit_apply(&plan),
                 _ => bad_token(),
             },
             // The session answers the hello itself and never passes one on.
@@ -336,6 +346,83 @@ impl Engine<'_> {
         )
     }
 }
+
+impl Engine<'_> {
+    /// The plan half of `nails config set` and `nails config unset`, on the
+    /// helper's own configuration: make the changes and check them as the CLI
+    /// does, write nothing, and keep the plan behind a token. A change the
+    /// file already holds answers as the CLI does and keeps nothing.
+    fn config_edit_plan(&mut self, args: &ConfigEditArgs) -> Answer {
+        let plan = match edits(args).and_then(|edits| config_edit::plan(self.config(), &edits)) {
+            Ok(plan) => plan,
+            Err(failure) => return config_edit_failure(&failure),
+        };
+        if !plan.writes() {
+            return Answer::result(ExitStatus::Ok, &Envelope::success(CONFIG, plan.data()));
+        }
+        let path = plan.path().display().to_string();
+        let changes = plan
+            .change_data()
+            .into_iter()
+            .map(|change| ConfigChange {
+                key: change.key.to_string(),
+                before: change.before,
+                after: change.after,
+            })
+            .collect();
+        self.hold(CONFIG, Planned::ConfigEdit(Box::new(plan)), |token| {
+            ConfigEditPlanData {
+                path,
+                changes,
+                token,
+            }
+        })
+    }
+}
+
+/// The apply half of a configuration change: write the plan, while the file
+/// is still what the plan read.
+fn config_edit_apply(plan: &config_edit::Plan) -> Answer {
+    match config_edit::apply(plan) {
+        Ok(applied) => Answer::result(ExitStatus::Ok, &Envelope::success(CONFIG, applied.data())),
+        Err(failure) => config_edit_failure(&failure),
+    }
+}
+
+/// The engine's edits for the window's changes: each key a setting, each
+/// value of the kind it takes, refused as `config set` and `config unset`
+/// refuse them before any file is read.
+fn edits(args: &ConfigEditArgs) -> Result<Vec<config_edit::Edit>, config_edit::Failure> {
+    let known = |key: &str| {
+        config_edit::setting(key)
+            .ok_or_else(|| config_edit::Failure::Usage(config_edit::unknown_key(key)))
+    };
+    let mut edits = Vec::with_capacity(args.set.len() + args.unset.len());
+    for setting in &args.set {
+        let value = match &setting.value {
+            SettingValue::Bool(value) => config_edit::Value::Bool(*value),
+            SettingValue::Integer(value) => config_edit::Value::Integer(*value),
+            SettingValue::Text(value) => config_edit::Value::Text(value.clone()),
+            SettingValue::List(values) => config_edit::Value::Names(values.clone()),
+        };
+        let known = known(&setting.key)?;
+        known.check(&value).map_err(config_edit::Failure::Usage)?;
+        edits.push(config_edit::Edit::Set(known, value));
+    }
+    for key in &args.unset {
+        edits.push(config_edit::Edit::Unset(known(key)?));
+    }
+    Ok(edits)
+}
+
+/// A configuration change refused or failed, as `nails config set` reports
+/// it.
+fn config_edit_failure(failure: &config_edit::Failure) -> Answer {
+    let body = commands::config_edit::failure_body(failure, "config set");
+    Answer::result(failure.exit_status(), &error_envelope(CONFIG, body))
+}
+
+const CONFIG: &str = "config";
 
 /// The apply half of `nails discard`: delete the plan its token named, which
 /// was the plan of the request just before.
