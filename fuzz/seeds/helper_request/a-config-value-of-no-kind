@@ -1,0 +1,1 @@
+{"v":1,"id":12,"op":{"config_edit_plan":{"set":[{"key":"minimum_space_mb","value":1.5}]}}}
