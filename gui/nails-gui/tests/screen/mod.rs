@@ -27,12 +27,35 @@ pub struct Screen {
     asks: Rc<RefCell<Vec<Ask>>>,
     hang_ups: Rc<Cell<u32>>,
     closed: Rc<Cell<bool>>,
+    emergencies: Rc<Cell<u32>>,
 }
 
 impl Screen {
     /// A window for the engine `/mnt/data/nails`, shown on the headless
     /// platform.
     pub fn new(waits_for_password: bool) -> Self {
+        Self::with(Model::new(
+            Some(PathBuf::from("/mnt/data/nails")),
+            waits_for_password,
+        ))
+    }
+
+    /// A window that read the mount table of a hidden session, before the
+    /// helper answered.
+    pub fn in_hidden_session() -> Self {
+        Self::with(
+            Model::new(Some(PathBuf::from("/mnt/data/nails")), false).in_hidden_session(true),
+        )
+    }
+
+    /// A window with `model`, shown on the headless platform.
+    pub fn with(model: Model) -> Self {
+        Self::with_emergency(model, Box::new(|| {}))
+    }
+
+    /// As [`Screen::with`], and the emergency, once counted, also fires
+    /// through `emergency`.
+    pub fn with_emergency(model: Model, emergency: Box<dyn Fn()>) -> Self {
         thread_local! {
             static PLATFORM: Cell<bool> = const { Cell::new(false) };
         }
@@ -46,17 +69,23 @@ impl Screen {
         let asks = Rc::new(RefCell::new(Vec::new()));
         let hang_ups = Rc::new(Cell::new(0));
         let closed = Rc::new(Cell::new(false));
+        let emergencies = Rc::new(Cell::new(0));
         let controller = {
             let asks = Rc::clone(&asks);
             let hang_ups = Rc::clone(&hang_ups);
             let closed = Rc::clone(&closed);
+            let emergencies = Rc::clone(&emergencies);
             Controller::new(
                 &window,
-                Model::new(Some(PathBuf::from("/mnt/data/nails")), waits_for_password),
+                model,
                 Hooks {
                     ask: Box::new(move |ask| asks.borrow_mut().push(ask)),
                     hang_up: Box::new(move || hang_ups.set(hang_ups.get() + 1)),
                     close: Box::new(move || closed.set(true)),
+                    emergency: Box::new(move || {
+                        emergencies.set(emergencies.get() + 1);
+                        emergency();
+                    }),
                 },
             )
         };
@@ -67,7 +96,56 @@ impl Screen {
             asks,
             hang_ups,
             closed,
+            emergencies,
         }
+    }
+
+    /// How many times the window fired the emergency.
+    pub fn emergencies(&self) -> u32 {
+        self.emergencies.get()
+    }
+
+    /// Let `ms` milliseconds of Slint's mocked time pass: animations,
+    /// timers and the bindings that read the time move on.
+    pub fn wait_ms(&self, ms: u64) {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
+    }
+
+    /// The middle of `element`, in the window's coordinates.
+    pub fn middle(&self, element: &ElementHandle) -> slint::LogicalPosition {
+        let at = element.absolute_position();
+        let size = element.size();
+        slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0)
+    }
+
+    /// Press the left button at `position`.
+    pub fn press_at(&self, position: slint::LogicalPosition) {
+        self.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        self.window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: slint::platform::PointerEventButton::Left,
+            });
+    }
+
+    /// Move the pointer, its button held or not, to `position`.
+    pub fn move_to(&self, position: slint::LogicalPosition) {
+        self.window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+    }
+
+    /// Release the left button at `position`.
+    pub fn release_at(&self, position: slint::LogicalPosition) {
+        self.window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: slint::platform::PointerEventButton::Left,
+            });
     }
 
     /// Make the window tall enough to show a page of every recorded check at

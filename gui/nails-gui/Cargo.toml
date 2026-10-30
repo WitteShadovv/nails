@@ -33,14 +33,17 @@ serde_json = "1.0"
 # Puts /dev/null in place of standard input once the window took the
 # launcher's socket off it, so that closing the window's end closes every copy
 # of it; gives the process its neutral name and its limits (core dumps,
-# dumpable, no_new_privs); and checks that the runtime directory is a tmpfs.
-# Already in the toolkit's graph (Wayland, X11 and the event loop).
+# dumpable, no_new_privs); checks that the runtime directory is a tmpfs; and
+# lets the emergency write its request without waiting on a full pipe
+# (`send` with MSG_DONTWAIT). Already in the toolkit's graph (Wayland, X11 and
+# the event loop).
 rustix = { version = "1.1.5", default-features = false, features = [
     "std",
     "stdio",
     "thread",
     "process",
     "fs",
+    "net",
 ] }
 # The toolkit, pinned exactly as its own crates pin each other. Only the
 # software renderer (no GL, no Vulkan, no shader cache) and the winit backend
@@ -106,4 +109,12 @@ required-features = ["testing"]
 
 [[test]]
 name = "deactivation"
+required-features = ["testing"]
+
+[[test]]
+name = "emergency"
+required-features = ["testing"]
+
+[[test]]
+name = "emergency_wired"
 required-features = ["testing"]

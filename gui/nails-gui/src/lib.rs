@@ -19,16 +19,21 @@
 //!   [`client`] speaks the protocol: the handshake, one request at a time,
 //!   and an operation's plan, token and apply.
 //! - [`worker`] runs the client on a thread of its own, so the window never
-//!   waits on the pipe, and reports what happens as [`worker::Update`]s.
+//!   waits on the pipe, and reports what happens as [`worker::Update`]s,
+//!   which reach the window's thread through a [`mailbox`].
+//! - [`emergency`] is the way out of a hidden session, on a thread and a
+//!   path of its own that nothing of the window can hold up.
 //! - [`envelope`] reads the envelopes the window shows; [`model`] turns them
 //!   into the page the window draws, with the words of [`text`]; [`ui`]
 //!   draws the page in the Slint window and wires its controls.
 //! - [`process`] is what the window's own process shows to whoever lists it.
 
 pub mod client;
+pub mod emergency;
 pub mod envelope;
 pub mod frames;
 pub mod launch;
+pub mod mailbox;
 pub mod model;
 pub mod process;
 pub mod text;

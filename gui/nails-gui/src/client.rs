@@ -15,9 +15,15 @@
 //! single-use token; [`Client::apply`] sends that token back. The helper
 //! withdraws a plan as soon as any other request comes, so the client refuses
 //! to apply a plan once another request was sent, without asking the helper.
+//!
+//! The window's emergency writes its own request onto the same pipe, from a
+//! thread of its own ([`crate::emergency`]): the client writes each of its
+//! requests under a lock the emergency takes too ([`Client::emergency_line`]),
+//! and it skips the frames that answer the emergency's id.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use nails_api::Event;
 use nails_api::protocol::{
@@ -26,6 +32,7 @@ use nails_api::protocol::{
     ProtocolError, RELEASE, Request, Token,
 };
 
+use crate::emergency::{EMERGENCY_ID, HelperLine};
 use crate::frames::{FrameError, FrameReader};
 
 /// The window's own versions, as its hello names them: this protocol and the
@@ -190,6 +197,9 @@ pub enum PlanAnswer {
 pub struct Client {
     frames: FrameReader<UnixStream>,
     output: UnixStream,
+    /// Held while a request is written, so the emergency's never lands in
+    /// the middle of one.
+    writes: Arc<Mutex<()>>,
     engine: Hello,
     next_id: u64,
     last_request: u64,
@@ -230,6 +240,7 @@ impl Client {
         let mut client = Self {
             frames,
             output,
+            writes: Arc::new(Mutex::new(())),
             engine,
             next_id: 1,
             last_request: 0,
@@ -263,6 +274,20 @@ impl Client {
     /// The error of duplicating the descriptor.
     pub fn hang_up_handle(&self) -> std::io::Result<UnixStream> {
         self.output.try_clone()
+    }
+
+    /// The window's end of the pipe and the lock the client writes its
+    /// requests under, for the emergency to write its own request with
+    /// ([`crate::emergency::Emergency::open`]).
+    ///
+    /// # Errors
+    ///
+    /// The error of duplicating the descriptor.
+    pub fn emergency_line(&self) -> std::io::Result<HelperLine> {
+        Ok(HelperLine {
+            stream: self.output.try_clone()?,
+            writes: Arc::clone(&self.writes),
+        })
     }
 
     /// Run `op` and return its answer, passing each event of it to
@@ -360,16 +385,22 @@ impl Client {
         }
         .to_line();
         line.push('\n');
-        self.output
-            .write_all(line.as_bytes())
-            .and_then(|()| self.output.flush())
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::BrokenPipe => ClientError::Closed,
-                _ => ClientError::Broken(format!("the pipe failed: {error}")),
-            })?;
+        {
+            let _writes = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
+            self.output
+                .write_all(line.as_bytes())
+                .and_then(|()| self.output.flush())
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::BrokenPipe => ClientError::Closed,
+                    _ => ClientError::Broken(format!("the pipe failed: {error}")),
+                })?;
+        }
         loop {
             match self.frames.next_frame()? {
                 None => return Err(ClientError::Closed),
+                // The emergency's request is not the client's.
+                Some(Frame::Event { id: of, .. } | Frame::Result { id: of, .. })
+                    if of == EMERGENCY_ID => {}
                 Some(Frame::Event { id: of, event }) if of == id => on_event(event),
                 Some(Frame::Result {
                     id: of,

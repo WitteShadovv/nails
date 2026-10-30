@@ -26,7 +26,9 @@ use std::rc::Rc;
 
 use nails_api::protocol::{PROTOCOL_VERSION, RELEASE};
 use nails_gui::AppWindow;
+use nails_gui::emergency::{Emergency, Fallback};
 use nails_gui::launch::{self, Start};
+use nails_gui::mailbox::Mailbox;
 use nails_gui::model::Model;
 use nails_gui::process;
 use nails_gui::text;
@@ -133,7 +135,15 @@ fn main() -> ExitCode {
         eprintln!("The window could not open: it could not limit itself: {error}");
         return ExitCode::FAILURE;
     }
-    match open(connect, engine) {
+    // The window's own reading, which needs no helper: in a hidden session
+    // its Emergency control shows from the start.
+    let in_hidden_session = match (&engine, mountinfo.as_deref()) {
+        (Some(engine), Some(mountinfo)) => engine
+            .parent()
+            .is_some_and(|root| launch::root_is_hidden_overlay(mountinfo, root)),
+        _ => false,
+    };
+    match open(connect, engine, in_hidden_session) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("The window could not open: {error}");
@@ -143,22 +153,35 @@ fn main() -> ExitCode {
 }
 
 /// Open the window, start the worker on `connect`, and run until the window
-/// closes. `engine` is the engine the pages name.
-fn open(connect: Connect, engine: Option<PathBuf>) -> Result<(), slint::PlatformError> {
+/// closes. `engine` is the engine the pages name; `in_hidden_session` whether
+/// the window runs in one.
+fn open(
+    connect: Connect,
+    engine: Option<PathBuf>,
+    in_hidden_session: bool,
+) -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
     // The menu entry of a hidden session has this name, so the desktop puts
     // the window with it; it names nothing about NAILS.
     slint::set_xdg_app_id(text::APP_ID)?;
     let waits_for_password = matches!(connect, Connect::Pkexec { .. });
-    let worker = worker::spawn(connect, |update| {
-        // On the window's thread, once its event loop runs.
+    // Its thread starts before the worker's and waits for nothing but the
+    // control's gesture.
+    let emergency = Emergency::start(Fallback::system(), |_| {});
+    // The worker's updates reach the window's thread through one task on
+    // its event loop at a time, however many come.
+    let mailbox = Mailbox::new(|mailbox: Mailbox| {
         let _ = slint::invoke_from_event_loop(move || {
+            let updates = mailbox.take();
             CONTROLLER.with(|controller| {
                 if let Some(controller) = controller.borrow().as_ref() {
-                    controller.borrow_mut().update(update);
+                    controller.borrow_mut().take(updates);
                 }
             });
         });
+    });
+    let worker = worker::spawn(connect, Some(emergency.clone()), move |update| {
+        mailbox.put(update);
     });
     let line = worker.hang_up();
     let weak = window.as_weak();
@@ -177,8 +200,12 @@ fn open(connect: Connect, engine: Option<PathBuf>) -> Result<(), slint::Platform
             }
             let _ = slint::quit_event_loop();
         }),
+        emergency: Box::new(move || {
+            emergency.fire();
+        }),
     };
-    let controller = Controller::new(&window, Model::new(engine, waits_for_password), hooks);
+    let model = Model::new(engine, waits_for_password).in_hidden_session(in_hidden_session);
+    let controller = Controller::new(&window, model, hooks);
     CONTROLLER.with(|slot| *slot.borrow_mut() = Some(controller));
     window.show()?;
     // The loop ends with the window, whether its own Close or the window
