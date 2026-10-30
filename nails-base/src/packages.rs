@@ -18,7 +18,9 @@
 //! Each of them holds whatever the decoy's disk holds, or what a hidden
 //! session wrote, so the parsers take any input: a line, a stanza or an entry
 //! they cannot read is left out, never an error. rpm's database is read
-//! whole or not at all: a header or a page it cannot read is an error. The
+//! whole or not at all: a header or a page it cannot read is an error, and so
+//! is a database larger than rpm keeps or one whose packages would take more
+//! memory than any of rpm's do ([`rpm::read_packages`]). The
 //! `dpkg_status`, `pacman_local` and `rpmdb` fuzz targets drive them with
 //! hostile input.
 //!
