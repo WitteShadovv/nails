@@ -9,8 +9,9 @@
 //!    it, the init checked ([`crate::whole_root::ret`]);
 //! 2. mark the hidden backend for deferred removal;
 //! 3. arm the plan for the way back;
-//! 4. SIGKILL every interactive shell, so none writes its history on the
-//!    session stop;
+//! 4. SIGKILL every interactive shell, the newest first, so none writes its
+//!    history on the session stop, nor on a hangup the kernel sends it as
+//!    another one dies;
 //! 5. enqueue `soft-reboot.target` (or the requested power action) directly
 //!    with PID 1, with every other job replaced;
 //! 6. `cgroup.kill` every unit that can hold a hidden program, sparing
@@ -362,12 +363,14 @@ fn dispatch(plan: &Plan, host: &Host, finish: Finish, report: &mut HotReport) {
 
 /// Stopping the login sessions sends their shells SIGHUP, on which bash
 /// writes its history (on the decoy: to the decoy disk). SIGKILL every
-/// interactive shell, the invocation's own included, before anything is
-/// enqueued.
+/// interactive shell, the invocation's own included, the newest first
+/// ([`crate::shells::kill_interactive_shells_newest_first`]), before anything
+/// is enqueued. No shell is part of the command chain, and the hot path
+/// ignores the SIGHUP that the death of the shell it was typed into sends it.
 fn kill_shells(host: &Host, report: &mut HotReport) {
     report.timed("kill-shells", |_| {
         if host.act {
-            crate::shells::kill_all_interactive_shells(&[]);
+            crate::shells::kill_interactive_shells_newest_first();
         }
     });
 }

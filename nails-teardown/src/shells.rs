@@ -6,18 +6,16 @@
 //! An interactive shell keeps its history in memory and writes it out when it
 //! exits, and stopping a login session sends it SIGHUP, on which bash writes.
 //! `activate` therefore SIGKILLs every interactive shell (root's included) on
-//! the decoy, the newest first ([`kill_interactive_shells_newest_first`]),
-//! right before it asks logind for the soft-reboot, again while logind holds
-//! it back and once more when PID 1 holds its job, so the activation command
-//! never reaches a decoy history file. `emergency` kills them before the way
-//! back or the power-off ([`kill_all_interactive_shells`]). A SIGKILLed shell
-//! runs no handler and writes
-//! nothing. Non-interactive shells
-//! (a service's script, an `sh -c` wrapper, a pipeline subshell) keep no
-//! history and are left alone. The shells of the teardown's own invocation (its
-//! ancestors and those in its session) die last ([`kill_invoking_shells`]).
+//! the decoy right before it asks logind for the soft-reboot, again while
+//! logind holds it back and once more when PID 1 holds its job, so the
+//! activation command never reaches a decoy history file, and `emergency` does
+//! the same before the way back or the power-off. Both kill them the newest
+//! first, as one shell's death can hang up another
+//! ([`kill_interactive_shells_newest_first`]). A SIGKILLed shell runs no
+//! handler and writes nothing. Non-interactive shells (a service's script, an
+//! `sh -c` wrapper, a pipeline subshell) keep no history and are left alone.
 
-use crate::proc::{self, Invocation, ProcessHandle};
+use crate::proc::{self, ProcessHandle};
 
 /// Process names treated as shells.
 pub const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"];
@@ -75,80 +73,10 @@ pub fn is_interactive_shell(pid: u32) -> bool {
         )
 }
 
-/// Whether `pid` runs in one of the `spared_units` (system services named by
-/// the caller whose shells must survive).
-fn in_spared_unit(pid: u32, spared_units: &[String]) -> bool {
-    !spared_units.is_empty()
-        && proc::cgroup(pid)
-            .and_then(|c| crate::cgroup::service_unit_from_cgroup(&c))
-            .is_some_and(|unit| spared_units.iter().any(|s| s == &unit))
-}
-
-/// SIGKILL every interactive shell but those `invocation` was started from
-/// ([`Invocation::is_invoking`]) and those in `spared_units`. Returns handles
-/// on the shells signalled, to wait for their exit.
-pub fn kill_interactive_shells(
-    invocation: &Invocation,
-    spared_units: &[String],
-) -> Vec<ProcessHandle> {
-    let mut killed = Vec::new();
-    for pid in proc::pids() {
-        let stat = proc::stat(pid);
-        if pid == 1 || invocation.is_invoking(pid, stat.as_ref()) || !is_interactive_shell(pid) {
-            continue;
-        }
-        if in_spared_unit(pid, spared_units) {
-            continue;
-        }
-        if let Some(handle) = ProcessHandle::open(pid)
-            && handle.kill()
-        {
-            killed.push(handle);
-        }
-    }
-    killed
-}
-
-/// SIGKILL the interactive shells this process was started from: those among
-/// its ancestors and in its session. [`kill_all_interactive_shells`] calls it
-/// once every other interactive shell is gone. A shell that leads its
-/// terminal's session hangs up the terminal's foreground job as it dies:
-/// `sudo` passes the SIGHUP on to its command, which the emergency ignores,
-/// and a pipe reader there that does not ignore it ends.
-pub fn kill_invoking_shells(spared_units: &[String]) -> Vec<u32> {
-    let invocation = Invocation::current();
-    let own = std::process::id();
-    let mut killed = Vec::new();
-    for pid in proc::pids() {
-        if pid == own {
-            continue;
-        }
-        let stat = proc::stat(pid);
-        if !invocation.is_invoking(pid, stat.as_ref())
-            || !is_interactive_shell(pid)
-            || in_spared_unit(pid, spared_units)
-        {
-            continue;
-        }
-        if ProcessHandle::open(pid).is_some_and(|h| h.kill()) {
-            killed.push(pid);
-        }
-    }
-    killed
-}
-
-/// SIGKILL every interactive shell, the invocation's own last. An emergency
-/// calls it right before it starts the way back or a power action: stopping
-/// a login session sends its shells SIGHUP, on which bash writes its history.
-pub fn kill_all_interactive_shells(spared_units: &[String]) {
-    let invocation = Invocation::current();
-    let _ = kill_interactive_shells(&invocation, spared_units);
-    let _ = kill_invoking_shells(spared_units);
-}
-
 /// SIGKILL every interactive shell, the newest first, and return the pids
 /// signalled in that order. An activation calls it right before it asks
-/// logind for the soft-reboot, and again until PID 1 holds the job.
+/// logind for the soft-reboot and again until PID 1 holds the job, and an
+/// emergency right before it starts the way back or a power action.
 ///
 /// A shell that leads its terminal's session hangs up the terminal's
 /// foreground job as it dies, and a console such as tty1 hangs up whole. A
@@ -160,7 +88,7 @@ pub fn kill_all_interactive_shells(spared_units: &[String]) {
 /// job, and one that `sudo -i` started gets it from `sudo`, which passes it
 /// on. Were the login shell killed first, such a shell, the one the
 /// activation was typed into among them, could write its history before its
-/// own SIGKILL came.
+/// own SIGKILL came. An emergency typed into such a shell is the same.
 ///
 /// What the kernel sends as a shell dies reaches only processes started after
 /// it: SIGHUP to its terminal's foreground job when it leads its session, the
@@ -292,8 +220,8 @@ mod tests {
         if std::env::var_os(CHILD_ENV).is_some_and(|name| name == test) {
             // Never let a killer loose on the host's processes.
             assert_eq!(std::process::id(), 1, "the body must run as PID 1");
-            // Lead a session of our own, so the shells spawned below belong
-            // to this invocation unless they call setsid themselves.
+            // Lead a session of our own, without a terminal: no shell spawned
+            // below reaches the terminal the tests run from.
             rustix::process::setsid().expect("setsid");
             body();
             return;
@@ -352,49 +280,6 @@ mod tests {
         }
 
         assert_eq!(verdicts, [true, false, false]);
-    }
-
-    #[test]
-    fn the_invocation_s_shells_are_killed_last_and_scripts_never() {
-        in_pid_namespace(
-            "shells::tests::the_invocation_s_shells_are_killed_last_and_scripts_never",
-            || {
-                let mut own = spawn_as("sh", "sh", &["-i"]);
-                let mut foreign = spawn_as("sh", "setsid", &["sh", "-i"]);
-                let script = spawn_as("sh", "setsid", &["sh", "-c", "sleep 30; :"]);
-                let spared = ["unrelated.service".to_string()];
-
-                // First every shell outside the invocation...
-                let killed = kill_interactive_shells(&Invocation::current(), &spared);
-                let pids: Vec<u32> = killed.iter().map(ProcessHandle::pid).collect();
-                assert_eq!(pids, vec![foreign.id()]);
-                assert!(was_killed(&mut foreign));
-                assert_eq!(own.try_wait().unwrap(), None, "the own shell waits");
-
-                // ...then, last, the invocation's own.
-                assert_eq!(kill_invoking_shells(&spared), vec![own.id()]);
-                assert!(was_killed(&mut own));
-                assert!(still_running(script), "a script keeps no history");
-            },
-        );
-    }
-
-    #[test]
-    fn every_interactive_shell_is_killed_before_a_soft_reboot() {
-        in_pid_namespace(
-            "shells::tests::every_interactive_shell_is_killed_before_a_soft_reboot",
-            || {
-                let mut own = spawn_as("sh", "sh", &["-i"]);
-                let mut foreign = spawn_as("sh", "setsid", &["sh", "-i"]);
-                let script = spawn_as("sh", "sh", &["-c", "sleep 30; :"]);
-
-                kill_all_interactive_shells(&[]);
-
-                assert!(was_killed(&mut own));
-                assert!(was_killed(&mut foreign));
-                assert!(still_running(script));
-            },
-        );
     }
 
     /// Make the next process of this PID namespace get `pid + 1`.
