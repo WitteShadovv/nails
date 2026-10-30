@@ -244,6 +244,16 @@ fn an_info_file_names_its_package_and_architecture() {
 }
 
 #[test]
+fn a_journal_entry_is_named_by_digits_alone() {
+    for name in ["0000", "0001", "0249", "7"] {
+        assert!(dpkg::is_journal(name), "{name}");
+    }
+    for name in ["", "tmp.i", "0000.new", "-1", "00 1", "٣"] {
+        assert!(!dpkg::is_journal(name), "{name}");
+    }
+}
+
+#[test]
 fn the_status_file_is_read_through_the_filesystem() {
     let fs = MockFilesystem::new();
     let root = Path::new("/decoy");
