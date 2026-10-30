@@ -526,7 +526,7 @@ soft-reboot need not run them in a cold boot's order, so their numbers can
 differ more, also in their power-of-two range (logind's does in the NixOS test
 of this).
 
-This is best effort and never blocks the way back: without a record, outside
+This is best effort and never stops the way back: without a record, outside
 PID 1's PID namespace, or where the counter cannot be written (a kernel built
 without `CONFIG_CHECKPOINT_RESTORE` has no such file), the numbers continue as
 before, and `deactivate` warns of that before the switch. It does not warn

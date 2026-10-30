@@ -581,7 +581,7 @@ of this changelog for that version becomes the release notes word for word, and
   started again after a logout, is passed over. Without either, and where the measure would go
   lower, the counter goes just below the lowest number the decoy's own userspace held at entry. The
   decoy's other units are not measured, so their numbers can land further from their boot's. The
-  step is best effort and never blocks the way back. Where it cannot set the counter (no number
+  step is best effort and never stops the way back. Where it cannot set the counter (no number
   recorded, or a kernel without `CONFIG_CHECKPOINT_RESTORE`), `deactivate` warns before the switch.
   The forensic oracle's allowlist no longer holds the getty records of the way back: in the
   oracle-images test they now fall in the range of a fresh boot's getty and subtract like it, so a
