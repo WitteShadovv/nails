@@ -187,7 +187,7 @@ gets a fixed decision before the switch:
 | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
 | an overlay entry not mounted now, its upper on a disk | kept unmounted |
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
-| a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back | left alone: never mounted |
+| a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back | left alone: nothing mounts it at boot, but a skipped unit that pulls it in is masked instead (see below) |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | the hidden volume, or a path inside it | bound at its own path |
 
@@ -214,12 +214,24 @@ directory of them cannot be listed), the unit is masked instead. So is a unit
 whose skip a drop-in of the decoy's would undo, for it or for a unit it pulls
 in: one named like the skip's drop-in (`zz-overlay-runtime.conf`) that systemd
 reads in its place, or one whose name sorts after it and resets the start
-conditions with an empty `Condition…=` assignment. A skipped mount or swap still
-waits for its device, so an entry whose device is not there at activation (NAILS
-also asks systemd whether the device's unit is active, at `nails check` as at
-activation) is masked instead as well; attach the device, or give the entry
-`nofail` (for a unit file of the decoy's own, install it with `WantedBy=` rather
-than `RequiredBy=`; for a unit a generator makes and requires, such as a
+conditions with an empty `Condition…=` assignment. So is a unit whose skip would
+pull in a mount, swap or automount that the session neither keeps off nor puts
+in place: systemd has every mount require the mount of each parent directory
+that has a unit (a `noauto` line's unit among them), and a skipped unit starts
+the mounts its unit files name in `Requires=`, `BindsTo=`, `Wants=` or
+`Upholds=` or link in its `.requires`, `.wants` or `.upholds` directory, those
+of the paths in its `RequiresMountsFor=` and `WantsMountsFor=`, and those its
+fstab line names with `x-systemd.requires=` or `x-systemd.requires-mounts-for=`.
+The hidden systemd would mount such a filesystem read-write from the decoy's
+disk before the skip's condition is tested. A skipped unit that requires a unit
+the session masks, such as the mount of an unmounted parent directory with
+`nofail`, does not start, so its target is not reached either, and `nails check`
+and `nails activate` warn of that too. A skipped mount or swap still waits for
+its device, so an entry whose device is not there at activation (NAILS also asks
+systemd whether the device's unit is active, at `nails check` as at activation)
+is masked instead as well; attach the device, or give the entry `nofail` (for a
+unit file of the decoy's own, install it with `WantedBy=` rather than
+`RequiredBy=`; for a unit a generator makes and requires, such as a
 `systemd.mount-extra=` of the kernel command line, give that line `nofail`, or
 run `systemctl daemon-reload` if the line is gone). For either mask
 `nails check` and `nails activate` warn that the hidden session will not reach
