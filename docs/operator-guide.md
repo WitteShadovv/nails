@@ -1160,9 +1160,15 @@ seconds or minutes.
 Any on-screen tell that you are in the hidden environment is a shoulder-surfing
 and screen-recording liability. NAILS adds none: it changes no prompt and no
 terminal colours, and the way back writes nothing on the screen, also when it
-powers off instead of returning. What the hidden session looks like is up to its
-configuration; a hidden desktop that looks different from the decoy's, or a
-login screen that does, is itself a tell.
+powers off instead of returning. The hidden PID 1 does not name the decoy
+filesystems the session carries either, which it unmounts at every way back: a
+runtime drop-in keeps its status lines and its log lines about them off the
+console unless an unmount fails. Its other lines show as at any shutdown, where
+the console shows them (systemd's status lines without `quiet` on the kernel
+command line): the units that stop, and the hidden volume's own mount point as
+it is unmounted. What the hidden session looks like is up to its configuration;
+a hidden desktop that looks different from the decoy's, or a login screen that
+does, is itself a tell.
 
 ### Disks mounted during the session
 

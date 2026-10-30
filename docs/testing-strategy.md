@@ -122,9 +122,9 @@ real-kernel test runs that way back with a file bound over `/dev/console` and
 finds it empty; the whole path is tested in a VM, by
 `session-wayback-poweroff`: a session that loads `ipip`, whose fallback device
 `tunl0` the kernel keeps when asked to delete it, ends with a power-off and
-nothing on the console that says why, after `deactivate` and after a plain
-`emergency`, while a session whose dummy link the way back deletes still
-returns.
+nothing on the console that says why or names the decoy, with PID 1's status
+lines turned on, after `deactivate` and after a plain `emergency`, while a
+session whose dummy link the way back deletes still returns.
 
 ### (d) Contract tests: one body, mock and real
 

@@ -1609,9 +1609,21 @@ fn session_leftovers_are_critical_on_the_decoy() {
     fs.mock_set_path_type("/run/systemd/system", PathKind::Dir);
     fs.mock_set_directory_contents(
         std::path::Path::new("/run/systemd/system"),
-        vec![std::path::PathBuf::from(
-            "/run/systemd/system/overlay-runtime-monitor.service",
-        )],
+        vec![
+            std::path::PathBuf::from("/run/systemd/system/overlay-runtime-monitor.service"),
+            std::path::PathBuf::from("/run/systemd/system/mnt-data-root-decoy-.mount.d"),
+            std::path::PathBuf::from("/run/systemd/system/home-.mount.d"),
+        ],
+    );
+    // The drop-in that quieted the carried filesystems' mount units, and one
+    // of the same name with other content, which is not the session's.
+    fs.mock_add_file(
+        "/run/systemd/system/mnt-data-root-decoy-.mount.d/zz-overlay-runtime.conf",
+        "[Mount]\nLogLevelMax=notice\n",
+    );
+    fs.mock_add_file(
+        "/run/systemd/system/home-.mount.d/zz-overlay-runtime.conf",
+        "[Mount]\nLogLevelMax=debug\n",
     );
     let result = verifier.run(false).unwrap();
     let session: Vec<_> = result
@@ -1619,7 +1631,14 @@ fn session_leftovers_are_critical_on_the_decoy() {
         .iter()
         .filter(|f| f.category == "session")
         .collect();
-    assert_eq!(session.len(), 4, "{session:?}");
+    assert_eq!(session.len(), 5, "{session:?}");
+    assert!(
+        session.iter().any(|f| f.message.starts_with(
+            "the session's runtime guard \
+             /run/systemd/system/mnt-data-root-decoy-.mount.d/zz-overlay-runtime.conf is left"
+        )),
+        "{session:?}"
+    );
     assert!(session.iter().all(|f| f.severity == Severity::Critical));
     assert!(session.iter().all(|f| f.fix_guidance.is_some()));
     assert_eq!(result.status, VerifyStatus::Critical);

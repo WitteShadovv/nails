@@ -228,6 +228,8 @@ mod kernel_tests {
             let run = tempfile::tempdir().unwrap();
             let binary = Path::new("/run/overlay-runtime/control");
             let dropin = transition::install_dropin(run.path(), binary).unwrap();
+            let quiet =
+                transition::install_quiet_mounts(run.path(), "mnt-data-root-decoy-.mount").unwrap();
             let rule = disk_guard::install_rule(run.path(), binary).unwrap();
             let units = runtime_units::install_units(
                 run.path(),
@@ -243,7 +245,7 @@ mod kernel_tests {
                     .join(transition::stop_guard_dir(unit))
                     .join(transition::STOP_GUARD_NAME)
             });
-            for file in guards.chain([dropin, rule]).chain(units) {
+            for file in guards.chain([dropin, quiet, rule]).chain(units) {
                 let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o7777;
                 assert_eq!(mode, 0o644, "{}: {mode:o}", file.display());
             }

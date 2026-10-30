@@ -502,6 +502,15 @@ of this changelog for that version becomes the release notes word for word, and
   well, and the warnings say so. The network settings, the hostname and the per-link runtime state
   below `/run` do not count, also when writing them back fails, and neither does what the way back
   leaves alone, such as what the session deleted or added inside a table of the decoy's.
+- At every way back the hidden session's PID 1 named the decoy filesystems the session carries as it
+  unmounted them: `Unmounting /mnt/data/root/decoy/boot...` and
+  `Unmounted /mnt/data/root/decoy/boot.` on a console that shows its status lines (the default
+  without `quiet` on the kernel command line), and the same with
+  `mnt-data-root-decoy-boot.mount: Deactivated successfully.` in its log, which reaches a console
+  that shows the kernel's info lines. Anyone watching read the word decoy. The entry now gives those
+  mount units a runtime drop-in with `LogLevelMax=notice`, so PID 1 says nothing about them unless
+  an unmount fails, and every way back and every rollback removes it. The layout on the hidden
+  volume is unchanged.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On

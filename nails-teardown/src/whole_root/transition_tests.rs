@@ -653,6 +653,72 @@ fn a_rollback_removes_the_guards_and_only_the_directories_it_made() {
     assert!(!run.join(DROPIN_DIR).exists());
 }
 
+/// The carried filesystems' mount units get one drop-in for their prefix,
+/// readable by all, that drops PID 1's info lines about them; a name that is
+/// no prefix of mount units is refused, so nothing else is quieted.
+#[test]
+fn the_carried_mount_units_are_quieted_by_their_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    let file = install_quiet_mounts(run, "mnt-data-root-decoy-.mount").unwrap();
+    assert_eq!(
+        file,
+        run.join("systemd/system/mnt-data-root-decoy-.mount.d")
+            .join(STOP_GUARD_NAME)
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "[Mount]\nLogLevelMax=notice\n"
+    );
+    let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o644, "{mode:o}");
+    for name in [
+        "mnt-data-root-decoy.mount",
+        "-.mount",
+        "mnt-data-root-decoy-.service",
+        "../escape-.mount",
+        "",
+    ] {
+        assert!(install_quiet_mounts(run, name).is_err(), "{name}");
+    }
+    assert_eq!(
+        fs::read_dir(run.join("systemd/system")).unwrap().count(),
+        1,
+        "only the prefix's directory"
+    );
+}
+
+/// Every removal of the drop-ins removes the quieting one too, whichever
+/// prefix the entry quieted, and its directory unless the decoy had it; a
+/// file of the same name with other content is the decoy's and stays.
+#[test]
+fn the_quieting_dropin_goes_with_the_other_dropins() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    let decoy_dir = run.join(stop_guard_dir("srv-x-.mount"));
+    fs::create_dir_all(&decoy_dir).unwrap();
+    let kept = Snapshot::take(run);
+    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    install_quiet_mounts(run, "mnt-data-root-decoy-.mount").unwrap();
+    install_quiet_mounts(run, "srv-x-.mount").unwrap();
+    let theirs = run.join(stop_guard_dir("home-.mount"));
+    fs::create_dir_all(&theirs).unwrap();
+    fs::write(theirs.join(STOP_GUARD_NAME), "[Mount]\nLogLevelMax=debug\n").unwrap();
+
+    assert!(remove_dropin(run, &kept));
+
+    assert!(
+        !run.join(stop_guard_dir("mnt-data-root-decoy-.mount"))
+            .exists()
+    );
+    assert!(decoy_dir.is_dir(), "the decoy's directory stays");
+    assert!(!decoy_dir.join(STOP_GUARD_NAME).exists());
+    assert_eq!(
+        fs::read_to_string(theirs.join(STOP_GUARD_NAME)).unwrap(),
+        "[Mount]\nLogLevelMax=debug\n"
+    );
+}
+
 #[test]
 fn a_decoy_service_s_pid_file_the_hidden_session_wrote_again_goes_on_the_way_back() {
     // The decoy's avahi wrote its PID file and removed it when the switch

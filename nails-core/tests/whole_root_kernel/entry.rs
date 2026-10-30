@@ -260,6 +260,23 @@ fn the_decoy_filesystems_are_carried_through_the_session_and_put_back_on_the_way
         assert!(targets.contains(&PathBuf::from("/home")), "{targets:?}");
         assert!(targets.contains(&PathBuf::from("/boot")), "{targets:?}");
         assert!(carried.iter().all(|c| !c.read_only));
+        // One drop-in keeps the hidden PID 1 from naming them as it unmounts
+        // them at the way back: their units share the prefix of their
+        // directory as the hidden root resolves it.
+        let dir = carried[0].at.parent().unwrap();
+        assert!(carried.iter().all(|c| c.at.parent() == Some(dir)));
+        let prefix = nails_core::session::way_back::carried_units_prefix(dir);
+        let quiet = world
+            .run
+            .path()
+            .join(transition::stop_guard_dir(&prefix))
+            .join(transition::STOP_GUARD_NAME);
+        assert_eq!(
+            std::fs::read_to_string(&quiet).unwrap(),
+            transition::QUIET_MOUNTS_TEXT,
+            "{}",
+            quiet.display()
+        );
         for mount in &mut carried {
             // The hidden session sees the hidden volume at its own path;
             // from the decoy it is reached through the next root.
@@ -297,6 +314,8 @@ fn the_decoy_filesystems_are_carried_through_the_session_and_put_back_on_the_way
         assert!(carry::restore(&carried, bare.path()).is_err());
         assert!(!bare.path().join("home").exists());
         entry::rollback(&paths);
+        assert!(!quiet.exists(), "the rollback removes it");
+        assert!(!quiet.parent().unwrap().exists());
     });
 }
 
