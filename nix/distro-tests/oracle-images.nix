@@ -38,11 +38,12 @@
 # Fedora is not admitted yet: the release `nails` refuses it (the refusal
 # scenario, refusal.nix, proves that). So this driver runs a test-only build
 # of the release binary in which the one Fedora row of the family table is
-# admitted, and nothing else changes. That build is never shipped. What the
-# images prove is what a session on a Fedora 44 Cloud decoy leaves on its
-# disk, not that NAILS supports Fedora.
+# admitted, and nothing else changes. That build is never shipped. The
+# oracle's verdict on the images says what its channels see of a session on a
+# Fedora 44 Cloud decoy's disk (ci/oracle/README.md lists what they do not),
+# not that NAILS supports Fedora.
 #
-# The decoy is prepared before the before image, so all three hold it alike:
+# The decoy is prepared before the before image, so all of them hold it alike:
 # its journal volatile and auditd masked (lib/hidden-root.nix's
 # makeDecoyAmnesic, the posture NAILS requires), /mnt/data created, and the
 # coverage canary written. The canary file has btrfs compression turned off,
