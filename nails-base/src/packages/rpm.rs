@@ -18,13 +18,26 @@
 //! and the log through the [`Filesystem`] seam, and of each header the tags
 //! it judges by: the package's name, epoch, version, release and
 //! architecture, and the files it installed (their paths, flags, modes and
-//! states). A header it cannot read makes the database unreadable: rpm
-//! itself would not trust such a database either.
+//! states). A header it cannot read makes the database unreadable: rpm itself
+//! would not trust such a database either.
+//!
+//! The database is read one row at a time, and of each row only the package
+//! is kept, within a [`Budget`] of memory that the packages of both databases
+//! one judgement reads share. A database or log larger than [`FILE_LIMIT`], a
+//! row larger than the largest header rpm writes, and packages that need more
+//! than the budget make the database unreadable too, as a page that does not
+//! hold does: none of them is one rpm keeps.
+
+mod header;
 
 use super::sqlite::{self, Database, Pages, Value};
 use crate::{Filesystem, NailsError, Result};
+use header::HEADER_MAX;
+#[cfg(test)]
+use header::{kind, tag};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -45,38 +58,23 @@ pub const JOURNAL: &str = "-journal";
 /// The table of installed packages.
 const PACKAGES: &str = "Packages";
 
-/// The most index entries and data bytes rpm allows a header
-/// (`HEADER_TAGS_MAX`, `HEADER_DATA_MAX` in lib/header_internal.h), each one
-/// less than a power of two, so a size within it has no bit outside it.
-const TAGS_MAX: usize = 0xffff;
-const DATA_MAX: usize = 0x0fff_ffff;
+/// The most bytes of rpm's database file, or of its log, the reader takes
+/// on, 4 GiB. rpm's database of a desktop holds a few hundred MiB, more after
+/// many updates, since SQLite does not give back the room of what it
+/// deleted, and its log grows by a whole transaction until rpm copies it into
+/// the database at the end: a larger file is not one rpm keeps outside a
+/// transaction stopped half way, and reading it would take long.
+pub const FILE_LIMIT: u64 = 4 << 30;
 
-/// The tags read (lib/rpmtag.h).
-mod tag {
-    pub const NAME: u32 = 1000;
-    pub const VERSION: u32 = 1001;
-    pub const RELEASE: u32 = 1002;
-    pub const EPOCH: u32 = 1003;
-    pub const ARCH: u32 = 1022;
-    pub const OLDFILENAMES: u32 = 1027;
-    pub const FILESTATES: u32 = 1029;
-    pub const FILEMODES: u32 = 1030;
-    pub const FILEFLAGS: u32 = 1037;
-    pub const DIRINDEXES: u32 = 1116;
-    pub const BASENAMES: u32 = 1117;
-    pub const DIRNAMES: u32 = 1118;
-}
+/// The largest row of rpm's table of packages: the largest header rpm
+/// writes, and the record's header before it (its size and two serial
+/// types, eleven bytes at most).
+const ROW_MAX: usize = HEADER_MAX + 16;
 
-/// The types read (`rpmTagType`).
-mod kind {
-    pub const CHAR: u32 = 1;
-    pub const INT8: u32 = 2;
-    pub const INT16: u32 = 3;
-    pub const INT32: u32 = 4;
-    pub const STRING: u32 = 6;
-    pub const STRING_ARRAY: u32 = 8;
-    pub const I18NSTRING: u32 = 9;
-}
+/// The memory the packages of one judgement's two databases may take, 256
+/// MiB: a desktop's database lists a few hundred thousand files, which take
+/// some tens of MiB here, about 64 bytes each.
+pub const KEPT_LIMIT: usize = 256 << 20;
 
 /// A file's flag: a configuration file (`RPMFILE_CONFIG`, bit 0).
 pub const CONFIG: u32 = 0x01;
@@ -99,11 +97,76 @@ pub struct Stamp {
     pub modified: SystemTime,
 }
 
+/// What the packages read from rpm's databases may still take in memory:
+/// what a package keeps is taken from it before it is copied out of its
+/// header, each string as the allocator holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    /// What it started with, in bytes.
+    total: usize,
+    /// What is left of it, in bytes.
+    left: usize,
+}
+
+impl Budget {
+    /// A budget of `bytes`.
+    pub const fn new(bytes: usize) -> Self {
+        Self {
+            total: bytes,
+            left: bytes,
+        }
+    }
+
+    /// What it has left, in bytes.
+    pub fn left(&self) -> usize {
+        self.left
+    }
+
+    /// Take `bytes` from it, or say that the packages need more.
+    fn take(&mut self, bytes: usize) -> std::result::Result<(), String> {
+        self.left = self.left.checked_sub(bytes).ok_or_else(|| {
+            format!(
+                "packages that need more than the {} bytes of memory NAILS keeps for rpm's \
+                 databases",
+                self.total
+            )
+        })?;
+        Ok(())
+    }
+
+    /// `text` as a string of its own, taken from the budget first.
+    fn copy(&mut self, text: &str) -> std::result::Result<Box<str>, String> {
+        self.take(Self::allocation(text.len()))?;
+        Ok(text.into())
+    }
+
+    /// About what the allocator holds for a string of `len` bytes: its bytes
+    /// and a word of its own, rounded up to sixteen. An empty string holds
+    /// nothing.
+    fn allocation(len: usize) -> usize {
+        if len == 0 {
+            0
+        } else {
+            (len + 8).next_multiple_of(16)
+        }
+    }
+}
+
+impl Default for Budget {
+    /// A budget of [`KEPT_LIMIT`].
+    fn default() -> Self {
+        Self::new(KEPT_LIMIT)
+    }
+}
+
 /// One file of a package.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct File {
-    /// Its absolute path.
-    pub path: String,
+    /// The index of its directory among its package's
+    /// [`dirs`](Package::dirs).
+    pub dir: u32,
+    /// Its name in that directory.
+    pub name: Box<str>,
     /// Its `RPMFILE_*` flags.
     pub flags: u32,
     /// Its mode.
@@ -113,6 +176,18 @@ pub struct File {
 }
 
 impl File {
+    /// The file `name` in the directory of index `dir`, with no flag, a plain
+    /// file's mode of none and the state [`NORMAL`].
+    fn new(dir: u32, name: Box<str>) -> Self {
+        Self {
+            dir,
+            name,
+            flags: 0,
+            mode: 0,
+            state: NORMAL,
+        }
+    }
+
     /// Whether the package installed the file as it is and keeps it: not a
     /// directory, which other packages share, nor a configuration file, which
     /// the operator edits, nor one rpm lists without installing it (a ghost,
@@ -138,6 +213,9 @@ pub struct Package {
     pub version: String,
     /// Its release.
     pub release: String,
+    /// The directories its files are in, as its header records them: each
+    /// absolute and ending in `/`, as rpm writes them.
+    pub dirs: Vec<Box<str>>,
     /// Its files.
     pub files: Vec<File>,
 }
@@ -156,230 +234,64 @@ impl Package {
     pub fn is_key(&self) -> bool {
         self.name == "gpg-pubkey" && self.arch.is_none()
     }
-}
 
-/// One index entry of a header.
-#[derive(Clone, Copy)]
-struct Entry {
-    kind: u32,
-    offset: usize,
-    count: usize,
-}
-
-/// A header being read: its entries by tag and its data.
-struct Header<'a> {
-    entries: BTreeMap<u32, Entry>,
-    data: &'a [u8],
-}
-
-fn bad<T>(reason: impl Into<String>) -> std::result::Result<T, String> {
-    Err(reason.into())
-}
-
-fn be32(bytes: &[u8], at: usize) -> Option<u32> {
-    let b = bytes.get(at..at.checked_add(4)?)?;
-    Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-impl<'a> Header<'a> {
-    fn parse(blob: &'a [u8]) -> std::result::Result<Self, String> {
-        let (Some(il), Some(dl)) = (be32(blob, 0), be32(blob, 4)) else {
-            return bad("a header shorter than its sizes");
-        };
-        let (il, dl) = (il as usize, dl as usize);
-        if il == 0 || il & !TAGS_MAX != 0 || dl & !DATA_MAX != 0 {
-            return bad("a header of a size rpm does not write");
-        }
-        let start = 8 + 16 * il;
-        let Some(data) = blob.get(start..start + dl) else {
-            return bad("a header shorter than its sizes");
-        };
-        let mut entries = BTreeMap::new();
-        for i in 0..il {
-            let at = 8 + 16 * i;
-            let field = |n: usize| be32(blob, at + 4 * n).unwrap_or_default();
-            let entry = Entry {
-                kind: field(1),
-                offset: field(2) as usize,
-                count: field(3) as usize,
-            };
-            if entry.offset > dl {
-                return bad("a header entry past its data");
-            }
-            entries.entry(field(0)).or_insert(entry);
-        }
-        Ok(Self { entries, data })
-    }
-
-    /// The strings of `tag`: `None` when the header has no such tag.
-    fn strings(&self, tag: u32) -> std::result::Result<Option<Vec<String>>, String> {
-        let Some(entry) = self.entries.get(&tag).copied() else {
-            return Ok(None);
-        };
-        if !matches!(
-            entry.kind,
-            kind::STRING | kind::STRING_ARRAY | kind::I18NSTRING
-        ) {
-            return bad(format!("tag {tag} is no string"));
-        }
-        // A plain string counts once, whatever the entry says.
-        let count = if entry.kind == kind::STRING {
-            1
-        } else {
-            entry.count
-        };
-        // Each string takes a byte at least, so a count past the data ends
-        // at the data's end.
-        let mut at = entry.offset;
-        let mut strings = Vec::new();
-        for _ in 0..count {
-            let rest = self.data.get(at..).unwrap_or_default();
-            let Some(end) = rest.iter().position(|&byte| byte == 0) else {
-                return bad(format!("a string of tag {tag} runs past its data"));
-            };
-            let text = std::str::from_utf8(&rest[..end])
-                .map_err(|_| format!("a string of tag {tag} is not UTF-8"))?;
-            strings.push(text.to_string());
-            at += end + 1;
-        }
-        Ok(Some(strings))
-    }
-
-    /// The one string of `tag`.
-    fn string(&self, tag: u32) -> std::result::Result<Option<String>, String> {
-        Ok(self
-            .strings(tag)?
-            .and_then(|strings| strings.into_iter().next()))
-    }
-
-    /// The integers of `tag`, of the width its type gives: `None` when the
-    /// header has no such tag.
-    fn integers(&self, tag: u32) -> std::result::Result<Option<Vec<u32>>, String> {
-        let Some(entry) = self.entries.get(&tag).copied() else {
-            return Ok(None);
-        };
-        let width = match entry.kind {
-            kind::CHAR | kind::INT8 => 1,
-            kind::INT16 => 2,
-            kind::INT32 => 4,
-            _ => return bad(format!("tag {tag} is no integer")),
-        };
-        let bytes = entry
-            .count
-            .checked_mul(width)
-            .and_then(|len| self.data.get(entry.offset..entry.offset.checked_add(len)?))
-            .ok_or_else(|| format!("tag {tag} runs past its data"))?;
-        Ok(Some(
-            bytes
-                .chunks_exact(width)
-                .map(|b| match b {
-                    [byte] => u32::from(*byte),
-                    [high, low] => u32::from(u16::from_be_bytes([*high, *low])),
-                    [a, b, c, d] => u32::from_be_bytes([*a, *b, *c, *d]),
-                    _ => unreachable!("a width of 1, 2 or 4"),
-                })
-                .collect(),
-        ))
-    }
-
-    /// The files: each path with its flags, mode and state, which a header
-    /// without them gives as none, a plain file and [`NORMAL`].
-    fn files(&self) -> std::result::Result<Vec<File>, String> {
-        let paths = match self.strings(tag::BASENAMES)? {
-            Some(basenames) => {
-                let dirnames = self.strings(tag::DIRNAMES)?.unwrap_or_default();
-                let indexes = self.integers(tag::DIRINDEXES)?.unwrap_or_default();
-                if indexes.len() != basenames.len() {
-                    return bad("as many directory indexes as file names");
-                }
-                basenames
-                    .iter()
-                    .zip(&indexes)
-                    .map(|(base, &index)| {
-                        dirnames
-                            .get(index as usize)
-                            .map(|dir| format!("{dir}{base}"))
-                            .ok_or_else(|| "a directory index past the directories".to_string())
-                    })
-                    .collect::<std::result::Result<Vec<_>, _>>()?
-            }
-            None => self.strings(tag::OLDFILENAMES)?.unwrap_or_default(),
-        };
-        let per_file = |tag: u32| -> std::result::Result<Vec<u32>, String> {
-            match self.integers(tag)? {
-                None => Ok(vec![0; paths.len()]),
-                Some(values) if values.len() == paths.len() => Ok(values),
-                Some(_) => bad(format!("tag {tag} has not one value per file")),
-            }
-        };
-        let (flags, modes, states) = (
-            per_file(tag::FILEFLAGS)?,
-            per_file(tag::FILEMODES)?,
-            per_file(tag::FILESTATES)?,
-        );
-        Ok(paths
-            .into_iter()
-            .enumerate()
-            .map(|(i, path)| File {
-                path,
-                flags: flags[i],
-                mode: modes[i] as u16,
-                state: states[i] as u8,
-            })
-            .collect())
+    /// The path of `file`, one of its files, as its header records it: its
+    /// directory and its name.
+    pub fn path(&self, file: &File) -> String {
+        let dir = self.dirs.get(file.dir as usize).map_or("", |dir| dir);
+        format!("{dir}{}", file.name)
     }
 }
 
 /// The package the header `blob` records, or why it cannot be read.
 pub fn parse_header(blob: &[u8]) -> std::result::Result<Package, String> {
-    let header = Header::parse(blob)?;
-    let required = |tag: u32, what: &str| -> std::result::Result<String, String> {
-        header
-            .string(tag)?
-            .ok_or_else(|| format!("a header without its {what}"))
-    };
-    let epoch = match header.integers(tag::EPOCH)? {
-        Some(values) => values.first().copied(),
-        None => None,
-    };
-    Ok(Package {
-        name: required(tag::NAME, "name")?,
-        arch: header.string(tag::ARCH)?,
-        epoch,
-        version: required(tag::VERSION, "version")?,
-        release: required(tag::RELEASE, "release")?,
-        files: header.files()?,
-    })
+    header::parse(blob, &mut Budget::default())
 }
 
 /// The packages of the database `database`, in the order of its table, or
-/// why they cannot be read.
-pub fn packages(database: &Database<'_>) -> std::result::Result<Vec<Package>, String> {
+/// why they cannot be read, with what they keep taken from `budget`.
+pub fn packages(
+    database: &Database<'_>,
+    budget: &mut Budget,
+) -> std::result::Result<Vec<Package>, String> {
     let root = database
         .table_root(PACKAGES)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no table {PACKAGES}"))?;
-    database
-        .rows(root)
-        .map_err(|e| e.to_string())?
-        .iter()
-        .map(|row| match row.values.get(1) {
-            Some(Value::Blob(blob)) => {
-                parse_header(blob).map_err(|e| format!("package {}: {e}", row.rowid))
+    let mut packages = Vec::new();
+    let stopped = database
+        .each_row(root, |row| {
+            let package = match row.values.get(1) {
+                Some(Value::Blob(blob)) => {
+                    header::parse(blob, budget).map_err(|e| format!("package {}: {e}", row.rowid))
+                }
+                _ => Err(format!("package {} has no header", row.rowid)),
+            };
+            match package {
+                Ok(package) => {
+                    packages.push(package);
+                    ControlFlow::Continue(())
+                }
+                Err(e) => ControlFlow::Break(e),
             }
-            _ => bad(format!("package {} has no header", row.rowid)),
         })
-        .collect()
+        .map_err(|e| e.to_string())?;
+    match stopped {
+        Some(e) => Err(e),
+        None => Ok(packages),
+    }
 }
 
-/// The packages of the database in `file` with its log `wal`, as bytes.
+/// The packages of the database in `file` with its log `wal`, as bytes,
+/// within a [`Budget`] of [`KEPT_LIMIT`].
 pub fn parse_database(
     file: &[u8],
     wal: Option<&[u8]>,
 ) -> std::result::Result<Vec<Package>, String> {
     let database = Database::open(&file, wal.as_ref().map(|wal| wal as &dyn Pages))
-        .map_err(|e| e.to_string())?;
-    packages(&database)
+        .map_err(|e| e.to_string())?
+        .with_payload_limit(ROW_MAX);
+    packages(&database, &mut Budget::default())
 }
 
 /// The size of the pieces [`Source`] reads a file in.
@@ -504,11 +416,16 @@ fn error(path: &Path, kind: std::io::ErrorKind, reason: String) -> NailsError {
 }
 
 /// The packages the database `files` hold, read through `fs` (see the
-/// [parent module](super) on access times). An error when they cannot be
-/// read, when a rollback journal that is not empty says a transaction was
-/// stopped half way (SQLite would roll it back first), or when a file is
-/// written while it is read, twice in a row.
-pub fn read_packages<F: Filesystem>(fs: &F, files: &Files) -> Result<Vec<Package>> {
+/// [parent module](super) on access times), with what they keep taken from
+/// `budget`. An error when they cannot be read, when the database or its log
+/// holds more than [`FILE_LIMIT`] bytes, when a rollback journal that is not
+/// empty says a transaction was stopped half way (SQLite would roll it back
+/// first), or when a file is written while it is read, twice in a row.
+pub fn read_packages<F: Filesystem>(
+    fs: &F,
+    files: &Files,
+    budget: &mut Budget,
+) -> Result<Vec<Package>> {
     let mut last = None;
     for _ in 0..2 {
         let before = files.stamps(fs)?;
@@ -528,6 +445,23 @@ pub fn read_packages<F: Filesystem>(fs: &F, files: &Files) -> Result<Vec<Package
                 "no such file".to_string(),
             ));
         };
+        for (path, stamp) in [
+            (Some(&files.database), before[0]),
+            (files.wal.as_ref(), before[1]),
+        ] {
+            if let (Some(path), Some(stamp)) = (path, stamp)
+                && stamp.size > FILE_LIMIT
+            {
+                return Err(error(
+                    path,
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} bytes, more than rpm keeps in its database or its log ({FILE_LIMIT})",
+                        stamp.size
+                    ),
+                ));
+            }
+        }
         let main = Source {
             fs,
             path: &files.database,
@@ -543,9 +477,11 @@ pub fn read_packages<F: Filesystem>(fs: &F, files: &Files) -> Result<Vec<Package
             }),
             _ => None,
         };
+        // A read that is thrown away gives back what it took.
+        let mut kept = *budget;
         let read = Database::open(&main, wal.as_ref().map(|wal| wal as &dyn Pages))
             .map_err(|e| e.to_string())
-            .and_then(|database| packages(&database));
+            .and_then(|database| packages(&database.with_payload_limit(ROW_MAX), &mut kept));
         if files.stamps(fs)? != before {
             last = Some(error(
                 &files.database,
@@ -554,6 +490,7 @@ pub fn read_packages<F: Filesystem>(fs: &F, files: &Files) -> Result<Vec<Package
             ));
             continue;
         }
+        *budget = kept;
         return read
             .map_err(|reason| error(&files.database, std::io::ErrorKind::InvalidData, reason));
     }
