@@ -656,16 +656,16 @@ of this changelog for that version becomes the release notes word for word, and
   (else logind), the hidden session's own start shows how many numbers a start uses up to its copy
   of it, and the way back's last step, once every hidden process has stopped and before the decoy
   starts a single unit, sets `/proc/sys/kernel/ns_last_pid` that many below. That assumes a hidden
-  start that runs about as many processes up to its getty as the decoy's. A getty or logind that
-  started more than a minute after the oldest process of its start that still runs, such as a getty
-  started again after a logout, is passed over. Without either, the counter goes just below the
-  lowest number the decoy's own userspace held at entry. The decoy's other units are not measured,
-  so their numbers can land further from their boot's. The step is best effort and never stops the
-  way back. Where it cannot set the counter (no number recorded, or a kernel without
-  `CONFIG_CHECKPOINT_RESTORE`), `deactivate` warns before the switch. The forensic oracle's
-  allowlist no longer holds the getty records of the way back: in the oracle-images test they now
-  fall in the range of a fresh boot's getty and subtract like it, so a getty record of another range
-  fails the oracle again.
+  start that runs about as many processes up to its getty as the decoy's. The difference adds up
+  over sessions without a power-off between them. A getty or logind that started more than a minute
+  after the oldest process of its start that still runs, such as a getty started again after a
+  logout, is passed over. Without either, the counter goes just below the lowest number the decoy's
+  own userspace held at entry. The decoy's other units are not measured, so their numbers can land
+  further from their boot's. The step is best effort and never stops the way back. Where it cannot
+  set the counter (no number recorded, or a kernel without `CONFIG_CHECKPOINT_RESTORE`),
+  `deactivate` warns before the switch. The forensic oracle's allowlist no longer holds the getty
+  records of the way back: in the oracle-images test they now fall in the range of a fresh boot's
+  getty and subtract like it, so a getty record of another range fails the oracle again.
 - Ctrl+C at the `deactivate` and `discard` prompts cancels at once, with the cancelled notice and
   exit 130 (under `--json` the cancel envelope). The signal handlers these commands install restart
   an interrupted read, so Ctrl+C only echoed `^C` there, and a "y" typed afterwards went on. The
