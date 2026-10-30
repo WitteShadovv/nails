@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 // The window. One page at a time: a head with the verdict and where things
-// stand, rows of facts, rows of checks, a line that names the fix, and one
-// main action at the bottom. Over it, when an operation asks first, the
-// question of its plan. What each page says is decided in Rust (src/model.rs);
-// this file only lays it out.
+// stand, rows of facts, the steps of an activation, rows of checks, a line
+// that names the fix, and one main action at the bottom. Over it, when an
+// operation asks first, its question. What each page says is decided in Rust
+// (src/model.rs); this file only lays it out. A page past an activation's
+// point of no return takes no input at all, the window's Close included.
 //
 // The title is "Session" on purpose: a window title others may see names
 // nothing about NAILS.
@@ -26,12 +27,20 @@ export struct Fact {
     value: string,
 }
 
-// One check as the page shows it.
+// One check as the page shows it; `allow` labels the button that allows the
+// problem for one activation, empty for none.
 export struct CheckLine {
     outcome: Outcome,
     word: string,
     message: string,
     fix: string,
+    allow: string,
+}
+
+// One step of an activation: what it does, and whether it is done or runs.
+export struct StepLine {
+    label: string,
+    state: string,
 }
 
 export component AppWindow inherits Window {
@@ -43,21 +52,40 @@ export component AppWindow inherits Window {
     in property <bool> busy;
     in property <string> busy-label;
     in property <[Fact]> facts;
+    in property <[StepLine]> steps;
     in property <[CheckLine]> checks;
     in property <string> fix;
     // The main action's label; empty for none.
     in property <string> action;
-    // The question of a plan, while one waits for an answer.
+    // The main action is a plain button rather than the suggested one.
+    in property <bool> action-plain;
+    // False on a page that takes no input at all.
+    in property <bool> takes-input: true;
+    // The question that waits for an answer, while one does.
     in property <bool> question-open;
     in property <string> question-heading;
     in property <string> question-body;
     in property <string> question-confirm;
     in property <bool> question-destructive;
+    // The prompt of the word the question wants typed first, if any, and
+    // whether its confirming button still waits for it.
+    in property <string> question-prompt;
+    in property <bool> question-locked;
     in property <bool> follow-system-scheme: true;
 
     callback close-window();
     callback action-activated();
+
+    // Gives the page the keyboard back, once a question that held it closed:
+    // the focus was in the question, which is gone.
+    public function focus-page() {
+        page-focus.focus();
+    }
+
+    callback escape-pressed();
+    callback allow-requested(index: int);
     callback question-answered(confirmed: bool);
+    callback question-typed(text: string);
 
     title: "Session";
     no-frame: true;
@@ -84,109 +112,140 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Everything behind an open question is out of the keyboard's reach.
-    property <bool> reachable: !root.question-open;
+    // Everything behind an open question is out of the keyboard's reach, and
+    // everything on a page that takes no input.
+    property <bool> reachable: !root.question-open && root.takes-input;
 
-    VerticalLayout {
-        HeaderBar {
-            title: "Session";
-            reachable: root.reachable;
-            close-clicked => {
-                root.close-window();
+    // Escape anywhere on the page, for the page to handle (it cancels an
+    // activation before its point of no return). A question takes its own.
+    keys := FocusScope {
+        width: root.width;
+        height: root.height;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape && root.reachable) {
+                root.escape-pressed();
+                return accept;
             }
+            reject
         }
 
-        page := Rectangle {
-            vertical-stretch: 1;
-            accessible-role: main;
-
-            page-focus := FocusScope {
-                width: page.width;
-                height: page.height;
-                enabled: root.reachable;
-                focus-on-click: false;
-                focus-on-tab-navigation: false;
-            }
-
-            flick := Flickable {
-                width: page.width;
-                height: page.height - action-bar.height;
-                content-height: column.preferred-height;
-
-                column := VerticalLayout {
-                    x: max(0px, (flick.width - 600px) / 2);
-                    width: min(600px, flick.width);
-                    padding-top: 18px;
-                    padding-bottom: 18px;
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    spacing: 18px;
-                    alignment: start;
-
-                    if root.busy: Busy {
-                        label: root.busy-label;
-                    }
-
-                    StatusHead {
-                        heading: root.heading;
-                        description: root.description;
-                        urgent: root.urgent;
-                    }
-
-                    if root.note != "": Text {
-                        text: root.note;
-                        color: Adw.window-fg;
-                        wrap: word-wrap;
-                    }
-
-                    if root.facts.length > 0: BoxedList {
-                        for fact[i] in root.facts: ActionRow {
-                            title: fact.title;
-                            value: fact.value;
-                            first: i == 0;
-                            last: i == root.facts.length - 1;
-                            reachable: root.reachable;
-                        }
-                    }
-
-                    if root.checks.length > 0: BoxedList {
-                        for line[i] in root.checks: CheckRow {
-                            outcome: line.outcome;
-                            word: line.word;
-                            message: line.message;
-                            fix: line.fix;
-                            first: i == 0;
-                            last: i == root.checks.length - 1;
-                            reachable: root.reachable;
-                        }
-                    }
-
-                    if root.fix != "": Text {
-                        text: root.fix;
-                        color: Adw.window-fg;
-                        wrap: word-wrap;
-                    }
+        VerticalLayout {
+            HeaderBar {
+                title: "Session";
+                reachable: root.reachable;
+                close-clicked => {
+                    root.close-window();
                 }
             }
 
-            // The main action, at the bottom of every page that has one.
-            action-bar := Rectangle {
-                y: page.height - self.height;
-                width: page.width;
-                height: action-button.preferred-height + 36px;
+            page := Rectangle {
+                vertical-stretch: 1;
+                accessible-role: main;
 
-                action-button := Button {
-                    x: (parent.width - self.width) / 2;
-                    y: 18px;
-                    width: self.preferred-width;
-                    height: self.preferred-height;
-                    text: root.action;
-                    kind: ButtonKind.suggested;
-                    shape: ButtonShape.pill;
-                    visible: root.action != "";
-                    reachable: root.action != "" && root.reachable;
-                    clicked => {
-                        root.action-activated();
+                page-focus := FocusScope {
+                    width: page.width;
+                    height: page.height;
+                    enabled: root.reachable;
+                    focus-on-click: false;
+                    focus-on-tab-navigation: false;
+                }
+
+                flick := Flickable {
+                    width: page.width;
+                    height: page.height - action-bar.height;
+                    content-height: column.preferred-height;
+
+                    column := VerticalLayout {
+                        x: max(0px, (flick.width - 600px) / 2);
+                        width: min(600px, flick.width);
+                        padding-top: 18px;
+                        padding-bottom: 18px;
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 18px;
+                        alignment: start;
+
+                        if root.busy: Busy {
+                            label: root.busy-label;
+                        }
+
+                        StatusHead {
+                            heading: root.heading;
+                            description: root.description;
+                            urgent: root.urgent;
+                        }
+
+                        if root.note != "": Text {
+                            text: root.note;
+                            color: Adw.window-fg;
+                            wrap: word-wrap;
+                        }
+
+                        if root.facts.length > 0: BoxedList {
+                            for fact[i] in root.facts: ActionRow {
+                                title: fact.title;
+                                value: fact.value;
+                                first: i == 0;
+                                last: i == root.facts.length - 1;
+                                reachable: root.reachable;
+                            }
+                        }
+
+                        if root.steps.length > 0: BoxedList {
+                            for step[i] in root.steps: ActionRow {
+                                title: step.label;
+                                value: step.state;
+                                first: i == 0;
+                                last: i == root.steps.length - 1;
+                                reachable: root.reachable;
+                            }
+                        }
+
+                        if root.checks.length > 0: BoxedList {
+                            for line[i] in root.checks: CheckRow {
+                                outcome: line.outcome;
+                                word: line.word;
+                                message: line.message;
+                                fix: line.fix;
+                                allow: line.allow;
+                                first: i == 0;
+                                last: i == root.checks.length - 1;
+                                reachable: root.reachable;
+                                allow-clicked => {
+                                    root.allow-requested(i);
+                                }
+                            }
+                        }
+
+                        if root.fix != "": Text {
+                            text: root.fix;
+                            color: Adw.window-fg;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // The main action, at the bottom of every page that has one.
+                action-bar := Rectangle {
+                    y: page.height - self.height;
+                    width: page.width;
+                    height: action-button.preferred-height + 36px;
+
+                    action-button := Button {
+                        x: (parent.width - self.width) / 2;
+                        y: 18px;
+                        width: self.preferred-width;
+                        height: self.preferred-height;
+                        text: root.action;
+                        kind: root.action-plain ? ButtonKind.regular : ButtonKind.suggested;
+                        shape: ButtonShape.pill;
+                        visible: root.action != "";
+                        reachable: root.action != "" && root.reachable;
+                        clicked => {
+                            root.action-activated();
+                        }
                     }
                 }
             }
@@ -200,8 +259,13 @@ export component AppWindow inherits Window {
         body: root.question-body;
         confirm-label: root.question-confirm;
         destructive: root.question-destructive;
+        prompt: root.question-prompt;
+        locked: root.question-locked;
         answered(confirmed) => {
             root.question-answered(confirmed);
+        }
+        typed(text) => {
+            root.question-typed(text);
         }
     }
 }

@@ -8,6 +8,7 @@
 // one in order. A row behind an open dialog is not reachable.
 
 import { Adw } from "theme.slint";
+import { Button } from "button.slint";
 
 export component BoxedList {
     vertical-stretch: 0;
@@ -136,15 +137,19 @@ export component ActionRow {
 export enum Outcome { passed, warning, problem, skipped }
 
 // A row for one check: the outcome as a word, the check's sentence and,
-// under it, what fixes a problem.
+// under it, what fixes a problem. A problem the person can allow for one
+// activation has a button for that under it, the Tab stop after the row's.
 export component CheckRow {
     in property <Outcome> outcome;
     in property <string> word;
     in property <string> message;
     in property <string> fix;
+    // The label of the button that allows the problem; empty for none.
+    in property <string> allow;
     in property <bool> first;
     in property <bool> last;
     in property <bool> reachable: true;
+    callback allow-clicked();
 
     property <string> label: root.word + ": " + root.message;
 
@@ -152,6 +157,16 @@ export component CheckRow {
     accessible-role: list-item;
     accessible-label: root.label;
     accessible-description: root.fix;
+
+    // First in the tree, so the row is reached before its button.
+    focus := RowFocus {
+        width: root.width;
+        height: root.height;
+        label: root.label;
+        first: root.first;
+        last: root.last;
+        reachable: root.reachable;
+    }
 
     VerticalLayout {
         padding-left: 14px;
@@ -183,15 +198,19 @@ export component CheckRow {
             wrap: word-wrap;
             accessible-role: none;
         }
-    }
 
-    focus := RowFocus {
-        width: root.width;
-        height: root.height;
-        label: root.label;
-        first: root.first;
-        last: root.last;
-        reachable: root.reachable;
+        if root.allow != "": HorizontalLayout {
+            padding-top: 6px;
+            alignment: start;
+
+            Button {
+                text: root.allow;
+                reachable: root.reachable;
+                clicked => {
+                    root.allow-clicked();
+                }
+            }
+        }
     }
 
     if !root.last: RowSeparator {

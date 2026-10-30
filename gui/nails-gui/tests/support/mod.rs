@@ -32,6 +32,17 @@ pub fn pair() -> (UnixStream, UnixStream) {
     (one, other)
 }
 
+/// What a fake helper does in answer to a request.
+#[derive(Debug, Clone)]
+pub enum Act {
+    /// Write this frame.
+    Send(Frame),
+    /// Wait until the window hangs up (shuts its writing half or closes its
+    /// end), as the real helper's watch on its pipe does; fail the helper if
+    /// the window sends anything else, or nothing within [`PIPE_TIMEOUT`].
+    AwaitHangUp,
+}
+
 /// A running fake helper.
 pub struct FakeHelper {
     thread: JoinHandle<Vec<Request>>,
@@ -41,11 +52,21 @@ impl FakeHelper {
     /// Start a helper that opens with `hello` and answers each request with
     /// the frames `respond` gives for it, or closes the pipe when it gives
     /// `None`. Returns the window's end of the pipe.
-    pub fn start<F>(hello: Hello, respond: F) -> (UnixStream, Self)
+    pub fn start<F>(hello: Hello, mut respond: F) -> (UnixStream, Self)
     where
         F: FnMut(&Request) -> Option<Vec<Frame>> + Send + 'static,
     {
-        Self::start_raw(vec![Frame::Hello(hello).to_line()], respond)
+        Self::scripted(hello, move |request| {
+            respond(request).map(|frames| frames.into_iter().map(Act::Send).collect())
+        })
+    }
+
+    /// As [`FakeHelper::start`], but each answer is a script of [`Act`]s.
+    pub fn scripted<F>(hello: Hello, respond: F) -> (UnixStream, Self)
+    where
+        F: FnMut(&Request) -> Option<Vec<Act>> + Send + 'static,
+    {
+        Self::run(vec![Frame::Hello(hello).to_line()], respond)
     }
 
     /// As [`FakeHelper::start`], but the helper opens with `opening`, raw
@@ -53,6 +74,15 @@ impl FakeHelper {
     pub fn start_raw<F>(opening: Vec<String>, mut respond: F) -> (UnixStream, Self)
     where
         F: FnMut(&Request) -> Option<Vec<Frame>> + Send + 'static,
+    {
+        Self::run(opening, move |request| {
+            respond(request).map(|frames| frames.into_iter().map(Act::Send).collect())
+        })
+    }
+
+    fn run<F>(opening: Vec<String>, mut respond: F) -> (UnixStream, Self)
+    where
+        F: FnMut(&Request) -> Option<Vec<Act>> + Send + 'static,
     {
         let (window, helper) = pair();
         let thread = std::thread::spawn(move || {
@@ -74,12 +104,24 @@ impl FakeHelper {
                     .unwrap_or_else(|error| panic!("the window sent {line:?}: {error:?}"));
                 let reply = respond(&request);
                 requests.push(request);
-                let Some(frames) = reply else {
+                let Some(acts) = reply else {
                     return requests;
                 };
-                for frame in frames {
-                    if writeln!(output, "{}", frame.to_line()).is_err() {
-                        return requests;
+                for act in acts {
+                    match act {
+                        Act::Send(frame) => {
+                            if writeln!(output, "{}", frame.to_line()).is_err() {
+                                return requests;
+                            }
+                        }
+                        Act::AwaitHangUp => {
+                            let mut rest = String::new();
+                            match input.read_line(&mut rest) {
+                                Ok(0) => {}
+                                Ok(_) => panic!("the window sent {rest:?} instead of hanging up"),
+                                Err(error) => panic!("the window never hung up: {error}"),
+                            }
+                        }
                     }
                 }
             }
