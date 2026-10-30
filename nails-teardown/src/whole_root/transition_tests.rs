@@ -1207,50 +1207,24 @@ fn fake_systemctl(dir: &Path, code: i32) -> PathBuf {
     tool
 }
 
-/// The way back's one console line names what it could not undo and says it
-/// powers off instead of returning.
-#[test]
-fn the_power_off_line_says_what_stayed_and_why() {
-    let line = power_off_line(&[
-        "the MAC address of eth0".to_string(),
-        "link tunl0".to_string(),
-    ]);
-    assert_eq!(
-        line,
-        "The way back could not undo the session's network changes (the MAC address of eth0, \
-         link tunl0): powering off instead of returning to the decoy, which clears them.\n"
-    );
-    assert_eq!(line.lines().count(), 1);
-    assert!(!line.to_lowercase().contains("nails"), "{line}");
-}
-
-/// The way back says why on the console, asks PID 1 to power off at once and,
-/// should it still run after the grace, asks the kernel.
+/// The way back asks PID 1 to power off at once and, should it still run
+/// after the grace, asks the kernel.
 #[test]
 fn powering_off_instead_asks_pid_1_and_then_the_kernel() {
     let dir = tempfile::tempdir().unwrap();
-    let console = dir.path().join("console");
-    fs::write(&console, "").unwrap();
     let systemctl = fake_systemctl(dir.path(), 0);
     let kernel = std::cell::Cell::new(false);
 
-    let taken = power_off_instead(
-        &console,
-        Some(&systemctl),
-        "why\n",
-        std::time::Duration::ZERO,
-        || {
-            kernel.set(true);
-            false
-        },
-    );
+    let taken = power_off_instead(Some(&systemctl), std::time::Duration::ZERO, || {
+        kernel.set(true);
+        false
+    });
 
     assert!(taken);
     assert!(
         kernel.get(),
         "the kernel is asked when this process still runs"
     );
-    assert_eq!(fs::read_to_string(&console).unwrap(), "why\n");
     assert_eq!(
         fs::read_to_string(dir.path().join("calls")).unwrap(),
         "--force poweroff\n"
@@ -1261,37 +1235,16 @@ fn powering_off_instead_asks_pid_1_and_then_the_kernel() {
 #[test]
 fn powering_off_instead_asks_the_kernel_when_pid_1_cannot_be_asked() {
     let dir = tempfile::tempdir().unwrap();
-    let console = dir.path().join("console");
-    fs::write(&console, "").unwrap();
     let refusing = fake_systemctl(dir.path(), 1);
     for systemctl in [Some(refusing.as_path()), None] {
         let kernel = std::cell::Cell::new(false);
-        let taken = power_off_instead(
-            &console,
-            systemctl,
-            "why\n",
-            std::time::Duration::from_secs(3600),
-            || {
-                kernel.set(true);
-                false
-            },
-        );
+        let taken = power_off_instead(systemctl, std::time::Duration::from_secs(3600), || {
+            kernel.set(true);
+            false
+        });
         assert!(!taken, "{systemctl:?}");
         assert!(kernel.get(), "{systemctl:?}");
     }
-    // A console that cannot be opened stops nothing.
-    let kernel = std::cell::Cell::new(false);
-    let _ = power_off_instead(
-        &dir.path().join("no-console"),
-        None,
-        "why\n",
-        std::time::Duration::ZERO,
-        || {
-            kernel.set(true);
-            false
-        },
-    );
-    assert!(kernel.get());
 }
 
 /// The kernel's power-off in every test: it refuses, so no test powers its

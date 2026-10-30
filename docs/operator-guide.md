@@ -490,22 +490,22 @@ journal that starts late:
     resolved's per-link DNS settings), rewritten in place, so each file keeps
     its owner and mode.
 
-  When one of these steps fails, the way back powers off instead of
-  returning: a device that still has the session's MAC address after the
-  retry, a link or Wi-Fi interface of the session's that is still there, a
-  policy-routing rule or firewall table of the session's that is still
-  loaded, or a part it cannot read back (the kernel's list of links, or
-  `ip` or `nft` failing to list the rules or tables). That state lives only
-  in the kernel, so a power-off erases it, where a return would hand it to
-  the decoy. A missing tool counts the same way wherever the way back can
-  see what the session left without it: without `ip` a changed MAC address
-  or a link the session made, without `iw` a Wi-Fi interface it added. The
-  console shows one line before the power-off that names what stayed, and
-  the next boot is the plain decoy. A missing tool with nothing to undo
-  (the stock NixOS decoy without `nft`, a session that added no Wi-Fi
-  interface) returns as before. The network settings and the hostname do
-  not count: the way back writes them back and does not power off over
-  them.
+  When one of these steps fails, the way back powers off instead of returning:
+  a device that still has the session's MAC address after the retry, a link or
+  Wi-Fi interface of the session's that is still there, a policy-routing rule
+  or firewall table of the session's that is still loaded, or a part it cannot
+  read back (the kernel's list of links, or `ip` or `nft` failing to list the
+  rules or tables). That state lives only in the kernel, so a power-off erases
+  it, where a return would hand it to the decoy. A missing tool counts the
+  same way wherever the way back can see what the session left without it:
+  without `ip` a changed MAC address or a link the session made, without `iw`
+  a Wi-Fi interface it added. The machine turns off as with `--poweroff`, and
+  the next boot is the plain decoy. Nothing on the screen says why: a line
+  there would tell anyone watching that a hidden session had just ended. A
+  missing tool with nothing to undo (the stock NixOS decoy without `nft`, a
+  session that added no Wi-Fi interface) returns as before. The network
+  settings and the hostname do not count: the way back writes them back and
+  does not power off over them.
 
   The decoy's NetworkManager therefore does not adopt a session link as
   connected externally or record a profile for it in
@@ -548,19 +548,19 @@ journal that starts late:
   do not refuse, since a stock NixOS decoy has no `nft`.
   Before it asks, `deactivate` warns when the way back's last step will find
   no `ip` (iproute2), no `nft` (nftables) or, on a machine with a Wi-Fi
-  interface, no `iw`, in the hidden session's system directories or, on
-  NixOS, the decoy's system: without `ip` the policy-routing rules the
-  session added stay, and a virtual link it made or a MAC address it
-  changed makes the machine power off instead of returning; without `nft`
-  the nftables tables it added stay; and without `iw` a Wi-Fi interface it
-  added on the decoy's radios makes the machine power off instead. Beyond
-  that, the step runs after the session has ended and shows nothing but the
-  console line of such a power-off, so nothing tells you what it left: take a VPN connection down with its own tool (`wg-quick down`,
-  `nmcli connection down`, the app's disconnect), end monitor mode with
-  `airmon-ng stop`, and stop the containers and virtual machines of the
-  session before you deactivate, and end a session with
-  `deactivate --poweroff` (or `emergency --poweroff`) when none of its
-  network state may reach the decoy.
+  interface, no `iw`, in the hidden session's system directories or, on NixOS,
+  the decoy's system: without `ip` the policy-routing rules the session added
+  stay, and a virtual link it made or a MAC address it changed makes the
+  machine power off instead of returning; without `nft` the nftables tables it
+  added stay; and without `iw` a Wi-Fi interface it added on the decoy's
+  radios makes the machine power off instead. Beyond that, the step runs with
+  no output after the session has ended, so nothing tells you what it left, or
+  why it powered off: take a VPN connection down with its own tool
+  (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
+  monitor mode with `airmon-ng stop`, and stop the containers and virtual
+  machines of the session before you deactivate, and end a session with
+  `deactivate --poweroff` (or `emergency --poweroff`) when none of its network
+  state may reach the decoy.
 - on a volatile decoy, a journal that starts at the return. The way back
   deletes the runtime journal the decoy shared with the hidden session, so the
   decoy's own records from before the session (the activation's sudo line, the
@@ -1394,9 +1394,10 @@ session.
 
 Any on-screen tell that you are in the hidden environment is a shoulder-surfing
 and screen-recording liability. NAILS adds none: it changes no prompt and no
-terminal colours. What the hidden session looks like is up to its configuration;
-a hidden desktop that looks different from the decoy's, or a login screen that
-does, is itself a tell.
+terminal colours, and the way back writes nothing on the screen, also when it
+powers off instead of returning. What the hidden session looks like is up to its
+configuration; a hidden desktop that looks different from the decoy's, or a
+login screen that does, is itself a tell.
 
 ### Disks mounted during the session
 

@@ -717,40 +717,48 @@ fn the_record_name_carries_no_product_name() {
 
 /// A way back whose restore left nothing of the session's and checked it all
 /// has failed nothing, and so is a return; what entry could not record or a
-/// missing tool could not see is left alone and is no failure either.
+/// missing tool could not see is left alone and is no failure either, and
+/// neither is a network setting it could not write back.
 #[test]
 fn nothing_failed_when_all_is_back_or_only_left_alone() {
-    assert!(Kept::default().failed().is_empty());
+    assert!(!Kept::default().failed());
     let left_alone = Kept {
         settings: vec!["net/ipv4/ip_forward".to_string()],
         unknown: vec!["links", "IPv4 rules", "IPv6 rules", "firewall tables"],
         ..Kept::default()
     };
-    assert!(left_alone.failed().is_empty(), "{:?}", left_alone.failed());
+    assert!(!left_alone.failed(), "{left_alone:?}");
 }
 
 /// Each part still the session's, and each part the way back could not read
-/// back, is named in the order a person reads it.
+/// back, is a failure on its own.
 #[test]
-fn what_the_way_back_could_not_undo_or_check_is_named() {
-    let kept = Kept {
-        addresses: vec!["eth0".to_string()],
-        links: vec!["tunl0".to_string()],
-        rules: vec!["-4 100: from all lookup 51820".to_string()],
-        tables: vec!["inet mullvad".to_string()],
-        unverified: vec!["IPv6 rules"],
-        ..Kept::default()
-    };
-    assert_eq!(
-        kept.failed(),
-        [
-            "the MAC address of eth0",
-            "link tunl0",
-            "rule -4 100: from all lookup 51820",
-            "table inet mullvad",
-            "IPv6 rules unverified",
-        ]
-    );
+fn each_part_the_way_back_could_not_undo_or_check_is_a_failure() {
+    let parts = [
+        Kept {
+            addresses: vec!["eth0".to_string()],
+            ..Kept::default()
+        },
+        Kept {
+            links: vec!["tunl0".to_string()],
+            ..Kept::default()
+        },
+        Kept {
+            rules: vec!["-4 100: from all lookup 51820".to_string()],
+            ..Kept::default()
+        },
+        Kept {
+            tables: vec!["inet mullvad".to_string()],
+            ..Kept::default()
+        },
+        Kept {
+            unverified: vec!["IPv6 rules"],
+            ..Kept::default()
+        },
+    ];
+    for kept in parts {
+        assert!(kept.failed(), "{kept:?}");
+    }
 }
 
 /// Without `ip` the way back changes no link, but it still sees, through the
@@ -762,9 +770,7 @@ fn a_missing_ip_fails_where_the_session_changed_what_it_would_have_undone() {
     let record = NetworkRecord::capture(&places, &NetTools::default());
     let tools = NetTools::default();
     assert!(
-        restore_with(&places, &tools, Some(&record.encode()))
-            .failed()
-            .is_empty(),
+        !restore_with(&places, &tools, Some(&record.encode())).failed(),
         "nothing to undo"
     );
     fs::write(
@@ -776,7 +782,9 @@ fn a_missing_ip_fails_where_the_session_changed_what_it_would_have_undone() {
 
     let kept = restore_with(&places, &tools, Some(&record.encode()));
 
-    assert_eq!(kept.failed(), ["the MAC address of eth0", "link wg0"]);
+    assert!(kept.failed());
+    assert_eq!(kept.addresses, ["eth0"]);
+    assert_eq!(kept.links, ["wg0"]);
 }
 
 /// Links the kernel's list cannot be read of now are unverified: the way back
@@ -791,5 +799,5 @@ fn links_that_cannot_be_read_on_the_way_back_are_unverified() {
 
     assert_eq!(kept.unverified, ["links"]);
     assert!(!kept.unknown.contains(&"links"), "{kept:?}");
-    assert_eq!(kept.failed(), ["links unverified"]);
+    assert!(kept.failed());
 }
