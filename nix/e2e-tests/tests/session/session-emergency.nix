@@ -39,7 +39,16 @@
 #      decoy's order, and no mount more): the store's overlay with NixOS's
 #      read-only bind of it stacked on top, and the tmpfs at /nix/.rw-store
 #      that holds the overlay's upper.
-#   3. A scratch disk mounted over the hidden root in the session: the
+#   3. In the hidden session, a desktop shell stand-in leads a session and a
+#      process group of its own, as a unit's main process does, and starts
+#      an app as its direct child in both, as GNOME Shell and niri start menu
+#      entries; the app ignores SIGTERM, and the unit never escalates its stop.
+#      The stand-in's terminal (a pseudo-terminal of script's) runs
+#      `sudo nails emergency` itself, as a menu entry that asks for a terminal
+#      does. The emergency's kill ends the app at once, or the switch would wait
+#      for it for ever, and the emergency itself lives on past its kill: it logs
+#      its phases on the hidden volume.
+#   4. A scratch disk mounted over the hidden root in the session: the
 #      session watcher, polling every second with its automatic emergency on,
 #      keeps running past its debounce without writing a probe or ending the
 #      session, deactivate is refused with root_covered, emergency still ends
@@ -48,7 +57,7 @@
 #      prepared), and the scratch disk received nothing: no logs/, state.json,
 #      .lock or write probe, and its root directory's mtime and ctime are
 #      unchanged.
-#   4. `nails emergency --poweroff` in the hidden session powers the machine
+#   5. `nails emergency --poweroff` in the hidden session powers the machine
 #      off; the next cold boot is the plain decoy with the backend closed.
 { self, pkgs, ... }:
 let
@@ -85,6 +94,32 @@ in
           echo $$ > /run/pidfile-probe/pid
           trap 'rm -f /run/pidfile-probe/pid; exit 0' TERM
           while :; do sleep 1 & wait $!; done
+        '';
+      };
+      # A desktop shell stand-in, started in the hidden session only. Its
+      # main process leads a session and a process group of its own, and its
+      # app is its direct child in both. The app ignores SIGTERM and the stop
+      # never escalates: only the emergency's kill can end it before the
+      # switch. Its terminal runs the command written to the launch fifo.
+      systemd.services.desktop-standin = {
+        path = [
+          pkgs.bash
+          pkgs.coreutils
+          pkgs.util-linux
+        ];
+        serviceConfig = {
+          User = "testuser";
+          RuntimeDirectory = "desktop-standin";
+          TimeoutStopSec = "infinity";
+        };
+        script = ''
+          sh -c 'trap "" TERM; exec sleep infinity' &
+          echo $! > /run/desktop-standin/app.pid
+          mkfifo /run/desktop-standin/launch
+          exec 3<>/run/desktop-standin/launch
+          read -r command <&3
+          script -qfec "$command" /dev/null <&3 >/dev/null 2>&1 &
+          wait
         '';
       };
       # The disk a covered-root subtest mounts over the hidden root.
@@ -313,6 +348,44 @@ in
         assert activation_token not in history, history
         assert hidden_token not in history, history
         assert "emergency" not in history, history
+
+    with subtest("an emergency from a desktop's terminal ends the desktop's app at once"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        write_config()
+        canonical_activate(CONFIG, "--overlay-only", "activate-desktop")
+        session.assert_hidden_root(machine)
+        finished = (
+            "cat /mnt/data/logs/*.log 2>/dev/null | grep -c 'emergency hot path finished' || true"
+        )
+        logged = int(machine.succeed(finished).strip() or 0)
+        machine.succeed("systemctl start desktop-standin.service")
+        machine.wait_until_succeeds(
+            "test -s /run/desktop-standin/app.pid && test -p /run/desktop-standin/launch",
+            timeout=60,
+        )
+        desktop = machine.succeed("systemctl show -p MainPID --value desktop-standin").strip()
+        app = machine.succeed("cat /run/desktop-standin/app.pid").strip()
+        # The app is in the desktop's session and process group.
+        ids = machine.succeed(f"ps -o sid=,pgid= -p {app}").split()
+        assert ids == [desktop, desktop], (ids, desktop)
+        command = (
+            "/run/wrappers/bin/sudo /run/current-system/sw/bin/nails "
+            f"--config {CONFIG} emergency"
+        )
+        # A spared app would hold the switch for ever: the deadline fails it.
+        timings = session.follow_soft_reboot(
+            machine,
+            f"echo '{command}' > /run/desktop-standin/launch",
+            "emergency-from-a-desktop-terminal",
+            deadline_s=300,
+        )
+        machine.log(f"emergency from the desktop's terminal: {timings}")
+        session.assert_decoy_root(machine)
+        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        # The emergency outlived its kill, which took its terminal, sudo and
+        # the desktop: it logged its phases after it.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        assert int(machine.succeed(finished).strip() or 0) == logged + 1
 
     with subtest("a disk mounted over the hidden root in the session receives nothing"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
