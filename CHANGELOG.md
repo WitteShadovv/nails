@@ -276,6 +276,15 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
+  the programs that wait for logind's shutdown signal end on it before the switch, as at an
+  ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
+  unattended-upgrades shutdown helper was stopped without that signal: on Debian 13 it wrote
+  "SIGTERM or SIGHUP received" to `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log`
+  on the decoy disk at every activation, a line an ordinary shutdown does not write, and on
+  Ubuntu 24.04 and 26.04 it failed (`exit-code`) when the bus stopped under it. A soft-reboot that
+  logind does not take is enqueued directly as before, and `emergency` still enqueues its own
+  directly, without waiting for anything.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
