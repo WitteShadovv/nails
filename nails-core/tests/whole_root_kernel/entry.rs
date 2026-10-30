@@ -762,6 +762,12 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             pid_places: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
+            network: nails_teardown::whole_root::network::Places::system(&paths.run),
+            network_tools: None,
+            power_off: transition::PowerOff {
+                grace: std::time::Duration::ZERO,
+                kernel: || false,
+            },
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         assert!(
@@ -815,6 +821,12 @@ fn the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter() {
             pid_places: Some(fresh_pids::Places::under(counter.path())),
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
+            network: nails_teardown::whole_root::network::Places::system(&paths.run),
+            network_tools: None,
+            power_off: transition::PowerOff {
+                grace: std::time::Duration::ZERO,
+                kernel: || false,
+            },
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         assert_eq!(
@@ -1268,6 +1280,12 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
             pid_places: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
+            network: nails_teardown::whole_root::network::Places::system(&paths.run),
+            network_tools: None,
+            power_off: transition::PowerOff {
+                grace: std::time::Duration::ZERO,
+                kernel: || false,
+            },
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         for unit in &plan.boot_masks {
