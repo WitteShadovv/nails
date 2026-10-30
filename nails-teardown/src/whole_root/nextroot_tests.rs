@@ -196,6 +196,51 @@ fn directories_are_created_and_listed_through_links_resolved_inside_the_root() {
     .unwrap();
 }
 
+/// The guard sees the directory each missing one is made in, right before
+/// it is made, through the descriptor the make goes through: a part of the
+/// path swapped for a link after it was made is caught where the next one
+/// would be made inside the link's target, and nothing is made there.
+#[test]
+fn the_guard_sees_each_parent_right_before_a_directory_is_made_in_it() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.path().join("guarded")).unwrap();
+    let mut seen = Vec::new();
+    let refused = create_dir_all_in_root_guarded(
+        root.path(),
+        Path::new("/a/b/c"),
+        &mut |parent| {
+            let at = real_path(parent)?;
+            seen.push(at.clone());
+            if at.starts_with(real.join("guarded")) {
+                return Err(io::Error::other("a guarded directory"));
+            }
+            Ok(())
+        },
+        &mut |_, name| {
+            // Once `a` is made, swap it for a link into the guarded tree,
+            // as a second process could between two looks at the path.
+            if name == "a" {
+                std::fs::remove_dir(root.path().join("a")).unwrap();
+                symlink("/guarded", root.path().join("a")).unwrap();
+            }
+            Ok(())
+        },
+    );
+    assert!(
+        refused.is_err(),
+        "the make inside the link's target went on"
+    );
+    assert_eq!(seen, [real.clone(), real.join("guarded")]);
+    assert_eq!(
+        std::fs::read_dir(root.path().join("guarded"))
+            .unwrap()
+            .count(),
+        0,
+        "nothing was made through the link"
+    );
+}
+
 #[test]
 fn canonical_in_root_resolves_symlinked_mount_points() {
     let root = tempfile::tempdir().unwrap();
