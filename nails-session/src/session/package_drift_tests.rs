@@ -890,3 +890,116 @@ fn an_upper_closed_to_the_check_cannot_be_judged() {
         "{privileged:?}"
     );
 }
+
+/// dpkg's journal at `dir`: a directory with `entries`, each a file, or a
+/// whiteout where it starts with `!`.
+fn journal(fs: &MockFilesystem, dir: &str, entries: &[&str]) {
+    fs.mock_set_path_type(dir, PathKind::Dir);
+    let mut listed = Vec::new();
+    for entry in entries {
+        let (name, whiteout) = match entry.strip_prefix('!') {
+            Some(name) => (name, true),
+            None => (*entry, false),
+        };
+        let path = format!("{dir}/{name}");
+        if whiteout {
+            fs.mock_set_whiteout(&path);
+        } else {
+            fs.mock_add_file(&path, "Package: tor\nStatus: install ok unpacked\n");
+        }
+        listed.push(PathBuf::from(path));
+    }
+    fs.mock_set_directory_contents(Path::new(dir), listed);
+}
+
+#[test]
+fn a_dpkg_run_a_hidden_session_did_not_finish_cannot_be_judged() {
+    let decoy = status(&[("libc6", "2.41-13")]);
+    let copy = status(&[("libc6", "2.41-13")]);
+    // The journal alone in the upper, or beside a copy of the record: their
+    // dpkg adds it to what it reads at its next run either way.
+    for hidden in [None, Some(copy.as_str())] {
+        let fs = debian(&decoy, hidden);
+        journal(
+            &fs,
+            &format!("{UPPER}/var/lib/dpkg/updates"),
+            &["0000", "tmp.i"],
+        );
+        let result = run(&check(), &fs);
+        assert!(result.is_warn(), "{result:?}");
+        assert!(
+            result.message().contains(
+                "could not tell whether hidden sessions' copy of the dpkg package database \
+                 (/var/lib/dpkg/status) follows the decoy's: a dpkg run in a hidden session \
+                 stopped half way and left its journal in /var/lib/dpkg/updates, which dpkg adds \
+                 to its record only when it next runs"
+            ),
+            "{result:?}"
+        );
+        assert!(
+            result.message().contains(
+                "In a hidden session, run `sudo dpkg --configure -a`, as apt asks there, so dpkg \
+                 finishes that run."
+            ),
+            "{result:?}"
+        );
+    }
+    // dpkg's file being written there, and the decoy's entries hidden
+    // sessions deleted, are no run of theirs.
+    let fs = debian(&decoy, None);
+    journal(
+        &fs,
+        &format!("{UPPER}/var/lib/dpkg/updates"),
+        &["tmp.i", "!0000"],
+    );
+    let result = run(&check(), &fs);
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn a_dpkg_run_the_decoy_did_not_finish_cannot_be_judged_against_a_copy() {
+    let record = status(&[("libc6", "2.41-13")]);
+    let decoy_journal = format!("{ROOT}/var/lib/dpkg/updates");
+    // Hidden sessions without a copy see the decoy's record and its journal
+    // as the decoy does.
+    let fs = debian(&record, None);
+    journal(&fs, &decoy_journal, &["0003"]);
+    let result = run(&check(), &fs);
+    assert!(result.is_pass(), "{result:?}");
+    // Their dpkg would add the decoy's journal to a copy of their own.
+    let fs = debian(&record, Some(&record));
+    journal(&fs, &decoy_journal, &["0003", "tmp.i"]);
+    let result = run(&check(), &fs);
+    assert!(
+        result
+            .message()
+            .contains("a dpkg run on the decoy stopped half way"),
+        "{result:?}"
+    );
+    assert!(
+        result
+            .message()
+            .contains("On the decoy, run `sudo dpkg --configure -a`"),
+        "{result:?}"
+    );
+    // Only root lists the decoy's journal without changing its access time.
+    let result = run(&check().as_privileged(false), &fs);
+    assert!(result.message().contains("only root reads"), "{result:?}");
+    // An entry hidden sessions deleted they do not see, and neither do they
+    // see any where they deleted the journal's directory.
+    let upper_journal = format!("{UPPER}/var/lib/dpkg/updates");
+    journal(&fs, &upper_journal, &["!0003"]);
+    assert!(run(&check(), &fs).is_pass());
+    fs.mock_set_whiteout(&upper_journal);
+    assert!(run(&check(), &fs).is_pass());
+    // A link in its place on the decoy is not followed.
+    let fs = debian(&record, Some(&record));
+    fs.mock_set_path_type(&decoy_journal, PathKind::Symlink);
+    let result = run(&check(), &fs);
+    assert!(
+        result
+            .message()
+            .contains("/var/lib/dpkg/updates on the decoy is a symbolic link"),
+        "{result:?}"
+    );
+}

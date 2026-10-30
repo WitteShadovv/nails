@@ -424,3 +424,87 @@ fn a_kernel_update_through_the_decoys_lib_link_is_the_hidden_sessions_own() {
         );
     });
 }
+
+/// A hidden session's dpkg stopped half way leaves its journal in the upper,
+/// and the decoy's own leaves one hidden sessions see: the row says it cannot
+/// tell and names the run to finish, and it lists the decoy's journal without
+/// changing its access time.
+#[test]
+fn a_dpkg_run_stopped_half_way_leaves_the_row_unable_to_tell() {
+    let _ = Rerun::new(test_path!(
+        a_dpkg_run_stopped_half_way_leaves_the_row_unable_to_tell
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        const UPDATES: &str = "var/lib/dpkg/updates";
+        let decoy = decoy();
+        decoy.mkdir(UPDATES);
+        let hidden = hidden();
+        let check = PackageDriftCheck::new(decoy.path().to_path_buf(), hidden.path().to_path_buf())
+            .as_privileged(true);
+        let row = || PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+
+        // Stopped after dpkg wrote its first change, before its record.
+        in_next_root(decoy.path(), hidden.path(), |next| {
+            std::fs::write(
+                next.join(UPDATES).join("0000"),
+                status(&[("tor", "0.4.8.17-1")]),
+            )
+            .unwrap();
+        });
+        let result = row();
+        assert!(
+            result
+                .message()
+                .contains("a dpkg run in a hidden session stopped half way"),
+            "{result:?}"
+        );
+        assert!(
+            result
+                .message()
+                .contains("In a hidden session, run `sudo dpkg --configure -a`"),
+            "{result:?}"
+        );
+
+        // `dpkg --configure -a` finishes it: the record written again, the
+        // journal emptied.
+        in_next_root(decoy.path(), hidden.path(), |next| {
+            write_status(
+                next,
+                &[
+                    ("libc6", "2.41-12"),
+                    ("openssh-client", "1:10.0p1-7"),
+                    ("tor", "0.4.8.17-1"),
+                ],
+            );
+            std::fs::write(next.join(INFO).join("tor.list"), "/usr/bin/tor\n").unwrap();
+            std::fs::remove_file(next.join(UPDATES).join("0000")).unwrap();
+        });
+        let result = row();
+        assert!(!result.message().contains("half way"), "{result:?}");
+
+        // The decoy's own run stops half way: hidden sessions see its journal.
+        std::fs::write(
+            decoy.path().join(UPDATES).join("0001"),
+            status(&[("curl", "8.14.1-2")]),
+        )
+        .unwrap();
+        let listed = decoy.path().join(UPDATES);
+        age(&listed);
+        let before = own_atime(&listed);
+        let result = row();
+        assert_eq!(own_atime(&listed), before, "the journal was listed");
+        assert!(
+            result
+                .message()
+                .contains("a dpkg run on the decoy stopped half way"),
+            "{result:?}"
+        );
+        assert!(
+            result
+                .message()
+                .contains("On the decoy, run `sudo dpkg --configure -a`"),
+            "{result:?}"
+        );
+    });
+}
