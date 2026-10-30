@@ -166,8 +166,7 @@ fn ready_at(root: &Path) -> ReadyDeactivation {
         ..nails_core::Config::test_default()
     };
     let mut plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
-    plan.pids.floor = Some(388);
-    nails_teardown::test_support::stage_pid_counter(root);
+    plan.pids = nails_teardown::test_support::stage_pid_measure(root);
     ReadyDeactivation::for_test(config, plan, root)
 }
 
