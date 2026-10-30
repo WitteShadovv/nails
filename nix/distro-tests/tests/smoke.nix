@@ -30,10 +30,15 @@
 # fails after it. After the second session, which pushes the kernel's process
 # numbers far on, the getty the decoy starts again carries a number in the
 # power-of-two range the decoy's fresh boot gave it, and logind a number below
-# the one the session pushed the counter to. Each entry ends the decoy's
-# unattended-upgrades shutdown helper on logind's shutdown signal, as an
-# ordinary shutdown does: the unit does not fail at the switch, and its log on
-# the decoy disk gains no stop line.
+# the one the session pushed the counter to. Each switch goes through logind: a
+# program that blocks shutdown makes the activation refuse, a program that
+# holds the shutdown back (a delay inhibitor) keeps the first entry waiting,
+# with status showing it activating and recover leaving it alone, and one in
+# the second session holds the way back and leaves the proof of logind's
+# signal on the hidden volume. Each entry ends the decoy's unattended-upgrades
+# shutdown helper on logind's signal, as an ordinary shutdown does: the unit
+# does not fail at the switch, and neither its log on the decoy disk nor the
+# session's copy gains a stop line.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -478,6 +483,46 @@ distroVm.buildVmTest {
         )
 
 
+    # A program that holds a shutdown delay inhibitor, as an updater or
+    # unattended-upgrades' helper does: once logind's shutdown signal comes, it
+    # writes the time to `seen` (the proof that the switch went through
+    # logind) and holds the switch back for `hold` seconds more.
+    delay_probe_script = "\n".join(
+        (
+            "#!/bin/sh",
+            "until busctl get-property org.freedesktop.login1 /org/freedesktop/login1 "
+            + "org.freedesktop.login1.Manager PreparingForShutdown | grep -q true; do",
+            "  sleep 0.2",
+            "done",
+            "cat /proc/uptime > \"$1\"",
+            "sleep \"$2\"",
+            "",
+        )
+    )
+
+
+    def hold_shutdown(unit, mode, command):
+        # `command` under a shutdown inhibitor of `mode`, as the unit `unit`.
+        vm.succeed(
+            f"systemd-run --unit={unit} --collect systemd-inhibit --what=shutdown "
+            + f"--mode={mode} --who={unit} --why=smoke {command}"
+        )
+        vm.wait_until_succeeds(
+            f"systemd-inhibit --list --no-pager | grep -q {unit}", timeout=30
+        )
+
+
+    def hold_shutdown_back(unit, seen, hold):
+        vm.succeed(
+            "printf %s "
+            + shlex.quote(delay_probe_script)
+            + " > /run/delay-probe"
+        )
+        vm.succeed(f"rm -f {seen}")
+        # Run by sh: /run is noexec on Debian and Ubuntu.
+        hold_shutdown(unit, "delay", f"sh /run/delay-probe {seen} {hold}")
+
+
     def assert_quiet_kernel_log(where):
         # Neither PID 1's warning that a session drop-in is not readable by
         # all (which names the file), nor a failed unmount of the hidden
@@ -707,9 +752,51 @@ distroVm.buildVmTest {
         vm.succeed("systemctl reset-failed cancelled-activation.service || true")
         vm.succeed("rm -f /mnt/data/reports/activation-residue-*.json")
 
+    with subtest("a program that blocks shutdown makes activation refuse"):
+        # A shutdown block inhibitor means a program is in the middle of
+        # something it must not lose (a package or firmware update): the
+        # activation refuses, names it, and leaves nothing behind.
+        hold_shutdown("block-probe", "block", "sleep infinity")
+        rc, out = vm.execute(f"{nails_cmd} activate -y 2>&1")
+        print(out)
+        assert rc != 0 and "block-probe blocks shutdown" in out, (rc, out)
+        vm.fail("mountpoint -q /run/nextroot")
+        vm.fail("test -e /run/overlay-runtime")
+        vm.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
+        session.assert_decoy_root(vm)
+        place = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]["place"]
+        assert place == "decoy", f"after the refusal: {place}"
+        vm.succeed("systemctl stop block-probe.service")
+        vm.succeed("rm -f /mnt/data/reports/activation-residue-*.json")
+
     with subtest("activation soft-reboots into the whole-root overlay"):
         decoy_uu_stops = uu_stop_lines()
+        # A program holds the shutdown back for a while, as an updater does.
+        # The activation waits for it through logind and stays the entry's
+        # owner meanwhile: status shows it activating, and recover leaves it.
+        seen = "/run/delay-probe.seen"
+        hold_shutdown_back("delay-probe", seen, 8)
+        # The activation kills every interactive shell, the driver's own among
+        # them, so a unit looks while the switch waits and keeps what it saw
+        # in /run, which the switch carries.
+        look = (
+            f"until [ -s {seen} ]; do sleep 0.1; done; "
+            + f"{nails_cmd} status --json > /run/waiting-status.json 2>&1; "
+            + f"{nails_cmd} recover > /run/waiting-recover.out 2>&1; "
+            + "echo $? > /run/waiting-recover.rc; "
+            + "if mountpoint -q /run/nextroot && test -e /run/overlay-runtime; "
+            + "then echo kept; else echo gone; fi > /run/waiting-entry"
+        )
+        vm.succeed(f"systemd-run --unit=switch-look --collect sh -c {shlex.quote(look)}")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
+        print(vm.succeed("cat /run/waiting-status.json /run/waiting-recover.out"))
+        waiting = json.loads(vm.succeed("cat /run/waiting-status.json"))["data"]["place"]
+        assert waiting == "activating", f"while logind held the switch back: {waiting}"
+        recover_rc = vm.succeed("cat /run/waiting-recover.rc").strip()
+        assert recover_rc == "6", f"recover while the switch waited: {recover_rc}"
+        assert vm.succeed("cat /run/waiting-entry").strip() == "kept", (
+            "recover took the waiting entry down"
+        )
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
         session.assert_hidden_root(vm)
@@ -859,6 +946,9 @@ distroVm.buildVmTest {
         vm.succeed("for i in $(seq 8000); do /bin/sh -c :; done")
         reached = int(vm.succeed("sh -c 'echo $$'").strip())
         assert reached > 4 * max(fresh_numbers.values()), (reached, fresh_numbers)
+        # The way back goes through logind as well: a program in the session
+        # holds it back and leaves its proof on the hidden volume.
+        hold_shutdown_back("delay-probe-hidden", "/mnt/data/delay-probe.seen", 3)
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
         check_failed_units("on the decoy after deactivate", "afterReturn")
@@ -899,6 +989,18 @@ distroVm.buildVmTest {
     with subtest("the rehearsal's scan runs on the decoy in the planting boot"):
         # As the operator would: unlock and mount the hidden volume again.
         vm.succeed("""${hiddenRoot.reopenHiddenRoot}""")
+        # The program in the session saw logind's shutdown signal at the way
+        # back, and its copy of unattended-upgrades' helper wrote no stop line
+        # into the upper.
+        vm.succeed("test -s /mnt/data/delay-probe.seen")
+        _, out = vm.execute(
+            f"grep -c -F {shlex.quote(uu_stop_line)} /mnt/data/root/upper{uu_log} "
+            + "2>/dev/null || true"
+        )
+        assert int(out.strip() or "0") == decoy_uu_stops, (
+            f"the way back stopped the session's unattended-upgrades helper without "
+            f"logind's signal: {out.strip()} stop lines in its log in the upper"
+        )
         token = json.loads(vm.succeed("cat /mnt/data/rehearse/state.json"))["token"]
         print(vm.succeed("cat /proc/sys/kernel/random/boot_id; systemctl --version | head -1"))
         rc, out, err = rehearse("status")
