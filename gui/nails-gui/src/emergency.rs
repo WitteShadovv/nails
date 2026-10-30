@@ -17,17 +17,16 @@
 //!    request asks for a power-off, as every emergency of a hidden session
 //!    ends. The helper takes it as soon as it reads its next request, runs
 //!    the engine's hot path and powers off.
-//! 2. **A power-off of the operator's own**, when there is no helper, the
-//!    request could not be written within the [grace](Fallback::grace) of
-//!    the press, or the window still runs a grace after the request was
-//!    written: `systemctl poweroff`, which asks logind as a desktop's own
-//!    Power Off does. That is the orderly power-off, slower than the
-//!    engine's, but it needs neither root nor the helper. After the engine's
-//!    emergency it may still run: the engine's hot path spares the
-//!    helper's own process tree and session, and a window that started its
-//!    helper through pkexec is the helper's parent, so it lives on into the
-//!    orderly shutdown, where this power-off merges with the one the engine
-//!    enqueued.
+//! 2. **A power-off of the operator's own**, only when the helper never ran
+//!    the engine's emergency: there is no helper, the request could not be
+//!    written within the [grace](Fallback::grace) of the press, or the
+//!    window still runs a grace after the request was written. The last
+//!    happens only when the helper did not act on it: the engine's hot path
+//!    ends every process of the hidden session, the window included, the
+//!    helper's parent through pkexec as much as the launcher's. It is
+//!    `systemctl poweroff`, which asks logind as a desktop's own Power Off
+//!    does: the orderly power-off, slower than the engine's, but it needs
+//!    neither root nor the helper.
 //! 3. **The power button**, which the page names from the start: holding it
 //!    switches the computer off, as on any computer.
 //!
@@ -218,12 +217,11 @@ fn run(shared: &Shared, fallback: &Fallback, report: &dyn Fn(Outcome)) {
     let deadline = Instant::now() + fallback.grace;
     if ask_helper(shared, deadline) {
         report(Outcome::HelperAsked);
-        // The engine's emergency enqueues the power-off and ends the
-        // session's programs, but not the helper's parents or its session.
-        // The launcher's window is neither, and ends with the others; a
-        // window that started its helper through pkexec is its parent, and
-        // lives on until the orderly shutdown stops it. One still here a
-        // grace after the request asks for the power-off as well.
+        // The engine's emergency enqueues the power-off and ends every
+        // program of the session, this window included, whether the
+        // launcher started it or it started its helper through pkexec. A
+        // window still here a grace after the request means the helper
+        // never ran it: the window asks for the power-off itself.
         std::thread::sleep(fallback.grace);
     }
     report(if power_off(fallback) {
