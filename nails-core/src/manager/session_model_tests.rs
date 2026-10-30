@@ -198,10 +198,12 @@ impl ReferenceStateMachine for Model {
                 }
                 state.spot = Spot::Decoy;
             }
-            // Recover resets a stale active record on the plain decoy and rolls
-            // back an interrupted entry; it refuses while an entry or a session
-            // is live.
-            (Op::Recover, Spot::Decoy) if state.record == Record::Active => {
+            // Recover resets, on the plain decoy, a stale active record and one
+            // it cannot read or trust, and rolls back an interrupted entry; it
+            // refuses while an entry or a session is live.
+            (Op::Recover, Spot::Decoy)
+                if matches!(state.record, Record::Active | Record::Corrupt) =>
+            {
                 state.record = Record::Inactive;
             }
             (Op::Recover, Spot::Interrupted) => {
@@ -763,6 +765,23 @@ fn a_power_loss_in_session_reads_as_a_stale_record_until_recover() {
         (Op::Switch, Spot::Hidden, Record::Active),
         (Op::PowerLoss, Spot::Decoy, Record::Active),
         (Op::Recover, Spot::Decoy, Record::Inactive),
+    ] {
+        assert_eq!(world.step(op), Model { spot, record }, "{op:?}");
+    }
+}
+
+/// A record that cannot be read leaves activation refusing on the decoy until
+/// `recover` resets it, which it may, since the live facts show no session.
+#[test]
+fn an_unreadable_record_on_the_decoy_blocks_activation_until_recover() {
+    let mut world = World::new(Model {
+        spot: Spot::Decoy,
+        record: Record::Corrupt,
+    });
+    for (op, spot, record) in [
+        (Op::Activate, Spot::Decoy, Record::Corrupt),
+        (Op::Recover, Spot::Decoy, Record::Inactive),
+        (Op::Activate, Spot::Entering, Record::Active),
     ] {
         assert_eq!(world.step(op), Model { spot, record }, "{op:?}");
     }
