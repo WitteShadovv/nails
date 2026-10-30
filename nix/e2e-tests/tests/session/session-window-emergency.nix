@@ -25,6 +25,11 @@
 #   - polkit and logind let the operator's power-off through without a
 #     password, and the machine powers off;
 #   - each cold boot after is the plain decoy, with the hidden volume closed.
+#
+# Each power-off is proved, not taken from QEMU's exit: the driver starts the
+# machine with -no-reboot, so a reboot or a kernel panic ends QEMU too. Only
+# the kernel's own "reboot: Power down" on the console, with no reboot or
+# panic before it, passes (`session.wait_for_real_power_off`).
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -114,7 +119,7 @@ in
             check_return=False,
             check_output=False,
         )
-        session.wait_for_power_off(machine, 300)
+        session.wait_for_real_power_off(machine, 300)
 
     with subtest("the next cold boot is the plain decoy with the hidden volume closed"):
         machine.start()
@@ -153,7 +158,7 @@ in
             "/run/current-system/sw/bin/systemctl poweroff --no-ask-password "
             "</dev/null >/dev/null 2>&1\n"
         )
-        session.wait_for_power_off(machine, 300)
+        session.wait_for_real_power_off(machine, 300)
 
     with subtest("the cold boot after it is the plain decoy too"):
         machine.start()
