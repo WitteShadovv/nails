@@ -30,7 +30,9 @@
 
 use crate::whole_root::plan::{self, Skip};
 use crate::whole_root::run_scrub::Snapshot;
-use crate::whole_root::runtime_units::{self, RUNTIME_UNIT_DIR, valid_unit_name};
+use crate::whole_root::runtime_units::{
+    self, RUNTIME_CONTROL_DIR, RUNTIME_UNIT_DIR, valid_unit_name,
+};
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -127,8 +129,11 @@ fn write_dropin(run: &Path, unit: &str) -> io::Result<PathBuf> {
 /// drop-in that `kept` (the `/run` snapshot the entry took, empty when it is
 /// gone) does not hold and that still holds [`SKIP_TEXT`], each drop-in
 /// directory left empty that `kept` does not hold, and the masks written in
-/// place of a skip whose device was gone ([`runtime_units::remove_unit_masks`]).
-/// A drop-in directory the decoy had keeps its own files.
+/// place of a skip whose device was gone ([`runtime_units::remove_unit_masks`])
+/// with the control directory they leave empty, unless `kept` holds it.
+/// Every caller removes the session's other masks first, whose removal leaves
+/// that directory while these masks are still in it. A drop-in directory the
+/// decoy had keeps its own files.
 ///
 /// The way back calls this before its scrub, which keeps everything when the
 /// snapshot is gone, and so does the decoy side: an entry rolled back, a next
@@ -157,6 +162,9 @@ pub fn remove_skips(run: &Path, skips: &[Skip], kept: &Snapshot) -> bool {
             }
         }
         removed |= runtime_units::remove_unit_masks(run, &skip.units, kept);
+    }
+    if !kept.contains(std::ffi::OsStr::new(RUNTIME_CONTROL_DIR)) {
+        let _ = std::fs::remove_dir(run.join(RUNTIME_CONTROL_DIR));
     }
     removed
 }
@@ -259,6 +267,45 @@ mod tests {
         assert!(remove_skips(run.path(), &skips, &Snapshot::default()));
         assert!(fs::symlink_metadata(&mask).is_err());
         assert!(fs::symlink_metadata(&control).is_err());
+        assert!(
+            fs::symlink_metadata(run.path().join(runtime_units::RUNTIME_CONTROL_DIR)).is_err(),
+            "the control directory it made went too"
+        );
+    }
+
+    #[test]
+    fn the_control_directory_goes_whichever_masks_are_removed_first() {
+        // A disarm, a rollback and the decoy side of an emergency remove the
+        // session's masks first, then the skips: the masks of a skip whose
+        // device was gone keep the control directory until the skips go.
+        let run = tempfile::tempdir().unwrap();
+        let control = run.path().join(runtime_units::RUNTIME_CONTROL_DIR);
+        let skips = [skip(
+            &["srv-data.mount"],
+            &[],
+            Some(&run.path().join("gone")),
+        )];
+        let masks = ["dev-vda3.swap".to_string()];
+        runtime_units::mask_units(run.path(), &masks).unwrap();
+        skip_units(run.path(), &skips).unwrap();
+        let none = Snapshot::default();
+        assert!(runtime_units::remove_masks(
+            run.path(),
+            &masks,
+            &[],
+            &[],
+            &none
+        ));
+        assert!(control.is_dir(), "the skip's mask is still in it");
+        assert!(remove_skips(run.path(), &skips, &none));
+        assert!(fs::symlink_metadata(&control).is_err());
+
+        // A control directory the decoy had stays.
+        fs::create_dir_all(&control).unwrap();
+        let kept = Snapshot::take(run.path());
+        skip_units(run.path(), &skips).unwrap();
+        assert!(remove_skips(run.path(), &skips, &kept));
+        assert!(control.is_dir());
     }
 
     #[test]
