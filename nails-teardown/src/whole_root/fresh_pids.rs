@@ -25,7 +25,8 @@
 //! 3. the way back, armed in the hidden session, reads how many numbers the
 //!    hidden start used up to its own copy of the anchor, and sets the counter
 //!    that many below the decoy's anchor ([`counter`]), so the decoy's anchor
-//!    gets about the number its own boot gave it.
+//!    gets about the number its own boot gave it, as far as the hidden start
+//!    runs as many processes up to its anchor as the decoy's start does.
 //!
 //! A process counts as one a start ran only when it started at most
 //! [`START_WINDOW`] after the first process of that start still running: the
@@ -34,8 +35,8 @@
 //! terminal, took its number after everything that ran before it, so it is no
 //! anchor and no measure, and the next anchor is tried.
 //!
-//! The counter never goes below the floor: without an anchor to measure by it
-//! goes to just below it, as it does when the measure would put it lower (a
+//! The counter never goes lower than just below the floor: it goes there
+//! without an anchor to measure by, and when the measure would put it lower (a
 //! hidden start that used more numbers up to its anchor than the decoy's boot
 //! did from its floor). The decoy's start then numbers its units from where
 //! its own boot's userspace began; no test measures how close its getty lands

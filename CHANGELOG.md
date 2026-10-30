@@ -655,7 +655,8 @@ of this changelog for that version becomes the release notes word for word, and
   decoy's boot and the hidden session. Activation records the number the decoy's boot gave its getty
   (else logind), the hidden session's own start shows how many numbers a start uses up to its copy
   of it, and the way back's last step, once every hidden process has stopped and before the decoy
-  starts a single unit, sets `/proc/sys/kernel/ns_last_pid` that many below. A getty or logind that
+  starts a single unit, sets `/proc/sys/kernel/ns_last_pid` that many below. That assumes a hidden
+  start that runs about as many processes up to its getty as the decoy's. A getty or logind that
   started more than a minute after the oldest process of its start that still runs, such as a getty
   started again after a logout, is passed over. Without either, and where the measure would go
   lower, the counter goes just below the lowest number the decoy's own userspace held at entry. The
