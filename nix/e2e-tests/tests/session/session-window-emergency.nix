@@ -1,4 +1,5 @@
-# Session: the window's emergency through the engine's helper
+# Session: the window's emergency, through the engine's helper and through
+# the operator's own power-off
 #
 # The window's Emergency control does not ask the person anything and does
 # not go through the window's worker: it writes the engine's emergency onto
@@ -11,10 +12,19 @@
 # serves that request in a hidden NixOS session: a shell client speaks the
 # window's half of the protocol to `nails helper --stdio`, run as root as the
 # launcher and pkexec run it, the hello the helper names and then that line.
-# The test shows:
+# Where no helper takes the request in time, the window asks logind for the
+# power-off itself, as the operator: `systemctl poweroff --no-ask-password`
+# from its fixed path, with no terminal (the window's streams are
+# /dev/null) and, here, no environment at all. The second session runs that
+# command line from the operator's login on tty1, in a scope of the user's
+# service manager, where a desktop or a terminal runs the window. The test
+# shows:
 #
-#   - the helper takes it, and the engine's emergency powers the machine off;
-#   - the next cold boot is the plain decoy, with the hidden volume closed.
+#   - the helper takes the request, and the engine's emergency powers the
+#     machine off;
+#   - polkit and logind let the operator's power-off through without a
+#     password, and the machine powers off;
+#   - each cold boot after is the plain decoy, with the hidden volume closed.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -52,13 +62,15 @@ in
   name = "session-window-emergency";
   meta.tags = [ "session" ];
 
-  # One soft-reboot, the power-off and a cold boot.
-  globalTimeout = 1200;
+  # Two soft-reboots, two power-offs and two cold boots.
+  globalTimeout = 1500;
 
   nodes.machine =
     { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
+      # What decides the operator's own power-off, as on every desktop.
+      security.polkit.enable = true;
       system.extraDependencies = [
         windowEngine
         client
@@ -105,6 +117,45 @@ in
         session.wait_for_power_off(machine, 300)
 
     with subtest("the next cold boot is the plain decoy with the hidden volume closed"):
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
+        session.assert_decoy_root(machine)
+        machine.fail("test -e /dev/mapper/data")
+
+    with subtest("activate again, and log the operator in on tty1"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        session.follow_soft_reboot(
+            machine,
+            f"su testuser -c 'sudo /mnt/data/nails --config {CONFIG} activate -y --overlay-only' "
+            "> /mnt/data/activate-again.log 2>&1",
+            "activate again",
+        )
+        session.assert_hidden_root(machine, UPPER)
+        machine.wait_for_unit("getty@tty1.service")
+        # Clear tty1 first, so an earlier prompt cannot match; wait for the
+        # password prompt before typing (login flushes typeahead).
+        machine.succeed("printf '\\033[H\\033[2J' > /dev/tty1")
+        machine.send_chars("testuser\n")
+        machine.wait_until_tty_matches("1", "Password: ", timeout=60)
+        machine.send_chars("test\n")
+        machine.wait_until_succeeds(
+            "loginctl list-sessions --no-legend | grep -q testuser", timeout=60
+        )
+        uid = machine.succeed("id -u testuser").strip()
+        machine.wait_until_succeeds(f"systemctl is-active user@{uid}.service", timeout=60)
+
+    with subtest("the operator's own power-off, as the window asks for it, powers off"):
+        # The window's fallback command line (`Fallback::system` on NixOS,
+        # which a unit test of the window pins), in a scope of the user's
+        # manager, with no terminal and an empty environment.
+        machine.send_chars(
+            "setsid -f systemd-run --user --scope --quiet -- env -i "
+            "/run/current-system/sw/bin/systemctl poweroff --no-ask-password "
+            "</dev/null >/dev/null 2>&1\n"
+        )
+        session.wait_for_power_off(machine, 300)
+
+    with subtest("the cold boot after it is the plain decoy too"):
         machine.start()
         machine.wait_for_unit("multi-user.target")
         session.assert_decoy_root(machine)
