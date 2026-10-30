@@ -407,8 +407,9 @@ const WITHOUT_NFT: &str = "without it the nftables tables a session adds stay on
 
 /// What stays on the decoy without `iw`, as the row says it.
 const WITHOUT_IW: &str = "without it a Wi-Fi interface a session adds on one of the decoy's \
-                          radios (a monitor or access point interface) makes the way back power \
-                          off instead of returning";
+                          radios (a monitor or access point interface, or the one iwd makes in \
+                          place of the decoy's, as it does by default when it starts) makes the \
+                          way back power off instead of returning";
 
 #[test]
 fn a_decoy_without_nft_warns_with_the_package_of_each_family() {

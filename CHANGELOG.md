@@ -588,18 +588,19 @@ of this changelog for that version becomes the release notes word for word, and
   policy-routing rules the session added stay on the decoy until power-off, and a virtual link it
   made or a MAC address it changed makes the machine power off instead of returning; without `nft`
   the nftables tables it added stay (a VPN app's table that blocks all traffic outside its tunnel
-  keeps the decoy offline); and without `iw` a Wi-Fi interface it added on the decoy's radios makes
-  the machine power off instead. `deactivate --poweroff` leaves none of them. Under `--json` each
-  warning is in the envelope's `warnings`.
+  keeps the decoy offline); and without `iw` a Wi-Fi interface it added on the decoy's radios, iwd's
+  own in place of the decoy's included, makes the machine power off instead. `deactivate --poweroff`
+  leaves none of them. Under `--json` each warning is in the envelope's `warnings`.
 - `nails check` and activation warn when the decoy has no `nft` (nftables), or has a Wi-Fi interface
   and no `iw` (the new `network-tools` check). Activation lists the decoy's own firewall tables with
   `nft`, and the way back deletes the tables a session added with it, and a Wi-Fi interface a
   session added on one of the decoy's radios with `iw`. Without `nft` the way back leaves those
-  tables on the decoy until power-off, without `iw` such a Wi-Fi interface makes it power off
-  instead of returning, and nothing said so before the session: a VPN app's table that blocks all
-  traffic outside its tunnel keeps the decoy offline, and a stock NixOS decoy has no `nft`. The
-  warning names the package to install, on NixOS with `networking.nftables.enable` as the other way
-  to get `nft`, and looks for the tools where the way back does. It warns and does not refuse.
+  tables on the decoy until power-off, without `iw` such a Wi-Fi interface (iwd's own in place of
+  the decoy's included) makes it power off instead of returning, and nothing said so before the
+  session: a VPN app's table that blocks all traffic outside its tunnel keeps the decoy offline, and
+  a stock NixOS decoy has no `nft`. The warning names the package to install, on NixOS with
+  `networking.nftables.enable` as the other way to get `nft`, and looks for the tools where the way
+  back does. It warns and does not refuse.
 - The `activate --json` schema now ties `ok` to the outcome, as the output always did: a document
   that is not `ok` carries its error, and a failed activation (data status `failed`) is never
   `ok`. It accepted both contradictions, so a reader that validated a document could not tell a
@@ -665,9 +666,10 @@ of this changelog for that version becomes the release notes word for word, and
   watching that a hidden session had just ended. A missing tool alone changes nothing: activation
   and `deactivate` still only warn, and a session that left nothing for that tool to undo returns as
   before. Where the way back sees what the session left without the tool (a changed MAC address or a
-  link without `ip`, a Wi-Fi interface without `iw`), it powers off as well, and the warnings say
-  so. The network settings, the hostname and the per-link runtime state below `/run` do not count,
-  also when writing them back fails.
+  link without `ip`, a Wi-Fi interface without `iw`, the one iwd makes in place of the decoy's by
+  default included), it powers off as well, and the warnings say so. The network settings, the
+  hostname and the per-link runtime state below `/run` do not count, also when writing them back
+  fails.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On
