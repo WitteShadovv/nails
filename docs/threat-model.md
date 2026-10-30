@@ -510,13 +510,16 @@ numbers a start of the service manager uses up to it. The counter goes that many
 below the decoy's number, so the decoy's getty gets about the number its own
 boot gave it. That assumes the hidden start runs about as many processes up to
 its getty as the decoy's start does: where the hidden system starts other units
-before it, the decoy's getty lands off by the difference. The kernel skips a
-number still in use. Only a getty or logind that started at most a minute after
-the oldest process of the same start that still runs counts: one started again
-after a logout, or on demand for another terminal, took its number after
-everything that ran before it, so it is passed over, in the decoy and in the
-hidden session alike. One started again after a login that ended within that
-minute is not told apart.
+before it, the decoy's getty lands off by the difference. The difference adds up
+over sessions without a power-off between them, since each entry anchors on the
+number the last way back gave: in two runs of the Ubuntu 24.04 smoke the getty
+moved up by 34 and by 74 numbers over two sessions. The kernel skips a number
+still in use. Only a getty or logind that started at most a minute after the
+oldest process of the same start that still runs counts: one started again after
+a logout, or on demand for another terminal, took its number after everything
+that ran before it, so it is passed over, in the decoy and in the hidden session
+alike. One started again after a login that ended within that minute is not told
+apart.
 
 Without such a getty or logind, the counter goes to just below the lowest number
 the decoy's own userspace held at entry. No test measures how close the getty
@@ -529,16 +532,17 @@ of this).
 This is best effort and never stops the way back: without a record, outside
 PID 1's PID namespace, or where the counter cannot be written (a kernel built
 without `CONFIG_CHECKPOINT_RESTORE` has no such file), the numbers continue as
-before, and `deactivate` warns of that before the switch. It does not warn
-where the measure finds no getty or logind and the counter goes to just below
-that lowest number. Where the getty itself is measured, its number matches the
-decoy's own boot closely, not exactly, and an examiner who compares the getty
-records with those of every earlier boot sees one more boot of the same kind.
-Until the next power-off, anyone with a shell can see the reset itself: the
-decoy's units can hold numbers below those of kernel threads that started
-before them (the soft-reboot row of the residual table above). Only a session
-ended with `deactivate --poweroff` (or `emergency --poweroff`), which has no
-way back, leaves none of this to chance.
+before, and `deactivate` warns of that before the switch. It does not warn where
+the measure finds no getty or logind and the counter goes to just below that
+lowest number. Where the getty itself is measured, its number lands near the
+decoy's own boot's, not on it, and so far in the same power-of-two range in
+every test; an examiner who compares the getty records with those of every
+earlier boot can still see one that sits above the rest, the more so after
+several sessions without a power-off. Until the next power-off, anyone with a
+shell can see the reset itself: the decoy's units can hold numbers below those
+of kernel threads that started before them (the soft-reboot row of the residual
+table above). Only a session ended with `deactivate --poweroff` (or
+`emergency --poweroff`), which has no way back, leaves none of this to chance.
 
 ## Evaluation scope
 

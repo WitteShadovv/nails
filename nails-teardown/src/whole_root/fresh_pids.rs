@@ -26,7 +26,9 @@
 //!    hidden start used up to its own copy of the anchor, and sets the counter
 //!    that many below the decoy's anchor ([`counter`]), so the decoy's anchor
 //!    gets about the number its own boot gave it, as far as the hidden start
-//!    runs as many processes up to its anchor as the decoy's start does.
+//!    runs as many processes up to its anchor as the decoy's start does. The
+//!    difference adds up over sessions without a power-off between them,
+//!    since each entry anchors on the number the last way back gave.
 //!
 //! A process counts as one a start ran only when it started at most
 //! [`START_WINDOW`] after the first process of that start still running: the
