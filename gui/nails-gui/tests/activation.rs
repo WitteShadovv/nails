@@ -112,7 +112,7 @@ fn a_ready_page_activates_through_a_question_that_starts_on_cancel() {
     assert!(screen.shows(text::READY));
     assert_eq!(
         screen.labels(AccessibleRole::Button),
-        ["Close", text::ACTIVATE]
+        ["Close", text::VERIFY, text::REHEARSAL, text::ACTIVATE]
     );
     asked(&screen);
     let dialog = screen.find_with(text::ACTIVATE_QUESTION, AccessibleRole::Groupbox);
@@ -334,7 +334,7 @@ fn a_problem_that_can_be_allowed_is_followed_by_its_button_in_the_tab_order() {
             "This computer",
             row.as_str(),
             text::ALLOW,
-            text::CHECK_AGAIN
+            text::VERIFY
         ]
     );
 }

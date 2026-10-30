@@ -75,9 +75,16 @@ fn every_page_names_each_control_and_row() {
     assert!(!screen.with_role(AccessibleRole::ListItem).is_empty());
     // The recorded decoy keeps a persistent record, which can be allowed for
     // one activation: its row has the button for that.
+    // The rows that open the tools follow the checks.
     assert_eq!(
         screen.labels(AccessibleRole::Button),
-        ["Close", nails_gui::text::ALLOW, "Check Again"]
+        [
+            "Close",
+            nails_gui::text::ALLOW,
+            nails_gui::text::VERIFY,
+            nails_gui::text::REHEARSAL,
+            "Check Again"
+        ]
     );
 
     for failure in [
