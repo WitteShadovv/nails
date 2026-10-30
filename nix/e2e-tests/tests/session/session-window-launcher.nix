@@ -23,7 +23,10 @@
 #     the test's, opens the window, which starts the helper through pkexec:
 #     the helper runs as root, the window's child, and keeps its session
 #     with the window until the window closes; the window's command line,
-#     once it started itself again, names no path;
+#     once it started itself again, names no path; on a session bus whose
+#     services only record that they were started, the window never starts
+#     the settings portal, while AccessKit's status read starts the
+#     accessibility bus;
 #   - both files lie on the hidden volume, and the decoy root, mounted
 #     read-only beside the session, has neither.
 #
@@ -97,6 +100,7 @@ in
         windowEngine
         windowProgram
         pkgs.xvfb
+        pkgs.dbus
       ];
     };
 
@@ -243,6 +247,44 @@ in
             "-screen 0 1024x768x24 < /dev/null > /dev/null 2>&1 &'"
         )
         machine.wait_until_succeeds("test -S /tmp/.X11-unix/X7", timeout=60)
+        # And the operator's session bus, in the runtime directory as a
+        # desktop runs it, whose two activatable services only record that the
+        # bus started them: the settings portal the window's toolkit reads,
+        # and the accessibility bus AccessKit asks.
+        bus = "/run/session-test-bus"
+        machine.succeed(f"install -d -m 0755 -o testuser -g users {bus} {bus}/services")
+        machine.succeed(
+            f"cat > {bus}/started.sh <<'EOF'\n"
+            "#!/bin/sh\n"
+            f"echo \"$1\" >> {bus}/started\n"
+            "EOF\n"
+            f"chmod 0755 {bus}/started.sh"
+        )
+        for name in ("org.freedesktop.portal.Desktop", "org.a11y.Bus"):
+            machine.succeed(
+                f"printf '[D-BUS Service]\\nName={name}\\nExec={bus}/started.sh {name}\\n' "
+                f"> {bus}/services/{name}.service"
+            )
+        machine.succeed(
+            f"cat > {bus}/bus.conf <<'EOF'\n"
+            "<busconfig>\n"
+            "  <type>session</type>\n"
+            f"  <listen>unix:path=/run/user/{uid}/bus</listen>\n"
+            "  <auth>EXTERNAL</auth>\n"
+            f"  <servicedir>{bus}/services</servicedir>\n"
+            "  <policy context='default'>\n"
+            "    <allow send_destination='*' eavesdrop='true'/>\n"
+            "    <allow eavesdrop='true'/>\n"
+            "    <allow own='*'/>\n"
+            "  </policy>\n"
+            "</busconfig>\n"
+            "EOF"
+        )
+        machine.succeed(
+            f"su testuser -c 'setsid ${pkgs.dbus}/bin/dbus-daemon --config-file={bus}/bus.conf "
+            "--nofork --nopidfile --nosyslog < /dev/null > /dev/null 2>&1 &'"
+        )
+        machine.wait_until_succeeds(f"test -S /run/user/{uid}/bus", timeout=60)
         command = " ".join(shlex.quote(word) for word in argv)
         # Only the window goes to the background, with its streams on
         # /dev/null: a background list would keep the driver's output open
@@ -272,12 +314,21 @@ in
         # the pair, and the helper would have ended with it.
         machine.sleep(5)
         machine.succeed(f"kill -0 {window} && {helper_of_window}")
+        # On its session bus the window never started the settings portal:
+        # its reads carry NO_AUTO_START. AccessKit's status read did start
+        # the accessibility bus, which shows that the window talked on it.
+        started = machine.succeed(f"cat {bus}/started 2>/dev/null || true").split()
+        print(f"services the bus started for the window: {started}")
+        assert "org.freedesktop.portal.Desktop" not in started, started
+        assert "org.a11y.Bus" in started, started
         # Closing the window closes its end: the helper ends too.
         machine.succeed(f"kill {window}")
         machine.wait_until_fails(f"kill -0 {helper}", timeout=30)
         machine.wait_until_fails(f"kill -0 {window}", timeout=30)
         machine.succeed("pkill -u testuser -x Xvfb")
         machine.wait_until_fails("pgrep -u testuser -x Xvfb", timeout=30)
+        machine.succeed("pkill -u testuser -x dbus-daemon")
+        machine.wait_until_fails("pgrep -u testuser -x dbus-daemon", timeout=30)
 
     with subtest("both files lie on the hidden volume, and the decoy has neither"):
         machine.succeed(f"test -f {UPPER}{ENTRY} && test -f {UPPER}{ACTION}")
