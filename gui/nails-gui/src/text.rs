@@ -96,6 +96,16 @@ pub const CANCELLING: &str = "Cancelling";
 pub const LOGGING_OUT: &str = "Logging Out";
 /// What to do next, past the point of no return.
 pub const LOG_IN_AGAIN: &str = "Log in again at the login screen.";
+/// Past the point of no return, the engine could not ask for the logout.
+pub const LOGOUT_NOT_ASKED: &str =
+    "The logout could not be asked for, so the activation stops here.";
+/// A logout the engine asked for, still not come.
+pub const LOGOUT_LATE: &str = "The logout did not come within a minute.";
+/// A hidden session that should have ended, still running.
+pub const ENDING_LATE: &str = "The hidden session did not end within a minute.";
+/// The ways to end a hidden session that has not ended.
+pub const END_ANOTHER_WAY: &str =
+    "Use the Emergency control, or hold the power button until the computer is off.";
 /// An activation the window cancelled.
 pub const ACTIVATION_CANCELLED: &str = "Activation Cancelled";
 /// An activation that failed.
@@ -341,6 +351,16 @@ pub fn next_step(engine: Option<&Path>, command: &str) -> String {
 #[must_use]
 pub fn open_from_terminal(engine: Option<&Path>) -> String {
     format!("Open a terminal and run: {}", launch::gui_line(engine))
+}
+
+/// What to do when the logout does not come: the window's next session
+/// with `engine` tells where things stand.
+#[must_use]
+pub fn see_where_things_stand(engine: Option<&Path>) -> String {
+    format!(
+        "Close this window and open it again from a terminal to see where things stand: {}",
+        launch::gui_line(engine)
+    )
 }
 
 /// The line that opens the window again, once its session is over.
