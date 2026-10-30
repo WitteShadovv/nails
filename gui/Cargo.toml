@@ -2,12 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # nails-gui is its own Cargo workspace, outside the main NAILS one, as the fuzz
-# and setup crates are. The toolkit the graphical interface will be built on is
-# not chosen yet; whichever it is, it brings a large dependency tree that must
-# not reach the shipped binaries before that choice is made and reviewed, so the
-# crate is kept off the shipped dependency graph and built on its own. The
-# interface is not implemented yet; this is the initial scaffold: the workspace
-# and a placeholder binary, with no toolkit dependency.
+# and setup crates are. The window runs as the operator and drives the static
+# engine over a pipe, so the two never link each other, and the toolkit the
+# window will be drawn with, a large dependency tree of its own, never reaches
+# the engine. The one crate of the engine's tree the window links is
+# nails-api, the wire contract, which depends on serde alone.
 
 [workspace]
 members = ["nails-gui"]

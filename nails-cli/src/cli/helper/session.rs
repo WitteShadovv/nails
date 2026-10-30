@@ -23,11 +23,12 @@ use super::reader::{LineError, LineReader, Readiness};
 use crate::cli::output::ExitStatus;
 use crate::cli::output::envelope::Envelope;
 
-/// The helper's own versions, as its hello names them.
+/// The helper's own versions, as its hello names them: the release of the
+/// contract crate, which a window built for this release names as well.
 pub(crate) fn our_hello() -> Hello {
     Hello {
         protocol: PROTOCOL_VERSION,
-        engine: env!("CARGO_PKG_VERSION").to_string(),
+        engine: nails_api::protocol::RELEASE.to_string(),
     }
 }
 
