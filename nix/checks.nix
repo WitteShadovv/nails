@@ -169,7 +169,9 @@ in
   # synchronisation lint scans. git is a tool because changes.py shells out to
   # it and its tests build throwaway repositories, e2fsprogs and btrfs-progs
   # because the oracle's free-space planting is tested on ext4 and btrfs images
-  # it makes and checks, and jq because the tests run the script of ci.yml's
+  # it makes and checks, util-linux, sleuthkit and dosfstools because the
+  # oracle's choice of how to compare each partition of a disk is tested on GPT
+  # disk images it builds, and jq because the tests run the script of ci.yml's
   # gate job, which reads the results of the jobs with it.
   ci-python = lint "ci-python" {
     files = fs.unions [
@@ -195,6 +197,9 @@ in
       pkgs.git
       pkgs.e2fsprogs
       pkgs.btrfs-progs
+      pkgs.util-linux
+      pkgs.sleuthkit
+      pkgs.dosfstools
       pkgs.jq
     ];
     script = ''
