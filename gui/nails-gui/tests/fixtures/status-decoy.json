@@ -1,0 +1,17 @@
+{
+  "command": "status",
+  "data": {
+    "attention": null,
+    "decoy_persistent": true,
+    "hidden_root": "/mnt/data",
+    "hidden_root_mounted": false,
+    "masked_units": [],
+    "nextroot_mounted": false,
+    "opsec_reminders": [],
+    "persona_mode": "shared-home",
+    "place": "decoy",
+    "policy_mounts": []
+  },
+  "ok": true,
+  "schema_version": 2
+}
