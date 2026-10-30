@@ -3,11 +3,12 @@
 
 //! Config command handler
 //!
-//! `nails config path|show|validate` inspects the configuration file. Every
-//! subcommand is read-only: nothing is mounted, written or logged to the
-//! hidden volume beyond what any command's logging setup does. Under `--json`
-//! each subcommand prints exactly one version-2 envelope line on stdout, errors
-//! included.
+//! `nails config path|show|validate` inspects the configuration file. These
+//! subcommands are read-only: nothing is mounted, written or logged to the
+//! hidden volume beyond what any command's logging setup does. `set` and
+//! `unset` change the file through the engine's writer ([`super::config_edit`]).
+//! Under `--json` each subcommand prints exactly one version-2 envelope line on
+//! stdout, errors included.
 
 use std::path::Path;
 
@@ -26,6 +27,12 @@ const EXIT_USAGE: i32 = 2;
 /// Exit code for a configuration file that is missing (when required),
 /// unreadable or invalid.
 const EXIT_CONFIG_ERROR: i32 = 3;
+
+/// Exit code for a change of the file that failed.
+const EXIT_FAILED: i32 = 1;
+
+/// Exit code for a change refused for where the file lies.
+const EXIT_REFUSED: i32 = 4;
 
 /// What a config subcommand prints and how it exits.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -85,8 +92,11 @@ fn json_load_error(error: &NailsError, command: &str, code: i32) -> Outcome {
 /// Execute a `nails config` subcommand.
 ///
 /// Returns [`ExitStatus::Ok`] on success, [`ExitStatus::Usage`] for
-/// `show --example --json`, and [`ExitStatus::Config`] when the configuration
-/// file is missing (where one is required), unreadable or invalid.
+/// `show --example --json` and for a key or value `set` or `unset` does not
+/// take, and [`ExitStatus::Config`] when the configuration file is missing
+/// (where one is required), unreadable or invalid. A change `set` or `unset`
+/// refuses for where the file lies is [`ExitStatus::PreflightRefused`], and
+/// one that failed is [`ExitStatus::Failed`].
 pub fn execute(
     settings: &OutputSettings,
     config_override: Option<&Path>,
@@ -103,6 +113,8 @@ pub fn execute(
     match outcome.code {
         0 => ExitStatus::Ok,
         EXIT_USAGE => ExitStatus::Usage,
+        EXIT_FAILED => ExitStatus::Failed,
+        EXIT_REFUSED => ExitStatus::PreflightRefused,
         _ => ExitStatus::Config,
     }
 }
@@ -133,6 +145,20 @@ fn run(config_override: Option<&Path>, command: &ConfigCommand, json: bool) -> O
             show(config_override, json, &overrides)
         }
         ConfigCommand::Validate { path } => validate(config_override, path.as_deref(), json),
+        ConfigCommand::Set { key, values } => {
+            printed(super::config_edit::set(config_override, key, values, json))
+        }
+        ConfigCommand::Unset { keys } => {
+            printed(super::config_edit::unset(config_override, keys, json))
+        }
+    }
+}
+
+fn printed(printed: super::config_edit::Printed) -> Outcome {
+    Outcome {
+        code: printed.code,
+        stdout: printed.stdout,
+        stderr: printed.stderr,
     }
 }
 

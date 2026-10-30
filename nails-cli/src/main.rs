@@ -13,7 +13,8 @@ use nails::cli::{Cli, Commands, OutputSettings, execute_command};
 ///
 /// Only the commands that act on an attached hidden volume do. The commands
 /// that keep nothing they write (`status`, `verify`, `check` and its alias
-/// `activate --dry-run`, `config`, `transition`) and `init` — which
+/// `activate --dry-run`, the `config` views, `transition`), `config set` and
+/// `config unset`, which write the configuration file alone, and `init` — which
 /// runs before the volume holds any NAILS structure — never create a log
 /// directory or file, so running them from the decoy or a download directory
 /// leaves nothing behind there. The attach gate is still the backstop: even a
