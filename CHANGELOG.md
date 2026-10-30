@@ -813,6 +813,19 @@ of this changelog for that version becomes the release notes word for word, and
   removed again when its mode or owner cannot be set either: a home whose mode or owner failed was
   left without the attribute, and every later activation kept it, with the decoy home showing
   through.
+- The NixOS reference check (`suspicious-nails-reference`) knows more names of the storage the
+  hidden volume is on: the kernel's name of each layer and of the volume's own device, alone as a
+  udev rule writes it (`KERNEL=="sdb2"`) or as its device node (`/dev/dm-0`), and its
+  `/dev/block/<major>:<minor>` link. A decoy configuration that named the hidden storage in one of
+  these ways passed the check. A path now counts however many slashes separate its parts
+  (`/mnt//data`, `/dev/mapper//data`), and behind the prefixes systemd allows before a path where
+  they start the value (`EnvironmentFile=-/mnt/data/app.env`, `ExecStart=+/mnt/data/bin/app`),
+  which passed too. `/srv//mnt/data`, which is `/srv/mnt/data`, no longer counts as `/mnt/data`. A kernel name counts as the kernel gives it while the check runs, so a
+  decoy line that names a device of its own as `/dev/dm-1` is refused while the hidden volume's
+  storage holds that number; name such a device by its uuid. The check still does not follow a
+  mapping defined through a `let` binding, `lib.listToAttrs` or an interpolated name, or a path
+  with a `.` or `..` component, and does not know the units systemd names after the storage's
+  devices.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
