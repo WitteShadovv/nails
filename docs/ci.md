@@ -60,7 +60,7 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 | `docs-check` | `docs` | Installs lychee and runs `scripts/docs-check.sh`: an offline link check of every tracked Markdown file and the retired-name guard. |
 | `sbom` | `sbom` | Calls `sbom.yml`, the workflow that writes the release SBOM: the SBOM and the VEX document that a tag of the commit would get (`v` plus the workspace version), made and checked as a release makes and checks them (`sbom-check` and `cyclonedx validate`), but never attested; the run keeps them as the `release-sbom` artifact. An SBOM that `actions/attest` would refuse therefore fails on the pull request that breaks it, or on `main`, and not in a release run, where the tag can no longer be fixed. The filter is what the SBOM is made from: the Cargo manifests of the workspace and `Cargo.lock`, `rust-toolchain.toml`, `flake.nix` and `flake.lock`, `ci/release.py`, `release.yml` and `sbom.yml`. |
 | `lint-misc` | `nix` or `workflows` | The unit tests of the CI and E2E tooling (`scripts/tests`, `ci/tests`, which includes `just docs-check`) and `nix flake check`: nixfmt, statix, deadnix, shellcheck, actionlint, zizmor and the E2E shard weights. |
-| `gate` | always | The one required status. It fails when any job failed or was cancelled and passes when the path filter skipped one. |
+| `gate` | always | The one required status. It fails when any job failed or was cancelled, or when `changes` was skipped or set no path filters, which skips every work job, and passes when the path filter skipped a job. |
 
 ### Important gate behavior
 

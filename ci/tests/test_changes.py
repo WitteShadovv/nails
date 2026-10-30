@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import textwrap
 import tomllib
 import unittest
 from pathlib import Path
@@ -484,6 +487,101 @@ class WorkflowTest(unittest.TestCase):
         self.assertLessEqual(read, set(changes.FILTERS))
         runs_on = {name for filters in JOB_FILTERS.values() for name in filters}
         self.assertEqual(runs_on, set(changes.FILTERS))
+
+
+def gate_needs(
+    changes_result: str = "success",
+    filters: dict[str, str] | None = None,
+    work: str = "success",
+) -> dict[str, dict[str, object]]:
+    """The needs context of gate, as toJSON(needs) gives it.
+
+    changes has the result ``changes_result`` and the outputs ``filters``, every
+    filter true by default, and each work job has the result ``work``.
+    """
+    if filters is None:
+        filters = dict.fromkeys(changes.FILTERS, "true")
+    needs: dict[str, dict[str, object]] = {
+        "changes": {"result": changes_result, "outputs": filters}
+    }
+    for job in JOB_FILTERS:
+        needs[job] = {"result": work, "outputs": {}}
+    return needs
+
+
+class GateTest(unittest.TestCase):
+    """gate passes only when changes set the filters and no job went red.
+
+    The script of gate's step runs here as the runner runs it, with bash and jq.
+    """
+
+    NO_FILTERS = "::error::changes did not set the path filters the work jobs run on\n"
+
+    def run_gate(
+        self, needs: dict[str, dict[str, object]]
+    ) -> subprocess.CompletedProcess[str]:
+        if shutil.which("jq") is None:
+            self.fail("jq, which gate runs, is not installed")
+        found = re.search(r"^ {8}run: \|\n((?: {10}.*\n|\n)+)", ci_job("gate"), re.M)
+        if found is None:
+            raise AssertionError("ci.yml's gate job has no run: | script")
+        script = textwrap.dedent(found[1])
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        env = {
+            **os.environ,
+            "NEEDS": json.dumps(needs),
+            "GITHUB_STEP_SUMMARY": str(Path(tmp) / "summary.md"),
+        }
+        # The shell the runner starts for a run: step of shell bash.
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+
+    def test_passes_when_every_job_passed(self) -> None:
+        result = self.run_gate(gate_needs())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_passes_when_the_filters_skipped_every_job(self) -> None:
+        # A change no filter matches, such as an image under docs/assets/.
+        filters = dict.fromkeys(changes.FILTERS, "false")
+        result = self.run_gate(gate_needs(filters=filters, work="skipped"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_fails_when_a_job_failed_or_was_cancelled(self) -> None:
+        for red in ("failure", "cancelled"):
+            with self.subTest(result=red):
+                needs = gate_needs()
+                needs["rust"]["result"] = red
+                result = self.run_gate(needs)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("::error::Failed or cancelled: rust\n", result.stdout)
+
+    def test_fails_when_changes_set_no_filters(self) -> None:
+        # Skipped, or passed without writing its outputs: every work job was
+        # skipped then, so none could fail. The runner leaves an empty output
+        # out of the context, and one it kept fails as well.
+        empty = dict.fromkeys(changes.FILTERS, "")
+        for result_of_changes, filters in (
+            ("skipped", {}),
+            ("success", {}),
+            ("success", empty),
+        ):
+            with self.subTest(changes=result_of_changes, filters=filters):
+                needs = gate_needs(result_of_changes, filters, work="skipped")
+                result = self.run_gate(needs)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(self.NO_FILTERS, result.stdout)
+
+    def test_fails_on_a_filter_that_is_neither_true_nor_false(self) -> None:
+        filters = {**dict.fromkeys(changes.FILTERS, "false"), "rust": "yes"}
+        result = self.run_gate(gate_needs(filters=filters, work="skipped"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(self.NO_FILTERS, result.stdout)
 
 
 def git(repo: Path, *args: str) -> str:
