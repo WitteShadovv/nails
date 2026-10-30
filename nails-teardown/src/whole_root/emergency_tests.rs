@@ -48,6 +48,7 @@ fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
         phases(&report),
         [
             "signal-activation",
+            "drop-soft-reboot",
             "detach-nextroot",
             "remove-runtime",
             "reload"
@@ -60,6 +61,7 @@ fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
             phases(&report),
             [
                 "signal-activation",
+                "drop-soft-reboot",
                 "detach-nextroot",
                 "remove-runtime",
                 "kill-shells",
@@ -68,6 +70,23 @@ fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
             "{finish:?}"
         );
     }
+}
+
+/// A soft-reboot logind keeps for the entry and cannot drop would restart the
+/// decoy's userspace when its delay ends: a decoy-side emergency that was to
+/// leave the decoy running powers it off instead. A requested power action
+/// stays as asked.
+#[test]
+fn a_held_soft_reboot_turns_a_decoy_side_return_into_a_power_off() {
+    let (finish, why) = decoy_finish(Finish::Return, true);
+    assert_eq!(finish, Finish::Poweroff);
+    assert!(why.is_some_and(|why| why.contains("cannot drop")));
+    assert_eq!(decoy_finish(Finish::Return, false), (Finish::Return, None));
+    assert_eq!(decoy_finish(Finish::Reboot, true), (Finish::Reboot, None));
+    assert_eq!(
+        decoy_finish(Finish::Poweroff, true),
+        (Finish::Poweroff, None)
+    );
 }
 
 #[test]
@@ -172,8 +191,9 @@ impl Interrupted {
     /// interactive shell.
     fn clean_up(&self, requested: Finish, dispatched: Option<Finish>) -> HotReport {
         let mut report = HotReport::new(Side::Decoy, requested);
-        let unloaded = decoy(&self.plan, &self.host, &mut report);
+        let (unloaded, held) = decoy(&self.plan, &self.host, &mut report);
         assert!(unloaded, "a drop-in and three masks were removed");
+        assert!(!held, "no soft-reboot is held");
         report.dispatched = dispatched;
         settle(&self.plan, &self.host, unloaded, &mut report);
         report
@@ -200,11 +220,16 @@ impl Interrupted {
         );
     }
 
-    /// The `systemctl` calls made, one per line.
+    /// The `systemctl` calls made, one per line, starting with the question
+    /// whether PID 1 already holds a soft-reboot for the entry.
     fn calls(&self) -> String {
         std::fs::read_to_string(self.dir.path().join("systemctl-calls")).unwrap_or_default()
     }
 }
+
+/// The decoy side first asks PID 1 whether it holds a soft-reboot for the
+/// entry (the entry recorded no `busctl` here, so logind is not asked).
+const ASKED_PID1: &str = "list-jobs --plain --no-legend --full\n";
 
 /// On the decoy, with nothing enqueued, the cleanup undoes the masks and the
 /// kernel paths, removes the runtime directory and the drop-in, and reloads
@@ -214,7 +239,7 @@ fn the_decoy_side_undoes_the_masks_and_the_kernel_paths() {
     let scratch = Interrupted::new();
     let report = scratch.clean_up(Finish::Return, None);
     scratch.assert_cleaned();
-    assert_eq!(scratch.calls(), "daemon-reload\n");
+    assert_eq!(scratch.calls(), format!("{ASKED_PID1}daemon-reload\n"));
     assert_eq!(phases(&report).last(), Some(&"reload"));
 }
 
@@ -227,12 +252,16 @@ fn a_power_action_on_the_decoy_side_waits_for_no_reload() {
         let scratch = Interrupted::new();
         let report = scratch.clean_up(finish, Some(finish));
         scratch.assert_cleaned();
-        assert_eq!(scratch.calls(), "", "{finish:?}");
+        assert_eq!(scratch.calls(), ASKED_PID1, "{finish:?}");
         assert!(!phases(&report).contains(&"reload"), "{finish:?}");
 
         let scratch = Interrupted::new();
         scratch.clean_up(finish, None);
-        assert_eq!(scratch.calls(), "daemon-reload\n", "{finish:?}");
+        assert_eq!(
+            scratch.calls(),
+            format!("{ASKED_PID1}daemon-reload\n"),
+            "{finish:?}"
+        );
     }
 }
 

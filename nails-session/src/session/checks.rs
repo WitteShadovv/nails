@@ -10,6 +10,9 @@
 //!   back;
 //! - `session-state`: neither in the hidden root already nor with leftovers of
 //!   an interrupted entry;
+//! - `shutdown-inhibitors`: no program blocks shutdown outright: one that does
+//!   is in the middle of something the switch would cut short (a package or
+//!   firmware update);
 //! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
 //!   safe decision ([`super::policy`]);
 //! - `kernel-modules`: no hidden session deleted or replaced the running
@@ -30,6 +33,7 @@ use crate::filesystem::Filesystem;
 use crate::platform::{HostProfile, upgrade_hint};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
+use nails_teardown::whole_root::logind;
 use std::path::{Path, PathBuf};
 
 pub use super::kernel_modules::KernelModulesCheck;
@@ -234,6 +238,48 @@ impl<F: Filesystem> PreFlightCheck<F> for SessionStateCheck {
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
         Ok(judge_session(&probe::probe(&self.paths, &self.hidden_root)))
+    }
+}
+
+/// Judge logind's inhibitors (`None`: logind cannot be asked, so nothing can
+/// block the switch through it).
+pub fn judge_inhibitors(inhibitors: Option<&[logind::Inhibitor]>) -> CheckResult {
+    let blocker = inhibitors.and_then(|list| list.iter().find(|i| i.blocks_shutdown()));
+    match blocker {
+        Some(blocker) => CheckResult::fail_with(
+            format!(
+                "{} blocks shutdown ({}, PID {}): the switch would cut it short",
+                blocker.who, blocker.why, blocker.pid
+            ),
+            "Let it finish, then activate again.".to_string(),
+        ),
+        None => CheckResult::Pass("no program blocks shutdown".to_string()),
+    }
+}
+
+/// `shutdown-inhibitors`: asks logind with `busctl`.
+#[derive(Debug)]
+pub struct ShutdownInhibitorsCheck {
+    busctl: Option<PathBuf>,
+}
+
+impl ShutdownInhibitorsCheck {
+    /// The check through `busctl` (`None`: logind is not asked).
+    pub fn new(busctl: Option<PathBuf>) -> Self {
+        Self { busctl }
+    }
+}
+
+impl<F: Filesystem> PreFlightCheck<F> for ShutdownInhibitorsCheck {
+    fn name(&self) -> &'static str {
+        "shutdown-inhibitors"
+    }
+    fn description(&self) -> &'static str {
+        "no program blocks shutdown"
+    }
+    fn run(&self, _fs: &F) -> Result<CheckResult> {
+        let inhibitors = self.busctl.as_deref().and_then(logind::inhibitors);
+        Ok(judge_inhibitors(inhibitors.as_deref()))
     }
 }
 

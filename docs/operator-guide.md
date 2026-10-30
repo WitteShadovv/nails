@@ -179,7 +179,10 @@ Keep all of it `root`-owned on the hidden volume.
    `systemd-version` (254 or newer), `soft-reboot-units` (the units that
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
-   session and no leftovers of an interrupted one), `fstab-policy`,
+   session and no leftovers of an interrupted one), `shutdown-inhibitors` (no
+   program blocks shutdown: one that does, such as a package or firmware
+   update, is in the middle of something the switch would cut short),
+   `fstab-policy`,
    `kernel-modules` (no hidden session deleted or replaced the running
    kernel's module tree or its index; it only warns, see
    [below](#copy-up-cost-and-shadowed-decoy-updates)), `package-drift`
@@ -233,13 +236,25 @@ Keep all of it `root`-owned on the hidden volume.
 7. It installs the transition step (a runtime drop-in for
    `systemd-soft-reboot.service`), prints its result, kills the decoy's
    interactive shells and soft-reboots the way `systemctl soft-reboot` does,
-   through logind: the programs that wait for logind's shutdown signal end on
-   it before the decoy stops (for at most `InhibitDelayMaxSec=`, 5 seconds by
-   default), as at an ordinary shutdown. unattended-upgrades' shutdown helper
-   on Debian and Ubuntu is one; stopped without that signal, it writes a line
-   to its log in `/var/log/unattended-upgrades` that an ordinary shutdown does
-   not. When logind does not take the soft-reboot, activation enqueues it with
-   PID 1 directly. A second runtime drop-in clears the
+   through logind. logind first tells the programs that wait for its shutdown
+   signal that the system is going down and waits for them, as at an ordinary
+   shutdown, for at most `InhibitDelayMaxSec=` (5 seconds by default;
+   unattended-upgrades on Debian and Ubuntu raises it to 30).
+   unattended-upgrades' shutdown helper is one of them: stopped without that
+   signal, it writes a line to its log in `/var/log/unattended-upgrades` that
+   an ordinary shutdown does not. With `Unattended-Upgrade::InstallOnShutdown`
+   set, it installs the pending updates on that signal, at every activation
+   as at every shutdown, and the switch waits for them, past logind's delay
+   too ([decoy requirements](decoy-requirements.md#ubuntu)). Activation stays until
+   PID 1 holds the soft-reboot's job: until then `status` shows it activating
+   and `recover` leaves it alone. When a program holds a shutdown block
+   inhibitor (a package or firmware update in the middle of its work), or
+   logind refuses the soft-reboot or drops it (`shutdown -c`), nothing is
+   queued: activation fails with the reason and removes everything it built.
+   When logind still holds the soft-reboot past its delay, activation drops it
+   and fails (systemd 257 and newer) or, where logind cannot drop it (255),
+   enqueues it with PID 1 directly, as logind would. A second runtime drop-in
+   clears the
    stop command of `blk-availability.service`, which Debian's and Ubuntu's
    lvm2 package enables: its `blkdeactivate -u` would unmount the hidden volume
    below `/run/nextroot` during the switch, or a LUKS or LVM decoy root on the
@@ -360,7 +375,9 @@ holds (the hidden session unmounted a carried filesystem, or mounted something
 on one) stops the way back instead of being left out or replaced: `deactivate`
 then refuses, and `emergency` powers off. It then marks the hidden backend's
 device-mapper stack for deferred removal, records the state as inactive and
-soft-reboots, through logind as activation does. A device it cannot mark (the hidden session removed `dmsetup`,
+soft-reboots, through logind as activation does; a program that holds a
+shutdown block inhibitor in the session makes it refuse instead, with the
+session running on (`emergency` does not wait for it). A device it cannot mark (the hidden session removed `dmsetup`,
 say) stays open after the switch, its key in RAM, until power-off:
 `deactivate` and `emergency` name it once the soft-reboot is enqueued
 (`backend_left_open` under `--json`). The orderly shutdown stops every hidden
@@ -600,7 +617,10 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
   is still mounted (for example because the configuration lives on it), it
   leaves the devices open and says so: unmount and close the volume yourself
   when you are done. It never reboots. In the hidden session it refuses and
-  points at `deactivate`. A plain `reboot` after an interrupted activation
+  points at `deactivate`. It refuses as well while the interrupted
+  activation's soft-reboot still comes (PID 1 has started it, or logind holds
+  it back for a delay inhibitor and cannot drop it, as systemd 255 cannot),
+  and drops one logind can drop first. A plain `reboot` after an interrupted activation
   needs no `recover`: the leftover next root is detached during it and the
   hidden volume's devices are closed, as a full reboot would.
 
@@ -640,7 +660,11 @@ autologin, like a restart of the desktop.
   in `/run`: `sudo /run/overlay-runtime/control emergency`.
 - On the decoy, emergency removes what an interrupted activation left (it
   detaches `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in),
-  like `recover`.
+  like `recover`. It first drops the soft-reboot logind may still hold for
+  that activation. Where logind cannot drop it (systemd 255, while a delay
+  inhibitor holds it back), it powers off instead: that soft-reboot would
+  restart the decoy's userspace a few seconds later, with records an ordinary
+  boot never writes.
 
 The backend watcher (`[backend_watch]`) and the sleep guard (`[sleep_policy]`)
 run as runtime units of the hidden session from the RAM copy. The watcher's

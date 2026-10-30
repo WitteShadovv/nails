@@ -226,3 +226,47 @@ fn an_unreadable_fstab_fails_the_policy_check() {
         .unwrap();
     assert!(result.is_pass(), "{result:?}");
 }
+
+fn inhibitor(what: &str, mode: &str) -> logind::Inhibitor {
+    logind::Inhibitor {
+        what: what.to_string(),
+        who: "fwupd".to_string(),
+        why: "Firmware update in progress".to_string(),
+        mode: mode.to_string(),
+        pid: 977,
+    }
+}
+
+/// A program that blocks shutdown outright refuses the entry, named, with what
+/// to do; a delay or a weak block does not, nor does a logind that cannot be
+/// asked.
+#[test]
+fn a_program_that_blocks_shutdown_refuses_the_entry() {
+    let blocked = judge_inhibitors(Some(&[
+        inhibitor("sleep", "block"),
+        inhibitor("shutdown:sleep", "delay"),
+        inhibitor("sleep:shutdown", "block"),
+    ]));
+    assert!(blocked.is_fail());
+    assert!(
+        blocked
+            .message()
+            .contains("fwupd blocks shutdown (Firmware update in progress, PID 977)"),
+        "{}",
+        blocked.message()
+    );
+    assert_eq!(
+        blocked.remediation(),
+        Some("Let it finish, then activate again.")
+    );
+    assert!(
+        judge_inhibitors(Some(&[
+            inhibitor("shutdown", "delay"),
+            inhibitor("shutdown", "block-weak"),
+            inhibitor("handle-lid-switch", "block"),
+        ]))
+        .is_pass()
+    );
+    assert!(judge_inhibitors(Some(&[])).is_pass());
+    assert!(judge_inhibitors(None).is_pass());
+}

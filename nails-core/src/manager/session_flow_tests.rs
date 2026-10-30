@@ -35,6 +35,8 @@ struct FakeEntryHost {
     reloads: Cell<u32>,
     /// Request a cancel during the first reload, as a Ctrl+C would.
     cancel_at_reload: bool,
+    /// A soft-reboot still comes that cannot be dropped.
+    switch_coming: bool,
 }
 
 impl EntryHost for FakeEntryHost {
@@ -61,6 +63,9 @@ impl EntryHost for FakeEntryHost {
     }
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
         Ok(String::new())
+    }
+    fn drop_pending_switch(&self) -> bool {
+        !self.switch_coming
     }
 }
 
@@ -283,6 +288,35 @@ fn recovery_refuses_while_an_activation_is_still_entering() {
     );
 }
 
+/// The activation is gone, but its soft-reboot still comes (PID 1 has
+/// started it, or logind holds it and cannot drop it): recovering now would
+/// leave it to soft-reboot the plain decoy, so the leftovers stay for it.
+#[test]
+fn recovery_refuses_while_the_interrupted_entry_soft_reboot_still_comes() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost {
+        switch_coming: true,
+        ..FakeEntryHost::default()
+    };
+
+    let error = m.recover_session_on(&machine, &host).unwrap_err();
+
+    assert!(matches!(error, RecoverError::Switching), "{error:?}");
+    assert!(error.to_string().contains("still comes"), "{error}");
+    assert!(machine.paths.plan().exists(), "the leftovers stay");
+    assert_eq!(host.reloads.get(), 0);
+    assert!(
+        recorded(&hidden).state.is_active(),
+        "the record is untouched"
+    );
+}
+
 #[test]
 fn recovery_in_the_hidden_root_points_to_deactivate() {
     let dir = tempfile::tempdir().unwrap();
@@ -347,6 +381,33 @@ fn leaving_a_hidden_root_without_its_plan_asks_for_a_power_off() {
         recorded(&hidden).state.is_active(),
         "the record is untouched"
     );
+}
+
+/// A way back whose soft-reboot was not started (a program blocks shutdown,
+/// logind refused it or dropped it) leaves the session running: its record
+/// stays active, its way back undone.
+#[test]
+fn a_way_back_that_did_not_start_keeps_the_session_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let target = FakeTarget {
+        refuse: true,
+        ..FakeTarget::default()
+    };
+
+    let error = m
+        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("refused"), "{error}");
+    assert_eq!(*target.started.borrow(), ["poweroff.target"]);
+    assert!(recorded(&hidden).state.is_active(), "the session goes on");
 }
 
 #[test]

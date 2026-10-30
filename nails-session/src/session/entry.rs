@@ -67,7 +67,7 @@ use nails_teardown::whole_root::plan::{
 };
 use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
-use nails_teardown::whole_root::{kernel_helpers, network, ret, transition, utab};
+use nails_teardown::whole_root::{kernel_helpers, logind, network, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -113,6 +113,14 @@ pub trait EntryHost {
     fn kernel_settings(&self) -> Vec<kernel_helpers::KernelSetting> {
         kernel_helpers::read(&kernel_helpers::HELPER_PATHS)
     }
+    /// Drop the soft-reboot logind still holds for an interrupted entry, before
+    /// its leftovers go: `false` when one still comes (PID 1 has started it,
+    /// or logind holds it and cannot drop it, as on systemd 255, or stopped
+    /// answering when asked to), so they must stay for it
+    /// ([`logind::drop_soft_reboot`]).
+    fn drop_pending_switch(&self) -> bool {
+        true
+    }
 }
 
 /// The real host.
@@ -135,6 +143,13 @@ impl EntryHost for RealEntryHost {
         nails_teardown::whole_root::tools::find(None, "systemctl")
             .and_then(|systemctl| nails_teardown::whole_root::tools::failed_units(&systemctl))
             .unwrap_or_default()
+    }
+
+    fn drop_pending_switch(&self) -> bool {
+        let systemctl = nails_teardown::whole_root::tools::find(None, "systemctl");
+        let busctl = nails_teardown::whole_root::tools::find(None, logind::BUSCTL);
+        logind::drop_soft_reboot(systemctl.as_deref(), busctl.as_deref())
+            == logind::Pending::Nothing
     }
 
     fn daemon_reload(&self) -> Result<()> {
@@ -455,6 +470,8 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
             systemctl: nails_teardown::whole_root::tools::find(None, "systemctl")
                 .and_then(|p| std::fs::canonicalize(p).ok()),
             dmsetup: nails_teardown::whole_root::tools::find(None, "dmsetup")
+                .and_then(|p| std::fs::canonicalize(p).ok()),
+            busctl: nails_teardown::whole_root::tools::find(None, logind::BUSCTL)
                 .and_then(|p| std::fs::canonicalize(p).ok()),
         },
         armed: None,

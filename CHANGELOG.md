@@ -282,9 +282,15 @@ of this changelog for that version becomes the release notes word for word, and
   unattended-upgrades shutdown helper was stopped without that signal: on Debian 13 it wrote
   "SIGTERM or SIGHUP received" to `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log`
   on the decoy disk at every activation, a line an ordinary shutdown does not write, and on
-  Ubuntu 24.04 and 26.04 it failed (`exit-code`) when the bus stopped under it. A soft-reboot that
-  logind does not take is enqueued directly as before, and `emergency` still enqueues its own
-  directly, without waiting for anything.
+  Ubuntu 24.04 and 26.04 it failed (`exit-code`) when the bus stopped under it. Both wait until
+  PID 1 holds the soft-reboot's job, so meanwhile `status` shows the activation in progress and
+  `recover` leaves it alone. A program that holds a shutdown block inhibitor makes them refuse,
+  naming it, and a soft-reboot that logind refuses or drops (`shutdown -c`) fails the command with
+  nothing left queued. One that logind still holds past its delay is dropped and fails the command,
+  or, on systemd 255, where logind cannot drop it, is enqueued with PID 1 directly. `recover`
+  refuses while an interrupted activation's soft-reboot still comes, and `emergency` on the decoy
+  drops it, or powers off where logind cannot. `emergency` in the hidden session still enqueues its
+  soft-reboot directly, without waiting for anything.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root

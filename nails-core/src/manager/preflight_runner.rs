@@ -147,8 +147,8 @@ pub fn build_registry<F: Filesystem>(
         SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
-        DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
-        SystemdVersionCheck,
+        DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
+        SoftRebootUnitsCheck, SystemdVersionCheck,
     };
 
     let _ = fs;
@@ -196,6 +196,12 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
         config_layer.is_some(),
+    )));
+    // The switch goes through logind, which a program that blocks shutdown
+    // outright stops; such a program is in the middle of something the switch
+    // would cut short, so the entry is refused before anything is prepared.
+    registry.add_check(Box::new(ShutdownInhibitorsCheck::new(
+        nails_teardown::whole_root::tools::find(None, nails_teardown::whole_root::logind::BUSCTL),
     )));
 
     // The way back mounts the decoy root again by device.
