@@ -173,6 +173,10 @@ pub struct Unreached {
     pub target: String,
     /// Why the unit is masked rather than skipped.
     pub cause: Unskippable,
+    /// Whether the unit comes from a unit file of the decoy's own rather than
+    /// an fstab line: `nofail` means nothing in its `Options=`, and a target
+    /// requires it by a link.
+    pub native: bool,
 }
 
 /// Why a unit a boot target requires is masked rather than skipped.
@@ -235,11 +239,18 @@ impl Decision {
                 Some(Unreached {
                     target: boot,
                     cause,
+                    native,
                 }),
             ..
         } = self
         else {
             return None;
+        };
+        let remedy = if *native {
+            "install the unit with WantedBy= rather than RequiredBy=, so that the target wants it \
+             instead of requiring it"
+        } else {
+            "give the fstab entry the nofail option"
         };
         let unreached = format!(
             "the hidden session will not reach {boot}, which requires it, and the units only \
@@ -248,7 +259,7 @@ impl Decision {
         Some(match cause {
             Unskippable::NoDevice(device) => format!(
                 "{} is masked rather than skipped, as its device {} is not there: {unreached}. \
-                 Attach the device before activating, or give the fstab entry the nofail option",
+                 Attach the device before activating, or {remedy}",
                 target.display(),
                 device.display()
             ),
@@ -296,6 +307,9 @@ pub struct Units {
     /// The units it pulls in that act on its device or filesystem
     /// ([`super::fstab::checkers`]).
     pub checkers: Vec<String>,
+    /// Whether they come from a unit file of the decoy's own rather than an
+    /// fstab line ([`Unreached::native`]).
+    pub native: bool,
 }
 
 impl Units {
@@ -311,6 +325,7 @@ impl Units {
             automount: entry.is_automount().then(|| automount_unit(&entry.file)),
             required_by: required_by(entry),
             checkers: checkers(entry),
+            native: false,
         }
     }
 }
@@ -426,6 +441,7 @@ fn gate(
             unreached: Some(Unreached {
                 target: required,
                 cause: Unskippable::NoDevice(device),
+                native: units.native,
             }),
         },
         device => Decision::Skip {
