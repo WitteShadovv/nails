@@ -23,7 +23,7 @@
 //! | a local filesystem mounted read-only in the decoy | read-only bind |
 //! | any other local filesystem mounted in the decoy | an overlay with its upper on the hidden volume |
 //! | a local filesystem not mounted now, mounted at boot | kept unmounted (and its automount off) |
-//! | `noauto` without an automount or a unit named to pull it in | left alone: never mounted |
+//! | `noauto` without an automount or a unit named to pull it in | left alone: nothing mounts it at boot (a skip that pulls it in is masked, see [`super::mount_units`]) |
 //! | a network filesystem | kept unmounted: the hidden session would write to the server |
 //! | an overlay entry not mounted now, its upper in RAM | left to the hidden systemd |
 //! | an overlay entry not mounted now, its upper on a disk | kept unmounted |
