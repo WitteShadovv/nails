@@ -29,11 +29,13 @@ class CheckOrphanModulesTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
 
     def run_check(self, root: Path | None = None) -> subprocess.CompletedProcess[str]:
+        # A scratch tree takes the script well under a second.
         return subprocess.run(
             ["bash", str(SCRIPT), str(root or self.root)],
             capture_output=True,
             text=True,
             check=False,
+            timeout=60,
         )
 
     def test_declared_modules_pass(self) -> None:
@@ -84,8 +86,9 @@ class CheckOrphanModulesTest(unittest.TestCase):
         self.assertNotIn("tests/window.rs", result.stdout)
 
     def test_the_test_bench_and_example_trees_are_checked(self) -> None:
-        # Each file directly in tests/, benches/ or examples/ is a crate root of
-        # its own, which declares its modules beside itself, as lib.rs does.
+        # Each file directly in tests/, benches/ or examples/, and each main.rs
+        # of a directory directly there, is a crate root of its own, which
+        # declares its modules beside itself, as lib.rs does.
         trees = (
             "nails-core/tests",
             "nails-core/benches",
@@ -97,35 +100,101 @@ class CheckOrphanModulesTest(unittest.TestCase):
             self.write(f"{tree}/common/mod.rs")
             self.write(f"{tree}/kernel.rs", '#[path = "kernel/entry.rs"]\nmod entry;\n')
             self.write(f"{tree}/kernel/entry.rs")
+            self.write(f"{tree}/split/main.rs", "mod part;\n")
+            self.write(f"{tree}/split/part.rs")
         result = self.run_check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for tree in trees:
             self.write(f"{tree}/common/stale.rs")
+            self.write(f"{tree}/split/stale.rs")
         # A tests/ directory inside src/ holds modules, not crate roots.
         self.write("nails-core/src/config/tests/stale.rs")
         result = self.run_check()
         self.assertEqual(result.returncode, 1)
         for tree in trees:
             self.assertIn(f"  {tree}/common/stale.rs\n", result.stdout)
+            self.assertIn(f"  {tree}/split/stale.rs\n", result.stdout)
         self.assertIn("  nails-core/src/config/tests/stale.rs\n", result.stdout)
         self.assertNotIn("flow.rs", result.stdout)
         self.assertNotIn("kernel", result.stdout)
+        self.assertNotIn("main.rs", result.stdout)
+        self.assertNotIn("part.rs", result.stdout)
+
+    def test_the_binaries_of_src_bin_are_crate_roots(self) -> None:
+        self.write("nails-core/src/bin/probe.rs")
+        self.write("gui/nails-gui/src/bin/tool/main.rs", "mod cli;\n")
+        self.write("gui/nails-gui/src/bin/tool/cli.rs")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_lib_or_main_file_cargo_does_not_build_needs_its_mod(self) -> None:
+        # Cargo builds src/lib.rs, src/main.rs and the main.rs of a directory
+        # directly in src/bin/, tests/, benches/ or examples/, and no other
+        # lib.rs or main.rs: one anywhere else compiles for nobody unless a
+        # module declares it.
+        stale = (
+            "nails-core/src/store/lib.rs",
+            "nails-core/src/store/main.rs",
+            "nails-core/src/bin/tool/inner/main.rs",
+            "nails-core/tests/helpers/lib.rs",
+            "nails-core/tests/deep/inner/main.rs",
+            "setup/nails-setup/benches/deep/inner/main.rs",
+            "gui/nails-gui/examples/shared/lib.rs",
+        )
+        for path in stale:
+            self.write(path)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        for path in stale:
+            self.assertIn(f"  {path}\n", result.stdout)
+        # Declared, each of them is a module like any other.
+        self.write("nails-core/src/lib.rs", "mod store;\n")
+        self.write("nails-core/src/store/mod.rs", "mod lib;\nmod main;\n")
+        self.write("nails-core/tests/helpers/main.rs", "mod lib;\n")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("nails-core/src/store/", result.stdout)
+        self.assertNotIn("nails-core/tests/helpers/", result.stdout)
+        self.assertIn("  nails-core/tests/deep/inner/main.rs\n", result.stdout)
 
     def test_the_fuzz_crate_is_checked_like_the_crates(self) -> None:
+        self.write(
+            "fuzz/Cargo.toml",
+            '[package]\nname = "fuzz"\n\n[[bin]]\nname = "utab"\n'
+            'path = "fuzz_targets/utab.rs"\n\n[[bin]]\nname = "deep"\n'
+            'path = "fuzz_targets/deep/entry.rs"\n',
+        )
         self.write("fuzz/src/lib.rs", "pub mod libmount;\n")
         self.write("fuzz/src/libmount.rs")
-        # A fuzz target is a crate root of its own.
+        # A fuzz target, a file a [[bin]] table names, is a crate root of its
+        # own.
         self.write("fuzz/fuzz_targets/utab.rs", "mod common;\n")
         self.write("fuzz/fuzz_targets/common/mod.rs")
+        self.write("fuzz/fuzz_targets/deep/entry.rs")
         result = self.run_check()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.write("fuzz/src/stale.rs")
         self.write("fuzz/fuzz_targets/common/stale.rs")
+        # Cargo builds no other file of fuzz_targets/.
+        self.write("fuzz/fuzz_targets/unlisted.rs")
+        self.write("fuzz/fuzz_targets/shared/main.rs")
         result = self.run_check()
         self.assertEqual(result.returncode, 1)
         self.assertIn("  fuzz/src/stale.rs\n", result.stdout)
         self.assertIn("  fuzz/fuzz_targets/common/stale.rs\n", result.stdout)
+        self.assertIn("  fuzz/fuzz_targets/unlisted.rs\n", result.stdout)
+        self.assertIn("  fuzz/fuzz_targets/shared/main.rs\n", result.stdout)
         self.assertNotIn("utab.rs", result.stdout)
+        self.assertNotIn("entry.rs", result.stdout)
+
+    def test_fuzz_targets_without_a_manifest_fail(self) -> None:
+        self.write("fuzz/fuzz_targets/utab.rs")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "ERROR: no fuzz/Cargo.toml names the targets in fuzz/fuzz_targets",
+            result.stderr,
+        )
 
     def test_a_side_workspace_without_a_crate_fails(self) -> None:
         for workspace, crate in (("setup", "nails-setup"), ("gui", "nails-gui")):

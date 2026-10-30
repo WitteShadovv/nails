@@ -7,12 +7,13 @@
 # Every crate directory of the repository (nails-*/), every crate of the side
 # workspaces (setup/ and gui/) and the fuzz crate (fuzz/) is checked, so a new
 # crate needs no edit here: its src/ tree and the tests/, benches/ and examples/
-# trees it has, and the fuzz crate's fuzz_targets/. A crate root is a lib.rs or
-# a main.rs, or a file directly in one of those other trees, which Cargo builds
-# as a target of its own: an integration test, a benchmark, an example, or a
-# fuzz target that fuzz/Cargo.toml lists (check-fuzz-targets.sh checks that it
-# does). It checks the repository it lives in, or the directory given as the
-# only argument.
+# trees it has, and the fuzz crate's fuzz_targets/. A crate root is a file that
+# Cargo builds as a target of its own: src/lib.rs and src/main.rs, each *.rs and
+# each */main.rs directly in src/bin/, tests/, benches/ or examples/ (a binary,
+# an integration test, a benchmark, an example), and each fuzz target that a
+# [[bin]] table of fuzz/Cargo.toml names. Every other file, a lib.rs or a
+# main.rs further down among them, is a module that needs its `mod`. It checks
+# the repository it lives in, or the directory given as the only argument.
 
 set -euo pipefail
 
@@ -20,6 +21,8 @@ set -euo pipefail
 # match the paths find reports below.
 REPO_ROOT="$(cd "${1:-$(dirname "$0")/..}" && pwd -P)"
 SOURCE_ROOTS=("$REPO_ROOT"/nails-*/src "$REPO_ROOT"/setup/*/src "$REPO_ROOT"/gui/*/src "$REPO_ROOT"/fuzz/src)
+FUZZ_TARGETS="$REPO_ROOT/fuzz/fuzz_targets"
+FUZZ_MANIFEST="$REPO_ROOT/fuzz/Cargo.toml"
 
 # A pattern that matches nothing stays as written, and find fails on it inside
 # the process substitutions below without failing the script, which would then
@@ -31,26 +34,59 @@ for root in "${SOURCE_ROOTS[@]}"; do
   fi
 done
 
+# The crate roots, keyed by the path find reports for each.
+declare -A CRATE_ROOTS=()
+add_crate_roots() {
+  local file
+  for file in "$@"; do
+    if [ -f "$file" ]; then
+      CRATE_ROOTS["$file"]=1
+    fi
+  done
+}
+
+for root in "${SOURCE_ROOTS[@]}"; do
+  add_crate_roots "$root"/lib.rs "$root"/main.rs "$root"/bin/*.rs "$root"/bin/*/main.rs
+done
+
 # The trees of the other targets. A crate may have none of them, so only those
 # that exist are scanned.
 TARGET_ROOTS=()
-declare -A IS_TARGET_ROOT=()
-for root in "$REPO_ROOT"/{nails-*,setup/*,gui/*}/{tests,benches,examples} \
-  "$REPO_ROOT"/fuzz/fuzz_targets; do
+for root in "$REPO_ROOT"/{nails-*,setup/*,gui/*}/{tests,benches,examples}; do
   if [ -d "$root" ]; then
     TARGET_ROOTS+=("$root")
-    IS_TARGET_ROOT["$root"]=1
+    add_crate_roots "$root"/*.rs "$root"/*/main.rs
   fi
 done
+
+# Cargo builds no file of fuzz_targets/ on its own: the fuzz targets are the
+# paths of the [[bin]] tables of fuzz/Cargo.toml, read as check-fuzz-targets.sh
+# reads them.
+if [ -d "$FUZZ_TARGETS" ]; then
+  if [ ! -f "$FUZZ_MANIFEST" ]; then
+    echo "ERROR: no fuzz/Cargo.toml names the targets in fuzz/fuzz_targets" >&2
+    exit 1
+  fi
+  TARGET_ROOTS+=("$FUZZ_TARGETS")
+  in_bin=0
+  while IFS= read -r line; do
+    case "$line" in
+      '[[bin]]') in_bin=1 ;;
+      '['*) in_bin=0 ;;
+      *)
+        if [ "$in_bin" = 1 ] &&
+          [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
+          CRATE_ROOTS["$(realpath -m "$REPO_ROOT/fuzz/${BASH_REMATCH[1]}")"]=1
+        fi
+        ;;
+    esac
+  done < "$FUZZ_MANIFEST"
+fi
 
 # Whether `file` is a crate root, which rustc reaches without a `mod`. A crate
 # root resolves the modules it declares beside itself, as a mod.rs does.
 is_crate_root() {
-  local file="$1"
-  case "${file##*/}" in
-    lib.rs | main.rs) return 0 ;;
-  esac
-  [ -n "${IS_TARGET_ROOT[${file%/*}]:-}" ]
+  [ -n "${CRATE_ROOTS[$1]:-}" ]
 }
 
 # Resolve a `mod <module_name>;` (optionally carrying a `#[path = "..."]`
