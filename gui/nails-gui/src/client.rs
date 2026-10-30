@@ -27,9 +27,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use nails_api::Event;
 use nails_api::protocol::{
-    ActivateArgs, ActivatePlanData, DeactivateArgs, DeactivatePlanData, DiscardPlanArgs,
-    DiscardPlanData, ErrorCode, Frame, Hello, InitArgs, InitPlanData, Op, PROTOCOL_VERSION,
-    ProtocolError, RELEASE, Request, Token,
+    ActivateArgs, ActivatePlanData, ConfigEditArgs, ConfigEditPlanData, DeactivateArgs,
+    DeactivatePlanData, DiscardPlanArgs, DiscardPlanData, ErrorCode, Frame, Hello, InitArgs,
+    InitPlanData, Op, PROTOCOL_VERSION, ProtocolError, RELEASE, Request, Token,
 };
 
 use crate::emergency::{EMERGENCY_ID, HelperLine};
@@ -105,6 +105,8 @@ pub enum Plan {
     Deactivate(DeactivateArgs),
     /// `nails init`.
     Init(InitArgs),
+    /// `nails config set` and `nails config unset`.
+    ConfigEdit(ConfigEditArgs),
 }
 
 impl Plan {
@@ -114,6 +116,7 @@ impl Plan {
             Plan::Activate(args) => Op::ActivatePlan(args),
             Plan::Deactivate(args) => Op::DeactivatePlan(args),
             Plan::Init(args) => Op::InitPlan(args),
+            Plan::ConfigEdit(args) => Op::ConfigEditPlan(args),
         }
     }
 
@@ -125,6 +128,7 @@ impl Plan {
             Plan::Activate(_) => PlanData::Activate(serde_json::from_value(data)?),
             Plan::Deactivate(_) => PlanData::Deactivate(serde_json::from_value(data)?),
             Plan::Init(_) => PlanData::Init(serde_json::from_value(data)?),
+            Plan::ConfigEdit(_) => PlanData::ConfigEdit(serde_json::from_value(data)?),
         })
     }
 }
@@ -141,6 +145,8 @@ pub enum PlanData {
     Deactivate(DeactivatePlanData),
     /// The layout an init would write.
     Init(InitPlanData),
+    /// What a change of the settings would write.
+    ConfigEdit(ConfigEditPlanData),
 }
 
 impl PlanData {
@@ -150,6 +156,7 @@ impl PlanData {
             PlanData::Activate(data) => &data.token,
             PlanData::Deactivate(data) => &data.token,
             PlanData::Init(data) => &data.token,
+            PlanData::ConfigEdit(data) => &data.token,
         }
     }
 
@@ -162,6 +169,7 @@ impl PlanData {
             PlanData::Activate(_) => Op::ActivateApply(token),
             PlanData::Deactivate(_) => Op::DeactivateApply(token),
             PlanData::Init(_) => Op::InitApply(token),
+            PlanData::ConfigEdit(_) => Op::ConfigEditApply(token),
         }
     }
 }
@@ -426,6 +434,10 @@ impl Client {
 fn is_plan(op: &Op) -> bool {
     matches!(
         op,
-        Op::DiscardPlan(_) | Op::ActivatePlan(_) | Op::DeactivatePlan(_) | Op::InitPlan(_)
+        Op::DiscardPlan(_)
+            | Op::ActivatePlan(_)
+            | Op::DeactivatePlan(_)
+            | Op::InitPlan(_)
+            | Op::ConfigEditPlan(_)
     )
 }
