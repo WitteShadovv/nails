@@ -204,3 +204,20 @@ fn a_handler_without_an_envelope_answers_as_a_failure() {
     assert_eq!(envelope["command"], "recover");
     assert_eq!(envelope["ok"], false);
 }
+
+/// A discard that cannot be planned answers as `nails discard` reports it:
+/// in the hidden session `invalid_state` with exit 6, otherwise exit 1.
+#[test]
+fn a_discard_plan_that_cannot_be_made_answers_as_the_cli_does() {
+    let (exit, envelope) = result(discard_failure(&NailsError::InvalidState(
+        "discard is refused inside the hidden root".to_string(),
+    )));
+    assert_eq!(exit, ExitStatus::InvalidState);
+    assert_eq!(envelope["command"], "discard");
+    assert_eq!(envelope["error"]["code"], "discard");
+    let (exit, _) = result(discard_failure(&NailsError::io(
+        "/mnt/data/root/upper/home",
+        std::io::Error::other("read-only"),
+    )));
+    assert_eq!(exit, ExitStatus::Failed);
+}

@@ -40,8 +40,6 @@ pub fn execute(
     args: &DiscardArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
-    use nails_core::NailsError;
-
     let json = settings.is_json();
 
     // discard deletes data on the hidden volume, so it must not run against
@@ -64,16 +62,8 @@ pub fn execute(
     let plan = match locked.plan(&target) {
         Ok(plan) => plan,
         Err(e) => {
-            let status = match e {
-                NailsError::InvalidState(_) => ExitStatus::InvalidState,
-                _ => ExitStatus::Failed,
-            };
-            return report_error(
-                json,
-                "discard",
-                status,
-                ErrorBody::new("discard", e.to_string()),
-            );
+            let (status, body) = plan_failure(&e);
+            return report_error(json, "discard", status, body);
         }
     };
 
@@ -154,6 +144,18 @@ const CANCELLED: &str = nails_core::catalog::CANCEL_DISCARD.text;
 
 /// What the attach gate accepts for the discard: with `--allow-decoy-storage`,
 /// a root this computer's own storage holds, as `activate` accepts it.
+/// The exit status and error body of a discard that could not be planned:
+/// `invalid_state` (exit 6) in the hidden session, a plain failure
+/// otherwise. The window's helper reports a plan it could not make with them
+/// too.
+pub(crate) fn plan_failure(error: &nails_core::NailsError) -> (ExitStatus, ErrorBody) {
+    let status = match error {
+        nails_core::NailsError::InvalidState(_) => ExitStatus::InvalidState,
+        _ => ExitStatus::Failed,
+    };
+    (status, ErrorBody::new("discard", error.to_string()))
+}
+
 fn allow(args: &DiscardArgs) -> nails_core::hidden_root::Allow {
     if args.allow_decoy_storage {
         nails_core::hidden_root::Allow::DecoyStorage

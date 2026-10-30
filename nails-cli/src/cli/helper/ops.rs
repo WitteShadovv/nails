@@ -354,11 +354,7 @@ const DISCARD: &str = "discard";
 
 /// A plan that could not be made, as `nails discard` reports it.
 fn discard_failure(error: &NailsError) -> Answer {
-    let exit = match error {
-        NailsError::InvalidState(_) => ExitStatus::InvalidState,
-        _ => ExitStatus::Failed,
-    };
-    let body = ErrorBody::new(DISCARD, error.to_string());
+    let (exit, body) = commands::discard::plan_failure(error);
     Answer::result(exit, &error_envelope(DISCARD, body))
 }
 
