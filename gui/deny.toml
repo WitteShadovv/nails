@@ -40,17 +40,20 @@ ignore = [
     # expires: 2027-04-15
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, no fixed release; reached only through winit's Wayland decorations, which Slint's winit backend always enables" },
     # GUI: zvariant, zbus_names and zvariant_derive are part of zbus 6 now.
-    # The window reaches zbus 5 only through AccessKit's AT-SPI adapter
-    # (accesskit_unix -> atspi -> zbus), the screen reader's way in; they go
-    # once AccessKit moves to zbus 6.
+    # The window reaches zbus 5 on two paths, both on every Linux build:
+    # AccessKit's AT-SPI adapter (accesskit_unix and atspi -> zbus), the
+    # screen reader's way in, and Slint's winit backend, which depends on
+    # zbus for every Linux target and reads the desktop's settings portal
+    # with it at every start (i-slint-backend-winit -> zbus). They go once
+    # both AccessKit and Slint's winit backend move off zbus 5.
     # expires: 2027-01-31
-    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, merged into zbus 6; reached through AccessKit's AT-SPI adapter on zbus 5" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, merged into zbus 6; reached on zbus 5 through AccessKit's AT-SPI adapter and Slint's winit backend, which reads the settings portal" },
     # GUI: as RUSTSEC-2026-0370, for zbus_names.
     # expires: 2027-01-31
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, merged into zbus 6; reached through AccessKit's AT-SPI adapter on zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, merged into zbus 6; reached on zbus 5 through AccessKit's AT-SPI adapter and Slint's winit backend, which reads the settings portal" },
     # GUI: as RUSTSEC-2026-0370, for zvariant_derive.
     # expires: 2027-01-31
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, merged into zbus 6; reached through AccessKit's AT-SPI adapter on zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, merged into zbus 6; reached on zbus 5 through AccessKit's AT-SPI adapter and Slint's winit backend, which reads the settings portal" },
 ]
 
 # =============================================================================
