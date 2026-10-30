@@ -22,6 +22,8 @@ This document contains the help content for the `nails` command-line program.
 * [`nails config path`↴](#nails-config-path)
 * [`nails config show`↴](#nails-config-show)
 * [`nails config validate`↴](#nails-config-validate)
+* [`nails config set`↴](#nails-config-set)
+* [`nails config unset`↴](#nails-config-unset)
 * [`nails completions`↴](#nails-completions)
 
 ## `nails`
@@ -411,21 +413,25 @@ EXAMPLES:
 
 ## `nails config`
 
-Inspect and check the configuration file (nails.toml)
+Inspect, check and change the configuration file (nails.toml)
 
 **Usage:** `nails config <COMMAND>`
 
 EXAMPLES:
-  nails config path                   Print the resolved config file path
-  nails config show                   Print the effective configuration
-  nails config show --example         Print a commented example config
-  nails config validate ./nails.toml  Strictly check a config file
+  nails config path                         Print the resolved config file path
+  nails config show                         Print the effective configuration
+  nails config show --example               Print a commented example config
+  nails config validate ./nails.toml        Strictly check a config file
+  nails config set persona.mode fresh-home  Change a key, keeping the comments
+  nails config unset nixos_flake            Remove a key, so its default applies
 
 ###### **Subcommands:**
 
 * `path` — Print the resolved configuration file path and whether it exists
 * `show` — Print the effective configuration and where each value comes from
 * `validate` — Check a configuration file strictly (syntax, types, unknown keys)
+* `set` — Set a key in the configuration file, keeping its comments and other keys
+* `unset` — Remove keys from the configuration file, so their defaults apply
 
 
 
@@ -459,6 +465,67 @@ Check a configuration file strictly (syntax, types, unknown keys)
 ###### **Arguments:**
 
 * `<PATH>` — File to check (default: the resolved configuration file)
+
+
+
+## `nails config set`
+
+Set a key in the configuration file, keeping its comments and other keys
+
+**Usage:** `nails config set <KEY> <VALUE>...`
+
+WHAT IT CHANGES:
+  The configuration beside the running nails on its hidden volume, or the
+  file --config names there. Only the keys named change: the comments, the
+  order and every other key stay as they were. The new file is checked as
+  `config validate` checks one, and replaces the old one at once. Nothing is
+  written when it is not valid, when the file lies on another volume, or when
+  a link or another filesystem is on the way to it. Change settings inside a
+  hidden session: the watcher and the sleep guard of a running session keep
+  the settings it started with until the next activation. While a session
+  runs or an activation enters one, the hidden volume root and the state
+  file stay where the session recorded them.
+
+EXAMPLES:
+  nails config set persona.mode fresh-home
+  nails config set minimum_space_mb 2000
+  nails config set persona.mask_inherited dropbox syncthing.service
+  nails config unset persona.mode nixos_flake
+
+###### **Arguments:**
+
+* `<KEY>` — The key, as docs/configuration.md lists it (`persona.mode`)
+* `<VALUE>` — The value; a list such as `persona.mask_inherited` takes one per entry
+
+
+
+## `nails config unset`
+
+Remove keys from the configuration file, so their defaults apply
+
+**Usage:** `nails config unset <KEY>...`
+
+WHAT IT CHANGES:
+  The configuration beside the running nails on its hidden volume, or the
+  file --config names there. Only the keys named change: the comments, the
+  order and every other key stay as they were. The new file is checked as
+  `config validate` checks one, and replaces the old one at once. Nothing is
+  written when it is not valid, when the file lies on another volume, or when
+  a link or another filesystem is on the way to it. Change settings inside a
+  hidden session: the watcher and the sleep guard of a running session keep
+  the settings it started with until the next activation. While a session
+  runs or an activation enters one, the hidden volume root and the state
+  file stay where the session recorded them.
+
+EXAMPLES:
+  nails config set persona.mode fresh-home
+  nails config set minimum_space_mb 2000
+  nails config set persona.mask_inherited dropbox syncthing.service
+  nails config unset persona.mode nixos_flake
+
+###### **Arguments:**
+
+* `<KEY>` — The keys, as docs/configuration.md lists them
 
 
 

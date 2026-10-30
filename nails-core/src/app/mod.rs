@@ -67,6 +67,7 @@
 
 pub mod activate;
 pub mod config;
+pub mod config_edit;
 pub mod config_view;
 pub mod deactivate;
 pub mod discard_upper;

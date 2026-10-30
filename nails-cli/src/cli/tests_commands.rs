@@ -139,15 +139,18 @@ fn test_transition_is_a_bare_hidden_subcommand() {
 #[test]
 fn test_only_the_commands_that_change_the_system_count_as_mutating() {
     // An interrupt must roll a mutating command back through its guards
-    // instead of killing it halfway through a switch, so it installs the
-    // cancellation handlers and sheds OOM priority. Every other command keeps
-    // the default signal behaviour, so an interrupt stops it at once.
+    // instead of killing it halfway through a switch, or between the new
+    // configuration file and its rename, so it installs the cancellation
+    // handlers and sheds OOM priority. Every other command keeps the default
+    // signal behaviour, so an interrupt stops it at once.
     let mutating: &[&[&str]] = &[
         &["activate"],
         &["deactivate"],
         &["emergency"],
         &["recover"],
         &["discard", "/home"],
+        &["config", "set", "minimum_space_mb", "600"],
+        &["config", "unset", "minimum_space_mb"],
     ];
     let other: &[&[&str]] = &[
         &["status"],
@@ -156,6 +159,8 @@ fn test_only_the_commands_that_change_the_system_count_as_mutating() {
         &["check"],
         &["init", "/mnt/hidden"],
         &["config", "path"],
+        &["config", "show"],
+        &["config", "validate"],
         &["completions", "bash"],
         &["watch"],
         &["sleep-guard"],
@@ -186,9 +191,10 @@ fn test_only_the_commands_that_change_the_system_count_as_mutating() {
     assert_eq!(sorted, subcommands);
 }
 
-/// The commands that take the system up or down catch the signals themselves;
-/// every other one keeps the default action, which `--json` turns into the
-/// cancel envelope of the command whose envelope it prints.
+/// The commands that take the system up or down or replace the configuration
+/// catch the signals themselves; every other one keeps the default action,
+/// which `--json` turns into the cancel envelope of the command whose envelope
+/// it prints.
 #[test]
 fn only_the_commands_that_print_an_envelope_report_a_signal_as_their_cancel() {
     for argv in [
@@ -197,6 +203,8 @@ fn only_the_commands_that_print_an_envelope_report_a_signal_as_their_cancel() {
         &["emergency"],
         &["recover"],
         &["discard", "/home"],
+        &["config", "set", "persona.mode", "fresh-home"],
+        &["config", "unset", "persona.mode"],
     ] {
         let command = parse(argv).command;
         assert!(command_is_mutating(&command), "{argv:?}");
