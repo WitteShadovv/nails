@@ -160,6 +160,13 @@ the run, because the root cannot be told apart safely: scan the root
 filesystem's own image instead. So does an image that holds a filesystem at
 byte 0 and a partition table too, which could be either.
 
+Neither carver replays a journal or a log tree: `debugfs rdump` and `btrfs
+restore` read a filesystem as it lies. So an ext{2,3,4} filesystem whose
+journal waits to be replayed (`needs_recovery`) and a btrfs filesystem with a
+log tree (`log_root` not 0) stop the run, since the files they recover would
+be older than the ones the decoy mounts. An image taken after a clean
+shutdown has neither.
+
 Of a whole-disk image, every byte outside the root filesystem is compared too,
 each part at a top-level name of its own (`ci/oracle/partitions.sh`), and
 each partition from its place n in the partition table:
