@@ -16,7 +16,9 @@ use crate::session::policy::Decision;
 use nails_teardown::whole_root::nextroot::{
     canonical_in_root, list_in_root, read_in_root, regular_file_in_root,
 };
+use std::ffi::OsString;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// Where a unit directory lives: in the next root, or in `/run`, which the
@@ -117,6 +119,22 @@ fn generator_dir(base: Base, dir: &str) -> bool {
     base == Base::Run && dir.starts_with("systemd/generator")
 }
 
+/// A drop-in of a unit, as systemd finds it ([`UnitDirs::dropins`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Dropin {
+    /// Its file name, which orders it among the unit's drop-ins.
+    pub(super) name: OsString,
+    /// Where its drop-in directory comes in the order systemd searches them:
+    /// the directory that comes first gives a name its file.
+    pub(super) rank: usize,
+    /// The root its unit directory is below.
+    base: Base,
+    /// Its unit directory.
+    dir: &'static str,
+    /// Its drop-in directory there (`srv-data.mount.d`).
+    sub: String,
+}
+
 /// How systemd would load a unit, as far as NAILS can tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Load {
@@ -194,13 +212,74 @@ impl UnitDirs<'_> {
         }
     }
 
-    /// The unit `name` as systemd loads it: the first unit directory that
-    /// has it, then its drop-ins (`*.conf`) in the order of their names, each
-    /// name from the first directory that has it in the order systemd's
+    /// The drop-in directories of the unit `name` in the order systemd's
     /// `unit_file_find_dropin_paths()` searches them: in each unit directory
-    /// `<name>.d` and the directory of each of its name's prefixes
-    /// ([`dropin_stems`]), then in each unit directory the directory of its
-    /// type (`mount.d`).
+    /// `<name>.d` and those of the names [`dropin_stems`] gives, then in each
+    /// unit directory the directory of its type (`mount.d`).
+    fn dropin_dirs(name: &str) -> Vec<(Base, &'static str, String)> {
+        let stems = dropin_stems(name);
+        let mut searched = Vec::new();
+        for &(base, dir) in UNIT_DIRS {
+            for stem in &stems {
+                searched.push((base, dir, format!("{stem}.d")));
+            }
+        }
+        if let Some((_, kind)) = name.rsplit_once('.') {
+            for &(base, dir) in UNIT_DIRS {
+                searched.push((base, dir, format!("{kind}.d")));
+            }
+        }
+        searched
+    }
+
+    /// The drop-ins of the unit `name` systemd applies, in the order of
+    /// their names: each file of its drop-in directories ([`Self::dropin_dirs`])
+    /// whose name ends in `.conf`, as bytes, each name from the first
+    /// directory that has it. A hidden name, which begins with a dot, is not
+    /// one, as systemd skips it. `Err` when a drop-in directory is there but
+    /// cannot be listed.
+    pub(super) fn dropins(&self, name: &str) -> Result<Vec<Dropin>, ()> {
+        let mut found: Vec<Dropin> = Vec::new();
+        for (rank, (base, dir, sub)) in Self::dropin_dirs(name).into_iter().enumerate() {
+            let (root, path) = self.locate(base, dir, &sub);
+            let entries = match list_in_root(root, &path) {
+                Ok(entries) => entries,
+                Err(e) if missing(&e) => continue,
+                Err(_) => return Err(()),
+            };
+            for entry in entries {
+                let bytes = entry.as_bytes();
+                if bytes.ends_with(b".conf")
+                    && !bytes.starts_with(b".")
+                    && !found.iter().any(|seen| seen.name == entry)
+                {
+                    found.push(Dropin {
+                        name: entry,
+                        rank,
+                        base,
+                        dir,
+                        sub: sub.clone(),
+                    });
+                }
+            }
+        }
+        found.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+        Ok(found)
+    }
+
+    /// The text of `dropin`: `Ok(None)` for one that masks its name (a link
+    /// to `/dev/null`) or is gone by now, `Err` for one that cannot be read.
+    pub(super) fn read_dropin(&self, dropin: &Dropin) -> Result<Option<Vec<u8>>, ()> {
+        let (root, dir) = self.locate(dropin.base, dropin.dir, &dropin.sub);
+        let path = dir.join(&dropin.name);
+        if canonical_in_root(root, &path) == Path::new("/dev/null") {
+            return Ok(None);
+        }
+        Self::read_file(root, &path)
+    }
+
+    /// The unit `name` as systemd loads it: the first unit directory that
+    /// has it, then its drop-ins ([`Self::dropins`]).
     pub(super) fn load(&self, name: &str) -> Load {
         let mut fragment = None;
         for &(base, dir) in UNIT_DIRS {
@@ -223,43 +302,12 @@ impl UnitDirs<'_> {
         if fragment.is_empty() {
             return Load::Masked;
         }
-        let stems = dropin_stems(name);
-        let mut searched: Vec<(Base, &str, String)> = Vec::new();
-        for &(base, dir) in UNIT_DIRS {
-            for stem in &stems {
-                searched.push((base, dir, format!("{stem}.d")));
-            }
-        }
-        if let Some((_, kind)) = name.rsplit_once('.') {
-            for &(base, dir) in UNIT_DIRS {
-                searched.push((base, dir, format!("{kind}.d")));
-            }
-        }
-        let mut dropins: Vec<(String, Base, &str, &str)> = Vec::new();
-        for (base, dir, sub) in &searched {
-            let (root, path) = self.locate(*base, dir, sub);
-            let entries = match list_in_root(root, &path) {
-                Ok(entries) => entries,
-                Err(e) if missing(&e) => continue,
-                Err(_) => return Load::Unreadable,
-            };
-            for entry in entries {
-                let Some(entry) = entry.to_str() else {
-                    continue;
-                };
-                if entry.ends_with(".conf") && !dropins.iter().any(|(seen, ..)| seen == entry) {
-                    dropins.push((entry.to_string(), *base, dir, sub));
-                }
-            }
-        }
-        dropins.sort_by(|a, b| a.0.cmp(&b.0));
+        let Ok(dropins) = self.dropins(name) else {
+            return Load::Unreadable;
+        };
         let mut texts = vec![fragment];
-        for (file, base, dir, sub) in dropins {
-            let (root, path) = self.locate(base, dir, &format!("{sub}/{file}"));
-            if canonical_in_root(root, &path) == Path::new("/dev/null") {
-                continue;
-            }
-            match Self::read_file(root, &path) {
+        for dropin in &dropins {
+            match self.read_dropin(dropin) {
                 Ok(Some(bytes)) => texts.push(bytes),
                 Ok(None) => {}
                 Err(()) => return Load::Unreadable,
