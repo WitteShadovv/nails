@@ -547,8 +547,10 @@ pub fn open_dir_in_root(root: &Path, path: &Path) -> io::Result<OwnedFd> {
 /// The directory is opened with `O_NOATIME` ([`with_noatime`]): `nails
 /// check` lists the decoy root's own unit directories, and a listing would
 /// otherwise stamp them with the time of the read on a `relatime`
-/// filesystem. As for [`read_in_root`], the lookup can still update the
-/// access time of a symlink it follows.
+/// filesystem. A caller that neither owns the directory nor holds
+/// `CAP_FOWNER` cannot avoid that: without root the open falls back to one
+/// without the flag. As for [`read_in_root`], the lookup can still update
+/// the access time of a symlink it follows.
 pub fn list_in_root(root: &Path, path: &Path) -> io::Result<Vec<OsString>> {
     let dir = rustix::fs::open(
         root,
