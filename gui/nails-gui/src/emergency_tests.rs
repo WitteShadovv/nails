@@ -275,3 +275,64 @@ fn the_systems_power_off_asks_logind_without_a_password_prompt() {
         assert!(program.ends_with("systemctl") && program.is_absolute());
     }
 }
+
+#[test]
+fn the_grace_after_a_late_request_counts_from_the_request() {
+    let fake = FakePowerOff::new("exit 0");
+    let mut fallback = fake.fallback();
+    fallback.grace = Duration::from_millis(400);
+    let (tell, heard) = channel();
+    let emergency = Emergency::start(fallback, move |outcome| {
+        let _ = tell.send((outcome, Instant::now()));
+    });
+    emergency.fire();
+    // The session opens late, shortly before the grace of the press runs
+    // out, as one does once pkexec's password was typed.
+    std::thread::sleep(Duration::from_millis(300));
+    let (line, helper) = pipe();
+    emergency.open(line);
+    assert_eq!(read_request(&helper).id, EMERGENCY_ID);
+    let (asked, written) = heard.recv_timeout(PATIENCE).expect("a report");
+    assert_eq!(asked, Outcome::HelperAsked);
+    let (off, later) = heard.recv_timeout(PATIENCE).expect("a report");
+    assert_eq!(off, Outcome::PowerOffAsked);
+    assert!(
+        later - written >= Duration::from_millis(400),
+        "a whole grace after the request: {:?}",
+        later - written
+    );
+}
+
+/// The names of this process's threads.
+fn thread_names() -> Vec<String> {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+        .map(|name| name.trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn its_thread_keeps_the_name_of_the_thread_that_starts_it() {
+    let (before, after) = std::thread::spawn(|| {
+        crate::process::name_neutrally().unwrap();
+        let count = || {
+            thread_names()
+                .iter()
+                .filter(|name| *name == "session")
+                .count()
+        };
+        let before = count();
+        let (_emergency, _heard) = started(Fallback {
+            program: None,
+            args: Vec::new(),
+            grace: GRACE,
+            limit: Duration::from_secs(1),
+        });
+        (before, count())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(after, before + 1, "the emergency's thread is `session` too");
+    assert!(!thread_names().iter().any(|name| name == "emergency"));
+}
