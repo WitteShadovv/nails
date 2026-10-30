@@ -587,6 +587,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
 ]
@@ -641,6 +642,7 @@ dependencies = [
  "nails-teardown",
  "rustix",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -1037,6 +1039,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
