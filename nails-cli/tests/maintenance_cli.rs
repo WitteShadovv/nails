@@ -156,6 +156,32 @@ fn recover_resets_a_stale_active_record_on_the_decoy() {
     );
 }
 
+#[test]
+fn recover_resets_a_record_that_cannot_be_read_on_the_decoy() {
+    in_namespace(
+        test_path!(recover_resets_a_record_that_cannot_be_read_on_the_decoy),
+        || {
+            let harness = Harness::new();
+            std::fs::write(&harness.state_path, "{ not a record").unwrap();
+            let before = json(&harness.run(&["status", "--json"]));
+            assert_eq!(before["data"]["attention"], "record_unreadable", "{before}");
+
+            let output = harness.run(&["recover", "--json"]);
+
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let value = json(&output);
+            assert_eq!(value["ok"], true, "{value}");
+            assert_eq!(value["data"]["outcome"], "record_reset", "{value}");
+            assert_eq!(harness.state(), SystemState::Inactive);
+            let after = json(&harness.run(&["status", "--json"]));
+            assert_eq!(after["data"]["attention"], Value::Null, "{after}");
+            // Once reset, a second recovery has nothing to do.
+            let again = json(&harness.run(&["recover", "--json"]));
+            assert_eq!(again["data"]["outcome"], "clean", "{again}");
+        },
+    );
+}
+
 // ---------------------------------------------------------------------------
 // discard
 // ---------------------------------------------------------------------------

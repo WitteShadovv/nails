@@ -214,6 +214,53 @@ fn recovering_the_plain_decoy_resets_an_active_record() {
 }
 
 #[test]
+fn recovering_the_plain_decoy_resets_a_record_that_cannot_be_trusted() {
+    // A damaged record leaves activation refusing until it is reset; on the
+    // plain decoy no session is active, so it is.
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let path = hidden.join("state.json");
+    std::fs::write(&path, "{ not a record").unwrap();
+    assert!(
+        StateFile::load_with_outcome(&path)
+            .unwrap()
+            .outcome
+            .is_unknown()
+    );
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost::default();
+
+    let outcome = m
+        .recover_session_on(&machine(dir.path(), DECOY_TABLE), &host)
+        .unwrap();
+
+    assert_eq!(outcome, SessionRecovery::RecordReset);
+    let loaded = StateFile::load_with_outcome(&path).unwrap();
+    assert_eq!(loaded.outcome, crate::LoadOutcome::Loaded);
+    assert_eq!(loaded.state_file.state, SystemState::Inactive);
+    assert_eq!(host.reloads.get(), 0, "nothing to reload on a clean decoy");
+}
+
+#[test]
+fn a_record_that_cannot_be_trusted_stays_while_a_session_is_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let path = hidden.join("state.json");
+    let table = hidden_table(&hidden.join("root/upper"));
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(&path, "{ not a record").unwrap();
+    let mut m = manager(&hidden);
+
+    let error = m
+        .recover_session_on(&machine(dir.path(), &table), &FakeEntryHost::default())
+        .unwrap_err();
+
+    assert!(matches!(error, RecoverError::HiddenSession), "{error:?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not a record");
+}
+
+#[test]
 fn recovering_the_plain_decoy_leaves_an_inactive_record_unwritten() {
     let dir = tempfile::tempdir().unwrap();
     let hidden = dir.path().join("hidden");

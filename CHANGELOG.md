@@ -317,6 +317,12 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- `recover` on the plain decoy now also resets a record on the hidden volume that cannot be read or
+  trusted (malformed, failing its integrity check, from a newer release, or unreadable), which left
+  activation refusing with no command to clear it. No hidden session is active there, which the
+  live mounts show, so the record is replaced with an inactive one; `--json` reports the outcome
+  `record_reset`. In the hidden session, and while an activation enters, `recover` still refuses,
+  and a record this process may not read at all is left alone.
 - The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
   sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
