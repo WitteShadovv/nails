@@ -175,7 +175,12 @@ mod tests {
             "{}",
             body.message
         );
-        assert!(!body.message.contains("emergency"), "{}", body.message);
+        // The `sudo` line names this binary by its path, which may hold any
+        // word: no emergency in the rest.
+        let sudo = nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Recover);
+        assert!(body.message.contains(&sudo), "{}", body.message);
+        let rest = body.message.replace(&sudo, "");
+        assert!(!rest.contains("emergency"), "{}", body.message);
     }
 
     /// While the interrupted activation's soft-reboot may still come, recover
