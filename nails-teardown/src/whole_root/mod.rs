@@ -35,6 +35,8 @@
 //!   back) so `status` can say so;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
+//! - [`logind`]: the soft-reboot request of the entry and the way back, and
+//!   what logind holds of it;
 //! - [`emergency`]: the emergency hot path;
 //! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls.
 
@@ -47,6 +49,7 @@ pub mod emergency;
 pub mod fresh_pids;
 pub mod kernel_helpers;
 pub mod kill;
+pub mod logind;
 pub mod network;
 pub mod network_policy;
 pub mod network_run;

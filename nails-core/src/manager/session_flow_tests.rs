@@ -35,6 +35,8 @@ struct FakeEntryHost {
     reloads: Cell<u32>,
     /// Request a cancel during the first reload, as a Ctrl+C would.
     cancel_at_reload: bool,
+    /// A soft-reboot still comes that cannot be dropped.
+    switch_coming: bool,
 }
 
 impl EntryHost for FakeEntryHost {
@@ -62,16 +64,27 @@ impl EntryHost for FakeEntryHost {
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
         Ok(String::new())
     }
+    fn drop_pending_switch(&self) -> bool {
+        !self.switch_coming
+    }
 }
 
-/// Records the targets started; refuses them when `refuse` is set.
+/// Records the targets started; refuses them when `refuse` is set, and
+/// refuses any switch when `blocked` is (a program blocks shutdown).
 #[derive(Default)]
 struct FakeTarget {
     started: RefCell<Vec<String>>,
     refuse: bool,
+    blocked: bool,
 }
 
 impl TargetHost for FakeTarget {
+    fn may_switch(&self) -> Result<()> {
+        if self.blocked {
+            return Err(NailsError::InvalidState("apt blocks shutdown".into()));
+        }
+        Ok(())
+    }
     fn start_target(&self, target: &str) -> Result<()> {
         self.started.borrow_mut().push(target.to_string());
         if self.refuse {
@@ -284,6 +297,35 @@ fn recovery_refuses_while_an_activation_is_still_entering() {
     );
 }
 
+/// The activation is gone, but its soft-reboot may still come (PID 1 has
+/// started it, or logind holds it and cannot drop it): recovering now would
+/// leave it to soft-reboot the plain decoy, so the leftovers stay for it.
+#[test]
+fn recovery_refuses_while_the_interrupted_entry_soft_reboot_still_comes() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost {
+        switch_coming: true,
+        ..FakeEntryHost::default()
+    };
+
+    let error = m.recover_session_on(&machine, &host).unwrap_err();
+
+    assert!(matches!(error, RecoverError::Switching), "{error:?}");
+    assert!(error.to_string().contains("may still come"), "{error}");
+    assert!(machine.paths.plan().exists(), "the leftovers stay");
+    assert_eq!(host.reloads.get(), 0);
+    assert!(
+        recorded(&hidden).state.is_active(),
+        "the record is untouched"
+    );
+}
+
 #[test]
 fn recovery_in_the_hidden_root_points_to_deactivate() {
     let dir = tempfile::tempdir().unwrap();
@@ -348,6 +390,33 @@ fn leaving_a_hidden_root_without_its_plan_asks_for_a_power_off() {
         recorded(&hidden).state.is_active(),
         "the record is untouched"
     );
+}
+
+/// A way back whose soft-reboot was not started (a program blocks shutdown,
+/// logind refused it or dropped it) leaves the session running: its record
+/// stays active, its way back undone.
+#[test]
+fn a_way_back_that_did_not_start_keeps_the_session_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let target = FakeTarget {
+        refuse: true,
+        ..FakeTarget::default()
+    };
+
+    let error = m
+        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("refused"), "{error}");
+    assert_eq!(*target.started.borrow(), ["poweroff.target"]);
+    assert!(recorded(&hidden).state.is_active(), "the session goes on");
 }
 
 #[test]
@@ -470,6 +539,32 @@ fn a_refused_soft_reboot_rolls_the_entry_back_and_resets_the_record() {
         vec![false],
         "a soft-reboot PID 1 refused ends the activation as a failure"
     );
+}
+
+/// A program that blocks shutdown refuses the entry before its soft-reboot
+/// is asked for: nothing is started, and the entry is rolled back.
+#[test]
+fn a_program_that_blocks_shutdown_refuses_the_entry_before_its_soft_reboot() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    let mut m = manager(&hidden);
+    let target = FakeTarget {
+        blocked: true,
+        ..FakeTarget::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let error = m.trigger_entry_on(&machine, &target, &host).unwrap_err();
+
+    assert!(error.to_string().contains("apt blocks shutdown"), "{error}");
+    assert!(target.started.borrow().is_empty());
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 1);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
 
 // ---------------------------------------------------------------------------
