@@ -410,6 +410,7 @@
           python314
           ruff
           mypy
+          jq # the script of ci.yml's gate job, which ci/tests runs
           cargo-deny
           cargo-vet # `just vet`: supply-chain audit of the dependency graph
           cargo-nextest
