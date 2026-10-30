@@ -54,10 +54,11 @@ of this changelog for that version becomes the release notes word for word, and
   `/dev/null`, and an environment from an allowlist: the display, the session bus and the locale, a
   home and XDG directories of its own in the operator's runtime directory (refused unless it is
   private and in RAM), and settings that turn off shader caches, on-disk settings and the portals of
-  GTK. Slint, the window's toolkit, still reads the desktop's appearance from the settings portal on
-  the session bus at every start, starting xdg-desktop-portal through D-Bus activation where it is
-  not running: no setting of Slint 1.18 turns that off, and the session bus stays, since the screen
-  reader support needs it. The desktop trace test that admits a decoy desktop has to clear it. The
+  GTK. The session bus stays, since the screen reader support needs it: at every start AccessKit
+  asks the accessibility bus (`org.a11y.Bus`) whether a screen reader listens, which starts at-spi's
+  bus launcher through D-Bus activation where it does not run, and the window reads the desktop's
+  appearance from the settings portal with `NO_AUTO_START`, so xdg-desktop-portal is read where it
+  runs and never started. The desktop trace test that admits a decoy desktop has to clear that. The
   helper and the window each lead a session of their own, so closing the terminal, or the shell
   being killed, signals neither.
 - The way into the coming window from a hidden session's menu. A build with the `gui` cargo feature
@@ -114,9 +115,12 @@ of this changelog for that version becomes the release notes word for word, and
   (`<hidden-root>/gui/bin/session`), its process name and the application name a screen reader reads
   are all `session`. Its command line is its name alone, `session` (`session --engine -` once a menu
   entry's start ran again), so a log that quotes it, such as dbus-daemon's line for a service the
-  window's bus traffic starts, names no place. A process list still shows `nails` while the window
-  is open: the helper runs as `<hidden-root>/nails helper --stdio`. Its tests run without a display,
-  on Slint's testing platform.
+  window's bus traffic starts, names no place. Its toolkit starts no program, on X11 or on Wayland:
+  its winit backend is a patched copy of Slint's (`gui/patches/i-slint-backend-winit`) that draws no
+  window decorations, whose Wayland frame ran `dbus-send`, `gsettings` and `fc-match` even for a
+  window without one, and that reads the settings portal without starting it. A process list still
+  shows `nails` while the window is open: the helper runs as `<hidden-root>/nails helper --stdio`.
+  Its tests run without a display, on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
