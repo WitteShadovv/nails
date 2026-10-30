@@ -139,3 +139,30 @@ fn a_lost_mount_systemd_keeps_at_a_soft_reboot_is_a_warning() {
         "{found:?}"
     );
 }
+
+/// The mount unit systemd names for each carried filesystem starts with the
+/// prefix of their directory up to the dash, which is what makes it read the
+/// prefix's drop-ins for that unit.
+#[test]
+fn the_carried_filesystems_units_share_the_prefix_of_their_directory() {
+    assert_eq!(
+        carried_units_prefix(Path::new("/mnt/data/root/decoy")),
+        "mnt-data-root-decoy-.mount"
+    );
+    assert_eq!(
+        carried_units_prefix(Path::new("/mnt/my-data/root/decoy")),
+        "mnt-my\\x2ddata-root-decoy-.mount"
+    );
+    let layout = Layout::new(Path::new("/mnt/data"));
+    let prefix = carried_units_prefix(&layout.carried_dir());
+    let stem = prefix.trim_end_matches(".mount");
+    for target in ["/nix/.ro-store", "/boot", "/home", "/srv/my-share"] {
+        let unit = crate::session::fstab::mount_unit(&layout.carried(Path::new(target)));
+        let rest = unit.strip_prefix(stem).unwrap_or_else(|| panic!("{unit}"));
+        assert!(!rest.contains('-'), "{unit}: one level below the prefix");
+    }
+    assert_eq!(
+        crate::session::fstab::mount_unit(&layout.carried(Path::new("/nix/.ro-store"))),
+        "mnt-data-root-decoy-nix\\x2d.ro\\x5cx2dstore.mount"
+    );
+}

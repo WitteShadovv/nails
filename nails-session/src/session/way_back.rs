@@ -36,7 +36,7 @@ use crate::error::{NailsError, Result};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::decoy_mounts::{self, Lost};
 use nails_teardown::whole_root::plan::{CarriedMount, Plan, PolicyMountKind, UTAB_NAME};
-use nails_teardown::whole_root::{carry, utab};
+use nails_teardown::whole_root::{carry, nextroot, transition, utab};
 use std::path::{Path, PathBuf};
 
 /// Carry the decoy's filesystems into the next root and record the decoy's
@@ -63,6 +63,9 @@ pub fn keep(
         }
     }
     plan.carried = carry_all(paths, layout, &targets, mounts)?;
+    if !plan.carried.is_empty() {
+        quiet_carried_units(paths, layout);
+    }
     let record = decoy_mounts::record(mounts, &hidden, &plan.carried);
     plan.decoy_mounts = record.mounts;
     // The copy of utab the entry took with the mount table it read.
@@ -149,6 +152,32 @@ fn carry_all(
         });
     }
     Ok(carried)
+}
+
+/// Keep the hidden PID 1 from naming the carried filesystems as it unmounts
+/// them at every way back: `Unmounting /mnt/data/root/decoy/boot...` on a
+/// console that shows its status or the kernel's info lines, and the same
+/// with `Deactivated successfully.` in the log, which name the decoy. Their
+/// mount units are named after their directory as the hidden root resolves
+/// it ([`carried_units_prefix`]), and a runtime drop-in for that prefix,
+/// which the hidden PID 1 loads when it starts, quiets them
+/// ([`transition::install_quiet_mounts`]); every way back and every rollback
+/// removes it with the other drop-ins. Best effort: without it the lines
+/// show as they did.
+fn quiet_carried_units(paths: &Paths, layout: &Layout) {
+    let dir = nextroot::canonical_in_root(&paths.nextroot(), &layout.carried_dir());
+    let prefix = carried_units_prefix(&dir);
+    if let Err(e) = transition::install_quiet_mounts(&paths.run, &prefix) {
+        tracing::debug!(error = %e, %prefix, "the carried filesystems' unmounts are not quieted");
+    }
+}
+
+/// The prefix the mount units of the filesystems carried in `dir` share as
+/// systemd names them: `mnt-data-root-decoy-.mount` for
+/// `/mnt/data/root/decoy`, whose drop-ins systemd reads for every
+/// `mnt-data-root-decoy-*.mount`.
+pub fn carried_units_prefix(dir: &Path) -> String {
+    format!("{}-.mount", super::fstab::escape_path(dir))
 }
 
 /// The entry's warnings about the decoy mounts in `lost` at or below a
