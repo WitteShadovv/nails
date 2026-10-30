@@ -10,8 +10,10 @@
 //! 1. the main file: the first of `/etc/systemd/NAME.conf`,
 //!    `/run/systemd/NAME.conf`, `/usr/local/lib/systemd/NAME.conf` and
 //!    `/usr/lib/systemd/NAME.conf` that exists (only that one is used). This
-//!    is how systemd 256 and later look for it, and how NAILS does; before
-//!    256 the daemons read the main file from `/etc` alone;
+//!    is how systemd 256 and later look for it; before 256 the daemons read
+//!    the main file from `/etc` alone. NAILS looks where the running release
+//!    looks. When it cannot read the release, a main file found outside `/etc`
+//!    that changes what is read leaves the configuration [`Unread`];
 //! 2. then every `*.conf` drop-in found in `NAME.conf.d/` under the same four
 //!    directories, sorted by file name across all of them. A drop-in in a
 //!    higher-priority directory (`/etc` over `/run` over `/usr/local/lib` over
@@ -96,6 +98,10 @@ const CONF_DIRS: &[&str] = &[
     "usr/lib/systemd",
 ];
 
+/// The first systemd release whose daemons look for their main file in every
+/// one of [`CONF_DIRS`]; the earlier ones read it from `/etc` alone.
+const MAIN_FILE_OUTSIDE_ETC_SINCE: u32 = 256;
+
 /// One `Key=value` assignment, with key and value stripped of whitespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
@@ -137,6 +143,10 @@ pub enum UnreadCause {
     /// A file, or a drop-in directory, that NAILS cannot read, as an
     /// unprivileged `check` cannot read one only root may.
     CannotRead,
+    /// A main file outside `/etc`, which systemd 256 and later read and the
+    /// earlier releases do not, while NAILS cannot read which release runs,
+    /// and reading it changes what is applied.
+    UnknownRelease,
 }
 
 impl Unread {
@@ -156,6 +166,9 @@ impl Unread {
                  there (an empty one masks a vendor file of the same name)"
             }
             UnreadCause::CannotRead => "run the command again with sudo",
+            UnreadCause::UnknownRelease => {
+                "put the main file in /etc/systemd, where every release reads it"
+            }
         }
     }
 }
@@ -165,6 +178,12 @@ impl std::fmt::Display for Unread {
         match self.cause {
             UnreadCause::NotRegular => write!(f, "{} is not a regular file", self.path.display()),
             UnreadCause::CannotRead => write!(f, "NAILS cannot read {}", self.path.display()),
+            UnreadCause::UnknownRelease => write!(
+                f,
+                "only systemd 256 and later read the main file {}, and NAILS cannot read which \
+                 release runs",
+                self.path.display()
+            ),
         }
     }
 }
@@ -206,28 +225,46 @@ fn entry<F: Filesystem>(fs: &F, path: &Path) -> Entry {
     }
 }
 
-/// The files systemd reads for configuration `name` (e.g. `journald.conf`) under
-/// `root`, in application order: the main file first, then the drop-ins.
+/// The main file and the drop-ins of a configuration, as [`listing`] finds
+/// them.
+struct Listing {
+    /// The main file systemd reads, if any.
+    main: Option<PathBuf>,
+    /// A main file outside `/etc` while the running release is not known:
+    /// systemd 256 and later read it, earlier releases do not.
+    uncertain_main: Option<PathBuf>,
+    /// The drop-ins, in the order systemd applies them.
+    dropins: Vec<PathBuf>,
+}
+
+/// Find the files of configuration `name` under `root` for a systemd of major
+/// version `systemd_major` (`None` when it is not known).
 ///
 /// [`Unread`] when the main file systemd would read, or a drop-in that is not
 /// shadowed, is no regular file, or when NAILS cannot read a drop-in directory.
 /// Every drop-in is looked at, wherever a line refused in an earlier file
 /// would stop the reading, because systemd 260 and later open them all first.
-pub fn config_files<F: Filesystem>(
+fn listing<F: Filesystem>(
     fs: &F,
     root: &Path,
     name: &str,
-) -> Result<Vec<PathBuf>, Unread> {
-    let mut files = Vec::new();
+    systemd_major: Option<u32>,
+) -> Result<Listing, Unread> {
+    let main_dirs = match systemd_major {
+        Some(major) if major < MAIN_FILE_OUTSIDE_ETC_SINCE => &CONF_DIRS[..1],
+        _ => CONF_DIRS,
+    };
+    let (mut main, mut uncertain_main) = (None, None);
 
     // Only the first main file found is used; a link to a path that does not
     // exist is none, so systemd goes on to the next directory.
-    for dir in CONF_DIRS {
+    for (index, dir) in main_dirs.iter().enumerate() {
         let path = root.join(dir).join(name);
         match entry(fs, &path) {
             Entry::Missing => continue,
-            Entry::Regular => files.push(path),
             Entry::Unread(cause) => return Err(Unread::new(&path, cause)),
+            Entry::Regular if index > 0 && systemd_major.is_none() => uncertain_main = Some(path),
+            Entry::Regular => main = Some(path),
         }
         break;
     }
@@ -259,6 +296,7 @@ pub fn config_files<F: Filesystem>(
             dropins.entry(file_name.to_os_string()).or_insert(listed);
         }
     }
+    let mut files = Vec::new();
     for path in dropins.into_values() {
         match entry(fs, &path) {
             Entry::Regular => files.push(path),
@@ -266,27 +304,78 @@ pub fn config_files<F: Filesystem>(
             Entry::Unread(cause) => return Err(Unread::new(&path, cause)),
         }
     }
-    Ok(files)
+    Ok(Listing {
+        main,
+        uncertain_main,
+        dropins: files,
+    })
+}
+
+/// The files systemd of major version `systemd_major` (`None` when it is not
+/// known) reads for configuration `name` (e.g. `journald.conf`) under `root`,
+/// in application order: the main file first, then the drop-ins.
+///
+/// [`Unread`] as [`listing`] has it, and when only the release can tell
+/// whether a main file outside `/etc` is read.
+pub fn config_files<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    name: &str,
+    systemd_major: Option<u32>,
+) -> Result<Vec<PathBuf>, Unread> {
+    let listing = listing(fs, root, name, systemd_major)?;
+    if let Some(path) = listing.uncertain_main {
+        return Err(Unread::new(&path, UnreadCause::UnknownRelease));
+    }
+    Ok(listing.main.into_iter().chain(listing.dropins).collect())
 }
 
 /// The effective assignments in `[section]` of configuration `name` under
-/// `root`, in the order systemd applies them (so a later entry overrides an
-/// earlier one for the same key). A line systemd refuses ([`RefusedLine`]) ends
-/// the resolution as it does in systemd, and a file that is gone by the time it
-/// is read adds nothing, as systemd skips it.
+/// `root`, for a systemd of major version `systemd_major` (`None` when it is
+/// not known), in the order systemd applies them (so a later entry overrides
+/// an earlier one for the same key). A line systemd refuses ([`RefusedLine`])
+/// ends the resolution as it does in systemd, and a file that is gone by the
+/// time it is read adds nothing, as systemd skips it.
 ///
 /// [`Unread`] when NAILS cannot read the configuration as systemd does: an
-/// entry [`config_files`] refuses, or a file that systemd reads and NAILS
-/// cannot. The caller counts it as the setting it guards against.
+/// entry [`listing`] refuses, a file that systemd reads and NAILS cannot, or a
+/// main file outside `/etc` that only the release would tell to read, where
+/// reading it changes what is applied. The caller counts it as the setting it
+/// guards against.
 pub fn section_assignments<F: Filesystem>(
     fs: &F,
     root: &Path,
     name: &str,
     section: &str,
+    systemd_major: Option<u32>,
+) -> Result<Vec<Assignment>, Unread> {
+    let listing = listing(fs, root, name, systemd_major)?;
+    let Some(uncertain) = &listing.uncertain_main else {
+        return read_files(fs, listing.main.iter().chain(&listing.dropins), section);
+    };
+    // 256 and later read this main file and earlier releases do not, so it may
+    // count only where reading it changes nothing.
+    let with_it = read_files(
+        fs,
+        std::iter::once(uncertain).chain(&listing.dropins),
+        section,
+    )?;
+    if with_it != read_files(fs, listing.dropins.iter(), section)? {
+        return Err(Unread::new(uncertain, UnreadCause::UnknownRelease));
+    }
+    Ok(with_it)
+}
+
+/// The assignments in `[section]` of `files`, read in turn as systemd reads
+/// them.
+fn read_files<'a, F: Filesystem>(
+    fs: &F,
+    files: impl Iterator<Item = &'a PathBuf>,
+    section: &str,
 ) -> Result<Vec<Assignment>, Unread> {
     let mut out = Vec::new();
-    for file in config_files(fs, root, name)? {
-        let Some(text) = read_listed_config(fs, &file)? else {
+    for file in files {
+        let Some(text) = read_listed_config(fs, file)? else {
             continue;
         };
         if parse_section(&text, section, &mut out).is_err() {
@@ -374,10 +463,17 @@ pub fn decode_config_bytes(bytes: &[u8]) -> String {
     text
 }
 
-/// Whether any file of configuration `name` exists under `root`. An
-/// [`Unread`] configuration has one.
-pub fn config_present<F: Filesystem>(fs: &F, root: &Path, name: &str) -> bool {
-    !config_files(fs, root, name).is_ok_and(|files| files.is_empty())
+/// Whether any file of configuration `name` exists under `root`, for a systemd
+/// of major version `systemd_major`. An [`Unread`] configuration has one.
+pub fn config_present<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    name: &str,
+    systemd_major: Option<u32>,
+) -> bool {
+    !listing(fs, root, name, systemd_major).is_ok_and(|found| {
+        found.main.is_none() && found.uncertain_main.is_none() && found.dropins.is_empty()
+    })
 }
 
 /// Append the assignments of `[section]` in one configuration text to `out`.

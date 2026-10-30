@@ -185,8 +185,18 @@ pub fn effective_logind_sleep<F: Filesystem>(fs: &F) -> LogindSleepSettings {
 /// configuration NAILS cannot read as logind does leaves every setting unknown
 /// ([`LogindSleepSettings::unread`]), never at its default.
 pub fn effective_logind_sleep_at<F: Filesystem>(fs: &F, root: &Path) -> LogindSleepSettings {
+    logind_sleep_under(fs, root, super::journald_storage::host_systemd_major())
+}
+
+/// [`effective_logind_sleep_at`] under a service manager of major version
+/// `systemd_major`, `None` when it is not known.
+fn logind_sleep_under<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    systemd_major: Option<u32>,
+) -> LogindSleepSettings {
     let mut settings = LogindSleepSettings::default();
-    match systemd_conf::section_assignments(fs, root, LOGIND_CONF, LOGIN_SECTION) {
+    match systemd_conf::section_assignments(fs, root, LOGIND_CONF, LOGIN_SECTION, systemd_major) {
         Ok(assignments) => {
             for assignment in &assignments {
                 apply_logind(&mut settings, assignment);

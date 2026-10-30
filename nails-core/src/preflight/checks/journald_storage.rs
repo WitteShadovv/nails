@@ -195,8 +195,9 @@ fn storage_credential<F: Filesystem>(
 /// The running service manager's major version, or `None` when it cannot be
 /// read or host interaction is skipped (a unit-test binary). `None` makes the
 /// built-in default fail closed, so a decoy of an unknown systemd is treated as
-/// persistent rather than assumed amnesic.
-fn host_systemd_major() -> Option<u32> {
+/// persistent rather than assumed amnesic. The logind and systemd-coredump
+/// readers take it too, to find the main file where the release looks for it.
+pub(super) fn host_systemd_major() -> Option<u32> {
     if runtime_safety::should_skip_host_interaction() {
         return None;
     }
@@ -245,7 +246,8 @@ fn resolved_storage<F: Filesystem>(
     root: &Path,
     systemd_major: Option<u32>,
 ) -> Result<JournaldStorage, Unread> {
-    let assignments = systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION)?;
+    let assignments =
+        systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION, systemd_major)?;
     Ok(resolve_storage(
         storage_from(&assignments),
         storage_credential(fs, root, systemd_major),
@@ -708,13 +710,47 @@ mod tests {
             "run/systemd/journald.conf.d/10-auto.conf",
             "[Journal]\nStorage=auto\n",
         );
-        let storage = effective_journald_storage_at(&RealFilesystem, root);
+        // From 256 journald reads the vendor main file, which the drop-in
+        // overrides.
+        let storage = storage_under_version(&RealFilesystem, root, Some(256));
         assert_eq!(storage, JournaldStorage::Auto);
         // No journal directory in the tree: auto stays volatile.
-        assert!(!journald_persists_to_decoy_at(&RealFilesystem, root));
+        assert!(!journal_persists_to_disk(
+            storage,
+            persistent_journal_dir_present(&RealFilesystem, root)
+        ));
         // With an on-disk journal directory, auto persists. (The tempdir itself
         // may sit on tmpfs, so the directory verdict is supplied directly.)
         assert!(journal_persists_to_disk(storage, true));
+    }
+
+    /// systemd 255, which Ubuntu 24.04 runs, reads journald's main file from
+    /// `/etc` alone. With that file gone, a `/run/systemd/journald.conf` that
+    /// sets `Storage=volatile` is not read: journald keeps its `auto` default
+    /// and persists to an on-disk `/var/log/journal`, where NAILS read the
+    /// `/run` file and passed. From 256 journald reads it; a release NAILS
+    /// cannot read counts as persistent.
+    #[test]
+    fn a_main_file_in_run_counts_only_from_256() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "run/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        let on_255 = storage_under_version(&RealFilesystem, root, Some(255));
+        assert_eq!(on_255, JournaldStorage::Auto);
+        // The tempdir may sit on tmpfs, so the directory verdict is supplied.
+        assert!(journal_persists_to_disk(on_255, true));
+        assert_eq!(
+            storage_under_version(&RealFilesystem, root, Some(256)),
+            JournaldStorage::Volatile
+        );
+        assert_eq!(
+            storage_under_version(&RealFilesystem, root, None),
+            JournaldStorage::Persistent
+        );
     }
 
     /// A configuration NAILS cannot read as journald does persists, whatever

@@ -438,8 +438,9 @@ case: `HandleLidSwitch` defaults to `suspend`, and desktops add idle
 auto-suspend.
 
 The `sleep-policy` pre-flight check resolves `logind.conf` the way systemd
-does (the main file from `/etc`, `/run`, `/usr/local/lib` or `/usr/lib`, then
-every `logind.conf.d/*.conf` drop-in by file name, `/etc` shadowing the others)
+does (the main file from `/etc`, `/run`, `/usr/local/lib` or `/usr/lib` on
+systemd 256 and later and from `/etc` alone before, then every
+`logind.conf.d/*.conf` drop-in by file name, `/etc` shadowing the others)
 and **warns** (never blocks) when the effective lid-switch or idle settings
 would suspend an active session, and when a closed lid is set to `ignore` (on
 battery, or on external power), which keeps the session running and unlocked

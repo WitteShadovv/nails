@@ -144,8 +144,13 @@ kernel support, so nothing can be loaded. `nails status` shows an armed kdump
 on the decoy (`decoy_kdump_armed` in `--json`).
 
 NAILS reads journald's `Storage=` the way journald does. The main
-`journald.conf` and every `journald.conf.d/*.conf` drop-in come first, and
-systemd stops reading them at the first line that is not valid UTF-8, unless
+`journald.conf` and every `journald.conf.d/*.conf` drop-in come first. From
+systemd 256 the main file is the first one in `/etc`, `/run`, `/usr/local/lib`
+or `/usr/lib/systemd`, while earlier releases read `/etc/systemd/journald.conf`
+alone, and NAILS looks where the running release looks; when it cannot read
+the release, a main file outside `/etc` that changes the result counts as
+persistent. systemd stops reading these files at the first line that is not
+valid UTF-8, unless
 it is a comment, so a setting below that line or in a later drop-in counts for
 nothing. Keep these files in UTF-8. When no file sets `Storage=`, the
 `journal.storage` credential decides, from systemd 256 on. journald accepts
