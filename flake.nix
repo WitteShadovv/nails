@@ -241,7 +241,8 @@
       };
 
       # The gui/ workspace's binary: the window, which drives the engine
-      # through its root helper. It is not part of the release yet.
+      # through its root helper. Its program is called `session`, the window's
+      # neutral app id. It is not part of the release yet.
       nails-gui = rustPlatformGui.buildRustPackage {
         pname = "nails-gui";
         version = guiManifest.workspace.package.version;
@@ -260,7 +261,7 @@
           "--package"
           "nails-gui"
           "--bin"
-          "nails-gui"
+          "session"
         ];
 
         # The binary must not name the toolchain that built it.
@@ -273,7 +274,7 @@
           description = "The window of nails, a front end that drives the engine through its root helper";
           inherit (guiManifest.workspace.package) homepage;
           license = lib.getLicenseFromSpdxId guiManifest.workspace.package.license;
-          mainProgram = "nails-gui";
+          mainProgram = "session";
           platforms = [ system ];
         };
       };

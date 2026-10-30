@@ -19,7 +19,9 @@ use crate::launch;
 pub const WINDOW_TITLE: &str = "Session";
 
 /// The window's app id on Wayland and X11, which is also the name of the menu
-/// entry a hidden session gets: neutral, like the title.
+/// entry a hidden session gets: neutral, like the title. It is the name of
+/// the window's program and process too (`<root>/gui/bin/session`), which a
+/// process list shows and an accessibility tool names the application by.
 pub const APP_ID: &str = "session";
 
 /// While the handshake runs.

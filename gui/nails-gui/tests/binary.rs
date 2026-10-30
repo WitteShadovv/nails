@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The `nails-gui` binary itself: it names its versions, and started neither
-//! by the launcher nor in a hidden session it opens nothing and names the
-//! launcher's line instead.
+//! The window's program, `session`, itself: it names its versions, and
+//! started neither by the launcher nor in a hidden session it opens nothing
+//! and names the launcher's line instead.
 
 use std::io::Read;
 use std::process::{Command, Output, Stdio};
@@ -55,7 +55,7 @@ fn finish(command: &mut Command) -> Output {
 }
 
 fn window() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_nails-gui"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_session"));
     // No display to reach: a window that tried to open would fail, not hang.
     command
         .env_remove("DISPLAY")
@@ -63,6 +63,17 @@ fn window() -> Command {
         .env_remove("WAYLAND_SOCKET")
         .stdin(Stdio::null());
     command
+}
+
+#[test]
+fn the_program_bears_the_windows_neutral_name() {
+    // A process list shows the program's file name, and AccessKit names the
+    // application after it for every screen reader and accessibility tool.
+    let program = std::path::Path::new(env!("CARGO_BIN_EXE_session"));
+    assert_eq!(
+        program.file_name().and_then(|name| name.to_str()),
+        Some(nails_gui::text::APP_ID)
+    );
 }
 
 #[test]
@@ -90,7 +101,7 @@ fn any_other_argument_is_a_usage_error() {
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            "usage: nails-gui [--version | --engine <path>]\n"
+            "usage: session [--version | --engine <path>]\n"
         );
     }
 }

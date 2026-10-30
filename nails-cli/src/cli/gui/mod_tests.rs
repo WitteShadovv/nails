@@ -136,20 +136,20 @@ fn the_window_program_lies_beside_the_engine() {
         missing
             .body
             .message
-            .contains(&dir.path().join("gui/bin/nails-gui").display().to_string()),
+            .contains(&dir.path().join("gui/bin/session").display().to_string()),
         "{}",
         missing.body.message
     );
 
-    std::fs::create_dir_all(dir.path().join("gui/bin/nails-gui")).unwrap();
+    std::fs::create_dir_all(dir.path().join("gui/bin/session")).unwrap();
     let not_a_file = window_program(&engine).unwrap_err();
     assert!(not_a_file.body.message.contains("it is not a file"));
 
-    std::fs::remove_dir(dir.path().join("gui/bin/nails-gui")).unwrap();
-    std::fs::write(dir.path().join("gui/bin/nails-gui"), "").unwrap();
+    std::fs::remove_dir(dir.path().join("gui/bin/session")).unwrap();
+    std::fs::write(dir.path().join("gui/bin/session"), "").unwrap();
     assert_eq!(
         window_program(&engine).unwrap(),
-        dir.path().join("gui/bin/nails-gui")
+        dir.path().join("gui/bin/session")
     );
 }
 
@@ -159,12 +159,12 @@ fn an_activation_writes_the_hidden_launcher_only_beside_a_window() {
     let engine = dir.path().join("nails");
     assert_eq!(hidden_launcher(&engine), None);
     std::fs::create_dir_all(dir.path().join("gui/bin")).unwrap();
-    std::fs::write(dir.path().join("gui/bin/nails-gui"), "").unwrap();
+    std::fs::write(dir.path().join("gui/bin/session"), "").unwrap();
     assert_eq!(
         hidden_launcher(&engine),
         Some(nails_core::session::WindowLauncher {
             engine: engine.clone(),
-            window: dir.path().join("gui/bin/nails-gui"),
+            window: dir.path().join("gui/bin/session"),
         })
     );
 }
