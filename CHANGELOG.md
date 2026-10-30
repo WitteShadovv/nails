@@ -136,7 +136,8 @@ of this changelog for that version becomes the release notes word for word, and
   a record of exactly the same key in the control image's login files, which the scan keeps whole
   and reads. bulk_extractor carves a record only where its bytes lie plain and in one piece, which
   btrfs compression and the place of each block decide, so the control could miss records it holds.
-  On btrfs, bulk_extractor sees no compressed extent at all (ci/oracle/README.md).
+  On btrfs, bulk_extractor sees no compressed extent at all, and a btrfs scan's verdict now names
+  `compressed_extents` among the classes it cannot see (ci/oracle/README.md).
 
 ### Changed
 
