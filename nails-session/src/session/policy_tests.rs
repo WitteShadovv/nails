@@ -189,6 +189,7 @@ fn a_required_unit_whose_device_is_not_there_is_masked_with_a_warning() {
             unreached: Some(Unreached {
                 target: "local-fs.target".into(),
                 cause: Unskippable::NoDevice("/dev/sdb1".into()),
+                native: false,
             }),
         }
     );

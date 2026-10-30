@@ -415,11 +415,12 @@ of this changelog for that version becomes the release notes word for word, and
   it pulls in still starts, and a unit whose pulls NAILS cannot tell is masked instead. A skipped
   mount still waits for its device, so an entry whose device is not there at activation (its node,
   with its device unit active) is masked as before, and `nails check` and `nails activate` warn that
-  the hidden session will not reach its target (attach the device, or give the entry `nofail`); a
-  device gone by the switch has its units masked then. Entries with `nofail` stay masked. `verify`
-  reports a skip drop-in left on the decoy. `nails status` lists each such unit, skipped or masked,
-  with why (`required_units` in `status --json`): its device was not there, NAILS could not tell
-  what it is or pulls in, or the fstab lines or unit files for it disagree, which `nails check` and
+  the hidden session will not reach its target (attach the device, or give the entry `nofail`, or
+  install a unit file of its own with `WantedBy=` rather than `RequiredBy=`); a device gone by the
+  switch has its units masked then. Entries with `nofail` stay masked. `verify` reports a skip
+  drop-in left on the decoy. `nails status` lists each such unit, skipped or masked, with why
+  (`required_units` in `status --json`): its device was not there, NAILS could not tell what it is
+  or pulls in, or the fstab lines or unit files for it disagree, which `nails check` and
   `nails activate` now warn of too.
 - An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
   reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session

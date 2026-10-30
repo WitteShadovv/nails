@@ -458,6 +458,7 @@ fn mask(
         unreached: required.map(|boot| Unreached {
             target: boot.clone(),
             cause: Unskippable::Unread,
+            native: true,
         }),
     }
 }
@@ -591,6 +592,7 @@ fn decide_one(
         required_by: native.required_by.clone(),
         // What NAILS cannot tell is masked with the skip ([`kept_off`]).
         checkers: pulled_in(dirs, &mount_name).unwrap_or_default(),
+        native: true,
     };
     let decision = policy::decide_units(&entry, &units, mounts, hidden_root, present);
     let placed = matches!(
