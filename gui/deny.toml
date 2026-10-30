@@ -30,15 +30,6 @@ yanked = "deny"
 # block directly above it, at most 180 days ahead; ci/deny_ignores.py checks
 # this file as it checks the main one.
 ignore = [
-    # GUI: ttf-parser is unmaintained and has no maintained release. It is
-    # reached only through winit's Wayland window decorations, which Slint's
-    # winit backend always turns on with Wayland: i-slint-backend-winit ->
-    # winit (wayland-csd-adwaita) -> sctk-adwaita (ab_glyph) -> ab_glyph ->
-    # owned_ttf_parser -> ttf-parser. The window draws no decorations of the
-    # system's (it has no frame), and it renders its own text with skrifa.
-    # Check again when winit, sctk-adwaita or ab_glyph moves off ttf-parser.
-    # expires: 2027-04-15
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, no fixed release; reached only through winit's Wayland decorations, which Slint's winit backend always enables" },
     # GUI: zvariant, zbus_names and zvariant_derive are part of zbus 6 now.
     # The window reaches zbus 5 on two paths, both on every Linux build:
     # AccessKit's AT-SPI adapter (accesskit_unix and atspi -> zbus), the
@@ -91,12 +82,8 @@ allow = [
 # to Slint's own crates, so that any other GPL-3.0-only dependency stays a
 # decision of its own. i-slint-backend-testing is a dev-dependency (the
 # headless tests), and i-slint-renderer-skia is reached only by a build for
-# iOS; `just deny-full` meets both.
-#
-# sctk-adwaita declares MIT, but its ab_glyph feature, which winit's Wayland
-# support turns on, compiles a Cantarell font (SIL OFL 1.1) into the binary.
-# The clarification below records that, and OFL-1.1 is accepted for that
-# crate only.
+# iOS; `just deny-full` meets both. i-slint-backend-winit is the patched copy
+# in gui/patches (see gui/Cargo.toml), under the same licence as published.
 exceptions = [
     { crate = "slint", allow = ["GPL-3.0-only"] },
     { crate = "slint-build", allow = ["GPL-3.0-only"] },
@@ -110,18 +97,7 @@ exceptions = [
     { crate = "i-slint-core-macros", allow = ["GPL-3.0-only"] },
     { crate = "i-slint-renderer-skia", allow = ["GPL-3.0-only"] },
     { crate = "i-slint-renderer-software", allow = ["GPL-3.0-only"] },
-    { crate = "sctk-adwaita", allow = ["OFL-1.1"] },
 ]
-
-# GUI: the font sctk-adwaita compiles in (src/title/ab_glyph_renderer.rs:
-# `include_bytes!("Cantarell-Regular.ttf")`), copyright 2009-2011
-# Understanding Limited and 2010-2011 Jakub Steiner. The hash pins the crate's
-# MIT LICENSE file; when it changes, cargo-deny drops the clarification and
-# this needs a new look.
-[[licenses.clarify]]
-crate = "sctk-adwaita"
-expression = "MIT AND OFL-1.1"
-license-files = [{ path = "LICENSE", hash = 0xa41ea83d }]
 
 # The workspace's own crates, and nails-api from the main tree, are not
 # published, so they are not checked.
