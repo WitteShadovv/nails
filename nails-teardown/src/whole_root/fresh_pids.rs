@@ -43,15 +43,19 @@
 //! other units get their numbers in the order its start runs them, which a
 //! soft-reboot need not share with a cold boot.
 //!
-//! It is best effort and never blocks the way back: without a record, outside
+//! It is best effort and never stops the way back: without a record, outside
 //! PID 1's PID namespace, when the counter is already lower or cannot be
 //! written (a kernel built without `CONFIG_CHECKPOINT_RESTORE` has no such
 //! file), the numbers continue as before. The transition cannot report that,
 //! so `deactivate` checks before the switch ([`way_back_can_lower`]) and warns.
+//!
+//! The emergency and `deactivate` measure the counter on their way out, so the
+//! measure must not wait on a filesystem: it tells a process's root by the
+//! inode the kernel holds for it ([`file_id`]), and a process rooted on an NFS
+//! or FUSE filesystem whose server no longer answers holds neither up.
 
 use crate::proc::parse_stat;
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// The kernel's last allocated process number of the writer's PID namespace.
@@ -250,8 +254,18 @@ pub fn counter(record: &Record, proc: &Path) -> Option<u32> {
 
 /// The device and inode of the file `path` names, following a link: the
 /// directory a `/proc/<pid>/root` link names, or a namespace.
-fn file_id(path: &Path) -> Option<(u64, u64)> {
-    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+///
+/// Only the inode number is asked for, and from the inode the kernel holds
+/// (`AT_STATX_DONT_SYNC`): a plain `stat` has NFS and FUSE check expired
+/// attributes with their server, which waits for good on a hard NFS mount
+/// whose server is gone or a FUSE filesystem whose daemon hangs. `None` when
+/// the kernel reports no inode number.
+fn file_id(path: &Path) -> Option<(u32, u32, u64)> {
+    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+    let stat = statx(CWD, path, AtFlags::STATX_DONT_SYNC, StatxFlags::INO).ok()?;
+    StatxFlags::from_bits_retain(stat.stx_mask)
+        .contains(StatxFlags::INO)
+        .then_some((stat.stx_dev_major, stat.stx_dev_minor, stat.stx_ino))
 }
 
 /// Where [`lower`] looks.
