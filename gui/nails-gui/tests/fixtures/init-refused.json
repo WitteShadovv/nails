@@ -1,0 +1,10 @@
+{
+  "command": "init",
+  "error": {
+    "code": "not_separate_volume",
+    "message": "/mnt/data is not a volume of its own: it is a folder on the filesystem mounted at /. Nothing was written.\nIf the volume is already prepared, unlock and mount it at /mnt/data, then run the command again.\nSetting up here would leave files on this computer's own disk, where an examination can find them.\nPrepare the volume where nothing reaches this disk: on an external drive prepared on another computer (recommended), or from a setup medium (a live system started from a USB stick).\nThen unlock and mount it here, and run the program from it.\nRead \"Where setup happens\" in the operator guide on another device: opening it here leaves traces such as ~/.lesshst.",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}

@@ -420,6 +420,50 @@ pub struct Hit {
     pub offset: u64,
 }
 
+/// The data of `discard` (`docs/schemas/discard.schema.json`), for a plan
+/// with nothing to delete and for an apply.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DiscardData {
+    /// The folder whose hidden changes were discarded.
+    pub target: String,
+    /// What was removed from the hidden volume; empty for nothing.
+    pub removed: Vec<String>,
+}
+
+/// The data of `init` (`docs/schemas/init.schema.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct InitData {
+    /// The hidden volume the layout was written to.
+    pub root: String,
+    /// Each part of the layout, created or already there.
+    pub items: Vec<InitItem>,
+    /// What the person should know about it.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    /// Lines of information (the hidden NixOS layout was skipped).
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+/// One part of an init's layout.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct InitItem {
+    /// Its path.
+    pub path: String,
+    /// `created` or `already_present`.
+    pub status: InitItemStatus,
+}
+
+/// Whether init made a part of the layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitItemStatus {
+    /// Init made it.
+    Created,
+    /// It was there already.
+    AlreadyPresent,
+}
+
 /// The tally of a readiness report.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Summary {
