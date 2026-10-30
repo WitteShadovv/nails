@@ -5,7 +5,6 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use super::gate::{ADMITTED_DESKTOPS, DecoyFacts, decide, decide_on_decoy};
-use super::runtime_dir::{DirFacts, judge};
 use super::*;
 use crate::cli::{Cli, Commands};
 
@@ -228,51 +227,6 @@ fn a_relative_configuration_reaches_the_helper_as_the_launcher_read_it() {
     let empty = absolute_config(Some(Path::new(""))).unwrap_err();
     assert_eq!(empty.status, ExitStatus::Config);
     assert_eq!(empty.body.code, "config");
-}
-
-#[test]
-fn only_a_private_runtime_directory_of_the_operator_in_ram_is_used() {
-    let good = DirFacts {
-        is_dir: true,
-        owner: 1000,
-        mode: 0o700,
-        in_ram: true,
-    };
-    assert_eq!(judge(&good, 1000), Ok(()));
-    assert_eq!(
-        judge(
-            &DirFacts {
-                is_dir: false,
-                ..good
-            },
-            1000
-        ),
-        Err("it is not a directory".to_string())
-    );
-    assert_eq!(
-        judge(&good, 1001),
-        Err("it belongs to uid 1000".to_string())
-    );
-    assert_eq!(
-        judge(
-            &DirFacts {
-                mode: 0o750,
-                ..good
-            },
-            1000
-        ),
-        Err("other accounts can reach it (mode 750)".to_string())
-    );
-    assert_eq!(
-        judge(
-            &DirFacts {
-                in_ram: false,
-                ..good
-            },
-            1000
-        ),
-        Err("it is not in RAM (tmpfs)".to_string())
-    );
 }
 
 #[test]

@@ -15,30 +15,12 @@
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
+use nails_api::window_env::{DirFacts, OWN_DIR_BYTES, USER_RUNTIME_BASE, judge, own_dir_name};
 use nails_core::RuntimeEnv;
 use nails_core::target_user::TargetUser;
 
 use super::Refusal;
 use crate::cli::output::ExitStatus;
-
-/// Where logind makes each account's runtime directory.
-const USER_RUNTIME_BASE: &str = "/run/user";
-
-/// The random bytes in the name of the window's own directory.
-const OWN_DIR_BYTES: usize = 8;
-
-/// What the launcher checks of a runtime directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct DirFacts {
-    /// A directory (a symlink is not one: it is not followed).
-    pub(super) is_dir: bool,
-    /// The owner's uid.
-    pub(super) owner: u32,
-    /// The permission bits.
-    pub(super) mode: u32,
-    /// On a tmpfs.
-    pub(super) in_ram: bool,
-}
 
 /// The operator's runtime directory, checked.
 pub(super) fn find(env: &RuntimeEnv, operator: &TargetUser) -> Result<PathBuf, Refusal> {
@@ -71,27 +53,6 @@ fn facts_of(dir: &Path) -> std::io::Result<DirFacts> {
         mode: meta.mode() & 0o7777,
         in_ram,
     })
-}
-
-/// Why a runtime directory with `facts` is not one the window may use, for
-/// the operator `uid`.
-pub(super) fn judge(facts: &DirFacts, uid: u32) -> Result<(), String> {
-    if !facts.is_dir {
-        return Err("it is not a directory".to_string());
-    }
-    if facts.owner != uid {
-        return Err(format!("it belongs to uid {}", facts.owner));
-    }
-    if facts.mode & 0o077 != 0 {
-        return Err(format!(
-            "other accounts can reach it (mode {:o})",
-            facts.mode
-        ));
-    }
-    if !facts.in_ram {
-        return Err("it is not in RAM (tmpfs)".to_string());
-    }
-    Ok(())
 }
 
 fn no_session(operator: &TargetUser, dir: &Path, why: &str) -> Refusal {
@@ -159,5 +120,5 @@ fn random_name() -> std::io::Result<String> {
     use std::io::Read;
     let mut bytes = [0u8; OWN_DIR_BYTES];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(own_dir_name(&bytes))
 }
