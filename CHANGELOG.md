@@ -315,11 +315,12 @@ of this changelog for that version becomes the release notes word for word, and
   marked compressed, whether an `ntfs` or `ntfs3` mount, any `fuseblk` mount (the type ntfs-3g
   mounts NTFS as) or an NTFS image; an ext4 or f2fs with the encrypt feature (fscrypt), which the
   scan reads from the superblock of a mounted device too; and a device that holds the folder of an
-  eCryptfs mount (an encrypted home or Private folder): the filesystem the folder lies on, and for
-  a `--device` also a whole disk with that filesystem in a partition or a device below it, which
-  the scan reads from sysfs. A `--device` the scan cannot place against such a folder is not
-  checked either. The scan sees an eCryptfs folder only while it is mounted, and never in an
-  `--offline` scan, which reads no mount table.
+  eCryptfs mount (an encrypted home or Private folder): the filesystem the folder lies on, or each
+  one it may lie on where the mount table does not show which, and for a `--device` also a whole
+  disk with that filesystem in a partition or a device below it, which the scan reads from sysfs.
+  A `--device` the scan cannot place against such a folder is not checked either. The scan sees an
+  eCryptfs folder only while it is mounted, and never in an `--offline` scan, which reads no mount
+  table.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up

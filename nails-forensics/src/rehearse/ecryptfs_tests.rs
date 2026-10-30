@@ -219,11 +219,12 @@ fn a_filesystem_moved_over_the_folders_path_later_does_not_hold_it() {
 }
 
 #[test]
-fn a_folder_beside_its_mount_point_lies_on_the_mount_its_path_reached_then() {
-    // The folder /srv/.vault, on the root, is mounted on /home/alice/vault, on
-    // /home: up from the mount it was made on to the root, then down the
-    // folder's own path. Neither /home (sda2), where its mount point lies,
-    // nor a filesystem mounted over /srv later (sda3) holds it.
+fn a_folder_beside_its_mount_point_may_lie_on_each_mount_on_its_own_path() {
+    // The folder /srv/.vault is mounted on /home/alice/vault, on /home: up
+    // from the mount it was made on to the root, then down the folder's own
+    // path, where sda3 is mounted over /srv. The table cannot show whether
+    // sda3 was there when the folder was mounted, so the root and sda3 may
+    // hold it. /home (sda2), where only its mount point lies, does not.
     let mounts = parse_mountinfo(&format!(
         "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
          2 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n\
@@ -234,19 +235,20 @@ fn a_folder_beside_its_mount_point_lies_on_the_mount_its_path_reached_then() {
     assert_eq!(
         default_blind_spots(&mounts),
         vec![
-            (PathBuf::from("/dev/sda1"), stacked),
+            (PathBuf::from("/dev/sda1"), stacked.clone()),
             (PathBuf::from("/dev/sda2"), None),
-            (PathBuf::from("/dev/sda3"), None),
+            (PathBuf::from("/dev/sda3"), stacked),
         ]
     );
 }
 
 #[test]
-fn a_folder_with_a_filesystem_of_its_own_lies_on_that_filesystem() {
-    // The encrypted files of a Private folder on a partition of their own,
-    // mounted at /home/alice/.Private before the eCryptfs mount, and another
-    // filesystem stacked on that one later: the folder lies on sda3, not on
-    // /home (sda2) or the later one (sdb1).
+fn a_folder_with_a_filesystem_of_its_own_may_lie_on_it_or_below_it() {
+    // The encrypted files of a Private folder on a partition of their own
+    // (sda3), mounted at /home/alice/.Private, with another filesystem stacked
+    // on that one (sdb1). Either may have been mounted after the eCryptfs
+    // mount, so the folder may lie on /home (sda2), sda3 or sdb1, never on the
+    // root.
     let mounts = parse_mountinfo(&format!(
         "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
          2 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n\
@@ -260,22 +262,84 @@ fn a_folder_with_a_filesystem_of_its_own_lies_on_that_filesystem() {
         default_blind_spots(&mounts),
         vec![
             (PathBuf::from("/dev/sda1"), None),
-            (PathBuf::from("/dev/sda2"), None),
-            (PathBuf::from("/dev/sda3"), stacked),
-            (PathBuf::from("/dev/sdb1"), None),
+            (PathBuf::from("/dev/sda2"), stacked.clone()),
+            (PathBuf::from("/dev/sda3"), stacked.clone()),
+            (PathBuf::from("/dev/sdb1"), stacked),
+        ]
+    );
+}
+
+#[test]
+fn a_mount_a_copied_namespace_lists_after_the_ecryptfs_mount_may_hold_its_folder() {
+    // A mount namespace copied from another (unshare -m, a container, a
+    // service with mount sandboxing) lists the mounts it copied in the order
+    // of their tree: sdb1 was mounted over /home/.ecryptfs before the
+    // encrypted home was mounted on the tmpfs at /home/alice, yet the table
+    // lists it after, as the tmpfs came first. The folder may lie on sdb1 or on
+    // /home (sda2) below it, so both, and their disks, are not checked; the
+    // root's partition is.
+    const SDB1: &str = "/sys/devices/pci0/block/sdb/sdb1";
+    let sysfs = Sysfs::two_disks();
+    sysfs.partition(SDB1, "sdb1", "8:17", 1);
+    let mounts = parse_mountinfo(&format!(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         2 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n\
+         3 2 0:60 / /home/alice rw,relatime - tmpfs tmpfs rw\n\
+         4 3 0:50 / /home/alice/Private rw,relatime - ecryptfs /home/.ecryptfs/alice/.Private \
+         {ECRYPTFS_OPTS}\n\
+         5 2 8:17 / /home/.ecryptfs rw,relatime - ext4 /dev/sdb1 rw\n"
+    ));
+    let stacked = Some(ScanBlindSpot::StackedEncryption.reason().to_string());
+    assert_eq!(
+        default_blind_spots(&mounts),
+        vec![
+            (PathBuf::from("/dev/sda1"), None),
+            (PathBuf::from("/dev/sda2"), stacked.clone()),
+            (PathBuf::from("/dev/sdb1"), stacked.clone()),
+        ]
+    );
+    for device in ["/dev/sdb1", "/dev/sdb", "/dev/sda2", "/dev/sda"] {
+        assert_eq!(sysfs.blind_spot(device, &mounts), stacked, "{device}");
+    }
+    assert_eq!(sysfs.blind_spot("/dev/sda1", &mounts), None);
+}
+
+#[test]
+fn a_mount_a_copied_namespace_lists_before_the_ecryptfs_mount_may_not_have_held_its_folder() {
+    // Copied the same way, a mount made after the encrypted home comes before
+    // it when its tree does: sdb1, mounted over /srv/vault after the eCryptfs
+    // mount, sits on /srv (sda2), which the copy took before /home (sda3). The
+    // folder may lie on sda2, sdb1 or the root below them, never on /home.
+    let mounts = parse_mountinfo(&format!(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         2 1 8:2 / /srv rw,relatime - ext4 /dev/sda2 rw\n\
+         3 2 8:17 / /srv/vault rw,relatime - ext4 /dev/sdb1 rw\n\
+         4 1 8:3 / /home rw,relatime - ext4 /dev/sda3 rw\n\
+         5 4 0:50 / /home/alice rw,relatime - ecryptfs /srv/vault/.Private {ECRYPTFS_OPTS}\n"
+    ));
+    let stacked = Some(ScanBlindSpot::StackedEncryption.reason().to_string());
+    assert_eq!(
+        default_blind_spots(&mounts),
+        vec![
+            (PathBuf::from("/dev/sda1"), stacked.clone()),
+            (PathBuf::from("/dev/sda2"), stacked.clone()),
+            (PathBuf::from("/dev/sdb1"), stacked),
+            (PathBuf::from("/dev/sda3"), None),
         ]
     );
 }
 
 #[test]
 fn a_folder_in_the_view_of_another_ecryptfs_mount_lies_where_that_ones_folder_does() {
-    // Alice's encrypted home keeps its files in /srv/alice/.Private on sda2,
-    // and a second eCryptfs folder inside her home keeps its files in the
-    // first one's view: stored encrypted again on sda2, never on the root.
+    // Alice's encrypted home keeps its files in /home/.ecryptfs/alice/.Private
+    // on /home (sda2), as ecryptfs-utils sets one up, and a second eCryptfs
+    // folder inside her home keeps its files in the first one's view: stored
+    // encrypted again on sda2, never on the root.
     let mounts = parse_mountinfo(&format!(
         "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
-         2 1 8:2 / /srv rw,relatime - ext4 /dev/sda2 rw\n\
-         3 1 0:50 / /home/alice rw,relatime - ecryptfs /srv/alice/.Private {ECRYPTFS_OPTS}\n\
+         2 1 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n\
+         3 2 0:50 / /home/alice rw,relatime - ecryptfs /home/.ecryptfs/alice/.Private \
+         {ECRYPTFS_OPTS}\n\
          4 3 0:51 / /home/alice/vault rw,relatime - ecryptfs /home/alice/.vault \
          {ECRYPTFS_OPTS}\n"
     ));
@@ -297,13 +361,17 @@ fn an_ecryptfs_mount_the_table_cannot_place_is_not_checked() {
     // The scan cannot tell what the folder lay on when the table does not
     // list the parent the eCryptfs mount names, lists two mounts with that ID
     // (one freed and its ID given to another while the table was read), has
-    // parents that run in a circle, or two mounts the folder's path could
-    // take at one place, or stacked in a circle there. The folder is listed
-    // unread and not checked, and so is every device named for a scan.
+    // parents that run in a circle, or two mounts on one at a place on the
+    // folder's path, or stacked in a circle there, or when the folder's path
+    // climbs (`..`). The folder is listed unread and not checked, and so is
+    // every device named for a scan.
     let tables = [
         "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
          2 1 8:2 / /home rw - ext4 /dev/sda2 rw\n\
          3 9 0:50 / /home/alice rw - ecryptfs /home/alice/.Private {opts}\n",
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         2 1 8:2 / /home rw - ext4 /dev/sda2 rw\n\
+         3 2 0:50 / /home/alice rw - ecryptfs /home/alice/../.Private {opts}\n",
         "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
          2 1 8:2 / /home rw - ext4 /dev/sda2 rw\n\
          2 1 8:3 / /srv rw - ext4 /dev/sda3 rw\n\
@@ -352,6 +420,39 @@ fn an_ecryptfs_mount_the_table_cannot_place_is_not_checked() {
             );
         }
     }
+}
+
+#[test]
+fn ecryptfs_folders_that_lie_only_in_each_others_views_are_not_placed() {
+    // Each eCryptfs mount sits on the other and keeps its folder in the
+    // other's view, which only a table read while it changed shows. No
+    // filesystem holds either folder, so neither is placed: both are listed
+    // unread and not checked, and so is every device named for a scan.
+    let mounts = parse_mountinfo(&format!(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         3 4 0:50 / /home/alice rw - ecryptfs /home/alice/.Private {ECRYPTFS_OPTS}\n\
+         4 3 0:51 / /home/alice rw - ecryptfs /home/alice/.vault {ECRYPTFS_OPTS}\n"
+    ));
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    assert_eq!(
+        targets
+            .iter()
+            .map(|t| (t.device.clone(), t.unread.is_some()))
+            .collect::<Vec<_>>(),
+        vec![
+            (PathBuf::from("/dev/sda1"), false),
+            (PathBuf::from("/home/alice/.Private"), true),
+            (PathBuf::from("/home/alice/.vault"), true),
+        ]
+    );
+    assert_eq!(targets[0].blind_spot, None);
+    let reason = Sysfs::two_disks()
+        .blind_spot("/dev/sda1", &mounts)
+        .unwrap_or_default();
+    assert!(
+        reason.contains("cannot tell whether this device holds them"),
+        "{reason}"
+    );
 }
 
 #[test]

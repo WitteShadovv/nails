@@ -995,11 +995,15 @@ checked, never as clean:
   `Private` folder). That is the filesystem the folder lies on, and for a
   device named with `--device` also a whole disk with that filesystem in a
   partition, or a device below it (the partition under a LUKS or LVM mapping,
-  an md array's member). A `--device` the scan cannot place against such a
-  folder, because the folder lies on a tmpfs, an overlay, a FUSE or network
-  filesystem or in an image file stored on one, because more devices lie
-  below its filesystem than the scan follows, or because sysfs lists no block
-  device at the path, is reported as not checked too;
+  an md array's member). Where the path to the folder runs through a mount
+  point that the path to the eCryptfs mount does not, each filesystem mounted
+  there counts, and so does the one below them, since the mount table does not
+  show which of them was there when the folder was mounted. A `--device` the
+  scan cannot place against such a folder, because the folder lies on a tmpfs,
+  an overlay, a FUSE or network filesystem or in an image file stored on one,
+  because more devices lie below its filesystem than the scan follows, or
+  because sysfs lists no block device at the path, is reported as not checked
+  too;
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
@@ -1010,11 +1014,14 @@ checked, never as clean:
   that ends before its swap area does, or a whole-disk image that ends before a
   partition its table lists, or before the disk its GPT was written for.
 
-File-level encryption escapes that list in three cases, and a device that
+File-level encryption escapes that list in these cases, and a device that
 holds it can read as clean:
 
 - an eCryptfs folder that is not mounted while the scan runs, since the scan
   sees one only through its mount;
+- an eCryptfs mount that was moved (`mount --move`) after it was made, or
+  whose folder's filesystem was moved or detached (`umount -l`), since the
+  scan places the folder by the paths the mount table shows;
 - every eCryptfs folder in an `--offline` scan, which reads no mount table;
 - a vault a FUSE tool encrypts (gocryptfs, CryFS or EncFS, as Plasma Vaults
   use), which the scan does not recognise at all.

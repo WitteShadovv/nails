@@ -493,6 +493,7 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
             .iter()
             .any(|line| line.contains(file_level)
                 && line.contains("an eCryptfs folder not mounted during the scan")
+                && line.contains("mount or filesystem was moved or detached")
                 && line.contains("every eCryptfs folder in an --offline scan")
                 && line.ends_with("and a FUSE tool's vault")),
         "{:?}",
