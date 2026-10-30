@@ -114,9 +114,9 @@ of this changelog for that version becomes the release notes word for word, and
   a soft-reboot only with `Relogin=true` (docs/operator-guide.md).
 - The forensic oracle scans btrfs images, the default root of Fedora and Arch decoys. plaso cannot
   read btrfs, so on btrfs images no timeline runs, and the verdict says `partial` (exit 3), never
-  `clean`, and names `timeline: not run, plaso cannot read btrfs`. The restore carve, the record
-  diff and bulk_extractor stay required on every image, and the journal files plaso would compare
-  are compared as files instead. The positive controls of a real btrfs image go into device space
+  `clean`, and names `timeline: not run, plaso cannot read btrfs`. The restore carve and
+  bulk_extractor stay required on every image, and the journal files plaso would compare are
+  compared as files instead. The positive controls of a real btrfs image go into device space
   no btrfs chunk uses, with no mount. A nightly job scans synthetic btrfs images and passes only on
   that partial verdict (ci/oracle/README.md). Of a whole-disk image the restore channel now compares
   every partition, not only the root: an EFI system partition is carved through a read-only mount,
@@ -127,12 +127,16 @@ of this changelog for that version becomes the release notes word for word, and
   whole before, after a plain reboot, after a second plain reboot and after a hidden session and the
   way back, then scanned without the timeline, once with the session and once with the second plain
   reboot in its place, which must leave nothing. Fedora is not admitted yet, so these images come
-  from a test-only build that admits its row and is never released. The scan now reads what
-  bulk_extractor carves from such a disk: the description of a zip member next to its saved file, a
-  member found in decompressed data, and a login record it saved once and names `<CACHED>` after
-  that. On a disk btrfs compresses, bulk_extractor sees no compressed extent, so a carved login
-  record new in after is also subtracted by a record of exactly the same key in the control image's
-  login files, which the scan keeps whole and reads (ci/oracle/README.md).
+  from a test-only build that admits its row and is never released (ci/oracle/README.md).
+- Two kinds of line bulk_extractor writes no longer stop an oracle scan before its verdict, on ext4
+  as on btrfs: a zip member's description is passed over beside its saved file, whose hash keys the
+  member, a member found in decompressed data included, and a login record it names `<CACHED>` is
+  read from the record it saved with the same hash.
+- On every oracle scan, ext4 included, a carved login record new in after is now also subtracted by
+  a record of exactly the same key in the control image's login files, which the scan keeps whole
+  and reads. bulk_extractor carves a record only where its bytes lie plain and in one piece, which
+  btrfs compression and the place of each block decide, so the control could miss records it holds.
+  On btrfs, bulk_extractor sees no compressed extent at all (ci/oracle/README.md).
 
 ### Changed
 

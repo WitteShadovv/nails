@@ -610,7 +610,7 @@ fi
 if [ "$status" -eq 3 ]; then
   partial='.status == "partial" and .not_run == [{"tool": "plaso", "channel": "timeline", "reason": "plaso cannot read btrfs"}]'
   if [ "$timeline" = btrfs ] && jq -e "$partial" "$work/verdict.json" >/dev/null; then
-    note="PARTIAL verdict, not a full run: timeline: not run, plaso cannot read btrfs. The restore carve, the record diff and bulk_extractor ran and found nothing unexplained."
+    note="PARTIAL verdict, not a full run: timeline: not run, plaso cannot read btrfs. The restore carve and bulk_extractor ran, and the verdict found nothing unexplained in what they read."
     echo "run-scan: $note" >&2
     if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning title=Partial oracle verdict::$note"; fi
     status=0
