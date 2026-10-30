@@ -244,12 +244,14 @@ fn an_interrupted_activation_or_an_unreadable_record_comes_before_the_check() {
 
 #[test]
 fn a_status_that_could_not_be_built_is_an_unreadable_record() {
+    // The envelope the helper's status gives then (the CLI's
+    // status_unknown_envelope): no next step.
     let mut model = connected();
     model.apply(answered(
         Kind::Status,
         json!({"schema_version": 2, "command": "status", "ok": false,
             "data": {"place": "unknown", "attention": "record_unreadable"},
-            "error": {"code": "record_unreadable", "message": "the record is damaged", "next": {"command": "recover"}}}),
+            "error": {"code": "record_unreadable", "message": "the record is damaged", "next": null}}),
     ));
     let page = model.page();
     assert_eq!(page.heading, "Record Cannot Be Read");
@@ -263,7 +265,10 @@ fn a_status_that_could_not_be_built_is_an_unreadable_record() {
         "the engine does not guess the place, and neither does the page"
     );
     assert_eq!(page.note, "The record is damaged.");
-    assert_eq!(page.fix, "Next: sudo /mnt/data/nails recover");
+    assert_eq!(
+        page.fix, "",
+        "the engine names no next step, nor does the page"
+    );
     assert_eq!(
         page.action, None,
         "nothing shows that no session is active, so the record is not reset"
