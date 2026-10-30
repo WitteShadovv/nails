@@ -86,9 +86,17 @@ impl Sysfs {
     }
     /// The whole check on `content`, as (line, text, kind).
     fn scan(&self, content: &str) -> Vec<(usize, String, super::super::ReferenceKind)> {
+        self.scan_mounted(DATA_MOUNT, content)
+    }
+    /// The whole check on `content` with `mountinfo` as the mount table.
+    fn scan_mounted(
+        &self,
+        mountinfo: &str,
+        content: &str,
+    ) -> Vec<(usize, String, super::super::ReferenceKind)> {
         let file = "/etc/nixos/configuration.nix";
         self.0
-            .mock_set_file_content("/proc/self/mountinfo", DATA_MOUNT);
+            .mock_set_file_content("/proc/self/mountinfo", mountinfo);
         self.0
             .mock_set_files_with_pattern("/etc/nixos", ".nix", &[Path::new(file)]);
         self.0.mock_set_file_content(file, content);
@@ -179,10 +187,14 @@ fn a_luks_mapping_on_a_partition_is_named_by_both_and_their_uuids() {
         [
             path(&format!("/dev/disk/by-id/dm-uuid-{}", LUKS.to_lowercase())),
             Pattern::Text("7d2c9e14-e8a1-4b3c-9f6b-0e1a2d3c4b5a".into()),
+            path("/dev/dm-0"),
+            path("/dev/block/254:0"),
             path("/dev/sdb2"),
             Pattern::Text("4f1b0a7d-02".into()),
+            path("/dev/block/8:18"),
         ]
     );
+    assert_eq!(storage.kernel_names, ["dm-0", "sdb2"]);
 }
 
 /// Every link udev made for a layer, and the uuids and labels it records:
@@ -291,10 +303,13 @@ fn storage_the_decoy_shares_is_not_the_hidden_volume_s() {
         storage.markers,
         [
             path("/dev/disk/by-id/dm-uuid-lvm-abc"),
+            path("/dev/dm-1"),
+            path("/dev/block/254:1"),
             path("/dev/vg/hidden"),
             path("/dev/mapper/vg-hidden"),
         ]
     );
+    assert_eq!(storage.kernel_names, ["dm-1"]);
 
     // Alone on the mapping, the mapping and the partition are its own.
     let storage = lvm_on_luks(false).below(LV_MOUNT);
@@ -303,13 +318,55 @@ fn storage_the_decoy_shares_is_not_the_hidden_volume_s() {
         path("/dev/sdb2"),
         path("/dev/disk/by-id/dm-name-data"),
         path("/dev/disk/by-id/ata-disk-part2"),
+        path("/dev/dm-0"),
+        path("/dev/block/254:0"),
+        path("/dev/block/8:18"),
     ] {
         assert!(storage.markers.contains(&marker), "{marker:?}");
     }
+    assert_eq!(storage.kernel_names, ["dm-1", "dm-0", "sdb2"]);
 }
 
+/// The decoy's own mapping and partition below a logical volume of the
+/// hidden volume keep their kernel names: the decoy names them freely,
+/// while the hidden volume's own device is refused by each of its names.
 #[test]
-fn an_image_file_behind_a_loop_device_is_named_by_its_path() {
+fn the_kernel_names_of_storage_the_decoy_shares_pass() {
+    use super::super::ReferenceKind::Storage;
+    let sysfs = lvm_on_luks(true);
+    for content in [
+        "{ boot.initrd.luks.devices.root.device = \"/dev/sdb2\"; }",
+        "{ fileSystems.\"/\".device = \"/dev/dm-0\"; }",
+        "{ boot.resumeDevice = \"/dev/block/254:0\"; }",
+        "{ services.udev.extraRules = ''KERNEL==\"dm-0\", OPTIONS+=\"watch\"''; }",
+        "{ }\n# the decoy's root is on sdb2\n",
+    ] {
+        assert_eq!(sysfs.scan_mounted(LV_MOUNT, content), [], "{content}");
+    }
+    for (content, text) in [
+        (
+            "{ swapDevices = [ { device = \"/dev/dm-1\"; } ]; }",
+            "/dev/dm-1",
+        ),
+        (
+            "{ boot.resumeDevice = \"/dev/block/254:1\"; }",
+            "/dev/block/254:1",
+        ),
+        (
+            "{ services.udev.extraRules = ''KERNEL==\"dm-1\", ENV{UDISKS_IGNORE}=\"1\"''; }",
+            "dm-1",
+        ),
+    ] {
+        assert_eq!(
+            sysfs.scan_mounted(LV_MOUNT, content),
+            [(1, text.to_string(), Storage)],
+            "{content}"
+        );
+    }
+}
+
+/// `data`, a TrueCrypt mapping on the loop device over `/var/lib/Vault.img`.
+fn tcrypt_on_an_image() -> Sysfs {
     let sysfs = Sysfs::new();
     sysfs
         .dm(DM0, "254:0", "data", "CRYPT-TCRYPT-data")
@@ -320,15 +377,159 @@ fn an_image_file_behind_a_loop_device_is_named_by_its_path() {
         &format!("{LOOP0}/loop/backing_file"),
         "/var/lib/Vault.img\n",
     );
-    let storage = sysfs.below(DATA_MOUNT);
+    sysfs
+}
+
+#[test]
+fn an_image_file_behind_a_loop_device_is_named_by_its_path() {
+    let storage = tcrypt_on_an_image().below(DATA_MOUNT);
     assert_eq!(storage.names, ["data"]);
     assert_eq!(
         storage.markers,
         [
             path("/dev/disk/by-id/dm-uuid-crypt-tcrypt-data"),
+            path("/dev/dm-0"),
+            path("/dev/block/254:0"),
             path("/var/lib/vault.img"),
+            path("/dev/loop0"),
+            path("/dev/block/7:0"),
         ]
     );
+    assert_eq!(storage.kernel_names, ["dm-0", "loop0"]);
+}
+
+/// A device whose kernel name holds a `/` (`cciss/c0d0p1`, which sysfs
+/// spells `cciss!c0d0p1`) counts by its device node and its `/dev/block`
+/// link; no udev rule writes such a name alone, so it is no word marker.
+#[test]
+fn a_kernel_name_with_a_slash_counts_as_a_path_only() {
+    const CCISS: &str = "/sys/devices/pci0/cciss0/block/cciss!c0d0/cciss!c0d0p1";
+    let sysfs = Sysfs::new();
+    sysfs
+        .dm(DM0, "254:0", "data", LUKS)
+        .links(DM0, "slaves", &[CCISS])
+        .device(CCISS, "104:1", "DEVNAME=cciss/c0d0p1\nDEVTYPE=partition")
+        .links(CCISS, "holders", &[DM0]);
+    let storage = sysfs.below(DATA_MOUNT);
+    assert_eq!(storage.kernel_names, ["dm-0"]);
+    for marker in [path("/dev/cciss/c0d0p1"), path("/dev/block/104:1")] {
+        assert!(
+            storage.markers.contains(&marker),
+            "{marker:?}: {storage:#?}"
+        );
+    }
+    assert_eq!(
+        sysfs.scan("{ boot.initrd.luks.devices.x.device = \"/dev/cciss/c0d0p1\"; }"),
+        [(
+            1,
+            "/dev/cciss/c0d0p1".to_string(),
+            super::super::ReferenceKind::Storage
+        )]
+    );
+}
+
+/// The kernel's names of every layer: the device node of the mapping, the
+/// `/dev/block/<major>:<minor>` link of each layer, and the kernel name
+/// alone, as a udev rule matches a device by it, in a path below `/sys`
+/// or in prose. A line that names a layer by a path too reports the path.
+#[test]
+fn the_kernel_s_names_of_every_layer_are_refused() {
+    use super::super::ReferenceKind::Storage;
+    let sysfs = luks_on_a_partition();
+    for (content, expected) in [
+        (
+            "{ services.udev.extraRules = ''KERNEL==\"sdb2\", SYMLINK+=\"vault\"''; }",
+            (1, "sdb2"),
+        ),
+        (
+            "{ services.udev.extraRules = ''\n  KERNEL==\"dm-0\", ENV{UDISKS_IGNORE}=\"1\"\n''; }",
+            (2, "dm-0"),
+        ),
+        ("{ }\n# KERNEL==\"SDB2\", GOTO=\"end\"\n", (2, "SDB2")),
+        (
+            "{ fileSystems.\"/srv\".device = \"/dev/dm-0\"; }",
+            (1, "/dev/dm-0"),
+        ),
+        (
+            "{ boot.resumeDevice = \"/dev/block/254:0\"; }",
+            (1, "/dev/block/254:0"),
+        ),
+        (
+            "{ }\n# was /dev/block/8:18 before\n",
+            (2, "/dev/block/8:18"),
+        ),
+        ("{ }\n# the vault is on sdb2.\n", (2, "sdb2")),
+        (
+            "{ systemd.services.x.script = \"echo 1 > /sys/class/block/sdb2/queue/rotational\"; }",
+            (1, "sdb2"),
+        ),
+        (
+            "{ services.udev.extraRules = ''KERNEL==\"dm-0\"''; swapDevices = [ { device = \"/dev/sdb2\"; } ]; }",
+            (1, "/dev/sdb2"),
+        ),
+        (
+            "{ fileSystems.\"/srv\".device = \"/dev//dm-0\"; }",
+            (1, "/dev//dm-0"),
+        ),
+        (
+            "{ boot.resumeDevice = \"/dev/block//8:18\"; }",
+            (1, "/dev/block//8:18"),
+        ),
+    ] {
+        let (line, text) = expected;
+        assert_eq!(
+            sysfs.scan(content),
+            [(line, text.to_string(), Storage)],
+            "{content}"
+        );
+    }
+
+    let sysfs = tcrypt_on_an_image();
+    for (content, text) in [
+        ("{ }\n# losetup -d /dev/loop0\n", "/dev/loop0"),
+        ("{ }\n# KERNEL==\"loop0\"\n", "loop0"),
+        ("{ }\n# /dev/block/7:0\n", "/dev/block/7:0"),
+    ] {
+        assert_eq!(
+            sysfs.scan(content),
+            [(2, text.to_string(), Storage)],
+            "{content}"
+        );
+    }
+}
+
+/// Other devices' kernel names pass: another disk, another partition whose
+/// name starts like the hidden one's, another mapping and another loop
+/// device, and their `/dev/block` links, as well as words that only hold
+/// the name.
+#[test]
+fn other_devices_kernel_names_pass() {
+    let sysfs = luks_on_a_partition();
+    for content in [
+        "{ fileSystems.\"/\".device = \"/dev/sda2\"; }",
+        "{ services.udev.extraRules = ''KERNEL==\"sda2\", OPTIONS+=\"watch\"''; }",
+        "{ fileSystems.\"/media\".device = \"/dev/sdb20\"; }",
+        "{ services.udev.extraRules = ''KERNEL==\"sdb20\", SYMLINK+=\"usb\"''; }",
+        "{ swapDevices = [ { device = \"/dev/dm-1\"; } ]; }",
+        "{ boot.resumeDevice = \"/dev/dm-10\"; }",
+        "{ services.udev.extraRules = ''KERNEL==\"dm-1\", ENV{UDISKS_IGNORE}=\"1\"''; }",
+        "{ boot.resumeDevice = \"/dev/block/8:180\"; }",
+        "{ boot.resumeDevice = \"/dev/block/8:1\"; }",
+        "{ boot.resumeDevice = \"/dev/block/18:18\"; }",
+        "{ boot.resumeDevice = \"/dev/block/254:1\"; }",
+        "{ }\n# sdb2-backup and xsdb2 are other names\n",
+        "{ networking.hostName = \"dm-0x\"; }",
+    ] {
+        assert_eq!(sysfs.scan(content), [], "{content}");
+    }
+    let sysfs = tcrypt_on_an_image();
+    for content in [
+        "{ }\n# losetup -d /dev/loop1\n",
+        "{ }\n# KERNEL==\"loop10\"\n",
+        "{ }\n# /dev/loop0p1\n",
+    ] {
+        assert_eq!(sysfs.scan(content), [], "{content}");
+    }
 }
 
 /// The whole check: a decoy configuration that names the volume by what

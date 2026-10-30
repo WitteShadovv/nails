@@ -553,6 +553,96 @@ fn ordinary_uses_of_the_mapper_name_pass() {
     }
 }
 
+/// A path written with doubled slashes is the same path: the mount point,
+/// the device and its links are refused however many slashes part them,
+/// with the text as the file writes it. Another path that only has doubled
+/// slashes too passes, and so does one that holds the mount point after a
+/// doubled slash (`/srv//mnt/data` is `/srv/mnt/data`).
+#[test]
+fn a_path_with_doubled_slashes_is_refused() {
+    use ReferenceKind::{Device, MountPoint};
+    for (content, expected) in [
+        (
+            "{ fileSystems.\"/mnt//data\".device = \"/dev/sdb1\"; }",
+            (1, "/mnt//data", MountPoint),
+        ),
+        (
+            "{ imports = [ /mnt///data/nixos/extra.nix ]; }",
+            (1, "/mnt///data", MountPoint),
+        ),
+        ("{ x = \"//mnt/data\"; }", (1, "/mnt/data", MountPoint)),
+        (
+            "{ }\n# mount /dev/mapper//data before work\n",
+            (2, "/dev/mapper//data", Device),
+        ),
+        (
+            "{ fileSystems.\"/srv\".device = \"/dev/disk/by-id//dm-name-data\"; }",
+            (1, "/dev/disk/by-id//dm-name-data", Device),
+        ),
+        (
+            "{ }\n# device = \"/dev//disk/by-id/dm-uuid-CRYPT-LUKS2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data\";\n",
+            (
+                2,
+                "/dev//disk/by-id/dm-uuid-CRYPT-LUKS2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data",
+                Device,
+            ),
+        ),
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(only_reference(&scan), expected, "{content}");
+    }
+    for content in [
+        "{ fileSystems.\"/mnt//data2\".device = \"/dev/sdb1\"; }",
+        "{ swapDevices = [ { device = \"/dev/mapper//data-swap\"; } ]; }",
+        "{ fileSystems.\"/srv//mnt/data\".device = \"/dev/sdb1\"; }",
+        "{ services.postgresql.dataDir = \"/var/lib/postgresql//data\"; }",
+    ] {
+        let scan = scan_configuration(content);
+        assert!(scan.is_clean(), "{content}: {scan:#?}");
+    }
+}
+
+/// A unit's setting that names a file on the hidden volume behind one of
+/// systemd's prefixes (`-` for a file that may be missing) names the mount
+/// point, and is refused as the bare path is.
+#[test]
+fn a_path_behind_a_systemd_prefix_is_refused() {
+    for content in [
+        "{ systemd.services.app.serviceConfig.EnvironmentFile = \"-/mnt/data/app.env\"; }",
+        "{ systemd.services.app.serviceConfig.ExecStart = \"+/mnt/data/bin/app\"; }",
+        "{ systemd.services.app.serviceConfig.ReadWritePaths = [ \"-/mnt/data\" ]; }",
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(
+            only_reference(&scan),
+            (1, "/mnt/data", ReferenceKind::MountPoint),
+            "{content}"
+        );
+    }
+    let scan = scan_configuration(
+        "{ systemd.services.app.serviceConfig.EnvironmentFile = \"-/srv/-/mnt/data/app.env\"; }",
+    );
+    assert!(scan.is_clean(), "{scan:#?}");
+}
+
+/// A mount table that writes the device with a doubled slash still names
+/// it: the marker counts a run of slashes once, as the text does.
+#[test]
+fn a_device_the_mount_table_writes_with_a_doubled_slash_is_refused() {
+    let fs = host(
+        &[(
+            "/etc/nixos/configuration.nix",
+            "{ swapDevices = [ { device = \"/dev/mapper/data\"; } ]; }",
+        )],
+        "36 35 254:0 / /mnt/data rw - ext4 /dev//mapper/data rw\n",
+    );
+    let scan = scan_at(&fs, ROOT);
+    assert_eq!(
+        only_reference(&scan),
+        (1, "/dev/mapper/data", ReferenceKind::Device)
+    );
+}
+
 /// `nixos-generate-config` run while the hidden volume was mounted names its
 /// mount point, its device and its mapping: three lines, the first reported
 /// first.
@@ -808,4 +898,6 @@ fn every_kind_says_what_it_is_and_what_to_do() {
     assert!(ReferenceKind::MapperName.remedy().contains("under a name"));
     assert!(ReferenceKind::MountPoint.remedy().contains("at a path"));
     assert!(ReferenceKind::MountUnit.remedy().contains("at a path"));
+    assert!(ReferenceKind::Storage.reason().contains("kernel name"));
+    assert!(ReferenceKind::Storage.remedy().contains("by its uuid"));
 }

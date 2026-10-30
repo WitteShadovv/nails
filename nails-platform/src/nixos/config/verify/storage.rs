@@ -12,6 +12,10 @@
 //! - from sysfs, the layers: the LUKS mapping, the partition (`/dev/sdb2`) and
 //!   its partition uuid, a mapping below a logical volume, the image file
 //!   behind a loop device, and each mapping's `dm-uuid` link and LUKS uuid;
+//! - from sysfs too, the kernel's name of each layer (`dm-0`, `sdb2`,
+//!   `loop0`), which a udev rule writes without `/dev/` (`KERNEL=="sdb2"`),
+//!   its device node (`/dev/dm-0`) and the `/dev/block/<major>:<minor>` link
+//!   udev makes for it;
 //! - from udev's database (`/run/udev/data/b<major>:<minor>`), every link
 //!   udev made for a layer: each `/dev/disk/by-*` name (`by-id`, `by-path`,
 //!   `by-partlabel`, `by-partuuid`, `by-diskseq`, the `by-uuid` and
@@ -43,6 +47,9 @@ pub(super) struct Storage {
     /// The paths and identifiers of the layers: their links and device
     /// nodes, LUKS, filesystem and partition uuids, labels, image files.
     pub(super) markers: Vec<Pattern>,
+    /// The kernel's name of every layer, top first (`dm-0`, `sdb2`): a udev
+    /// rule matches a device by it (`KERNEL=="sdb2"`).
+    pub(super) kernel_names: Vec<String>,
 }
 
 /// The storage below the top mount at `root` in `mounts`. A device below the
@@ -70,6 +77,7 @@ pub(super) fn below<F: Filesystem>(fs: &F, mounts: &[MountEntry], root: &Path) -
         if alone {
             own.push(&layer.name);
             storage.add(layer);
+            storage.add_kernel_names(layer);
             storage.add_udev_names(fs, layer);
         }
     }
@@ -136,6 +144,22 @@ impl Storage {
             if let Some(uuid) = layer.partition.as_ref().and_then(|p| p.uuid.as_deref()) {
                 self.identifier(Identifier::Uuid, uuid);
             }
+        }
+    }
+
+    /// The names the kernel gives `layer`: its device node (`/dev/dm-0`),
+    /// the `/dev/block/<major>:<minor>` link udev makes for every block
+    /// device, and its kernel name alone (`dm-0`), as a udev rule writes it.
+    fn add_kernel_names(&mut self, layer: &Layer) {
+        let name = layer.name.trim().to_ascii_lowercase();
+        if !name.is_empty() {
+            self.path(&format!("/dev/{name}"));
+            if !name.contains('/') && !self.kernel_names.contains(&name) {
+                self.kernel_names.push(name);
+            }
+        }
+        if let Some(dev) = &layer.dev {
+            self.path(&format!("/dev/block/{}", dev.trim()));
         }
     }
 
