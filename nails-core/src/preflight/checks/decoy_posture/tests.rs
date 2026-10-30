@@ -5,10 +5,26 @@ use super::*;
 use crate::RealFilesystem;
 use crate::filesystem::{MockFilesystem, PathKind};
 
-/// Mark a systemd unit active by creating its runtime invocation marker.
+/// An invocation id as systemd writes it: 32 hex digits.
+const INVOCATION_ID: &str = "8028a17235414b4e80c950b24a7487d7";
+
+/// Mark a systemd unit active by creating its runtime invocation marker, as
+/// systemd does: a link to the invocation id.
 fn set_unit_active(fs: &MockFilesystem, unit: &str) {
     let marker = format!("/{}/invocation:{unit}", loggers::INVOCATION_DIR);
-    fs.mock_set_path_exists(&marker, true);
+    fs.create_symlink(Path::new(INVOCATION_ID), Path::new(&marker))
+        .unwrap();
+}
+
+/// Mark a systemd unit active under the scratch `root` the way systemd marks
+/// it: a link to the bare invocation id, which names no file, so the link
+/// dangles.
+fn mark_active(root: &Path, unit: &str) {
+    let dir = root.join(loggers::INVOCATION_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join(format!("invocation:{unit}"));
+    std::os::unix::fs::symlink(INVOCATION_ID, &marker).unwrap();
+    assert!(!marker.exists(), "the marker dangles, as systemd's does");
 }
 
 /// A mountinfo with a single `/` entry of the given fstype and options.
@@ -569,8 +585,8 @@ fn a_syslog_ng_template_instance_fails_closed() {
 
 #[test]
 fn a_logger_running_only_as_a_process_fails_closed() {
-    // A daemon started outside systemd, or one a recent systemd leaves no marker
-    // for, is caught by its process name.
+    // A daemon started outside systemd, which leaves no marker, is caught by its
+    // process name.
     for (comm, needle) in [
         ("rsyslogd", "rsyslog"),
         ("syslog-ng", "syslog-ng"),
@@ -791,7 +807,7 @@ fn the_syslog_alias_is_resolved_on_a_real_unit_directory() {
     .unwrap();
     assert!(loggers::active_logger_blockers(&RealFilesystem, root).is_empty());
 
-    write(root, "run/systemd/units/invocation:nanolog.service", "");
+    mark_active(root, "nanolog.service");
     let found = loggers::active_logger_blockers(&RealFilesystem, root);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("nanolog.service"), "{found:?}");
@@ -844,6 +860,43 @@ fn kdump_service_is_refused_without_a_loaded_crash_kernel() {
             .contains("a crash kernel is loaded and kdump-tools.service is active"),
         "{result:?}"
     );
+}
+
+/// A scratch decoy tree that keeps no journal and has no crash kernel loaded.
+/// The journal is set volatile outright: a test runs without the host's
+/// systemd version, so journald's built-in default would count as persistent.
+fn amnesic_tree() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    write(tmp.path(), "sys/kernel/kexec_crash_loaded", "0\n");
+    tmp
+}
+
+#[test]
+fn an_exited_kdump_unit_is_seen_by_the_marker_systemd_leaves() {
+    // kdump-tools.service and kdump.service are oneshot units that stay active
+    // once they have run: no process and no populated cgroup, only systemd's
+    // invocation marker, a link that dangles. A probe that follows the link
+    // never sees the unit.
+    for unit in ["kdump-tools.service", "kdump.service"] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        let check = DecoyPersistenceCheck::new(false, false).with_root(root);
+        let clean = check.run(&RealFilesystem).unwrap();
+        assert!(!clean.is_fail(), "{unit}: {clean:?}");
+
+        mark_active(root, unit);
+        let result = check.run(&RealFilesystem).unwrap();
+        assert!(result.is_fail(), "{unit}: {result:?}");
+        assert!(
+            result.message().contains(&format!("({unit} is active)")),
+            "{unit}: {result:?}"
+        );
+    }
 }
 
 #[test]
