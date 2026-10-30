@@ -16,7 +16,10 @@
 //! operator is. Resolution order, highest priority first:
 //!
 //! 1. `NAILS_TARGET_UID` — forwarded across the detached `systemd-run` boundary.
-//! 2. `SUDO_UID`, `PKEXEC_UID`, `DOAS_UID` — set by the privilege-escalation tool.
+//! 2. `PKEXEC_UID`, `SUDO_UID`, `DOAS_UID` — set by the privilege-escalation tool.
+//!    `PKEXEC_UID` comes first because pkexec of polkit 127 and later sets
+//!    `SUDO_UID` and `SUDO_GID` too: where both are set, pkexec started this
+//!    process, and `PKEXEC_UID` names the account that asked it to.
 //! 3. `NAILS_TARGET_USER`, `SUDO_USER`, `DOAS_USER` — the name-based equivalents.
 //! 4. The owner of the active graphical session on seat0, via logind.
 //!
@@ -51,7 +54,7 @@ const ENV_SUDO_USER: &str = "SUDO_USER";
 const ENV_DOAS_USER: &str = "DOAS_USER";
 
 /// UID environment sources, highest priority first.
-const UID_ENV_SOURCES: &[&str] = &[ENV_TARGET_UID, ENV_SUDO_UID, ENV_PKEXEC_UID, ENV_DOAS_UID];
+const UID_ENV_SOURCES: &[&str] = &[ENV_TARGET_UID, ENV_PKEXEC_UID, ENV_SUDO_UID, ENV_DOAS_UID];
 
 /// Username environment sources, highest priority first.
 const NAME_ENV_SOURCES: &[&str] = &[ENV_TARGET_USER, ENV_SUDO_USER, ENV_DOAS_USER];
@@ -192,7 +195,7 @@ where
     }
 
     Err(NailsError::InvalidState(
-        "Could not determine the target user: none of NAILS_TARGET_UID, SUDO_UID, PKEXEC_UID, \
+        "Could not determine the target user: none of NAILS_TARGET_UID, PKEXEC_UID, SUDO_UID, \
          DOAS_UID, NAILS_TARGET_USER, SUDO_USER or DOAS_USER resolved to a passwd entry, and no \
          active seat0 session was found. Set NAILS_TARGET_UID or NAILS_TARGET_USER to the \
          operator's account."

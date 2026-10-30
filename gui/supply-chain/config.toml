@@ -21,3 +21,2358 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[[exemptions.ab_glyph]]
+version = "0.2.32"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.32. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ab_glyph_rasterizer]]
+version = "0.1.10"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.10. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit]]
+version = "0.24.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.24.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit_atspi_common]]
+version = "0.19.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.19.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit_consumer]]
+version = "0.38.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.38.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit_ios]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit_macos]]
+version = "0.26.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.26.3. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit_unix]]
+version = "0.22.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.22.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit_windows]]
+version = "0.34.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.34.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.accesskit_winit]]
+version = "0.33.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.33.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ahash]]
+version = "0.8.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.12. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.aho-corasick]]
+version = "1.1.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.5. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.android-activity]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.6.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.android-properties]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.android_system_properties]]
+version = "0.1.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.6. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.annotate-snippets]]
+version = "0.12.16"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.16. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.anstyle]]
+version = "1.0.14"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.14. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.arboard]]
+version = "3.6.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.6.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.arrayvec]]
+version = "0.7.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.8. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.as-raw-xcb-connection]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-broadcast]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-channel]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.5.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-executor]]
+version = "1.14.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.14.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-io]]
+version = "2.6.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.6.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-lock]]
+version = "3.4.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.4.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-process]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.5.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-recursion]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.0. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-signal]]
+version = "0.2.14"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.14. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.async-trait]]
+version = "0.1.92"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.92. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.atspi]]
+version = "0.29.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.29.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.atspi-common]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.atspi-proxies]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.autocfg]]
+version = "1.5.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.5.1. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.base64]]
+version = "0.23.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.23.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.bincode]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.0.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.bitflags]]
+version = "2.13.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.13.2. It is in the window through fontique (the font library Slint uses), rustix (the window's handling of its standard input) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.block2]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.blocking]]
+version = "1.7.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.7.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.borsh]]
+version = "1.8.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.8.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.by_address]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.1. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.bytemuck]]
+version = "1.25.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.25.2. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.bytemuck_derive]]
+version = "1.12.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.12.1. It runs at build time only, through fontique (the font library Slint uses), slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.byteorder-lite]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.bytes]]
+version = "1.12.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.12.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.calloop]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.calloop]]
+version = "0.14.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.14.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.calloop-wayland-source]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.cc]]
+version = "1.8.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.8.0. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.cfg-if]]
+version = "1.0.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.5. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.chrono]]
+version = "0.4.45"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.45. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.clang-sys]]
+version = "1.9.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.9.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.clipboard-win]]
+version = "5.4.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.4.3. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.clru]]
+version = "0.6.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.6.3. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.combine]]
+version = "4.6.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 4.6.8. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.concurrent-queue]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.5.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.const-field-offset]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.const-field-offset-macro]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.1. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.convert_case]]
+version = "0.10.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.10.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.core-graphics]]
+version = "0.23.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.23.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.countme]]
+version = "3.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.0.1. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.crc32fast]]
+version = "1.5.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.5.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.critical-section]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.0. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.crossbeam-channel]]
+version = "0.5.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.5.4 is the base of the imported delta audits that reach 0.5.17, the version in the lock, and this exemption stands for 0.5.4 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.crossbeam-deque]]
+version = "0.8.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.8. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.crossbeam-epoch]]
+version = "0.9.21"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.21. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.crossbeam-utils]]
+version = "0.8.23"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.23. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ctor]]
+version = "0.10.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.10.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.cursor-icon]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.data-url]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.derive_more]]
+version = "2.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.derive_more-impl]]
+version = "2.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.1.1. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.dispatch]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.dispatch2]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.1. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.displaydoc]]
+version = "0.2.7"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.7. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.dlib]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.3. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.downcast-rs]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.dpi]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.drm]]
+version = "0.14.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.14.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.drm-ffi]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.drm-fourcc]]
+version = "2.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.2.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.drm-sys]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.dtor]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.either]]
+version = "1.19.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.19.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.endi]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.enumflags2]]
+version = "0.7.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.12. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.enumflags2_derive]]
+version = "0.7.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.12. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.error-code]]
+version = "3.4.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.4.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.event-listener]]
+version = "5.4.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.4.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.event-listener-strategy]]
+version = "0.5.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.4. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.fastrand]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.5.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.field-offset]]
+version = "0.3.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.6. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.filetime]]
+version = "0.2.29"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.29. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.find-msvc-tools]]
+version = "0.1.14"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.14. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.fixed_decimal]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.fixedbitset]]
+version = "0.5.7"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.7. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.flate2]]
+version = "1.1.10"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.10. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.float-cmp]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.font-types]]
+version = "0.12.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.6. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.fontdb]]
+version = "0.24.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.24.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.fontique]]
+version = "0.11.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.11.1. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.foreign-types-macros]]
+version = "0.2.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.4. It runs at build time only, through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.34. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures-channel]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.34. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures-executor]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.34. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures-io]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.34. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures-lite]]
+version = "2.6.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.6.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures-macro]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.34. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures-sink]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.34. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.futures-task]]
+version = "0.3.21"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.3.21 is the base of the imported delta audits that reach 0.3.34, the version in the lock, and this exemption stands for 0.3.21 itself. It is in the window through slint (the Slint toolkit the window draws with), and in its tests."
+
+[[exemptions.futures-util]]
+version = "0.3.21"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.3.21 is the base of the imported delta audits that reach 0.3.34, the version in the lock, and this exemption stands for 0.3.21 itself. It is in the window through slint (the Slint toolkit the window draws with), and in its tests."
+
+[[exemptions.gethostname]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.getrandom]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.2.2 is the base of the imported delta audits that reach 0.3.4, 0.4.3, the version in the lock, and this exemption stands for 0.2.2 itself. It is in the window through slint (the Slint toolkit the window draws with)."
+
+[[exemptions.gif]]
+version = "0.14.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.14.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.gl_generator]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.14.0. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.glob]]
+version = "0.3.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.4. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.glow]]
+version = "0.18.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.18.0. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.glutin]]
+version = "0.32.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.32.3. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.glutin-winit]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.glutin_egl_sys]]
+version = "0.7.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.glutin_glx_sys]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.6.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.glutin_wgl_sys]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.6.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.grid]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.half]]
+version = "2.7.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.7.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.harfrust]]
+version = "0.12.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.hashbrown]]
+version = "0.14.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.14.2 is the base of the imported delta audits that reach 0.14.5, 0.15.5, 0.16.1, 0.17.1, the version in the lock, and this exemption stands for 0.14.2 itself. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust)."
+
+[[exemptions.hermit-abi]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.3.1 is the base of the imported delta audits that reach 0.3.9, 0.5.3, the version in the lock, and this exemption stands for 0.3.1 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.hermit-abi]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.3. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.htmlparser]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-backend-linuxkms]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-backend-selector]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-backend-testing]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is only in the window's tests (the headless UI tests), never in the window itself. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-backend-winit]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-common]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-compiler]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-core]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-core-macros]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-renderer-skia]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.i-slint-renderer-software]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.iana-time-zone]]
+version = "0.1.65"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.65. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_collections]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_decimal]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_decimal_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_locale_core]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_locale_fallback]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_locale_fallback_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_normalizer]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_normalizer_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_plurals]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_plurals_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_properties]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_properties_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_provider]]
+version = "2.3.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_segmenter]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.icu_segmenter_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.3.0. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.idna_adapter]]
+version = "1.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.image]]
+version = "0.25.10"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.25.10. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.image-webp]]
+version = "0.2.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.4. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.imagesize]]
+version = "0.15.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.15.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.imgref]]
+version = "1.12.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.12.3. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.indexmap]]
+version = "2.14.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.14.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.input]]
+version = "0.10.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.10.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.input-sys]]
+version = "1.19.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.19.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.itertools]]
+version = "0.10.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.10.3 is the base of the imported delta audits that reach 0.13.0, 0.15.0, the version in the lock, and this exemption stands for 0.10.3 itself. It runs at build time only, through slint (the Slint toolkit the window draws with)."
+
+[[exemptions.itertools]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.0. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.itoa]]
+version = "1.0.18"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.18. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine), and runs at build time through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.jni]]
+version = "0.22.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.22.4. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.jni-macros]]
+version = "0.22.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.22.4. It runs at build time only, through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.jni-sys]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.jni-sys]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.jni-sys-macros]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.1. It runs at build time only, through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.jobserver]]
+version = "0.1.35"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.35. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.js-sys]]
+version = "0.3.106"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.106. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.keyboard-types]]
+version = "0.7.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.khronos_api]]
+version = "3.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.1.0. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.kurbo]]
+version = "0.13.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.lazy_static]]
+version = "1.5.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.5.1. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.libc]]
+version = "0.2.189"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.2.189 is the base of the imported delta audits that reach 0.2.190, the version in the lock, and this exemption stands for 0.2.189 itself. It is in the window through fontique (the font library Slint uses), rustix (the window's handling of its standard input) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests."
+
+[[exemptions.libloading]]
+version = "0.8.9"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.9. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.libm]]
+version = "0.2.16"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.16. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.libredox]]
+version = "0.1.25"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.25. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.libseat]]
+version = "0.2.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.4. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.libseat-sys]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.libudev-sys]]
+version = "0.1.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.4. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.linebender_resource_handle]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.1. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.linux-raw-sys]]
+version = "0.4.15"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.15. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.linux-raw-sys]]
+version = "0.9.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.4. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.1. It is in the window through rustix (the window's handling of its standard input) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.litemap]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.3. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.litrs]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.lock_api]]
+version = "0.4.14"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.14. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.log]]
+version = "0.4.34"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.34. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.lyon_algorithms]]
+version = "1.0.21"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.21. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.lyon_extra]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.lyon_geom]]
+version = "1.0.19"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.19. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.lyon_path]]
+version = "1.0.19"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.19. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.memchr]]
+version = "2.8.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.8.3. It is in the window through fontique (the font library Slint uses), nails-api (the wire contract with the engine), serde_json (the JSON of the protocol with the engine) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.memmap2]]
+version = "0.2.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.2.3 is the base of the imported delta audits that reach 0.9.11, the version in the lock, and this exemption stands for 0.2.3 itself. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests."
+
+[[exemptions.memoffset]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.minimal-lexical]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.miniz_oxide]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.moxcms]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.muda]]
+version = "0.19.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.19.3. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.naga]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.naga-types]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ndk]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ndk-sys]]
+version = "0.6.0+11769913"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.6.0+11769913. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.nix]]
+version = "0.31.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.31.3. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.nom]]
+version = "8.0.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 8.0.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.num_enum]]
+version = "0.7.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.6. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.num_enum_derive]]
+version = "0.7.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.7.6. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc-sys]]
+version = "0.3.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.5. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.3. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-app-kit]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-app-kit]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.2. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-cloud-kit]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-contacts]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-core-data]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-core-image]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-core-location]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-core-text]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.2. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-foundation]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-link-presentation]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-metal]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-quartz-core]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-symbols]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-ui-kit]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-ui-kit]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-uniform-type-identifiers]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.objc2-user-notifications]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.once_cell]]
+version = "1.12.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 1.12.0 is the base of the imported delta audits that reach 1.21.4, the version in the lock, and this exemption stands for 1.12.0 itself. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests."
+
+[[exemptions.orbclient]]
+version = "0.3.55"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.55. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ordered-float]]
+version = "5.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.5.0. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ordered-stream]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.os_pipe]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.3. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.owned_ttf_parser]]
+version = "0.25.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.25.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.parking_lot]]
+version = "0.12.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.5. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.parking_lot_core]]
+version = "0.9.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.12. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.parlance]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.1. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.parley]]
+version = "0.11.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.11.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.parley_data]]
+version = "0.11.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.11.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.petgraph]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.3. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.phf]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.8.0 is the base of the imported delta audits that reach 0.13.1, the version in the lock, and this exemption stands for 0.8.0 itself. It is in the window through slint (the Slint toolkit the window draws with)."
+
+[[exemptions.phf_generator]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.8.0 is the base of the imported delta audits that reach 0.13.1, the version in the lock, and this exemption stands for 0.8.0 itself. It runs at build time only, through slint (the Slint toolkit the window draws with)."
+
+[[exemptions.phf_macros]]
+version = "0.13.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.1. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.phf_shared]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.8.0 is the base of the imported delta audits that reach 0.13.1, the version in the lock, and this exemption stands for 0.8.0 itself. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with)."
+
+[[exemptions.pico-args]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.pin-project]]
+version = "1.1.13"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.13. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.pin-project-internal]]
+version = "1.1.13"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.13. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.pin-project-lite]]
+version = "0.2.17"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.17. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.pin-utils]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.pin-weak]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.0. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.piper]]
+version = "0.2.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.5. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.plain]]
+version = "0.2.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.3. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.png]]
+version = "0.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.18.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.polling]]
+version = "3.11.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.11.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.polycool]]
+version = "0.4.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.portable-atomic]]
+version = "1.15.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.15.0. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.portable-atomic-util]]
+version = "0.2.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.8. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.potential_utf]]
+version = "0.1.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.6. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.prettyplease]]
+version = "0.2.37"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.37. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.proc-macro-crate]]
+version = "3.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.5.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.proc-macro2]]
+version = "1.0.107"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.107. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through fontique (the font library Slint uses), nails-api (the wire contract with the engine), rustix (the window's handling of its standard input), serde (the JSON of the protocol with the engine), serde_json (the JSON of the protocol with the engine), slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.profiling]]
+version = "1.0.18"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.18. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.pulldown-cmark]]
+version = "0.13.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.5. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.pxfm]]
+version = "0.1.30"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.30. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.quick-error]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.0.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.quick-xml]]
+version = "0.41.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.41.0. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.r-efi]]
+version = "5.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 5.2.0 is the base of the imported delta audits that reach 5.3.0, 6.0.0, the version in the lock, and this exemption stands for 5.2.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.range-alloc]]
+version = "0.1.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.5. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rayon]]
+version = "1.12.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.12.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.redox_syscall]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.redox_syscall]]
+version = "0.5.18"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.18. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.redox_syscall]]
+version = "0.9.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.4. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.regex]]
+version = "1.13.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.13.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.regex-automata]]
+version = "0.4.18"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.18. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.regex-syntax]]
+version = "0.8.11"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.11. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.renderdoc-sys]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.0. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.resvg]]
+version = "0.48.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rgb]]
+version = "0.8.53"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.53. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rowan]]
+version = "0.17.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.17.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.roxmltree]]
+version = "0.21.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.21.1. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rspolib]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.2. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rustc-hash]]
+version = "2.1.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.1.3. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rustix]]
+version = "0.38.44"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.38.44. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rustix]]
+version = "1.1.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.5. It is in the window through rustix (the window's handling of its standard input) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rustversion]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.23. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.same-file]]
+version = "1.0.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.6. It runs at build time only, through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.scoped-tls]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.scoped-tls-hkt]]
+version = "0.1.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.5. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.scopeguard]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 1.1.0 is the base of the imported delta audits that reach 1.2.0, the version in the lock, and this exemption stands for 1.1.0 itself. It is in the window through slint (the Slint toolkit the window draws with), and in its tests."
+
+[[exemptions.sctk-adwaita]]
+version = "0.10.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.10.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.229. It is in the window through nails-api (the wire contract with the engine), serde (the JSON of the protocol with the engine), serde_json (the JSON of the protocol with the engine) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_core]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.229. It is in the window through fontique (the font library Slint uses), nails-api (the wire contract with the engine), rustix (the window's handling of its standard input), serde (the JSON of the protocol with the engine), serde_json (the JSON of the protocol with the engine) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_derive]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.229. It runs at build time only, through fontique (the font library Slint uses), nails-api (the wire contract with the engine), rustix (the window's handling of its standard input), serde (the JSON of the protocol with the engine), serde_json (the JSON of the protocol with the engine), slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_json]]
+version = "1.0.154"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.154. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine), and runs at build time through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_repr]]
+version = "0.1.21"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.21. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_spanned]]
+version = "1.1.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.2. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.signal-hook-registry]]
+version = "1.4.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.4.8. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.simd-adler32]]
+version = "0.3.10"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.10. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.simd_cesu8]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.simplecss]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.siphasher]]
+version = "1.0.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.4. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.skia-bindings]]
+version = "0.153.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.153.3. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.skia-safe]]
+version = "0.153.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.153.3. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.slab]]
+version = "0.4.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.12. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.slint]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.slint-build]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It runs at build time only, through slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.slint-macros]]
+version = "1.18.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.18.1. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.slotmap]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.smallvec]]
+version = "1.16.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.16.3. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.smithay-client-toolkit]]
+version = "0.19.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.19.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.smol_str]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.smol_str]]
+version = "0.3.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.6. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.snafu]]
+version = "0.8.9"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.9. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.snafu-derive]]
+version = "0.8.9"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.9. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.softbuffer]]
+version = "0.4.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.8. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.spin_on]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.spirv]]
+version = "0.2.0+1.5.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.2.0+1.5.4 is the base of the imported delta audits that reach 0.4.0+sdk-1.4.341.0, the version in the lock, and this exemption stands for 0.2.0+1.5.4 itself. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it."
+
+[[exemptions.stable_deref_trait]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.strict-num]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.strum]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.28.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.strum_macros]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.28.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.svgtypes]]
+version = "0.16.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.16.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.swash]]
+version = "0.2.10"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.10. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.syn]]
+version = "2.0.119"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.0.119. It runs at build time only, through fontique (the font library Slint uses), slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.syn]]
+version = "3.0.9"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.0.9. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through fontique (the font library Slint uses), nails-api (the wire contract with the engine), rustix (the window's handling of its standard input), serde (the JSON of the protocol with the engine), serde_json (the JSON of the protocol with the engine), slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.synstructure]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.14.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.sys-locale]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.2. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.taffy]]
+version = "0.10.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.10.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tar]]
+version = "0.4.38"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.4.38 is the base of the imported delta audits that reach 0.4.46, the version in the lock, and this exemption stands for 0.4.38 itself. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it."
+
+[[exemptions.tempfile]]
+version = "3.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 3.3.0 is the base of the imported delta audits that reach 3.27.0, the version in the lock, and this exemption stands for 3.3.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.text-size]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.1. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.thiserror]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.0.21. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.thiserror-impl]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.0.21. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tiny-skia]]
+version = "0.11.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.11.4. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tiny-skia]]
+version = "0.12.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tiny-skia-path]]
+version = "0.11.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.11.4. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tiny-skia-path]]
+version = "0.12.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tiny-xlib]]
+version = "0.2.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.5. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tinystr]]
+version = "0.8.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.4. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tokio]]
+version = "1.54.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.54.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.toml]]
+version = "1.1.8+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.8+spec-1.1.0. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.toml_datetime]]
+version = "1.1.2+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.2+spec-1.1.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.toml_edit]]
+version = "0.25.17+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.25.17+spec-1.1.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.toml_parser]]
+version = "1.1.5+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.5+spec-1.1.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.toml_writer]]
+version = "1.1.3+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.3+spec-1.1.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tracing]]
+version = "0.1.44"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.44. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tracing-attributes]]
+version = "0.1.31"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.31. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.tree_magic_mini]]
+version = "3.2.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.2.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.ttf-parser]]
+version = "0.25.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.25.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.typed-index-collections]]
+version = "3.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.5.0. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.udev]]
+version = "0.9.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.3. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.uds_windows]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.1. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.unicase]]
+version = "2.10.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.10.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.unicode-ident]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.27. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through fontique (the font library Slint uses), nails-api (the wire contract with the engine), rustix (the window's handling of its standard input), serde (the JSON of the protocol with the engine), serde_json (the JSON of the protocol with the engine), slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.unicode-script]]
+version = "0.5.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.8. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.unicode-vo]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.unty]]
+version = "0.0.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.0.4. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.url]]
+version = "2.5.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.5.8. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.usvg]]
+version = "0.48.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.uuid]]
+version = "1.28.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.28.0. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.version_check]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.5. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.vtable]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.0. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.vtable-macro]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.0. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.walkdir]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.5.0. It runs at build time only, through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wasm-bindgen]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.129. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wasm-bindgen-futures]]
+version = "0.4.79"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.79. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wasm-bindgen-macro]]
+version = "0.2.99"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.2.99 is the base of the imported delta audits that reach 0.2.129, the version in the lock, and this exemption stands for 0.2.99 itself. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. It is built only for a system other than Linux."
+
+[[exemptions.wasm-bindgen-macro-support]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.129. It runs at build time only, through slint (the Slint toolkit the window draws with), and in the tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wasm-bindgen-shared]]
+version = "0.2.100"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.2.100 is the base of the imported delta audits that reach 0.2.129, the version in the lock, and this exemption stands for 0.2.100 itself. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux."
+
+[[exemptions.wayland-backend]]
+version = "0.3.17"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.17. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-client]]
+version = "0.31.15"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.31.15. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-csd-frame]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-cursor]]
+version = "0.31.14"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.31.14. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-protocols]]
+version = "0.32.13"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.32.13. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-protocols-plasma]]
+version = "0.3.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.12. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-protocols-wlr]]
+version = "0.3.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.12. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-scanner]]
+version = "0.31.11"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.31.11. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wayland-sys]]
+version = "0.31.11"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.31.11. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.web-sys]]
+version = "0.3.106"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.106. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.webbrowser]]
+version = "1.2.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.2.4. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.weezl]]
+version = "0.1.12"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.12. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wgpu]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wgpu-core]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wgpu-core-deps-apple]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wgpu-core-deps-windows-linux-android]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wgpu-hal]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wgpu-naga-bridge]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wgpu-types]]
+version = "30.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 30.0.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.winapi-util]]
+version = "0.1.9"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.1.9 is the base of the imported delta audits that reach 0.1.11, the version in the lock, and this exemption stands for 0.1.9 itself. It runs at build time only, through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows]]
+version = "0.62.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.62.2. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-collections]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.2. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-core]]
+version = "0.62.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.62.2. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-future]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.2. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-implement]]
+version = "0.60.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.60.2. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-interface]]
+version = "0.59.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.59.3. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-numerics]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-result]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-strings]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-sys]]
+version = "0.48.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-sys]]
+version = "0.52.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-sys]]
+version = "0.59.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.59.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-sys]]
+version = "0.60.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.60.2. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.61.2. It is in the window through rustix (the window's handling of its standard input) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-targets]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-targets]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-targets]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.5, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows-threading]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.1. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_aarch64_gnullvm]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_aarch64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_aarch64_gnullvm]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows_aarch64_msvc]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_aarch64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_aarch64_msvc]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows_i686_gnu]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_i686_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_i686_gnu]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows_i686_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_i686_gnullvm]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows_i686_msvc]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_i686_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_i686_msvc]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows_x86_64_gnu]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_x86_64_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_x86_64_gnu]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows_x86_64_gnullvm]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_x86_64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_x86_64_gnullvm]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.windows_x86_64_msvc]]
+version = "0.48.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.48.5. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_x86_64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.52.6. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows_x86_64_msvc]]
+version = "0.53.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.53.0 is the base of the imported delta audits that reach 0.48.5, 0.52.6, 0.53.1, the version in the lock, and this exemption stands for 0.53.0 itself. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux."
+
+[[exemptions.winit]]
+version = "0.30.13"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.30.13. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.winnow]]
+version = "1.0.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.4. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.wl-clipboard-rs]]
+version = "0.9.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.4. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.write-fonts]]
+version = "0.50.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.50.0. It is in the window through slint (the Slint toolkit the window draws with). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.writeable]]
+version = "0.6.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.6.4. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.x11-dl]]
+version = "2.21.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.21.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.x11rb]]
+version = "0.13.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.x11rb-protocol]]
+version = "0.13.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.13.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.xcursor]]
+version = "0.3.11"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.11. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.xkbcommon]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.9.0. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.xkbcommon-dl]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.4.2. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.xkeysym]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.1. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.xml-rs]]
+version = "0.8.29"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.29. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.xmlwriter]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.yazi]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.yeslogic-fontconfig-sys]]
+version = "6.0.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 6.0.1. It is in the window through fontique (the font library Slint uses) and slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.yoke]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.3. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.yoke-derive]]
+version = "0.8.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.4. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zbus]]
+version = "5.19.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.19.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zbus-lockstep]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.2. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zbus-lockstep-macros]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.2. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zbus_macros]]
+version = "5.19.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.19.0. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zbus_names]]
+version = "4.3.4"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 4.3.4. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zbus_xml]]
+version = "5.2.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.2.1. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zcheapstr]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zeno]]
+version = "0.3.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.3.3. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zerocopy]]
+version = "0.8.62"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.62. It is in the window through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zerocopy-derive]]
+version = "0.8.62"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.8.62. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zerofrom]]
+version = "0.1.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.8. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zerofrom-derive]]
+version = "0.1.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.1.8. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zerotrie]]
+version = "0.2.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.2.5. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zerovec]]
+version = "0.11.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.11.8. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zerovec-derive]]
+version = "0.11.6"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.11.6. It runs at build time only, through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in the tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zlib-rs]]
+version = "0.6.8"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.6.8. No build of the window compiles it: it is in the lock only as an optional dependency in the graph of slint (the Slint toolkit the window draws with) that no feature the window uses turns on. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zmij]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.23. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine), and runs at build time through slint (the Slint toolkit the window draws with), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zune-core]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.3. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zune-jpeg]]
+version = "0.5.15"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.5.15. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zvariant]]
+version = "5.15.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.15.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zvariant_derive]]
+version = "5.15.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 5.15.0. It runs at build time only, through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zvariant_utils]]
+version = "4.2.0"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 4.2.0. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."

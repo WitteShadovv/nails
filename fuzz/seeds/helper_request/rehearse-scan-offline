@@ -1,0 +1,1 @@
+{"v":1,"id":22,"op":{"rehearse_scan":{"offline":true,"images":["/srv/decoy.raw"],"token_file":"/mnt/data/token","allow_same_boot":true,"max_bytes":1073741824}}}

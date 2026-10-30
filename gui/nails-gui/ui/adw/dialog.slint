@@ -1,0 +1,118 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// A question over the window, as libadwaita's alert dialog: a heading, the
+// sentence it asks about, Cancel and the action it confirms.
+//
+// It holds the keyboard while it is open. Focus starts on Cancel; Tab and
+// Shift+Tab move between its two buttons and never leave it, because every
+// control behind it is unreachable while it is open (the window passes that
+// down); Escape cancels from anywhere in it; Return presses only the button
+// that has the focus, so it never confirms by itself. The pointer cannot
+// reach the window behind it either.
+
+import { Adw } from "theme.slint";
+import { Button, ButtonKind, ButtonShape } from "button.slint";
+
+export component AlertDialog {
+    in property <string> heading;
+    in property <string> body;
+    in property <string> confirm-label;
+    in property <bool> destructive;
+    // Called with true for the confirming button, false for Cancel or Escape.
+    callback answered(confirmed: bool);
+
+    accessible-role: groupbox;
+    accessible-label: root.heading;
+    accessible-description: root.body;
+
+    init => {
+        cancel.focus();
+    }
+
+    // The dimming over the window, and nothing underneath gets the pointer.
+    Rectangle {
+        background: Adw.dimming;
+    }
+
+    TouchArea { }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.answered(false);
+                return accept;
+            }
+            reject
+        }
+
+        sheet := Rectangle {
+            width: min(root.width - 24px, 372px);
+            height: content.preferred-height;
+            x: round((root.width - self.width) / 2px) * 1px;
+            y: round((root.height - self.height) / 2px) * 1px;
+            border-radius: Adw.alert-radius;
+            background: Adw.dialog-bg;
+            border-width: 1px;
+            border-color: Adw.outline;
+
+            content := VerticalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 32px;
+                padding-bottom: 24px;
+                spacing: 10px;
+
+                Text {
+                    text: root.heading;
+                    font-size: Adw.font-size-title;
+                    font-weight: Adw.weight-title;
+                    color: Adw.dialog-fg;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+
+                Text {
+                    text: root.body;
+                    color: Adw.dialog-fg;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+
+                HorizontalLayout {
+                    padding-top: 22px;
+                    spacing: 12px;
+
+                    cancel := Button {
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        horizontal-stretch: 1;
+                        text: "Cancel";
+                        shape: ButtonShape.response;
+                        surface-fg: Adw.dialog-fg;
+                        clicked => {
+                            root.answered(false);
+                        }
+                    }
+
+                    Button {
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        horizontal-stretch: 1;
+                        text: root.confirm-label;
+                        shape: ButtonShape.response;
+                        surface-fg: Adw.dialog-fg;
+                        kind: root.destructive ? ButtonKind.destructive : ButtonKind.suggested;
+                        clicked => {
+                            root.answered(true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

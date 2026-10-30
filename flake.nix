@@ -213,12 +213,16 @@
       });
 
       # The gui/ workspace is a Cargo workspace of its own and builds from its
-      # own manifest and lock. Only what cargo reads is in its source, so a
-      # change to its cargo-deny policy, its supply-chain records or its
-      # coverage floor rebuilds nothing.
+      # own manifest and lock. It links one crate of the main tree, nails-api
+      # (the wire contract), which takes its version, edition and lints from
+      # the root manifest, so both are in its source too. Only what cargo reads
+      # is, so a change to its cargo-deny policy, its supply-chain records or
+      # its coverage floor rebuilds nothing.
       guiSourceFiles = lib.fileset.toSource {
-        root = ./gui;
+        root = ./.;
         fileset = lib.fileset.unions [
+          ./Cargo.toml
+          ./nails-api
           ./gui/Cargo.toml
           ./gui/Cargo.lock
           ./gui/nails-gui
@@ -236,15 +240,16 @@
         rustc = rustToolchainGui;
       };
 
-      # The gui/ workspace's binary. It is a placeholder that prints its version
-      # and that the interface is not built yet; it draws no window and is not
-      # part of the release.
+      # The gui/ workspace's binary: the window, which drives the engine
+      # through its root helper. It is not part of the release yet.
       nails-gui = rustPlatformGui.buildRustPackage {
         pname = "nails-gui";
         version = guiManifest.workspace.package.version;
 
         src = guiSourceFiles;
         cargoLock.lockFile = ./gui/Cargo.lock;
+        cargoRoot = "gui";
+        buildAndTestSubdir = "gui";
 
         strictDeps = true;
 
@@ -265,7 +270,7 @@
         doCheck = false;
 
         meta = {
-          description = "Placeholder binary of the graphical interface for nails, which is not built yet";
+          description = "The window of nails, a front end that drives the engine through its root helper";
           inherit (guiManifest.workspace.package) homepage;
           license = lib.getLicenseFromSpdxId guiManifest.workspace.package.license;
           mainProgram = "nails-gui";
