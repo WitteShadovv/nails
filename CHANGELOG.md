@@ -150,24 +150,25 @@ of this changelog for that version becomes the release notes word for word, and
   its header bar, on every page until it fires: also before the helper answered, once it is gone, on
   that page and above an open question, whose dimming keeps everything else out of reach. Held, its
   bar fills in about a second, the window's own countdown, and letting go once it is full ends the
-  session; letting go earlier or moving off cancels, and a press too short says to hold it. From the
-  keyboard (it is a Tab stop, never where the focus starts) Return or Space ends it on the second
-  press, with no time limit, and Escape or Tab cancels; a screen reader's activate action takes the
-  same two steps, and each change of its label is announced at once. It decides on the input event
-  itself, and the emergency then goes its own way on a thread of its own: it writes the engine's
-  emergency, a power-off, onto the helper's pipe beside whatever request the window waits on (a
-  helper busy with another request reads it once that one is done), and where there is no helper,
-  the request cannot be written within 3 seconds, or the window still runs 3 seconds after it, it
-  asks logind for the power-off itself with `systemctl poweroff`, which needs neither root nor the
-  helper. The page names the power button for a computer that still does not turn off. The worker's
-  updates reach the window's thread through one task on its event loop at a time, at most 64 per
-  turn, so no flood of the helper's events can queue ahead of the person's input. Every control and
-  row is a Tab stop with an accessible name. The window's own names are neutral: its title is
-  "Session", and its app id, its program (`<hidden-root>/gui/bin/session`), its process name and the
-  application name a screen reader reads are all `session`. Its command line is its name alone,
-  `session` (`session --engine -` once a menu entry's start ran again), so a log that quotes it,
-  such as dbus-daemon's line for a service the window's bus traffic starts, names no place. Its
-  toolkit starts no program, on X11 or on Wayland: its winit backend is a patched copy of Slint's
+  session; letting go earlier or moving off cancels, a press made beside it and let go on it does
+  nothing, and a press too short says to hold it. From the keyboard (it is a Tab stop, never where
+  the focus starts) Return or Space ends it on the second press, with no time limit (a key held down
+  is one press), and Escape or Tab cancels; a screen reader's activate action takes the same two
+  steps, and each change of its label is announced at once. It decides on the input event itself,
+  and the emergency then goes its own way on a thread of its own: it writes the engine's emergency,
+  a power-off, onto the helper's pipe beside whatever request the window waits on (a helper busy
+  with another request reads it once that one is done), and where there is no helper, the request
+  cannot be written within 3 seconds, or the window still runs 3 seconds after it, it asks logind
+  for the power-off itself with `systemctl poweroff`, which needs neither root nor the helper. The
+  page names the power button for a computer that still does not turn off. The worker's updates
+  reach the window's thread through one task on its event loop at a time, at most 64 per turn, so no
+  flood of the helper's events can queue ahead of the person's input. Every control and row is a Tab
+  stop with an accessible name. The window's own names are neutral: its title is "Session", and its
+  app id, its program (`<hidden-root>/gui/bin/session`), its process name and the application name a
+  screen reader reads are all `session`. Its command line is its name alone, `session` (`session
+  --engine -` once a menu entry's start ran again), so a log that quotes it, such as dbus-daemon's
+  line for a service the window's bus traffic starts, names no place. Its toolkit starts no program,
+  on X11 or on Wayland: its winit backend is a patched copy of Slint's
   (`gui/patches/i-slint-backend-winit`) that builds winit without sctk-adwaita. winit still builds
   its Wayland client-side frame and hides it, since the window has no frame, but that frame is now
   smithay's fallback frame, which starts no program, where sctk-adwaita's ran `dbus-send`,
