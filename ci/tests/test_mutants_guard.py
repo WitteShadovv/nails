@@ -6,8 +6,10 @@ import contextlib
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -266,24 +268,117 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(done.returncode, 2)
 
 
+def recipe_body(name: str) -> str:
+    """The lines of the justfile recipe ``name``."""
+    text = JUSTFILE.read_text(encoding="utf-8")
+    recipe = re.search(
+        rf"^{re.escape(name)} [^\n]*:\n((?:[ \t]+[^\n]*\n|\n)*)", text, re.M
+    )
+    if recipe is None:
+        raise AssertionError(f"no recipe {name} in the justfile")
+    return recipe.group(1)
+
+
+def justfile_variable(name: str) -> str:
+    """The value of the justfile's variable ``name``."""
+    found = re.search(
+        rf'^{re.escape(name)} := "([^"]*)"$', JUSTFILE.read_text(encoding="utf-8"), re.M
+    )
+    if found is None:
+        raise AssertionError(f"no variable {name} in the justfile")
+    return found.group(1)
+
+
+def write_program(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+
+
 class LaneTest(unittest.TestCase):
-    def test_the_lane_runs_every_test_binary_through_the_guard(self) -> None:
-        text = JUSTFILE.read_text(encoding="utf-8")
-        recipe = re.search(
-            r"^mutants-in-diff [^\n]*:\n((?:[ \t]+[^\n]*\n|\n)*)", text, re.M
+    def runner_cargo_gets(self, host: str) -> str:
+        """The runner the recipe gives cargo for the test binaries of ``host``.
+
+        The recipe runs in bash as just runs it, with its parameters filled
+        in, a rustc that names ``host``, and a cargo that writes down the
+        variable cargo reads for that host's test binaries (CARGO_TARGET_ and
+        the host in capitals, `-` as `_`) and then stops the recipe. bash reads
+        no startup file, and its stdin is no socket, which it would take for
+        sshd's and then read the system's bashrc, which can set PATH anew.
+        """
+        variable = "CARGO_TARGET_" + host.upper().replace("-", "_") + "_RUNNER"
+        values = {
+            "diff": "pr.diff",
+            "shard": "0",
+            "shards": "1",
+            "minutes": "",
+            "mutants_in_diff_options": justfile_variable("mutants_in_diff_options"),
+            "justfile_directory()": str(REPO_ROOT),
+        }
+        # An interpolation not filled in here fails the test with its name.
+        script = re.sub(
+            r"\{\{ ([^}]*) \}\}",
+            lambda found: values[found.group(1)],
+            recipe_body("mutants-in-diff"),
         )
-        if recipe is None:
-            raise AssertionError("no recipe mutants-in-diff in the justfile")
-        body = recipe.group(1)
-        # cargo's runner for the host, the target of the test binaries.
-        self.assertIn("host=$(rustc --print host-tuple)", body)
-        self.assertIn(
-            'export "CARGO_TARGET_${host//-/_}_RUNNER=python3 -I '
-            '{{ justfile_directory() }}/ci/mutants_guard.py"',
-            body,
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = Path(tmp, "bin")
+            tools.mkdir()
+            seen = Path(tmp, "runner")
+            write_program(tools / "rustc", f"#!/bin/sh\necho {host}\n")
+            write_program(
+                tools / "cargo",
+                f'#!/bin/sh\nprintf %s "${{{variable}-unset}}" > "{seen}"\nexit 7\n',
+            )
+            done = subprocess.run(
+                ["bash", "--norc", "--noprofile", "-c", script],
+                cwd=tmp,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={"PATH": f"{tools}{os.pathsep}{os.environ.get('PATH', '')}"},
+            )
+            # The recipe ends with the status of the cargo that stopped it.
+            self.assertEqual(done.returncode, 7, done.stderr)
+            return seen.read_text(encoding="utf-8")
+
+    def test_cargo_gets_the_guard_as_the_runner_for_the_host(self) -> None:
+        for host in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-musl"):
+            with self.subTest(host=host):
+                self.assertEqual(
+                    self.runner_cargo_gets(host),
+                    f"python3 -I {REPO_ROOT}/ci/mutants_guard.py",
+                )
+
+    def test_a_binary_run_through_that_runner_gets_the_cap(self) -> None:
+        # cargo splits the runner at whitespace and appends the test binary and
+        # its arguments.
+        runner = self.runner_cargo_gets("x86_64-unknown-linux-gnu").split()
+        probe = "import resource; print(resource.getrlimit(resource.RLIMIT_DATA)[0])"
+        done = subprocess.run(
+            [*runner, *python(probe)], capture_output=True, text=True, timeout=60
         )
-        # Before cargo-mutants starts.
-        self.assertLess(body.index("_RUNNER="), body.index("cargo mutants"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, f"{mutants_guard.MEMORY_BYTES}\n")
+
+    def test_the_check_holds_with_a_socket_for_stdin(self) -> None:
+        # As when the tests run in a command that sshd started.
+        theirs, ours = socket.socketpair()
+        with theirs, ours:
+            done = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "unittest",
+                    f"{__name__}.LaneTest.test_cargo_gets_the_guard_as_the_runner_for_the_host",
+                ],
+                cwd=REPO_ROOT,
+                stdin=theirs.fileno(),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        self.assertEqual(done.returncode, 0, done.stderr)
 
 
 if __name__ == "__main__":
