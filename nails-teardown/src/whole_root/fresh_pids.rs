@@ -35,7 +35,9 @@
 //! floor's in the decoy, the first above the switch's counter in the hidden
 //! session. A getty started again after a logout, or on demand for another
 //! terminal, took its number after everything that ran before it, so it is no
-//! anchor and no measure, and the next anchor is tried.
+//! anchor and no measure, and the next anchor is tried. When the getty is
+//! passed over, the measure goes by logind, and the getty's own number is not
+//! measured.
 //!
 //! Without an anchor to measure by, the counter goes to just below the floor.
 //! The decoy's start then numbers its units from where its own boot's
