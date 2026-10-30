@@ -31,7 +31,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use nails_api::Event;
-use nails_api::protocol::{CheckArgs, Hello, Op, ProtocolError};
+use nails_api::protocol::{
+    CheckArgs, Hello, Op, ProtocolError, RehearsePlantArgs, RehearseScanArgs, VerifyArgs,
+};
 
 use crate::client::{Answer, Client, ClientError, Plan, PlanAnswer, PlanData, Planned};
 use crate::emergency::Emergency;
@@ -46,12 +48,41 @@ pub enum Ask {
     Check(CheckArgs),
     /// `nails recover`: the window's Clean Up and Reset Record.
     Recover,
+    /// `nails verify`.
+    Verify(VerifyArgs),
+    /// A step of `nails rehearse`.
+    Rehearse(Rehearse),
     /// The plan of an operation the engine confirms first.
     Plan(Plan),
     /// Apply the plan that waits.
     Apply,
     /// Drop the plan that waits.
     Withdraw,
+}
+
+/// One step of `nails rehearse`, each a request of its own: none of them
+/// asks first, in the CLI or here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rehearse {
+    /// `nails rehearse status`: where the rehearsal stands.
+    Status,
+    /// `nails rehearse plant`: plant the test words in this hidden session.
+    Plant(RehearsePlantArgs),
+    /// `nails rehearse scan`: read this computer's disks for them.
+    Scan(RehearseScanArgs),
+    /// `nails rehearse reset`: remove the rehearsal from the hidden volume.
+    Reset,
+}
+
+impl Rehearse {
+    fn op(self) -> Op {
+        match self {
+            Rehearse::Status => Op::RehearseStatus,
+            Rehearse::Plant(args) => Op::RehearsePlant(args),
+            Rehearse::Scan(args) => Op::RehearseScan(args),
+            Rehearse::Reset => Op::RehearseReset,
+        }
+    }
 }
 
 /// The request an answer belongs to.
@@ -63,6 +94,10 @@ pub enum Kind {
     Check,
     /// [`Ask::Recover`].
     Recover,
+    /// [`Ask::Verify`].
+    Verify,
+    /// [`Ask::Rehearse`].
+    Rehearse,
     /// [`Ask::Plan`].
     Plan,
     /// [`Ask::Apply`].
@@ -354,29 +389,16 @@ fn serve(
     planned: &mut Option<Planned>,
     report: &dyn Fn(Update),
 ) -> Result<(), ClientError> {
-    let mut events = |event| report(Update::Event(event));
     match ask {
-        Ask::Status => {
-            report(Update::Running(Kind::Status));
-            *planned = None;
-            let answer = client.call(Op::Status, &mut events)?;
-            report(Update::Answered(Kind::Status, answer));
-        }
-        Ask::Check(args) => {
-            report(Update::Running(Kind::Check));
-            *planned = None;
-            let answer = client.call(Op::Check(args), &mut events)?;
-            report(Update::Answered(Kind::Check, answer));
-        }
-        Ask::Recover => {
-            report(Update::Running(Kind::Recover));
-            *planned = None;
-            let answer = client.call(Op::Recover, &mut events)?;
-            report(Update::Answered(Kind::Recover, answer));
-        }
+        Ask::Status => call(client, Kind::Status, Op::Status, planned, report),
+        Ask::Check(args) => call(client, Kind::Check, Op::Check(args), planned, report),
+        Ask::Recover => call(client, Kind::Recover, Op::Recover, planned, report),
+        Ask::Verify(args) => call(client, Kind::Verify, Op::Verify(args), planned, report),
+        Ask::Rehearse(step) => call(client, Kind::Rehearse, step.op(), planned, report),
         Ask::Plan(plan) => {
             report(Update::Running(Kind::Plan));
             *planned = None;
+            let mut events = |event| report(Update::Event(event));
             match client.plan(plan, &mut events)? {
                 PlanAnswer::Ready(ready) => {
                     report(Update::Planned(ready.data().clone()));
@@ -384,25 +406,47 @@ fn serve(
                 }
                 PlanAnswer::Settled(answer) => report(Update::Answered(Kind::Plan, answer)),
             }
+            Ok(())
         }
         Ask::Apply => match planned.take() {
             Some(ready) => {
                 report(Update::Running(Kind::Apply));
+                let mut events = |event| report(Update::Event(event));
                 let answer = client.apply(ready, &mut events)?;
                 report(Update::Answered(Kind::Apply, answer));
+                Ok(())
             }
-            None => report(Update::Withdrawn),
+            None => {
+                report(Update::Withdrawn);
+                Ok(())
+            }
         },
         Ask::Withdraw => {
             if planned.take().is_some() {
                 report(Update::Withdrawn);
                 // Any request withdraws the helper's plan; a status one
                 // also brings the page up to date.
-                report(Update::Running(Kind::Status));
-                let answer = client.call(Op::Status, &mut events)?;
-                report(Update::Answered(Kind::Status, answer));
+                call(client, Kind::Status, Op::Status, planned, report)?;
             }
+            Ok(())
         }
     }
+}
+
+/// Send `op`, a request of its own, and report its events and its answer
+/// as `kind`'s. Any plan that waited is gone with it: the helper withdraws
+/// its plan as soon as another request comes.
+fn call(
+    client: &mut Client,
+    kind: Kind,
+    op: Op,
+    planned: &mut Option<Planned>,
+    report: &dyn Fn(Update),
+) -> Result<(), ClientError> {
+    report(Update::Running(kind));
+    *planned = None;
+    let mut events = |event| report(Update::Event(event));
+    let answer = client.call(op, &mut events)?;
+    report(Update::Answered(kind, answer));
     Ok(())
 }

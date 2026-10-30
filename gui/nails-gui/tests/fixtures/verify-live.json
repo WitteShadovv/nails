@@ -1,0 +1,80 @@
+{
+  "command": "verify",
+  "data": {
+    "areas_not_checked": [
+      "the systemd journal (not searched by verify)",
+      "shell histories and temp directories (/tmp, /var/tmp); re-run with --deep",
+      "renamed or unknown artifacts not in the registry",
+      "a byte-for-byte comparison of the decoy disk against a baseline",
+      "apt/dpkg drift for /var/lib/dpkg/status (no activation baseline at /mnt/data/reports/package-baseline/dpkg-status)",
+      "apt/dpkg drift for /var/log/apt/history.log (no activation baseline at /mnt/data/reports/package-baseline/apt-history.log)",
+      "apt/dpkg drift for /var/log/dpkg.log (no activation baseline at /mnt/data/reports/package-baseline/dpkg.log)",
+      "Persistent systemd journal, Journal window around each soft-reboot, Classic syslog daemon, Shell history, Desktop recent-files lists, Hidden kernel records imported by the decoy journal (re-run with --deep)",
+      "Decoy journal reset by the way back: RAM only, gone at power-off",
+      "Decoy filesystems the hidden systemd would mount: verify cannot tell what a session wrote to another filesystem",
+      "Disks mounted during the hidden session: verify cannot tell what a session wrote to another disk",
+      "Network state the hidden session created or changed: a link the decoy adopted looks like one the decoy made itself",
+      "Soft-reboot counter and boot ID: RAM only, gone at power-off",
+      "Login and boot records around a switch: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran",
+      "The decoy's mounts made again by the way back: RAM only, gone at power-off",
+      "EFI NVRAM, RTC and firmware pstore: EFI variables and firmware storage are not part of a disk image",
+      "SMART power-on hours: a disk image does not carry SMART counters",
+      "SSD flash-translation-layer remnants: no host-side read reaches remapped flash cells, so `nails rehearse` cannot see them either",
+      "NetworkManager connection records: a connection record the decoy wrote after adopting a session's link looks like one the decoy made itself",
+      "Copy-on-write and compressed storage history: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean: a mounted one (a zfs dataset included) by its mount, an image or an unmounted device by its superblock, and a whole disk partition by partition, where an encrypted partition, or one on which no filesystem is identified, is not checked either",
+      "setup traces an examiner looks for (LVM metadata archive and backup, udisks2 state, crypttab and fstab entries, LUKS headers on partitions, High-entropy unpartitioned space, Encrypted container candidates, Encryption tooling and its access times, History naming a container or unlock): run verify --offline --root <image> --examiner"
+    ],
+    "checks_run": 8,
+    "config_aware": true,
+    "config_paths_checked": 3,
+    "findings": [
+      {
+        "category": "catalog",
+        "fix_guidance": "Session touches land in the upper; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. (see docs/decoy-requirements.md#session-time-records)",
+        "message": "timesyncd clock stamp present: /var/lib/systemd/timesync/clock, modified 2026-10-30T08:18:09Z [timesync-clock]",
+        "severity": "info"
+      },
+      {
+        "category": "catalog",
+        "fix_guidance": "Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)",
+        "message": "Persistent timer stamps present: /var/lib/systemd/timers, modified 2026-10-29T18:34:16Z [timer-stamps]",
+        "severity": "info"
+      },
+      {
+        "category": "process",
+        "message": "A process references NAILS on its command line: pid 155664 command line references \"nails\"",
+        "severity": "info"
+      },
+      {
+        "category": "process",
+        "message": "A process references NAILS on its command line: pid 597413 command line references \"nails\"",
+        "severity": "info"
+      },
+      {
+        "category": "process",
+        "message": "A process references NAILS on its command line: pid 625482 command line references \"nails\"",
+        "severity": "info"
+      },
+      {
+        "category": "memory",
+        "fix_guidance": "Power off (in the hidden session: `sudo /mnt/data/nails deactivate --poweroff`) and leave the machine off for a few minutes before handing it over",
+        "message": "RAM keeps the session's data until power-off, and briefly after it",
+        "severity": "info"
+      },
+      {
+        "category": "config",
+        "fix_guidance": "Ensure hidden volume is unmounted when not in use",
+        "message": "Hidden volume path is accessible: /mnt/data",
+        "severity": "warn"
+      }
+    ],
+    "scan_depth": "standard",
+    "state_file_status": {
+      "kind": "missing",
+      "path": "/mnt/data/state.json"
+    },
+    "status": "warning"
+  },
+  "ok": false,
+  "schema_version": 2
+}

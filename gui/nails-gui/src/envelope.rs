@@ -271,6 +271,155 @@ pub enum DeactivateStatus {
     PoweroffRequested,
 }
 
+/// The data of `verify` the window shows (`docs/schemas/verify.schema.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct VerifyData {
+    /// The verdict.
+    pub status: VerifyStatus,
+    /// What it found, notes included.
+    pub findings: Vec<Finding>,
+    /// A standard or a deep scan.
+    pub scan_depth: ScanDepth,
+    /// How many checks ran.
+    pub checks_run: usize,
+    /// What this run did not look at, one sentence each.
+    pub areas_not_checked: Vec<String>,
+}
+
+/// A verdict of `verify`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyStatus {
+    /// No known trace was found.
+    Secure,
+    /// A possible trace was found.
+    Warning,
+    /// A trace was found.
+    Critical,
+}
+
+/// How deep `verify` looked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanDepth {
+    /// The standard checks.
+    Standard,
+    /// `--deep`: homes, histories, temporary folders and the journal too.
+    Deep,
+}
+
+/// One finding of `verify`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Finding {
+    /// How much it weighs.
+    pub severity: Severity,
+    /// What kind of thing it is.
+    pub category: String,
+    /// What was found.
+    pub message: String,
+    /// How to deal with it, when the engine says.
+    #[serde(default)]
+    pub fix_guidance: Option<String>,
+}
+
+/// The weight of a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// A note: not a trace.
+    Info,
+    /// A possible trace.
+    Warn,
+    /// A trace.
+    Critical,
+}
+
+/// The data of every step of `rehearse` the window shows
+/// (`docs/schemas/rehearse.schema.json`; the payload is the command's own,
+/// `nails-cli/src/cli/commands/rehearse.rs`). The test words themselves are
+/// never in it: only a fingerprint, and `<canary>` where a path holds them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RehearseData {
+    /// Where the rehearsal stands.
+    pub phase: Phase,
+    /// Where the test words went at plant time, planted or skipped.
+    #[serde(default)]
+    pub channels: Vec<Channel>,
+    /// A scan's result, from `rehearse scan`.
+    #[serde(default)]
+    pub scan: Option<ScanReport>,
+    /// What `rehearse reset` removed.
+    #[serde(default)]
+    pub removed: Vec<String>,
+}
+
+/// Where a rehearsal stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// No rehearsal on the hidden volume.
+    None,
+    /// The test words are planted; no scan ran yet.
+    Planted,
+    /// At least one scan ran.
+    Scanned,
+}
+
+/// One place the test words were planted in, or why not.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Channel {
+    /// Which kind of place (`overlay-file`, `home-file`, `recent-files`,
+    /// `system-log`, `process-cmdline`, `notification`).
+    pub kind: String,
+    /// Where, as the session saw it.
+    pub location: String,
+    /// Why it was not planted there, when it was not.
+    #[serde(default)]
+    pub skipped: Option<String>,
+}
+
+/// What a scan for the test words read and found.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ScanReport {
+    /// Each device or image the scan read, or could not.
+    pub devices: Vec<DeviceScan>,
+    /// What no scan of this kind can see, one sentence each.
+    pub not_visible: Vec<String>,
+}
+
+/// The scan of one device.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DeviceScan {
+    /// The device or image.
+    pub device: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// The bytes read.
+    pub bytes_scanned: u64,
+    /// Where the test words were found on it.
+    pub hits: Vec<Hit>,
+    /// More hits exist than are listed.
+    #[serde(default)]
+    pub hits_capped: bool,
+    /// A byte limit stopped the scan early.
+    #[serde(default)]
+    pub limit_reached: bool,
+    /// Why it could not be read.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Why a clean read of it is not a clean result: its storage can hide
+    /// the test words from this scan.
+    #[serde(default)]
+    pub blind_spot: Option<String>,
+}
+
+/// Where the test words were found.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Hit {
+    /// The byte offset of the match.
+    pub offset: u64,
+}
+
 /// The tally of a readiness report.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Summary {

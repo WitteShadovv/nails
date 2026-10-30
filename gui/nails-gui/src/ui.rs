@@ -21,10 +21,10 @@ use std::rc::{Rc, Weak};
 use nails_api::CheckOutcome;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::model::{ActionKind, Asker, Effect, Model, Page, SWITCH_OVERDUE};
+use crate::model::{ActionKind, Asker, CheckView, Effect, Model, Page, SWITCH_OVERDUE, View};
 use crate::text;
 use crate::worker::{Ask, Update};
-use crate::{AppWindow, CheckLine, Fact, Outcome, StepLine};
+use crate::{AppWindow, CheckLine, Fact, Outcome, RowGroup, StepLine, ToolLink};
 
 /// The ways from the window to the worker and the window itself.
 pub struct Hooks {
@@ -49,6 +49,9 @@ pub struct Controller {
     switch_timer: slint::Timer,
     /// Whether the timer runs for the page that shows.
     timing_switch: bool,
+    /// The page drawn last, whose focus goes back to the page's start when
+    /// another one replaces it.
+    view: View,
 }
 
 impl Controller {
@@ -62,6 +65,7 @@ impl Controller {
             me: Weak::new(),
             switch_timer: slint::Timer::default(),
             timing_switch: false,
+            view: View::default(),
         }));
         controller.borrow_mut().me = Rc::downgrade(&controller);
         wire(window, &controller);
@@ -108,9 +112,16 @@ impl Controller {
         self.model.page()
     }
 
-    fn draw(&self) {
+    fn draw(&mut self) {
         if let Some(window) = self.window.upgrade() {
-            draw(&window, &self.model.page());
+            let page = self.model.page();
+            draw(&window, &page);
+            if page.view != self.view {
+                // The control that had the focus went with the page before:
+                // the focus starts again at the new page's start.
+                self.view = page.view;
+                window.invoke_focus_page();
+            }
         }
     }
 
@@ -196,6 +207,26 @@ impl Controller {
         }
         self.refresh();
     }
+
+    fn secondary(&mut self) {
+        let effect = self.model.secondary();
+        self.effect(effect);
+        self.refresh();
+    }
+
+    fn open(&mut self, index: usize) {
+        if let Some(ask) = self.model.open(index) {
+            (self.hooks.ask)(ask);
+        }
+        self.refresh();
+    }
+
+    fn back(&mut self) {
+        if let Some(ask) = self.model.back() {
+            (self.hooks.ask)(ask);
+        }
+        self.refresh();
+    }
 }
 
 fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
@@ -247,6 +278,29 @@ fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
             controller.borrow_mut().alternative();
         }
     });
+    wire_tools(window, controller);
+}
+
+/// The controls of the tools: their rows, Back and a page's second action.
+fn wire_tools(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
+    let weak = Rc::downgrade(controller);
+    window.on_secondary_activated(move || {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().secondary();
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_link_activated(move |index| {
+        if let (Some(controller), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
+            controller.borrow_mut().open(index);
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_back_activated(move || {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().back();
+        }
+    });
 }
 
 /// Draw `page` in `window`.
@@ -275,26 +329,13 @@ pub fn draw(window: &AppWindow, page: &Page) {
         })
         .collect();
     window.set_steps(ModelRc::new(VecModel::from(steps)));
-    let checks: Vec<CheckLine> = page
-        .checks
-        .iter()
-        .map(|check| CheckLine {
-            outcome: outcome(check.outcome),
-            word: check.word.as_str().into(),
-            message: check.message.as_str().into(),
-            fix: check.fix.as_str().into(),
-            allow: if check.allow.is_some() {
-                text::ALLOW
-            } else {
-                ""
-            }
-            .into(),
-        })
-        .collect();
+    let checks: Vec<CheckLine> = page.checks.iter().map(check_line).collect();
     window.set_checks(ModelRc::new(VecModel::from(checks)));
+    draw_tools(window, page);
     window.set_fix(page.fix.as_str().into());
     window.set_action(page.action.unwrap_or_default().into());
     window.set_action_plain(page.action_kind == ActionKind::Plain);
+    window.set_secondary(page.secondary.unwrap_or_default().into());
     window.set_takes_input(!page.no_input);
     window.set_emergency_shown(page.emergency);
     match &page.question {
@@ -324,6 +365,47 @@ pub fn draw(window: &AppWindow, page: &Page) {
                 window.invoke_focus_page();
             }
         }
+    }
+}
+
+/// Draw the parts of `page` that the tools add: the rows that open them,
+/// Back and a tool's groups of rows.
+fn draw_tools(window: &AppWindow, page: &Page) {
+    let links: Vec<ToolLink> = page
+        .links
+        .iter()
+        .map(|link| ToolLink {
+            title: link.title.as_str().into(),
+            subtitle: link.subtitle.as_str().into(),
+        })
+        .collect();
+    window.set_links(ModelRc::new(VecModel::from(links)));
+    window.set_back_shown(page.back);
+    let groups: Vec<RowGroup> = page
+        .groups
+        .iter()
+        .map(|group| RowGroup {
+            title: group.title.as_str().into(),
+            rows: ModelRc::new(VecModel::from(
+                group.rows.iter().map(check_line).collect::<Vec<_>>(),
+            )),
+        })
+        .collect();
+    window.set_groups(ModelRc::new(VecModel::from(groups)));
+}
+
+fn check_line(check: &CheckView) -> CheckLine {
+    CheckLine {
+        outcome: outcome(check.outcome),
+        word: check.word.as_str().into(),
+        message: check.message.as_str().into(),
+        fix: check.fix.as_str().into(),
+        allow: if check.allow.is_some() {
+            text::ALLOW
+        } else {
+            ""
+        }
+        .into(),
     }
 }
 

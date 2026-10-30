@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 // The window. One page at a time: a head with the verdict and where things
-// stand, rows of facts, the steps of an activation, rows of checks, a line
-// that names the fix, and one main action at the bottom. Over it, when an
-// operation asks first, its question. What each page says is decided in Rust
-// (src/model.rs); this file only lays it out. A page past an activation's
-// point of no return takes no input at all, the window's Close included.
+// stand, rows of facts, the steps of an activation, rows of checks, titled
+// groups of rows (what a tool found, read or did not check), a line that
+// names the fix, the rows that open the window's tools, and one main action
+// at the bottom, with a second plain one beside it on some pages. A tool's
+// page starts with Back. Over it, when an operation asks first, its
+// question. What each page says is decided in
+// Rust (src/model.rs); this file only lays it out. A page past an
+// activation's point of no return takes no input at all, the window's Close
+// included.
 //
 // The title is "Session" on purpose: a window title others may see names
 // nothing about NAILS.
@@ -20,7 +24,7 @@ import { Palette } from "std-widgets.slint";
 import { Adw } from "adw/theme.slint";
 import { HeaderBar } from "adw/headerbar.slint";
 import { Button, ButtonKind, ButtonShape } from "adw/button.slint";
-import { BoxedList, ActionRow, CheckRow, Outcome } from "adw/lists.slint";
+import { BoxedList, ActionRow, CheckRow, NavRow, Outcome } from "adw/lists.slint";
 import { StatusHead, Busy } from "adw/status.slint";
 import { AlertDialog } from "adw/dialog.slint";
 import { EmergencyButton } from "adw/emergency.slint";
@@ -49,6 +53,18 @@ export struct StepLine {
     state: string,
 }
 
+// A row of the session's page that opens a tool.
+export struct ToolLink {
+    title: string,
+    subtitle: string,
+}
+
+// A titled group of rows on a tool's page.
+export struct RowGroup {
+    title: string,
+    rows: [CheckLine],
+}
+
 export component AppWindow inherits Window {
     // The page.
     in property <string> heading;
@@ -60,11 +76,18 @@ export component AppWindow inherits Window {
     in property <[Fact]> facts;
     in property <[StepLine]> steps;
     in property <[CheckLine]> checks;
+    in property <[RowGroup]> groups;
     in property <string> fix;
+    in property <[ToolLink]> links;
+    // A tool's page: Back leads to the session's page.
+    in property <bool> back-shown;
     // The main action's label; empty for none.
     in property <string> action;
     // The main action is a plain button rather than the suggested one.
     in property <bool> action-plain;
+    // The second action's label, a plain button beside the main one; empty
+    // for none.
+    in property <string> secondary;
     // False on a page that takes no input at all.
     in property <bool> takes-input: true;
     // The question that waits for an answer, while one does.
@@ -86,6 +109,9 @@ export component AppWindow inherits Window {
     callback close-window();
     callback emergency-fired();
     callback action-activated();
+    callback secondary-activated();
+    callback link-activated(index: int);
+    callback back-activated();
 
     // Gives the page the keyboard back, once a question that held it closed:
     // the focus was in the question, which is gone.
@@ -179,6 +205,18 @@ export component AppWindow inherits Window {
                         spacing: 18px;
                         alignment: start;
 
+                        if root.back-shown: HorizontalLayout {
+                            alignment: start;
+
+                            Button {
+                                text: "Back";
+                                reachable: root.reachable;
+                                clicked => {
+                                    root.back-activated();
+                                }
+                            }
+                        }
+
                         if root.busy: Busy {
                             label: root.busy-label;
                         }
@@ -231,32 +269,82 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        for group in root.groups: VerticalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: group.title;
+                                font-weight: Adw.weight-bold;
+                                color: Adw.window-fg;
+                                wrap: word-wrap;
+                            }
+
+                            BoxedList {
+                                for line[i] in group.rows: CheckRow {
+                                    outcome: line.outcome;
+                                    word: line.word;
+                                    message: line.message;
+                                    fix: line.fix;
+                                    first: i == 0;
+                                    last: i == group.rows.length - 1;
+                                    reachable: root.reachable;
+                                }
+                            }
+                        }
+
                         if root.fix != "": Text {
                             text: root.fix;
                             color: Adw.window-fg;
                             wrap: word-wrap;
                         }
+
+                        if root.links.length > 0: BoxedList {
+                            for link[i] in root.links: NavRow {
+                                title: link.title;
+                                subtitle: link.subtitle;
+                                first: i == 0;
+                                last: i == root.links.length - 1;
+                                reachable: root.reachable;
+                                activated => {
+                                    root.link-activated(i);
+                                }
+                            }
+                        }
                     }
                 }
 
-                // The main action, at the bottom of every page that has one.
+                // The main action, at the bottom of every page that has one,
+                // and the second one beside it.
                 action-bar := Rectangle {
                     y: page.height - self.height;
                     width: page.width;
                     height: action-button.preferred-height + 36px;
 
-                    action-button := Button {
+                    HorizontalLayout {
                         x: (parent.width - self.width) / 2;
                         y: 18px;
                         width: self.preferred-width;
-                        height: self.preferred-height;
-                        text: root.action;
-                        kind: root.action-plain ? ButtonKind.regular : ButtonKind.suggested;
-                        shape: ButtonShape.pill;
-                        visible: root.action != "";
-                        reachable: root.action != "" && root.reachable;
-                        clicked => {
-                            root.action-activated();
+                        height: action-button.preferred-height;
+                        spacing: 12px;
+
+                        action-button := Button {
+                            text: root.action;
+                            kind: root.action-plain ? ButtonKind.regular : ButtonKind.suggested;
+                            shape: ButtonShape.pill;
+                            visible: root.action != "";
+                            reachable: root.action != "" && root.reachable;
+                            clicked => {
+                                root.action-activated();
+                            }
+                        }
+
+                        if root.secondary != "": Button {
+                            text: root.secondary;
+                            shape: ButtonShape.pill;
+                            reachable: root.reachable;
+                            clicked => {
+                                root.secondary-activated();
+                            }
                         }
                     }
                 }
