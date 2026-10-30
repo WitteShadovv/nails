@@ -42,13 +42,18 @@ strip = true
 lto = true
 
 # Slint's winit backend, patched: gui/patches/i-slint-backend-winit is the
-# crate Slint publishes at the version the window pins, with a change of
-# ours, marked "NAILS:" in place. Its Wayland support no longer turns on
-# winit's sctk-adwaita window decorations, which winit builds even for a
-# window without a frame and then hides, running dbus-send (for the colour
-# scheme and the button layout), gsettings (for the title's font) and
-# fc-match on the way. No feature of Slint 1.18 turns them off. winit then
-# draws smithay's fallback frame, which starts nothing. A new Slint release
-# brings a new copy of the crate with the same change.
+# crate Slint publishes at the version the window pins, with two changes of
+# ours, each marked "NAILS:" in place. No feature of Slint 1.18 makes either.
+#
+# - Its Wayland support no longer turns on winit's sctk-adwaita window
+#   decorations, which winit builds even for a window without a frame and
+#   then hides, running dbus-send (for the colour scheme and the button
+#   layout), gsettings (for the title's font) and fc-match on the way. winit
+#   then draws smithay's fallback frame, which starts nothing.
+# - Its reads of the desktop's settings portal carry NO_AUTO_START: the
+#   window follows the desktop's appearance where xdg-desktop-portal runs,
+#   and never starts it through D-Bus activation.
+#
+# A new Slint release brings a new copy of the crate with the same changes.
 [patch.crates-io]
 i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }
