@@ -25,8 +25,7 @@ use std::path::{Path, PathBuf};
 
 /// Enqueues a systemd target: tests replace it.
 pub trait TargetHost {
-    /// Enqueue `target` with PID 1. An error means PID 1 is known not to
-    /// have taken it.
+    /// Enqueue `target`. An error means it is known not to have been taken.
     fn start_target(&self, target: &str) -> Result<()>;
 }
 
@@ -51,10 +50,19 @@ impl TargetHost for RealTargetHost {
             .systemctl
             .as_deref()
             .ok_or_else(|| NailsError::InvalidState("systemctl not found".to_string()))?;
+        // The soft-reboot of the entry and of the way back goes through
+        // logind, as `systemctl soft-reboot` does, so the programs waiting
+        // for the shutdown signal end on it first; a power-off is enqueued
+        // with PID 1 directly.
+        let outcome = if target == tools::SOFT_REBOOT_TARGET {
+            tools::soft_reboot(systemctl)
+        } else {
+            tools::start_target(systemctl, target)
+        };
         // A call cut short (by the very stop it enqueued, typically) counts
         // as enqueued: undoing a prepared next root while PID 1 may already
         // be switching into it would leave it switching into an empty one.
-        match tools::start_target(systemctl, target) {
+        match outcome {
             tools::Outcome::Done | tools::Outcome::Unknown => Ok(()),
             tools::Outcome::Refused => Err(NailsError::InvalidState(format!(
                 "systemctl could not enqueue {target}"
@@ -230,7 +238,7 @@ pub fn leave(
     let deferred = ret::close_backend_deferred(plan);
     let armed = ret::arm_leave(plan, &paths.plan())
         .map_err(|e| NailsError::InvalidState(e.to_string()))
-        .and_then(|()| host.start_target("soft-reboot.target"));
+        .and_then(|()| host.start_target(tools::SOFT_REBOOT_TARGET));
     if let Err(e) = armed {
         nextroot::detach_tree(&nextroot);
         plan.armed = None;
@@ -259,6 +267,35 @@ mod tests {
             kind: PolicyMountKind::ReadOnlyBind,
         }];
         plan
+    }
+
+    /// The real host asks logind for the soft-reboot, as `systemctl
+    /// soft-reboot` does, and enqueues a power-off with PID 1 directly.
+    #[test]
+    fn the_real_host_soft_reboots_through_logind_and_powers_off_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = dir.path().join("calls");
+        let systemctl = dir.path().join("systemctl");
+        nails_base::test_support::write_executable(
+            &systemctl,
+            format!("#!/bin/sh\necho \"$*\" >> {}\n", calls.display()),
+            0o755,
+        );
+        let mut plan = plan();
+        plan.tools.systemctl = Some(systemctl);
+        let host = RealTargetHost::for_plan(Some(&plan));
+        host.start_target(tools::SOFT_REBOOT_TARGET).unwrap();
+        host.start_target("poweroff.target").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&calls)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "--no-wall soft-reboot",
+                "start --no-block --job-mode=replace-irreversibly -- poweroff.target",
+            ]
+        );
     }
 
     #[test]
