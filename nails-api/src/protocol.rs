@@ -18,7 +18,8 @@
 //!    operation, and its exit code) or one [`Frame::Error`].
 //!
 //! An operation the CLI asks the operator to confirm (activate, deactivate,
-//! discard) or that writes a new layout (init) runs in two requests. The plan
+//! discard), that writes a new layout (init) or that changes the
+//! configuration (config set and unset) runs in two requests. The plan
 //! request says what the apply would do and hands out a single-use token; only
 //! the apply request carrying that token does it, and any other request in
 //! between withdraws the plan. Emergency is one request: it is the way out,
@@ -43,9 +44,10 @@ use crate::events::Event;
 mod args;
 
 pub use args::{
-    ActivateArgs, ActivatePlanData, CheckArgs, ConfigShowArgs, DeactivateArgs, DeactivatePlanData,
-    DiscardPlanArgs, DiscardPlanData, EmergencyArgs, InitArgs, InitPlanData, RehearsePlantArgs,
-    RehearseScanArgs, Token, VerifyArgs,
+    ActivateArgs, ActivatePlanData, CheckArgs, ConfigChange, ConfigEditArgs, ConfigEditPlanData,
+    ConfigShowArgs, DeactivateArgs, DeactivatePlanData, DiscardPlanArgs, DiscardPlanData,
+    EmergencyArgs, InitArgs, InitPlanData, RehearsePlantArgs, RehearseScanArgs, SettingArg,
+    SettingValue, Token, VerifyArgs,
 };
 
 /// The version of this protocol. A window and a helper talk only when theirs
@@ -70,6 +72,19 @@ pub const MAX_ENGINE_BYTES: usize = 64;
 
 /// The length of a plan token, in lowercase hexadecimal digits.
 pub const TOKEN_HEX_DIGITS: usize = 32;
+
+/// The most keys one configuration change names, set and unset together.
+pub const MAX_SETTINGS: usize = 32;
+
+/// The longest key of a configuration change, in bytes.
+pub const MAX_KEY_BYTES: usize = 64;
+
+/// The longest string of a configuration value, or of one entry of a list, in
+/// bytes.
+pub const MAX_SETTING_BYTES: usize = 4096;
+
+/// The most entries of a list value.
+pub const MAX_LIST_ENTRIES: usize = 64;
 
 /// The versions one side of the pipe speaks. The helper's first frame and the
 /// window's first request both carry one.
@@ -149,6 +164,11 @@ pub enum Op {
     InitPlan(InitArgs),
     /// The apply half of `nails init`.
     InitApply(Token),
+    /// The plan half of `nails config set` and `nails config unset`: what each
+    /// key named would hold, and the token that writes it.
+    ConfigEditPlan(ConfigEditArgs),
+    /// The apply half of a configuration change.
+    ConfigEditApply(Token),
 }
 
 impl Op {
@@ -177,6 +197,8 @@ impl Op {
             Op::RehearseReset => "rehearse_reset",
             Op::InitPlan(_) => "init_plan",
             Op::InitApply(_) => "init_apply",
+            Op::ConfigEditPlan(_) => "config_edit_plan",
+            Op::ConfigEditApply(_) => "config_edit_apply",
         }
     }
 
@@ -187,7 +209,8 @@ impl Op {
             Op::DiscardApply(token)
             | Op::ActivateApply(token)
             | Op::DeactivateApply(token)
-            | Op::InitApply(token) => Some(&token.token),
+            | Op::InitApply(token)
+            | Op::ConfigEditApply(token) => Some(&token.token),
             _ => None,
         }
     }
@@ -342,10 +365,12 @@ pub fn validate(op: &Op) -> Result<(), String> {
         Op::RehearsePlant(args) => args.user.as_deref().map_or(Ok(()), valid_user),
         Op::RehearseScan(args) => valid_scan(args),
         Op::InitPlan(args) => valid_init(args),
+        Op::ConfigEditPlan(args) => valid_config_edit(args),
         Op::DiscardApply(token)
         | Op::ActivateApply(token)
         | Op::DeactivateApply(token)
-        | Op::InitApply(token) => valid_token(&token.token),
+        | Op::InitApply(token)
+        | Op::ConfigEditApply(token) => valid_token(&token.token),
         Op::Status
         | Op::ConfigPath
         | Op::ConfigValidate
@@ -467,6 +492,72 @@ fn valid_init(args: &InitArgs) -> Result<(), String> {
     valid_path("hidden volume", &args.path)?;
     if let Some(hardware) = &args.hardware_config {
         valid_path("hardware configuration", hardware)?;
+    }
+    Ok(())
+}
+
+/// A configuration change: at least one key, at most [`MAX_SETTINGS`], each
+/// named once and shaped as a key of `nails.toml` is (lowercase letters,
+/// digits, `_`, and a `.` between a table and its key), each string value
+/// bounded and free of control characters. Which keys exist and what each
+/// takes is the engine's to check, as it is for the CLI.
+fn valid_config_edit(args: &ConfigEditArgs) -> Result<(), String> {
+    let keys: Vec<&str> = args
+        .set
+        .iter()
+        .map(|setting| setting.key.as_str())
+        .chain(args.unset.iter().map(String::as_str))
+        .collect();
+    if keys.is_empty() || keys.len() > MAX_SETTINGS {
+        return Err(format!(
+            "a configuration change names 1 to {MAX_SETTINGS} keys"
+        ));
+    }
+    for (index, key) in keys.iter().enumerate() {
+        valid_key(key)?;
+        if keys[..index].contains(key) {
+            return Err(format!("the key {key} is named twice"));
+        }
+    }
+    args.set
+        .iter()
+        .try_for_each(|setting| valid_setting_value(&setting.value))
+}
+
+fn valid_key(key: &str) -> Result<(), String> {
+    let part = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    let shaped = key.len() <= MAX_KEY_BYTES
+        && match key.split_once('.') {
+            Some((table, name)) => part(table) && part(name),
+            None => part(key),
+        };
+    if !shaped {
+        return Err(format!(
+            "a key is at most {MAX_KEY_BYTES} bytes of lowercase letters, digits and `_`, with \
+             one `.` between a table and its key"
+        ));
+    }
+    Ok(())
+}
+
+fn valid_setting_value(value: &SettingValue) -> Result<(), String> {
+    let text =
+        |text: &String| text.len() <= MAX_SETTING_BYTES && !text.chars().any(char::is_control);
+    let shaped = match value {
+        SettingValue::Bool(_) | SettingValue::Integer(_) => true,
+        SettingValue::Text(value) => text(value),
+        SettingValue::List(values) => values.len() <= MAX_LIST_ENTRIES && values.iter().all(text),
+    };
+    if !shaped {
+        return Err(format!(
+            "a value is at most {MAX_SETTING_BYTES} bytes with no control character, and a list \
+             at most {MAX_LIST_ENTRIES} of them"
+        ));
     }
     Ok(())
 }

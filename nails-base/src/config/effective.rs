@@ -141,7 +141,9 @@ impl LoadedConfig {
         self.cli_keys.extend(overrides.overridden_keys());
     }
 
-    /// Where the value of top-level `key` came from.
+    /// Where the value of `key` came from: a top-level key, or a key of a
+    /// table written `table.key`, which comes from the file only where the
+    /// file sets that key itself.
     pub fn source(&self, key: &str) -> ValueSource {
         if self.cli_keys.contains(key) {
             ValueSource::Cli
@@ -215,7 +217,8 @@ impl LoadedConfig {
     }
 
     /// The effective configuration, its file and the source of every key, as
-    /// JSON.
+    /// JSON: each top-level key, a table as a whole included, and each key of
+    /// a table, written `table.key`.
     ///
     /// # Errors
     ///
@@ -223,11 +226,24 @@ impl LoadedConfig {
     pub fn to_json(&self) -> Result<serde_json::Value> {
         let config = serde_json::to_value(&self.config)
             .map_err(|e| NailsError::ConfigError(format!("cannot render config: {e}")))?;
-        let sources: serde_json::Map<String, serde_json::Value> = self
+        let mut sources: serde_json::Map<String, serde_json::Value> = self
             .sources()
             .into_iter()
             .map(|(key, source)| (key.to_string(), serde_json::json!(source)))
             .collect();
+        // A table's source says only that the file holds it: each of its keys
+        // has its own.
+        for (name, value) in config.as_object().into_iter().flatten() {
+            for key in value
+                .as_object()
+                .into_iter()
+                .flat_map(serde_json::Map::keys)
+            {
+                let key = format!("{name}.{key}");
+                let source = serde_json::json!(self.source(&key));
+                sources.insert(key, source);
+            }
+        }
 
         Ok(serde_json::json!({
             "path": self.path.display().to_string(),
