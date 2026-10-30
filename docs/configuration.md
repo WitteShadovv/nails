@@ -272,6 +272,13 @@ NAILS does not read zram-generator's configuration: at the switch the hidden
 session's zram-generator sets the device up again from it, so a
 `writeback-device=` set there after the decoy set its device up is not seen.
 
+NAILS lists the decoy's unit directories and reads its unit files with
+`O_NOATIME`, which the kernel grants to root, and activation always runs as
+root. A `nails check` or `nails activate --dry-run` run without root falls back
+to plain reads, which update their access times on a decoy root mounted without
+`noatime`, and a lookup that follows a symbolic link (a mask, or NixOS's
+`/etc/systemd/system`) updates the link's access time either way.
+
 No other unit outside the fstab is decided. A mount unit that only another
 unit pulls in, by `Requires=` or `Wants=` (a target's own unit file among
 them), from a service's `.wants` directory (a NixOS `systemd.mounts` unit
