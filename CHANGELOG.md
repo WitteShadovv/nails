@@ -135,7 +135,17 @@ of this changelog for that version becomes the release notes word for word, and
   for the power-off itself with `systemctl poweroff`, which needs neither root nor the helper. The
   page names the power button for a computer that still does not turn off. The worker's updates
   reach the window's thread through one task on its event loop at a time, at most 64 per turn, so no
-  flood of the helper's events can queue ahead of the person's input. Every control and row is a Tab
+  flood of the helper's events can queue ahead of the person's input. A settled page of the session
+  has rows that open the window's tools, each a page with Back (Escape goes back too), which asks
+  for the session's status again. Verify runs `nails verify`, standard or with Deep Scan; its page
+  puts the verdict first and never more than the engine found (no known trace is no proof of none),
+  then each finding with the engine's fix, then every area the run did not check, as the engine
+  lists it. Rehearsal shows the rehearsal's three steps, where it stands and the action of the next
+  one: Plant Test Words in a hidden session, Scan for Test Words once they are planted (not in the
+  session that planted them, which the engine refuses), and Remove Test Words on the decoy. A scan's
+  result lists first what the scan did not check, a disk whose storage can hide the test words among
+  it, and reads Not a Clean Result, never Passed, for such a disk, and Scan Incomplete for one it
+  could not read in full. Every control and row is a Tab
   stop with an accessible name. The window's own names are neutral: its title is "Session", and its
   app id, its program (`<hidden-root>/gui/bin/session`), its process name and the application name a
   screen reader reads are all `session`. Its command line is its name alone, `session` (`session

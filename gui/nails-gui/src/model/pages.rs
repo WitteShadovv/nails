@@ -140,6 +140,7 @@ impl Model {
                 } else {
                     text::CHECK_AGAIN
                 });
+                page.links = self.links(Place::Decoy);
             }
             Check::Failed(error) => {
                 page.heading = text::CHECK_FAILED.to_string();
@@ -151,6 +152,7 @@ impl Model {
                     .unwrap_or_default();
                 page.fix = join(&fix, &next);
                 page.action = Some(text::CHECK_AGAIN);
+                page.links = self.links(Place::Decoy);
             }
         }
         page
@@ -178,6 +180,7 @@ impl Model {
                 facts: self.volume_fact(status),
                 fix: fix.unwrap_or_default(),
                 action: Some(text::DEACTIVATE),
+                links: self.links(Place::Hidden),
                 ..Page::default()
             },
             attention => Page {
@@ -194,8 +197,14 @@ impl Model {
                 facts: self.volume_fact(status),
                 fix: fix.unwrap_or_default(),
                 // Without the hidden volume the way back has nothing to
-                // return with: the session ends with an emergency.
+                // return with: the session ends with an emergency. Nor can a
+                // tool reach it.
                 action: (attention != Some(Attention::VolumeLost)).then_some(text::DEACTIVATE),
+                links: if attention == Some(Attention::VolumeLost) {
+                    Vec::new()
+                } else {
+                    self.links(Place::Hidden)
+                },
                 ..Page::default()
             },
         }
