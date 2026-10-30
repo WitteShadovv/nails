@@ -329,3 +329,98 @@ fn the_row_reads_rpms_databases_and_tells_the_decoys_changes_from_the_hidden_ses
         });
     });
 }
+
+/// rpm's databases of the links fixtures of `nails-base`: the decoy's, whose
+/// filesystem package links /lib to usr/lib and whose kernel's modules are
+/// recorded below /lib, and the hidden session's after it installed kernel
+/// 6.18 and removed 6.17.1.
+const LINKS_DECOY: &[u8] =
+    include_bytes!("../../../nails-base/src/packages/fixtures/rpmdb-links-decoy.sqlite");
+const LINKS_HIDDEN: &[u8] =
+    include_bytes!("../../../nails-base/src/packages/fixtures/rpmdb-links-hidden.sqlite");
+
+/// The access time of `path` itself, a link's own when it is one.
+fn own_atime(path: &Path) -> (i64, i64) {
+    let meta = std::fs::symlink_metadata(path).unwrap();
+    (meta.atime(), meta.atime_nsec())
+}
+
+/// Set the access time of `path` itself, a link's own when it is one, to
+/// one long past, so that any later read shows.
+fn age(path: &Path) {
+    use rustix::fs::{AtFlags, CWD, Timespec, Timestamps, UTIME_OMIT, utimensat};
+    let times = Timestamps {
+        last_access: Timespec {
+            tv_sec: 1_000_000_000,
+            tv_nsec: 0,
+        },
+        last_modification: Timespec {
+            tv_sec: 0,
+            tv_nsec: UTIME_OMIT,
+        },
+    };
+    utimensat(CWD, path, &times, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+}
+
+/// A hidden session updates the kernel on a Fedora decoy whose /lib links to
+/// usr/lib: rpm records the modules below /lib, the hidden session writes
+/// them through the decoy's link, so the upper holds them below usr/lib, and
+/// the row counts the kernel's modules as the hidden session's own. Reading
+/// leaves the access times of the decoy's database and of its link alone.
+#[test]
+fn a_kernel_update_through_the_decoys_lib_link_is_the_hidden_sessions_own() {
+    let _ = Rerun::new(test_path!(
+        a_kernel_update_through_the_decoys_lib_link_is_the_hidden_sessions_own
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let old = "usr/lib/modules/6.17.1-200.fc44.x86_64";
+        let new = "lib/modules/6.18.0-200.fc44.x86_64/kernel/drivers/nails";
+        let decoy = ScratchTmpfs::strictatime();
+        decoy.mkdir("usr/lib/sysimage/rpm");
+        decoy.mkdir(&format!("{old}/kernel/drivers/nails"));
+        std::os::unix::fs::symlink("usr/lib", decoy.path().join("lib")).unwrap();
+        std::fs::write(decoy.path().join(RPMDB), LINKS_DECOY).unwrap();
+        std::fs::write(
+            decoy
+                .path()
+                .join(format!("{old}/kernel/drivers/nails/nails.ko.xz")),
+            b"6.17.1\n",
+        )
+        .unwrap();
+        let hidden = hidden();
+        let upper = hidden.path().join("root/upper");
+
+        in_next_root(decoy.path(), hidden.path(), |next| {
+            std::fs::write(next.join(RPMDB), LINKS_HIDDEN).unwrap();
+            std::fs::create_dir_all(next.join(new)).unwrap();
+            std::fs::write(next.join(new).join("nails.ko.xz"), b"6.18.0\n").unwrap();
+        });
+        // Written through the link: the upper holds it below usr/lib.
+        assert!(upper.join("usr").join(new).join("nails.ko.xz").is_file());
+        assert!(!upper.join("lib").exists(), "nothing at the link's place");
+        // dnf deletes the oldest kernel's modules.
+        whiteout(&upper, old);
+
+        let read = [decoy.path().join(RPMDB), decoy.path().join("lib")];
+        for path in &read {
+            age(path);
+        }
+        let before: Vec<_> = read.iter().map(|path| own_atime(path)).collect();
+        let check = PackageDriftCheck::new(decoy.path().to_path_buf(), hidden.path().to_path_buf())
+            .as_privileged(true);
+        let result = PreFlightCheck::<RealFilesystem>::run(&check, &RealFilesystem).unwrap();
+        let after: Vec<_> = read.iter().map(|path| own_atime(path)).collect();
+        assert_eq!(
+            after, before,
+            "the row reads without changing an access time"
+        );
+        assert!(result.is_pass(), "{result:?}");
+        assert!(
+            result
+                .message()
+                .contains("but for the 1 package they changed themselves"),
+            "{result:?}"
+        );
+    });
+}

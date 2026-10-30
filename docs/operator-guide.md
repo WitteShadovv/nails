@@ -1209,7 +1209,12 @@ removed since, as for dpkg. rpm keeps no file per package beside its database,
 so a package counts as one a hidden session changed when the upper holds, or
 deleted, one of the files the package installs by either side's record (not
 its directories, configuration files or ghost files, which other packages
-share or the operator edits). A package that installs no such file, other
+share or the operator edits), at the place rpm installed it: through the
+directory links that rpm's own records give, never read on the decoy. Fedora
+records a kernel's modules below `/lib`, which its `filesystem` package
+installs as a link to `usr/lib`, so a kernel update in a hidden session
+counts as its own by the modules it wrote below `/usr/lib` or the tree it
+deleted there. A package that installs no such file, other
 than the public keys rpm records as `gpg-pubkey`, which the check leaves out,
 is named when its record differs. Activation shows
 the same warning before it asks to log you out (unless `-y` skips the
@@ -1232,9 +1237,14 @@ trace or reading what cannot be read:
 - a database or an upper that cannot be read (an I/O error, a file larger than
   any package database, a dpkg record in a format NAILS does not know whose
   copy differs from it, an rpm database whose pages or headers do not hold, an
-  rpm database or log over 4 GiB or one whose packages would take more than
-  the 256 MiB of memory the check keeps for both databases, or one rpm wrote
-  while it was read, twice in a row);
+  rpm database or log over 4 GiB, one that records a directory, a file's path
+  or a link's target of 4096 bytes or more, longer than a path can be, one
+  whose packages, with the links they record and the paths resolved through
+  them, would take more than the 256 MiB of memory the check keeps for both
+  databases, or one rpm wrote while it was read, twice in a row);
+- links in rpm's records on the way to a package's file that make a loop, or
+  that lead to a path of 4096 bytes or more: no system resolves such a path,
+  so the check cannot tell where the file lies;
 - an rpm transaction stopped half way that left a rollback journal: rpm rolls
   it back the next time it opens the database, so the check names neither
   state;

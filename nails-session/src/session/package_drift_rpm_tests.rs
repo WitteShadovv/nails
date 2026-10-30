@@ -381,6 +381,7 @@ fn package(name: &str, arch: Option<&str>, version: &str) -> rpm::Package {
         release: "1".to_string(),
         dirs: Vec::new(),
         files: Vec::new(),
+        links: Vec::new(),
     }
 }
 
@@ -463,4 +464,206 @@ fn a_directory_a_hidden_session_replaced_with_a_link_makes_the_package_its_own()
         "{result:?}"
     );
     assert!(!result.message().contains("delta ("), "{result:?}");
+}
+
+/// `value` as a varint of SQLite.
+fn varint(mut value: u64) -> Vec<u8> {
+    let mut bytes = vec![(value & 0x7f) as u8];
+    value >>= 7;
+    while value > 0 {
+        bytes.push((value & 0x7f) as u8 | 0x80);
+        value >>= 7;
+    }
+    bytes.reverse();
+    bytes
+}
+
+/// A cell of a table leaf: row `rowid`, whose record holds `values`, each a
+/// serial type and its bytes.
+fn cell(rowid: u64, values: &[(u64, &[u8])]) -> Vec<u8> {
+    let serials: Vec<u8> = values
+        .iter()
+        .flat_map(|(serial, _)| varint(*serial))
+        .collect();
+    let mut record = varint(serials.len() as u64 + 1);
+    record.extend(serials);
+    for (_, bytes) in values {
+        record.extend(*bytes);
+    }
+    let mut cell = varint(record.len() as u64);
+    cell.extend(varint(rowid));
+    cell.extend(record);
+    cell
+}
+
+/// A leaf page of `cell` alone, its b-tree header at `start` of the page.
+fn leaf(page: &mut [u8], start: usize, cell: &[u8]) {
+    let at = page.len() - cell.len();
+    page[start] = 0x0d;
+    page[start + 3..start + 5].copy_from_slice(&1u16.to_be_bytes());
+    page[start + 5..start + 7].copy_from_slice(&u16::try_from(at).unwrap().to_be_bytes());
+    page[start + 8..start + 10].copy_from_slice(&u16::try_from(at).unwrap().to_be_bytes());
+    page[at..].copy_from_slice(cell);
+}
+
+/// rpm's database of one package, the header `header`, as SQLite lays out a
+/// table of one row: pages of 4096 bytes, the schema naming the table
+/// `Packages` at page 2.
+fn database_of(header: &[u8]) -> Vec<u8> {
+    let mut file = vec![0; 8192];
+    file[..16].copy_from_slice(b"SQLite format 3\0");
+    file[16..18].copy_from_slice(&4096u16.to_be_bytes());
+    file[56..60].copy_from_slice(&1u32.to_be_bytes());
+    let sql = b"CREATE TABLE Packages (hnum INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL)";
+    let text = |bytes: &[u8]| 2 * bytes.len() as u64 + 13;
+    let schema: [(u64, &[u8]); 5] = [
+        (text(b"table"), b"table"),
+        (text(b"Packages"), b"Packages"),
+        (text(b"Packages"), b"Packages"),
+        (1, &[2]),
+        (text(sql), sql),
+    ];
+    leaf(&mut file[..4096], 100, &cell(1, &schema));
+    let row: [(u64, &[u8]); 2] = [(0, &[]), (2 * header.len() as u64 + 12, header)];
+    let row = cell(1, &row);
+    leaf(&mut file[4096..], 0, &row);
+    file
+}
+
+/// rpm's header of the package `name` 1-1 of `files`, each a directory, a
+/// name and, for a symbolic link, its target.
+fn rpm_header(name: &str, files: &[(&str, &str, Option<&str>)]) -> Vec<u8> {
+    let strings = |strings: &[&str]| -> Vec<u8> {
+        strings
+            .iter()
+            .flat_map(|text| text.bytes().chain([0]))
+            .collect()
+    };
+    let mut dirs: Vec<&str> = Vec::new();
+    let mut indexes = Vec::new();
+    for (dir, _, _) in files {
+        let index = dirs
+            .iter()
+            .position(|known| known == dir)
+            .unwrap_or_else(|| {
+                dirs.push(*dir);
+                dirs.len() - 1
+            });
+        indexes.extend(u32::try_from(index).unwrap().to_be_bytes());
+    }
+    let names: Vec<&str> = files.iter().map(|(_, name, _)| *name).collect();
+    let modes: Vec<u8> = files
+        .iter()
+        .flat_map(|(_, _, target)| match target {
+            Some(_) => 0o120_777u16.to_be_bytes(),
+            None => 0o100_644u16.to_be_bytes(),
+        })
+        .collect();
+    let targets: Vec<&str> = files
+        .iter()
+        .map(|(_, _, target)| target.unwrap_or(""))
+        .collect();
+    let count = files.len() as u32;
+    // Tag, type, count and data of each entry, as `headerExport()` lays one
+    // out.
+    let entries: [(u32, u32, u32, Vec<u8>); 9] = [
+        (1000, 6, 1, strings(&[name])),
+        (1001, 6, 1, strings(&["1"])),
+        (1002, 6, 1, strings(&["1"])),
+        (1022, 6, 1, strings(&["noarch"])),
+        (1030, 3, count, modes),
+        (1036, 8, count, strings(&targets)),
+        (1116, 4, count, indexes),
+        (1117, 8, count, strings(&names)),
+        (1118, 8, dirs.len() as u32, strings(&dirs)),
+    ];
+    let (mut index, mut data): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+    for (tag, kind, count, bytes) in entries {
+        for word in [tag, kind, data.len() as u32, count] {
+            index.extend(word.to_be_bytes());
+        }
+        data.extend(bytes);
+    }
+    let mut header = Vec::new();
+    header.extend(9u32.to_be_bytes());
+    header.extend((data.len() as u32).to_be_bytes());
+    header.extend(index);
+    header.extend(data);
+    header
+}
+
+#[test]
+fn links_that_loop_on_the_way_to_a_packages_file_cannot_be_judged() {
+    // Hidden sessions' copy records a package whose links /a and /b point at
+    // each other, and a file of its own below /a.
+    let header = rpm_header(
+        "loopy",
+        &[
+            ("/", "a", Some("b")),
+            ("/", "b", Some("a")),
+            ("/a/", "x", None),
+        ],
+    );
+    let hidden = database_of(&header);
+    assert_eq!(rpm::parse_database(&hidden, None).unwrap().len(), 1);
+    let fs = fedora(LINKS_DECOY, Some(&hidden));
+    upper(&fs, &[DB], &[]);
+    let result = run(&check(), &fs);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "could not tell whether hidden sessions' copy of the rpm package database \
+             (/usr/lib/sysimage/rpm/rpmdb.sqlite) follows the decoy's: rpm's records give \
+             links on the way to /a/ that NAILS cannot follow: the links on its way make a \
+             loop"
+        ),
+        "{result:?}"
+    );
+}
+
+/// rpm's own databases of the links fixtures (`make-rpmdb.sh`): the decoy's
+/// filesystem package links /lib to usr/lib, and its kernel's modules are
+/// recorded below /lib/modules; hidden sessions installed kernel 6.18 and
+/// removed 6.17.1, as dnf does at its limit of kernels.
+const LINKS_DECOY: &[u8] =
+    include_bytes!("../../../nails-base/src/packages/fixtures/rpmdb-links-decoy.sqlite");
+const LINKS_HIDDEN: &[u8] =
+    include_bytes!("../../../nails-base/src/packages/fixtures/rpmdb-links-hidden.sqlite");
+const MODULES_NEW: &str = "usr/lib/modules/6.18.0-200.fc44.x86_64";
+const MODULES_OLD: &str = "usr/lib/modules/6.17.1-200.fc44.x86_64";
+
+#[test]
+fn a_kernel_update_through_lib_in_a_hidden_session_is_its_own() {
+    // dnf in a hidden session writes the new modules where /lib leads,
+    // below usr/lib, and deletes the old tree there.
+    let new = format!("{MODULES_NEW}/kernel/drivers/nails/nails.ko.xz");
+    let fs = fedora(LINKS_DECOY, Some(LINKS_HIDDEN));
+    upper(&fs, &[DB, &new], &[MODULES_OLD]);
+    let result = run(&check(), &fs);
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "hidden sessions keep their own copy of the rpm package database \
+         (/usr/lib/sysimage/rpm/rpmdb.sqlite), which follows the decoy's but for the 1 package \
+         they changed themselves"
+    );
+    // Either change alone tells it.
+    for (files, whiteouts) in [
+        (vec![DB, new.as_str()], vec![]),
+        (vec![DB], vec![MODULES_OLD]),
+    ] {
+        let fs = fedora(LINKS_DECOY, Some(LINKS_HIDDEN));
+        upper(&fs, &files, &whiteouts);
+        assert!(run(&check(), &fs).is_pass(), "{files:?} {whiteouts:?}");
+    }
+    // Without either, nothing says a hidden session changed the package.
+    let fs = fedora(LINKS_DECOY, Some(LINKS_HIDDEN));
+    upper(&fs, &[DB], &[]);
+    let result = run(&check(), &fs);
+    assert!(
+        result.message().contains(
+            "kernel-modules (6.17.1-200.fc44 on the decoy, 6.18.0-200.fc44 in hidden sessions)"
+        ),
+        "{result:?}"
+    );
 }
