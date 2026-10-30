@@ -1077,6 +1077,34 @@ fn the_drop_ins_of_a_unit_s_name_prefixes_and_of_its_type_apply_too() {
 }
 
 #[test]
+fn a_hidden_drop_in_is_skipped_and_one_whose_name_is_no_utf8_applies() {
+    // systemd skips a name that begins with a dot, and reads a name's bytes
+    // whatever they are.
+    use std::os::unix::ffi::OsStrExt;
+    let decoy = Decoy::new();
+    decoy.write(
+        "/usr/lib/systemd/system/srv-ram.mount",
+        "[Mount]\nWhat=tmpfs\nWhere=/srv/ram\nType=tmpfs\n",
+    );
+    decoy.write(
+        "/etc/systemd/system/srv-ram.mount.d/.hidden.conf",
+        "[Mount]\nWhat=/dev/vdb1\n",
+    );
+    let what = |decoy: &Decoy| {
+        let Load::Loaded { unit, .. } = decoy.dirs().load("srv-ram.mount") else {
+            panic!("the unit loads");
+        };
+        unit.last("Mount", "What").map(str::to_string)
+    };
+    assert_eq!(what(&decoy).as_deref(), Some("tmpfs"));
+    let raw = decoy
+        .at("/etc/systemd/system/srv-ram.mount.d")
+        .join(std::ffi::OsStr::from_bytes(b"\xff-own.conf"));
+    std::fs::write(raw, "[Mount]\nWhat=/dev/vdb2\n").unwrap();
+    assert_eq!(what(&decoy).as_deref(), Some("/dev/vdb2"));
+}
+
+#[test]
 fn the_drop_in_directories_are_those_of_the_name_and_each_prefix_up_to_a_dash() {
     for (name, stems) in [
         ("srv-data.mount", &["srv-data.mount", "srv-.mount"][..]),
