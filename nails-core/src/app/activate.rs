@@ -265,9 +265,10 @@ impl LockedActivation {
         // The decoy's shells write their history when they exit, bash on the
         // SIGHUP that stopping their login session sends: the soft-reboot does
         // that the moment PID 1 holds its job. The entry's host SIGKILLs them,
-        // ours last, right before it asks logind, and keeps killing any shell
-        // opened while logind holds the soft-reboot back, so the activation
-        // command never reaches a history file on the decoy disk.
+        // the newest first, so no hangup the kernel sends as one dies reaches
+        // one still alive, right before it asks logind, and keeps killing any
+        // shell opened while logind holds the soft-reboot back, so the
+        // activation command never reaches a history file on the decoy disk.
         let host = RealTargetHost::for_plan(Some(&entry.plan)).killing_shells();
         self.ready.manager.trigger_entry(&host, &RealEntryHost)
     }

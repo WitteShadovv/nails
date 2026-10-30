@@ -138,8 +138,11 @@ Two safeguards bracket the session:
 - **No shell history reaches the decoy.** Right before it starts the
   soft-reboot, activation SIGKILLs the decoy's interactive shells: stopping a
   login session sends its shells SIGHUP, on which bash writes its history, so
-  they must be gone first. None of them can flush the activation command to a
-  history file. `nails emergency` does the same before it starts the way back
+  they must be gone first. They die the newest first, as one shell's death can
+  hang up the shells started after it (see
+  [the flush race](bash-history-forensics.md#the-flush-race)). None of them can
+  flush the activation command to a history file. `nails emergency` kills them
+  too before it starts the way back
   or the power-off. Shells in the hidden session write their history
   into the hidden home, which is in the upper (see [Shell history](#shell-history)).
 
