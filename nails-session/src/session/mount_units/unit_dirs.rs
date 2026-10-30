@@ -90,28 +90,46 @@ impl Unlisted {
 }
 
 /// The names whose drop-in directories (`<name>.d`) apply to the unit
-/// `name`, as systemd's `unit_file_find_dirs()` walks them: the name itself,
-/// then, while what is left before its type holds a dash that is not its
-/// first byte, the name cut after its last dash (`srv-data-old.mount`,
-/// `srv-data-.mount`, `srv-.mount`). A mount, swap or automount unit has no
-/// instance, so no template's directory applies.
+/// `name`, in the order systemd's `unit_file_find_dirs()` walks them: the
+/// name itself; for an instance (`systemd-fsck@dev-vdb1.service`) its
+/// template's names (`systemd-fsck@.service`, and what follows from that);
+/// then, while what is left before the instance or the type holds a dash
+/// that is not its first byte, the names of the name cut after its last
+/// dash, the instance kept (`srv-data-old.mount`, `srv-data-.mount`,
+/// `srv-.mount`; `systemd-@dev-vdb1.service`).
 pub(super) fn dropin_stems(name: &str) -> Vec<String> {
-    let mut stems = vec![name.to_string()];
-    let Some((mut prefix, kind)) = name.rsplit_once('.') else {
-        return stems;
+    let mut stems = Vec::new();
+    find_stems(name, &mut stems);
+    stems
+}
+
+/// [`dropin_stems`] of `name`, added to `stems`.
+fn find_stems(name: &str, stems: &mut Vec<String>) {
+    stems.push(name.to_string());
+    let Some((body, kind)) = name.rsplit_once('.') else {
+        return;
     };
-    loop {
-        // A prefix that ends in a dash loses it once, so the walk goes on to
-        // the dash before it.
-        let rest = prefix.strip_suffix('-').unwrap_or(prefix);
-        match rest.rfind('-') {
-            Some(dash) if dash > 0 => {
-                prefix = &rest[..=dash];
-                stems.push(format!("{prefix}.{kind}"));
-            }
-            _ => return stems,
-        }
+    let (prefix, instance) = match body.split_once('@') {
+        Some((prefix, instance)) => (prefix, Some(instance).filter(|i| !i.is_empty())),
+        None => (body, None),
+    };
+    if instance.is_some() {
+        find_stems(&format!("{prefix}@.{kind}"), stems);
     }
+    // A prefix that ends in a dash loses it once, so the walk goes on to the
+    // dash before it.
+    let rest = prefix.strip_suffix('-').unwrap_or(prefix);
+    let Some(dash) = rest.rfind('-').filter(|&dash| dash > 0) else {
+        return;
+    };
+    let cut = &rest[..=dash];
+    find_stems(
+        &match instance {
+            Some(instance) => format!("{cut}@{instance}.{kind}"),
+            None => format!("{cut}.{kind}"),
+        },
+        stems,
+    );
 }
 
 /// Whether `base` and `dir` name a directory generators write to.
@@ -230,6 +248,19 @@ impl UnitDirs<'_> {
             }
         }
         searched
+    }
+
+    /// Where the skip drop-in of the unit `name` comes in the order systemd
+    /// searches its drop-in directories ([`Self::dropin_dirs`]): `<name>.d`
+    /// below `/run/systemd/system`.
+    pub(super) fn runtime_rank(name: &str) -> usize {
+        let own = format!("{name}.d");
+        Self::dropin_dirs(name)
+            .iter()
+            .position(|(base, dir, sub)| {
+                *base == Base::Run && *dir == "systemd/system" && *sub == own
+            })
+            .unwrap_or(usize::MAX)
     }
 
     /// The drop-ins of the unit `name` systemd applies, in the order of

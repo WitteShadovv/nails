@@ -80,6 +80,8 @@ use super::policy::{self, Decision, KeptOff, Present, Units, Unreached, Unskippa
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::plan::{MaskCause, Skip};
 use nails_teardown::whole_root::runtime_units::valid_unit_name;
+use nails_teardown::whole_root::skips::SKIP_DROPIN_NAME;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use unit_dirs::Load;
 pub use unit_dirs::{UnitDirs, Unlisted};
@@ -299,15 +301,63 @@ fn conflict_warning(unit: &str) -> String {
     )
 }
 
+/// Why the skip drop-in of `unit` would not hold, as the decoy's drop-ins
+/// stand: one of the skip's name that systemd reads in its place (from a
+/// directory it searches first, or at the very path the skip writes, which
+/// the switch would overwrite), or one whose name sorts after it that resets
+/// the unit's start conditions with an empty `Condition…=` assignment. `None`
+/// when the skip holds. A drop-in that cannot be listed or read counts as one
+/// that undoes the skip.
+fn skip_undone(dirs: UnitDirs<'_>, unit: &str) -> Option<String> {
+    let Ok(dropins) = dirs.dropins(unit) else {
+        return Some(format!("a drop-in directory of {unit} cannot be listed"));
+    };
+    let skip = UnitDirs::runtime_rank(unit);
+    let name = SKIP_DROPIN_NAME.as_bytes();
+    for dropin in &dropins {
+        let own = dropin.name.as_bytes();
+        if own == name {
+            if dropin.rank <= skip {
+                return Some(format!(
+                    "{unit} has a drop-in named {SKIP_DROPIN_NAME} of its own, which systemd \
+                     reads in place of the skip"
+                ));
+            }
+            continue;
+        }
+        if own < name {
+            continue;
+        }
+        let resets = match dirs.read_dropin(dropin) {
+            Ok(None) => false,
+            Ok(Some(bytes)) => match unit_file::parse(&bytes) {
+                Ok(file) => file.assignments.iter().any(|(section, key, value)| {
+                    section == "Unit" && key.starts_with("Condition") && value.is_empty()
+                }),
+                Err(_) => true,
+            },
+            Err(()) => true,
+        };
+        if resets {
+            return Some(format!(
+                "a drop-in of {unit} that sorts after the skip's resets or hides its start \
+                 conditions"
+            ));
+        }
+    }
+    None
+}
+
 /// What the hidden session keeps from starting for `fstab` and the
 /// `decisions` made for it and for the units outside it
 /// ([`policy::runtime_units`]), each skip with the units its units pull in
 /// that act on their device or file ([`pulled_in`]), and a warning for each
 /// skip masked instead: one whose units pull in units NAILS cannot tell,
-/// any of which could act on its disk before its condition is tested. Such a
-/// skip's units are recorded as masked for that ([`MaskCause::Undetermined`]).
-/// A warning goes too for each unit masked because what describes it
-/// disagrees ([`MaskCause::ConflictingLines`]).
+/// any of which could act on its disk before its condition is tested
+/// ([`MaskCause::Undetermined`]), and one that a drop-in of the decoy's
+/// would undo for one of its units or of those they pull in
+/// ([`MaskCause::SkipUndone`]). A warning goes too for each unit masked
+/// because what describes it disagrees ([`MaskCause::ConflictingLines`]).
 pub fn kept_off(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
@@ -326,28 +376,38 @@ pub fn kept_off(
             .iter()
             .map(|unit| pulled_in(dirs, unit))
             .collect();
-        match pulled {
+        let (why, cause) = match pulled {
             Ok(pulled) => {
                 for unit in pulled.into_iter().flatten() {
                     if !skip.pulled.contains(&unit) {
                         skip.pulled.push(unit);
                     }
                 }
-                kept.skips.push(skip);
-            }
-            Err(why) => {
-                warnings.push(format!(
-                    "{} is masked rather than skipped, as {why}: the hidden session will not \
-                     reach the boot target that requires it, and the units only that target \
-                     pulls in will not start there",
-                    skip.units.join(" and ")
-                ));
-                kept.record_masked(&skip.units, MaskCause::Undetermined, None);
-                for unit in skip.units {
-                    if !kept.masks.contains(&unit) {
-                        kept.masks.push(unit);
+                let undone = skip
+                    .units
+                    .iter()
+                    .chain(&skip.pulled)
+                    .find_map(|unit| skip_undone(dirs, unit));
+                match undone {
+                    None => {
+                        kept.skips.push(skip);
+                        continue;
                     }
+                    Some(why) => (why, MaskCause::SkipUndone),
                 }
+            }
+            Err(why) => (why.to_string(), MaskCause::Undetermined),
+        };
+        warnings.push(format!(
+            "{} is masked rather than skipped, as {why}: the hidden session will not reach the \
+             boot target that requires it, and the units only that target pulls in will not \
+             start there",
+            skip.units.join(" and ")
+        ));
+        kept.record_masked(&skip.units, cause, None);
+        for unit in skip.units {
+            if !kept.masks.contains(&unit) {
+                kept.masks.push(unit);
             }
         }
     }
