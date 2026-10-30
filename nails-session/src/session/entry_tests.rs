@@ -510,21 +510,33 @@ mod kernel_tests {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
 
-    /// A process named `comm` that sleeps until the namespace ends: `sleep`
-    /// run through a link of that name, which the kernel names it after.
-    fn start(dir: &Path, sleep: &Path, comm: &str) -> Child {
-        let link = dir.join(comm);
-        if std::fs::symlink_metadata(&link).is_err() {
-            std::os::unix::fs::symlink(sleep, &link).unwrap();
-        }
-        Command::new(&link)
-            .arg0("sleep")
-            .arg("600")
-            .stdin(Stdio::null())
+    /// A shell run as `program` with `arg0` that waits on the input the test
+    /// holds open, so it runs until the test ends it. dash and bash run as
+    /// themselves under any name. `sleep` would not: a multi-call coreutils
+    /// picks the program by the name it was run under, and uutils coreutils,
+    /// Ubuntu 26.04's, by the path the kernel ran rather than argv[0], so
+    /// through a link named after another program it runs that program, or
+    /// none, and ends at once.
+    fn waiting(program: &Path, arg0: &str) -> Child {
+        Command::new(program)
+            .arg0(arg0)
+            .args(["-c", "read line"])
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .unwrap()
+    }
+
+    /// A process named `comm` that runs until the test ends it: a waiting
+    /// shell ([`waiting`]) run through a link of that name, which the kernel
+    /// names it after.
+    fn start(dir: &Path, sh: &Path, comm: &str) -> Child {
+        let link = dir.join(comm);
+        if std::fs::symlink_metadata(&link).is_err() {
+            std::os::unix::fs::symlink(sh, &link).unwrap();
+        }
+        waiting(&link, "sh")
     }
 
     /// End `child` and reap it.
@@ -533,10 +545,10 @@ mod kernel_tests {
         child.wait().unwrap();
     }
 
-    /// Use up `count` process numbers with processes that end at once.
-    fn use_up(sleep: &Path, count: usize) {
+    /// Use up `count` process numbers with shells that end at once.
+    fn use_up(sh: &Path, count: usize) {
         for _ in 0..count {
-            let status = Command::new(sleep).arg("0").status().unwrap();
+            let status = Command::new(sh).args(["-c", ":"]).status().unwrap();
             assert!(status.success());
         }
     }
@@ -548,36 +560,28 @@ mod kernel_tests {
         ))
         .in_pid_ns()
         .run(|| {
-            let Some(sleep) = nails_teardown::whole_root::tools::find(None, "sleep") else {
-                skip_host("no sleep in the system directories");
+            let Some(sh) = nails_teardown::whole_root::tools::find(None, "sh") else {
+                skip_host("no sh in the system directories");
             };
             let places = Places::system();
             let Some(before) = places.current() else {
                 skip_host("this kernel has no ns_last_pid (CONFIG_CHECKPOINT_RESTORE)");
             };
-            let Some(sh) = nails_teardown::whole_root::tools::find(None, "sh") else {
-                skip_host("no sh in the system directories");
-            };
             let dir = tempfile::tempdir().unwrap();
             // A root storage daemon, which a soft-reboot leaves running, with
             // the lowest number: it is no part of the start the entry reads.
-            // A shell that waits on its input stands in for it, since a
-            // multi-call coreutils takes the program to run from argv[0].
-            let storage = Command::new(&sh)
-                .arg0("@storage")
-                .args(["-c", "read line"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
+            let mut storage = waiting(&sh, "@storage");
             // The decoy's userspace: its journal, the floor, and further on
             // its getty.
-            let journal = start(dir.path(), &sleep, "systemd-journal");
-            use_up(&sleep, 50);
-            let getty = start(dir.path(), &sleep, "agetty");
+            let mut journal = start(dir.path(), &sh, "systemd-journal");
+            use_up(&sh, 50);
+            let mut getty = start(dir.path(), &sh, "agetty");
             let tty = nails_teardown::proc::stat(getty.id()).unwrap().tty;
             let mut record = RealEntryHost.pid_record();
+            // One that had ended would be a zombie, which the entry leaves out.
+            for child in [&mut storage, &mut journal, &mut getty] {
+                assert_eq!(child.try_wait().unwrap(), None, "a stand-in ended");
+            }
             assert!(before < storage.id() && storage.id() < journal.id());
             assert_eq!(record.floor, Some(journal.id()));
             assert_eq!(
@@ -591,14 +595,14 @@ mod kernel_tests {
 
             // The switch, and a hidden start whose getty follows it.
             record.at_switch = places.current();
-            let hidden = start(dir.path(), &sleep, "agetty");
+            let hidden = start(dir.path(), &sh, "agetty");
             let used = hidden.id() - record.at_switch.unwrap();
             record.counter = fresh_pids::counter(&record, Path::new("/proc"));
             assert_eq!(record.counter, Some(getty.id() - used));
 
             // The hidden session runs on and stops; the way back sets the
             // counter, and the next process gets a number below where it was.
-            use_up(&sleep, 20);
+            use_up(&sh, 20);
             stop(hidden);
             let reached = places.current().unwrap();
             let target = record.way_back_counter().unwrap();
@@ -606,7 +610,7 @@ mod kernel_tests {
                 fresh_pids::lower(Some(target), &places),
                 Lowered::Set(target)
             );
-            let next = start(dir.path(), &sleep, "agetty");
+            let next = start(dir.path(), &sh, "agetty");
             assert!(
                 target < next.id() && next.id() <= reached,
                 "{target} < {} <= {reached}",
