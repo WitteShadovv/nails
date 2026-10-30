@@ -11,7 +11,9 @@
 //! request follows the protocol's version and has arguments of the shape the
 //! protocol states, checked here on their own rather than by the decoder's
 //! own validation (every path absolute with no control character, a token of
-//! 32 lowercase hexadecimal digits, no two options the CLI refuses together),
+//! 32 lowercase hexadecimal digits, no two options the CLI refuses together,
+//! a configuration change of 1 to 32 keys shaped as keys of `nails.toml`,
+//! each named once, with bounded values free of control characters),
 //! and that an accepted request, written back as the window writes it, is
 //! read again as the same request: through the decoder where the written form
 //! fits, and past its length check where that form, which names every field,
@@ -21,7 +23,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use nails_api::protocol::{
-    ErrorCode, MAX_LINE_BYTES, Op, PROTOCOL_VERSION, RehearseScanArgs, Request, VerifyArgs,
+    ConfigEditArgs, ErrorCode, MAX_KEY_BYTES, MAX_LINE_BYTES, MAX_LIST_ENTRIES, MAX_SETTING_BYTES,
+    MAX_SETTINGS, Op, PROTOCOL_VERSION, RehearseScanArgs, Request, SettingValue, VerifyArgs,
     decode_request, validate,
 };
 
@@ -58,6 +61,49 @@ fn scan_ok(args: &RehearseScanArgs) -> bool {
         && args.token_file.as_deref().is_none_or(path_ok)
 }
 
+/// A key of `nails.toml` as a change names it: lowercase letters, digits and
+/// `_`, with one `.` between a table and its key.
+fn key_ok(key: &str) -> bool {
+    let part = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    key.len() <= MAX_KEY_BYTES
+        && match key.split_once('.') {
+            Some((table, name)) => part(table) && part(name),
+            None => part(key),
+        }
+}
+
+fn value_ok(value: &SettingValue) -> bool {
+    let text =
+        |text: &String| text.len() <= MAX_SETTING_BYTES && !text.chars().any(char::is_control);
+    match value {
+        SettingValue::Bool(_) | SettingValue::Integer(_) => true,
+        SettingValue::Text(value) => text(value),
+        SettingValue::List(values) => values.len() <= MAX_LIST_ENTRIES && values.iter().all(text),
+    }
+}
+
+/// A configuration change: 1 to 32 keys, each named once, each value bounded.
+fn edit_ok(args: &ConfigEditArgs) -> bool {
+    let keys: Vec<&str> = args
+        .set
+        .iter()
+        .map(|setting| setting.key.as_str())
+        .chain(args.unset.iter().map(String::as_str))
+        .collect();
+    (1..=MAX_SETTINGS).contains(&keys.len())
+        && keys.iter().all(|key| key_ok(key))
+        && keys
+            .iter()
+            .enumerate()
+            .all(|(index, key)| !keys[..index].contains(key))
+        && args.set.iter().all(|setting| value_ok(&setting.value))
+}
+
 /// Whether `op` has the shape the protocol states for its arguments.
 fn shaped(op: &Op) -> bool {
     match op {
@@ -89,10 +135,12 @@ fn shaped(op: &Op) -> bool {
                 && args.hardware_config.as_deref().is_none_or(path_ok)
                 && !(args.no_hardware_config && args.hardware_config.is_some())
         }
+        Op::ConfigEditPlan(args) => edit_ok(args),
         Op::DiscardApply(token)
         | Op::ActivateApply(token)
         | Op::DeactivateApply(token)
-        | Op::InitApply(token) => token_ok(&token.token),
+        | Op::InitApply(token)
+        | Op::ConfigEditApply(token) => token_ok(&token.token),
         Op::Status
         | Op::ConfigPath
         | Op::ConfigValidate

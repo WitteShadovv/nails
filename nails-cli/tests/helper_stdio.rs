@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use nails_api::protocol::{
-    ActivateArgs, CheckArgs, ConfigShowArgs, DeactivateArgs, DiscardPlanArgs, DiscardPlanData,
-    EmergencyArgs, ErrorCode, Frame, Hello, InitArgs, Op, PROTOCOL_VERSION, RehearseScanArgs,
-    Request, Token, VerifyArgs,
+    ActivateArgs, CheckArgs, ConfigEditArgs, ConfigEditPlanData, ConfigShowArgs, DeactivateArgs,
+    DiscardPlanArgs, DiscardPlanData, EmergencyArgs, ErrorCode, Frame, Hello, InitArgs, Op,
+    PROTOCOL_VERSION, RehearseScanArgs, Request, SettingArg, SettingValue, Token, VerifyArgs,
 };
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
@@ -45,11 +45,25 @@ impl Helper {
     /// [`start`](Self::start) with the variables `vars` set, as the launcher
     /// sets `NAILS_TARGET_UID` for its helper.
     fn start_with(config: &Path, vars: &[(&str, &str)]) -> Self {
-        let mut child = Command::new(assert_cmd::cargo::cargo_bin!("nails"))
-            .envs(vars.iter().copied())
-            .arg("--no-log-file")
-            .arg("--config")
-            .arg(config)
+        Self::launch(assert_cmd::cargo::cargo_bin!("nails"), Some(config), vars)
+    }
+
+    /// Start the helper of the engine at `binary`, on `config` or, without
+    /// one, on the configuration beside the engine, and read its hello.
+    fn start_at(binary: &Path, config: Option<&Path>) -> Self {
+        Self::launch(binary, config, &[])
+    }
+
+    /// Start the helper of the engine at `binary`, on `config` or the
+    /// configuration beside the engine, with the variables `vars` set, and
+    /// read its hello.
+    fn launch(binary: &Path, config: Option<&Path>, vars: &[(&str, &str)]) -> Self {
+        let mut command = Command::new(binary);
+        command.envs(vars.iter().copied()).arg("--no-log-file");
+        if let Some(config) = config {
+            command.arg("--config").arg(config);
+        }
+        let mut child = command
             .args(["helper", "--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -851,6 +865,252 @@ mod kernel_tests {
             assert_eq!(answer, (cli_exit, cli));
             assert_eq!(answer.0, 0, "{}", answer.1);
         });
+    }
+
+    /// A tmpfs hidden volume laid out as `init` lays it out, with the test
+    /// binary bound into it as `<volume>/nails`, so that is the volume the
+    /// engine runs from and its configuration the one beside it. Build it
+    /// inside [`in_namespace`].
+    struct EngineVolume {
+        _tmpfs: ScratchTmpfs,
+        root: PathBuf,
+    }
+
+    impl EngineVolume {
+        fn new() -> Self {
+            let tmpfs = ScratchTmpfs::new("");
+            let root = tmpfs.path().canonicalize().unwrap();
+            std::fs::create_dir(root.join("config")).unwrap();
+            std::fs::write(root.join("state.json"), "{}").unwrap();
+            std::fs::write(
+                root.join("config/nails.toml"),
+                nails_core::Config::init_template(&root),
+            )
+            .unwrap();
+            let binary = root.join("nails");
+            std::fs::write(&binary, "").unwrap();
+            nix::mount::mount(
+                Some(assert_cmd::cargo::cargo_bin!("nails")),
+                &binary,
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .expect("bind the engine onto the volume");
+            Self {
+                _tmpfs: tmpfs,
+                root,
+            }
+        }
+
+        fn binary(&self) -> PathBuf {
+            self.root.join("nails")
+        }
+
+        fn config(&self) -> PathBuf {
+            self.root.join("config/nails.toml")
+        }
+
+        fn text(&self) -> String {
+            std::fs::read_to_string(self.config()).unwrap()
+        }
+
+        fn helper(&self) -> Helper {
+            let mut helper = Helper::start_at(&self.binary(), None);
+            let (exit, _) = helper.result(Op::Hello(ours()));
+            assert_eq!(exit, 0);
+            helper
+        }
+
+        /// The CLI's `config` subcommand `args` with `--json`, run from the
+        /// volume: its exit code and envelope.
+        fn cli(&self, args: &[&str]) -> (i32, Value) {
+            let output = Command::new(self.binary())
+                .arg("--no-log-file")
+                .arg("--json")
+                .args(args)
+                .output()
+                .expect("run nails");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let value = serde_json::from_str(stdout.trim())
+                .unwrap_or_else(|e| panic!("not one envelope ({e}): {stdout}"));
+            (output.status.code().unwrap_or(-1), value)
+        }
+    }
+
+    impl Drop for EngineVolume {
+        fn drop(&mut self) {
+            let _ = nix::mount::umount(&self.binary());
+        }
+    }
+
+    fn change(set: &[(&str, SettingValue)], unset: &[&str]) -> Op {
+        Op::ConfigEditPlan(ConfigEditArgs {
+            set: set
+                .iter()
+                .map(|(key, value)| SettingArg {
+                    key: (*key).to_string(),
+                    value: value.clone(),
+                })
+                .collect(),
+            unset: unset.iter().map(|key| (*key).to_string()).collect(),
+        })
+    }
+
+    fn change_plan(helper: &mut Helper, op: Op) -> ConfigEditPlanData {
+        let (exit, envelope) = helper.result(op);
+        assert_eq!(exit, 0, "{envelope}");
+        serde_json::from_value(envelope["data"].clone())
+            .unwrap_or_else(|e| panic!("{e}: {envelope}"))
+    }
+
+    fn change_apply(token: &str) -> Op {
+        Op::ConfigEditApply(Token {
+            token: token.to_string(),
+        })
+    }
+
+    #[test]
+    fn a_configuration_change_writes_only_with_its_token_and_the_file_it_read() {
+        in_namespace(
+            test_path!(a_configuration_change_writes_only_with_its_token_and_the_file_it_read),
+            || {
+                let volume = EngineVolume::new();
+                let template = volume.text();
+                let mut helper = volume.helper();
+
+                let plan = change_plan(
+                    &mut helper,
+                    change(
+                        &[("persona.mode", SettingValue::Text("fresh-home".into()))],
+                        &["nixos_flake"],
+                    ),
+                );
+                assert_eq!(plan.path, volume.config().display().to_string());
+                assert_eq!(plan.changes.len(), 2, "{plan:?}");
+                assert_eq!(plan.changes[0].after, Some(serde_json::json!("fresh-home")));
+                assert_eq!(volume.text(), template, "a plan writes nothing");
+
+                let (exit, envelope) = helper.result(change_apply(&plan.token));
+                assert_eq!(exit, 0, "{envelope}");
+                assert_eq!(envelope["command"], "config");
+                assert_eq!(envelope["data"]["written"], true, "{envelope}");
+                assert_eq!(
+                    volume.text(),
+                    format!("{template}\n[persona]\nmode = \"fresh-home\"\n")
+                );
+                // The token was spent.
+                refused_token(&mut helper, change_apply(&plan.token));
+
+                // A change the file already holds answers as the CLI does,
+                // with no token.
+                let answer = helper.result(change(
+                    &[("persona.mode", SettingValue::Text("fresh-home".into()))],
+                    &[],
+                ));
+                assert_eq!(answer.1["data"]["written"], false, "{}", answer.1);
+                assert_eq!(
+                    answer,
+                    volume.cli(&["config", "set", "persona.mode", "fresh-home"])
+                );
+
+                // A plan of a file that changed since is not applied.
+                let plan = change_plan(
+                    &mut helper,
+                    change(&[("minimum_space_mb", SettingValue::Integer(2000))], &[]),
+                );
+                let changed = format!("{}# changed meanwhile\n", volume.text());
+                std::fs::write(volume.config(), &changed).unwrap();
+                let (exit, envelope) = helper.result(change_apply(&plan.token));
+                assert_eq!(exit, 1, "{envelope}");
+                assert_eq!(envelope["error"]["code"], "plan_stale", "{envelope}");
+                assert_eq!(volume.text(), changed);
+
+                // Any other request withdraws a plan.
+                let plan = change_plan(
+                    &mut helper,
+                    change(&[("minimum_space_mb", SettingValue::Integer(2000))], &[]),
+                );
+                helper.result(Op::ConfigPath);
+                refused_token(&mut helper, change_apply(&plan.token));
+                assert_eq!(volume.text(), changed);
+
+                // An invalid value is the CLI's error, the file untouched.
+                let answer = helper.result(change(
+                    &[("hidden_volume_root", SettingValue::Text("/mnt/a,b".into()))],
+                    &[],
+                ));
+                assert_eq!(
+                    answer,
+                    volume.cli(&["config", "set", "hidden_volume_root", "/mnt/a,b"])
+                );
+                assert_eq!(answer.0, 3, "{}", answer.1);
+                assert_eq!(volume.text(), changed);
+                assert_eq!(helper.close(), 0);
+            },
+        );
+    }
+
+    /// While an entry was left behind on this machine (a populated
+    /// `/run/nextroot` in this namespace), the hidden volume and the record
+    /// stay where the way back finds them: the helper refuses moving them as
+    /// the CLI does and writes nothing, keeps a plan that leaves them where
+    /// they are, and still changes the other keys.
+    #[test]
+    fn an_entry_left_behind_holds_the_volume_and_the_record_as_the_cli_does() {
+        in_namespace(
+            test_path!(an_entry_left_behind_holds_the_volume_and_the_record_as_the_cli_does),
+            || {
+                let volume = EngineVolume::new();
+                assert!(
+                    !volume.root.starts_with("/run"),
+                    "the volume must not lie under the /run this test covers"
+                );
+                let template = volume.text();
+                for target in ["/run", "/run/nextroot"] {
+                    if target != "/run" {
+                        std::fs::create_dir(target).unwrap();
+                    }
+                    nix::mount::mount(
+                        Some("tmpfs"),
+                        target,
+                        Some("tmpfs"),
+                        nix::mount::MsFlags::empty(),
+                        Some("size=1m"),
+                    )
+                    .expect("a tmpfs of this namespace's own");
+                }
+                let mut helper = volume.helper();
+                for (key, path) in [
+                    ("state_file_path", volume.root.join("elsewhere.json")),
+                    ("hidden_volume_root", volume.root.join("elsewhere")),
+                ] {
+                    let path = path.display().to_string();
+                    let answer =
+                        helper.result(change(&[(key, SettingValue::Text(path.clone()))], &[]));
+                    assert_eq!(answer.0, 4, "{}", answer.1);
+                    assert_eq!(answer.1["error"]["code"], "session_paths", "{}", answer.1);
+                    assert_eq!(answer, volume.cli(&["config", "set", key, &path]));
+                }
+                assert_eq!(volume.text(), template, "nothing was written");
+
+                // Where the record is now, it may be written down.
+                let here = volume.root.join("state.json").display().to_string();
+                change_plan(
+                    &mut helper,
+                    change(&[("state_file_path", SettingValue::Text(here))], &[]),
+                );
+                // Any other key changes as before.
+                let plan = change_plan(
+                    &mut helper,
+                    change(&[("minimum_space_mb", SettingValue::Integer(600))], &[]),
+                );
+                let (exit, envelope) = helper.result(change_apply(&plan.token));
+                assert_eq!(exit, 0, "{envelope}");
+                assert!(volume.text().contains("minimum_space_mb = 600"));
+                assert_eq!(helper.close(), 0);
+            },
+        );
     }
 
     /// A rehearsal plant on a volume with no session refuses as the CLI's.
