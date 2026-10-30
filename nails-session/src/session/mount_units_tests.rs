@@ -810,6 +810,81 @@ fn a_unit_masked_because_its_lines_disagree_is_warned_of() {
 }
 
 #[test]
+fn a_skip_a_drop_in_of_the_decoy_s_would_undo_is_masked_with_a_warning() {
+    // The skip writes /run/systemd/system/<unit>.d/zz-overlay-runtime.conf.
+    let undone = |path: &str, text: &str| {
+        let decoy = Decoy::new();
+        decoy.write(path, text);
+        let (kept, warnings) = decoy.kept_off(DATA, &decide_data());
+        (kept, warnings)
+    };
+    let reset = "[Unit]\nConditionPathExists=\n";
+    for (path, text, why) in [
+        // Sorts after the skip's drop-in and resets its start conditions.
+        (
+            "/etc/systemd/system/srv-data.mount.d/zzz.conf",
+            reset,
+            "resets or hides its start conditions",
+        ),
+        (
+            "/usr/lib/systemd/system/mount.d/zz-override.conf",
+            reset,
+            "resets or hides its start conditions",
+        ),
+        // So for the fsck the skip pulls in, through its template.
+        (
+            "/etc/systemd/system/systemd-fsck@.service.d/zzz.conf",
+            reset,
+            "resets or hides its start conditions",
+        ),
+        // Of the skip's name, read in its place.
+        (
+            "/etc/systemd/system/srv-data.mount.d/zz-overlay-runtime.conf",
+            "[Unit]\nDescription=own\n",
+            "reads in place of the skip",
+        ),
+        (
+            "/run/systemd/system/srv-data.mount.d/zz-overlay-runtime.conf",
+            "[Unit]\nDescription=own\n",
+            "reads in place of the skip",
+        ),
+    ] {
+        let (kept, warnings) = undone(path, text);
+        assert!(kept.skips.is_empty(), "{path}: {:?}", kept.skips);
+        assert_eq!(kept.masks, ["srv-data.mount"], "{path}");
+        assert_eq!(
+            kept.required_masks,
+            [RequiredMask {
+                unit: "srv-data.mount".into(),
+                cause: MaskCause::SkipUndone,
+                device: None,
+            }],
+            "{path}"
+        );
+        assert_eq!(warnings.len(), 1, "{path}: {warnings:?}");
+        assert!(warnings[0].contains(why), "{path}: {}", warnings[0]);
+    }
+    // One that sorts before the skip's, a condition added rather than reset,
+    // and one of the skip's name below a directory systemd reads after it,
+    // leave the skip as it is.
+    for (path, text) in [
+        ("/etc/systemd/system/srv-data.mount.d/aa.conf", reset),
+        (
+            "/etc/systemd/system/srv-data.mount.d/zzz.conf",
+            "[Unit]\nConditionPathExists=/srv\n",
+        ),
+        (
+            "/usr/lib/systemd/system/srv-data.mount.d/zz-overlay-runtime.conf",
+            "[Unit]\nDescription=own\n",
+        ),
+    ] {
+        let (kept, warnings) = undone(path, text);
+        assert_eq!(kept.skips.len(), 1, "{path}: {:?}", kept.masks);
+        assert!(warnings.is_empty(), "{path}: {warnings:?}");
+    }
+}
+
+#[test]
 fn a_directory_of_links_that_cannot_be_listed_refuses_the_entry() {
     for (link, dir) in [
         (
@@ -1121,6 +1196,17 @@ fn the_drop_in_directories_are_those_of_the_name_and_each_prefix_up_to_a_dash() 
             &["srv-my\\x2ddisk.mount", "srv-.mount"][..],
         ),
         ("data.swap", &["data.swap"][..]),
+        // An instance: its template's, then the prefixes with the instance.
+        (
+            "systemd-fsck@dev-vdb1.service",
+            &[
+                "systemd-fsck@dev-vdb1.service",
+                "systemd-fsck@.service",
+                "systemd-.service",
+                "systemd-@dev-vdb1.service",
+                "systemd-@.service",
+            ][..],
+        ),
     ] {
         assert_eq!(unit_dirs::dropin_stems(name), stems, "{name}");
     }
