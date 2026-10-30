@@ -117,12 +117,22 @@ impl Engine<'_> {
     /// in one without a way back, it answers as the CLI does and keeps
     /// nothing. The apply takes the lock, as the CLI does once confirmed.
     pub(super) fn deactivate_plan(&mut self, args: &DeactivateArgs) -> Answer {
+        let prepared = nails_core::app::deactivate::prepare(self.env, self.config());
+        self.deactivate_plan_from(args, prepared)
+    }
+
+    /// [`deactivate_plan`](Self::deactivate_plan) from what the deactivation's
+    /// preparation found.
+    pub(super) fn deactivate_plan_from(
+        &mut self,
+        args: &DeactivateArgs,
+        prepared: nails_core::app::deactivate::Prepared,
+    ) -> Answer {
         let settings = json_settings();
         let args = crate::cli::args::DeactivateArgs {
             yes: true,
             poweroff: args.poweroff,
         };
-        let prepared = nails_core::app::deactivate::prepare(self.env, self.config());
         let mut ready = None;
         let (exit, line) = capture(|| {
             commands::deactivate::deactivate_prepared_with(
