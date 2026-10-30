@@ -16,6 +16,7 @@ pub mod image;
 pub mod kconfig;
 pub mod kernel;
 pub mod libmount;
+pub mod plocate;
 pub mod systemd;
 pub mod systemd_conf;
 
