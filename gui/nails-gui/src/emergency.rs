@@ -6,7 +6,8 @@
 //!
 //! The Emergency control fires on the window's thread, and firing waits for
 //! nothing there: [`Emergency::fire`] sets a flag and wakes a thread that
-//! started with the window and does the rest, in this order:
+//! started with the window, under the window's neutral name, and does the
+//! rest, in this order:
 //!
 //! 1. **The engine's emergency**, through the helper, while a session with
 //!    one is open. The thread writes the request onto the helper's pipe
@@ -17,11 +18,16 @@
 //!    ends. The helper takes it as soon as it reads its next request, runs
 //!    the engine's hot path and powers off.
 //! 2. **A power-off of the operator's own**, when there is no helper, the
-//!    request could not be written within the [grace](Fallback::grace), or
-//!    the window still runs that long after it was: `systemctl poweroff`,
-//!    which asks logind as a desktop's own Power Off does. That is the
-//!    orderly power-off, slower than the engine's, but it needs neither root
-//!    nor the helper.
+//!    request could not be written within the [grace](Fallback::grace) of
+//!    the press, or the window still runs a grace after the request was
+//!    written: `systemctl poweroff`, which asks logind as a desktop's own
+//!    Power Off does. That is the orderly power-off, slower than the
+//!    engine's, but it needs neither root nor the helper. After the engine's
+//!    emergency it may still run: the engine's hot path spares the
+//!    helper's own process tree and session, and a window that started its
+//!    helper through pkexec is the helper's parent, so it lives on into the
+//!    orderly shutdown, where this power-off merges with the one the engine
+//!    enqueued.
 //! 3. **The power button**, which the page names from the start: holding it
 //!    switches the computer off, as on any computer.
 //!
@@ -162,8 +168,9 @@ impl Emergency {
             changed: Condvar::new(),
         });
         let theirs = Arc::clone(&shared);
+        // No name of its own: the thread keeps the one of the thread that
+        // starts it, the window's neutral name, which a list of threads shows.
         let thread = std::thread::Builder::new()
-            .name("emergency".to_string())
             .spawn(move || run(&theirs, &fallback, &report))
             .ok()
             .map(|handle| handle.thread().clone());
@@ -211,10 +218,13 @@ fn run(shared: &Shared, fallback: &Fallback, report: &dyn Fn(Outcome)) {
     let deadline = Instant::now() + fallback.grace;
     if ask_helper(shared, deadline) {
         report(Outcome::HelperAsked);
-        // The engine's emergency powers off and ends every program of the
-        // session, this window's mostly first; one still here past the
-        // grace asks for the power-off itself.
-        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        // The engine's emergency enqueues the power-off and ends the
+        // session's programs, but not the helper's parents or its session.
+        // The launcher's window is neither, and ends with the others; a
+        // window that started its helper through pkexec is its parent, and
+        // lives on until the orderly shutdown stops it. One still here a
+        // grace after the request asks for the power-off as well.
+        std::thread::sleep(fallback.grace);
     }
     report(if power_off(fallback) {
         Outcome::PowerOffAsked
