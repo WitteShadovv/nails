@@ -80,12 +80,15 @@ export component EmergencyButton {
         clip: true;
         background: touch.pressed ? Adw.destructive-button-active : touch.has-hover ? Adw.destructive-button-hover : Adw.destructive-button-bg;
 
+        // The hold's bar, in the solid colour a destructive button fills
+        // with: the label over it is white (below), the rest stays red on
+        // the tint, so every part of it reads.
         Rectangle {
             x: 0px;
             y: 0px;
             width: parent.width * root.progress;
             height: parent.height;
-            background: Adw.destructive-button-active;
+            background: Adw.destructive-bg;
         }
     }
 
@@ -99,6 +102,29 @@ export component EmergencyButton {
         vertical-alignment: center;
         overflow: elide;
         accessible-role: none;
+    }
+
+    // The label again, white, over the filled part of the bar only.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width * root.progress;
+        height: root.height;
+        clip: true;
+
+        Text {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            text: root.label;
+            font-weight: Adw.weight-bold;
+            color: Adw.destructive-fg;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
     }
 
     touch := TouchArea {
