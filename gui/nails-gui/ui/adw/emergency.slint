@@ -108,6 +108,15 @@ export component EmergencyButton {
                 root.down = false;
                 return;
             }
+            // Any release ends the toolkit's hold on the pointer, also one of
+            // another button, and no cancel follows it: the left button's
+            // later release reaches whatever lies under the pointer then. So
+            // every release ends the press, and only a press of its own,
+            // released with nothing in between, counts.
+            if (event.kind == PointerEventKind.up && event.button != PointerEventButton.left) {
+                root.down = false;
+                return;
+            }
             if (event.button != PointerEventButton.left) {
                 return;
             }
