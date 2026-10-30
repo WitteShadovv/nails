@@ -437,3 +437,116 @@ fn cancelling_the_risk_allows_nothing() {
     model.allow(7);
     assert_eq!(model.page().question, None);
 }
+
+/// A decoy whose check passed with the persistent record allowed behind the
+/// word.
+fn allowed() -> Model {
+    let mut model = decoy();
+    persistent(&mut model, false);
+    model.allow(0);
+    model.typed("allow");
+    model.answer(true);
+    checked(
+        &mut model,
+        json!([{"name": "decoy-persistence", "status": "warn", "message": "allowed"}]),
+        0,
+        "fresh-home",
+    );
+    assert_eq!(model.page().heading, text::READY);
+    model
+}
+
+fn decoy_status() -> Update {
+    answered(
+        Kind::Status,
+        json!({"schema_version": 2, "command": "status", "ok": true,
+            "data": {"place": "decoy", "attention": null, "hidden_root": "/mnt/data"}}),
+    )
+}
+
+/// After whatever ended what was allowed: the check runs again without it,
+/// refuses again and offers Allow again, and the next Activate… carries no
+/// flag.
+fn allowed_no_more(model: &mut Model) {
+    assert_eq!(
+        model.apply(decoy_status()),
+        vec![Ask::Check(CheckArgs::default())],
+        "the check runs again without the flag"
+    );
+    persistent(model, false);
+    let page = model.page();
+    assert_eq!(page.checks[0].allow, Some(Risk::PersistentDecoy));
+    assert!(
+        !page
+            .facts
+            .iter()
+            .any(|(title, _)| title == text::FACT_ALLOWED),
+        "{:?}",
+        page.facts
+    );
+    // Had the decoy changed in between, its activation would still carry
+    // nothing allowed.
+    checked(
+        model,
+        json!([{"name": "decoy-persistence", "status": "pass", "message": "amnesic"}]),
+        0,
+        "fresh-home",
+    );
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Activate(
+            ActivateArgs::default()
+        ))))
+    );
+}
+
+#[test]
+fn what_was_allowed_holds_for_one_activation_that_failed() {
+    let mut model = allowed();
+    activating(&mut model);
+    let asks = model.apply(answered(
+        Kind::Apply,
+        json!({"schema_version": 2, "command": "activate", "ok": false,
+            "data": {"status": "failed"},
+            "error": {"code": "not_ready", "message": "Pre-flight checks failed", "next": null}}),
+    ));
+    assert_eq!(asks, vec![Ask::Status]);
+    allowed_no_more(&mut model);
+}
+
+#[test]
+fn what_was_allowed_goes_with_an_activation_withdrawn() {
+    // The person declined the activation's question: the status of the
+    // withdrawal comes next.
+    let mut model = allowed();
+    assert!(matches!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Activate(ActivateArgs {
+            allow_persistent_decoy: true,
+            ..
+        }))))
+    ));
+    model.apply(plan(None, None, false));
+    assert_eq!(model.answer(false), Some(Ask::Withdraw));
+    assert!(model.apply(Update::Withdrawn).is_empty());
+    allowed_no_more(&mut model);
+
+    // The helper withdrew it, a token it refused: the window asks for the
+    // status itself.
+    let mut model = allowed();
+    activating(&mut model);
+    assert_eq!(model.apply(Update::Withdrawn), vec![Ask::Status]);
+    allowed_no_more(&mut model);
+}
+
+#[test]
+fn what_was_allowed_goes_with_a_recovery() {
+    let mut model = allowed();
+    let asks = model.apply(answered(
+        Kind::Recover,
+        json!({"schema_version": 2, "command": "recover", "ok": true,
+            "data": {"outcome": "clean", "remaining_mounts": [], "backend": []}}),
+    ));
+    assert_eq!(asks, vec![Ask::Status]);
+    allowed_no_more(&mut model);
+}
