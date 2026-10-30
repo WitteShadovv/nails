@@ -35,8 +35,8 @@ ignore = [
     # AccessKit's AT-SPI adapter (accesskit_unix and atspi -> zbus), the
     # screen reader's way in, and Slint's winit backend, which depends on
     # zbus for every Linux target and reads the desktop's settings portal
-    # with it at every start (i-slint-backend-winit -> zbus). They go once
-    # both AccessKit and Slint's winit backend move off zbus 5.
+    # with it where the portal runs (i-slint-backend-winit -> zbus). They go
+    # once both AccessKit and Slint's winit backend move off zbus 5.
     # expires: 2027-01-31
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, merged into zbus 6; reached on zbus 5 through AccessKit's AT-SPI adapter and Slint's winit backend, which reads the settings portal" },
     # GUI: as RUSTSEC-2026-0370, for zbus_names.

@@ -44,13 +44,17 @@ rustix = { version = "1.1.5", default-features = false, features = [
 ] }
 # The toolkit, pinned exactly as its own crates pin each other. Only the
 # software renderer (no GL, no Vulkan, no shader cache) and the winit backend
-# for X11 and Wayland, with AccessKit for the screen reader. Both talk on the
-# session bus: AccessKit to find the accessibility bus, and the winit backend,
-# at every start, to read the desktop's appearance (light or dark, accent
-# colour, font size, cursor blink) from the settings portal and follow its
-# changes. No feature or variable of Slint 1.18 turns that read off, and
-# AccessKit needs the same bus; where xdg-desktop-portal is not running, the
-# read starts it through D-Bus activation.
+# for X11 and Wayland, with AccessKit for the screen reader. The winit backend
+# is the patched copy in gui/patches (see gui/Cargo.toml): it draws no window
+# decorations, so the toolkit starts no program on either. Both talk on the
+# session bus at every start. AccessKit asks the accessibility bus whether a
+# screen reader listens, which starts at-spi's bus launcher through D-Bus
+# activation where it does not run: that is the screen reader's way in, and
+# AccessKit has no read that starts nothing. The winit backend reads the
+# desktop's appearance (light or dark, accent colour, font size, cursor
+# blink) from the settings portal and follows its changes, with
+# NO_AUTO_START: where xdg-desktop-portal is not running it is not started,
+# and the window keeps Slint's defaults.
 slint = { version = "=1.18.1", default-features = false, features = [
     "std",
     "compat-1-2",
