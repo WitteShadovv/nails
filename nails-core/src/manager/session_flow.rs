@@ -129,6 +129,10 @@ pub enum EnterOutcome {
 pub enum SessionRecovery {
     /// Nothing was left to recover.
     Clean,
+    /// On the plain decoy, the record on the hidden volume could not be read
+    /// or trusted, and was replaced with an inactive one: no hidden session
+    /// is active, which the live facts show.
+    RecordReset,
     /// An interrupted entry was rolled back.
     RolledBack {
         /// Mounts still below `/run/nextroot` (empty when everything came off).
@@ -626,12 +630,23 @@ impl<F: Filesystem> NailsManager<F> {
         host: &dyn EntryHost,
     ) -> std::result::Result<SessionRecovery, RecoverError> {
         match self.session_view_on(machine) {
-            SessionView::Decoy => {
-                if matches!(self.current_state(), Ok(SystemState::Active { .. })) {
+            // The live facts say no session is active, so the record follows
+            // them: one left active by a session that ended without updating
+            // it, and one that cannot be read or trusted (corrupt, failed its
+            // integrity check, from a newer release, or unreadable), which
+            // leaves activation refusing until it is reset. A record that
+            // this process may not read at all is left alone.
+            SessionView::Decoy => match self.current_state_with_outcome() {
+                Ok((_, outcome)) if outcome.is_unknown() => {
                     self.force_state(SystemState::Inactive)?;
+                    Ok(SessionRecovery::RecordReset)
                 }
-                Ok(SessionRecovery::Clean)
-            }
+                Ok((SystemState::Active { .. }, _)) => {
+                    self.force_state(SystemState::Inactive)?;
+                    Ok(SessionRecovery::Clean)
+                }
+                _ => Ok(SessionRecovery::Clean),
+            },
             SessionView::Interrupted { .. } => {
                 // A soft-reboot still to come would switch after the leftovers
                 // went: into a plain soft-reboot of the decoy.
