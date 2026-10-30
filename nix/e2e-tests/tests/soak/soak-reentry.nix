@@ -62,7 +62,15 @@ let
       # follows another once the test arms it.
       wantedBy = [ "multi-user.target" ];
       after = [ "multi-user.target" ];
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        # nails returns only once PID 1 holds the soft-reboot, and the switch
+        # then stops this unit too, usually while its script still runs: the
+        # stop's SIGTERM ends the script, which a oneshot counts as a failure
+        # ('signal'). That is this unit's normal end, so it counts as success.
+        # A transition that fails still exits non-zero and fails the unit.
+        SuccessExitStatus = "SIGTERM";
+      };
       path = [
         nailsPackage
         pkgs.cryptsetup
