@@ -276,6 +276,9 @@ fn write(root: &Path, file: &Planned<'_>) -> std::io::Result<()> {
             "the operator's home is not in the hidden root",
         ));
     }
+    // Before any directory is made: a part of the way that already resolves
+    // into the store would take the new ones in there.
+    refuse_store_on_the_way(root, &file.dir)?;
     let dir = nextroot::create_dir_all_in_root(root, &file.dir, &mut |parent, name| {
         made(parent, name, file.owner)
     })?;
@@ -315,6 +318,26 @@ fn made(parent: BorrowedFd<'_>, name: &OsStr, owner: Option<&TargetUser>) -> std
             Some(rustix::fs::Uid::from_raw(operator.uid)),
             Some(rustix::fs::Gid::from_raw(operator.gid)),
         )?;
+    }
+    Ok(())
+}
+
+/// Refuse `dir`, as the hidden root names it, when a part of it that exists
+/// already resolves into the Nix store, before anything is made below it: a
+/// home whose `~/.local/share` links into the store would otherwise get its
+/// `applications` made inside that store path. The parts are looked at from
+/// the root down, up to the first that does not exist yet.
+fn refuse_store_on_the_way(root: &Path, dir: &Path) -> std::io::Result<()> {
+    let mut current = PathBuf::from("/");
+    for component in dir.components() {
+        if let std::path::Component::Normal(name) = component {
+            current.push(name);
+            match nextroot::open_dir_in_root(root, &current) {
+                Ok(fd) => refuse_store(root, &fd)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
     }
     Ok(())
 }
