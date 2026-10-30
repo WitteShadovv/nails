@@ -73,6 +73,23 @@ impl World {
             pid_places: None,
             now,
             mounts: parse_mountinfo(&table),
+            network: self.network(),
+            network_tools: Some(network::NetTools::default()),
+            power_off: PowerOff {
+                grace: std::time::Duration::ZERO,
+                kernel: refused_power_off,
+            },
+        }
+    }
+    /// Where the way back reads and writes the network state: a fake
+    /// `/sys/class/net`, hostname and network settings below the world, and
+    /// the per-link runtime state below its `/run`.
+    fn network(&self) -> network::Places {
+        network::Places {
+            run: self.run(),
+            sys_class_net: self.dir.path().join("sys/class/net"),
+            proc_hostname: self.dir.path().join("proc/sys/kernel/hostname"),
+            proc_sys: self.dir.path().join("proc/sys"),
         }
     }
     fn write_plan(&self, plan: &Plan) {
@@ -1275,4 +1292,99 @@ fn powering_off_instead_asks_the_kernel_when_pid_1_cannot_be_asked() {
         },
     );
     assert!(kernel.get());
+}
+
+/// The kernel's power-off in every test: it refuses, so no test powers its
+/// host off, whatever the code under test decides.
+fn refused_power_off() -> bool {
+    false
+}
+
+/// Add link `name` with interface index `index` to the fake `/sys/class/net`
+/// at `sys_class_net`, virtual as the kernel lists a link it made (no
+/// `device` entry).
+fn add_virtual_link(sys_class_net: &Path, name: &str, index: u32) {
+    let dir = sys_class_net.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
+}
+
+/// A way back armed in `world`, with the record entry took of the network
+/// state the world's fake kernel has now (its loopback link and a hostname)
+/// and a `systemctl` that logs each call ([`systemctl_calls`]).
+fn way_back_with_a_network_record(world: &World) -> Env {
+    let mut env = world.env(true, 1_000);
+    fs::create_dir_all(env.network.proc_hostname.parent().unwrap()).unwrap();
+    fs::write(&env.network.proc_hostname, "decoy-host\n").unwrap();
+    add_virtual_link(&env.network.sys_class_net, "lo", 1);
+    let record = network::NetworkRecord::capture(&env.network, &network::NetTools::default());
+    fs::write(world.runtime().join(network::RECORD_NAME), record.encode()).unwrap();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    env.systemctl = Some(fake_systemctl(world.dir.path(), 0));
+    env
+}
+
+/// What the `systemctl` of [`way_back_with_a_network_record`] was asked, one
+/// call per line.
+fn systemctl_calls(world: &World) -> String {
+    fs::read_to_string(world.dir.path().join("calls")).unwrap_or_default()
+}
+
+/// A way back that cannot undo what the session did to the network state
+/// powers off instead of returning: the link the session made is still there
+/// (this way back finds no `ip` to delete it with), so it asks PID 1 to power
+/// off at once.
+#[test]
+fn a_way_back_that_cannot_put_the_network_state_back_powers_off() {
+    let world = World::new();
+    let env = way_back_with_a_network_record(&world);
+    add_virtual_link(&env.network.sys_class_net, "wg0", 9);
+
+    let outcome = run(&env);
+
+    let calls = systemctl_calls(&world);
+    assert!(
+        calls.lines().any(|call| call == "--force poweroff"),
+        "{calls}"
+    );
+    // The stand-in kernel refused, so the way back returned after all, with
+    // the link that stayed.
+    let Outcome::Returned { network, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(network.links, ["wg0"]);
+}
+
+/// A way back that puts the network state back returns and never asks for a
+/// power-off: here its `ip` deletes the link the session made.
+#[test]
+fn a_way_back_that_puts_the_network_state_back_returns_without_a_power_off() {
+    let world = World::new();
+    let mut env = way_back_with_a_network_record(&world);
+    let sys = env.network.sys_class_net.clone();
+    add_virtual_link(&sys, "wg0", 9);
+    // Deletes the link from the fake sysfs, as the kernel does.
+    let ip = world.dir.path().join("ip");
+    write_executable(
+        &ip,
+        format!(
+            "#!/bin/sh\nif [ \"$1 $2\" = 'link delete' ]; then rm -r '{}'/\"$4\"; fi\n",
+            sys.display()
+        ),
+        0o755,
+    );
+    env.network_tools = Some(network::NetTools {
+        ip: Some(ip),
+        ..network::NetTools::default()
+    });
+
+    let outcome = run(&env);
+
+    assert!(!sys.join("wg0").exists(), "the way back deleted the link");
+    let calls = systemctl_calls(&world);
+    assert!(!calls.contains("poweroff"), "{calls}");
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
 }

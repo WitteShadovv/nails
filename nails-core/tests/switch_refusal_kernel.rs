@@ -74,6 +74,12 @@ mod kernel_tests {
                 pid_places: None,
                 now: 1_234,
                 mounts: read_mountinfo().expect("the live mount table"),
+                network: nails_teardown::whole_root::network::Places::system(self.run.path()),
+                network_tools: None,
+                power_off: transition::PowerOff {
+                    grace: std::time::Duration::ZERO,
+                    kernel: || false,
+                },
             }
         }
     }
