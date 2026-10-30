@@ -46,6 +46,27 @@ of this changelog for that version becomes the release notes word for word, and
   inside a hidden session instead of a `.new` file moved into place, and so does the README. A new
   fuzz target, `config_edit`, checks that an edit keeps every comment and every key it does not
   name.
+- `nails check` and activation refuse an updatedb that would list the hidden volume in the
+  decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
+  `services.locate`) writes the name of every file it finds into a database on the decoy disk,
+  and a run while the volume is mounted on the decoy writes every name on the volume there. The
+  check refuses while one runs now (its service is active, or a process runs, one started by hand
+  included) or is scheduled (an enabled or active timer that is not masked, or a cron job), and
+  does not skip the volume; no flag lifts the refusal. It reads `/etc/updatedb.conf` as plocate
+  and mlocate read it, a service's `ExecStart=` from its unit file and drop-ins as systemd reads
+  them, with updatedb's options on top (`--prunepaths` replaces the file's list, `--add-prunepaths`
+  adds to it, `--database-root` starts the scan elsewhere), and a running process's own command
+  line. It judges the hidden root where its links lead and every other mount of its filesystem:
+  updatedb skips it for a `PRUNEPATHS` entry that is exactly a directory on the way to it, a
+  `PRUNENAMES` entry that names one, or a `PRUNEFS` entry that is the type of a filesystem
+  mounted on the way. The check passes naming the rule that skips the volume, and warns where it
+  cannot tell (an `/etc/updatedb.conf` it cannot read or that updatedb refuses, an `ExecStart=` it
+  cannot read, findutils' updatedb) and where only a person starts an updatedb that does not skip
+  it. The fix it prints names the directory the volume is mounted in, never the mount point
+  itself: `services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];` on NixOS, which the
+  check of the decoy's `/etc/nixos` does not refuse, and `PRUNEPATHS` or `systemctl mask` of the
+  timer elsewhere. Fedora installs and enables plocate by default, and the default `PRUNEPATHS` of
+  Debian 13, Ubuntu 26.04, Fedora 44 and NixOS do not skip `/mnt`.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

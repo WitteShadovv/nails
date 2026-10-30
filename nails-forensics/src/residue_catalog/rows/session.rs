@@ -193,6 +193,33 @@ pub(super) const ROWS: &[ResidueClass] = &[
         conclusion: None,
     },
     ResidueClass {
+        id: "locate-database",
+        title: "Locate database",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&[
+            "/var/lib/plocate/plocate.db",
+            "/var/lib/mlocate/mlocate.db",
+            "/var/cache/locatedb",
+        ]),
+        platforms: Platforms::ALL,
+        risk: "An updatedb run (plocate, mlocate, NixOS's update-locatedb) while the hidden volume is mounted on the decoy, before activation or after the way back, writes the name of every file on the volume into the locate database on the decoy disk. plocate's and NixOS's timers run daily with Persistent=true, which catches a missed run up right after boot, when the volume is unlocked for a session.",
+        preflight: Probe::Check("locate-database"),
+        preflight_blocks: true,
+        verify: Probe::Paths {
+            paths: &[
+                "/var/lib/plocate/plocate.db",
+                "/var/lib/mlocate/mlocate.db",
+                "/var/cache/locatedb",
+            ],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now or is scheduled does not skip it.",
+        doc_anchor: "decoy-requirements.md#the-locate-database",
+        e2e: E2e::Test("locate-database"),
+        residual: false,
+        conclusion: None,
+    },
+    ResidueClass {
         id: "shell-history",
         title: "Shell history",
         kind: ResidueKind::Session,

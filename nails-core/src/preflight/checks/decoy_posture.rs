@@ -65,6 +65,8 @@ mod coredump;
 mod loggers;
 mod sssd;
 mod sudo_logging;
+// The locate-database check reads the decoy's units the same way.
+pub(in crate::preflight::checks) use loggers::{UNIT_DIRS, unit_active};
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
 /// `/proc/self/mountinfo`, the authoritative mount table.
@@ -336,7 +338,11 @@ impl DecoyPersistenceCheck {
 /// `/etc/systemd/system`, which outranks every link to the unit. It is followed
 /// only once an enabling link was found, so on a decoy without one no unit
 /// link is followed.
-fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+pub(in crate::preflight::checks) fn unit_enabled<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    unit: &str,
+) -> bool {
     let linked = loggers::UNIT_DIRS.iter().any(|dir| {
         fs.list_directory(&root.join(dir)).is_ok_and(|entries| {
             entries.iter().any(|entry| {
@@ -357,7 +363,7 @@ fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
 
 /// Whether `/etc/systemd/system` under `root` masks `unit`: a link there that
 /// resolves to `/dev/null`.
-fn masked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+pub(in crate::preflight::checks) fn masked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
     let unit_file = root.join(ADMIN_UNIT_DIR).join(unit);
     fs.is_symlink(&unit_file).unwrap_or(false)
         && fs
