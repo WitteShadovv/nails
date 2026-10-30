@@ -258,7 +258,8 @@ fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
          requires it is not reached",
         "srv-native.mount: masked, as NAILS could not tell what it is or pulls in; the boot \
          target that requires it is not reached",
-        "data.mount: masked, as the fstab lines for it disagree",
+        "data.mount: masked, as the fstab lines or unit files for it disagree; where the one the \
+         hidden systemd reads has a boot target require it, that target is not reached",
     ] {
         assert!(lines.contains(line), "{line}: {lines}");
     }

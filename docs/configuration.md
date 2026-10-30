@@ -170,8 +170,9 @@ units masked then. An entry with `nofail` is masked: its target only wants it.
 In the session `nails status` lists each unit a target requires that is kept
 off, skipped or masked, with why (`required_units` in `status --json`): its
 device was not there at activation or at the switch, NAILS could not tell what
-it is or pulls in, or two fstab lines the hidden systemd may read disagree about
-it. Status reads them from the session plan in `/run`, which is RAM.
+it is or pulls in, or the fstab lines or unit files the hidden systemd may read
+for it disagree, which `nails check` and `nails activate` warn of as well.
+Status reads them from the session plan in `/run`, which is RAM.
 
 The hidden systemd also starts the mount, swap and automount units a target
 pulls in outside the fstab: a mount unit installed for a target (NixOS's
