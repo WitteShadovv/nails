@@ -3,8 +3,9 @@
 
 //! How systemd finds a unit: the unit directories of the system manager in
 //! their order, below the next root and below `/run`, a unit's file and its
-//! drop-ins read as systemd loads them ([`UnitDirs::load`]), and the names a
-//! directory of units or links lists ([`UnitDirs::list`]).
+//! drop-ins read as systemd loads them ([`UnitDirs::load`]), the names a
+//! directory of units or links lists ([`UnitDirs::list`]), and the unit an
+//! alias link makes a name stand for ([`UnitDirs::alias_of`]).
 //!
 //! A lookup that fails for another reason than that nothing is there (a loop
 //! of links, a directory NAILS may not search) does not count as nothing:
@@ -14,12 +15,12 @@
 use super::unit_file::{self, UnitFile};
 use crate::session::policy::Decision;
 use nails_teardown::whole_root::nextroot::{
-    canonical_in_root, list_in_root, read_in_root, regular_file_in_root,
+    canonical_in_root, list_in_root, read_in_root, read_link_in_root, regular_file_in_root,
 };
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Where a unit directory lives: in the next root, or in `/run`, which the
 /// soft-reboot carries into the hidden session.
@@ -132,6 +133,52 @@ fn find_stems(name: &str, stems: &mut Vec<String>) {
     );
 }
 
+/// The template of the instance `name` (`systemd-fsck@.service` for
+/// `systemd-fsck@dev-vdb1.service`), with the instance (`dev-vdb1`); `None`
+/// for a name that is no instance.
+pub(super) fn template_of(name: &str) -> Option<(String, &str)> {
+    let (stem, kind) = name.rsplit_once('.')?;
+    let (prefix, instance) = stem.split_once('@')?;
+    (!instance.is_empty()).then(|| (format!("{prefix}@.{kind}"), instance))
+}
+
+/// The instance `instance` of the template `template` (`bar@x.service` for
+/// `bar@.service` and `x`); `None` for a name that is no template.
+pub(super) fn instance_of(template: &str, instance: &str) -> Option<String> {
+    let (prefix, kind) = template.split_once("@.")?;
+    Some(format!("{prefix}@{instance}.{kind}"))
+}
+
+/// Whether a link named `name` to a unit file named `file` can make `name`
+/// an alias of `file`, as systemd lets one: both of one type, and both
+/// templates or neither.
+fn alias_fits(name: &str, file: &str) -> bool {
+    let kind = |n: &str| n.rsplit_once('.').map(|(_, kind)| kind.to_string());
+    let template = |n: &str| {
+        n.rsplit_once('.')
+            .is_some_and(|(stem, _)| stem.ends_with('@'))
+    };
+    file != name
+        && nails_teardown::whole_root::runtime_units::valid_unit_name(file)
+        && kind(file) == kind(name)
+        && template(file) == template(name)
+}
+
+/// `path` with its `.` and `..` components resolved by their text.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::from("/");
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+        }
+    }
+    out
+}
+
 /// Whether `base` and `dir` name a directory generators write to.
 fn generator_dir(base: Base, dir: &str) -> bool {
     base == Base::Run && dir.starts_with("systemd/generator")
@@ -191,6 +238,30 @@ impl UnitDirs<'_> {
             .into_iter()
             .map(|(name, _)| name)
             .collect())
+    }
+
+    /// The units linked in the `kind` directories (`requires`, `wants`,
+    /// `upholds`) that systemd reads for the unit `name`: `<name>.<kind>` and
+    /// those of the names [`dropin_stems`] gives in each unit directory, then
+    /// `<type>.<kind>` in each, each name once. `Err` names the first
+    /// directory that is there but cannot be listed.
+    pub(super) fn links(&self, name: &str, kind: &str) -> Result<Vec<String>, Unlisted> {
+        let mut dirs: Vec<String> = dropin_stems(name)
+            .into_iter()
+            .map(|stem| format!("{stem}.{kind}"))
+            .collect();
+        if let Some((_, unit_kind)) = name.rsplit_once('.') {
+            dirs.push(format!("{unit_kind}.{kind}"));
+        }
+        let mut units: Vec<String> = Vec::new();
+        for dir in dirs {
+            for unit in self.list(&dir)? {
+                if !units.contains(&unit) {
+                    units.push(unit);
+                }
+            }
+        }
+        Ok(units)
     }
 
     /// [`Self::list`], each name with whether its unit directory is one a
@@ -323,11 +394,33 @@ impl UnitDirs<'_> {
     }
 
     /// The unit `name` as systemd loads it: the first unit directory that
-    /// has it, then its drop-ins ([`Self::dropins`]).
+    /// has it, or for an instance (`systemd-fsck@dev-vdb1.service`) that has
+    /// neither it nor a mask of it, the first that has its template
+    /// (`systemd-fsck@.service`); then its drop-ins ([`Self::dropins`]).
     pub(super) fn load(&self, name: &str) -> Load {
+        match self.load_as(name, name, true) {
+            Load::Missing => match template_of(name) {
+                Some((template, _)) => self.load_as(name, &template, true),
+                None => Load::Missing,
+            },
+            load => load,
+        }
+    }
+
+    /// [`Self::load`] of a unit systemd loads without a file of its own too,
+    /// from its drop-ins: a device or a slice. One with neither is
+    /// [`Load::Missing`].
+    pub(super) fn load_bare(&self, name: &str) -> Load {
+        self.load_as(name, name, false)
+    }
+
+    /// [`Self::load`] of the unit `name` from the file of `file`: `name` or
+    /// its template. Without one, a unit that needs none (`!needs_file`)
+    /// loads from its drop-ins.
+    fn load_as(&self, name: &str, file: &str, needs_file: bool) -> Load {
         let mut fragment = None;
         for &(base, dir) in UNIT_DIRS {
-            let (root, path) = self.locate(base, dir, name);
+            let (root, path) = self.locate(base, dir, file);
             if canonical_in_root(root, &path) == Path::new("/dev/null") {
                 return Load::Masked;
             }
@@ -340,22 +433,24 @@ impl UnitDirs<'_> {
                 Err(()) => return Load::Unreadable,
             }
         }
-        let Some((fragment, generated)) = fragment else {
-            return Load::Missing;
+        let (mut texts, generated) = match fragment {
+            Some((fragment, _)) if fragment.is_empty() => return Load::Masked,
+            Some((fragment, generated)) => (vec![fragment], generated),
+            None if needs_file => return Load::Missing,
+            None => (Vec::new(), false),
         };
-        if fragment.is_empty() {
-            return Load::Masked;
-        }
         let Ok(dropins) = self.dropins(name) else {
             return Load::Unreadable;
         };
-        let mut texts = vec![fragment];
         for dropin in &dropins {
             match self.read_dropin(dropin) {
                 Ok(Some(bytes)) => texts.push(bytes),
                 Ok(None) => {}
                 Err(()) => return Load::Unreadable,
             }
+        }
+        if texts.is_empty() {
+            return Load::Missing;
         }
         let mut unit = UnitFile::default();
         for text in texts {
@@ -365,5 +460,89 @@ impl UnitDirs<'_> {
             }
         }
         Load::Loaded { unit, generated }
+    }
+
+    /// The system's path of the unit directory `dir` below `base`
+    /// (`/run/systemd/system` for one below `/run`).
+    fn system_path(base: Base, dir: &str) -> PathBuf {
+        match base {
+            Base::Root => Path::new("/").join(dir),
+            Base::Run => Path::new("/run").join(dir),
+        }
+    }
+
+    /// The unit the name `name` also names, as the first unit directory with
+    /// an entry `name` makes it an alias (systemd's
+    /// `unit_file_build_name_map()`): a link there to a unit file of another
+    /// name of the same type ([`alias_fits`]). With whether systemd takes the
+    /// link for an alias for sure (`true`): its target, read from the link's
+    /// own directory, lies right in one of the unit directories. One whose
+    /// target lies elsewhere systemd may take for a linked unit file under
+    /// the link's own name (`false`). An instance with no entry of its own
+    /// follows its template's link (`bar@x.service` for `foo@x.service` when
+    /// `foo@.service` links to `bar@.service`). `Ok(None)` for a file, a
+    /// link that makes no alias (a mask, a unit of the same name) and no
+    /// entry; `Err` when an entry cannot be read.
+    pub(super) fn alias_of(&self, name: &str) -> Result<Option<(String, bool)>, ()> {
+        if let Some(found) = self.link_of(name)? {
+            return Ok(found);
+        }
+        let Some((template, instance)) = template_of(name) else {
+            return Ok(None);
+        };
+        Ok(self
+            .link_of(&template)?
+            .flatten()
+            .and_then(|(aliased, sure)| Some((instance_of(&aliased, instance)?, sure))))
+    }
+
+    /// For the first unit directory with an entry `name`, the unit that entry
+    /// makes `name` an alias of, if any ([`Self::alias_of`]); `None` when no
+    /// unit directory has one.
+    fn link_of(&self, name: &str) -> Result<Option<Option<(String, bool)>>, ()> {
+        for &(base, dir) in UNIT_DIRS {
+            let (root, path) = self.locate(base, dir, name);
+            let target = match read_link_in_root(root, &path) {
+                Ok(target) => target,
+                Err(e) if missing(&e) => continue,
+                // A file, not a link: the unit's own.
+                Err(e) if e.kind() == io::ErrorKind::InvalidInput => return Ok(Some(None)),
+                Err(_) => return Err(()),
+            };
+            let Some(file) = target.file_name().and_then(|file| file.to_str()) else {
+                return Ok(Some(None));
+            };
+            if !alias_fits(name, file) {
+                return Ok(Some(None));
+            }
+            let at = lexical(&Self::system_path(base, dir).join(&target));
+            let sure = at.parent().is_some_and(|parent| {
+                UNIT_DIRS
+                    .iter()
+                    .any(|&(base, dir)| Self::system_path(base, dir) == parent)
+            });
+            return Ok(Some(Some((file.to_string(), sure))));
+        }
+        Ok(None)
+    }
+
+    /// The unit names with a directory of links or drop-ins of their own in
+    /// a unit directory (`<name>.wants`, `.requires`, `.upholds`, `.d`), each
+    /// once: an alias among them adds what is there to the unit it names.
+    /// `Err` names a unit directory that cannot be listed.
+    pub(super) fn named_dirs(&self) -> Result<Vec<String>, Unlisted> {
+        let mut names: Vec<String> = Vec::new();
+        for entry in self.list("")? {
+            let stem = [".wants", ".requires", ".upholds", ".d"]
+                .iter()
+                .find_map(|suffix| entry.strip_suffix(suffix));
+            if let Some(stem) = stem
+                && stem.contains('.')
+                && !names.iter().any(|seen| seen == stem)
+            {
+                names.push(stem.to_string());
+            }
+        }
+        Ok(names)
     }
 }

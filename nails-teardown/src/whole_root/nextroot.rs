@@ -624,6 +624,20 @@ pub fn real_path(fd: &OwnedFd) -> io::Result<PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
 }
 
+/// The target of the symlink at `path`, as its text reads, the directory it
+/// is in looked up as if `root` were `/`: the link itself is read, not
+/// followed. An error of kind `InvalidInput` when `path` is no symlink, and
+/// `NotFound` when nothing is there. As for a lookup that follows a link, the
+/// read can update the link's access time.
+pub fn read_link_in_root(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(io::ErrorKind::InvalidInput.into());
+    };
+    let dir = open_dir_in_root(root, parent)?;
+    let target = rustix::fs::readlinkat(&dir, name, Vec::new()).map_err(to_io)?;
+    Ok(PathBuf::from(OsString::from_vec(target.into_bytes())))
+}
+
 /// Whether `path` exists as if `root` were `/`: absolute symlinks resolve
 /// inside `root`, so on NixOS `/etc/systemd/system` (a link into `/etc/static`
 /// and the store) is looked up in that root's store, not the running one's.

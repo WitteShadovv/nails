@@ -60,6 +60,11 @@ const VIRTUAL_TYPES: &[&str] = &[
 /// Host shares of a virtual machine: they never reach a disk of the guest.
 const HOST_SHARE_TYPES: &[&str] = &["9p", "virtiofs"];
 
+/// Whether `vfstype` is the type of a virtual machine's host share.
+pub fn is_host_share_type(vfstype: &str) -> bool {
+    HOST_SHARE_TYPES.contains(&vfstype)
+}
+
 /// Filesystems backed by a server.
 const NETWORK_TYPES: &[&str] = &[
     "nfs",
@@ -98,7 +103,7 @@ impl FstabEntry {
 
     /// A virtual machine's host share.
     pub fn is_host_share(&self) -> bool {
-        HOST_SHARE_TYPES.contains(&self.vfstype.as_str())
+        is_host_share_type(&self.vfstype)
     }
 
     /// A network filesystem (including FUSE network types).

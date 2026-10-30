@@ -66,15 +66,17 @@
 //! NixOS's `mkswap-<name>.service`, would run before its condition is tested;
 //! its growfs, pcrfs, validatefs and quota units are bound to the mount and
 //! ordered after it, so they could not start while it is skipped, and are
-//! skipped for caution. Every other unit it pulls in still starts. Where
-//! NAILS cannot tell them all, the unit is masked instead, and the boot
-//! target that requires it is not reached. So it is where one of them is a
-//! mount, swap or automount the session neither keeps off nor puts in place,
-//! the mount of a parent directory among them, which the hidden systemd
-//! would mount from the decoy's disk ([`pulls`]). The generators run again in the
-//! hidden session; what they made in the decoy is taken as what they make
-//! there.
+//! skipped for caution. Every other unit it pulls in still starts, with what
+//! that pulls in in turn. Where NAILS cannot tell them all, the unit is
+//! masked instead, and the boot target that requires it is not reached. So
+//! it is where what it pulls in, followed unit by unit as far as it leads,
+//! reaches a mount, swap or automount the session neither keeps off nor puts
+//! in place, which the hidden systemd would mount from the decoy's disk, or
+//! where NAILS cannot tell all it reaches ([`pulls`], [`deps`]). The
+//! generators run again in the hidden session; what they made in the decoy is
+//! taken as what they make there.
 
+mod deps;
 mod pulls;
 pub mod unit_dirs;
 pub mod unit_file;
@@ -396,6 +398,8 @@ pub fn kept_off(
 ) -> (KeptOff, Vec<String>) {
     let mut kept = policy::runtime_units(fstab, decisions);
     let covered = covered_units(decisions);
+    // Read only where a skip needs it: the walk reads the boot's targets too.
+    let graph = std::cell::OnceCell::new();
     let mut warnings: Vec<String> = kept
         .required_masks
         .iter()
@@ -421,13 +425,16 @@ pub fn kept_off(
                     .chain(&skip.pulled)
                     .find_map(|unit| skip_undone(dirs, unit));
                 match undone {
-                    None => match mounted_pull(dirs, &skip, &covered, &kept.masks, fstab) {
-                        Ok(None) => {
+                    None => match walk_skip(
+                        graph.get_or_init(|| deps::Graph::new(dirs, fstab, &covered)),
+                        &skip,
+                        &kept.masks,
+                    ) {
+                        Ok(_) => {
                             kept.skips.push(skip);
                             continue;
                         }
-                        Ok(Some(why)) => (why, MaskCause::PullsInMount),
-                        Err(why) => (why.to_string(), MaskCause::Undetermined),
+                        Err(blocked) => blocked,
                     },
                     Some(why) => (why, MaskCause::SkipUndone),
                 }
@@ -448,54 +455,39 @@ pub fn kept_off(
         }
     }
     for skip in &kept.skips {
-        for unit in &skip.units {
-            let Ok(pulled) = pulls::mount_pulls(dirs, unit, fstab) else {
-                continue;
-            };
-            for pull in pulled
-                .iter()
-                .filter(|pull| pull.required && kept.masks.contains(&pull.unit))
-            {
-                warnings.push(format!(
-                    "{unit} is skipped, but it requires {} ({}), which the session masks: the \
-                     hidden systemd cannot start {unit}, so the boot target that requires it is \
-                     not reached",
-                    pull.unit, pull.how
-                ));
-            }
+        let graph = graph.get_or_init(|| deps::Graph::new(dirs, fstab, &covered));
+        let Ok(masked) = walk_skip(graph, skip, &kept.masks) else {
+            continue;
+        };
+        for (unit, chain) in masked {
+            warnings.push(format!(
+                "{unit} is skipped, but it requires {chain}, which the session masks: the hidden \
+                 systemd cannot start {unit}, so the boot target that requires it is not reached"
+            ));
         }
     }
     (kept, warnings)
 }
 
-/// Why `skip` would have the hidden systemd mount a decoy filesystem: a unit
-/// of it, or one it pulls in, pulls in a mount, swap or automount that the
-/// session neither keeps off nor puts in place ([`pulls::fate`]), given
-/// `covered`, the units the decisions keep off or put in place, and `masks`.
-/// `Ok(None)` when it pulls in none, `Err` when NAILS cannot tell what one
-/// of its units pulls in.
-fn mounted_pull(
-    dirs: UnitDirs<'_>,
+/// Walk the pulls of `skip` ([`pulls::walk`]): of each of its units and of
+/// each unit it pulls in, which start as well, given `masks`, the units the
+/// session masks. `Ok` with the masked units each unit of the skip requires
+/// through a chain of requirements, each with the chain; `Err` with why the
+/// skip must be masked.
+fn walk_skip(
+    graph: &deps::Graph<'_>,
     skip: &Skip,
-    covered: &[String],
     masks: &[String],
-    fstab: &[FstabEntry],
-) -> Result<Option<String>, &'static str> {
+) -> Result<Vec<(String, String)>, pulls::Blocked> {
+    let mut masked = Vec::new();
     for unit in skip.units.iter().chain(&skip.pulled) {
-        for pull in pulls::mount_pulls(dirs, unit, fstab)? {
-            if skip.units.contains(&pull.unit) {
-                continue;
-            }
-            if pulls::fate(dirs, &pull.unit, covered, masks, fstab) == pulls::Fate::Mounted {
-                return Ok(Some(format!(
-                    "{unit} pulls in {} ({}), which the session does not keep off, and the hidden \
-                     systemd would mount it from the decoy's disk",
-                    pull.unit, pull.how
-                )));
+        for chain in pulls::walk(graph, unit, masks)? {
+            if skip.units.contains(unit) {
+                masked.push((unit.clone(), chain));
             }
         }
     }
-    Ok(None)
+    Ok(masked)
 }
 
 /// The value of `key` in `section` of `unit`, with `%%` resolved: `Err` when
