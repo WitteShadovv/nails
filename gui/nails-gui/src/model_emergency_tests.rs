@@ -95,6 +95,7 @@ fn firing_closes_an_open_question_without_answering_it() {
     model.apply(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
         poweroff: false,
         warnings: vec![],
+        powers_off_instead: None,
         token: "0".repeat(32),
     })));
     assert!(model.page().question.is_some());
@@ -110,6 +111,7 @@ fn the_page_of_a_deactivation_that_ends_keeps_it() {
     model.apply(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
         poweroff: false,
         warnings: vec![],
+        powers_off_instead: None,
         token: "0".repeat(32),
     })));
     model.alternative();
