@@ -75,6 +75,85 @@ fn a_deactivation_off_the_hidden_root_answers_as_the_cli_and_plans_nothing() {
     }
 }
 
+/// A deactivation ready to leave a hidden session whose decoy runs no NixOS,
+/// its hidden volume, state file and way-back root below `root`, which the
+/// attach gate refuses: a test can plan it, and its apply never leaves.
+fn ready_at(root: &Path) -> nails_core::app::deactivate::ReadyDeactivation {
+    use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
+    let plan = serde_json::json!({
+        "version": PLAN_VERSION,
+        "hidden_root": "/mnt/data",
+        "upper": "/mnt/data/root/upper",
+        "work": "/mnt/data/root/work",
+        "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
+        "decoy": {"init": "/sbin/init"},
+        "hidden": {"init": "/sbin/init"},
+    });
+    let config = nails_core::Config {
+        hidden_volume_root: root.to_path_buf(),
+        state_file_path: root.join("state.json"),
+        log_path: root.join("logs"),
+        ..nails_core::Config::test_default()
+    };
+    let plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
+    nails_core::app::deactivate::ReadyDeactivation::for_test(config, plan, root)
+}
+
+/// With a way back, each ending is planned with its token and the warnings a
+/// person reads before the question, and the plan waits for its apply.
+#[test]
+fn a_deactivation_with_a_way_back_is_planned_for_each_ending() {
+    use nails_core::app::deactivate::Prepared;
+    let root = tempfile::tempdir().unwrap();
+    let env = RuntimeEnv::default();
+    let mut engine = Engine::new(&env, None);
+    for (poweroff, to) in [(false, LeaveTo::Decoy), (true, LeaveTo::Poweroff)] {
+        let ready = ready_at(root.path());
+        let warnings = ready.warnings(to, &ready.foresee(to));
+        let prepared = Prepared::Ready(Box::new(ready));
+        let (exit, envelope) =
+            result(engine.deactivate_plan_from(&DeactivateArgs { poweroff }, prepared));
+        assert_eq!(exit, ExitStatus::Ok, "{envelope}");
+        assert_eq!(envelope["command"], "deactivate");
+        let data = &envelope["data"];
+        assert_eq!(data["poweroff"], poweroff, "{envelope}");
+        assert_eq!(data["warnings"], serde_json::json!(warnings), "{envelope}");
+        let token = data["token"].as_str().expect("a token");
+        assert_eq!(token.len(), nails_api::protocol::TOKEN_HEX_DIGITS);
+        assert!(engine.has_plan());
+    }
+    // Without tools below the root, the return warns and the power-off not.
+    let ready = ready_at(root.path());
+    assert!(
+        !ready
+            .warnings(LeaveTo::Decoy, &ready.foresee(LeaveTo::Decoy))
+            .is_empty()
+    );
+    assert!(
+        ready
+            .warnings(LeaveTo::Poweroff, &ready.foresee(LeaveTo::Poweroff))
+            .is_empty()
+    );
+}
+
+/// The apply of a planned deactivation is the CLI's lock and leave: here the
+/// lock, whose gate refuses the plain directory, answers, never the token.
+#[test]
+fn the_apply_of_a_planned_deactivation_takes_the_lock_as_the_cli_does() {
+    use nails_core::app::deactivate::Prepared;
+    let root = tempfile::tempdir().unwrap();
+    let env = RuntimeEnv::default();
+    let mut engine = Engine::new(&env, None);
+    let prepared = Prepared::Ready(Box::new(ready_at(root.path())));
+    let (_, plan) = result(engine.deactivate_plan_from(&DeactivateArgs::default(), prepared));
+    let token = plan["data"]["token"].as_str().unwrap().to_string();
+    let (exit, envelope) = result(engine.run(Op::DeactivateApply(Token { token }), events()));
+    assert_eq!(exit, ExitStatus::PreflightRefused, "{envelope}");
+    assert_eq!(envelope["command"], "deactivate");
+    assert_eq!(envelope["ok"], false);
+    assert!(!engine.has_plan(), "an apply spends the plan");
+}
+
 #[test]
 fn emergency_and_recover_without_a_session_answer_as_the_cli() {
     if running_as_root() {
