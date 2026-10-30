@@ -188,8 +188,6 @@ pub struct Invocation {
     /// The command chain: this process and the ancestors the rule keeps, the
     /// start of `ancestry`.
     pub chain: Vec<u32>,
-    /// This process's session id (`0` when unknown).
-    pub sid: u32,
     /// Further pids to spare, handed in by the caller.
     pub extra: Vec<u32>,
 }
@@ -238,7 +236,7 @@ impl Invocation {
         let mut chain = vec![own];
         let mut joining = typed;
         let mut typed_into_a_shell = false;
-        let mut node = own_node.clone();
+        let mut node = own_node;
         while let Some(current) = node {
             let parent = current.stat.ppid;
             if parent == 0 || ancestry.contains(&parent) {
@@ -263,7 +261,6 @@ impl Invocation {
         Self {
             ancestry,
             chain,
-            sid: own_node.map_or(0, |n| n.stat.sid),
             extra: Vec::new(),
         }
     }
@@ -275,12 +272,6 @@ impl Invocation {
         self.chain.contains(&pid)
             || self.extra.contains(&pid)
             || stat.is_some_and(|s| self.chain.contains(&s.sid) || self.chain.contains(&s.pgid))
-    }
-
-    /// Whether `pid` (with its stat) is this process, one of its ancestors or
-    /// in its session: where the shells that started this invocation run.
-    pub fn is_invoking(&self, pid: u32, stat: Option<&Stat>) -> bool {
-        self.ancestry.contains(&pid) || (self.sid != 0 && stat.is_some_and(|s| s.sid == self.sid))
     }
 }
 
@@ -328,6 +319,11 @@ impl ProcessHandle {
     /// The pid.
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// When the process started, in clock ticks since boot.
+    pub fn start_time(&self) -> u64 {
+        self.start_time
     }
 
     /// Whether the process still runs (not exited, pid not reused).
@@ -493,7 +489,7 @@ mod tests {
         assert_eq!(invocation.chain.first(), Some(&own));
         assert!(invocation.contains(own, None));
         let parent = stat(own).unwrap().ppid;
-        assert!(invocation.is_invoking(parent, None));
+        assert_eq!(invocation.ancestry.get(1), Some(&parent));
     }
 
     #[test]

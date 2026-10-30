@@ -47,9 +47,9 @@ pub struct RealTargetHost {
     kill_shells: Option<fn()>,
 }
 
-/// SIGKILL every interactive shell on the decoy, the invocation's own last.
+/// SIGKILL every interactive shell on the decoy, the newest first.
 fn kill_decoy_shells() {
-    nails_teardown::shells::kill_all_interactive_shells(&[]);
+    nails_teardown::shells::kill_interactive_shells_newest_first();
 }
 
 impl RealTargetHost {
@@ -71,7 +71,10 @@ impl RealTargetHost {
     /// looks while logind holds the soft-reboot back (the desktop runs on
     /// meanwhile, and a shell opened then lives about a tenth of a second,
     /// too short to have anything to write), and once more when PID 1 holds
-    /// the job.
+    /// the job. Each time they die the newest first: a dying shell hangs up
+    /// what its session started, such as a desktop started from a console
+    /// login and the shells in its terminal windows, and those are gone by
+    /// then.
     pub fn killing_shells(mut self) -> Self {
         self.kill_shells = Some(kill_decoy_shells);
         self

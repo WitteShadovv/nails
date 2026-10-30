@@ -138,8 +138,11 @@ Two safeguards bracket the session:
 - **No shell history reaches the decoy.** Right before it starts the
   soft-reboot, activation SIGKILLs the decoy's interactive shells: stopping a
   login session sends its shells SIGHUP, on which bash writes its history, so
-  they must be gone first. None of them can flush the activation command to a
-  history file. `nails emergency` does the same before it starts the way back
+  they must be gone first. They die the newest first, as one shell's death can
+  hang up the shells started after it (see
+  [the flush race](bash-history-forensics.md#the-flush-race)). None of them can
+  flush the activation command to a history file. `nails emergency` kills them
+  the same way before it starts the way back
   or the power-off. Shells in the hidden session write their history
   into the hidden home, which is in the upper (see [Shell history](#shell-history)).
 
@@ -781,7 +784,10 @@ autologin, like a restart of the desktop.
   come (logind cannot drop it on systemd 256 and older, or does not answer,
   or PID 1 has already started it), emergency powers off (or reboots, as
   asked) at once, without the orderly stop of the decoy's services, so that
-  soft-reboot cannot run first.
+  soft-reboot cannot run first. A plain `emergency` that leaves the decoy
+  running kills no shell: the shell you typed it into keeps the line and
+  writes it to its history file when it exits, so run it, as `recover`, from
+  a shell with history off (`set +o history`).
 
 The backend watcher (`[backend_watch]`) and the sleep guard (`[sleep_policy]`)
 run as runtime units of the hidden session from the RAM copy. The watcher's

@@ -9,13 +9,13 @@
 //! the decoy right before it asks logind for the soft-reboot, again while
 //! logind holds it back and once more when PID 1 holds its job, so the
 //! activation command never reaches a decoy history file, and `emergency` does
-//! the same before the way back or the power-off. A SIGKILLed shell runs no handler and writes
-//! nothing. Non-interactive shells
-//! (a service's script, an `sh -c` wrapper, a pipeline subshell) keep no
-//! history and are left alone. The shells of the teardown's own invocation (its
-//! ancestors and those in its session) die last ([`kill_invoking_shells`]).
+//! the same before the way back or the power-off. Both kill them the newest
+//! first, as one shell's death can hang up another
+//! ([`kill_interactive_shells_newest_first`]). A SIGKILLed shell runs no
+//! handler and writes nothing. Non-interactive shells (a service's script, an
+//! `sh -c` wrapper, a pipeline subshell) keep no history and are left alone.
 
-use crate::proc::{self, Invocation, ProcessHandle};
+use crate::proc::{self, ProcessHandle};
 
 /// Process names treated as shells.
 pub const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"];
@@ -73,76 +73,53 @@ pub fn is_interactive_shell(pid: u32) -> bool {
         )
 }
 
-/// Whether `pid` runs in one of the `spared_units` (system services named by
-/// the caller whose shells must survive).
-fn in_spared_unit(pid: u32, spared_units: &[String]) -> bool {
-    !spared_units.is_empty()
-        && proc::cgroup(pid)
-            .and_then(|c| crate::cgroup::service_unit_from_cgroup(&c))
-            .is_some_and(|unit| spared_units.iter().any(|s| s == &unit))
-}
-
-/// SIGKILL every interactive shell but those `invocation` was started from
-/// ([`Invocation::is_invoking`]) and those in `spared_units`. Returns handles
-/// on the shells signalled, to wait for their exit.
-pub fn kill_interactive_shells(
-    invocation: &Invocation,
-    spared_units: &[String],
-) -> Vec<ProcessHandle> {
-    let mut killed = Vec::new();
-    for pid in proc::pids() {
-        let stat = proc::stat(pid);
-        if pid == 1 || invocation.is_invoking(pid, stat.as_ref()) || !is_interactive_shell(pid) {
-            continue;
-        }
-        if in_spared_unit(pid, spared_units) {
-            continue;
-        }
-        if let Some(handle) = ProcessHandle::open(pid)
-            && handle.kill()
-        {
-            killed.push(handle);
-        }
-    }
-    killed
-}
-
-/// SIGKILL the interactive shells this process was started from: those among
-/// its ancestors and in its session. [`kill_all_interactive_shells`] calls it
-/// once every other interactive shell is gone. A shell that leads its
-/// terminal's session hangs up the terminal's foreground job as it dies:
-/// `sudo` passes the SIGHUP on to its command, which the emergency ignores,
-/// and a pipe reader there that does not ignore it ends.
-pub fn kill_invoking_shells(spared_units: &[String]) -> Vec<u32> {
-    let invocation = Invocation::current();
+/// SIGKILL every interactive shell, the newest first, and return the pids
+/// signalled in that order. An activation calls it right before it asks
+/// logind for the soft-reboot and again until PID 1 holds the job, and an
+/// emergency right before it starts the way back or a power action.
+///
+/// A shell that leads its terminal's session hangs up the terminal's
+/// foreground job as it dies, and a console such as tty1 hangs up whole. A
+/// login shell on tty1 that started a compositor or an X server in the
+/// foreground ends it that way, and with it every terminal window on it: the
+/// kernel hangs up each window's pseudo-terminal and sends the shell in it
+/// SIGHUP, on which bash writes its history. A shell started at a prompt
+/// (`bash`, `su`, `nix-shell`) gets the SIGHUP as the prompt's foreground
+/// job, and one that `sudo -i` started gets it from `sudo`, which passes it
+/// on. Were the login shell killed first, such a shell, the one the
+/// activation was typed into among them, could write its history before its
+/// own SIGKILL came. An emergency typed into such a shell is the same.
+///
+/// What the kernel sends as a shell dies reaches only processes started after
+/// it: SIGHUP to its terminal's foreground job when it leads its session, the
+/// hangup of a pseudo-terminal once the last process holding its master
+/// ends, SIGHUP to a stopped process group it orphans. What those end in
+/// turn, a desktop's windows and the shells in them, started after it too.
+/// So every interactive shell is found first and then SIGKILLed before each
+/// older one, back to back: when a shell dies, every shell those paths reach
+/// has its SIGKILL already, and a shell sent SIGKILL runs no handler any
+/// more. Shells that started in the same clock tick go by pid, the higher
+/// first.
+///
+/// An older process that ends shells as a newer one goes is the exception: a
+/// terminal multiplexer that ends a session when its last client goes (tmux
+/// with `destroy-unattached` or `exit-unattached`, screen with
+/// `autodetach off`, zellij with `on_force_close "quit"`) sends the shells in
+/// its panes, older ones among them, SIGHUP as the shell that ran its last
+/// client dies. There the order only narrows the race.
+pub fn kill_interactive_shells_newest_first() -> Vec<u32> {
     let own = std::process::id();
-    let mut killed = Vec::new();
-    for pid in proc::pids() {
-        if pid == own {
-            continue;
-        }
-        let stat = proc::stat(pid);
-        if !invocation.is_invoking(pid, stat.as_ref())
-            || !is_interactive_shell(pid)
-            || in_spared_unit(pid, spared_units)
-        {
-            continue;
-        }
-        if ProcessHandle::open(pid).is_some_and(|h| h.kill()) {
-            killed.push(pid);
-        }
-    }
-    killed
-}
-
-/// SIGKILL every interactive shell, the invocation's own last. Called just
-/// before a soft-reboot or power action is asked for (and, by an activation,
-/// until PID 1 holds its job): stopping a login session sends its shells
-/// SIGHUP, on which bash writes its history.
-pub fn kill_all_interactive_shells(spared_units: &[String]) {
-    let invocation = Invocation::current();
-    let _ = kill_interactive_shells(&invocation, spared_units);
-    let _ = kill_invoking_shells(spared_units);
+    let mut shells: Vec<ProcessHandle> = proc::pids()
+        .into_iter()
+        .filter(|&pid| pid != 1 && pid != own && is_interactive_shell(pid))
+        .filter_map(ProcessHandle::open)
+        .collect();
+    shells.sort_by_key(|shell| std::cmp::Reverse((shell.start_time(), shell.pid())));
+    shells
+        .iter()
+        .filter(|shell| shell.kill())
+        .map(ProcessHandle::pid)
+        .collect()
 }
 
 #[cfg(test)]
@@ -243,8 +220,8 @@ mod tests {
         if std::env::var_os(CHILD_ENV).is_some_and(|name| name == test) {
             // Never let a killer loose on the host's processes.
             assert_eq!(std::process::id(), 1, "the body must run as PID 1");
-            // Lead a session of our own, so the shells spawned below belong
-            // to this invocation unless they call setsid themselves.
+            // Lead a session of our own, without a terminal: no shell spawned
+            // below reaches the terminal the tests run from.
             rustix::process::setsid().expect("setsid");
             body();
             return;
@@ -305,45 +282,153 @@ mod tests {
         assert_eq!(verdicts, [true, false, false]);
     }
 
+    /// Make the next process of this PID namespace get `pid + 1`.
+    fn set_last_pid(pid: u32) {
+        std::fs::write("/proc/sys/kernel/ns_last_pid", pid.to_string()).expect("write ns_last_pid");
+    }
+
+    /// Wait until a process started now gets a later start time than `pid`
+    /// did: `/proc/<pid>/stat` counts hundredths of a second of the boot clock.
+    fn wait_for_a_later_tick(pid: u32) {
+        let started = proc::stat(pid).expect("stat").start_time;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+            let ticks = u64::try_from(now.tv_sec).unwrap() * 100
+                + u64::try_from(now.tv_nsec).unwrap() / 10_000_000;
+            if ticks > started {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the boot clock stands still");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Wait for the one bash whose stat passes `pick` to settle, waiting for
+    /// input, and return its pid.
+    fn settled_bash(pick: impl Fn(&proc::Stat) -> bool) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let found = proc::pids().into_iter().find(|&pid| {
+                proc::comm(pid).as_deref() == Some("bash")
+                    && proc::stat(pid).is_some_and(|stat| stat.state == 'S' && pick(&stat))
+            });
+            if let Some(pid) = found {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "no bash settled");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Write `line` to the console, as typed on its keyboard.
+    fn type_into(console: &mut Child, line: &str) {
+        use std::io::Write;
+        let keyboard = console.stdin.as_mut().expect("keyboard");
+        keyboard.write_all(line.as_bytes()).expect("type");
+        keyboard.flush().expect("type");
+    }
+
+    /// A login shell on a console (a pseudo-terminal that `script` holds,
+    /// typed into through its stdin) with a second interactive bash in its
+    /// foreground, as `bash`, `su` or `nix-shell` typed at a prompt start one.
+    /// The inner shell has run a typed line, so it has history to write; both
+    /// write theirs to `history`. Returns the console and the login and the
+    /// inner shell's pids.
+    fn console_with_a_shell_in_its_foreground(history: &std::path::Path) -> (Child, u32, u32) {
+        let mut console = Command::new("script")
+            .args(["-qfec", "exec bash --norc --noprofile -i", "/dev/null"])
+            .env_remove("SHELL")
+            .env("HISTFILE", history)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn script");
+        let script = console.id();
+        let login = settled_bash(|stat| stat.ppid == script);
+        type_into(&mut console, "bash --norc --noprofile -i\n");
+        let inner = settled_bash(|stat| stat.ppid == login);
+        let typed = history.with_extension("typed");
+        type_into(&mut console, &format!("touch {}\n", typed.display()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !typed.exists() {
+            assert!(Instant::now() < deadline, "the inner shell ran nothing");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (console, login, inner)
+    }
+
     #[test]
-    fn the_invocation_s_shells_are_killed_last_and_scripts_never() {
+    fn a_dying_login_shell_makes_its_foreground_shell_write_history() {
         in_pid_namespace(
-            "shells::tests::the_invocation_s_shells_are_killed_last_and_scripts_never",
+            "shells::tests::a_dying_login_shell_makes_its_foreground_shell_write_history",
             || {
-                let mut own = spawn_as("sh", "sh", &["-i"]);
-                let mut foreign = spawn_as("sh", "setsid", &["sh", "-i"]);
-                let script = spawn_as("sh", "setsid", &["sh", "-c", "sleep 30; :"]);
-                let spared = ["unrelated.service".to_string()];
+                let dir = tempfile::tempdir().expect("tempdir");
+                let history = dir.path().join("history");
+                let (mut console, login, inner) = console_with_a_shell_in_its_foreground(&history);
+                let inner = ProcessHandle::open(inner).expect("inner shell");
 
-                // First every shell outside the invocation...
-                let killed = kill_interactive_shells(&Invocation::current(), &spared);
-                let pids: Vec<u32> = killed.iter().map(ProcessHandle::pid).collect();
-                assert_eq!(pids, vec![foreign.id()]);
-                assert!(was_killed(&mut foreign));
-                assert_eq!(own.try_wait().unwrap(), None, "the own shell waits");
+                // The login shell leads the console's session: as it dies,
+                // the console's foreground job, the inner shell, gets SIGHUP.
+                assert!(ProcessHandle::open(login).is_some_and(|login| login.kill()));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                assert!(proc::await_exit(&[inner], deadline).is_empty());
 
-                // ...then, last, the invocation's own.
-                assert_eq!(kill_invoking_shells(&spared), vec![own.id()]);
-                assert!(was_killed(&mut own));
-                assert!(still_running(script), "a script keeps no history");
+                let written = std::fs::read_to_string(&history).unwrap_or_default();
+                assert!(written.contains("touch"), "no history written: {written:?}");
+                let _ = console.kill();
+                let _ = console.wait();
             },
         );
     }
 
     #[test]
-    fn every_interactive_shell_is_killed_before_a_soft_reboot() {
+    fn shells_die_newest_first_so_no_dying_shell_hangs_up_a_live_one() {
         in_pid_namespace(
-            "shells::tests::every_interactive_shell_is_killed_before_a_soft_reboot",
+            "shells::tests::shells_die_newest_first_so_no_dying_shell_hangs_up_a_live_one",
             || {
-                let mut own = spawn_as("sh", "sh", &["-i"]);
-                let mut foreign = spawn_as("sh", "setsid", &["sh", "-i"]);
-                let script = spawn_as("sh", "sh", &["-c", "sleep 30; :"]);
+                let dir = tempfile::tempdir().expect("tempdir");
+                let history = dir.path().join("history");
+                let (mut console, login, inner) = console_with_a_shell_in_its_foreground(&history);
+                let shells = [login, inner].map(|pid| ProcessHandle::open(pid).expect("shell"));
 
-                kill_all_interactive_shells(&[]);
+                assert_eq!(kill_interactive_shells_newest_first(), vec![inner, login]);
 
-                assert!(was_killed(&mut own));
-                assert!(was_killed(&mut foreign));
-                assert!(still_running(script));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                assert!(proc::await_exit(&shells, deadline).is_empty());
+                assert!(
+                    !history.exists(),
+                    "a killed shell wrote its history: {:?}",
+                    std::fs::read_to_string(&history)
+                );
+                let _ = console.kill();
+                let _ = console.wait();
+            },
+        );
+    }
+
+    #[test]
+    fn the_newest_shell_dies_first_whatever_its_pid() {
+        in_pid_namespace(
+            "shells::tests::the_newest_shell_dies_first_whatever_its_pid",
+            || {
+                // The older shell gets the higher pid.
+                set_last_pid(5000);
+                let mut older = spawn_as("sh", "setsid", &["sh", "-i"]);
+                wait_for_a_later_tick(older.id());
+                set_last_pid(100);
+                let mut newer = spawn_as("sh", "setsid", &["sh", "-i"]);
+                assert!(newer.id() < older.id());
+                let script = spawn_as("sh", "setsid", &["sh", "-c", "sleep 30; :"]);
+
+                assert_eq!(
+                    kill_interactive_shells_newest_first(),
+                    vec![newer.id(), older.id()]
+                );
+                assert!(was_killed(&mut newer));
+                assert!(was_killed(&mut older));
+                assert!(still_running(script), "a script keeps no history");
             },
         );
     }
