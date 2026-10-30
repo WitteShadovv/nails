@@ -135,10 +135,30 @@ impl FstabEntry {
     }
 
     /// Never mounted at boot (and not on demand): `noauto`, unless a later
-    /// `auto` takes it back or the entry has an automount, which the boot
-    /// sets up whatever `noauto` says.
+    /// `auto` takes it back, the entry has an automount, which the boot sets
+    /// up whatever `noauto` says, or it names a unit that pulls it in
+    /// ([`names_units_that_pull_it_in`](Self::names_units_that_pull_it_in)).
     pub fn is_noauto(&self) -> bool {
-        self.yes_no_option("noauto", "auto") && !self.is_automount()
+        self.yes_no_option("noauto", "auto")
+            && !self.is_automount()
+            && !self.names_units_that_pull_it_in()
+    }
+
+    /// A mount entry that names units to pull it in: `x-systemd.wanted-by=`
+    /// or `x-systemd.required-by=` with a unit. systemd's fstab generator
+    /// links its unit into those units' `.wants` or `.requires` directory
+    /// whatever `noauto` and `nofail` say. It reads no such option for swap.
+    pub fn names_units_that_pull_it_in(&self) -> bool {
+        !self.is_swap()
+            && self.options.iter().any(|option| {
+                ["x-systemd.wanted-by=", "x-systemd.required-by="]
+                    .iter()
+                    .any(|key| {
+                        option
+                            .strip_prefix(key)
+                            .is_some_and(|unit| !unit.is_empty())
+                    })
+            })
     }
 
     /// `nofail`, unless a later `fail` takes it back: the boot then only
@@ -348,6 +368,18 @@ mod tests {
         assert!(!entry("ext4", "comment=systemd.automount,noauto").is_noauto());
         assert!(!entry("swap", "x-systemd.automount").is_automount());
         assert!(entry("swap", "noauto,x-systemd.automount").is_noauto());
+        // A unit named to pull the entry in takes noauto back, as the fstab
+        // generator then links the mount there; not for swap, nor with no
+        // unit named.
+        for options in [
+            "noauto,x-systemd.wanted-by=multi-user.target",
+            "x-systemd.required-by=backup.service,noauto",
+        ] {
+            assert!(!entry("ext4", options).is_noauto(), "{options}");
+            assert!(entry("ext4", options).names_units_that_pull_it_in());
+        }
+        assert!(entry("ext4", "noauto,x-systemd.wanted-by=").is_noauto());
+        assert!(entry("swap", "noauto,x-systemd.wanted-by=multi-user.target").is_noauto());
     }
 
     #[test]

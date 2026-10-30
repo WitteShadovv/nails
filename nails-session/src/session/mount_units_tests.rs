@@ -62,14 +62,20 @@ impl Decoy {
         self.decide_with("", mounts, present)
     }
 
-    /// [`Decoy::decide`] with the fstab lines `fstab` decided by the fstab
-    /// policy.
+    /// [`Decoy::decide`] with the fstab lines `fstab`, which the fstab policy
+    /// decides first.
     fn decide_with(&self, fstab: &str, mounts: &str, present: bool) -> Vec<Decision> {
         let units = read(self.dirs()).expect("the unit directories are listed");
+        let fstab_decisions = policy::decide_all(
+            &crate::session::fstab::parse_fstab(fstab),
+            &parse_mountinfo(mounts),
+            Path::new(HIDDEN),
+            &|_| present,
+        );
         decide(
             self.dirs(),
             &units,
-            &crate::session::fstab::parse_fstab(fstab),
+            &fstab_decisions,
             &parse_mountinfo(mounts),
             Path::new(HIDDEN),
             &|_| present,
@@ -302,6 +308,64 @@ fn a_unit_the_fstab_generator_made_is_left_only_to_a_line_the_policy_decides() {
              /dev/vdd1 /srv/old ext4 defaults 0 2\n"
         ),
         (vec!["srv-data.mount".into()], Vec::new())
+    );
+}
+
+#[test]
+fn a_generated_unit_of_a_line_the_policy_leaves_as_it_is_is_decided_as_a_unit() {
+    let decoy = Decoy::new();
+    // A noauto line's unit, which the administrator linked for
+    // multi-user.target by hand: it mounts the disk at every boot.
+    decoy.write(
+        "/run/systemd/generator/srv-x.mount",
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdb1\nWhere=/srv/x\nType=ext4\nOptions=noauto\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/multi-user.target.wants/srv-x.mount",
+        "/run/systemd/generator/srv-x.mount",
+    );
+    // A tmpfs line's unit, which a drop-in turns into the mount of a disk.
+    decoy.write(
+        "/run/systemd/generator/srv-ram.mount",
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=tmpfs\nWhere=/srv/ram\nType=tmpfs\n",
+    );
+    decoy.link(
+        "/run/systemd/generator/local-fs.target.requires/srv-ram.mount",
+        "../srv-ram.mount",
+    );
+    decoy.write(
+        "/etc/systemd/system/srv-ram.mount.d/disk.conf",
+        "[Mount]\nWhat=/dev/vdc1\nType=ext4\n",
+    );
+    // A noauto line a unit it names pulls in: the generator links its unit
+    // for that unit, and the fstab policy keeps it off itself.
+    decoy.write(
+        "/run/systemd/generator/srv-y.mount",
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdd1\nWhere=/srv/y\nType=ext4\n",
+    );
+    decoy.link(
+        "/run/systemd/generator/multi-user.target.wants/srv-y.mount",
+        "../srv-y.mount",
+    );
+    let fstab = "/dev/vdb1 /srv/x ext4 noauto 0 2\n\
+                 tmpfs /srv/ram tmpfs defaults 0 0\n\
+                 /dev/vdd1 /srv/y ext4 noauto,x-systemd.wanted-by=multi-user.target 0 2\n";
+    let decisions = decoy.decide_with(fstab, ROOT_ONLY, true);
+    assert_eq!(
+        policy::masked_units(&decisions),
+        ["srv-x.mount"],
+        "{decisions:?}"
+    );
+    let skipped: Vec<&str> = decisions
+        .iter()
+        .filter_map(Decision::skip)
+        .flat_map(|skip| skip.units.iter().map(String::as_str))
+        .collect();
+    assert_eq!(skipped, ["srv-ram.mount"], "{decisions:?}");
+    assert_eq!(
+        decisions.len(),
+        2,
+        "srv-y.mount is the policy's: {decisions:?}"
     );
 }
 
