@@ -110,7 +110,25 @@ impl Fake {
             .collect()
     }
 
+    /// Ask for the soft-reboot with a deadline no test run reaches, and call
+    /// the switch off after [`MOST_LOOKS`] looks: what ends the wait is the
+    /// fake's state at each look, never how fast the fakes answer.
     fn request(&self, wanted: &mut dyn FnMut() -> Wanted) -> Request {
+        let mut looks = 0;
+        let mut bounded = || {
+            looks += 1;
+            if looks > MOST_LOOKS {
+                return Wanted::No(format!("still waiting after {MOST_LOOKS} looks"));
+            }
+            wanted()
+        };
+        request_soft_reboot(&self.systemctl, Some(&self.busctl), UNREACHED, &mut bounded)
+    }
+
+    /// Ask for the soft-reboot with the short [`WAITS`], for a test of what
+    /// happens once the deadline has passed. The fake must not change while it
+    /// waits, so the outcome cannot depend on how many looks fit before it.
+    fn request_until_the_deadline(&self, wanted: &mut dyn FnMut() -> Wanted) -> Request {
         request_soft_reboot(&self.systemctl, Some(&self.busctl), WAITS, wanted)
     }
 
@@ -128,11 +146,27 @@ impl Fake {
     }
 }
 
+/// The waits of the tests about the deadline itself: the fake logind's delay
+/// (100 ms) and the margin have passed in well under a second.
 const WAITS: Waits = Waits {
     poll: Duration::from_millis(10),
     margin: Duration::from_millis(300),
     cap: Duration::from_secs(1),
 };
+
+/// The waits of every other test ([`Fake::request`]): a deadline no test run
+/// reaches. Under load a few looks can take longer than [`WAITS`] allows, and
+/// such a test would then end at the deadline instead of where it looks.
+const UNREACHED: Waits = Waits {
+    poll: Duration::from_millis(10),
+    margin: Duration::from_secs(3600),
+    cap: Duration::from_secs(3600),
+};
+
+/// The looks [`Fake::request`] allows a wait, far more than any test takes
+/// before what it waits for comes: a wait that should have ended then fails
+/// its test rather than waiting out [`UNREACHED`].
+const MOST_LOOKS: usize = 100;
 
 const ASKED: &str = "--no-wall soft-reboot";
 const DIRECT: &str = "start --no-block --job-mode=replace-irreversibly -- soft-reboot.target";
@@ -262,7 +296,7 @@ fn what_blocks_shutdown_is_unknown_unless_logind_answers_or_does_not_run() {
 fn a_soft_reboot_held_past_the_delay_is_dropped_or_enqueued_directly() {
     let fake = Fake::new();
     fake.held_back();
-    let result = fake.request(&mut go);
+    let result = fake.request_until_the_deadline(&mut go);
     assert!(
         matches!(&result, Request::Refused(why) if why.contains("nothing is queued")),
         "{result:?}"
@@ -273,9 +307,25 @@ fn a_soft_reboot_held_past_the_delay_is_dropped_or_enqueued_directly() {
         let fake = Fake::new();
         fake.put(release, "");
         fake.held_back();
-        let start = Instant::now();
-        assert_eq!(fake.request(&mut go), Request::Queued, "{release}");
-        assert!(start.elapsed() < Duration::from_secs(3));
+        let mut looks = 0u128;
+        let mut counted = || {
+            looks += 1;
+            Wanted::Yes
+        };
+        assert_eq!(
+            fake.request_until_the_deadline(&mut counted),
+            Request::Queued,
+            "{release}"
+        );
+        // It stops at logind's delay and the margin, no later: every look
+        // ends with a sleep of the poll, so by this many looks they are over.
+        // A slow host only makes the looks fewer.
+        let delay = delay_max(&fake.busctl).expect("the fake's delay");
+        let most = (delay + WAITS.margin)
+            .as_millis()
+            .div_ceil(WAITS.poll.as_millis())
+            + 1;
+        assert!(looks <= most, "{release}: {looks} looks, at most {most}");
         assert_eq!(fake.calls(), [ASKED, DIRECT], "{release}");
     }
 }
@@ -289,7 +339,7 @@ fn a_wait_logind_does_not_bound_lasts_the_cap() {
     fake.put("no-delay", "");
     fake.held_back();
     let start = Instant::now();
-    assert_eq!(fake.request(&mut go), Request::Queued);
+    assert_eq!(fake.request_until_the_deadline(&mut go), Request::Queued);
     assert!(start.elapsed() >= WAITS.cap, "{:?}", start.elapsed());
     assert_eq!(fake.calls(), [ASKED, DIRECT]);
 }
@@ -302,7 +352,7 @@ fn a_direct_job_pid_1_refuses_is_held_while_logind_holds_the_soft_reboot() {
     fake.put("v255", "");
     fake.put("start-refused", "");
     fake.held_back();
-    let result = fake.request(&mut go);
+    let result = fake.request_until_the_deadline(&mut go);
     assert!(
         matches!(&result, Request::Held(why) if why.starts_with("PID 1 refused")),
         "{result:?}"
