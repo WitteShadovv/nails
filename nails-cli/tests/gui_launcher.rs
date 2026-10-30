@@ -90,7 +90,22 @@ impl Bundle {
     /// leaves one: `PKEXEC_UID` names the operator, `SUDO_UID` (which pkexec
     /// of polkit 127 and later sets too) names root.
     fn launch(&self, vars: &[(&str, &str)]) -> (i32, Value) {
-        let output: Output = Command::new(self.engine())
+        self.launch_with(&self.dir.path().join("nails.toml"), None, vars)
+    }
+
+    /// [`launch`](Self::launch) with `--config config`, from the working
+    /// directory `cwd` when given.
+    fn launch_with(
+        &self,
+        config: &Path,
+        cwd: Option<&Path>,
+        vars: &[(&str, &str)],
+    ) -> (i32, Value) {
+        let mut command = Command::new(self.engine());
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        let output: Output = command
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("PKEXEC_UID", uid().to_string())
@@ -102,7 +117,7 @@ impl Bundle {
             .envs(vars.iter().copied())
             .arg("--no-log-file")
             .arg("--config")
-            .arg(self.dir.path().join("nails.toml"))
+            .arg(config)
             .args(["--json", "gui"])
             .output()
             .expect("run the launcher");
@@ -400,6 +415,49 @@ fn a_window_of_another_release_is_refused_and_its_helper_ends() {
         "the helper closed the pipe after refusing the hello"
     );
     wait_until_ended(helper);
+}
+
+/// A relative `--config` names the file the launcher read for the helper as
+/// well, which starts in `/`: the window asks for the configuration's path
+/// and gets the launcher's, found.
+#[test]
+fn a_relative_configuration_is_the_helpers_too() {
+    let ask = Request {
+        v: PROTOCOL_VERSION,
+        id: 2,
+        op: Op::ConfigPath,
+    }
+    .to_line();
+    let window = format!(
+        "read -r line\n\
+         printf '%s\\n' '{hello}' >&0\n\
+         read -r line\n\
+         printf '%s\\n' '{ask}' >&0\n\
+         read -r line; printf '%s\\n' \"$line\" > \"$out/config-path\"\n\
+         : > \"$out/done\"\n",
+        hello = hello_line(&ours().engine),
+    );
+    let bundle = Bundle::new(Some(&window));
+    let (exit, envelope) = bundle.launch_with(
+        Path::new("nails.toml"),
+        Some(bundle.dir.path()),
+        &[("NAILS_TEST_ADMIT_WINDOW", "1")],
+    );
+    assert_eq!(exit, 0, "{envelope}");
+    let _started = Started::from(&bundle, &envelope);
+    bundle.wait_for("done");
+    match bundle.frame("config-path") {
+        Frame::Result {
+            id: 2,
+            exit: 0,
+            envelope,
+        } => {
+            let expected = bundle.dir.path().join("nails.toml");
+            assert_eq!(envelope["data"]["path"], expected.display().to_string());
+            assert_eq!(envelope["data"]["exists"], true, "{envelope}");
+        }
+        other => panic!("the path was answered with {other:?}"),
+    }
 }
 
 #[test]
