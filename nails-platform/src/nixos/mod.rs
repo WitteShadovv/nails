@@ -27,6 +27,8 @@ pub use flake_ref::{
     split_flake_ref, with_dir,
 };
 
+pub(crate) use flake_ref::{flake_ref_readings, is_remote_flake_ref};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NixOSBuildMode {
     Flake,

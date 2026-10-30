@@ -15,13 +15,27 @@ use std::path::{Path, PathBuf};
 /// Validates the NixOS build target reference will resolve
 ///
 /// When an explicit `--flake` is provided, validates:
-/// - The path is absolute (not relative)
+/// - It is one NAILS can tell how Nix reads: a path (absolute, or `./`,
+///   `../`, `.` or `..`), a `path:` reference, a URL whose transport is a
+///   local file with no authority (`git+file:///srv/cfg`), or a plain remote
+///   reference (`github:owner/repo`, `git+https://example.org/repo`). Any
+///   other is refused whatever it names: a local URL with an authority
+///   (`git+file://../../etc/nixos`) and any other reference Nix may read as
+///   a path relative to the working directory (`a_b:x`), a registry alias
+///   written `flake:<name>`, which Nix looks up in its registries, and a
+///   relative path without `./`, which takes in a name alone
 /// - The directory exists
 /// - The directory contains a `flake.nix`
-/// - It is not the decoy's own `/etc/nixos` flake, named as a local path or a
-///   `path:`, `git+file:` or `file:` reference, with a query, a `dir`
-///   parameter or through a link (discovery reports that as
-///   [`HostTarget::DecoyFlake`])
+/// - It is not the decoy's own `/etc/nixos` flake or a directory below it,
+///   compared by device and inode, the links on the way followed (discovery
+///   reports that as [`HostTarget::DecoyFlake`]). These readings are
+///   checked: a local reference's path in each spelling (percent-escapes
+///   decoded or not, a `dir` parameter, a repository's `.git` directory),
+///   and the whole reference as a path relative to the working directory, as
+///   Nix reads one it cannot parse as a URL, where that path exists; each as
+///   written, its links and `..` resolved by the kernel as Nix resolves a
+///   path and `git+file:`, and with `.` and `..` applied by the text as Nix
+///   applies them to `path:`
 ///
 /// When no flake is specified, it reports the target the host's platform
 /// discovered ([`discover_host_target`](crate::platform::discover_host_target)),
@@ -166,7 +180,8 @@ impl NixOSBuildTargetCheck {
 /// place on the hidden volume at `hidden_volume_root`. `hidden` tells a hidden
 /// flake that is there but not chosen (the decoy's flake was named with
 /// `--nixos-flake` or `nixos_flake`) from one that is missing, and from a
-/// hidden flake directory that is a link to the decoy's.
+/// hidden flake directory that is the decoy's flake, or a directory below
+/// it, through a link or a bind mount.
 pub(crate) fn decoy_flake_refusal(
     dir: &Path,
     hidden_volume_root: &Path,
@@ -209,11 +224,15 @@ pub(crate) fn decoy_flake_refusal(
         ),
         HiddenFlake::DecoyFlake => (
             format!(
-                "{} is a link to {}, the decoy's own flake",
+                "{} is {} or a directory below it, the decoy's own flake, through a link or a \
+                 bind mount",
                 hidden_flake.display(),
                 dir.display()
             ),
-            format!("Remove the link {}. {write}", hidden_flake.display()),
+            format!(
+                "Remove the link or the bind mount {}. {write}",
+                hidden_flake.display()
+            ),
         ),
     };
     CheckResult::fail_with(
@@ -244,7 +263,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
             hidden_volume_root,
         } = &self.discovered
         {
-            let hidden = hidden_flake(fs, hidden_volume_root);
+            let hidden = hidden_flake(fs, hidden_volume_root)?;
             return Ok(decoy_flake_refusal(dir, hidden_volume_root, hidden));
         }
         if let Some(ref flake_ref) = self.nixos_flake {
