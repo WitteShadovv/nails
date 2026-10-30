@@ -16,11 +16,16 @@
 //!   (an invocation marker or a populated cgroup);
 //! - one of its daemons runs: the monitor `sssd`, or a responder or back end
 //!   named `sssd_<name>`, read from `<root>/proc`;
-//! - the socket of its Kerberos ticket cache is in place. `sssd-kcm.socket`
-//!   only listens until a program asks for a ticket, and a socket unit that
-//!   runs no program leaves neither an invocation marker nor a cgroup, so the
-//!   socket file in `/run` is what shows it. A stopped socket leaves the file
-//!   there until the next boot;
+//! - its Kerberos ticket cache listens: the socket file is in place in `/run`
+//!   and `<root>/proc/net/unix` lists a socket listening on it.
+//!   `sssd-kcm.socket` only listens until a program asks for a ticket, and a
+//!   socket unit that runs no program leaves neither an invocation marker nor
+//!   a cgroup, so the listening socket is what shows it. That socket is where
+//!   every Kerberos ticket cache of the KCM kind listens, not only sssd's:
+//!   Heimdal's daemon, `kcm`, binds it itself, so while a process of that name
+//!   runs the socket counts as its and not as sssd's. A socket file that
+//!   nothing listens on, which a stopped socket leaves in `/run` until the
+//!   next boot, is no sign;
 //! - `/var/lib/sss` holds one of the files sssd writes when it runs: its
 //!   configuration databases, the memory caches of its accounts, the database
 //!   of its Kerberos ticket cache and the sockets of its responders. Its
@@ -37,13 +42,14 @@
 //! and leaves every unit as it was, while Debian and Ubuntu install
 //! `sssd-kcm.socket` only with the `sssd-kcm` package. On NixOS the
 //! configuration owns the units and `systemctl disable` cannot change them, so
-//! the advice names the `services.sssd` options instead. sssd leaves the
-//! socket file and its state files behind when it stops, and they keep the
-//! warning, so the advice also names each one found with the `rm` that
-//! deletes it. That is safe once sssd is stopped: sssd makes each of them
-//! again when it starts, its configuration databases from `sssd.conf`, and
-//! only the Kerberos tickets its ticket cache kept are lost, which nothing
-//! reaches while `sssd-kcm` is off.
+//! the advice names the `services.sssd` options instead. sssd leaves its state
+//! files behind when it stops, and they keep the warning, so the advice also
+//! names each one found with the `rm` that deletes it. That is safe once sssd
+//! is stopped: sssd makes each of them again when it starts, its configuration
+//! databases from `sssd.conf`, and only the Kerberos tickets its ticket cache
+//! kept are lost, which nothing reaches while `sssd-kcm` is off. The advice
+//! never deletes the socket: once `sssd-kcm.socket` is stopped nothing listens
+//! on it, and another daemon may.
 //!
 //! Every probe reads metadata, or files under `/proc`, `/run` and `/sys`;
 //! nothing on the decoy disk is opened or listed, so no access time there
@@ -52,6 +58,8 @@
 
 use super::loggers;
 use crate::Filesystem;
+use std::cell::OnceCell;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// sssd's service units: its monitor, its Kerberos ticket cache and the
@@ -76,8 +84,24 @@ const DAEMON: &str = "sssd";
 const DAEMON_PREFIX: &str = "sssd_";
 
 /// The socket `sssd-kcm.socket` listens on, relative to the root: where
-/// Kerberos looks for a ticket cache of the KCM kind.
+/// Kerberos looks for a ticket cache of the KCM kind, whichever daemon serves
+/// it.
 const KCM_SOCKET: &str = "run/.heim_org.h5l.kcm-socket";
+
+/// The paths a listening KCM socket is bound at, as `/proc/net/unix` names
+/// them: the path its daemon gave, in `/run` or in `/var/run`, which links
+/// to `/run`.
+const KCM_BOUND_AT: &[&str] = &[
+    "/run/.heim_org.h5l.kcm-socket",
+    "/var/run/.heim_org.h5l.kcm-socket",
+];
+
+/// The flag `/proc/net/unix` sets on a listening socket (`__SO_ACCEPTCON`).
+const LISTENING: u32 = 1 << 16;
+
+/// The KCM daemons that are not sssd's, by process name: Heimdal's, which
+/// binds the socket itself and so runs while the socket is its.
+const OTHER_KCM_DAEMONS: &[&str] = &["kcm"];
 
 /// Files sssd writes under `/var/lib/sss` when it runs, relative to the root:
 /// the configuration database of the monitor and that of sssd-kcm, the memory
@@ -116,9 +140,12 @@ pub(super) fn sssd_finding<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -
 }
 
 /// What shows sssd in use on the decoy under `root`, one phrase each: its
-/// active units (or, when none is, a daemon that runs), the socket of its
-/// ticket cache, and the first of its state files found.
+/// active units (or, when none is, a daemon that runs), its listening ticket
+/// cache, and the first of its state files found.
 fn signs<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+    // The process names are read once, and only when a sign needs them.
+    let names = OnceCell::new();
+    let running = || names.get_or_init(|| loggers::running_process_names(fs, root));
     let mut signs: Vec<String> = UNITS
         .iter()
         .filter(|unit| loggers::unit_active(fs, root, unit))
@@ -127,16 +154,13 @@ fn signs<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
     // A daemon matters on its own only where no unit shows it: one started
     // outside systemd, or by a systemd that left no marker.
     if signs.is_empty()
-        && let Some(daemon) = loggers::running_process_names(fs, root)
-            .into_iter()
-            .find(|name| is_daemon(name))
+        && let Some(daemon) = running().iter().find(|name| is_daemon(name))
     {
         signs.push(format!("{daemon} runs"));
     }
-    if present(fs, &root.join(KCM_SOCKET)) {
+    if kcm_listens(fs, root) && !other_kcm_runs(running()) {
         signs.push(format!(
-            "the socket of its Kerberos ticket cache, /{KCM_SOCKET}, is in place (a stopped \
-             socket leaves it until the next boot)"
+            "its Kerberos ticket cache listens on /{KCM_SOCKET}"
         ));
     }
     if let Some(file) = STATE_FILES
@@ -148,12 +172,43 @@ fn signs<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
     signs
 }
 
+/// Whether a ticket cache listens on the KCM socket of the decoy under `root`:
+/// its file is in place and `<root>/proc/net/unix` lists a socket listening
+/// there. A file that nothing listens on is what a stopped socket leaves.
+fn kcm_listens<F: Filesystem>(fs: &F, root: &Path) -> bool {
+    present(fs, &root.join(KCM_SOCKET))
+        && fs
+            .read_file_content(&root.join("proc/net/unix"))
+            .is_ok_and(|table| table.lines().any(listens_on_kcm))
+}
+
+/// Whether a line of `/proc/net/unix` is a socket listening at the KCM
+/// socket. Its fields are `Num RefCount Protocol Flags Type St Inode Path`,
+/// the flags in hex; a line whose path holds a space has more fields and is
+/// never the KCM socket.
+fn listens_on_kcm(line: &str) -> bool {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let &[_, _, _, flags, _, _, _, path] = fields.as_slice() else {
+        return false;
+    };
+    u32::from_str_radix(flags, 16).is_ok_and(|flags| flags & LISTENING != 0)
+        && KCM_BOUND_AT.contains(&path)
+}
+
+/// Whether a KCM daemon that is not sssd's runs among `running`, the process
+/// names: then the KCM socket is its.
+fn other_kcm_runs(running: &BTreeSet<String>) -> bool {
+    OTHER_KCM_DAEMONS
+        .iter()
+        .any(|daemon| running.contains(*daemon))
+}
+
 /// The files sssd leaves behind when it stops, as paths on the decoy under
-/// `root`: the socket of its ticket cache and every one of its state files
-/// there. Each keeps the warning after sssd is off.
+/// `root`: every one of its state files there. Each keeps the warning after
+/// sssd is off.
 fn left_behind<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
-    std::iter::once(&KCM_SOCKET)
-        .chain(STATE_FILES)
+    STATE_FILES
+        .iter()
         .filter(|file| present(fs, &root.join(file)))
         .map(|file| format!("/{file}"))
         .collect()

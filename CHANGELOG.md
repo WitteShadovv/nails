@@ -91,12 +91,14 @@ of this changelog for that version becomes the release notes word for word, and
   tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
   the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists
   such decoys as out of scope. The warning names what shows sssd: an active unit or a running
-  daemon, the socket of its Kerberos ticket cache (`sssd-kcm.socket`, which Fedora 44 Cloud enables
-  by default, so a decoy made from it warns), or a file sssd writes under `/var/lib/sss` when it
-  runs. On the decoy disk the probes read only file metadata, so no access time there changes.
-  Following its advice clears it: the advice turns sssd off (`systemctl disable --now`, or the
-  `services.sssd` options on NixOS) and names the `rm` of each file sssd leaves behind when it
-  stops, which would keep the warning. docs/decoy-requirements.md says why deleting them is safe.
+  daemon, its Kerberos ticket cache listening on its socket (`sssd-kcm.socket`, which Fedora 44
+  Cloud enables by default, so a decoy made from it warns), or a file sssd writes under
+  `/var/lib/sss` when it runs. The socket counts only while something listens on it and Heimdal's
+  `kcm`, which serves the same socket, does not run. On the decoy disk the probes read only file
+  metadata, so no access time there changes. Following its advice clears it: the advice turns sssd
+  off (`systemctl disable --now`, or the `services.sssd` options on NixOS) and names the `rm` of
+  each file sssd leaves behind when it stops, which would keep the warning, and never deletes the
+  socket. docs/decoy-requirements.md says why deleting them is safe.
 - The residue catalog in docs/decoy-requirements.md lists a pending offline update, with what
   systemd's offline-update mechanism does across a soft-reboot and the way back, and sssd on a decoy
   joined to a domain, which docs/threat-model.md also lists among its residual channels. `verify`
