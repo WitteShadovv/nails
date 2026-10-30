@@ -99,17 +99,31 @@ pub fn hidden_flake<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> HiddenF
     }
 }
 
-/// The decoy's own flake directory when `flake_ref` names it and `/etc/nixos`
-/// holds a flake: a local reference (an absolute path, `path:`, `git+file:`
-/// or `file:`, or a relative one) whose directory is `/etc/nixos` once both
-/// are resolved and its `dir` parameter is applied, so `/etc/nixos/`,
-/// `/etc/nixos?ref=main`, `path:/etc?dir=nixos`, `git+file:///etc?dir=nixos`
-/// and a link to the directory name it too. Naming it explicitly is no way
-/// around the refusal [`HostTarget::DecoyFlake`] carries.
+/// The decoy's own flake directory when `flake_ref` names it, or a
+/// directory below it, and `/etc/nixos` holds a flake: a local reference (an
+/// absolute or relative path, `path:`, or a URL that reads local files such
+/// as `git+file:`, `hg+file:` or `file:`) with a directory at or below
+/// `/etc/nixos` once both are resolved, in any spelling `local_flake_dirs`
+/// reads (percent-escapes, `.` and `..`, a repository's `.git` directory,
+/// the path Nix reads a file URL with an authority as), so `/etc/nixos/`,
+/// `/etc/nixos?ref=main`, `path:/etc?dir=nixos`, `git+file:///etc?dir=nixos`,
+/// `git+file:///etc/nixos/.git`, `hg+file:///etc/nixos`, the percent-encoded
+/// `path:/etc/%6Eixos` and a link to the directory name it too. A directory
+/// below it counts because Nix builds the flake above a directory that holds
+/// none, and a flake on the decoy is no hidden flake anyway. Naming it
+/// explicitly is no way around the refusal [`HostTarget::DecoyFlake`]
+/// carries.
 pub(crate) fn explicit_decoy_flake<F: Filesystem>(fs: &F, flake_ref: &str) -> Option<PathBuf> {
     let (base, _) = crate::nixos::split_flake_ref(flake_ref);
-    let dir = local_flake_path(base)?;
-    is_decoy_flake_dir(fs, &dir).then(|| PathBuf::from(ETC_FLAKE_DIR))
+    let etc = Path::new(ETC_FLAKE_DIR);
+    if !fs.path_exists(&etc.join("flake.nix")).unwrap_or(false) {
+        return None;
+    }
+    let decoy = resolved(fs, etc);
+    crate::nixos::local_flake_dirs(base)
+        .iter()
+        .any(|dir| resolved(fs, dir).starts_with(&decoy))
+        .then(|| PathBuf::from(ETC_FLAKE_DIR))
 }
 
 /// Whether `/etc/nixos` holds a flake and `dir` is that directory once both
@@ -118,22 +132,6 @@ fn is_decoy_flake_dir<F: Filesystem>(fs: &F, dir: &Path) -> bool {
     let etc = Path::new(ETC_FLAKE_DIR);
     fs.path_exists(&etc.join("flake.nix")).unwrap_or(false)
         && resolved(fs, dir) == resolved(fs, etc)
-}
-
-/// The directory a local flake reference names, its `dir` parameter applied;
-/// `None` for a remote one.
-fn local_flake_path(base: &str) -> Option<PathBuf> {
-    let (location, dir) = crate::nixos::location_and_dir(base);
-    for scheme in ["git+file:", "file:"] {
-        if let Some(rest) = location.strip_prefix(scheme) {
-            // `git+file:///etc/nixos`: an empty authority before the path.
-            let path = rest.strip_prefix("//").unwrap_or(rest);
-            return path
-                .starts_with('/')
-                .then(|| crate::nixos::with_dir(PathBuf::from(path), dir));
-        }
-    }
-    crate::nixos::resolve_local_flake_dir(base).ok().flatten()
 }
 
 /// `path` with its links resolved where it can be, and with `.` components

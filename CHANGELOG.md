@@ -333,6 +333,18 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
   no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line. `nails check` does not test this yet; see
   docs/decoy-requirements.md.
+- `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
+  below it, in more spellings: as `hg+file:` and every other URL whose transport is a local file,
+  with no authority or an empty one, percent-encoded (`path:/etc/%6Eixos`, a `dir` parameter
+  `dir=%6Eixos`), with a `dir` parameter that starts with a `/` (`path:/etc?dir=/nixos`, which Nix
+  appends to the path), through the repository's `.git` directory (`git+file:///etc/nixos/.git`,
+  `git+file:///etc/.git?dir=nixos`, which Nix fetches from the repository the directory belongs
+  to) and with `.` or `..` components even where a directory on the way does not exist
+  (`/etc/nixos/x/..`). A local URL with an authority (`git+file://../../etc/nixos`) now fails the
+  `nixos-build-target` check whatever it names: Nix takes no authority there and reads such a file
+  URL as a path relative to the working directory. So does a registry alias such as
+  `flake:nixos-config`, as the name alone already did: Nix looks it up in its flake registries, so
+  NAILS cannot tell which flake it builds. Name the flake by its absolute path or URL instead.
 
 ### Fixed
 

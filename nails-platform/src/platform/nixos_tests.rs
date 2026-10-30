@@ -58,15 +58,18 @@ fn etc_flake_without_a_hidden_flake_is_the_refused_decoy_flake() {
     );
 }
 
-/// The decoy's own flake named explicitly, in each local spelling discovery
-/// resolves, is the refused decoy flake; another directory is not, and
-/// neither is `/etc/nixos` without a flake in it.
+/// The decoy's own flake named explicitly, or a directory below it, in each
+/// local spelling discovery resolves, is the refused decoy flake; another
+/// directory is not, and neither is `/etc/nixos` without a flake in it.
 #[test]
 fn the_decoy_flake_named_explicitly_is_the_refused_decoy_flake() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
     fs.create_symlink(Path::new("/etc/nixos"), Path::new("/srv/config"))
         .unwrap();
+    // Nix reads a file URL with an authority as a path relative to the
+    // working directory: enough `..` lead from any working directory to `/`.
+    let climb = format!("git+file://{}etc/nixos#host", "../".repeat(64));
     for spelling in [
         "/etc/nixos#host",
         "/etc/nixos/#host",
@@ -80,6 +83,18 @@ fn the_decoy_flake_named_explicitly_is_the_refused_decoy_flake() {
         "path:/etc?dir=nixos#host",
         "git+file:///etc?dir=nixos#host",
         "file:///etc?ref=main&dir=nixos",
+        "hg+file:///etc/nixos#host",
+        "hg+file:/etc?dir=nixos#host",
+        "path:/etc/%6Eixos#host",
+        "git+file:///etc?dir=%6Eixos#host",
+        "path:/etc?dir=/nixos#host",
+        "/etc/nixos/x/..#host",
+        "git+file:///etc/nixos/.git#host",
+        "git+file:///etc/nixos/.git/#host",
+        "git+file:///etc/.git?dir=nixos#host",
+        "/etc/nixos/sub#host",
+        "path:/etc/nixos?dir=sub#host",
+        climb.as_str(),
     ] {
         let target = super::super::discover_with_platform(
             &NixOsPlatform,
@@ -104,6 +119,12 @@ fn the_decoy_flake_named_explicitly_is_the_refused_decoy_flake() {
         "github:me/cfg#host",
         "path:/etc?dir=nixos2#host",
         "git+file:///etc#host",
+        "hg+https://example.org/etc/nixos#host",
+        "path:/etc/%6Eixos2#host",
+        "flake:nixos-config#host",
+        "/etc/x?dir=nixos#host",
+        "git+file:///etc/nixos2/.git#host",
+        "file://localhost/etc/nixos#host",
     ] {
         assert_eq!(explicit_decoy_flake(&fs, other), None, "{other}");
     }

@@ -16,12 +16,19 @@ use std::path::{Path, PathBuf};
 ///
 /// When an explicit `--flake` is provided, validates:
 /// - The path is absolute (not relative)
+/// - It is no local URL with an authority (`git+file://../../etc/nixos`),
+///   which Nix reads as a path relative to the working directory
+/// - It is no registry alias written `flake:<name>`, which Nix looks up in
+///   its registries, so it could name any flake (a name alone, the other
+///   spelling, is refused as a relative path)
 /// - The directory exists
 /// - The directory contains a `flake.nix`
-/// - It is not the decoy's own `/etc/nixos` flake, named as a local path or a
-///   `path:`, `git+file:` or `file:` reference, with a query, a `dir`
-///   parameter or through a link (discovery reports that as
-///   [`HostTarget::DecoyFlake`])
+/// - It is not the decoy's own `/etc/nixos` flake or a directory below it,
+///   named as a local path, a `path:` reference or a URL that reads local
+///   files (`git+file:`, `hg+file:`, `file:`), percent-encoded or not, with
+///   a query, a `dir` parameter, `.` or `..` components, through the
+///   repository's `.git` directory or through a link (discovery reports
+///   that as [`HostTarget::DecoyFlake`])
 ///
 /// When no flake is specified, it reports the target the host's platform
 /// discovered ([`discover_host_target`](crate::platform::discover_host_target)),

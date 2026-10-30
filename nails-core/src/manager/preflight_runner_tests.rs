@@ -474,11 +474,14 @@ fn a_decoy_flake_is_refused_across_discovery_and_preflight() {
 }
 
 /// Naming the decoy's own flake is no way around the refusal: in each
-/// spelling of /etc/nixos it fails the build-target check. With a hidden flake
-/// beside it, the refusal says the decoy's flake was named and how to take the
-/// hidden one.
+/// spelling of /etc/nixos, or of a directory below it, it fails the
+/// build-target check. With a hidden flake beside it, the refusal says the
+/// decoy's flake was named and how to take the hidden one.
 #[test]
 fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
+    // Nix reads a file URL with an authority as a path relative to the
+    // working directory: enough `..` lead from any working directory to `/`.
+    let climb = format!("git+file://{}etc/nixos#host", "../".repeat(64));
     for (spelling, hidden_flake) in [
         ("/etc/nixos#host", false),
         ("path:/etc/nixos#host", false),
@@ -488,6 +491,13 @@ fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
         ("/etc/nixos/?ref=main#host", true),
         ("path:/etc?dir=nixos#host", false),
         ("git+file:///etc?dir=nixos#host", true),
+        ("hg+file:///etc/nixos#host", true),
+        ("path:/etc/%6Eixos#host", false),
+        ("/etc?dir=%6Eixos#host", true),
+        ("git+file:///etc/nixos/.git#host", true),
+        ("git+file:///etc/.git?dir=nixos#host", false),
+        ("/etc/nixos/sub#host", true),
+        (climb.as_str(), false),
     ] {
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
@@ -524,6 +534,63 @@ fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
                 "{spelling}: {result:?}"
             );
         }
+    }
+}
+
+/// Nix takes no authority in a local URL: it reads a file URL with one as a
+/// path relative to the working directory. With one in `nixos_flake` the
+/// build-target check fails and says so, whatever the URL names.
+#[test]
+fn a_local_url_with_an_authority_fails_the_build_target_check() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/srv/flake/flake.nix", true);
+    let config = Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        nixos_flake: Some("git+file://localhost/srv/flake#host".to_string()),
+        ..explicit_config()
+    };
+    let mut manager = NailsManager::new(
+        fs,
+        config,
+        std::path::PathBuf::from("/mnt/hidden/state.json"),
+    );
+    manager.set_host_profile(crate::platform::FakePlatform::nixos().host_profile());
+
+    let result = build_target_result(&manager).expect("the check runs on NixOS");
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains("the authority 'localhost'"),
+        "{result:?}"
+    );
+}
+
+/// A registry alias may name any flake, the decoy's own among them, and the
+/// pre-flight cannot tell which: with one in `nixos_flake` the build-target
+/// check fails, written `flake:<name>` as an alias, and as a name alone, as
+/// before, as a relative path.
+#[test]
+fn a_registry_alias_fails_the_build_target_check() {
+    for (alias, why) in [
+        ("flake:nixos-config#host", "is a registry alias"),
+        ("nixos-config#host", "is relative"),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+        let config = Config {
+            hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+            nixos_flake: Some(alias.to_string()),
+            ..explicit_config()
+        };
+        let mut manager = NailsManager::new(
+            fs,
+            config,
+            std::path::PathBuf::from("/mnt/hidden/state.json"),
+        );
+        manager.set_host_profile(crate::platform::FakePlatform::nixos().host_profile());
+
+        let result = build_target_result(&manager).expect("the check runs on NixOS");
+        assert!(result.is_fail(), "{alias}: {result:?}");
+        assert!(result.message().contains(why), "{alias}: {result:?}");
     }
 }
 

@@ -51,11 +51,14 @@ pub enum HostTarget {
 ///
 /// In order: `overlay_only` short-circuits to [`HostTarget::OverlayOnly`]; an
 /// explicit flake reference (the operator's own choice) is honoured on every
-/// host, unless it names the decoy's own `/etc/nixos` flake in a local
-/// spelling discovery resolves (a path, `path:`, `git+file:` or `file:`, with
-/// a query, a `dir` parameter or through a link), which is the refused
-/// [`HostTarget::DecoyFlake`]; otherwise the backend's auto-discovery
-/// answers. Tests pass a
+/// host, unless it names the decoy's own `/etc/nixos` flake or a directory
+/// below it in a local spelling discovery resolves (a path, `path:`, or a
+/// URL that reads local files such as `git+file:`, `hg+file:` or `file:`,
+/// percent-encoded or not, with a query, a `dir` parameter, `.` or `..`
+/// components, through the repository's `.git` directory or through a
+/// link, and a file URL with an authority as the relative path Nix reads it
+/// as), which is the refused [`HostTarget::DecoyFlake`]; otherwise the
+/// backend's auto-discovery answers. Tests pass a
 /// [`FakePlatform`](super::FakePlatform) here to pin the discovered target
 /// without staging any host files.
 pub fn discover_with_platform<F: Filesystem>(
