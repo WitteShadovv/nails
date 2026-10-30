@@ -184,6 +184,27 @@ in
         assert not leaked, f"hidden canaries reached the decoy disk: {leaked}"
 
 
+    def end_neighbour(node):
+        """Stop a neighbour's QEMU, bounded, so the driver counts it as down.
+
+        Every switch a neighbour makes restarts its backdoor, and each new
+        backdoor announces itself on the driver's shell socket, where nothing
+        reads it: the driver still holds that shell as connected from before
+        the neighbour was armed. Once the script ends, the driver runs `sync`
+        on every machine that is up, and on a neighbour it would read that
+        backlog as the command's output and fail a soak that passed. A
+        neighbour's disk is scratch, so its QEMU is stopped instead, as the
+        driver's own cleanup stops it, and the driver passes over a machine
+        that is down."""
+        switches = sum(
+            "systemd[1]: Soft-rebooting." in line for line in node.full_console_log
+        )
+        node.log(f"ending the neighbour after {switches} soft-reboots of its own")
+        node.process.terminate()
+        node.process.wait(timeout=60)
+        node.wait_for_shutdown()
+
+
     # The canonical activate/deactivate helpers drive a `machine` global, which
     # the driver defines only for a test with a single node: point it at the
     # soaker. The driver injects each node under its name (soaker, neighbourA,
@@ -240,5 +261,9 @@ in
 
     assert reached == CYCLES, f"only {reached} of {CYCLES} re-entries reached the backdoor"
     soaker.log(f"soak complete: {reached} re-entries, decoy clean")
+
+    # The neighbours were load for the soaker's cycles, which are done.
+    for name in neighbours:
+        end_neighbour(globals()[name])
   '';
 }
