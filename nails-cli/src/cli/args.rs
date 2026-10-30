@@ -519,8 +519,8 @@ pub struct RehearseScanArgs {
     /// a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with
     /// the encrypt feature, a device that holds the folder of an eCryptfs
     /// mount (the filesystem the folder lies on, a disk with that filesystem
-    /// in a partition, a device below it), or storage the scan does not
-    /// identify is reported not checked rather than clean.
+    /// in a partition, a device below or above it), or storage the scan does
+    /// not identify is reported not checked rather than clean.
     #[arg(long = "device", value_name = "DEVICE", value_hint = ValueHint::FilePath, conflicts_with = "offline")]
     pub devices: Vec<std::path::PathBuf>,
 

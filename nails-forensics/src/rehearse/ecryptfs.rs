@@ -11,7 +11,7 @@
 
 use crate::Filesystem;
 use crate::filesystem::MountEntry;
-use nails_base::blockdev::{self, Layer, LoopFollow};
+use nails_base::blockdev::{self, Layer, LoopBacking, LoopFollow};
 use std::path::{Component, Path, PathBuf};
 
 /// The type of an eCryptfs mount.
@@ -161,17 +161,26 @@ const ECRYPTFS_UNPLACED: &str = "an eCryptfs mount (an encrypted home or Private
      mount the scan can place the folder on, or sysfs shows no block device at this path, so \
      this raw plaintext scan cannot prove the canary absent";
 
-/// Why a device named for a scan is not checked when the devices below the
-/// filesystem an eCryptfs folder lies on are more than the scan follows.
+/// Why a device named for a scan is not checked when more devices lie below
+/// the filesystem an eCryptfs folder lies on, or below the device itself, than
+/// the scan follows.
 const ECRYPTFS_TOO_MANY: &str = "an eCryptfs mount (an encrypted home or Private folder) stores \
      the files under it encrypted, and the scan cannot tell whether this device holds them: more \
-     devices lie below the filesystem their folder lies on than the scan follows, so this raw \
-     plaintext scan cannot prove the canary absent";
+     devices lie below the filesystem their folder lies on, or below this device, than the scan \
+     follows, so this raw plaintext scan cannot prove the canary absent";
+
+/// Why a device named for a scan is not checked when it reads, through a loop
+/// device, a path that leads to no file the scan can find.
+const ECRYPTFS_UNTRACED: &str = "an eCryptfs mount (an encrypted home or Private folder) stores \
+     the files under it encrypted, and the scan cannot tell whether this device holds them: it \
+     reads through a loop device a path that leads to no file or block device the scan can find \
+     (a deleted file, a device node outside /dev, a path only another mount namespace has), so \
+     this raw plaintext scan cannot prove the canary absent";
 
 /// The most devices the scan reads below the filesystem an eCryptfs folder
-/// lies on. Real stacks are a few devices deep, and a wide array adds two (a
-/// member partition and its disk) per drive, so only a pathological sysfs
-/// reaches it.
+/// lies on, or below a device named for a scan. Real stacks are a few devices
+/// deep, and a wide array adds two (a member partition and its disk) per
+/// drive, so only a pathological sysfs reaches it.
 pub(super) const MAX_HOLDING_DEVICES: usize = 256;
 
 /// Why a clean scan of `device` cannot rule out the eCryptfs mounts whose
@@ -182,16 +191,19 @@ pub(super) const MAX_HOLDING_DEVICES: usize = 256;
 /// other devices.
 ///
 /// A device holds a folder when it is the block device of the filesystem the
-/// folder lies on, or lies below that device: a whole disk with it in a
-/// partition, the partition below a dm-crypt or LVM mapping, a member of an md
-/// array, the file a loop device reads (named as a regular file) or the device
-/// of the filesystem that holds that file. A folder on a filesystem with no
-/// block device of its own (a tmpfs, an overlay, a network share), in an
-/// image file on one, or on no mount the scan can place it on, a path sysfs
-/// lists no block device for that is no regular file (a node outside `/dev`,
-/// a system without sysfs), and more devices below the folder's filesystem
-/// than [`MAX_HOLDING_DEVICES`] leave the scan unable to tell, unless the
-/// devices it did read hold `device`.
+/// folder lies on, lies below that device ([`devices_holding`]: a whole disk
+/// with it in a partition, the partition below a dm-crypt or LVM mapping, a
+/// member of an md array, the file a loop device reads, named as a regular
+/// file, or the device of the filesystem that holds that file), or is built on
+/// one that does ([`reaches`]: a mapping or a loop device over it, a partition
+/// of either). A folder on a filesystem with no block device of its own (a
+/// tmpfs, an overlay, a network share), in an image file on one, or on no
+/// mount the scan can place it on, a path sysfs lists no block device for that
+/// is no regular file (a node outside `/dev`, a system without sysfs), a loop
+/// device below `device` bound to a path that leads to no file, and more
+/// devices below the folder's filesystem or below `device` than
+/// [`MAX_HOLDING_DEVICES`] leave the scan unable to tell, unless the devices
+/// it did read hold `device`.
 pub(super) fn blind_spot<F: Filesystem>(
     fs: &F,
     device: &Path,
@@ -211,17 +223,17 @@ pub(super) fn blind_spot<F: Filesystem>(
             continue;
         };
         let holding = devices_holding(fs, &top);
-        let holds = holding.layers.iter().any(|layer| match &named {
-            Some(dir) => layer.sysfs == *dir,
-            None => layer
-                .loop_device
-                .as_ref()
-                .is_some_and(|bound| bound.backing.path() == device),
-        });
-        if holds {
+        let reach = match &named {
+            Some(dir) => reaches(fs, dir, &holding),
+            None => Reach {
+                holds: holding.reads_file(device),
+                gap: None,
+            },
+        };
+        if reach.holds {
             return Some(super::ScanBlindSpot::StackedEncryption.reason().to_string());
         }
-        if let Some(gap) = holding.gap {
+        if let Some(gap) = holding.gap.or(reach.gap) {
             unsure.get_or_insert(gap);
         }
     }
@@ -243,23 +255,56 @@ fn named_block_device<F: Filesystem>(fs: &F, device: &Path) -> Option<PathBuf> {
 struct Holding {
     /// The devices read.
     layers: Vec<Layer>,
+    /// The sysfs directories of the disks among `layers` that hold the
+    /// filesystem only in a partition among them: their other partitions do
+    /// not.
+    disks: Vec<PathBuf>,
     /// Why devices that hold the filesystem may be missing from `layers`:
     /// [`ECRYPTFS_UNPLACED`] or [`ECRYPTFS_TOO_MANY`].
     gap: Option<&'static str>,
+}
+
+impl Holding {
+    /// Whether the device whose sysfs directory is `dir` is among them.
+    fn has(&self, dir: &Path) -> bool {
+        self.layers.iter().any(|layer| layer.sysfs == dir)
+    }
+
+    /// Whether a loop device among them reads the file at `path`.
+    fn reads_file(&self, path: &Path) -> bool {
+        self.layers.iter().any(|layer| {
+            layer
+                .loop_device
+                .as_ref()
+                .is_some_and(|bound| bound.backing.path() == path)
+        })
+    }
+}
+
+/// The sysfs directory of the disk `layer` lies on, when it is a partition.
+fn disk_of(layer: &Layer) -> Option<&Path> {
+    layer
+        .partition
+        .as_ref()
+        .filter(|partition| partition.disk.is_some())
+        .and(layer.sysfs.parent())
 }
 
 /// The block devices whose raw bytes hold those of the device whose sysfs
 /// directory is `top`: the devices below it ([`blockdev::walk()`], through
 /// `slaves/` and below a loop device to the device of the filesystem that
 /// holds its file), and the disk each partition among them lies on, with the
-/// devices below that disk in turn. Some may be missing, which the gap says:
-/// a loop device among them reads a file no block device sysfs shows holds,
-/// or more than [`MAX_HOLDING_DEVICES`] devices lie below `top`.
+/// devices below that disk in turn. A disk reached only that way holds them in
+/// that partition alone. Some may be missing, which the gap says: a loop
+/// device among them reads a file no block device sysfs shows holds, or more
+/// than [`MAX_HOLDING_DEVICES`] devices lie below `top`.
 fn devices_holding<F: Filesystem>(fs: &F, top: &Path) -> Holding {
     let mut holding = Holding::default();
-    let mut pending = vec![top.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        if holding.layers.iter().any(|known| known.sysfs == dir) {
+    // Each device to walk down from, and whether it is the disk of a
+    // partition among them, which its walk reads first.
+    let mut pending = vec![(top.to_path_buf(), false)];
+    while let Some((dir, disk)) = pending.pop() {
+        if holding.has(&dir) {
             continue;
         }
         let limit = MAX_HOLDING_DEVICES.saturating_sub(holding.layers.len());
@@ -270,22 +315,91 @@ fn devices_holding<F: Filesystem>(fs: &F, top: &Path) -> Holding {
         if walk.cut_short {
             holding.gap.get_or_insert(ECRYPTFS_TOO_MANY);
         }
-        for layer in walk.layers {
-            if holding
-                .layers
-                .iter()
-                .any(|known| known.sysfs == layer.sysfs)
-            {
+        for (at, layer) in walk.layers.into_iter().enumerate() {
+            let only_disk = disk && at == 0;
+            if holding.has(&layer.sysfs) {
+                // Reached below a device that holds it, it holds the
+                // filesystem in full.
+                if !only_disk {
+                    holding.disks.retain(|known| *known != layer.sysfs);
+                }
                 continue;
             }
-            let disk = layer
-                .partition
-                .as_ref()
-                .filter(|partition| partition.disk.is_some())
-                .and(layer.sysfs.parent());
-            pending.extend(disk.map(Path::to_path_buf));
+            if only_disk {
+                holding.disks.push(layer.sysfs.clone());
+            }
+            pending.extend(disk_of(&layer).map(|disk| (disk.to_path_buf(), true)));
             holding.layers.push(layer);
         }
     }
     holding
+}
+
+/// What the walk down from a device named for a scan found ([`reaches`]).
+#[derive(Debug, Default)]
+struct Reach {
+    /// Whether the device holds what a [`Holding`] holds.
+    holds: bool,
+    /// Why devices it is built on may be missing from the walk:
+    /// [`ECRYPTFS_UNTRACED`] or [`ECRYPTFS_TOO_MANY`].
+    gap: Option<&'static str>,
+}
+
+/// Whether the block device whose sysfs directory is `dir` holds what
+/// `holding` holds: it is one of those devices, or is built on one. The walk
+/// goes down from it through `slaves/` (a mapping, an md array), from a loop
+/// device to the block device it is bound to, and from a partition to its
+/// disk, as a loop device over a whole disk shows that disk's partitions as
+/// its own. A loop device that reads the file a loop device of `holding`
+/// reads holds it too, and so does a partition of a disk of `holding`, unless
+/// that disk holds it only in another partition. A loop device bound to a
+/// path that leads to no regular file here, and more than
+/// [`MAX_HOLDING_DEVICES`] devices below `dir`, leave the walk unable to tell.
+fn reaches<F: Filesystem>(fs: &F, dir: &Path, holding: &Holding) -> Reach {
+    let mut reach = Reach::default();
+    let mut read: Vec<PathBuf> = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        if read.contains(&next) {
+            continue;
+        }
+        let limit = MAX_HOLDING_DEVICES.saturating_sub(read.len());
+        let walk = blockdev::walk(fs, &next, LoopFollow::BlockDevices, limit);
+        if walk.cut_short {
+            reach.gap.get_or_insert(ECRYPTFS_TOO_MANY);
+        }
+        if !walk.unplaced_loops.is_empty() {
+            reach.gap.get_or_insert(ECRYPTFS_UNTRACED);
+        }
+        for layer in walk.layers {
+            if read.contains(&layer.sysfs) {
+                continue;
+            }
+            if holding.has(&layer.sysfs) {
+                reach.holds = true;
+                return reach;
+            }
+            if let Some(LoopBacking::File(file)) =
+                layer.loop_device.as_ref().map(|bound| &bound.backing)
+            {
+                if holding.reads_file(file) {
+                    reach.holds = true;
+                    return reach;
+                }
+                if !fs.is_regular_file(file).unwrap_or(false) {
+                    reach.gap.get_or_insert(ECRYPTFS_UNTRACED);
+                }
+            }
+            if let Some(disk) = disk_of(&layer) {
+                if !holding.has(disk) {
+                    pending.push(disk.to_path_buf());
+                } else if !holding.disks.iter().any(|known| known == disk) {
+                    reach.holds = true;
+                    return reach;
+                }
+            }
+            read.push(layer.sysfs);
+        }
+    }
+    reach
 }

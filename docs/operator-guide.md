@@ -994,16 +994,19 @@ checked, never as clean:
   device that holds the folder of an eCryptfs mount (an encrypted home or
   `Private` folder). That is the filesystem the folder lies on, and for a
   device named with `--device` also a whole disk with that filesystem in a
-  partition, or a device below it (the partition under a LUKS or LVM mapping,
-  an md array's member). Where the path to the folder runs through a mount
-  point that the path to the eCryptfs mount does not, each filesystem mounted
-  there counts, and so does the one below them, since the mount table does not
-  show which of them was there when the folder was mounted. A `--device` the
-  scan cannot place against such a folder, because the folder lies on a tmpfs,
-  an overlay, a FUSE or network filesystem or in an image file stored on one,
-  because more devices lie below its filesystem than the scan follows, or
-  because sysfs lists no block device at the path, is reported as not checked
-  too;
+  partition, or a device below or above it (the partition under a LUKS or LVM
+  mapping, an md array's member, a loop device or a mapping built on the
+  partition or its disk, and a partition of such a device). Where the path to
+  the folder runs through a mount point that the path to the eCryptfs mount
+  does not, each filesystem mounted there counts, and so does the one below
+  them, since the mount table does not show which of them was there when the
+  folder was mounted. A `--device` the scan cannot place against such a folder,
+  because the folder lies on a tmpfs, an overlay, a FUSE or network filesystem
+  or in an image file stored on one, because more devices lie below its
+  filesystem or below the device than the scan follows, because the device
+  reads through a loop device a path that leads to no file (a deleted file, a
+  device node outside `/dev`), or because sysfs lists no block device at the
+  path, is reported as not checked too;
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
@@ -1023,6 +1026,11 @@ holds it can read as clean:
   whose folder's filesystem was moved or detached (`umount -l`), since the
   scan places the folder by the paths the mount table shows;
 - every eCryptfs folder in an `--offline` scan, which reads no mount table;
+- a device that a program serves from the storage of an eCryptfs folder (an
+  NBD or ublk device), which sysfs does not link to that storage, and one that
+  reaches the image file holding such a folder by another path than its loop
+  device shows (a hard link, another mount of the image's filesystem), as the
+  scan knows an image file by its path;
 - a vault a FUSE tool encrypts (gocryptfs, CryFS or EncFS, as Plasma Vaults
   use), which the scan does not recognise at all.
 

@@ -330,7 +330,7 @@ Step 3, after deactivating: scan the raw decoy devices for the canary
 
 * `--device <DEVICE>` — Scan this block device instead of the mounted decoy devices (repeatable)
 
-   Name the unlocked decoy filesystem. A mounted device is classified by its mount, and an ext4 or f2fs also by its superblock, which shows the encrypt feature no mount option does. One that is not mounted is identified from its raw superblock, a whole disk partition by partition. An encrypted container (scan its unlocked mapping instead), a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with the encrypt feature, a device that holds the folder of an eCryptfs mount (the filesystem the folder lies on, a disk with that filesystem in a partition, a device below it), or storage the scan does not identify is reported not checked rather than clean.
+   Name the unlocked decoy filesystem. A mounted device is classified by its mount, and an ext4 or f2fs also by its superblock, which shows the encrypt feature no mount option does. One that is not mounted is identified from its raw superblock, a whole disk partition by partition. An encrypted container (scan its unlocked mapping instead), a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with the encrypt feature, a device that holds the folder of an eCryptfs mount (the filesystem the folder lies on, a disk with that filesystem in a partition, a device below or above it), or storage the scan does not identify is reported not checked rather than clean.
 * `--offline` — Scan disk images or devices given with --image, not this machine's mounts
 * `--image <IMAGE>` — An image or device to scan in --offline mode (repeatable)
 

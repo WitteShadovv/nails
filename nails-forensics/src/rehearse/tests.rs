@@ -495,6 +495,8 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
                 && line.contains("an eCryptfs folder not mounted during the scan")
                 && line.contains("mount or filesystem was moved or detached")
                 && line.contains("every eCryptfs folder in an --offline scan")
+                && line.contains("a device a program serves from a folder's storage")
+                && line.contains("reaches a folder's image file by another path")
                 && line.ends_with("and a FUSE tool's vault")),
         "{:?}",
         report.not_visible

@@ -317,10 +317,10 @@ of this changelog for that version becomes the release notes word for word, and
   scan reads from the superblock of a mounted device too; and a device that holds the folder of an
   eCryptfs mount (an encrypted home or Private folder): the filesystem the folder lies on, or each
   one it may lie on where the mount table does not show which, and for a `--device` also a whole
-  disk with that filesystem in a partition or a device below it, which the scan reads from sysfs.
-  A `--device` the scan cannot place against such a folder is not checked either. The scan sees an
-  eCryptfs folder only while it is mounted, and never in an `--offline` scan, which reads no mount
-  table.
+  disk with that filesystem in a partition or a device below or above it (a loop device or a mapping
+  built on the partition), which the scan reads from sysfs. A `--device` the scan cannot place
+  against such a folder is not checked either. The scan sees an eCryptfs folder only while it is
+  mounted, and never in an `--offline` scan, which reads no mount table.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up
