@@ -365,13 +365,38 @@ impl MockFilesystem {
         contents.insert(path_buf, content.to_string());
     }
 
-    /// Say whether `path` is the root of a mount, as `is_mount_root` gives
-    /// it; a path not set gets `None`.
+    /// Say whether `path` is the root of a mount, as `mount_root` gives it;
+    /// of a path not set it says nothing, as a kernel before 5.8, and a path
+    /// set as a link is one.
     pub fn mock_set_mount_root(&self, path: &str, mount_root: bool) {
         self.mount_roots
             .lock()
             .expect("MockFilesystem mutex poisoned")
-            .insert(PathBuf::from(path), mount_root);
+            .insert(
+                PathBuf::from(path),
+                Ok(crate::filesystem::MountRoot::Entry(Some(mount_root))),
+            );
+    }
+
+    /// Make `path` an automount point nothing is mounted on, as `mount_root`
+    /// gives it.
+    pub fn mock_set_automount(&self, path: &str) {
+        self.mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(
+                PathBuf::from(path),
+                Ok(crate::filesystem::MountRoot::Automount),
+            );
+    }
+
+    /// Make `mount_root` of `path` fail with an error of `kind`, as the
+    /// kernel's `statx` fails with `NotFound` for a path that does not exist.
+    pub fn mock_set_mount_root_error(&self, path: &str, kind: std::io::ErrorKind) {
+        self.mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(PathBuf::from(path), Err(kind));
     }
 
     /// Set a file that holds `bytes`, which need not be text: what

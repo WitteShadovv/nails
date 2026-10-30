@@ -1222,8 +1222,13 @@ question), so you can answer no, and again among the warnings of its result,
 which then exits `9`. A hidden session that deleted or replaced the database
 itself draws a warning that names the `discard` that brings the decoy's back.
 Where the mount table cannot be read, the kernel's own word on each directory
-above a database (`statx`) tells whether the database lies on a decoy
-filesystem of its own, such as a separate `/var`.
+above a database or a package's file (`statx`) tells whether it lies on a decoy
+filesystem of its own, such as a separate `/var`. The check asks only about a
+directory whose own directories it has seen to be neither symbolic links nor
+automount points, such as an EFI system partition mounted on first use,
+since asking about a path below a link follows the link and asking about one
+below an automount point mounts it, and takes a directory the decoy lacks for
+no mount point.
 
 The check says it cannot tell only where nothing can decide without leaving a
 trace or reading what cannot be read:
@@ -1248,8 +1253,9 @@ trace or reading what cannot be read:
 - an rpm transaction stopped half way that left a rollback journal: rpm rolls
   it back the next time it opens the database, so the check names neither
   state;
-- no mount table and a kernel older than 5.8, which does not say what is a
-  mount point.
+- no mount table, and a kernel older than 5.8, which does not say what is a
+  mount point, or a directory on the way that the kernel cannot be asked
+  about.
 
 To bring hidden sessions back in line, make the decoy's changes in a hidden
 session too:

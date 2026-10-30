@@ -60,14 +60,15 @@ of this changelog for that version becomes the release notes word for word, and
   `O_NOATIME`, or without root only from a filesystem mounted `noatime`, so an unprivileged `nails
   check` that would need to read it elsewhere says it cannot tell. It also tells where it can
   without the mount table, from the kernel's own word (`statx`) on which directories are mount
-  points, and passes a dpkg record whose copy holds the same bytes, whatever its format. It still
+  points, asked only of directories below no link or automount point and taking one the decoy lacks
+  for none, and passes a dpkg record whose copy holds the same bytes, whatever its format. It still
   says it cannot tell only where no answer is possible without a trace: a symbolic link on the way
   to the decoy's database, a database or upper that cannot be read (an rpm database or log over 4
   GiB, one that records a path of 4096 bytes or more, or one whose packages need more than those 256
   MiB, counts as one), links in rpm's records that make a loop or lead to such a path, an rpm
-  transaction stopped half way, or a kernel before 5.8 without the mount table. The Argon2id advice
-  reads the installed cryptsetup through the same dpkg and pacman readers, which now take dpkg's
-  field names in any case, as dpkg does.
+  transaction stopped half way, or, without the mount table, a kernel before 5.8 or a directory the
+  kernel cannot be asked about. The Argon2id advice reads the installed cryptsetup through the same
+  dpkg and pacman readers, which now take dpkg's field names in any case, as dpkg does.
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
   derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the installed
   cryptsetup version. No released cryptsetup opens such a volume, and nothing outside the encrypted
