@@ -1,0 +1,207 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// The window. One page at a time: a head with the verdict and where things
+// stand, rows of facts, rows of checks, a line that names the fix, and one
+// main action at the bottom. Over it, when an operation asks first, the
+// question of its plan. What each page says is decided in Rust (src/model.rs);
+// this file only lays it out.
+//
+// The title is "Session" on purpose: a window title others may see names
+// nothing about NAILS.
+
+import { Palette } from "std-widgets.slint";
+import { Adw } from "adw/theme.slint";
+import { HeaderBar } from "adw/headerbar.slint";
+import { Button, ButtonKind, ButtonShape } from "adw/button.slint";
+import { BoxedList, ActionRow, CheckRow, Outcome } from "adw/lists.slint";
+import { StatusHead, Busy } from "adw/status.slint";
+import { AlertDialog } from "adw/dialog.slint";
+
+export { Adw, Outcome }
+
+// A fact of the page: a title and its value.
+export struct Fact {
+    title: string,
+    value: string,
+}
+
+// One check as the page shows it.
+export struct CheckLine {
+    outcome: Outcome,
+    word: string,
+    message: string,
+    fix: string,
+}
+
+export component AppWindow inherits Window {
+    // The page.
+    in property <string> heading;
+    in property <string> description;
+    in property <string> note;
+    in property <bool> urgent;
+    in property <bool> busy;
+    in property <string> busy-label;
+    in property <[Fact]> facts;
+    in property <[CheckLine]> checks;
+    in property <string> fix;
+    // The main action's label; empty for none.
+    in property <string> action;
+    // The question of a plan, while one waits for an answer.
+    in property <bool> question-open;
+    in property <string> question-heading;
+    in property <string> question-body;
+    in property <string> question-confirm;
+    in property <bool> question-destructive;
+    in property <bool> follow-system-scheme: true;
+
+    callback close-window();
+    callback action-activated();
+    callback question-answered(confirmed: bool);
+
+    title: "Session";
+    no-frame: true;
+    preferred-width: 480px;
+    preferred-height: 560px;
+    min-width: 360px;
+    min-height: 400px;
+    background: Adw.window-bg;
+    default-font-family: Adw.font-family;
+    default-font-size: Adw.font-size;
+    // The focus starts inside the page, on nothing that acts: Tab goes on to
+    // its rows and its action, Shift+Tab back to Close.
+    forward-focus: page-focus;
+
+    property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
+    init => {
+        if (root.follow-system-scheme) {
+            Adw.dark = root.system-dark;
+        }
+    }
+    changed system-dark => {
+        if (root.follow-system-scheme) {
+            Adw.dark = root.system-dark;
+        }
+    }
+
+    // Everything behind an open question is out of the keyboard's reach.
+    property <bool> reachable: !root.question-open;
+
+    VerticalLayout {
+        HeaderBar {
+            title: "Session";
+            reachable: root.reachable;
+            close-clicked => {
+                root.close-window();
+            }
+        }
+
+        page := Rectangle {
+            vertical-stretch: 1;
+            accessible-role: main;
+
+            page-focus := FocusScope {
+                width: page.width;
+                height: page.height;
+                enabled: root.reachable;
+                focus-on-click: false;
+                focus-on-tab-navigation: false;
+            }
+
+            flick := Flickable {
+                width: page.width;
+                height: page.height - action-bar.height;
+                content-height: column.preferred-height;
+
+                column := VerticalLayout {
+                    x: max(0px, (flick.width - 600px) / 2);
+                    width: min(600px, flick.width);
+                    padding-top: 18px;
+                    padding-bottom: 18px;
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 18px;
+                    alignment: start;
+
+                    if root.busy: Busy {
+                        label: root.busy-label;
+                    }
+
+                    StatusHead {
+                        heading: root.heading;
+                        description: root.description;
+                        urgent: root.urgent;
+                    }
+
+                    if root.note != "": Text {
+                        text: root.note;
+                        color: Adw.window-fg;
+                        wrap: word-wrap;
+                    }
+
+                    if root.facts.length > 0: BoxedList {
+                        for fact[i] in root.facts: ActionRow {
+                            title: fact.title;
+                            value: fact.value;
+                            first: i == 0;
+                            last: i == root.facts.length - 1;
+                            reachable: root.reachable;
+                        }
+                    }
+
+                    if root.checks.length > 0: BoxedList {
+                        for line[i] in root.checks: CheckRow {
+                            outcome: line.outcome;
+                            word: line.word;
+                            message: line.message;
+                            fix: line.fix;
+                            first: i == 0;
+                            last: i == root.checks.length - 1;
+                            reachable: root.reachable;
+                        }
+                    }
+
+                    if root.fix != "": Text {
+                        text: root.fix;
+                        color: Adw.window-fg;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // The main action, at the bottom of every page that has one.
+            action-bar := Rectangle {
+                y: page.height - self.height;
+                width: page.width;
+                height: action-button.preferred-height + 36px;
+
+                action-button := Button {
+                    x: (parent.width - self.width) / 2;
+                    y: 18px;
+                    width: self.preferred-width;
+                    height: self.preferred-height;
+                    text: root.action;
+                    kind: ButtonKind.suggested;
+                    shape: ButtonShape.pill;
+                    visible: root.action != "";
+                    reachable: root.action != "" && root.reachable;
+                    clicked => {
+                        root.action-activated();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.question-open: AlertDialog {
+        width: root.width;
+        height: root.height;
+        heading: root.question-heading;
+        body: root.question-body;
+        confirm-label: root.question-confirm;
+        destructive: root.question-destructive;
+        answered(confirmed) => {
+            root.question-answered(confirmed);
+        }
+    }
+}

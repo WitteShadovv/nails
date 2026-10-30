@@ -240,9 +240,8 @@
         rustc = rustToolchainGui;
       };
 
-      # The gui/ workspace's binary. It is a placeholder that prints its version
-      # and that the interface is not built yet; it draws no window and is not
-      # part of the release.
+      # The gui/ workspace's binary: the window, which drives the engine
+      # through its root helper. It is not part of the release yet.
       nails-gui = rustPlatformGui.buildRustPackage {
         pname = "nails-gui";
         version = guiManifest.workspace.package.version;
@@ -271,7 +270,7 @@
         doCheck = false;
 
         meta = {
-          description = "Placeholder binary of the graphical interface for nails, which is not built yet";
+          description = "The window of nails, a front end that drives the engine through its root helper";
           inherit (guiManifest.workspace.package) homepage;
           license = lib.getLicenseFromSpdxId guiManifest.workspace.package.license;
           mainProgram = "nails-gui";

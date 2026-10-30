@@ -1,17 +1,179 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The `nails-gui` binary.
+//! The `nails-gui` binary: the window.
 //!
-//! A placeholder entry point while the graphical interface is built. It reports
-//! the version and that the interface is not available yet, so the binary
-//! exists and builds as part of the workspace. The toolkit it will use is not
-//! chosen yet, so it draws no window and pulls in no toolkit.
+//! - `nails-gui --version` names the window's version, the engine release it
+//!   was built for and its protocol.
+//! - `nails-gui` opens the window on the socket of the launcher (`sudo
+//!   <root>/nails gui`), its standard input.
+//! - `nails-gui --engine <root>/nails`, as the menu entry of a hidden session
+//!   runs it, opens the window and starts that engine's helper through
+//!   pkexec ([`nails_gui::launch`]).
+//!
+//! Anywhere else it prints the launcher's line and exits with 2, before
+//! anything connects to a display or a session bus.
 
-fn main() {
-    println!(
-        "nails-gui {}: the graphical interface for running a nails session.",
-        env!("CARGO_PKG_VERSION")
+use std::cell::RefCell;
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::rc::Rc;
+
+use nails_api::protocol::{PROTOCOL_VERSION, RELEASE};
+use nails_gui::AppWindow;
+use nails_gui::launch::{self, PKEXEC, Start};
+use nails_gui::model::Model;
+use nails_gui::text;
+use nails_gui::ui::Controller;
+use nails_gui::worker::{self, Connect};
+use slint::ComponentHandle;
+
+thread_local! {
+    /// The window's controller, on the window's thread, where the worker's
+    /// updates are delivered.
+    static CONTROLLER: RefCell<Option<Rc<RefCell<Controller>>>> = const { RefCell::new(None) };
+}
+
+/// What the command line asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum Args {
+    /// Print the versions.
+    Version,
+    /// Open the window, starting this engine's helper when one is named.
+    Open(Option<PathBuf>),
+}
+
+/// Read the arguments after the program's name.
+fn parse(args: &[OsString]) -> Option<Args> {
+    match args {
+        [] => Some(Args::Open(None)),
+        [flag] if flag == "--version" => Some(Args::Version),
+        [flag, engine] if flag == "--engine" && !engine.is_empty() => {
+            Some(Args::Open(Some(PathBuf::from(engine))))
+        }
+        _ => None,
+    }
+}
+
+fn main() -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let engine = match parse(&args) {
+        Some(Args::Version) => {
+            println!(
+                "nails-gui {} for NAILS {RELEASE} (protocol {PROTOCOL_VERSION})",
+                env!("CARGO_PKG_VERSION")
+            );
+            return ExitCode::SUCCESS;
+        }
+        Some(Args::Open(engine)) => engine,
+        None => {
+            eprintln!("usage: nails-gui [--version | --engine <path>]");
+            return ExitCode::from(2);
+        }
+    };
+
+    let program = std::env::current_exe().unwrap_or_default();
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok();
+    // The menu entry names its engine and never hands over a socket; only
+    // without one is standard input the launcher's.
+    let launcher = if engine.is_none() {
+        launch::take_launcher_socket()
+    } else {
+        None
+    };
+    let start = launch::decide(engine, launcher, &program, mountinfo.as_deref());
+    let (connect, engine) = match start {
+        Start::Launcher { stream, engine } => (Connect::Stream(stream), engine),
+        Start::Pkexec { engine } => (
+            Connect::Pkexec {
+                program: PathBuf::from(PKEXEC),
+                engine: engine.clone(),
+            },
+            Some(engine),
+        ),
+        Start::Refuse(line) => {
+            eprintln!("{line}");
+            return ExitCode::from(2);
+        }
+    };
+    match open(connect, engine) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("The window could not open: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Open the window, start the worker on `connect`, and run until the window
+/// closes. `engine` is the engine the pages name.
+fn open(connect: Connect, engine: Option<PathBuf>) -> Result<(), slint::PlatformError> {
+    let window = AppWindow::new()?;
+    // The menu entry of a hidden session has this name, so the desktop puts
+    // the window with it; it names nothing about NAILS.
+    slint::set_xdg_app_id(text::APP_ID)?;
+    let waits_for_password = matches!(connect, Connect::Pkexec { .. });
+    let asks = worker::spawn(connect, |update| {
+        // On the window's thread, once its event loop runs.
+        let _ = slint::invoke_from_event_loop(move || {
+            CONTROLLER.with(|controller| {
+                if let Some(controller) = controller.borrow().as_ref() {
+                    controller.borrow_mut().update(update);
+                }
+            });
+        });
+    });
+    let weak = window.as_weak();
+    let controller = Controller::new(
+        &window,
+        Model::new(engine, waits_for_password),
+        move |ask| {
+            // The worker is gone only when the session is over, which the
+            // page already says.
+            let _ = asks.send(ask);
+        },
+        move || {
+            if let Some(window) = weak.upgrade() {
+                let _ = window.hide();
+            }
+            let _ = slint::quit_event_loop();
+        },
     );
-    println!("The graphical interface is not built yet.");
+    CONTROLLER.with(|slot| *slot.borrow_mut() = Some(controller));
+    window.show()?;
+    // The loop ends with the window, whether its own Close or the window
+    // manager's closed it.
+    slint::run_event_loop()?;
+    CONTROLLER.with(|slot| slot.borrow_mut().take());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_command_line_is_the_version_the_launchers_window_or_a_menu_entrys() {
+        assert_eq!(parse(&args(&[])), Some(Args::Open(None)));
+        assert_eq!(parse(&args(&["--version"])), Some(Args::Version));
+        assert_eq!(
+            parse(&args(&["--engine", "/mnt/data/nails"])),
+            Some(Args::Open(Some(PathBuf::from("/mnt/data/nails"))))
+        );
+        for wrong in [
+            &["--engine"][..],
+            &["--engine", ""],
+            &["--version", "x"],
+            &["--help"],
+            &["/mnt/data/nails"],
+            &["--engine", "/a", "--engine", "/b"],
+        ] {
+            assert_eq!(parse(&args(wrong)), None, "{wrong:?}");
+        }
+    }
 }

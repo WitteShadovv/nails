@@ -11,9 +11,6 @@
 //! a time, each answered with the envelope the CLI prints for the same command
 //! under `--json`.
 //!
-//! This crate holds the window's end of that protocol; the window itself is
-//! not drawn yet.
-//!
 //! - [`launch`] decides how the window reaches the helper: on the socket the
 //!   launcher (`sudo <root>/nails gui`) hands it as its standard input, or, in
 //!   a hidden session, by starting `pkexec <root>/nails helper --stdio`
@@ -23,8 +20,36 @@
 //!   and an operation's plan, token and apply.
 //! - [`worker`] runs the client on a thread of its own, so the window never
 //!   waits on the pipe, and reports what happens as [`worker::Update`]s.
+//! - [`envelope`] reads the envelopes the window shows; [`model`] turns them
+//!   into the page the window draws, with the words of [`text`]; [`ui`]
+//!   draws the page in the Slint window and wires its controls.
 
 pub mod client;
+pub mod envelope;
 pub mod frames;
 pub mod launch;
+pub mod model;
+pub mod text;
+pub mod ui;
 pub mod worker;
+
+/// The window's markup, compiled by `build.rs`.
+///
+/// The Slint compiler generates this code; it is not held to the crate's
+/// lints. Its unsafe blocks are the toolkit's own (pinned item trees and their
+/// virtual tables), which the toolkit's crates document and test.
+#[allow(
+    unsafe_code,
+    missing_docs,
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    clippy::undocumented_unsafe_blocks
+)]
+mod markup {
+    slint::include_modules!();
+}
+
+pub use markup::{Adw, AppWindow, CheckLine, Fact, Outcome};

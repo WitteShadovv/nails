@@ -1,0 +1,200 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// Boxed lists: a card of rows, as libadwaita's boxed list and action rows.
+//
+// Every row is a Tab stop with its title as its accessible name and its
+// value as its description, so the keyboard and a screen reader reach each
+// one in order. A row behind an open dialog is not reachable.
+
+import { Adw } from "theme.slint";
+
+export component BoxedList {
+    vertical-stretch: 0;
+    accessible-role: list;
+
+    Rectangle {
+        border-radius: Adw.card-radius;
+        background: Adw.card-bg;
+        border-width: 1px;
+        border-color: Adw.card-shade;
+    }
+
+    VerticalLayout {
+        @children
+    }
+}
+
+// The line under every row but the last.
+component RowSeparator inherits Rectangle {
+    height: 1px;
+    background: Adw.card-shade;
+}
+
+// The focus ring of a row, inside its edge.
+component RowFocusRing inherits Rectangle {
+    in property <bool> first;
+    in property <bool> last;
+    border-top-left-radius: root.first ? Adw.card-radius : 0px;
+    border-top-right-radius: root.first ? Adw.card-radius : 0px;
+    border-bottom-left-radius: root.last ? Adw.card-radius : 0px;
+    border-bottom-right-radius: root.last ? Adw.card-radius : 0px;
+    border-width: 2px;
+    border-color: Adw.focus-ring;
+}
+
+// The keyboard half of a row: a Tab stop that names the row while it has the
+// focus, and the ring that shows it after keyboard navigation.
+component RowFocus {
+    in property <string> label;
+    in property <bool> first;
+    in property <bool> last;
+    in property <bool> reachable: true;
+    out property <bool> has-focus: focus.has-focus;
+
+    property <bool> focus-visible;
+
+    forward-focus: focus;
+
+    focus := FocusScope {
+        width: root.width;
+        height: root.height;
+        enabled: root.reachable;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            root.focus-visible = reason == FocusReason.tab-navigation;
+            Adw.focused-label = root.label;
+        }
+        focus-lost(reason) => {
+            if (Adw.focused-label == root.label) {
+                Adw.focused-label = "";
+            }
+        }
+    }
+
+    if focus.has-focus && root.focus-visible: RowFocusRing {
+        first: root.first;
+        last: root.last;
+    }
+}
+
+// A row with a title and, at its end, a dimmed value.
+export component ActionRow {
+    in property <string> title;
+    in property <string> value;
+    in property <bool> first;
+    in property <bool> last;
+    in property <bool> reachable: true;
+
+    forward-focus: focus;
+    accessible-role: list-item;
+    accessible-label: root.title;
+    accessible-description: root.value;
+
+    HorizontalLayout {
+        min-height: 52px;
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 12px;
+
+        Text {
+            text: root.title;
+            color: Adw.card-fg;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+
+        if root.value != "": Text {
+            text: root.value;
+            color: Adw.window-fg-dim;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+    }
+
+    focus := RowFocus {
+        width: root.width;
+        height: root.height;
+        label: root.title;
+        first: root.first;
+        last: root.last;
+        reachable: root.reachable;
+    }
+
+    if !root.last: RowSeparator {
+        y: root.height - 1px;
+    }
+}
+
+export enum Outcome { passed, warning, problem, skipped }
+
+// A row for one check: the outcome as a word, the check's sentence and,
+// under it, what fixes a problem.
+export component CheckRow {
+    in property <Outcome> outcome;
+    in property <string> word;
+    in property <string> message;
+    in property <string> fix;
+    in property <bool> first;
+    in property <bool> last;
+    in property <bool> reachable: true;
+
+    property <string> label: root.word + ": " + root.message;
+
+    forward-focus: focus;
+    accessible-role: list-item;
+    accessible-label: root.label;
+    accessible-description: root.fix;
+
+    VerticalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 4px;
+
+        Text {
+            text: root.word;
+            font-weight: Adw.weight-bold;
+            color: root.outcome == Outcome.passed ? Adw.success
+                : root.outcome == Outcome.warning ? Adw.warning
+                : root.outcome == Outcome.problem ? Adw.destructive
+                : Adw.window-fg-dim;
+            accessible-role: none;
+        }
+
+        Text {
+            text: root.message;
+            color: Adw.card-fg;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+
+        if root.fix != "": Text {
+            text: root.fix;
+            color: Adw.window-fg-dim;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+    }
+
+    focus := RowFocus {
+        width: root.width;
+        height: root.height;
+        label: root.label;
+        first: root.first;
+        last: root.last;
+        reachable: root.reachable;
+    }
+
+    if !root.last: RowSeparator {
+        y: root.height - 1px;
+    }
+}
