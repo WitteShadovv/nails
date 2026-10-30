@@ -570,18 +570,22 @@ of this changelog for that version becomes the release notes word for word, and
   Debian 13 is among them although `last` there reads wtmpdb, which keeps no process numbers: its
   getty still writes `/var/log/wtmp`. Only a session ended with `--poweroff`, which has no way back,
   leaves none of them.
-- The way back now numbers the decoy's processes from where its own boot numbered them. A
+- The way back now gives the decoy's getty about the process number its own boot gave it. A
   soft-reboot keeps the kernel's process-number counter, so the getty the decoy started on the way
   back, and the records it writes to `/var/log/wtmp`, carried numbers that continued from the
   decoy's boot and the hidden session. Activation records the number the decoy's boot gave its getty
   (else logind), the hidden session's own start shows how many numbers a start uses up to its copy
   of it, and the way back's last step, once every hidden process has stopped and before the decoy
-  starts a single unit, sets `/proc/sys/kernel/ns_last_pid` that many below. Without either, it goes
-  just below the lowest number the decoy's own userspace held at entry. The step is best effort and
-  never blocks the way back. Where it cannot set the counter (no number recorded, or a kernel
-  without `CONFIG_CHECKPOINT_RESTORE`), `deactivate` warns before the switch. The forensic oracle's
-  allowlist no longer holds the getty records of the way back: they now match the getty of a fresh
-  boot and subtract like it, so a getty record of another range fails the oracle again.
+  starts a single unit, sets `/proc/sys/kernel/ns_last_pid` that many below. A getty or logind that
+  started more than a minute after the oldest process of its start that still runs, such as a getty
+  started again after a logout, is passed over. Without either, and where the measure would go
+  lower, the counter goes just below the lowest number the decoy's own userspace held at entry. The
+  decoy's other units are not measured, so their numbers can land further from their boot's. The
+  step is best effort and never blocks the way back. Where it cannot set the counter (no number
+  recorded, or a kernel without `CONFIG_CHECKPOINT_RESTORE`), `deactivate` warns before the switch.
+  The forensic oracle's allowlist no longer holds the getty records of the way back: in the
+  oracle-images test they now fall in the range of a fresh boot's getty and subtract like it, so a
+  getty record of another range fails the oracle again.
 - Ctrl+C at the `deactivate` and `discard` prompts cancels at once, with the cancelled notice and
   exit 130 (under `--json` the cancel envelope). The signal handlers these commands install restart
   an interrupted read, so Ctrl+C only echoed `^C` there, and a "y" typed afterwards went on. The
