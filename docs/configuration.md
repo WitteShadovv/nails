@@ -227,11 +227,14 @@ pulls in outside the fstab: a mount unit installed for a target (NixOS's
 `systemd.mounts`, a unit linked in `/etc/systemd/system/local-fs.target.wants`),
 a mount the kernel command line names (`systemd.mount-extra=`), zram-generator's
 swap, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
-`.swap` and `.automount` unit linked in a target's `.wants` or `.requires`
-directory (the initrd's targets aside) of the hidden root's unit directories
-and of `/run`, except those the fstab generator made from a line the fstab
-policy decides, with its own drop-ins, and gives each the decision an fstab
-line with its source, type
+`.swap` and `.automount` unit linked in a target's `.wants`, `.requires` or
+`.upholds` directory (the initrd's targets aside), including the directories
+systemd reads for every target (`target.wants`) and for the targets whose
+names begin with a prefix (`local-.target.wants`), of the hidden root's unit
+directories and of `/run`, except those the fstab generator made from a line
+the fstab policy decides, with its drop-ins (those of its name's prefixes,
+such as `srv-.mount.d`, and of its type, `mount.d`, included), and gives each
+the decision an fstab line with its source, type
 and options would get: a filesystem the decoy has mounted now is bound
 read-only or overlaid, one not mounted now is kept unmounted, skipped where it
 is linked in a target's `.requires` directory, and RAM and kernel filesystems

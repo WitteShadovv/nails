@@ -87,6 +87,31 @@ impl Unlisted {
     }
 }
 
+/// The names whose drop-in directories (`<name>.d`) apply to the unit
+/// `name`, as systemd's `unit_file_find_dirs()` walks them: the name itself,
+/// then, while what is left before its type holds a dash that is not its
+/// first byte, the name cut after its last dash (`srv-data-old.mount`,
+/// `srv-data-.mount`, `srv-.mount`). A mount, swap or automount unit has no
+/// instance, so no template's directory applies.
+pub(super) fn dropin_stems(name: &str) -> Vec<String> {
+    let mut stems = vec![name.to_string()];
+    let Some((mut prefix, kind)) = name.rsplit_once('.') else {
+        return stems;
+    };
+    loop {
+        // A prefix that ends in a dash loses it once, so the walk goes on to
+        // the dash before it.
+        let rest = prefix.strip_suffix('-').unwrap_or(prefix);
+        match rest.rfind('-') {
+            Some(dash) if dash > 0 => {
+                prefix = &rest[..=dash];
+                stems.push(format!("{prefix}.{kind}"));
+            }
+            _ => return stems,
+        }
+    }
+}
+
 /// Whether `base` and `dir` name a directory generators write to.
 fn generator_dir(base: Base, dir: &str) -> bool {
     base == Base::Run && dir.starts_with("systemd/generator")
@@ -170,8 +195,12 @@ impl UnitDirs<'_> {
     }
 
     /// The unit `name` as systemd loads it: the first unit directory that
-    /// has it, then its own drop-ins (`<name>.d/*.conf`), each name from the
-    /// first directory that has it, in the order of their names.
+    /// has it, then its drop-ins (`*.conf`) in the order of their names, each
+    /// name from the first directory that has it in the order systemd's
+    /// `unit_file_find_dropin_paths()` searches them: in each unit directory
+    /// `<name>.d` and the directory of each of its name's prefixes
+    /// ([`dropin_stems`]), then in each unit directory the directory of its
+    /// type (`mount.d`).
     pub(super) fn load(&self, name: &str) -> Load {
         let mut fragment = None;
         for &(base, dir) in UNIT_DIRS {
@@ -194,9 +223,21 @@ impl UnitDirs<'_> {
         if fragment.is_empty() {
             return Load::Masked;
         }
-        let mut dropins: Vec<(String, Base, &str)> = Vec::new();
+        let stems = dropin_stems(name);
+        let mut searched: Vec<(Base, &str, String)> = Vec::new();
         for &(base, dir) in UNIT_DIRS {
-            let (root, path) = self.locate(base, dir, &format!("{name}.d"));
+            for stem in &stems {
+                searched.push((base, dir, format!("{stem}.d")));
+            }
+        }
+        if let Some((_, kind)) = name.rsplit_once('.') {
+            for &(base, dir) in UNIT_DIRS {
+                searched.push((base, dir, format!("{kind}.d")));
+            }
+        }
+        let mut dropins: Vec<(String, Base, &str, &str)> = Vec::new();
+        for (base, dir, sub) in &searched {
+            let (root, path) = self.locate(*base, dir, sub);
             let entries = match list_in_root(root, &path) {
                 Ok(entries) => entries,
                 Err(e) if missing(&e) => continue,
@@ -207,14 +248,14 @@ impl UnitDirs<'_> {
                     continue;
                 };
                 if entry.ends_with(".conf") && !dropins.iter().any(|(seen, ..)| seen == entry) {
-                    dropins.push((entry.to_string(), base, dir));
+                    dropins.push((entry.to_string(), *base, dir, sub));
                 }
             }
         }
         dropins.sort_by(|a, b| a.0.cmp(&b.0));
         let mut texts = vec![fragment];
-        for (file, base, dir) in dropins {
-            let (root, path) = self.locate(base, dir, &format!("{name}.d/{file}"));
+        for (file, base, dir, sub) in dropins {
+            let (root, path) = self.locate(base, dir, &format!("{sub}/{file}"));
             if canonical_in_root(root, &path) == Path::new("/dev/null") {
                 continue;
             }
