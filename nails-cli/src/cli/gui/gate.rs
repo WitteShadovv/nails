@@ -46,31 +46,44 @@ pub(super) fn admit(env: &RuntimeEnv, config: Option<&Path>, engine: &Path) -> R
     if decoy_gate_waived(env) {
         return Ok(());
     }
-    if in_hidden_session(env, config) {
+    decide(&session_view(env, config), || decoy_facts(env), engine)
+}
+
+/// The gate where the machine is as `view` says: open in the hidden session,
+/// and on the decoy as [`decide_on_decoy`] decides on the `facts`, which are
+/// read only there.
+pub(super) fn decide(
+    view: &SessionView,
+    facts: impl FnOnce() -> DecoyFacts,
+    engine: &Path,
+) -> Result<(), Refusal> {
+    if view.is_hidden() {
         return Ok(());
     }
-    let facts = DecoyFacts {
+    decide_on_decoy(&facts(), ADMITTED_DESKTOPS, engine)
+}
+
+/// Where this machine is, from the live mount table and the session plan
+/// (never from the state file alone).
+fn session_view(env: &RuntimeEnv, config: Option<&Path>) -> SessionView {
+    let config = nails_core::app::config::load_config_or_defaults(config).into_config();
+    let state_path = config.state_file_path.clone();
+    NailsManager::new(RealFilesystem, config, state_path)
+        .with_runtime_env(env.clone())
+        .session_view()
+}
+
+/// What the gate reads of the decoy: its persistent records, without writing
+/// anything, and the desktop `XDG_CURRENT_DESKTOP` names.
+fn decoy_facts(env: &RuntimeEnv) -> DecoyFacts {
+    DecoyFacts {
         persistence: DecoyPersistenceCheck::persistence_findings(&RealFilesystem),
         desktop: env
             .inherited
             .iter()
             .find(|(key, _)| *key == "XDG_CURRENT_DESKTOP")
             .map(|(_, value)| value.to_string_lossy().into_owned()),
-    };
-    decide_on_decoy(&facts, ADMITTED_DESKTOPS, engine)
-}
-
-/// Whether this machine is in the hidden session, from the live mount table
-/// and the session plan (never from the state file alone).
-fn in_hidden_session(env: &RuntimeEnv, config: Option<&Path>) -> bool {
-    let config = nails_core::app::config::load_config_or_defaults(config).into_config();
-    let state_path = config.state_file_path.clone();
-    let manager =
-        NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
-    matches!(
-        manager.session_view(),
-        SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_)
-    )
+    }
 }
 
 /// A test build may waive the decoy gate, which no test host passes.
