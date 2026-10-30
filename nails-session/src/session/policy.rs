@@ -38,12 +38,14 @@
 //! session would run without `local-fs.target`. A skipped unit gets a runtime
 //! drop-in whose start condition never holds
 //! ([`nails_teardown::whole_root::skips`]); the units its fstab line has it
-//! pull in that act on its device (its fsck, makefs, growfs or mkswap,
-//! [`super::fstab::checkers`]) start before that condition is tested, so they
-//! are skipped with it. A skipped mount or swap still waits for its device,
-//! and one that is not there would hold the hidden session up until the
-//! device timeout and then start emergency mode: an entry whose device is not
-//! there now is masked, with a warning that its target will not be reached
+//! pull in that act on its device ([`super::fstab::checkers`]) are skipped
+//! with it: its fsck, makefs or mkswap would start before that condition is
+//! tested, and its growfs, pcrfs, validatefs and quota units, which are bound
+//! to the mount, are skipped for caution. A skipped mount or swap still waits
+//! for its device, and one that is not there would hold the hidden session up
+//! until the device timeout and then start emergency mode: an entry whose
+//! device is not there now is masked, with a warning that its target will not
+//! be reached
 //! ([`Decision::warning`]). A mount behind a skipped automount stays masked:
 //! the target does not pull it in.
 //!
@@ -254,7 +256,7 @@ impl Decision {
         };
         let unreached = format!(
             "the hidden session will not reach {boot}, which requires it, and the units only \
-             {boot} pulls in will not start there"
+             that target pulls in will not start there"
         );
         Some(match cause {
             Unskippable::NoDevice(device) => format!(
