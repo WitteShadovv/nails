@@ -1585,14 +1585,18 @@ fn a_shadowed_mount_below_the_next_root_does_not_fail_the_backstop() {
 }
 
 /// An emergency on the decoy, after an entry that cleared `noexec` on `/run`,
-/// sets it again as a rollback does, and detaches the next root.
+/// sets it again as a rollback does, and detaches the next root. The hot path
+/// acts for real here, so it runs as PID 1 of a PID namespace of its own. Were
+/// the entry's soft-reboot still to come, its escape would kill every
+/// interactive shell it sees and power off: it sees no process but the test's,
+/// and the kernel's power-off ends only the namespace.
 #[test]
 fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
     use nails_teardown::whole_root::emergency::{self, Finish, Side};
     let _ = Rerun::new(test_path!(
         an_emergency_on_the_decoy_sets_noexec_on_run_again
     ))
-    .in_user_mount_ns()
+    .in_pid_ns()
     .run(|| {
         let world = World::new();
         let paths = world.paths();
