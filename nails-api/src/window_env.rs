@@ -1,9 +1,13 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The window's environment: an allowlist, never the launcher's own.
+//! The environment a window runs in: an allowlist, never the environment of
+//! whoever started it.
 //!
-//! The window starts from an empty environment and gets:
+//! The launcher (`nails gui`) starts the window from an empty environment and
+//! these variables; a window that a hidden session's menu entry started
+//! applies the same list to itself before its toolkit starts. Either way the
+//! window gets:
 //!
 //! - what it needs to reach the operator's desktop: `XDG_RUNTIME_DIR`, the
 //!   Wayland display (found in the runtime directory, since sudo drops
@@ -18,7 +22,7 @@
 //! - a fixed `PATH`.
 //!
 //! Everything else is left out, the dynamic loader's variables, the session
-//! manager, the log and debug switches and every secret the launcher's own
+//! manager, the log and debug switches and every secret the starting
 //! environment may hold included.
 //!
 //! Only GTK reads `GDK_DEBUG`. The window's toolkit is Slint, whose winit
@@ -27,19 +31,22 @@
 //! variable here turns that off: the session bus stays, since AccessKit, the
 //! screen reader's way in, needs it to find the accessibility bus. Where
 //! xdg-desktop-portal is not running, the read starts it through D-Bus
-//! activation, which the desktop's trace test has to clear (see the gate's
-//! list of admitted desktops).
+//! activation, which the desktop's trace test has to clear (see the list of
+//! admitted desktops in the launcher's gate).
+//!
+//! The runtime directory is the one logind made for the operator,
+//! `/run/user/<uid>`, used only when [`judge`] accepts it: the operator's,
+//! private, and in RAM. The window's own directory in it has a fresh name
+//! ([`own_dir_name`]).
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::FileTypeExt;
-use std::path::Path;
-
-use nails_core::runtime_env::InheritedVars;
+use std::path::{Path, PathBuf};
 
 /// The `PATH` the window gets: the system's directories, NixOS's first.
-pub(super) const WINDOW_PATH: &str = "/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin";
+pub const WINDOW_PATH: &str = "/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin";
 
-/// Variables the window takes as the launcher got them, when set.
+/// Variables the window takes as they were given, when set.
 const PASSED: &[&str] = &[
     "DISPLAY",
     "XAUTHORITY",
@@ -69,19 +76,32 @@ const BASE_DIRS: &[(&str, &str)] = &[
     ("XDG_STATE_HOME", "state"),
 ];
 
-/// The window's whole environment, sorted by name: `inherited` is the
-/// launcher's, `runtime` the operator's runtime directory and `own` the
-/// window's own directory in it.
-pub(super) fn vars(
-    inherited: &InheritedVars,
+/// Where logind makes each account's runtime directory.
+pub const USER_RUNTIME_BASE: &str = "/run/user";
+
+/// The random bytes in the name of the window's own directory.
+pub const OWN_DIR_BYTES: usize = 8;
+
+/// The operator `uid`'s runtime directory, `/run/user/<uid>`.
+#[must_use]
+pub fn runtime_dir_of(uid: u32) -> PathBuf {
+    Path::new(USER_RUNTIME_BASE).join(uid.to_string())
+}
+
+/// The window's whole environment, sorted by name: `given` is the
+/// environment it was started with, `runtime` the operator's runtime
+/// directory and `own` the window's own directory in it.
+pub fn vars<'a>(
+    given: impl IntoIterator<Item = (&'a OsStr, &'a OsStr)>,
     runtime: &Path,
     own: &Path,
 ) -> Vec<(OsString, OsString)> {
+    let given: Vec<(&OsStr, &OsStr)> = given.into_iter().collect();
     let get = |name: &str| {
-        inherited
+        given
             .iter()
             .find(|(key, _)| *key == name)
-            .map(|(_, value)| value.to_owned())
+            .map(|(_, value)| (*value).to_owned())
     };
     let mut out: Vec<(OsString, OsString)> = Vec::new();
     let mut set = |key: &str, value: OsString| out.push((OsString::from(key), value));
@@ -91,9 +111,9 @@ pub(super) fn vars(
             set(name, value);
         }
     }
-    for (key, value) in inherited.iter() {
+    for (key, value) in &given {
         if is_locale_category(key) {
-            set(&key.to_string_lossy(), value.to_owned());
+            set(&key.to_string_lossy(), (*value).to_owned());
         }
     }
     for (key, value) in FIXED {
@@ -151,7 +171,7 @@ fn wayland_display(runtime: &Path, named: Option<&OsStr>) -> Option<OsString> {
 }
 
 /// The session bus: its socket in `runtime` when there is one, or else the
-/// address the launcher got, if any.
+/// address that was given, if any.
 fn session_bus(runtime: &Path, given: Option<OsString>) -> Option<OsString> {
     let socket = runtime.join("bus");
     let present = std::fs::symlink_metadata(&socket).is_ok_and(|meta| meta.file_type().is_socket());
@@ -161,6 +181,53 @@ fn session_bus(runtime: &Path, given: Option<OsString>) -> Option<OsString> {
         return Some(address);
     }
     given
+}
+
+/// What is checked of a runtime directory before the window's own directory
+/// is made in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirFacts {
+    /// A directory (a symlink is not one: it is not followed).
+    pub is_dir: bool,
+    /// The owner's uid.
+    pub owner: u32,
+    /// The permission bits.
+    pub mode: u32,
+    /// On a tmpfs.
+    pub in_ram: bool,
+}
+
+/// Why a runtime directory with `facts` is not one the window of the operator
+/// `uid` may use.
+///
+/// # Errors
+///
+/// The phrase that says why: not a directory, another account's, reachable
+/// by other accounts, or not in RAM.
+pub fn judge(facts: &DirFacts, uid: u32) -> Result<(), String> {
+    if !facts.is_dir {
+        return Err("it is not a directory".to_string());
+    }
+    if facts.owner != uid {
+        return Err(format!("it belongs to uid {}", facts.owner));
+    }
+    if facts.mode & 0o077 != 0 {
+        return Err(format!(
+            "other accounts can reach it (mode {:o})",
+            facts.mode
+        ));
+    }
+    if !facts.in_ram {
+        return Err("it is not in RAM (tmpfs)".to_string());
+    }
+    Ok(())
+}
+
+/// The neutral name of the window's own directory: [`OWN_DIR_BYTES`] random
+/// bytes in lowercase hexadecimal.
+#[must_use]
+pub fn own_dir_name(random: &[u8; OWN_DIR_BYTES]) -> String {
+    random.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

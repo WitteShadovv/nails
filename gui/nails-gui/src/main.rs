@@ -13,7 +13,9 @@
 //!
 //! Anywhere else it prints the launcher's line and exits with 2, before
 //! anything connects to a display or a session bus. Whichever way it starts,
-//! the process takes its neutral name first ([`nails_gui::process`]).
+//! the process takes its neutral name first, and before the window opens it
+//! limits itself; a menu entry's start first runs again on the launcher's
+//! environment ([`nails_gui::process`]).
 
 use std::cell::RefCell;
 use std::ffi::OsString;
@@ -92,18 +94,32 @@ fn main() -> ExitCode {
     let start = launch::decide(engine, launcher, &program, mountinfo.as_deref());
     let (connect, engine) = match start {
         Start::Launcher { stream, engine } => (Connect::Stream(stream), engine),
-        Start::Pkexec { engine } => (
-            Connect::Pkexec {
-                program: PathBuf::from(PKEXEC),
-                engine: engine.clone(),
-            },
-            Some(engine),
-        ),
+        Start::Pkexec { engine } => {
+            // A menu entry's start comes with the desktop's environment and
+            // streams: the window starts itself again on the launcher's
+            // allowlist first, and only returns here once it runs on it.
+            if let Err(why) = process::harden_menu_entry_start(&args) {
+                eprintln!("The window could not open: {why}");
+                return ExitCode::FAILURE;
+            }
+            (
+                Connect::Pkexec {
+                    program: PathBuf::from(PKEXEC),
+                    engine: engine.clone(),
+                },
+                Some(engine),
+            )
+        }
         Start::Refuse(line) => {
             eprintln!("{line}");
             return ExitCode::from(2);
         }
     };
+    // Whichever way it started, before the toolkit starts a thread.
+    if let Err(error) = process::limit() {
+        eprintln!("The window could not open: it could not limit itself: {error}");
+        return ExitCode::FAILURE;
+    }
     match open(connect, engine) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
