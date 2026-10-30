@@ -9,7 +9,8 @@
 //!   <root>/nails gui`), its standard input.
 //! - `session --engine <root>/nails`, as the menu entry of a hidden session
 //!   runs it, opens the window and starts that engine's helper through
-//!   pkexec ([`nails_gui::launch`]).
+//!   pkexec ([`nails_gui::launch`]). It first starts itself again as
+//!   `session --engine -`, with the engine's path on standard input.
 //!
 //! Anywhere else it prints the launcher's line and exits with 2, before
 //! anything connects to a display or a session bus. Whichever way it starts,
@@ -46,6 +47,9 @@ enum Args {
     Version,
     /// Open the window, starting this engine's helper when one is named.
     Open(Option<PathBuf>),
+    /// Open the window that a menu entry's start started again: its engine
+    /// comes on standard input.
+    Restarted,
 }
 
 /// Read the arguments after the program's name.
@@ -53,6 +57,9 @@ fn parse(args: &[OsString]) -> Option<Args> {
     match args {
         [] => Some(Args::Open(None)),
         [flag] if flag == "--version" => Some(Args::Version),
+        [flag, engine] if flag == "--engine" && engine == process::ENGINE_ON_STDIN => {
+            Some(Args::Restarted)
+        }
         [flag, engine] if flag == "--engine" && !engine.is_empty() => {
             Some(Args::Open(Some(PathBuf::from(engine))))
         }
@@ -76,6 +83,13 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Some(Args::Open(engine)) => engine,
+        Some(Args::Restarted) => match process::engine_on_stdin() {
+            Ok(engine) => Some(engine),
+            Err(why) => {
+                eprintln!("The window could not open: {why}");
+                return ExitCode::FAILURE;
+            }
+        },
         None => {
             eprintln!("usage: {} [--version | --engine <path>]", text::APP_ID);
             return ExitCode::from(2);
@@ -98,7 +112,7 @@ fn main() -> ExitCode {
             // A menu entry's start comes with the desktop's environment and
             // streams: the window starts itself again on the launcher's
             // allowlist first, and only returns here once it runs on it.
-            if let Err(why) = process::harden_menu_entry_start(&args) {
+            if let Err(why) = process::harden_menu_entry_start(&engine) {
                 eprintln!("The window could not open: {why}");
                 return ExitCode::FAILURE;
             }
@@ -186,6 +200,7 @@ mod tests {
     fn the_command_line_is_the_version_the_launchers_window_or_a_menu_entrys() {
         assert_eq!(parse(&args(&[])), Some(Args::Open(None)));
         assert_eq!(parse(&args(&["--version"])), Some(Args::Version));
+        assert_eq!(parse(&args(&["--engine", "-"])), Some(Args::Restarted));
         assert_eq!(
             parse(&args(&["--engine", "/mnt/data/nails"])),
             Some(Args::Open(Some(PathBuf::from("/mnt/data/nails"))))

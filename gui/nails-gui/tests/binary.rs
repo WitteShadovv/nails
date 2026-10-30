@@ -5,7 +5,7 @@
 //! started neither by the launcher nor in a hidden session it opens nothing
 //! and names the launcher's line instead.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -16,11 +16,30 @@ const LIMIT: Duration = Duration::from_secs(60);
 
 /// Run `command` to its end within [`LIMIT`], or end it and fail.
 fn finish(command: &mut Command) -> Output {
-    let mut child = command
+    let child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("the window starts");
+    wait(child)
+}
+
+/// [`finish`] with `input` on standard input, which then ends.
+fn finish_with_input(command: &mut Command, input: &[u8]) -> Output {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the window starts");
+    // Far less than a pipe holds: the write never waits on the window.
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    wait(child)
+}
+
+/// Wait for `child` to end within [`LIMIT`], or end it and fail, and take
+/// what it wrote.
+fn wait(mut child: std::process::Child) -> Output {
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().expect("the window can be waited for") {
@@ -115,6 +134,24 @@ fn an_engine_outside_a_hidden_session_of_its_volume_gets_no_pkexec() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         "The window opens from a terminal: sudo /mnt/data/nails gui\n"
+    );
+}
+
+#[test]
+fn started_again_it_takes_its_engine_from_standard_input() {
+    // How a menu entry's start runs again, here on no hidden session: the
+    // engine that came on standard input is the one the line names.
+    let output = finish_with_input(window().args(["--engine", "-"]), b"/mnt/data/nails");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "The window opens from a terminal: sudo /mnt/data/nails gui\n"
+    );
+    let output = finish_with_input(window().args(["--engine", "-"]), b"");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "The window could not open: no engine came on standard input\n"
     );
 }
 

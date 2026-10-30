@@ -183,27 +183,18 @@ fn the_desktops_environment_is_not_the_allowlists_and_the_allowlists_own_is() {
 fn a_runtime_directory_the_window_may_not_use_starts_nothing() {
     let runtime = Runtime::new();
     std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let refused = restart_on_allowlist(
-        runtime.path(),
-        uid(),
-        Path::new("/nonexistent/session"),
-        &[],
-        &desktop(),
-    )
-    .unwrap_err();
+    let restart = Restart {
+        program: Path::new("/nonexistent/session"),
+        args: &[],
+        input: b"/mnt/data/nails",
+    };
+    let refused = restart_on_allowlist(runtime.path(), uid(), &restart, &desktop()).unwrap_err();
     assert!(
         refused.ends_with("cannot be used: other accounts can reach it (mode 755)"),
         "{refused}"
     );
     let missing = runtime.path().join("missing");
-    let refused = restart_on_allowlist(
-        &missing,
-        uid(),
-        Path::new("/nonexistent/session"),
-        &[],
-        &desktop(),
-    )
-    .unwrap_err();
+    let refused = restart_on_allowlist(&missing, uid(), &restart, &desktop()).unwrap_err();
     assert!(refused.starts_with(&format!("{} cannot be used: ", missing.display())));
     // Nothing was made in either.
     assert_eq!(std::fs::read_dir(runtime.path()).unwrap().count(), 0);
@@ -212,7 +203,8 @@ fn a_runtime_directory_the_window_may_not_use_starts_nothing() {
 /// The script the menu entry's start is replaced by in the test below: it
 /// records, into `out`, what the process it now is got. Each fact is read in
 /// a command substitution, before anything is redirected to `out`, so the
-/// shell's own standard streams are the ones it was started with.
+/// shell's own standard streams are the ones it was started with; its
+/// standard input last, read to its end.
 fn recorder(out: &Path) -> String {
     format!(
         "f0=$(readlink /proc/$$/fd/0)\n\
@@ -223,7 +215,10 @@ fn recorder(out: &Path) -> String {
          c=$(ulimit -c)\n\
          h=$(ulimit -Hc)\n\
          e=$(env | sed 's/=.*//' | tr '\\n' ' ')\n\
-         printf '%s\\n' \"$f0\" \"$f1\" \"$f2\" \"$d\" \"$n\" \"$c\" \"$h\" \"HOME=$HOME\" \"$e\" > '{}'\n",
+         a=$(tr '\\0' '\\n' < /proc/$$/cmdline | head -n 1)\n\
+         i=$(cat)\n\
+         printf '%s\\n' \"$f0\" \"$f1\" \"$f2\" \"$d\" \"$n\" \"$c\" \"$h\" \"HOME=$HOME\" \"$e\" \
+         \"$a\" \"$i\" > '{}'\n",
         out.display()
     )
 }
@@ -238,7 +233,12 @@ fn a_menu_entrys_start_runs_again_on_the_allowlist_without_core_dumps() {
         let runtime = PathBuf::from(std::env::var_os("NAILS_GUI_TEST_RUNTIME").unwrap());
         let out = PathBuf::from(std::env::var_os("NAILS_GUI_TEST_OUT").unwrap());
         let args = [OsString::from("-c"), OsString::from(recorder(&out))];
-        let error = restart_on_allowlist(&runtime, uid(), Path::new("/bin/sh"), &args, &desktop());
+        let restart = Restart {
+            program: Path::new("/bin/sh"),
+            args: &args,
+            input: b"/mnt/data/nails",
+        };
+        let error = restart_on_allowlist(&runtime, uid(), &restart, &desktop());
         panic!("the start did not run again: {error:?}");
     }
     let runtime = Runtime::new();
@@ -253,13 +253,14 @@ fn a_menu_entrys_start_runs_again_on_the_allowlist_without_core_dumps() {
     assert!(status.success(), "the recorder ended with {status}");
     let recorded = std::fs::read_to_string(&out).unwrap();
     let lines: Vec<&str> = recorded.lines().collect();
-    // No core dumps, but no_new_privs not yet: the window starts pkexec
-    // before it sets that.
+    // Its input is the pipe that holds the engine, its output /dev/null. No
+    // core dumps, but no_new_privs not yet: the window starts pkexec before
+    // it sets that.
+    assert!(lines[0].starts_with("pipe:"), "{recorded}");
     let no_new_privs = inherited_no_new_privs();
     assert_eq!(
-        lines[..7],
+        lines[1..7],
         [
-            "/dev/null",
             "/dev/null",
             "/dev/null",
             "/",
@@ -269,6 +270,8 @@ fn a_menu_entrys_start_runs_again_on_the_allowlist_without_core_dumps() {
         ],
         "its streams, its directory and its limits: {recorded}"
     );
+    // Started by the window's name alone, with the engine on its input.
+    assert_eq!(lines[9..11], ["session", "/mnt/data/nails"], "{recorded}");
     // Its home is a fresh directory of its own in the runtime directory.
     let home = lines[7].strip_prefix("HOME=").unwrap();
     let home = Path::new(home);
@@ -361,4 +364,40 @@ fn pkexec_starts_before_the_window_sets_no_new_privs() {
         std::fs::read_to_string(&out).unwrap().trim_end(),
         inherited_no_new_privs()
     );
+}
+
+#[test]
+fn a_menu_entrys_start_again_names_no_path_on_its_command_line() {
+    assert_eq!(RESTART_ARGS, ["--engine", "-"]);
+    assert!(RESTART_ARGS.iter().all(|arg| !arg.contains('/')));
+    // The engine comes whole on standard input instead.
+    assert_eq!(
+        read_engine(&b"/mnt/data/nails"[..]),
+        Ok(PathBuf::from("/mnt/data/nails"))
+    );
+    assert_eq!(
+        read_engine(&[b'a'; 4096][..]).map(|engine| engine.as_os_str().len()),
+        Ok(4096)
+    );
+    assert_eq!(
+        read_engine(&b""[..]),
+        Err("no engine came on standard input".to_string())
+    );
+    assert_eq!(
+        read_engine(&[b'a'; 4097][..]),
+        Err("the engine on standard input is longer than a path".to_string())
+    );
+    // One longer than a path is never handed over.
+    let runtime = Runtime::new();
+    let restart = Restart {
+        program: Path::new("/nonexistent/session"),
+        args: &[],
+        input: &[b'a'; 4097],
+    };
+    let refused = restart_on_allowlist(runtime.path(), uid(), &restart, &desktop()).unwrap_err();
+    assert_eq!(
+        refused,
+        "the window could not hand itself its engine: its path is too long"
+    );
+    assert_eq!(std::fs::read_dir(runtime.path()).unwrap().count(), 0);
 }
