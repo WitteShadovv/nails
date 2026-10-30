@@ -429,7 +429,12 @@ impl Model {
         match status.attention {
             Some(Attention::NoWayBack) => Page {
                 heading: text::NO_WAY_BACK.to_string(),
-                description: text::hidden_no_way_back(status.reason.as_deref()),
+                description: text::HIDDEN_NO_WAY_BACK.to_string(),
+                note: status
+                    .reason
+                    .as_deref()
+                    .map(text::no_way_back_reason)
+                    .unwrap_or_default(),
                 urgent: true,
                 fix: text::HOLD_POWER_BUTTON.to_string(),
                 ..Page::default()
