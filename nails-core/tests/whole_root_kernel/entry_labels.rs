@@ -5,9 +5,11 @@
 //! mounts: the roots of the uppers and the way to the operator's home take the
 //! labels of the decoy's directories before the overlays are mounted, and the
 //! hidden root shows them; an entry that requires a label the decoy lacks is
-//! refused and undone; a parent of the home that an entry could not label is
-//! labelled at a later entry or refuses it again, in either persona; and an
-//! entry on a host whose facts report no SELinux writes no label.
+//! refused and undone; one that requires the labels is refused at a link in
+//! place of the root upper, and no entry labels that link or its target; a
+//! parent of the home that an entry could not label is labelled at a later
+//! entry or refuses it again, in either persona; and an entry on a host whose
+//! facts report no SELinux writes no label.
 //!
 //! As for the label copy's own tests, the namespace's root may write
 //! `security.selinux` on its own tmpfs where the kernel runs without SELinux.
@@ -162,6 +164,61 @@ fn an_entry_that_requires_a_label_the_decoy_lacks_is_refused_and_undone() {
         assert!(!next_root_mounted(&paths));
         assert!(!paths.runtime().exists());
         assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+    });
+}
+
+#[test]
+fn a_link_in_place_of_the_root_upper_is_refused_where_the_labels_are_required_and_never_labelled() {
+    let _ = Rerun::new(test_path!(
+        a_link_in_place_of_the_root_upper_is_refused_where_the_labels_are_required_and_never_labelled
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // The decoy root carries a label to copy, so a refusal can only come
+        // from the upper.
+        let world = unlabelled_world();
+        label_decoy(&world);
+        let decoy = world.decoy.path();
+        // The root upper replaced by a link to another directory of the hidden
+        // volume, which an overlay given the upper's path takes its root from.
+        world.hidden.mkdir("root");
+        let upper = Layout::new(world.hidden.path()).upper();
+        let elsewhere = world.hidden.mkdir("elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, &upper).unwrap();
+        let paths = world.paths();
+        let mut inputs = world.inputs();
+        inputs.labels = REQUIRED;
+
+        // Refused at the link itself, before the root overlay is mounted, and
+        // undone.
+        let host = FakeHost::default();
+        let error = entry::prepare(&paths, &inputs, &host).unwrap_err();
+        assert!(
+            error.to_string().ends_with(&format!(
+                ", so {0} must carry the SELinux label of {1}, but {0} is a link or a file, \
+                 not a directory",
+                upper.display(),
+                decoy.display()
+            )),
+            "{error}"
+        );
+        assert!(!next_root_mounted(&paths));
+        assert!(!paths.runtime().exists());
+        assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+
+        // A host whose facts report no SELinux goes on as before the label
+        // copy, with the hidden `/` taken from the link's target.
+        inputs.labels = Labels::BestEffort;
+        entry::prepare(&paths, &inputs, &FakeHost::default()).expect("the entry");
+        assert_eq!(label(&paths.nextroot()), Err(Errno::NODATA));
+        entry::rollback(&paths);
+
+        // Neither entry labelled the link or its target, though the decoy root
+        // has a label: the copy opens the upper without following the link.
+        // The mode and owner of the decoy root do reach the target, which
+        // `make_layer` sets through the link before the copy.
+        assert_eq!(label(&upper), Err(Errno::NODATA));
+        assert_eq!(label(&elsewhere), Err(Errno::NODATA));
     });
 }
 

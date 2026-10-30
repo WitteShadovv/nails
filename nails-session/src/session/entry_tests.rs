@@ -402,37 +402,6 @@ fn home_world(dir: &Path) -> (Paths, Layout) {
 }
 
 #[test]
-fn where_the_labels_are_required_a_link_in_place_of_an_upper_refuses_the_entry() {
-    // Real calls, on any host: whether the decoy directory has a label to copy
-    // or not, nothing reaches the root of the overlay that would be mounted
-    // there, which comes from the link's target.
-    let dir = tempfile::tempdir().unwrap();
-    let decoy = dir.path().join("decoy");
-    let elsewhere = dir.path().join("elsewhere");
-    for made in [&decoy, &elsewhere] {
-        std::fs::create_dir(made).unwrap();
-    }
-    let upper = dir.path().join("upper");
-    std::os::unix::fs::symlink(&elsewhere, &upper).unwrap();
-    let work = dir.path().join("work");
-
-    let error = make_layer(&upper, &work, &decoy, REQUIRED).unwrap_err();
-    assert!(matches!(error, NailsError::InvalidState(_)), "{error:?}");
-    let text = error.to_string();
-    assert!(
-        text.contains(&format!(
-            ", so {} must carry the SELinux label of {}, but ",
-            upper.display(),
-            decoy.display()
-        )),
-        "{text}"
-    );
-    // A host whose facts report no SELinux makes the layer as before.
-    make_layer(&upper, &work, &decoy, Labels::BestEffort).unwrap();
-    assert!(work.is_dir());
-}
-
-#[test]
 fn the_way_to_the_home_starts_at_the_upper_of_the_filesystem_it_lives_on() {
     let paths = Paths {
         root: PathBuf::from("/decoy"),
