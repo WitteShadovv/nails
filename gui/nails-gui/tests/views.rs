@@ -230,3 +230,65 @@ fn a_status_the_engine_could_not_build_names_no_place() {
         Some(i_slint_backend_testing::AccessibleLiveness::Assertive)
     );
 }
+
+fn decoy_with(attention: &str) -> Screen {
+    let screen = Screen::new(false);
+    screen.update(Update::Connected(ours()));
+    screen.update(answered(
+        Kind::Status,
+        json!({"schema_version": 2, "command": "status", "ok": false, "data": {
+            "place": "decoy", "attention": attention, "hidden_root": "/mnt/data",
+            "reason": "an interrupted activation left its runtime files in /run",
+            "remediation": "Run `sudo /mnt/data/nails recover` to remove them"}}),
+    ));
+    assert_eq!(screen.asks(), vec![Ask::Status], "no check before it");
+    screen
+}
+
+#[test]
+fn an_interrupted_activation_is_cleaned_up_from_its_page() {
+    let screen = decoy_with("interrupted");
+    assert!(screen.shows(nails_gui::text::INTERRUPTED));
+    assert_eq!(
+        screen.labels(AccessibleRole::Button),
+        ["Close", nails_gui::text::CLEAN_UP]
+    );
+    screen
+        .find_with(nails_gui::text::CLEAN_UP, AccessibleRole::Button)
+        .invoke_accessible_default_action();
+    assert_eq!(screen.asks(), vec![Ask::Recover]);
+    screen.update(Update::Running(Kind::Recover));
+    assert_eq!(screen.labels(AccessibleRole::Button), ["Close"]);
+    let busy = screen.with_role(AccessibleRole::ProgressIndicator);
+    assert_eq!(
+        busy[0].accessible_label().as_deref(),
+        Some(nails_gui::text::CLEANING_UP)
+    );
+    screen.update(answered(
+        Kind::Recover,
+        json!({"schema_version": 2, "command": "recover", "ok": true, "data": {
+            "outcome": "rolled_back", "remaining_mounts": [], "backend": []}}),
+    ));
+    assert_eq!(screen.asks(), vec![Ask::Status]);
+    screen.update(answered(Kind::Status, fixture("status-decoy")));
+    assert_eq!(screen.asks(), vec![Ask::Check(CheckArgs::default())]);
+    assert!(screen.shows(nails_gui::text::CLEANED_UP));
+}
+
+#[test]
+fn a_record_that_cannot_be_read_is_reset_from_its_page() {
+    let screen = decoy_with("record_unreadable");
+    assert!(screen.shows(nails_gui::text::RECORD_UNREADABLE));
+    screen
+        .find_with(nails_gui::text::RESET_RECORD, AccessibleRole::Button)
+        .invoke_accessible_default_action();
+    assert_eq!(screen.asks(), vec![Ask::Recover]);
+    screen.update(Update::Running(Kind::Recover));
+    screen.update(answered(
+        Kind::Recover,
+        json!({"schema_version": 2, "command": "recover", "ok": true, "data": {
+            "outcome": "record_reset", "remaining_mounts": [], "backend": []}}),
+    ));
+    screen.update(answered(Kind::Status, fixture("status-decoy")));
+    assert!(screen.shows(nails_gui::text::RECORD_RESET));
+}

@@ -39,6 +39,8 @@ pub enum Ask {
     Status,
     /// `nails check`, with each check sent as it finishes.
     Check(CheckArgs),
+    /// `nails recover`: the window's Clean Up and Reset Record.
+    Recover,
     /// The plan of an operation the engine confirms first.
     Plan(Plan),
     /// Apply the plan that waits.
@@ -54,6 +56,8 @@ pub enum Kind {
     Status,
     /// [`Ask::Check`].
     Check,
+    /// [`Ask::Recover`].
+    Recover,
     /// [`Ask::Plan`].
     Plan,
     /// [`Ask::Apply`].
@@ -312,6 +316,12 @@ fn serve(
             *planned = None;
             let answer = client.call(Op::Check(args), &mut events)?;
             report(Update::Answered(Kind::Check, answer));
+        }
+        Ask::Recover => {
+            report(Update::Running(Kind::Recover));
+            *planned = None;
+            let answer = client.call(Op::Recover, &mut events)?;
+            report(Update::Answered(Kind::Recover, answer));
         }
         Ask::Plan(plan) => {
             report(Update::Running(Kind::Plan));

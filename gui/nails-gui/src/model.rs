@@ -10,7 +10,10 @@
 //! decoy's status came in), and [`Model::page`] says what to draw.
 //!
 //! The decoy's page is the check, which runs when the window opens and on
-//! Check Again; once it passed, its action activates ([`activation`]). A
+//! Check Again; once it passed, its action activates ([`activation`]). An
+//! interrupted activation and a record that cannot be read come first, each
+//! with the one action that deals with it, Clean Up and Reset Record (both
+//! `nails recover`), after which the status and the check run again. A
 //! hidden session's page is its status. Anything that ends the session gets
 //! a page of its own that says what happened, what was not changed and what
 //! fixes it.
@@ -28,7 +31,9 @@ use nails_api::CheckOutcome;
 use nails_api::Event;
 
 use crate::client::{Plan, PlanData};
-use crate::envelope::{self, Attention, CheckStatus, ErrorBody, Place, Readiness, StatusData};
+use crate::envelope::{
+    self, Attention, CheckStatus, ErrorBody, Place, Readiness, RecoverData, StatusData,
+};
 use crate::text;
 use crate::worker::{Ask, Failure, Kind, Update};
 
@@ -314,6 +319,10 @@ impl Model {
                 ))))
             }
             text::CANCEL => self.cancel(),
+            text::CLEAN_UP | text::RESET_RECORD => {
+                self.notice = None;
+                Some(Effect::Ask(Ask::Recover))
+            }
             _ => None,
         }
     }
@@ -456,6 +465,12 @@ impl Model {
                 }
                 Vec::new()
             }
+            Kind::Recover => {
+                self.notice = Some(recovered(value));
+                // What it left is the status's to say, and then the check's.
+                self.check = Check::NotRun;
+                vec![Ask::Status]
+            }
             Kind::Apply if matches!(self.plan_for, Some(PlanFor::Activation)) => {
                 self.plan_for = None;
                 self.close_question();
@@ -517,7 +532,9 @@ impl Model {
         if let Some(notice) = &self.notice {
             page.note = join(notice, &page.note);
         }
-        if self.running.is_some() && page.busy.is_none() {
+        // Nothing to press while a request runs, but the Cancel of the
+        // activation that runs.
+        if self.running.is_some() && page.action != Some(text::CANCEL) {
             page.action = None;
         }
         page.question.clone_from(&self.question);
@@ -589,8 +606,11 @@ impl Model {
                 return Page {
                     heading: text::INTERRUPTED.to_string(),
                     description: text::DECOY_INTERRUPTED.to_string(),
+                    busy: (self.running == Some(Kind::Recover))
+                        .then(|| text::CLEANING_UP.to_string()),
                     facts: self.volume_fact(status),
                     fix,
+                    action: Some(text::CLEAN_UP),
                     ..Page::default()
                 };
             }
@@ -713,16 +733,22 @@ impl Model {
                     .map(|next| text::next_step(self.engine.as_deref(), &next.command))
             })
             .unwrap_or_default();
+        // Only a status of the decoy, which shows no session is active, can
+        // be the reason to reset the record.
+        let on_the_decoy = status.is_some_and(|status| status.place == Place::Decoy);
         Page {
             heading: text::RECORD_UNREADABLE.to_string(),
             description: text::DECOY_RECORD_UNREADABLE.to_string(),
             note: error
                 .map(|error| text::sentence(&error.message))
                 .unwrap_or_default(),
+            busy: (on_the_decoy && self.running == Some(Kind::Recover))
+                .then(|| text::RESETTING_RECORD.to_string()),
             facts: status
                 .map(|status| self.volume_fact(status))
                 .unwrap_or_default(),
             fix,
+            action: on_the_decoy.then_some(text::RESET_RECORD),
             ..Page::default()
         }
     }
@@ -800,6 +826,34 @@ impl Model {
     }
 }
 
+/// What a recovery's envelope `value` says it did, or why it did not run, as
+/// the line the page shows over the status that follows.
+fn recovered(value: &serde_json::Value) -> String {
+    let data = match envelope::read::<RecoverData>(value, "recover") {
+        Ok(envelope) => match (envelope.data, envelope.error) {
+            (Some(data), _) => data,
+            (None, Some(error)) => return text::sentence(&error.message),
+            (None, None) => return text::NOTHING_CHANGED.to_string(),
+        },
+        Err(error) => return text::sentence(&error.0),
+    };
+    let mut lines = vec![
+        match data.outcome.as_str() {
+            "rolled_back" => text::CLEANED_UP,
+            "record_reset" => text::RECORD_RESET,
+            _ => text::NOTHING_TO_CLEAN_UP,
+        }
+        .to_string(),
+    ];
+    if !data.remaining_mounts.is_empty() {
+        lines.push(text::mounts_stayed(&data.remaining_mounts));
+    }
+    if data.backend.iter().any(|device| device.state == "in_use") {
+        lines.push(text::DEVICE_IN_USE.to_string());
+    }
+    lines.join("\n")
+}
+
 /// Whether the decoy's page is its check: not while an interrupted
 /// activation or an unreadable record waits to be dealt with first.
 fn checks_on_open(status: &StatusData) -> bool {
@@ -862,3 +916,7 @@ mod tests;
 #[cfg(test)]
 #[path = "model_activation_tests.rs"]
 mod activation_tests;
+
+#[cfg(test)]
+#[path = "model_recover_tests.rs"]
+mod recover_tests;
