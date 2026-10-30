@@ -477,6 +477,16 @@ fn open_at(
     flags: OFlags,
     resolve: ResolveFlags,
 ) -> io::Result<OwnedFd> {
+    open_at_raw(dir, path, flags, resolve).map_err(to_io)
+}
+
+/// [`open_at`], with the kernel's error as it is.
+fn open_at_raw(
+    dir: &OwnedFd,
+    path: &Path,
+    flags: OFlags,
+    resolve: ResolveFlags,
+) -> rustix::io::Result<OwnedFd> {
     let relative = path.strip_prefix("/").unwrap_or(path);
     let relative = if relative.as_os_str().is_empty() {
         Path::new(".")
@@ -492,7 +502,6 @@ fn open_at(
             resolve,
         )
     })
-    .map_err(to_io)
 }
 
 /// Open (`O_PATH`) the file or directory at `path` below `dir` without
@@ -534,8 +543,28 @@ pub fn open_dir_in_root(root: &Path, path: &Path) -> io::Result<OwnedFd> {
 }
 
 /// The names in the directory at `path`, resolved as if `root` were `/`.
+///
+/// The directory is opened with `O_NOATIME` ([`with_noatime`]): `nails
+/// check` lists the decoy root's own unit directories, and a listing would
+/// otherwise stamp them with the time of the read on a `relatime`
+/// filesystem. As for [`read_in_root`], the lookup can still update the
+/// access time of a symlink it follows.
 pub fn list_in_root(root: &Path, path: &Path) -> io::Result<Vec<OsString>> {
-    let fd = open_in_root_with(root, path, OFlags::RDONLY | OFlags::DIRECTORY)?;
+    let dir = rustix::fs::open(
+        root,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(to_io)?;
+    let fd = with_noatime(|noatime| {
+        open_at_raw(
+            &dir,
+            path,
+            noatime | OFlags::RDONLY | OFlags::DIRECTORY,
+            ResolveFlags::IN_ROOT,
+        )
+    })
+    .map_err(to_io)?;
     let mut names = Vec::new();
     for entry in rustix::fs::Dir::new(fd).map_err(to_io)? {
         let name = entry.map_err(to_io)?.file_name().to_bytes().to_vec();
