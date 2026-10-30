@@ -25,6 +25,9 @@
 #     is on the hidden volume, as an fstab line would be;
 #   - the zram swap is masked as disk swap: its device could write pages back
 #     to the backing disk;
+#   - a disk at /srv/later, noauto in the fstab but pulled in by
+#     multi-user.target through x-systemd.wanted-by=, is masked and stays
+#     unchanged: the fstab generator links its mount whatever noauto says;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
@@ -93,6 +96,10 @@ in
           size = 64;
           driveConfig.deviceExtraOpts.serial = "zback";
         }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "later";
+        }
       ];
       boot.kernelModules = [ "zram" ];
       boot.supportedFilesystems = [ "vfat" ];
@@ -159,6 +166,8 @@ in
     LV = "/dev/mapper/vg0-files"
     ZRAM_UNIT = "dev-zram0.swap"
     SPARE_DEVICE_UNIT = "dev-disk-by\\x2did-virtio\\x2dspare.device"
+    LATER = "/dev/disk/by-id/virtio-later"
+    LATER_UNIT = "srv-later.mount"
     NOT_READY_RULE = "/run/udev/rules.d/99-spare-not-ready.rules"
     BLK_UNIT = "blk-availability.service"
     BLKDEACTIVATE = "/bin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
@@ -210,6 +219,10 @@ in
         return machine.succeed(f"sha256sum {SPARE}").split()[0]
 
 
+    def later_hash():
+        return machine.succeed(f"sha256sum {LATER}").split()[0]
+
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mountpoint -q /boot && mountpoint -q /srv/data")
@@ -252,6 +265,17 @@ in
         "echo 32M > /sys/block/zram0/disksize && mkswap /dev/zram0 && touch /run/zram-ready"
     )
     assert machine.succeed("cat /sys/block/zram0/backing_dev").strip() != "none"
+    # A disk the decoy's fstab marks noauto but names multi-user.target to
+    # pull in: the fstab generator links its mount there whatever noauto
+    # says. Not mounted now.
+    machine.succeed(
+        f"mkfs.ext4 -q {LATER} && "
+        f"echo '{LATER} /srv/later ext4 noauto,x-systemd.wanted-by=multi-user.target 0 2' "
+        ">> /etc/fstab && systemctl daemon-reload && "
+        f"test -L /run/systemd/generator/multi-user.target.wants/{LATER_UNIT}"
+    )
+    machine.fail("mountpoint -q /srv/later")
+    later_before = later_hash()
 
     with subtest("blk-availability's stop unmounts the decoy's device-mapper filesystems"):
         # Started at boot, so every soft-reboot runs its stop. Stopping it here
@@ -287,6 +311,7 @@ in
         assert "/srv/spare: skipped" in out, out
         assert "/srv/native: overlaid" in out, out
         assert "/dev/zram0: masked" in out, out
+        assert "/srv/later: masked" in out, out
 
     with subtest("check masks a required disk whose device unit is not active"):
         # udev marks the disk not ready: its node is there, but systemd's
@@ -347,6 +372,12 @@ in
         )
         machine.fail("test -e /run/peek/hidden-file")
         machine.succeed("umount /run/peek && rmdir /run/peek")
+
+    with subtest("a noauto disk a unit it names pulls in is kept off"):
+        state = machine.succeed(f"systemctl show -p LoadState --value '{LATER_UNIT}'").strip()
+        assert state == "masked", f"{LATER_UNIT}: {state}"
+        machine.fail("mountpoint -q /srv/later")
+        assert later_hash() == later_before, "the hidden session changed the noauto disk"
 
     with subtest("decoy swap is masked and never active"):
         state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
@@ -412,6 +443,8 @@ in
         assert state != "masked", f"the swap mask leaked into the decoy: {state}"
         state = machine.succeed(f"systemctl show -p LoadState --value '{ZRAM_UNIT}'").strip()
         assert state != "masked", f"the zram swap mask leaked into the decoy: {state}"
+        state = machine.succeed(f"systemctl show -p LoadState --value '{LATER_UNIT}'").strip()
+        assert state != "masked", f"the noauto disk's mask leaked into the decoy: {state}"
         source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
         assert source == LV, f"/srv/files is {source!r} after the way back"
         assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
