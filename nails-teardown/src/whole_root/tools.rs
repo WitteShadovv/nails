@@ -449,13 +449,16 @@ mod tests {
             ["late.service", "soft-reboot.target"]
         );
         let dir = tempfile::tempdir().unwrap();
-        // Busy for the first two calls, then only our own jobs.
+        // Busy for the first two calls, then only our own jobs. It stops
+        // answering at the hundredth call, so a wait that should have ended
+        // fails there.
         let count = dir.path().join("calls");
         let tool = dir.path().join("systemctl");
         write_executable(
             &tool,
             format!(
                 "#!/bin/sh\nn=$(cat {c} 2>/dev/null || echo 0); echo $((n + 1)) > {c}\n\
+                 [ \"$n\" -ge 99 ] && exit 1\n\
                  echo '7 soft-reboot.target start waiting'\n\
                  [ \"$n\" -lt 2 ] && echo '12 late.service stop running'\nexit 0\n",
                 c = count.display()
@@ -463,7 +466,9 @@ mod tests {
             0o755,
         );
         let ours = ["soft-reboot.target", "systemd-soft-reboot.service"];
-        assert!(wait_for_other_jobs(&tool, &ours, TOOL_BUDGET));
+        // A budget no test run reaches: the third call ends the wait, however
+        // long the calls take on a loaded host.
+        assert!(wait_for_other_jobs(&tool, &ours, Duration::from_secs(3600)));
         assert_eq!(std::fs::read_to_string(&count).unwrap().trim(), "3");
 
         let busy = dir.path().join("busy");
