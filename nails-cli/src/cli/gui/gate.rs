@@ -33,8 +33,9 @@ use crate::cli::output::ExitStatus;
 ///
 /// That test has to clear what the window does at every start that its
 /// environment cannot turn off, which is all on the session bus: its toolkit
-/// starts no program (its winit backend draws no window decorations, see
-/// `gui/Cargo.toml`), and its command line names no path.
+/// starts no program (its winit backend builds winit without sctk-adwaita, so
+/// winit's Wayland client-side frame is smithay's fallback frame, which starts
+/// none, see `gui/Cargo.toml`), and its command line names no path.
 ///
 /// - AccessKit, the screen reader's way in, asks the accessibility bus
 ///   whether a screen reader listens (`GetAll` of `org.a11y.Status` on
