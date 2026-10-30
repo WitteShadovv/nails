@@ -99,6 +99,43 @@ impl FakeProc {
         }
         fake
     }
+    /// Give process `pid` the argv `argv` and the real uid `uid`.
+    fn run_as(&self, pid: u32, argv: &[&str], uid: u32) {
+        let dir = self.proc().join(pid.to_string());
+        let cmdline: String = argv.iter().map(|arg| format!("{arg}\0")).collect();
+        fs::write(dir.join("cmdline"), cmdline).unwrap();
+        fs::write(
+            dir.join("status"),
+            format!("Name:\tx\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+        )
+        .unwrap();
+    }
+    /// Put process `pid` in the cgroup `path` (`/system.slice/a.service`) of
+    /// the hierarchy beside the procfs, and return that cgroup's directory.
+    fn in_cgroup(&self, pid: u32, path: &str) -> PathBuf {
+        let content = format!("0::{path}\n");
+        fs::write(self.proc().join(pid.to_string()).join("cgroup"), content).unwrap();
+        let dir = self
+            .dir
+            .path()
+            .join("sys/fs/cgroup")
+            .join(path.trim_start_matches('/'));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+}
+
+/// Mark the cgroup at `dir` as systemd marks that of a unit with
+/// `SurviveFinalKillSignal=` set, to `value`. False where the filesystem
+/// holding the test's directory takes no `user` attributes.
+fn mark(dir: &Path, value: &str) -> bool {
+    rustix::fs::setxattr(
+        dir,
+        SURVIVE_XATTRS[0],
+        value.as_bytes(),
+        rustix::fs::XattrFlags::empty(),
+    )
+    .is_ok()
 }
 
 #[test]
@@ -277,6 +314,77 @@ fn a_hidden_copy_started_again_after_the_switch_is_no_measure() {
         (9150, "agetty", TTY1, window + 1),
     ]);
     assert_eq!(counter(&record, &too_late.proc()), None);
+}
+
+#[test]
+fn a_root_storage_daemon_is_no_part_of_the_decoys_start() {
+    // After a way back: the start it ran began at 2000 seconds, with its
+    // journal at 421, logind at 610 and the getty of tty1 at 620. Beside them
+    // runs a root storage daemon that every soft-reboot left running, kept
+    // from the cold boot with a lower number. The floor and the anchors are
+    // the start's own.
+    let fake = FakeProc::with(&[
+        (300, "iscsid", 0, at(3)),
+        (421, "systemd-journal", 0, at(2000)),
+        (610, "systemd-logind", 0, at(2004)),
+        (620, "agetty", TTY1, at(2005)),
+    ]);
+    fake.run_as(300, &["@iscsid", "-f"], 0);
+    let found = record(&fake.proc());
+    assert_eq!(found.floor, Some(421));
+    assert_eq!(found.anchors, [getty(TTY1, 620), logind(610)]);
+
+    // A soft-reboot kills any other user's process whatever its argv, and
+    // one of root's whose argv[0] does not begin with `@`. Such a process is
+    // the start's first: the getty and logind, started long after it, fall
+    // outside the window.
+    for (case, argv, uid) in [
+        ("another user's", ["@iscsid", "-f"], 1000),
+        ("root's without the @", ["iscsid", "@-f"], 0),
+    ] {
+        fake.run_as(300, &argv, uid);
+        let found = record(&fake.proc());
+        assert_eq!(found.floor, Some(300), "{case}");
+        assert!(found.anchors.is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn a_unit_marked_to_survive_a_soft_reboot_is_no_part_of_the_decoys_start() {
+    // As above, with a unit kept from the cold boot by
+    // SurviveFinalKillSignal=yes, which systemd marks on the unit's cgroup.
+    let fake = FakeProc::with(&[
+        (310, "storaged", 0, at(4)),
+        (421, "systemd-journal", 0, at(2000)),
+        (620, "agetty", TTY1, at(2005)),
+    ]);
+    let cgroup = fake.in_cgroup(310, "/system.slice/storaged.service");
+    let found = record(&fake.proc());
+    assert_eq!(found.floor, Some(310), "unmarked, it counts");
+    assert!(found.anchors.is_empty());
+    if !mark(&cgroup, "1") {
+        eprintln!("skipped: the test's directory takes no user extended attributes");
+        return;
+    }
+    let found = record(&fake.proc());
+    assert_eq!(found.floor, Some(421));
+    assert_eq!(found.anchors, [getty(TTY1, 620)]);
+    // The mark set to false counts for nothing, as systemd reads it.
+    assert!(mark(&cgroup, "0"));
+    assert_eq!(record(&fake.proc()).floor, Some(310));
+    assert!(mark(&cgroup, "yes"));
+    assert_eq!(record(&fake.proc()).floor, Some(421));
+}
+
+#[test]
+fn the_survivor_mark_reads_as_systemd_reads_a_boolean() {
+    for yes in ["1", "yes", "Y", "true", "t", "On"] {
+        assert!(is_true(yes.as_bytes()), "{yes}");
+    }
+    assert!(is_true(b"1\0and more"), "up to a NUL");
+    for no in ["0", "no", "off", "", "2", "yess", " 1"] {
+        assert!(!is_true(no.as_bytes()), "{no}");
+    }
 }
 
 #[test]
