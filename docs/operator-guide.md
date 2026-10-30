@@ -293,14 +293,40 @@ Keep all of it `root`-owned on the hidden volume.
 next root's store (`nix build --store /run/nextroot`) from the first of:
 
 1. a flake given with `--nixos-flake` or `nixos_flake`, unless it is the
-   decoy's own `/etc/nixos`, which is refused when it is named as a local
-   path or a `path:`, `git+file:` or `file:` reference, also with a query
-   (`?ref=main`), a `dir` parameter (`path:/etc?dir=nixos`) or through a link
-   to the directory. Other spellings, such as a registry alias, `hg+file:` or
-   a percent-encoded path, are not recognised, so the refusal does not catch
-   them;
-2. a flake in `<hidden-root>/nixos`, built for this machine's hostname; a link
-   there to `/etc/nixos` is the decoy's own flake and refused the same way;
+   decoy's own `/etc/nixos` or a directory below it, which is refused while
+   `/etc/nixos` holds a flake. Directories count by what they are, their
+   device and inode, so a link to `/etc/nixos` and a bind mount of it
+   (impermanence's `/persist/etc/nixos`) count too. The reference is read
+   as a local path, a `path:` reference or a URL whose transport is a local
+   file (`git+file:`, `hg+file:`, `file:`) with no authority or an empty
+   one, also percent-encoded (`path:/etc/%6Eixos`), with a query
+   (`?ref=main`), a `dir` parameter (`path:/etc?dir=nixos`) or through the
+   repository's `.git` directory (`git+file:///etc/nixos/.git`), and as the
+   path relative to the working directory that Nix reads a reference it
+   cannot parse as a URL as (`git+file://../../etc/nixos`,
+   `github:/../../etc/nixos`). Each reading counts as written, its links and
+   `..` resolved by the kernel as Nix resolves a path and `git+file:`
+   (`/var/run/../etc/nixos`, where `/var/run` is a link to `../run`), and
+   with `.` and `..` applied by the text as Nix applies them to `path:`
+   (`/etc/nixos/x/..`). Besides a local path or URL, only a plain remote
+   reference passes (`github:owner/repo`, `git+https://example.org/repo`):
+   any other reference is refused whatever it names, among them a local URL
+   with an authority, a scheme Nix does not take (`a_b:x`) and a registry
+   alias (`flake:nixos-config`, or a name alone such as `nixos-config`,
+   which the check takes for a relative path without `./`). A remote URL
+   with a trailing slash, a percent-escape, an IPv6 host or a
+   `user:token@` in it is no plain one and is refused too. Other spellings
+   are not recognised, so the refusal does not catch them, among them a git
+   directory of its own that holds the decoy's flake
+   (`git+file:///var/lib/cfg.git`) and `git+ssh://localhost/etc/nixos`,
+   which reaches the decoy's `/etc/nixos` through an SSH login to the
+   machine itself. Name the hidden flake by its absolute path or a plain
+   URL;
+2. a flake in `<hidden-root>/nixos`, built for this machine's hostname. A link
+   there to `/etc/nixos` or a directory below it, or a bind mount of it, is
+   the decoy's own flake by device and inode and refused the same way, and
+   an error looking at either flake, other than a missing `flake.nix`,
+   refuses too;
 3. the legacy configuration: the decoy's `/etc/nixos` plus the hidden hardware
    configuration `init` placed in `<hidden-root>/root/upper/etc/nixos/`, which
    imports the hidden module `<hidden-root>/config/nixos/configuration.nix`.
