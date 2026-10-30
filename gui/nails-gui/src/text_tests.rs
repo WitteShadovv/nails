@@ -145,6 +145,33 @@ fn an_engine_sentence_gets_its_capital_and_its_full_stop() {
     assert_eq!(sentence("  Done.  "), "Done.");
     assert_eq!(sentence("Why?"), "Why?");
     assert_eq!(sentence(""), "");
+    assert_eq!(
+        sentence("host 'ubuntu' has no layer"),
+        "Host 'ubuntu' has no layer."
+    );
+}
+
+#[test]
+fn an_engine_sentence_that_starts_with_a_name_keeps_its_case() {
+    for (engine, shown) in [
+        (
+            "systemd 255 supports soft-reboot",
+            "systemd 255 supports soft-reboot.",
+        ),
+        (
+            "soft-reboot.target and systemd-soft-reboot.service are installed",
+            "soft-reboot.target and systemd-soft-reboot.service are installed.",
+        ),
+        (
+            "timesyncd keeps a clock file",
+            "timesyncd keeps a clock file.",
+        ),
+        ("apt/dpkg are present", "apt/dpkg are present."),
+        ("ip, nft: present", "ip, nft: present."),
+        ("1.8 GB free", "1.8 GB free."),
+    ] {
+        assert_eq!(sentence(engine), shown);
+    }
 }
 
 #[test]

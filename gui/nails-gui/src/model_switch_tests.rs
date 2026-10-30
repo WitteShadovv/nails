@@ -155,10 +155,9 @@ fn a_deactivation_that_does_not_end_points_to_the_emergency() {
     model.set_switch_overdue(true);
     let page = model.page();
     assert_eq!(page.heading, text::ENDING);
-    assert_eq!(
-        page.note,
-        format!("{}\n{}", text::BACKEND_LEFT_OPEN, text::ENDING_LATE)
-    );
+    // It no longer says the session ends in a few seconds.
+    assert_eq!(page.description, text::ENDING_LATE);
+    assert_eq!(page.note, text::BACKEND_LEFT_OPEN);
     assert_eq!(page.fix, text::END_ANOTHER_WAY);
     assert!(!page.no_input && page.emergency);
 }
