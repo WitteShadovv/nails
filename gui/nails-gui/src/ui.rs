@@ -74,6 +74,13 @@ impl Controller {
         self.take(std::iter::once(update));
     }
 
+    /// Take one turn of `mailbox`'s updates, at most
+    /// [`TURN`](crate::mailbox::TURN), and draw once: the task the window's
+    /// event loop runs each time the mailbox asks for a turn.
+    pub fn take_turn(&mut self, mailbox: &crate::mailbox::Mailbox) {
+        self.take(mailbox.take());
+    }
+
     /// Take in several of the worker's updates, in order, and draw once.
     pub fn take(&mut self, updates: impl IntoIterator<Item = Update>) {
         for update in updates {
