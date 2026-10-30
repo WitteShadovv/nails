@@ -9,7 +9,10 @@
 //!   a network tool the way back will not find and what stays on the decoy
 //!   without it, or that the computer then powers off instead of returning.
 //!   It offers both endings: Power Off, the safer one and the suggested
-//!   button, and Return to Decoy. The focus starts on Cancel.
+//!   button, and Return to Decoy. The focus starts on Cancel. Where the plan
+//!   says the return powers off instead, the question says so first, in the
+//!   CLI's words; where it powers off whatever happens before it runs, there
+//!   is no Return to Decoy to offer, only Power Off.
 //! - **Return to Decoy** applies that plan. **Power Off** asks for the plan
 //!   of a power-off, which has nothing to warn of, and applies it as soon as
 //!   it holds: the person has answered already.
@@ -43,16 +46,28 @@ impl Ending {
     }
 }
 
-/// The question before a deactivation, from the plan `data` of a return: the
-/// consequence, then each warning of the engine's.
+/// The question before a deactivation, from the plan `data` of a return:
+/// that the return powers off instead, where it does; the consequence; then
+/// each warning of the engine's.
 #[must_use]
 pub fn question(data: &DeactivatePlanData) -> Question {
-    let mut lines = vec![text::DEACTIVATE_CONSEQUENCE.to_string()];
+    let mut lines: Vec<String> = data
+        .powers_off_instead
+        .iter()
+        .map(|bound| text::powers_off_instead(bound.certain))
+        .collect();
+    lines.push(text::DEACTIVATE_CONSEQUENCE.to_string());
     lines.extend(
         data.warnings
             .iter()
             .map(|warning| text::sentence(&text::engine_fix(warning))),
     );
+    // A return the way back turns into a power-off, whatever happens before
+    // it runs, is no ending to offer.
+    let certain = data
+        .powers_off_instead
+        .as_ref()
+        .is_some_and(|bound| bound.certain);
     Question {
         heading: text::DEACTIVATE_QUESTION.to_string(),
         body: lines.join("\n"),
@@ -60,7 +75,7 @@ pub fn question(data: &DeactivatePlanData) -> Question {
         destructive: false,
         prompt: None,
         locked: false,
-        alternative: Some(text::RETURN_TO_DECOY.to_string()),
+        alternative: (!certain).then(|| text::RETURN_TO_DECOY.to_string()),
     }
 }
 

@@ -87,6 +87,52 @@ fn steps(page: &Page) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// The plan of an activation the helper gave, recorded on a volume whose
+/// hidden sessions' dpkg record no longer follows the decoy's.
+fn plan_with_advisory() -> Update {
+    let recorded: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/activate-plan-advisory.json"
+    ))
+    .unwrap();
+    Update::Planned(PlanData::Activate(
+        serde_json::from_value(recorded["data"].clone()).unwrap(),
+    ))
+}
+
+/// The risks the entry does not refuse come first, each with its fix, as
+/// the CLI writes them before it asks to log out; then the logout.
+#[test]
+fn the_question_starts_with_the_advisories_the_cli_writes_first() {
+    let mut model = ready();
+    model.action();
+    model.apply(Update::Running(Kind::Plan));
+    assert!(model.apply(plan_with_advisory()).is_empty());
+    let question = model.page().question.expect("the question is open");
+    let lines: Vec<&str> = question.body.lines().collect();
+    assert!(
+        lines[0].starts_with(
+            "The decoy installed, updated or removed 1 package since hidden sessions made their \
+             own copy of the dpkg package database (/var/lib/dpkg/status)"
+        ),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with("In a hidden session, run sudo apt-get update and sudo apt-get"),
+        "the fix, its code quotes dropped: {lines:?}"
+    );
+    assert_eq!(lines[2], text::ACTIVATE_CONSEQUENCE);
+    assert_eq!(question.confirm, text::LOG_OUT_AND_ACTIVATE);
+    // A plan without advisories starts with the logout.
+    let mut model = ready();
+    model.action();
+    model.apply(plan(None, None, false));
+    let question = model.page().question.expect("the question is open");
+    assert_eq!(
+        question.body.lines().next(),
+        Some(text::ACTIVATE_CONSEQUENCE)
+    );
+}
+
 #[test]
 fn the_question_before_an_activation_says_what_its_plan_says() {
     let mut model = decoy();

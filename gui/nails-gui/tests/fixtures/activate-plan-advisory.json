@@ -1,0 +1,18 @@
+{
+  "command": "activate",
+  "data": {
+    "advisories": [
+      {
+        "fix": "In a hidden session, run `sudo apt-get update` and `sudo apt-get full-upgrade`, and install or remove there what the decoy installed or removed, so hidden sessions record the same packages. See \"Package changes in hidden sessions\" in docs/operator-guide.md.",
+        "message": "the decoy installed, updated or removed 1 package since hidden sessions made their own copy of the dpkg package database (/var/lib/dpkg/status), which still records them as they were: acl (2.3.2-1build1.1 on the decoy, 2.3.2-1build1.1+hidden in hidden sessions)",
+        "name": "package-drift"
+      }
+    ],
+    "builds_hidden_system": false,
+    "defaults_notice": null,
+    "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "warning": null
+  },
+  "ok": true,
+  "schema_version": 2
+}

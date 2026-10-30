@@ -144,8 +144,10 @@ of this changelog for that version becomes the release notes word for word, and
   engine confirms first runs as a plan and its apply, and its question sends the plan's token back
   or withdraws the plan at once, and keeps the keyboard until it is answered, Escape cancelling it.
   A ready decoy activates from the window: Activate… asks first, with what the activation's plan
-  says (the logout, each risk allowed, the warning for a root accepted on this computer's storage,
-  the decoy home, a hidden system to build, a missing settings file); the steps then show as they
+  says (the advisories the CLI writes before it asks to log out, such as hidden sessions' package
+  database no longer following the decoy's, each with its fix, then the logout, each risk allowed,
+  the warning for a root accepted on this computer's storage, the decoy home, a hidden system to
+  build, a missing settings file); the steps then show as they
   stream; Cancel or Escape stops the activation before its point of no return by hanging up on the
   helper, which unwinds it and gives its answer last; and past that point the page reads "Logging
   Out" and takes no input, not even its Close, until the engine says the logout will not come (the
@@ -163,7 +165,10 @@ of this changelog for that version becomes the release notes word for word, and
   again. A hidden session's page deactivates: Deactivate… asks with what the return to the decoy
   would not put back, in the engine's words, and offers both endings, Power Off, the suggested one,
   and Return to Decoy; Power Off asks the engine for the plan of a power-off and applies it without
-  asking again. The page then reads "Ending the Hidden Session", takes no input but the Emergency
+  asking again. Where the plan says the way back turns the return into a power-off, the question
+  says first, in the CLI's words, that the session ends with the machine powering off instead of
+  returning, and where that holds whatever happens before the way back runs it offers no Return to
+  Decoy. The page then reads "Ending the Hidden Session", takes no input but the Emergency
   control and, where the hidden volume could not be marked to close, says so without naming its
   device; a session still there a minute later gets its Close back, and the page names the Emergency
   control and the power button. A hidden session's window has the Emergency control at the start of

@@ -202,3 +202,40 @@ fn a_failed_deactivation_brings_the_session_page_back_with_why() {
     assert!(screen.shows("Systemctl could not enqueue soft-reboot.target."));
     screen.find_with(text::DEACTIVATE, AccessibleRole::Button);
 }
+
+/// Where the way back powers off whatever happens before it runs, the
+/// question says the session ends with a power-off, in the CLI's words, and
+/// offers Power Off and Cancel alone: no Return to Decoy that would not
+/// happen.
+#[test]
+fn a_return_that_powers_off_anyway_has_no_return_to_offer() {
+    let screen = hidden();
+    screen
+        .find_with(text::DEACTIVATE, AccessibleRole::Button)
+        .invoke_accessible_default_action();
+    screen.asks();
+    let recorded = support::fixture("deactivate-plan-powers-off");
+    screen.update(Update::Planned(PlanData::Deactivate(
+        serde_json::from_value(recorded["data"].clone()).unwrap(),
+    )));
+    assert!(screen.window.get_question_open());
+    let dialog = screen.find_with(text::DEACTIVATE_QUESTION, AccessibleRole::Groupbox);
+    let body = dialog.accessible_description().unwrap_or_default();
+    assert_eq!(
+        body.lines().next(),
+        Some(text::powers_off_instead(true).as_str())
+    );
+    screen.find_with(text::POWER_OFF, AccessibleRole::Button);
+    assert!(!screen.shows(text::RETURN_TO_DECOY));
+    assert_eq!(screen.focused(), "Cancel");
+    // Power Off plans the power-off.
+    screen
+        .find_with(text::POWER_OFF, AccessibleRole::Button)
+        .invoke_accessible_default_action();
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Plan(Plan::Deactivate(DeactivateArgs {
+            poweroff: true
+        }))]
+    );
+}

@@ -101,6 +101,81 @@ fn a_hidden_session_deactivates_but_not_without_a_way_back_or_its_volume() {
     }
 }
 
+/// The plan of a return the helper gave, recorded on a hidden session's tree
+/// whose way back finds `name`: a link the kernel keeps
+/// (`deactivate-plan-powers-off`), or one it would delete with an `ip` it
+/// does not find (`deactivate-plan-may-power-off`).
+fn recorded_plan(name: &str) -> Update {
+    let text = match name {
+        "deactivate-plan-powers-off" => {
+            include_str!("../tests/fixtures/deactivate-plan-powers-off.json")
+        }
+        "deactivate-plan-may-power-off" => {
+            include_str!("../tests/fixtures/deactivate-plan-may-power-off.json")
+        }
+        other => panic!("no fixture {other}"),
+    };
+    let recorded: Value = serde_json::from_str(text).unwrap();
+    Update::Planned(PlanData::Deactivate(
+        serde_json::from_value(recorded["data"].clone()).unwrap(),
+    ))
+}
+
+/// Where the way back powers off whatever happens before it runs, the
+/// question says the session ends with a power-off, in the CLI's words, and
+/// offers no Return to Decoy: Power Off plans and applies a power-off.
+#[test]
+fn a_return_that_powers_off_anyway_offers_only_the_power_off() {
+    let mut model = hidden();
+    model.action();
+    model.apply(Update::Running(Kind::Plan));
+    assert!(
+        model
+            .apply(recorded_plan("deactivate-plan-powers-off"))
+            .is_empty()
+    );
+    let question = model.page().question.expect("a question");
+    let lines: Vec<&str> = question.body.lines().collect();
+    assert_eq!(
+        lines[0],
+        "This ends the hidden session now, and the machine powers off instead of returning to \
+         the decoy."
+    );
+    assert_eq!(lines[1], text::DEACTIVATE_CONSEQUENCE);
+    assert!(
+        lines[2].starts_with("The way back cannot delete tunl0, which the kernel keeps"),
+        "{lines:?}"
+    );
+    assert_eq!(question.confirm, text::POWER_OFF);
+    assert_eq!(question.alternative, None, "no return to offer");
+    assert_eq!(model.alternative(), None);
+    assert_eq!(
+        model.answer(true),
+        Some(Ask::Plan(Plan::Deactivate(DeactivateArgs {
+            poweroff: true
+        })))
+    );
+}
+
+/// Where the way back powers off unless that changes before it runs, the
+/// question says so, in the CLI's words, and keeps both endings.
+#[test]
+fn a_return_that_may_power_off_says_so_and_keeps_both_endings() {
+    let mut model = hidden();
+    model.action();
+    model.apply(recorded_plan("deactivate-plan-may-power-off"));
+    let question = model.page().question.expect("a question");
+    assert_eq!(
+        question.body.lines().next(),
+        Some(
+            "This ends the hidden session now, and unless that changes before it runs, the \
+             machine powers off instead of returning to the decoy."
+        )
+    );
+    assert_eq!(question.alternative.as_deref(), Some(text::RETURN_TO_DECOY));
+    assert_eq!(model.alternative(), Some(Ask::Apply));
+}
+
 #[test]
 fn the_question_names_what_the_return_leaves_and_offers_both_endings() {
     let mut model = hidden();

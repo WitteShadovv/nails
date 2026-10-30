@@ -161,6 +161,22 @@ pub const DEACTIVATE_CONSEQUENCE: &str = "Every program closes. Unsaved work is 
 pub const POWER_OFF: &str = "Power Off";
 /// The ending that returns to the decoy.
 pub const RETURN_TO_DECOY: &str = "Return to Decoy";
+
+/// What a deactivation whose return powers off instead says first, as the
+/// CLI's question says it: whatever happens before the way back runs when
+/// `certain`, otherwise unless that changes.
+#[must_use]
+pub fn powers_off_instead(certain: bool) -> String {
+    let unless = if certain {
+        ""
+    } else {
+        "unless that changes before it runs, "
+    };
+    format!(
+        "This ends the hidden session now, and {unless}the machine powers off instead of \
+         returning to the decoy."
+    )
+}
 /// While a hidden session ends.
 pub const ENDING: &str = "Ending the Hidden Session";
 /// A deactivation that returns to the decoy.

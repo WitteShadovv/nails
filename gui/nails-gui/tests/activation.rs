@@ -346,3 +346,29 @@ fn a_problem_that_can_be_allowed_is_followed_by_its_button_in_the_tab_order() {
         ]
     );
 }
+
+/// The risks the entry does not refuse open the question, each with its
+/// fix, as the CLI writes them before it asks to log out: here the package
+/// drift the helper found on a recorded volume.
+#[test]
+fn the_question_opens_with_the_advisories_of_the_plan() {
+    let screen = ready();
+    screen
+        .find_with(text::ACTIVATE, AccessibleRole::Button)
+        .invoke_accessible_default_action();
+    screen.asks();
+    let recorded = support::fixture("activate-plan-advisory");
+    screen.update(Update::Planned(PlanData::Activate(
+        serde_json::from_value(recorded["data"].clone()).unwrap(),
+    )));
+    let dialog = screen.find_with(text::ACTIVATE_QUESTION, AccessibleRole::Groupbox);
+    let body = dialog.accessible_description().unwrap_or_default();
+    let lines: Vec<&str> = body.lines().collect();
+    assert!(
+        lines[0].starts_with("The decoy installed, updated or removed 1 package"),
+        "{lines:?}"
+    );
+    assert!(lines[1].starts_with("In a hidden session, run sudo apt-get update"));
+    assert_eq!(lines[2], text::ACTIVATE_CONSEQUENCE);
+    assert_eq!(screen.focused(), "Cancel", "the focus starts on Cancel");
+}
