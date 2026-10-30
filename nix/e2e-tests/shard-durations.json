@@ -39,6 +39,7 @@
   "quickstart-zero-config": 28,
   "rehearse-canary": 46,
   "session-alert-delivery": 62,
+  "session-console-history": 130,
   "session-decoy-mount-table": 27,
   "session-disk-mounts": 39,
   "session-dns-records": 28,
