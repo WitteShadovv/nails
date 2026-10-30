@@ -5,6 +5,9 @@
 // sentence it asks about, Cancel and the action it confirms. A question that
 // asks for a word to be typed first (allowing a risk is never one click) has
 // a field for it, and its confirming button acts only once the word is there.
+// A question with a second action (a deactivation's two endings) stacks its
+// three buttons, as libadwaita does when they do not fit side by side: the
+// confirming one, the second action, and Cancel at the bottom.
 //
 // It holds the keyboard while it is open. Focus starts on Cancel, or in the
 // field when there is one; Tab and Shift+Tab move between its controls and
@@ -26,8 +29,12 @@ export component AlertDialog {
     in property <string> prompt;
     // The confirming button waits for that word.
     in property <bool> locked;
+    // The label of the second action; empty when there is none.
+    in property <string> alternative;
     // Called with true for the confirming button, false for Cancel or Escape.
     callback answered(confirmed: bool);
+    // Called for the second action.
+    callback alternative-chosen();
     // Called with what is in the field each time it changes.
     callback typed(text: string);
 
@@ -35,12 +42,6 @@ export component AlertDialog {
     accessible-label: root.heading;
     accessible-description: root.body;
 
-    init => {
-        // The field takes the focus itself when there is one.
-        if (root.prompt == "") {
-            cancel.focus();
-        }
-    }
 
     // The dimming over the window, and nothing underneath gets the pointer.
     Rectangle {
@@ -102,17 +103,23 @@ export component AlertDialog {
                     }
                 }
 
-                HorizontalLayout {
+                if root.alternative == "": HorizontalLayout {
                     padding-top: 22px;
                     spacing: 12px;
 
-                    cancel := Button {
+                    Button {
                         min-width: 0px;
                         preferred-width: 0px;
                         horizontal-stretch: 1;
                         text: "Cancel";
                         shape: ButtonShape.response;
                         surface-fg: Adw.dialog-fg;
+                        // The field takes the focus itself when there is one.
+                        init => {
+                            if (root.prompt == "") {
+                                self.focus();
+                            }
+                        }
                         clicked => {
                             root.answered(false);
                         }
@@ -129,6 +136,49 @@ export component AlertDialog {
                         enabled: !root.locked;
                         clicked => {
                             root.answered(true);
+                        }
+                    }
+                }
+
+                if root.alternative != "": VerticalLayout {
+                    padding-top: 22px;
+                    spacing: 12px;
+
+                    Button {
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        text: root.confirm-label;
+                        shape: ButtonShape.response;
+                        surface-fg: Adw.dialog-fg;
+                        kind: root.destructive ? ButtonKind.destructive : ButtonKind.suggested;
+                        enabled: !root.locked;
+                        clicked => {
+                            root.answered(true);
+                        }
+                    }
+
+                    Button {
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        text: root.alternative;
+                        shape: ButtonShape.response;
+                        surface-fg: Adw.dialog-fg;
+                        clicked => {
+                            root.alternative-chosen();
+                        }
+                    }
+
+                    Button {
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        text: "Cancel";
+                        shape: ButtonShape.response;
+                        surface-fg: Adw.dialog-fg;
+                        init => {
+                            self.focus();
+                        }
+                        clicked => {
+                            root.answered(false);
                         }
                     }
                 }

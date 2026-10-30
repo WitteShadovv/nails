@@ -13,6 +13,7 @@ use i_slint_backend_testing::AccessibleRole;
 use nails_api::Event;
 use nails_api::protocol::{CheckArgs, Hello};
 use nails_gui::client::{Answer, ours};
+use nails_gui::text;
 use nails_gui::worker::{Ask, Failure, Kind, Update};
 use screen::Screen;
 use serde_json::json;
@@ -155,7 +156,9 @@ fn a_hidden_session_page_shows_its_time_and_the_way_out() {
     );
     assert!(screen.shows("Hidden Session"));
     assert!(screen.shows("Hidden session active for 2 h 10 min."));
-    assert!(screen.shows("Deactivate from a terminal: sudo /mnt/data/nails deactivate"));
+    // The way out is the window's own: no terminal line.
+    screen.find_with(text::DEACTIVATE, AccessibleRole::Button);
+    assert!(!screen.texts().iter().any(|line| line.contains("sudo")));
     assert!(!screen.shows("Check Again"));
 }
 
