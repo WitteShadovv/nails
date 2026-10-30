@@ -1,0 +1,127 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// The window's own header bar: its title in the middle, a close button at
+// the end, and the rest of it a handle that moves the window (the window has
+// no frame from the window manager).
+//
+// The close button is a Tab stop like every other control, with a name a
+// screen reader reads. It closes the window, never a session.
+
+import { Adw } from "theme.slint";
+
+component CloseButton {
+    in property <bool> reachable: true;
+    callback clicked();
+
+    property <bool> focus-visible;
+
+    width: 34px;
+    height: 34px;
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-label: "Close";
+    accessible-enabled: root.reachable;
+    accessible-action-default => {
+        if (root.reachable) {
+            root.clicked();
+        }
+    }
+
+    Rectangle {
+        x: 5px;
+        y: 5px;
+        width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: touch.pressed ? Adw.button-active : touch.has-hover ? Adw.button-hover : Adw.button-bg;
+
+        // A cross of two strokes, drawn here rather than taken from an icon
+        // theme.
+        Path {
+            x: 7px;
+            y: 7px;
+            width: 10px;
+            height: 10px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            stroke: Adw.window-fg;
+            stroke-width: 1.5px;
+            commands: "M 1 1 L 9 9 M 9 1 L 1 9";
+            accessible-role: none;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.reachable;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    focus := FocusScope {
+        enabled: root.reachable;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (root.reachable && (event.text == Key.Space || event.text == Key.Return)) {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+        focus-gained(reason) => {
+            root.focus-visible = reason == FocusReason.tab-navigation;
+            Adw.focused-label = "Close";
+        }
+        focus-lost(reason) => {
+            if (Adw.focused-label == "Close") {
+                Adw.focused-label = "";
+            }
+        }
+    }
+
+    if focus.has-focus && root.focus-visible: Rectangle {
+        x: 3px;
+        y: 3px;
+        width: 28px;
+        height: 28px;
+        border-radius: 14px;
+        border-width: 2px;
+        border-color: Adw.focus-ring;
+    }
+}
+
+export component HeaderBar {
+    in property <string> title;
+    // False while a dialog covers the window.
+    in property <bool> reachable: true;
+    callback close-clicked();
+
+    min-height: 46px;
+    preferred-height: 46px;
+    vertical-stretch: 0;
+    accessible-role: window-title-bar;
+    accessible-label: root.title;
+
+    WindowMoveArea { }
+
+    Text {
+        width: root.width;
+        height: root.height;
+        text: root.title;
+        font-weight: Adw.weight-bold;
+        color: Adw.window-fg;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    CloseButton {
+        x: root.width - 6px - self.width;
+        y: (root.height - self.height) / 2;
+        reachable: root.reachable;
+        clicked => {
+            root.close-clicked();
+        }
+    }
+}

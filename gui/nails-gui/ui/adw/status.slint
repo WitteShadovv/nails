@@ -1,0 +1,59 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-only
+
+// The head of a view: its verdict as a title and, under it, the sentence
+// that says where things stand. Both are a live region, so a screen reader
+// speaks a change once: politely for a state, at once for an error.
+
+import { Adw } from "theme.slint";
+
+export component StatusHead {
+    in property <string> heading;
+    in property <string> description;
+    // The heading names an error: it is announced at once.
+    in property <bool> urgent;
+
+    VerticalLayout {
+        spacing: 6px;
+
+        Text {
+            text: root.heading;
+            font-size: Adw.font-size-title;
+            font-weight: Adw.weight-title;
+            color: Adw.window-fg;
+            wrap: word-wrap;
+            accessible-live-region: root.urgent ? AccessibleLiveness.assertive : AccessibleLiveness.polite;
+        }
+
+        if root.description != "": Text {
+            text: root.description;
+            color: Adw.window-fg;
+            wrap: word-wrap;
+            accessible-live-region: root.urgent ? AccessibleLiveness.assertive : AccessibleLiveness.polite;
+        }
+    }
+}
+
+// Three dots that pulse in turn while an operation runs. Colour alone moves,
+// which the software renderer draws cheaply on every surface.
+export component Busy {
+    in property <string> label;
+
+    property <float> phase: mod(animation-tick() / 1ms, 1200) / 400;
+
+    accessible-role: progress-indicator;
+    accessible-label: root.label;
+
+    HorizontalLayout {
+        alignment: start;
+        spacing: 6px;
+
+        for i in 3: Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: Adw.window-fg.with-alpha(abs(root.phase - i - 0.5) < 0.5 ? 0.9 : 0.25);
+            accessible-role: none;
+        }
+    }
+}
