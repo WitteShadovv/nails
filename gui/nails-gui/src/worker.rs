@@ -21,7 +21,7 @@
 //! point of no return. The worker reads the answer that follows and ends.
 
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -128,13 +128,34 @@ pub enum Connect {
     /// On a stream already connected to a helper (the launcher's pair, or a
     /// test's).
     Stream(UnixStream),
-    /// By starting the helper through pkexec.
+    /// On the helper pkexec was started for ([`Connect::pkexec`]).
     Pkexec {
-        /// pkexec ([`crate::launch::PKEXEC`], found on `PATH`).
-        program: PathBuf,
-        /// The engine pkexec starts the helper of.
-        engine: PathBuf,
+        /// pkexec, which becomes the helper once the password is given.
+        child: Child,
+        /// The window's end of the pair.
+        stream: UnixStream,
     },
+    /// pkexec could not be started, for this reason.
+    NotStarted(String),
+}
+
+impl Connect {
+    /// Start `engine helper --stdio` through `pkexec` on the calling thread,
+    /// before the worker exists: the window does this before it sets
+    /// `no_new_privs`, under which `execve` ignores pkexec's set-user-ID bit
+    /// and pkexec never becomes root. `pkexec` is the program
+    /// [`crate::launch::find_pkexec`] found, or why it found none.
+    #[must_use]
+    pub fn pkexec(pkexec: Result<PathBuf, String>, engine: &Path) -> Self {
+        let started = pkexec.and_then(|program| {
+            start_helper(&program, engine)
+                .map_err(|error| format!("pkexec could not be started: {error}"))
+        });
+        match started {
+            Ok((child, stream)) => Connect::Pkexec { child, stream },
+            Err(why) => Connect::NotStarted(why),
+        }
+    }
 }
 
 /// The window's way to hang up on its helper, whatever the worker waits on.
@@ -259,40 +280,36 @@ fn run(connect: Connect, inbox: &Receiver<Ask>, line: &HangUp, report: &dyn Fn(U
     }
 }
 
-/// Open the session: on the stream given, or on a helper pkexec starts.
+/// Open the session: on the stream given, or on the helper pkexec starts.
 fn open(connect: Connect) -> Result<(Client, Option<Child>), Failure> {
     match connect {
         Connect::Stream(stream) => Client::connect(stream)
             .map(|client| (client, None))
             .map_err(|error| Failure::from_error(error, false)),
-        Connect::Pkexec { program, engine } => {
-            let (mut child, stream) = start_helper(&program, &engine).map_err(|error| {
-                Failure::NotStarted(format!("pkexec could not be started: {error}"))
-            })?;
-            match Client::connect(stream) {
-                Ok(client) => Ok((client, Some(child))),
-                // The pipe closed before the helper's hello: pkexec ended
-                // first, and its exit code says why.
-                Err(ClientError::Closed) => Err(match child.wait().map(pkexec_end) {
-                    Ok(PkexecEnd::Dismissed) => Failure::PasswordDismissed,
-                    Ok(PkexecEnd::NotAuthorized) => Failure::PasswordUnavailable,
-                    Ok(PkexecEnd::Other(code)) => Failure::NotStarted(match code {
-                        Some(code) => {
-                            format!("the helper ended with exit code {code} before it spoke")
-                        }
-                        None => "the helper was ended by a signal before it spoke".to_string(),
-                    }),
-                    Err(error) => {
-                        Failure::NotStarted(format!("pkexec could not be waited for: {error}"))
+        Connect::NotStarted(why) => Err(Failure::NotStarted(why)),
+        Connect::Pkexec { mut child, stream } => match Client::connect(stream) {
+            Ok(client) => Ok((client, Some(child))),
+            // The pipe closed before the helper's hello: pkexec ended first,
+            // and its exit code says why.
+            Err(ClientError::Closed) => Err(match child.wait().map(pkexec_end) {
+                Ok(PkexecEnd::Dismissed) => Failure::PasswordDismissed,
+                Ok(PkexecEnd::NotAuthorized) => Failure::PasswordUnavailable,
+                Ok(PkexecEnd::Other(code)) => Failure::NotStarted(match code {
+                    Some(code) => {
+                        format!("the helper ended with exit code {code} before it spoke")
                     }
+                    None => "the helper was ended by a signal before it spoke".to_string(),
                 }),
                 Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    Err(Failure::from_error(error, false))
+                    Failure::NotStarted(format!("pkexec could not be waited for: {error}"))
                 }
+            }),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(Failure::from_error(error, false))
             }
-        }
+        },
     }
 }
 

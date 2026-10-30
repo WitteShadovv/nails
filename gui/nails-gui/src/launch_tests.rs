@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::os::unix::fs::PermissionsExt;
+
 use super::*;
 
 const DECOY: &str = "\
@@ -208,4 +210,88 @@ fn pkexecs_own_exit_codes_tell_a_dismissed_dialog_from_a_missing_agent() {
     assert_eq!(pkexec_end(status(127)), PkexecEnd::NotAuthorized);
     assert_eq!(pkexec_end(status(1)), PkexecEnd::Other(Some(1)));
     assert_eq!(pkexec_end(ExitStatus::from_raw(9)), PkexecEnd::Other(None));
+}
+
+#[test]
+fn only_a_set_user_id_program_of_roots_runs_as_root() {
+    let pkexec = ProgramFacts {
+        is_file: true,
+        owner: 0,
+        mode: 0o4755,
+    };
+    assert!(runs_as_root(pkexec));
+    // NixOS's wrapper: set-user-ID, executable by everyone, readable by none.
+    assert!(runs_as_root(ProgramFacts {
+        mode: 0o4511,
+        ..pkexec
+    }));
+    for (facts, why) in [
+        (
+            ProgramFacts {
+                mode: 0o555,
+                ..pkexec
+            },
+            "NixOS's pkexec in the store: not set-user-ID",
+        ),
+        (
+            ProgramFacts {
+                owner: 1000,
+                ..pkexec
+            },
+            "set-user-ID to another account",
+        ),
+        (
+            ProgramFacts {
+                is_file: false,
+                ..pkexec
+            },
+            "not a file",
+        ),
+        (
+            ProgramFacts {
+                mode: 0o4000,
+                ..pkexec
+            },
+            "not executable",
+        ),
+    ] {
+        assert!(!runs_as_root(facts), "{why}");
+    }
+}
+
+#[test]
+fn pkexec_is_looked_for_by_its_set_user_id_path_only() {
+    assert_eq!(
+        PKEXEC_PATHS,
+        ["/run/wrappers/bin/pkexec", "/usr/bin/pkexec"]
+    );
+    // A program of the test's own account, even set-user-ID, and a missing
+    // one are passed over, and the error names where the window looked.
+    let dir = std::env::temp_dir().join(format!("nails-gui-find-pkexec-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let own = dir.join("pkexec");
+    std::fs::write(&own, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o4755)).unwrap();
+    let missing = dir.join("missing");
+    let refused = find_pkexec_in(&[&own, &missing]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        refused,
+        Err(format!(
+            "no set-user-ID pkexec was found ({}, {})",
+            own.display(),
+            missing.display()
+        ))
+    );
+    // The first that runs as root is the one: su is set-user-ID root on
+    // every host the tests run on, at one of these paths.
+    let su: Vec<&Path> = ["/run/wrappers/bin/su", "/usr/bin/su", "/bin/su"]
+        .into_iter()
+        .map(Path::new)
+        .filter(|path| {
+            std::fs::metadata(path).is_ok_and(|meta| meta.mode() & 0o4000 != 0 && meta.uid() == 0)
+        })
+        .collect();
+    let first = su.first().expect("a set-user-ID su");
+    assert_eq!(find_pkexec_in(&[&missing, first]), Ok(first.to_path_buf()));
 }

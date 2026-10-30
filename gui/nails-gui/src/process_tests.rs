@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::worker::Connect;
 
 /// The variable that tells a test binary started by [`in_child`] which test
 /// it runs as the child.
@@ -103,6 +104,17 @@ fn desktop() -> Vec<(OsString, OsString)> {
 
 fn uid() -> u32 {
     rustix::process::getuid().as_raw()
+}
+
+/// The `NoNewPrivs:` line of this test process, which a child it starts
+/// inherits: 0 unless whatever runs the tests set it.
+fn inherited_no_new_privs() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .unwrap()
+        .lines()
+        .find(|line| line.starts_with("NoNewPrivs:"))
+        .unwrap()
+        .to_string()
 }
 
 #[test]
@@ -217,9 +229,9 @@ fn recorder(out: &Path) -> String {
 }
 
 #[test]
-fn a_menu_entrys_start_runs_again_on_the_allowlist_with_its_limits() {
+fn a_menu_entrys_start_runs_again_on_the_allowlist_without_core_dumps() {
     const TEST: &str =
-        "process::tests::a_menu_entrys_start_runs_again_on_the_allowlist_with_its_limits";
+        "process::tests::a_menu_entrys_start_runs_again_on_the_allowlist_without_core_dumps";
     if is_child(TEST) {
         // The child: the start that a menu entry made, which replaces itself
         // with the recorder, standing in for the window's program.
@@ -241,6 +253,9 @@ fn a_menu_entrys_start_runs_again_on_the_allowlist_with_its_limits() {
     assert!(status.success(), "the recorder ended with {status}");
     let recorded = std::fs::read_to_string(&out).unwrap();
     let lines: Vec<&str> = recorded.lines().collect();
+    // No core dumps, but no_new_privs not yet: the window starts pkexec
+    // before it sets that.
+    let no_new_privs = inherited_no_new_privs();
     assert_eq!(
         lines[..7],
         [
@@ -248,7 +263,7 @@ fn a_menu_entrys_start_runs_again_on_the_allowlist_with_its_limits() {
             "/dev/null",
             "/dev/null",
             "/",
-            "NoNewPrivs:\t1",
+            no_new_privs.as_str(),
             "0",
             "0"
         ],
@@ -282,4 +297,68 @@ fn a_menu_entrys_start_runs_again_on_the_allowlist_with_its_limits() {
     ] {
         assert!(!names.contains(&gone), "{gone} reached the window");
     }
+}
+
+/// A directory of its own for a stand-in program; removed when dropped.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("nails-gui-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn pkexec_starts_before_the_window_sets_no_new_privs() {
+    const TEST: &str = "process::tests::pkexec_starts_before_the_window_sets_no_new_privs";
+    if is_child(TEST) {
+        // The order of a menu entry's start: pkexec, then the limits.
+        let pkexec = PathBuf::from(std::env::var_os("NAILS_GUI_TEST_PKEXEC").unwrap());
+        let connect = Connect::pkexec(Ok(pkexec), Path::new("/mnt/data/nails"));
+        limit().unwrap();
+        assert!(rustix::thread::no_new_privs().unwrap());
+        let (mut child, stream) = match connect {
+            Connect::Pkexec { child, stream } => (child, stream),
+            other => panic!("pkexec did not start: {other:?}"),
+        };
+        drop(stream);
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(started.elapsed() < LIMIT, "pkexec did not end");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success(), "{status}");
+        return;
+    }
+    let scratch = Scratch::new("pkexec-order");
+    let out = scratch.0.join("recorded");
+    let pkexec = scratch.0.join("pkexec");
+    std::fs::write(
+        &pkexec,
+        format!(
+            "#!/bin/sh\ngrep '^NoNewPrivs:' /proc/$$/status > '{}'\n",
+            out.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&pkexec, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let status = in_child(TEST, &[("NAILS_GUI_TEST_PKEXEC", pkexec.as_os_str())]);
+    assert!(status.success(), "the child's checks failed: {status}");
+    // pkexec ran as the window would start it: without no_new_privs, so its
+    // set-user-ID bit counts.
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap().trim_end(),
+        inherited_no_new_privs()
+    );
 }
