@@ -252,6 +252,7 @@ and checks more than that nothing panics or hangs:
 | `fstab_crypttab` | a decoy's fstab, crypttab and mount table | every swap and mount the session masks is masked under the unit name systemd generates; a crypttab device is the node systemd opens |
 | `nixos_reference` | `configuration.nix` and udev's record of the hidden volume's partition | every reference lies in the file; ASCII case changes nothing; the scan reads forward only |
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
+| `locate_database` | a decoy's `/etc/updatedb.conf`, after two NULs in a row an `ExecStart=` value, and after the next two a cron job's shell | the file reads as plocate's `parse_updatedb_conf()` reads it, with the same lists or a refusal on the same line, and its lists written back read the same; the words of the value, quoted and escaped again, split into the same words; shell that names no updatedb runs none, and each updatedb command read from it, its words quoted again, reads back the same; every prune entry, scan root, database and configuration file a command line gives is part of one of its words |
 | `autologin` | GDM's, SDDM's, Plasma Login Manager's and LightDM's configuration with drop-ins | the accounts listed are the ones each display manager may log in, read with its parser in each order its locale may sort the drop-ins in |
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
 | `config_edit` | an operator's `nails.toml`, then the edits `config set` and `config unset` make of it, one a line | an edit of a file that parses writes TOML that parses; each key set holds the value asked for and each key unset is gone, while every other key, known or not, holds what it held; every comment stays; when no value changes the file comes back byte for byte; the same edits a second time change nothing |
@@ -265,8 +266,8 @@ and checks more than that nothing panics or hangs:
 | `disk_layout` | the start of a raw disk | partitions and free ranges lie on the disk, in order, apart; what a rehearsal scan reads at the start of each region (its signature, a compressing filesystem's magic, an f2fs's compression feature, an ext4's or f2fs's encrypt feature, the size a superblock, boot sector or swap header records) is read without an error |
 | `raw_token_scan` | a canary token and a sparse disk image | the windowed scan finds what a scan of the whole image in one buffer finds |
 
-What systemd, libmount, GLib, GDM, LightDM, SDDM, KConfig, dpkg and libalpm
-do, where a target compares NAILS with them, is modelled in `fuzz/src/`, each
+What systemd, libmount, GLib, GDM, LightDM, SDDM, KConfig, dpkg, libalpm and
+plocate do, where a target compares NAILS with them, is modelled in `fuzz/src/`, each
 model written from the C or C++ function it follows.
 Each target starts from its seed corpus in `fuzz/seeds/<target>/`, inputs
 taken from the fixtures and tests, with a dictionary in `fuzz/dicts/`. The

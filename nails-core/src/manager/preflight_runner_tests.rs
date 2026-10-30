@@ -1069,3 +1069,70 @@ fn the_systemd_version_row_judges_the_version_it_is_given() {
     let unread = systemd_version_row(debian, None);
     assert!(unread.is_fail(), "{unread:?}");
 }
+
+#[test]
+fn locate_database_runs_right_after_decoy_persistence() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    let at = names
+        .iter()
+        .position(|name| *name == "decoy-persistence")
+        .expect("a decoy-persistence row");
+    assert_eq!(names[at + 1], "locate-database", "{names:?}");
+}
+
+/// The locate database fails closed whatever the run accepts: no flag of
+/// `check` or activation turns its refusal into a warning.
+#[test]
+fn no_flag_lifts_the_locate_database_refusal() {
+    // A decoy whose plocate timer is enabled and whose updatedb.conf does not
+    // skip the hidden root's parent.
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content("/etc/updatedb.conf", "PRUNEPATHS=\"/tmp\"\n");
+    fs.mock_set_file_content(
+        "/usr/lib/systemd/system/plocate-updatedb.service",
+        "[Service]\nExecStart=/usr/bin/updatedb\n",
+    );
+    fs.mock_set_file_content(
+        "/usr/lib/systemd/system/plocate-updatedb.timer",
+        "[Timer]\nOnCalendar=daily\n",
+    );
+    let wants = std::path::Path::new("/etc/systemd/system/timers.target.wants");
+    fs.mock_set_directory_contents(
+        std::path::Path::new("/etc/systemd/system"),
+        vec![wants.to_path_buf()],
+    );
+    fs.mock_set_directory_contents(wants, vec![wants.join("plocate-updatedb.timer")]);
+    fs.create_symlink(
+        std::path::Path::new("../plocate-updatedb.timer"),
+        &wants.join("plocate-updatedb.timer"),
+    )
+    .unwrap();
+    let manager = manager_with(fs);
+    let options = PreflightOptions {
+        overlay_only: true,
+        read_only: true,
+        allow_persistent_decoy: true,
+        allow_decoy_storage: true,
+        allow_discards: true,
+    };
+    let registry = manager
+        .preflight_registry(&options)
+        .expect("registry builds");
+    let (results, _) = registry.run_all_detailed(manager.filesystem());
+    let locate = results
+        .iter()
+        .find(|(name, _)| name == "locate-database")
+        .map(|(_, result)| result)
+        .expect("a locate-database row");
+    assert!(locate.is_fail(), "{locate:?}");
+    assert!(
+        locate
+            .message()
+            .contains("does not skip the hidden volume at /mnt/hidden"),
+        "{locate:?}"
+    );
+}
