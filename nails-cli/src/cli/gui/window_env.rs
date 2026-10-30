@@ -14,12 +14,21 @@
 //!   library that writes a cache or a setting writes it there;
 //! - the settings that close the toolkit's other channels: no shader cache,
 //!   the system font configuration, a GSettings backend in memory, local file
-//!   access only, no portals;
+//!   access only, and no portals for GTK (`GDK_DEBUG`);
 //! - a fixed `PATH`.
 //!
 //! Everything else is left out, the dynamic loader's variables, the session
 //! manager, the log and debug switches and every secret the launcher's own
 //! environment may hold included.
+//!
+//! Only GTK reads `GDK_DEBUG`. The window's toolkit is Slint, whose winit
+//! backend reads the desktop's appearance from the settings portal on the
+//! session bus at every start (`org.freedesktop.portal.Settings`), and no
+//! variable here turns that off: the session bus stays, since AccessKit, the
+//! screen reader's way in, needs it to find the accessibility bus. Where
+//! xdg-desktop-portal is not running, the read starts it through D-Bus
+//! activation, which the desktop's trace test has to clear (see the gate's
+//! list of admitted desktops).
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::FileTypeExt;
