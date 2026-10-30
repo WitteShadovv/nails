@@ -389,6 +389,45 @@ def backend_open(machine: Machine, name: str = "data") -> bool:
     return rc == 0
 
 
+#: What the kernel prints on the console right before it cuts the power
+#: (``kernel_power_off``, after it stopped the threads that print its log, so
+#: the line goes out before the machine does). A reboot prints
+#: :data:`RESTART_MARKER` instead and a panic :data:`PANIC_MARKER`. The suite
+#: starts every machine with the driver's ``-no-reboot``, so QEMU exits on all
+#: three alike, and only these lines tell a power-off from the others.
+POWER_DOWN_MARKER = "reboot: Power down"
+
+#: What the kernel prints right before it resets the machine.
+RESTART_MARKER = "reboot: Restarting system"
+
+#: What the kernel prints when it panics.
+PANIC_MARKER = "Kernel panic"
+
+
+def wait_for_real_power_off(machine: Machine, timeout: float = 300.0) -> None:
+    """Wait, bounded, for the VM to stop as :func:`wait_for_power_off` does,
+    and prove that it powered off: the kernel said so on the console of this
+    boot, and it did not reboot or panic. Under ``-no-reboot`` QEMU exits on a
+    reboot and on a panic too, which :func:`wait_for_power_off` alone passes."""
+    wait_for_power_off(machine, timeout)
+    # The driver's reader thread may still hold the last lines QEMU wrote:
+    # it ends with QEMU's output, so wait for it, bounded.
+    reader = getattr(machine, "serial_thread", None)
+    if reader is not None:
+        reader.join(timeout=30)
+    console = machine.get_console_log()
+    if PANIC_MARKER in console:
+        cause = "the kernel panicked"
+    elif RESTART_MARKER in console:
+        cause = "the machine rebooted"
+    elif POWER_DOWN_MARKER in console:
+        return
+    else:
+        cause = "the kernel never said it powered off"
+    tail = "\n".join(console.splitlines()[-100:])
+    raise AssertionError(f"QEMU exited, but not from a power-off: {cause}\n{tail}")
+
+
 def wait_for_power_off(machine: Machine, timeout: float = 300.0) -> None:
     """Wait, bounded, for the VM to power off after a power-off was enqueued
     (the driver's ``wait_for_shutdown`` has no deadline), then reset the
