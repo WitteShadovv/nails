@@ -114,6 +114,7 @@ fn a_native_mount_a_target_requires_is_skipped_with_its_fsck_while_its_disk_is_t
         [NativeUnit {
             name: "srv-scratch.mount".into(),
             required_by: Some("local-fs.target".into()),
+            required_by_generator: false,
         }]
     );
     let decisions = decoy.decide(ROOT_ONLY, true);
@@ -142,6 +143,38 @@ fn a_native_mount_a_target_requires_is_skipped_with_its_fsck_while_its_disk_is_t
         "{warning}"
     );
     assert!(!warning.contains("nofail"), "{warning}");
+}
+
+#[test]
+fn a_generated_unit_a_generator_requires_is_told_nofail_or_a_reload() {
+    // A mount the kernel command line names (systemd.mount-extra=): the fstab
+    // generator makes its unit and its .requires link, so nofail on that line,
+    // or a reload once the line is gone, is what makes the target want it.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/run/systemd/generator/srv-extra.mount",
+        "[Unit]\nSourcePath=/proc/cmdline\n[Mount]\nWhat=/dev/vde1\nWhere=/srv/extra\nType=ext4\n",
+    );
+    decoy.link(
+        "/run/systemd/generator/local-fs.target.requires/srv-extra.mount",
+        "../srv-extra.mount",
+    );
+    let units = read(decoy.dirs()).unwrap();
+    assert!(units[0].required_by_generator, "{units:?}");
+    assert_eq!(units[0].origin(), Origin::Generated);
+    let decisions = decoy.decide(ROOT_ONLY, false);
+    let warning = decisions[0].warning().expect("a warning");
+    for part in ["nofail", "systemd.mount-extra=", "systemctl daemon-reload"] {
+        assert!(warning.contains(part), "{part}: {warning}");
+    }
+    assert!(!warning.contains("WantedBy="), "{warning}");
+    // A link of an installed unit file requires it as well: the generator
+    // is not all that requires it.
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.requires/srv-extra.mount",
+        "/run/systemd/generator/srv-extra.mount",
+    );
+    assert_eq!(read(decoy.dirs()).unwrap()[0].origin(), Origin::Installed);
 }
 
 #[test]
@@ -594,7 +627,7 @@ fn a_unit_that_cannot_be_read_or_resolved_is_masked() {
                 unreached: Some(Unreached {
                     target: "local-fs.target".into(),
                     cause: Unskippable::Unread,
-                    native: true,
+                    origin: Origin::Installed,
                 }),
             }],
             "{unit}"
@@ -946,7 +979,7 @@ fn a_unit_whose_files_fail_to_be_looked_up_is_masked_not_read_elsewhere() {
                 unreached: Some(Unreached {
                     target: "local-fs.target".into(),
                     cause: Unskippable::Unread,
-                    native: true,
+                    origin: Origin::Installed,
                 }),
             }],
             "{path}"
@@ -982,6 +1015,7 @@ fn only_mount_swap_and_automount_units_a_target_pulls_in_are_read() {
         [NativeUnit {
             name: "srv-scratch.mount".into(),
             required_by: None,
+            required_by_generator: false,
         }]
     );
 }
@@ -1233,6 +1267,7 @@ fn the_link_directories_of_every_target_of_a_prefix_and_upholds_are_read() {
     let unit = |name: &str, required_by: Option<&str>| NativeUnit {
         name: name.into(),
         required_by: required_by.map(str::to_string),
+        required_by_generator: false,
     };
     assert_eq!(
         read(decoy.dirs()).unwrap(),
