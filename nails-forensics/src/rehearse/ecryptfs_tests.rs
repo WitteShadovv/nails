@@ -583,13 +583,93 @@ fn a_device_the_scan_cannot_place_an_ecryptfs_folder_against_is_not_checked() {
 }
 
 #[test]
-fn a_stack_deeper_than_any_real_one_leaves_the_scan_unable_to_tell() {
-    // Sixteen mappings stacked on /dev/sdb, the top one holding an eCryptfs
-    // folder: more devices than any real stack has, so the walk down stops
-    // before the disk, and the scan cannot tell whether it holds the folder.
+fn a_loop_image_on_storage_sysfs_cannot_place_leaves_the_scan_unable_to_tell() {
+    // The vault image of a loop-mounted folder lies on an overlay: stat gives
+    // the file the overlay's own anonymous device, which sysfs does not list,
+    // and the overlay names no device. Its upper lies on the root partition,
+    // but the scan cannot follow an overlay, so it cannot tell whether a disk
+    // or partition holds the folder's files, and none is checked. The loop
+    // device and the image file hold them.
+    const LOOP0: &str = "/sys/devices/virtual/block/loop0";
+    let sysfs = Sysfs::two_disks();
+    sysfs.device(LOOP0, "loop0", "7:0");
+    let fs = &sysfs.0;
+    fs.mock_set_file_content(&format!("{LOOP0}/loop/backing_file"), "/srv/ov/vault.img\n");
+    fs.mock_set_device_id(Path::new("/srv/ov/vault.img"), rustix::fs::makedev(0, 40));
+    fs.mock_add_file("/srv/ov/vault.img", "");
+    let table = format!(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         2 1 0:40 / /srv/ov rw,relatime - overlay overlay \
+         rw,lowerdir=/srv/l,upperdir=/srv/u,workdir=/srv/w\n\
+         3 1 7:0 / /mnt/vault rw,relatime - ext4 /dev/loop0 rw\n\
+         4 3 0:50 / /mnt/vault/alice rw,relatime - ecryptfs /mnt/vault/.Private \
+         {ECRYPTFS_OPTS}\n"
+    );
+    fs.mock_set_mount_table(&table);
+    let mounts = parse_mountinfo(&table);
+    for device in ["/dev/sda", "/dev/sda1", "/dev/sdb"] {
+        let reason = sysfs.blind_spot(device, &mounts).unwrap_or_default();
+        assert!(
+            reason.contains("cannot tell whether this device holds them")
+                && reason.contains("an image file stored on one"),
+            "{device}: {reason}"
+        );
+    }
+    let stacked = Some(ScanBlindSpot::StackedEncryption.reason().to_string());
+    for device in ["/dev/loop0", "/srv/ov/vault.img"] {
+        assert_eq!(sysfs.blind_spot(device, &mounts), stacked, "{device}");
+    }
+}
+
+#[test]
+fn every_member_of_a_wide_array_below_an_ecryptfs_folder_holds_it() {
+    // /home is an md array of the first partitions of eight disks (sdc to
+    // sdj) and holds an encrypted home: with each member's disk, seventeen
+    // devices hold its files, all within what the scan follows. Each of
+    // them holds the folder, and the disks outside the array do not.
+    let sysfs = Sysfs::two_disks();
+    let md0 = "/sys/devices/virtual/block/md0";
+    let mut members = Vec::new();
+    for (n, letter) in ('c'..='j').enumerate() {
+        let disk = format!("/sys/devices/pci0/block/sd{letter}");
+        let member = format!("{disk}/sd{letter}1");
+        let minor = 32 + 16 * n;
+        sysfs
+            .device(&disk, &format!("sd{letter}"), &format!("8:{minor}"))
+            .partition(
+                &member,
+                &format!("sd{letter}1"),
+                &format!("8:{}", minor + 1),
+                1,
+            );
+        members.push(member);
+    }
+    let below: Vec<&str> = members.iter().map(String::as_str).collect();
+    sysfs.device(md0, "md0", "9:0").on(md0, &below);
+    let mounts = parse_mountinfo(&format!(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n\
+         2 1 9:0 / /home rw,relatime - ext4 /dev/md0 rw\n\
+         3 2 0:50 / /home/alice rw,relatime - ecryptfs /home/alice/.Private {ECRYPTFS_OPTS}\n"
+    ));
+    let stacked = Some(ScanBlindSpot::StackedEncryption.reason().to_string());
+    for device in ["/dev/md0", "/dev/sdc1", "/dev/sdj1", "/dev/sdc", "/dev/sdj"] {
+        assert_eq!(sysfs.blind_spot(device, &mounts), stacked, "{device}");
+    }
+    for device in ["/dev/sda", "/dev/sda1", "/dev/sdb"] {
+        assert_eq!(sysfs.blind_spot(device, &mounts), None, "{device}");
+    }
+}
+
+#[test]
+fn more_devices_below_an_ecryptfs_folder_than_the_scan_follows_leave_it_unable_to_tell() {
+    // More mappings stacked on /dev/sdb than the scan follows, the top one
+    // holding an eCryptfs folder: the walk down stops before the disk, so the
+    // scan cannot tell whether the disk, or any other device, holds the
+    // folder, and says why. A mapping it did read still holds it.
     let sysfs = Sysfs::two_disks();
     let mut below = SDB.to_string();
-    for n in 0..16 {
+    let top = super::scan::MAX_HOLDING_DEVICES;
+    for n in 0..=top {
         let dir = format!("/sys/devices/virtual/block/dm-{n}");
         sysfs
             .device(&dir, &format!("dm-{n}"), &format!("253:{n}"))
@@ -597,12 +677,18 @@ fn a_stack_deeper_than_any_real_one_leaves_the_scan_unable_to_tell() {
         below = dir;
     }
     let mounts = parse_mountinfo(&format!(
-        "1 0 253:15 / / rw,relatime - ext4 /dev/dm-15 rw\n\
+        "1 0 253:{top} / / rw,relatime - ext4 /dev/dm-{top} rw\n\
          2 1 0:50 / /home/alice rw,relatime - ecryptfs /home/alice/.Private {ECRYPTFS_OPTS}\n"
     ));
-    let reason = sysfs.blind_spot("/dev/sdb", &mounts).unwrap_or_default();
-    assert!(
-        reason.contains("cannot tell whether this device holds them"),
-        "{reason}"
-    );
+    for device in ["/dev/sdb", "/dev/dm-0", "/dev/sda"] {
+        let reason = sysfs.blind_spot(device, &mounts).unwrap_or_default();
+        assert!(
+            reason.contains("cannot tell whether this device holds them")
+                && reason.contains("than the scan follows"),
+            "{device}: {reason}"
+        );
+    }
+    let stacked = Some(ScanBlindSpot::StackedEncryption.reason().to_string());
+    let read = format!("/dev/dm-{}", top - 1);
+    assert_eq!(sysfs.blind_spot(&read, &mounts), stacked);
 }

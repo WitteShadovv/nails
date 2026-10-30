@@ -996,9 +996,10 @@ checked, never as clean:
   device named with `--device` also a whole disk with that filesystem in a
   partition, or a device below it (the partition under a LUKS or LVM mapping,
   an md array's member). A `--device` the scan cannot place against such a
-  folder, because the folder lies on a tmpfs, an overlay or a network share,
-  or because sysfs lists no block device at the path, is reported as not
-  checked too;
+  folder, because the folder lies on a tmpfs, an overlay, a FUSE or network
+  filesystem or in an image file stored on one, because more devices lie
+  below its filesystem than the scan follows, or because sysfs lists no block
+  device at the path, is reported as not checked too;
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)

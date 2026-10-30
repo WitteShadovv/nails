@@ -296,12 +296,27 @@ fn mount_blind_spot(entry: &MountEntry, lowers: &[&MountEntry]) -> Option<String
 }
 
 /// Why a device named for a scan is not checked when the scan cannot tell
-/// whether it holds the folder of an eCryptfs mount.
+/// whether it holds the folder of an eCryptfs mount, as the storage under the
+/// folder or the device itself is out of sysfs's sight.
 const ECRYPTFS_UNPLACED: &str = "an eCryptfs mount (an encrypted home or Private folder) stores \
      the files under it encrypted, and the scan cannot tell whether this device holds them: sysfs \
-     shows no block device under their folder (it lies on a tmpfs, an overlay or a network share, \
-     or on no mount the table shows) or none at this path, so this raw plaintext scan cannot \
-     prove the canary absent";
+     shows no block device at the bottom of the storage their folder lies on (a tmpfs, an overlay, \
+     a FUSE or network filesystem, or an image file stored on one), the mount table shows no \
+     mount the scan can place the folder on, or sysfs shows no block device at this path, so \
+     this raw plaintext scan cannot prove the canary absent";
+
+/// Why a device named for a scan is not checked when the devices below the
+/// filesystem an eCryptfs folder lies on are more than the scan follows.
+const ECRYPTFS_TOO_MANY: &str = "an eCryptfs mount (an encrypted home or Private folder) stores \
+     the files under it encrypted, and the scan cannot tell whether this device holds them: more \
+     devices lie below the filesystem their folder lies on than the scan follows, so this raw \
+     plaintext scan cannot prove the canary absent";
+
+/// The most devices the scan reads below the filesystem an eCryptfs folder
+/// lies on. Real stacks are a few devices deep, and a wide array adds two (a
+/// member partition and its disk) per drive, so only a pathological sysfs
+/// reaches it.
+pub(super) const MAX_HOLDING_DEVICES: usize = 256;
 
 /// Why a clean scan of `device` cannot rule out the eCryptfs mounts whose
 /// folders lie on the filesystems of `lowers`, or that the scan cannot place
@@ -315,10 +330,12 @@ const ECRYPTFS_UNPLACED: &str = "an eCryptfs mount (an encrypted home or Private
 /// partition, the partition below a dm-crypt or LVM mapping, a member of an md
 /// array, the file a loop device reads (named as a regular file) or the device
 /// of the filesystem that holds that file. A folder on a filesystem with no
-/// block device of its own (a tmpfs, an overlay, a network share) or on no
-/// mount the scan can place it on, and a path sysfs lists no block device for
-/// that is no regular file (a node outside `/dev`, a system without sysfs),
-/// leave the scan unable to tell.
+/// block device of its own (a tmpfs, an overlay, a network share), in an
+/// image file on one, or on no mount the scan can place it on, a path sysfs
+/// lists no block device for that is no regular file (a node outside `/dev`,
+/// a system without sysfs), and more devices below the folder's filesystem
+/// than [`MAX_HOLDING_DEVICES`] leave the scan unable to tell, unless the
+/// devices it did read hold `device`.
 fn ecryptfs_blind_spot<F: Filesystem>(
     fs: &F,
     device: &Path,
@@ -330,15 +347,15 @@ fn ecryptfs_blind_spot<F: Filesystem>(
     }
     let named = named_block_device(fs, device);
     let regular_file = named.is_none() && fs.is_regular_file(device).unwrap_or(false);
-    let mut unsure = !unplaced.is_empty() || (named.is_none() && !regular_file);
+    let mut unsure =
+        (!unplaced.is_empty() || (named.is_none() && !regular_file)).then_some(ECRYPTFS_UNPLACED);
     for lower in lowers {
-        let Some(layers) =
-            blockdev::device_of_mount(fs, lower).and_then(|top| devices_holding(fs, &top))
-        else {
-            unsure = true;
+        let Some(top) = blockdev::device_of_mount(fs, lower) else {
+            unsure.get_or_insert(ECRYPTFS_UNPLACED);
             continue;
         };
-        let holds = layers.iter().any(|layer| match &named {
+        let holding = devices_holding(fs, &top);
+        let holds = holding.layers.iter().any(|layer| match &named {
             Some(dir) => layer.sysfs == *dir,
             None => layer
                 .loop_device
@@ -348,8 +365,11 @@ fn ecryptfs_blind_spot<F: Filesystem>(
         if holds {
             return Some(super::ScanBlindSpot::StackedEncryption.reason().to_string());
         }
+        if let Some(gap) = holding.gap {
+            unsure.get_or_insert(gap);
+        }
     }
-    unsure.then(|| ECRYPTFS_UNPLACED.to_string())
+    unsure.map(str::to_string)
 }
 
 /// The sysfs directory of the block device at `device`, a path under `/dev`;
@@ -361,19 +381,45 @@ fn named_block_device<F: Filesystem>(fs: &F, device: &Path) -> Option<PathBuf> {
     blockdev::resolve_spec(fs, device.to_str()?)
 }
 
+/// The block devices below the filesystem an eCryptfs folder lies on, as far
+/// as the scan read them ([`devices_holding`]).
+#[derive(Debug, Default)]
+struct Holding {
+    /// The devices read.
+    layers: Vec<Layer>,
+    /// Why devices that hold the filesystem may be missing from `layers`:
+    /// [`ECRYPTFS_UNPLACED`] or [`ECRYPTFS_TOO_MANY`].
+    gap: Option<&'static str>,
+}
+
 /// The block devices whose raw bytes hold those of the device whose sysfs
-/// directory is `top`: the devices below it ([`blockdev::stack`], through
+/// directory is `top`: the devices below it ([`blockdev::walk()`], through
 /// `slaves/` and below a loop device to the device of the filesystem that
 /// holds its file), and the disk each partition among them lies on, with the
-/// devices below that disk in turn. `None` when they reach
-/// [`blockdev::MAX_STACK_DEVICES`], more than any real stack has, as some may
-/// then be missing.
-fn devices_holding<F: Filesystem>(fs: &F, top: &Path) -> Option<Vec<Layer>> {
-    let mut layers: Vec<Layer> = Vec::new();
+/// devices below that disk in turn. Some may be missing, which the gap says:
+/// a loop device among them reads a file no block device sysfs shows holds,
+/// or more than [`MAX_HOLDING_DEVICES`] devices lie below `top`.
+fn devices_holding<F: Filesystem>(fs: &F, top: &Path) -> Holding {
+    let mut holding = Holding::default();
     let mut pending = vec![top.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        for layer in blockdev::stack(fs, &dir, LoopFollow::BackingFiles) {
-            if layers.iter().any(|known| known.sysfs == layer.sysfs) {
+        if holding.layers.iter().any(|known| known.sysfs == dir) {
+            continue;
+        }
+        let limit = MAX_HOLDING_DEVICES.saturating_sub(holding.layers.len());
+        let walk = blockdev::walk(fs, &dir, LoopFollow::BackingFiles, limit);
+        if !walk.unplaced_loops.is_empty() {
+            holding.gap.get_or_insert(ECRYPTFS_UNPLACED);
+        }
+        if walk.cut_short {
+            holding.gap.get_or_insert(ECRYPTFS_TOO_MANY);
+        }
+        for layer in walk.layers {
+            if holding
+                .layers
+                .iter()
+                .any(|known| known.sysfs == layer.sysfs)
+            {
                 continue;
             }
             let disk = layer
@@ -382,10 +428,10 @@ fn devices_holding<F: Filesystem>(fs: &F, top: &Path) -> Option<Vec<Layer>> {
                 .filter(|partition| partition.disk.is_some())
                 .and(layer.sysfs.parent());
             pending.extend(disk.map(Path::to_path_buf));
-            layers.push(layer);
+            holding.layers.push(layer);
         }
     }
-    (layers.len() < blockdev::MAX_STACK_DEVICES).then_some(layers)
+    holding
 }
 
 /// Add a target under `device`, deduplicated by canonical path, keeping the
