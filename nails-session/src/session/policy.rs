@@ -175,10 +175,26 @@ pub struct Unreached {
     pub target: String,
     /// Why the unit is masked rather than skipped.
     pub cause: Unskippable,
-    /// Whether the unit comes from a unit file of the decoy's own rather than
-    /// an fstab line: `nofail` means nothing in its `Options=`, and a target
-    /// requires it by a link.
-    pub native: bool,
+    /// Where the unit and the link that requires it come from, which tells
+    /// what the operator can do about it.
+    pub origin: Origin,
+}
+
+/// Where a unit kept off comes from, and so what makes a boot target want
+/// it rather than require it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// An fstab line: `nofail` on it.
+    Fstab,
+    /// A unit a generator made and requires through a link of its own: an
+    /// fstab line, also one gone since the decoy's start, or a
+    /// `systemd.mount-extra=` of the kernel command line. `nofail` on that
+    /// line, or a reload of systemd for a line that is gone. `nofail` in a
+    /// unit file's `Options=` means nothing.
+    Generated,
+    /// A unit file installed for a target, which requires it by a link in
+    /// its `.requires` directory: `WantedBy=` rather than `RequiredBy=`.
+    Installed,
 }
 
 /// Why a unit a boot target requires is masked rather than skipped.
@@ -241,18 +257,24 @@ impl Decision {
                 Some(Unreached {
                     target: boot,
                     cause,
-                    native,
+                    origin,
                 }),
             ..
         } = self
         else {
             return None;
         };
-        let remedy = if *native {
-            "install the unit with WantedBy= rather than RequiredBy=, so that the target wants it \
-             instead of requiring it"
-        } else {
-            "give the fstab entry the nofail option"
+        let remedy = match origin {
+            Origin::Fstab => "give the fstab entry the nofail option",
+            Origin::Generated => {
+                "give the line its generator made it from the nofail option (an fstab entry, or \
+                 systemd.mount-extra= on the kernel command line), or run systemctl daemon-reload \
+                 if that line is gone"
+            }
+            Origin::Installed => {
+                "install the unit with WantedBy= rather than RequiredBy=, so that the target \
+                 wants it instead of requiring it"
+            }
         };
         let unreached = format!(
             "the hidden session will not reach {boot}, which requires it, and the units only \
@@ -309,9 +331,8 @@ pub struct Units {
     /// The units it pulls in that act on its device or filesystem
     /// ([`super::fstab::checkers`]).
     pub checkers: Vec<String>,
-    /// Whether they come from a unit file of the decoy's own rather than an
-    /// fstab line ([`Unreached::native`]).
-    pub native: bool,
+    /// Where they come from ([`Unreached::origin`]).
+    pub origin: Origin,
 }
 
 impl Units {
@@ -327,7 +348,7 @@ impl Units {
             automount: entry.is_automount().then(|| automount_unit(&entry.file)),
             required_by: required_by(entry),
             checkers: checkers(entry),
-            native: false,
+            origin: Origin::Fstab,
         }
     }
 }
@@ -443,7 +464,7 @@ fn gate(
             unreached: Some(Unreached {
                 target: required,
                 cause: Unskippable::NoDevice(device),
-                native: units.native,
+                origin: units.origin,
             }),
         },
         device => Decision::Skip {
