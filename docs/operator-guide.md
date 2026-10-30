@@ -405,12 +405,12 @@ journal that starts late:
   - the links: it deletes the virtual links the session brought up (a tunnel,
     a dummy, the bridges and virtual ports of containers and virtual machines)
     and the Wi-Fi interfaces it added on one of the decoy's radios (a monitor
-    or access point interface; this needs `iw` on the decoy, see below). A
-    link counts as the decoy's only with the index it had at entry, and a
-    link made again gets a new one, so a tunnel the session brought up under
-    the name of one of the decoy's, which the decoy's own stop took down,
-    goes too, while a link of the decoy's that the session only renamed
-    stays;
+    or access point interface, or the one iwd makes in place of the decoy's;
+    this needs `iw` on the decoy, see below). A link counts as the decoy's
+    only with the index it had at entry, and a link made again gets a new one,
+    so a tunnel the session brought up under the name of one of the decoy's,
+    which the decoy's own stop took down, goes too, while a link of the
+    decoy's that the session only renamed stays;
   - the MAC address of each of the decoy's devices, where the session changed
     it. Many drivers refuse to change the MAC address of a device that is up
     (USB Ethernet adapters such as the ASIX AX88179, and many Wi-Fi cards);
@@ -443,14 +443,16 @@ journal that starts late:
   it, where a return would hand it to the decoy. A missing tool counts the
   same way wherever the way back can see what the session left without it:
   without `ip` a changed MAC address or a link the session made, without `iw`
-  a Wi-Fi interface it added. The machine turns off as with `--poweroff`, and
-  the next boot is the plain decoy. Nothing on the screen says why: a line
+  a Wi-Fi interface it added, the one iwd makes in place of the decoy's by
+  default when it starts included, so on a decoy without `iw` a session that
+  runs iwd ends in a power-off. The machine turns off as with `--poweroff`,
+  and the next boot is the plain decoy. Nothing on the screen says why: a line
   there would tell anyone watching that a hidden session had just ended. A
   missing tool with nothing to undo (the stock NixOS decoy without `nft`, a
-  session that added no Wi-Fi interface) returns as before. The network
-  settings, the hostname and the per-link state below `/run` do not count: the
-  way back writes them back and does not power off over them, also when a
-  write fails.
+  session that added no Wi-Fi interface and ran no iwd) returns as before. The
+  network settings, the hostname and the per-link state below `/run` do not
+  count: the way back writes them back and does not power off over them, also
+  when a write fails.
 
   The decoy's NetworkManager therefore does not adopt a session link as
   connected externally or record a profile for it in
@@ -473,18 +475,18 @@ journal that starts late:
   name it gave one of the decoy's links; a Wi-Fi interface of the decoy's
   that software in the session replaced with one of its own, as iwd does by
   default when it starts and airmon-ng does when it starts monitor mode: the
-  way back deletes the replacement but does not make the decoy's interface
-  again, so the decoy has no Wi-Fi on that radio; the policy-routing rules
-  the session added where `ip` (iproute2) is not installed; and the MAC
-  address the session gave a device that was plugged in, or unplugged and
-  plugged in again, during the session, which makes it a new link. The
-  decoy's NetworkManager goes on using such an address unless the decoy's
-  profile sets one, so it can reach the decoy disk (in a DHCP lease, for
-  one). The way back also leaves alone a part of the network state that
-  activation could not read in full, rather than take the decoy's for the
-  session's: activation lists the decoy's own firewall tables with the
-  decoy's `nft`, so a session that starts on a decoy without it leaves every
-  table it adds even where the way back finds an `nft` later.
+  way back deletes the replacement (without `iw` it cannot, and powers off
+  instead) but does not make the decoy's interface again, so the decoy has no
+  Wi-Fi on that radio; the policy-routing rules the session added where `ip`
+  (iproute2) is not installed; and the MAC address the session gave a device
+  that was plugged in, or unplugged and plugged in again, during the session,
+  which makes it a new link. The decoy's NetworkManager goes on using such an
+  address unless the decoy's profile sets one, so it can reach the decoy disk
+  (in a DHCP lease, for one). The way back also leaves alone a part of the
+  network state that activation could not read in full, rather than take the
+  decoy's for the session's: activation lists the decoy's own firewall tables
+  with the decoy's `nft`, so a session that starts on a decoy without it
+  leaves every table it adds even where the way back finds an `nft` later.
 
   `check` and `activate` warn before a session when the decoy has no `nft`,
   or has a Wi-Fi interface and no `iw` (the `network-tools` check), and name
@@ -498,12 +500,13 @@ journal that starts late:
   stay, and a virtual link it made or a MAC address it changed makes the
   machine power off instead of returning; without `nft` the nftables tables it
   added stay; and without `iw` a Wi-Fi interface it added on the decoy's
-  radios makes the machine power off instead. Beyond that, the step runs with
-  no output after the session has ended, so nothing tells you what it left, or
-  why it powered off: take a VPN connection down with its own tool
-  (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
-  monitor mode with `airmon-ng stop`, and stop the containers and virtual
-  machines of the session before you deactivate, and end a session with
+  radios, the one iwd makes in place of the decoy's included, makes the
+  machine power off instead. Beyond that, the step runs with no output after
+  the session has ended, so nothing tells you what it left, or why it powered
+  off: take a VPN connection down with its own tool (`wg-quick down`,
+  `nmcli connection down`, the app's disconnect), end monitor mode with
+  `airmon-ng stop`, and stop the containers and virtual machines of the
+  session before you deactivate, and end a session with
   `deactivate --poweroff` (or `emergency --poweroff`) when none of its network
   state may reach the decoy.
 - on a volatile decoy, a journal that starts at the return. The way back
