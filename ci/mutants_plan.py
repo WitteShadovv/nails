@@ -4,12 +4,14 @@ The plan job of mutants-in-diff.yml lists the mutants of a pull request's diff
 (`just mutants-in-diff-plan`: cargo-mutants --list with the options that
 `just mutants-in-diff` tests with, which builds nothing) and passes the list
 here. The plan costs each mutant by the package whose tests run on it, and
-gives the lane as many shards as keep each one inside its time box with a
-margin, at most MAX_SHARDS: it reckons with the very mutants each shard gets,
-since cargo-mutants hands shard k of n the k-th run of consecutive mutants of
-the same list. A diff too large for that many shards of the ordinary box gets
-a longer box for each shard, up to MAX_SHARD_MINUTES. A diff that holds no
-mutant runs no shard.
+gives the lane the fewest shards that keep each one inside the ordinary time
+box with a margin, at most MAX_SHARDS: it reckons with the very mutants each
+shard gets, since cargo-mutants hands shard k of n the k-th run of
+consecutive mutants of the same list. A diff that no count of shards fits in
+the ordinary box gets the count whose dearest shard needs the shortest box,
+up to MAX_SHARD_MINUTES: with packages of different cost that box does not
+shrink with every shard added, as the slices move over the dear mutants. A
+diff that holds no mutant runs no shard.
 
 A diff too large even for the longest boxes runs no shard either, so none of
 its mutants is tested, and the rest of CI does not make up for it: the weekly
@@ -140,8 +142,8 @@ class Plan:
     # k-th run of ceil(mutants / n) consecutive mutants, so no shard holds more.
     per_shard: int = 0
     # The time box of each shard, in minutes: the one the dearest shard needs.
-    # For a diff too large for the lane, the box its MAX_SHARDS shards would
-    # need.
+    # For a diff too large for the lane, the shortest box any count of shards
+    # would need, and per_shard is the largest shard of that count.
     minutes: int = 0
 
     @property
@@ -198,30 +200,34 @@ def slices(mutants: int, shards: int) -> list[range]:
 
 
 def plan(packages: Sequence[str]) -> Plan:
-    """Split the mutants over the fewest shards that fit their time boxes.
+    """Split the mutants over the shards that fit them best.
 
-    ``packages`` holds the package of each mutant, in the order of the list
-    that cargo-mutants slices.
+    The fewest shards that fit the ordinary time box, and when no count up to
+    MAX_SHARDS does, the count whose dearest shard needs the shortest box, the
+    fewest shards of those that need it. ``packages`` holds the package of each
+    mutant, in the order of the list that cargo-mutants slices.
     """
     mutants = len(packages)
     if mutants == 0:
         return Plan(0)
     # The cost of the first i mutants, so that a slice costs a subtraction.
     before = list(accumulate(map(mutant_seconds, packages), initial=0))
-    shards = per_shard = minutes = 0
+    counts: list[Plan] = []
     for count in range(1, min(MAX_SHARDS, mutants) + 1):
         parts = slices(mutants, count)
         # A count that leaves a shard empty splits no finer than the fewer
         # shards that the same slices fill.
         if not parts[-1]:
             continue
-        shards, per_shard = count, len(parts[0])
         minutes = max(_box(before[part.stop] - before[part.start]) for part in parts)
+        counts.append(Plan(mutants, count, len(parts[0]), minutes))
         if minutes == SHARD_MINUTES:
             break
-    if minutes > MAX_SHARD_MINUTES:
-        return Plan(mutants, per_shard=per_shard, minutes=minutes)
-    return Plan(mutants, shards, per_shard, minutes)
+    # One shard always holds every mutant, so there is a count to take.
+    best = min(counts, key=lambda counted: (counted.minutes, counted.shards))
+    if best.minutes > MAX_SHARD_MINUTES:
+        return Plan(mutants, per_shard=best.per_shard, minutes=best.minutes)
+    return best
 
 
 def listed_packages(text: str) -> list[str]:
@@ -280,10 +286,12 @@ def describe(planned: Plan, packages: Sequence[str] = ()) -> str:
     if packages:
         held += f" ({_by_package(packages)})"
     if planned.too_large:
+        # The count of shards whose largest held per_shard mutants.
+        shards = math.ceil(planned.mutants / planned.per_shard)
         return (
-            f"The diff holds {held}, more than the lane can test: in "
-            f"{MAX_SHARDS} shards of at most {planned.per_shard} they would need "
-            f"{planned.minutes}-minute time boxes, and the lane gives a shard "
+            f"The diff holds {held}, more than the lane can test: split the best "
+            f"way, in {shards} shards of at most {planned.per_shard}, they would "
+            f"need {planned.minutes}-minute time boxes, and the lane gives a shard "
             f"{MAX_SHARD_MINUTES} minutes at most. No shard runs, so none of the "
             "diff's mutants is tested, and the lane fails. `just mutants-in-diff` "
             "tests the diff where time allows."
