@@ -19,8 +19,9 @@
 //!    base directory;
 //! 4. start both ends of one socket pair ([`spawn`]): `<root>/nails helper
 //!    --stdio`, still root, on one end, and the window's program
-//!    (`<root>/gui/bin/session`) on the other, dropped to the operator with
-//!    the environment of [`nails_api::window_env`] and nothing else.
+//!    (`<root>/gui/bin/session`, started as `session` alone) on the other,
+//!    dropped to the operator with the environment of
+//!    [`nails_api::window_env`] and nothing else.
 //!
 //! Both start a session of their own, so the terminal the line was typed in
 //! can close, and its shell be killed (activation kills it last, before the

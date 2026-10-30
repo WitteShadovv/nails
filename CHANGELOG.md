@@ -80,8 +80,9 @@ of this changelog for that version becomes the release notes word for word, and
   it first gives itself the launcher's environment, which a desktop's start does not: before its
   toolkit starts it starts itself again, as the same process, on the launcher's allowlist, with its
   home and XDG directories in a directory of its own in the operator's runtime directory (refused
-  unless it is private and in RAM), in `/` and with `/dev/null` as its standard streams. However it
-  starts, it turns off its core dumps (a limit of 0), makes itself not dumpable and sets
+  unless it is private and in RAM), in `/`, with `/dev/null` as its output, and as
+  `session --engine -`, which takes the engine's path on standard input instead of its command line.
+  However it starts, it turns off its core dumps (a limit of 0), makes itself not dumpable and sets
   `no_new_privs` before it opens. From a menu entry it starts pkexec before that, since pkexec
   cannot become root under `no_new_privs`, and by its set-user-ID path (`/run/wrappers/bin/pkexec`
   on NixOS, else `/usr/bin/pkexec`), never through `PATH`. Started any other way it opens nothing
@@ -111,10 +112,11 @@ of this changelog for that version becomes the release notes word for word, and
   device, and checks again. Every control and row is a Tab stop with an accessible name. The
   window's own names are neutral: its title is "Session", and its app id, its program
   (`<hidden-root>/gui/bin/session`), its process name and the application name a screen reader reads
-  are all `session`. A process list still shows `nails` while the window is open: the helper runs as
-  `<hidden-root>/nails helper --stdio`, and a menu entry's start keeps
-  `--engine <hidden-root>/nails` on the window's command line. Its tests run without a display, on
-  Slint's testing platform.
+  are all `session`. Its command line is its name alone, `session` (`session --engine -` once a menu
+  entry's start ran again), so a log that quotes it, such as dbus-daemon's line for a service the
+  window's bus traffic starts, names no place. A process list still shows `nails` while the window
+  is open: the helper runs as `<hidden-root>/nails helper --stdio`. Its tests run without a display,
+  on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
