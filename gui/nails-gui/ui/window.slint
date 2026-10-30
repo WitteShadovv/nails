@@ -165,6 +165,10 @@ export component AppWindow inherits Window {
         }
     }
 
+    // The width the Emergency control takes at the start of the header bar,
+    // while it shows.
+    property <length> emergency-width;
+
     // Everything behind an open question is out of the keyboard's reach, and
     // everything on a page that takes no input.
     property <bool> reachable: !root.question-open && root.takes-input;
@@ -188,6 +192,7 @@ export component AppWindow inherits Window {
             HeaderBar {
                 title: "Session";
                 reachable: root.reachable;
+                start-reserved: root.emergency-shown ? root.emergency-width + 6px : 0px;
                 close-clicked => {
                     root.close-window();
                 }
@@ -205,7 +210,11 @@ export component AppWindow inherits Window {
                     focus-on-tab-navigation: false;
                 }
 
+                // Set apart from its size: an element with a size and no
+                // position is centred in its parent, which put the page 40 px
+                // low and its end under the action bar.
                 flick := Flickable {
+                    y: 0px;
                     width: page.width;
                     height: page.height - action-bar.height;
                     content-height: column.preferred-height;
@@ -420,6 +429,13 @@ export component AppWindow inherits Window {
         y: 1px;
         width: min(self.preferred-width, root.width - 92px);
         height: 44px;
+        // The header bar's title gives way to a label that reaches it.
+        init => {
+            root.emergency-width = self.width;
+        }
+        changed width => {
+            root.emergency-width = self.width;
+        }
         fired => {
             root.emergency-fired();
         }
