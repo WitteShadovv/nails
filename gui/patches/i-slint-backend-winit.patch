@@ -1,0 +1,47 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 1d49f6f..bc30efc 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -85,9 +85,12 @@ unstable-wgpu-30 = [
+     "i-slint-renderer-femtovg?/unstable-wgpu-30",
+     "i-slint-renderer-skia?/unstable-wgpu-30",
+ ]
++# NAILS: without "winit/wayland-csd-adwaita". winit's sctk-adwaita window
++# decorations, which it builds even for a window without a frame and then
++# hides, run dbus-send, gsettings and fc-match at every start. Without them
++# winit draws smithay's fallback frame, which starts nothing.
+ wayland = [
+     "winit/wayland",
+-    "winit/wayland-csd-adwaita",
+     "glutin?/wayland",
+     "glutin-winit?/wayland",
+     "dep:arboard",
+diff --git a/xdg_desktop_settings.rs b/xdg_desktop_settings.rs
+index e22c5af..9d02ef6 100644
+--- a/xdg_desktop_settings.rs
++++ b/xdg_desktop_settings.rs
+@@ -185,15 +185,21 @@ async fn read_setting(
+     setting: &SettingDescriptor,
+ ) -> zbus::Result<zbus::zvariant::OwnedValue> {
+     let args = (setting.namespace, setting.key);
++    // NAILS: NO_AUTO_START on both reads. The portal is read where it runs
++    // and never started for the window through D-Bus activation: where no one
++    // owns its name, the bus answers NameHasNoOwner, which
++    // `portal_unavailable` takes as a missing portal.
++    let flags = zbus::proxy::MethodFlags::NoAutoStart.into();
+     #[cfg_attr(slint_nightly_test, allow(non_exhaustive_omitted_patterns))]
+-    match settings_proxy.call("ReadOne", &args).await {
++    let reply = match settings_proxy.call_with_flags("ReadOne", flags, &args).await {
+         Err(zbus::Error::MethodError(name, ..))
+             if name.as_str() == "org.freedesktop.DBus.Error.UnknownMethod" =>
+         {
+-            settings_proxy.call("Read", &args).await
++            settings_proxy.call_with_flags("Read", flags, &args).await
+         }
+         result => result,
+-    }
++    };
++    reply?.ok_or_else(|| zbus::Error::Failure("the settings portal sent no reply".into()))
+ }
+
+ /// Clears the pending flag so the backend creates and shows the first windows.
