@@ -329,14 +329,16 @@ WHAT HAPPENS:
   is stopped in order, the top of /run is scrubbed of the hidden session,
   most of the network state it set up is put back (the addresses and routes
   it gave the decoy's own devices stay, and so do its nftables tables on a
-  decoy without nft and the Wi-Fi interfaces it added on one without iw),
-  and the decoy starts again at its own login screen (a display manager set
-  to log an account in automatically logs it in again, as at boot). The
-  scrub also deletes the runtime journal, which the decoy shares with the
-  hidden session, so a volatile decoy's journal starts again at the return.
-  The hidden volume is unmounted and its encryption mapping closed by the
-  switch itself. Deactivation warns when the return will find no ip or nft,
-  or no iw on a machine with Wi-Fi.
+  decoy without nft), and the decoy starts again at its own login screen (a
+  display manager set to log an account in automatically logs it in again,
+  as at boot). When the return cannot undo a link, MAC address,
+  policy-routing rule or nftables table the session made or changed (a
+  Wi-Fi interface it added on a decoy without iw among them), the machine
+  powers off instead. The scrub also deletes the runtime journal, which the
+  decoy shares with the hidden session, so a volatile decoy's journal starts
+  again at the return. The hidden volume is unmounted and its encryption
+  mapping closed by the switch itself. Deactivation warns when the return
+  will find no ip or nft, or no iw on a machine with Wi-Fi.
 
 EXAMPLES:
   nails deactivate                    Soft-reboot back to the decoy
@@ -367,8 +369,10 @@ WHAT HAPPENS:
   hidden program is killed at once. The machine returns to the plain decoy,
   which shows its normal login screen; log in with the decoy password (a
   display manager set to log an account in automatically logs it in again, as
-  at boot). With --poweroff the machine powers off instead. On the decoy,
-  emergency removes what an interrupted activation left in /run.
+  at boot). With --poweroff the machine powers off instead, and so it does,
+  as after deactivate, when the return cannot undo a link, MAC address,
+  policy-routing rule or nftables table the session made or changed. On the
+  decoy, emergency removes what an interrupted activation left in /run.
 
 EXAMPLES:
   nails emergency                     Kill the hidden session and return now
