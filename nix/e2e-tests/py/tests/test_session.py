@@ -226,6 +226,70 @@ class PowerOffTest(unittest.TestCase):
         self.assertIn("what PID 1 waits on", machine.logged[-1])
 
 
+class RealPowerOffTest(unittest.TestCase):
+    """What a VM's last console says about how QEMU came to exit."""
+
+    @staticmethod
+    def stopped(lines: list[str]) -> FakeMachine:
+        class Exited:
+            def wait(self, timeout: float) -> int:
+                return 0
+
+        machine = FakeMachine([])
+        machine.full_console_log.extend(lines)
+        machine.process = Exited()
+        return machine
+
+    def test_the_kernels_power_down_line_proves_a_power_off(self) -> None:
+        machine = self.stopped(
+            [
+                "[   41.2] systemd-shutdown[1]: Powering off.",
+                "[   41.3] reboot: Power down",
+            ]
+        )
+        session.wait_for_real_power_off(machine, timeout=5)
+        self.assertFalse(machine.connected)
+
+    def test_a_reboot_or_a_panic_is_no_power_off(self) -> None:
+        for lines, cause in (
+            (["[   12.0] reboot: Restarting system"], "the machine rebooted"),
+            (
+                ["[    9.1] Kernel panic - not syncing: Attempted to kill init!"],
+                "the kernel panicked",
+            ),
+            # A panic on the way down, after the power-off was asked for.
+            (
+                [
+                    "[   41.3] Kernel panic - not syncing: VFS",
+                    "[   41.4] reboot: Power down",
+                ],
+                "the kernel panicked",
+            ),
+            (["[   41.2] systemd-shutdown[1]: Powering off."], "never said"),
+        ):
+            with self.subTest(cause=cause):
+                machine = self.stopped(lines)
+                with self.assertRaises(AssertionError) as raised:
+                    session.wait_for_real_power_off(machine, timeout=5)
+                self.assertIn("not from a power-off", str(raised.exception))
+                self.assertIn(cause, str(raised.exception))
+
+    def test_the_reader_thread_is_waited_for_bounded(self) -> None:
+        machine = self.stopped(["[   41.3] reboot: Power down"])
+
+        class Reader:
+            def __init__(self) -> None:
+                self.joined: list[float] = []
+
+            def join(self, timeout: float) -> None:
+                self.joined.append(timeout)
+
+        reader = Reader()
+        machine.serial_thread = reader  # type: ignore[attr-defined]
+        session.wait_for_real_power_off(machine, timeout=5)
+        self.assertEqual(reader.joined, [30])
+
+
 class TriggerFailureTest(unittest.TestCase):
     def test_a_failed_trigger_stops_the_wait_at_once(self) -> None:
         machine = FakeMachine(["activation failed", "nails-trigger-exit=1"])
