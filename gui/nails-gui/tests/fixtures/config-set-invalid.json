@@ -1,0 +1,10 @@
+{
+  "command": "config",
+  "error": {
+    "code": "config",
+    "message": "invalid config /mnt/data/config/nails.toml: log_path = \"/elsewhere/logs\": must lie inside the hidden volume root /mnt/data. Nothing was written.",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}

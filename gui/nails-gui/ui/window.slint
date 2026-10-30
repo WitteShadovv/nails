@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 // The window. One page at a time: a head with the verdict and where things
-// stand, rows of facts, the steps of an activation, rows of checks, titled
-// groups of rows (what a tool found, read or did not check), a line that
-// names the fix, the rows that open the window's tools, and one main action
-// at the bottom, with a second plain one beside it on some pages. A tool's
-// page starts with Back, and a field when it needs one typed. Over it, when
-// an operation asks first, its question. What each page says is decided in
+// stand, rows of facts, a field when the page needs one typed, the steps of
+// an activation, rows of checks, rows to pick (a setting, or one of its
+// states), titled groups of rows (what a tool found, read or did not check),
+// a line that names the fix, the rows that open the window's tools, and one
+// main action at the bottom, with a second plain one beside it on some
+// pages. A tool's page starts with Back. Over it, when an operation asks
+// first, its question. What each page says is decided in
 // Rust (src/model.rs); this file only lays it out. A page past an
 // activation's point of no return takes no input at all, the window's Close
 // included.
@@ -80,6 +81,9 @@ export component AppWindow inherits Window {
     in property <[RowGroup]> groups;
     in property <string> fix;
     in property <[ToolLink]> links;
+    // Rows to pick on a tool's page: a setting, or a state or an option of
+    // one.
+    in property <[ToolLink]> choices;
     // A tool's page: Back leads to the session's page.
     in property <bool> back-shown;
     // The field of a tool's page, when its label is not empty.
@@ -120,6 +124,7 @@ export component AppWindow inherits Window {
     callback action-activated();
     callback secondary-activated();
     callback link-activated(index: int);
+    callback choice-activated(index: int);
     callback back-activated();
     callback field-edited(text: string);
 
@@ -243,16 +248,6 @@ export component AppWindow inherits Window {
                             wrap: word-wrap;
                         }
 
-                        if root.field-label != "": FieldRow {
-                            label: root.field-label;
-                            hint: root.field-hint;
-                            text <=> root.field-text;
-                            reachable: root.reachable;
-                            edited(text) => {
-                                root.field-edited(text);
-                            }
-                        }
-
                         if root.facts.length > 0: BoxedList {
                             for fact[i] in root.facts: ActionRow {
                                 title: fact.title;
@@ -260,6 +255,16 @@ export component AppWindow inherits Window {
                                 first: i == 0;
                                 last: i == root.facts.length - 1;
                                 reachable: root.reachable;
+                            }
+                        }
+
+                        if root.field-label != "": FieldRow {
+                            label: root.field-label;
+                            hint: root.field-hint;
+                            text <=> root.field-text;
+                            reachable: root.reachable;
+                            edited(text) => {
+                                root.field-edited(text);
                             }
                         }
 
@@ -285,6 +290,19 @@ export component AppWindow inherits Window {
                                 reachable: root.reachable;
                                 allow-clicked => {
                                     root.allow-requested(i);
+                                }
+                            }
+                        }
+
+                        if root.choices.length > 0: BoxedList {
+                            for choice[i] in root.choices: NavRow {
+                                title: choice.title;
+                                subtitle: choice.subtitle;
+                                first: i == 0;
+                                last: i == root.choices.length - 1;
+                                reachable: root.reachable;
+                                activated => {
+                                    root.choice-activated(i);
                                 }
                             }
                         }

@@ -254,13 +254,14 @@ fn a_press_beside_it_let_go_on_it_does_nothing() {
 #[test]
 fn the_keyboard_takes_two_presses_and_escape_or_tab_cancels() {
     let screen = hidden();
-    let walk = screen.walk(Key::Tab, 5);
+    let walk = screen.walk(Key::Tab, 6);
     assert_eq!(
         walk,
         [
             "Hidden volume",
             text::VERIFY,
             text::REHEARSAL,
+            text::SETTINGS,
             text::DEACTIVATE,
             text::EMERGENCY
         ],
@@ -290,7 +291,7 @@ fn the_keyboard_takes_two_presses_and_escape_or_tab_cancels() {
 #[test]
 fn a_key_held_down_is_one_press_however_long_it_repeats() {
     let screen = hidden();
-    let walk = screen.walk(Key::Tab, 5);
+    let walk = screen.walk(Key::Tab, 6);
     assert_eq!(walk.last().map(String::as_str), Some(text::EMERGENCY));
     for (key, name) in [(Key::Return, "Return"), (Key::Space, "Space")] {
         // Past a keyboard's repeat delay and well past the pointer's hold.

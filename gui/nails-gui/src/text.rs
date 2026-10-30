@@ -14,8 +14,10 @@ use std::path::Path;
 
 use crate::launch;
 
+mod settings;
 mod tools;
 
+pub use settings::*;
 pub use tools::*;
 
 /// The window's title, the same on every page and on the decoy: it names

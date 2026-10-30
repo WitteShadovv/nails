@@ -1,0 +1,57 @@
+{
+  "command": "config",
+  "data": {
+    "config": {
+      "backend_watch": {
+        "auto_emergency": false,
+        "debounce_secs": 15,
+        "enabled": true,
+        "poll_interval_secs": 5
+      },
+      "hidden_volume_root": "/mnt/data",
+      "log_path": "/mnt/data/logs",
+      "minimum_space_mb": 500,
+      "nixos_flake": null,
+      "persona": {
+        "mask_inherited": [],
+        "mode": "shared-home"
+      },
+      "rebuild_space_mb": 4096,
+      "session_mounts": {
+        "alert": true,
+        "read_only": false
+      },
+      "show_opsec_reminders": true,
+      "sleep_policy": {
+        "mode": "warn"
+      },
+      "state_file_path": "/mnt/data/state.json"
+    },
+    "exists": true,
+    "path": "/mnt/data/config/nails.toml",
+    "sources": {
+      "backend_watch": "default",
+      "backend_watch.auto_emergency": "default",
+      "backend_watch.debounce_secs": "default",
+      "backend_watch.enabled": "default",
+      "backend_watch.poll_interval_secs": "default",
+      "hidden_volume_root": "derived",
+      "log_path": "derived",
+      "minimum_space_mb": "default",
+      "nixos_flake": "default",
+      "persona": "file",
+      "persona.mask_inherited": "default",
+      "persona.mode": "default",
+      "rebuild_space_mb": "default",
+      "session_mounts": "default",
+      "session_mounts.alert": "default",
+      "session_mounts.read_only": "default",
+      "show_opsec_reminders": "default",
+      "sleep_policy": "default",
+      "sleep_policy.mode": "default",
+      "state_file_path": "derived"
+    }
+  },
+  "ok": true,
+  "schema_version": 2
+}
