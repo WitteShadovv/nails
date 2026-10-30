@@ -389,7 +389,8 @@ fn decoy_filesystems(root: &Path, mounts: &[MountEntry], hidden_root: &Path) -> 
     let mut decisions = policy::decide_all(&entries, mounts, hidden_root, &policy::device_present);
     let run = root.join("run");
     let dirs = mount_units::UnitDirs { root, run: &run };
-    decisions.extend(checks::decoy_units(dirs, &entries, mounts, hidden_root));
+    let native = checks::decoy_units(dirs, &decisions, mounts, hidden_root);
+    decisions.extend(native);
     decisions
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
