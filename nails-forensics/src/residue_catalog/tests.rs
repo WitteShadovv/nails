@@ -467,3 +467,35 @@ fn generated_doc_tables_match_the_catalog() {
         );
     }
 }
+
+/// Only `Probe::None` detects nothing, so the detector invariant above sees a
+/// row whose both probes are `None` and no other.
+#[test]
+fn only_a_none_probe_detects_nothing() {
+    assert!(!Probe::None("no probe point sees it").detects());
+    assert!(Probe::Check("examiner-disk").detects());
+    assert!(
+        Probe::Paths {
+            paths: &["/var/log/x"],
+            severity: ProbeSeverity::Warn,
+        }
+        .detects()
+    );
+}
+
+/// `covered_by_verify_check` yields every row whose verify probe is the named
+/// check, in catalog order, and nothing for a name no row uses.
+#[test]
+fn covered_by_verify_check_yields_the_rows_of_that_check() {
+    let ids: Vec<&str> = covered_by_verify_check("examiner-disk")
+        .map(|row| row.id)
+        .collect();
+    let expected: Vec<&str> = CATALOG
+        .iter()
+        .filter(|row| row.verify == Probe::Check("examiner-disk"))
+        .map(|row| row.id)
+        .collect();
+    assert!(expected.len() >= 2, "{expected:?}");
+    assert_eq!(ids, expected);
+    assert_eq!(covered_by_verify_check("no-such-check").count(), 0);
+}

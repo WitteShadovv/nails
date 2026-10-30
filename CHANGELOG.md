@@ -327,6 +327,22 @@ of this changelog for that version becomes the release notes word for word, and
   the assignments before it count and the files after it are not read, so a `Storage=volatile` in a
   later drop-in, which journald never reads, no longer lets a persistent journal pass. Like systemd,
   NAILS counts the Unicode noncharacters (U+FFFF and the like) as not valid UTF-8.
+- A journald, logind or systemd-coredump configuration with a main file or drop-in that is not a
+  regular file is no longer read as if that entry were not there. systemd lists a drop-in by its
+  name alone, so a directory with a drop-in's name shadows the drop-in of that name below it, and
+  NAILS read the one below instead. The releases then read such an entry differently: up to 259 a
+  directory stops the reading where it comes and a link to `/dev/null` reads as empty, while 260
+  and later read none of the configuration, the main file included, when a drop-in or the main
+  file is a directory, a device (`/dev/null` too), a FIFO or a socket. NAILS counts such a
+  configuration as unread whatever release runs, as the daemons read their files when they start
+  and an update can bring another release before they next do, at the latest when the decoy starts
+  again after the way back. So does a configuration with a file or drop-in directory NAILS cannot
+  read where systemd, running as root, can (an unprivileged `check` used to skip such a file):
+  `decoy-persistence` refuses an unread journald configuration and warns about an unread coredump
+  one, `sleep-policy` warns that the lid or an idle session may suspend the host and that a closed
+  lid may leave the session unlocked, and the sleep guard's `block` mode takes the lid switch. Mask
+  a vendor drop-in with an empty file, which every release reads alike. A link to a path that does
+  not exist still shadows the file below it and adds nothing, as in every release.
 - A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
   equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
   activation, naming the folder, instead of passing the pre-flight check and then failing the

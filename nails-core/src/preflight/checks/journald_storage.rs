@@ -26,7 +26,7 @@
 //! Nothing here vacuums or rotates the decoy journal: destroying the decoy's
 //! own log history is itself a deniability tell.
 
-use super::systemd_conf::{self, Assignment};
+use super::systemd_conf::{self, Assignment, Unread};
 use crate::{Filesystem, runtime_safety};
 use std::path::Path;
 
@@ -222,7 +222,8 @@ pub fn effective_journald_storage<F: Filesystem>(fs: &F) -> JournaldStorage {
 /// [`effective_journald_storage`] for the system tree rooted at `root`. When no
 /// configuration file sets a valid `Storage=`, the `journal.storage` credential
 /// decides, and failing that journald's version-dependent built-in default
-/// ([`built_in_default`]).
+/// ([`built_in_default`]). A configuration NAILS cannot read as journald does
+/// ([`Unread`]) counts as persistent.
 pub fn effective_journald_storage_at<F: Filesystem>(fs: &F, root: &Path) -> JournaldStorage {
     storage_under_version(fs, root, host_systemd_major())
 }
@@ -234,13 +235,23 @@ fn storage_under_version<F: Filesystem>(
     root: &Path,
     systemd_major: Option<u32>,
 ) -> JournaldStorage {
-    let assignments = systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION);
-    resolve_storage(
+    resolved_storage(fs, root, systemd_major).unwrap_or(JournaldStorage::Persistent)
+}
+
+/// [`storage_under_version`], or the reason NAILS cannot tell where journald
+/// keeps the journal.
+fn resolved_storage<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    systemd_major: Option<u32>,
+) -> Result<JournaldStorage, Unread> {
+    let assignments = systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION)?;
+    Ok(resolve_storage(
         storage_from(&assignments),
         storage_credential(fs, root, systemd_major),
         vendor_storage_hint(fs, root),
         systemd_major,
-    )
+    ))
 }
 
 /// Whether `/var/log/journal` is a real on-disk directory (not tmpfs, not
@@ -274,12 +285,20 @@ pub fn journald_persists_to_decoy<F: Filesystem>(fs: &F) -> bool {
     journald_persists_to_decoy_at(fs, Path::new("/"))
 }
 
-/// [`journald_persists_to_decoy`] for the system tree rooted at `root`.
+/// [`journald_persists_to_decoy`] for the system tree rooted at `root`. A
+/// configuration NAILS cannot read as journald does persists.
 pub fn journald_persists_to_decoy_at<F: Filesystem>(fs: &F, root: &Path) -> bool {
-    journal_persists_to_disk(
-        effective_journald_storage_at(fs, root),
+    journald_persistence_at(fs, root).unwrap_or(true)
+}
+
+/// Whether the journal persists to the decoy disk under `root`, or why NAILS
+/// cannot tell: journald's configuration holds an entry that the systemd
+/// releases do not read alike, or a file NAILS cannot read ([`Unread`]).
+pub fn journald_persistence_at<F: Filesystem>(fs: &F, root: &Path) -> Result<bool, Unread> {
+    Ok(journal_persists_to_disk(
+        resolved_storage(fs, root, host_systemd_major())?,
         persistent_journal_dir_present(fs, root),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -696,5 +715,32 @@ mod tests {
         // With an on-disk journal directory, auto persists. (The tempdir itself
         // may sit on tmpfs, so the directory verdict is supplied directly.)
         assert!(journal_persists_to_disk(storage, true));
+    }
+
+    /// A configuration NAILS cannot read as journald does persists, whatever
+    /// its files set: from systemd 260 journald reads none of it, and its
+    /// default is `persistent` from 259. The reason names the entry.
+    #[test]
+    fn an_unread_configuration_counts_as_persistent() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(MAIN, "[Journal]\nStorage=volatile\n");
+        let entry = "/etc/systemd/journald.conf.d/50-x.conf";
+        fs.mock_set_directory_contents(
+            Path::new("/etc/systemd/journald.conf.d"),
+            vec![std::path::PathBuf::from(entry)],
+        );
+        fs.mock_set_path_type(entry, PathKind::Dir);
+        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Persistent);
+        assert!(journald_persists_to_decoy(&fs));
+        assert_eq!(
+            journald_persistence_at(&fs, Path::new("/")),
+            Err(Unread {
+                path: std::path::PathBuf::from(entry),
+                cause: systemd_conf::UnreadCause::NotRegular,
+            })
+        );
+
+        fs.mock_set_path_type(entry, PathKind::Missing);
+        assert_eq!(journald_persistence_at(&fs, Path::new("/")), Ok(false));
     }
 }

@@ -377,6 +377,62 @@ fn persistent_journald_drop_in_is_refused() {
     assert!(result.message().contains("journald.conf.d"));
 }
 
+/// A journald configuration NAILS cannot read as journald does is refused,
+/// naming its entry, however volatile the files around it are: a drop-in
+/// linked to `/dev/null` reads as empty up to systemd 259, and from 260 it
+/// leaves the whole configuration unread, the main file included.
+#[test]
+fn an_unread_journald_configuration_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    let entry = root.join("etc/systemd/journald.conf.d/10-vendor.conf");
+    std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &entry).unwrap();
+    let result = DecoyPersistenceCheck::new(false, false)
+        .with_root(root)
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(result.is_fail(), "{}", result.message());
+    let expected = format!(
+        "NAILS cannot tell where systemd-journald keeps the journal, so it counts as \
+         persistent: {} is not a regular file; systemd releases",
+        entry.display()
+    );
+    assert!(result.message().contains(&expected), "{}", result.message());
+}
+
+/// A coredump configuration NAILS cannot read as systemd-coredump does keeps
+/// no core off the disk, whatever its files set, and the warning names it.
+#[test]
+fn an_unread_coredump_configuration_keeps_no_core_off_the_disk() {
+    use super::coredump::CoredumpSettings;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/coredump.conf",
+        "[Coredump]\nStorage=none\nProcessSizeMax=0\n",
+    );
+    let entry = root.join("etc/systemd/coredump.conf.d/50-discard.conf");
+    std::fs::create_dir_all(&entry).unwrap();
+    let settings = CoredumpSettings::read(&RealFilesystem, root);
+    assert!(!settings.keeps_cores_off_disk(), "{settings:?}");
+    let finding = settings
+        .finding(false)
+        .expect("an unread configuration is a finding");
+    let expected = format!(
+        "NAILS cannot tell whether systemd-coredump keeps core dumps on the decoy disk: {} \
+         is not a regular file; systemd releases",
+        entry.display()
+    );
+    assert!(finding.starts_with(&expected), "{finding}");
+}
+
 #[test]
 fn volatile_journald_drop_in_passes() {
     let tmp = tempfile::tempdir().unwrap();

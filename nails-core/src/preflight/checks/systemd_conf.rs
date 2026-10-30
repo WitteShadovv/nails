@@ -9,18 +9,43 @@
 //!
 //! 1. the main file: the first of `/etc/systemd/NAME.conf`,
 //!    `/run/systemd/NAME.conf`, `/usr/local/lib/systemd/NAME.conf` and
-//!    `/usr/lib/systemd/NAME.conf` that exists (only that one is used);
+//!    `/usr/lib/systemd/NAME.conf` that exists (only that one is used). This
+//!    is how systemd 256 and later look for it, and how NAILS does; before
+//!    256 the daemons read the main file from `/etc` alone;
 //! 2. then every `*.conf` drop-in found in `NAME.conf.d/` under the same four
 //!    directories, sorted by file name across all of them. A drop-in in a
 //!    higher-priority directory (`/etc` over `/run` over `/usr/local/lib` over
-//!    `/usr/lib`) shadows a same-named file in a lower one; a drop-in symlinked
-//!    to `/dev/null` (or empty) therefore masks the vendor one.
+//!    `/usr/lib`) shadows a same-named file in a lower one; an empty drop-in
+//!    therefore masks the vendor one.
 //!
 //! The files are applied in that order and, per key, the last assignment wins.
 //! A pre-flight check that reads only `/etc/systemd/NAME.conf` both refuses a
 //! host configured through a drop-in and, worse, accepts one whose drop-in
 //! overrides a safe main file, so every systemd configuration read goes through
 //! [`section_assignments`].
+//!
+//! # Entries that are not regular files
+//!
+//! systemd lists a drop-in by its name alone, whatever is there: a directory,
+//! a device (a link to `/dev/null` among them), a FIFO or a socket with a
+//! drop-in's name shadows the same-named file below it as a regular file does.
+//! The releases then read such an entry differently. Up to 259 they open it:
+//! `/dev/null` reads as empty, while a directory fails the read where its turn
+//! comes, so the files before it count and the rest are skipped. From 260 they
+//! open every drop-in as a regular file before they parse anything, so any
+//! such entry, or such a main file, leaves the whole configuration unread, the
+//! main file included. A link that cannot be followed (a loop) differs as
+//! well: from 258 it is not listed, so the file below it is read, while the
+//! earlier releases fail on it. A link to a path that does not exist is the one
+//! exception, in every release: it shadows the file below and adds nothing.
+//!
+//! A configuration with such an entry is [`Unread`] whatever release runs, and
+//! so is one with a file or drop-in directory that NAILS cannot read where
+//! systemd, running as root, can. The daemons read these files when they
+//! start, and an update can bring another release before they next do, at the
+//! latest when the decoy starts again after the way back. A caller counts an
+//! unread configuration as the setting it guards against, never as the
+//! defaults: what the daemon applies is not known.
 //!
 //! # Syntax
 //!
@@ -91,72 +116,184 @@ pub enum RefusedLine {
     NotUtf8,
 }
 
-/// The files systemd reads for configuration `name` (e.g. `journald.conf`) under
-/// `root`, in application order: the main file first, then the drop-ins.
-pub fn config_files<F: Filesystem>(fs: &F, root: &Path, name: &str) -> Vec<PathBuf> {
-    let mut files = Vec::new();
+/// A configuration NAILS cannot read the way systemd reads it, so what the
+/// daemon applies is not known (see the [module docs](self)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unread {
+    /// The entry that is not read as systemd reads it.
+    pub path: PathBuf,
+    /// Why it is not.
+    pub cause: UnreadCause,
+}
 
-    // Only the first main file found is used.
-    if let Some(main) = CONF_DIRS
-        .iter()
-        .map(|dir| root.join(dir).join(name))
-        .find(|path| fs.path_exists(path).unwrap_or(false) && !is_dir(fs, path))
-    {
-        files.push(main);
+/// Why a configuration is [`Unread`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnreadCause {
+    /// A main file or drop-in that is not a regular file once its links are
+    /// followed: a directory, a device such as `/dev/null`, a FIFO, a socket,
+    /// or a link that cannot be followed. The systemd releases do not read
+    /// such a configuration alike.
+    NotRegular,
+    /// A file, or a drop-in directory, that NAILS cannot read, as an
+    /// unprivileged `check` cannot read one only root may.
+    CannotRead,
+}
+
+impl Unread {
+    fn new(path: &Path, cause: UnreadCause) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            cause,
+        }
     }
 
-    // Drop-ins: iterate directories in priority order so the first file seen
-    // for a name (the highest-priority one) shadows the others; the map keeps
-    // them sorted by file name, byte-wise like systemd.
+    /// What the operator can do about it, to follow the description.
+    pub fn advice(&self) -> &'static str {
+        match self.cause {
+            UnreadCause::NotRegular => {
+                "systemd releases do not read a configuration with such an entry alike, and from \
+                 260 a directory or a device there leaves all of it unread; put a regular file \
+                 there (an empty one masks a vendor file of the same name)"
+            }
+            UnreadCause::CannotRead => "run the command again with sudo",
+        }
+    }
+}
+
+impl std::fmt::Display for Unread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.cause {
+            UnreadCause::NotRegular => write!(f, "{} is not a regular file", self.path.display()),
+            UnreadCause::CannotRead => write!(f, "NAILS cannot read {}", self.path.display()),
+        }
+    }
+}
+
+/// What systemd's reader makes of one configuration path.
+enum Entry {
+    /// A regular file once its links are followed: systemd reads it.
+    Regular,
+    /// No file, or a link to a path that does not exist: systemd's open fails
+    /// with `ENOENT`, which it skips. A drop-in's name still shadows the files
+    /// of that name below it.
+    Missing,
+    /// Anything else: the configuration is not read alike by every release,
+    /// or NAILS cannot see what is there.
+    Unread(UnreadCause),
+}
+
+/// Classify `path` without opening it: a FIFO would block the open, and a
+/// device can be read without end.
+fn entry<F: Filesystem>(fs: &F, path: &Path) -> Entry {
+    if fs.is_regular_file(path).unwrap_or(false) {
+        return Entry::Regular;
+    }
+    if fs.path_exists(path).unwrap_or(true) {
+        return Entry::Unread(UnreadCause::NotRegular);
+    }
+    // Nothing that a lookup reaches: no file, a link to nothing, a link that
+    // cannot be followed (a loop), or a path NAILS may not look up. A path
+    // that resolves all the same is one the in-memory test double holds no
+    // file for (it resolves links without asking whether the target is
+    // there), or one that came into being since the lookup above.
+    match fs.canonicalize(path) {
+        Ok(_) => Entry::Missing,
+        Err(e) => match e.io_kind() {
+            Some(std::io::ErrorKind::NotFound) => Entry::Missing,
+            Some(std::io::ErrorKind::PermissionDenied) => Entry::Unread(UnreadCause::CannotRead),
+            _ => Entry::Unread(UnreadCause::NotRegular),
+        },
+    }
+}
+
+/// The files systemd reads for configuration `name` (e.g. `journald.conf`) under
+/// `root`, in application order: the main file first, then the drop-ins.
+///
+/// [`Unread`] when the main file systemd would read, or a drop-in that is not
+/// shadowed, is no regular file, or when NAILS cannot read a drop-in directory.
+/// Every drop-in is looked at, wherever a line refused in an earlier file
+/// would stop the reading, because systemd 260 and later open them all first.
+pub fn config_files<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    name: &str,
+) -> Result<Vec<PathBuf>, Unread> {
+    let mut files = Vec::new();
+
+    // Only the first main file found is used; a link to a path that does not
+    // exist is none, so systemd goes on to the next directory.
+    for dir in CONF_DIRS {
+        let path = root.join(dir).join(name);
+        match entry(fs, &path) {
+            Entry::Missing => continue,
+            Entry::Regular => files.push(path),
+            Entry::Unread(cause) => return Err(Unread::new(&path, cause)),
+        }
+        break;
+    }
+
+    // Drop-ins: iterate directories in priority order so the first entry seen
+    // for a name (the highest-priority one) shadows the others, whatever it
+    // is; the map keeps them sorted by file name, byte-wise like systemd.
     let dropin_dir = format!("{name}.d");
     let mut dropins: BTreeMap<OsString, PathBuf> = BTreeMap::new();
     for dir in CONF_DIRS {
-        let Ok(entries) = fs.list_directory(&root.join(dir).join(&dropin_dir)) else {
-            continue;
+        let dir = root.join(dir).join(&dropin_dir);
+        let entries = match fs.list_directory(&dir) {
+            Ok(entries) => entries,
+            // systemd skips a drop-in directory it cannot open, but it runs as
+            // root: one that only NAILS cannot open may hold drop-ins it reads.
+            Err(e) if e.io_kind() == Some(std::io::ErrorKind::PermissionDenied) => {
+                return Err(Unread::new(&dir, UnreadCause::CannotRead));
+            }
+            Err(_) => continue,
         };
-        for entry in entries {
-            let Some(file_name) = entry.file_name() else {
+        for listed in entries {
+            let Some(file_name) = listed.file_name() else {
                 continue;
             };
             let name_bytes = file_name.as_encoded_bytes();
             if name_bytes.starts_with(b".") || !name_bytes.ends_with(b".conf") {
                 continue;
             }
-            if is_dir(fs, &entry) {
-                continue;
-            }
-            dropins.entry(file_name.to_os_string()).or_insert(entry);
+            dropins.entry(file_name.to_os_string()).or_insert(listed);
         }
     }
-    files.extend(dropins.into_values());
-    files
-}
-
-fn is_dir<F: Filesystem>(fs: &F, path: &Path) -> bool {
-    fs.is_directory(path).unwrap_or(false)
+    for path in dropins.into_values() {
+        match entry(fs, &path) {
+            Entry::Regular => files.push(path),
+            Entry::Missing => {}
+            Entry::Unread(cause) => return Err(Unread::new(&path, cause)),
+        }
+    }
+    Ok(files)
 }
 
 /// The effective assignments in `[section]` of configuration `name` under
 /// `root`, in the order systemd applies them (so a later entry overrides an
-/// earlier one for the same key). A file that cannot be read contributes
-/// nothing; a line systemd refuses ([`RefusedLine`]) ends the resolution as it
-/// does in systemd.
+/// earlier one for the same key). A line systemd refuses ([`RefusedLine`]) ends
+/// the resolution as it does in systemd, and a file that is gone by the time it
+/// is read adds nothing, as systemd skips it.
+///
+/// [`Unread`] when NAILS cannot read the configuration as systemd does: an
+/// entry [`config_files`] refuses, or a file that systemd reads and NAILS
+/// cannot. The caller counts it as the setting it guards against.
 pub fn section_assignments<F: Filesystem>(
     fs: &F,
     root: &Path,
     name: &str,
     section: &str,
-) -> Vec<Assignment> {
+) -> Result<Vec<Assignment>, Unread> {
     let mut out = Vec::new();
-    for file in config_files(fs, root, name) {
-        let Some(text) = read_config_text(fs, &file) else {
+    for file in config_files(fs, root, name)? {
+        let Some(text) = read_listed_config(fs, &file)? else {
             continue;
         };
         if parse_section(&text, section, &mut out).is_err() {
             break;
         }
     }
-    out
+    Ok(out)
 }
 
 /// The text of configuration file `path`, for [`parse_section`] to read the way
@@ -176,14 +313,23 @@ pub fn section_assignments<F: Filesystem>(
 /// `O_NOATIME`, so it leaves no access-time trail on the decoy as the normal
 /// read does. `None` when the file cannot be read.
 pub fn read_config_text<F: Filesystem>(fs: &F, path: &Path) -> Option<String> {
+    read_listed_config(fs, path).ok().flatten()
+}
+
+/// [`read_config_text`] for a file that [`config_files`] listed: `None` when it
+/// is gone, as systemd skips a file that is gone when it opens it, and
+/// [`Unread`] when it is there and NAILS cannot read it.
+fn read_listed_config<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>, Unread> {
+    let unread = || Unread::new(path, UnreadCause::CannotRead);
     match fs.read_file_content(path) {
-        Ok(text) => Some(text),
-        Err(e) if e.io_kind() == Some(std::io::ErrorKind::InvalidData) => {
-            read_config_bytes_noatime(path)
-                .ok()
-                .map(|bytes| decode_config_bytes(&bytes))
-        }
-        Err(_) => None,
+        Ok(text) => Ok(Some(text)),
+        Err(e) => match e.io_kind() {
+            Some(std::io::ErrorKind::NotFound) => Ok(None),
+            Some(std::io::ErrorKind::InvalidData) => read_config_bytes_noatime(path)
+                .map(|bytes| Some(decode_config_bytes(&bytes)))
+                .map_err(|_| unread()),
+            _ => Err(unread()),
+        },
     }
 }
 
@@ -228,9 +374,10 @@ pub fn decode_config_bytes(bytes: &[u8]) -> String {
     text
 }
 
-/// Whether any file of configuration `name` exists under `root`.
+/// Whether any file of configuration `name` exists under `root`. An
+/// [`Unread`] configuration has one.
 pub fn config_present<F: Filesystem>(fs: &F, root: &Path, name: &str) -> bool {
-    !config_files(fs, root, name).is_empty()
+    !config_files(fs, root, name).is_ok_and(|files| files.is_empty())
 }
 
 /// Append the assignments of `[section]` in one configuration text to `out`.
