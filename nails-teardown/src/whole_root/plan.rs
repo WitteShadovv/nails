@@ -130,8 +130,9 @@ pub struct Skip {
     /// The units the target requires: a mount, its automount or a swap.
     pub units: Vec<String>,
     /// The units they pull in that act on their device or file (its fsck,
-    /// makefs, growfs or mkswap). PID 1 starts them before it tests the
-    /// condition of the unit that pulls them in, so they are skipped with it.
+    /// makefs or mkswap, which PID 1 starts before it tests the condition of
+    /// the unit that pulls them in, and its growfs, pcrfs, validatefs and
+    /// quota units, which are bound to the mount), skipped with it.
     /// Never masked: a masked unit that a unit requires keeps that unit, and
     /// the target with it, from starting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
