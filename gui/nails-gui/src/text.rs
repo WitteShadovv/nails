@@ -65,6 +65,14 @@ pub const DECOY_INTERRUPTED: &str =
     "Decoy. An activation was interrupted and left files in memory.";
 /// The decoy whose record cannot be read.
 pub const DECOY_RECORD_UNREADABLE: &str = "Decoy. The record on the hidden volume cannot be read.";
+/// A record that cannot be read anywhere, where the engine does not guess
+/// the place.
+pub const PLACE_UNKNOWN: &str = "The record on the hidden volume cannot be read, so it is not \
+     known whether a hidden session is active.";
+/// The settings could not be read, so there is no status.
+pub const SETTINGS_UNREADABLE: &str = "Settings Cannot Be Read";
+/// The status failed for another reason.
+pub const STATUS_UNAVAILABLE: &str = "Status Not Available";
 /// The decoy after a session that did not end normally.
 pub const DECOY_ENDED_ABNORMALLY: &str = "Decoy. The last hidden session did not end normally.";
 /// The decoy with a disk over the hidden volume.
