@@ -1,7 +1,7 @@
 """Tests for ci/oracle/partitions.sh: which partition of a whole-disk image the
 oracle carves as the root, how its restore channel compares every other part
-of the disk, and which images it refuses. The disk images are built from
-files, with no root, no loop device and no mount."""
+of the disk, and which filesystems it refuses to carve. The disk images are
+built from files, with no root, no loop device and no mount."""
 
 from __future__ import annotations
 
@@ -46,14 +46,32 @@ TOOLS = {
         "blkid",
         "mkfs.fat",
         "mkfs.btrfs",
+        "btrfs",
         "mkswap",
+        "mkfs.ext4",
+        "debugfs",
     )
 }
+
+_CRC32C = []
+for _i in range(256):
+    _c = _i
+    for _ in range(8):
+        _c = (_c >> 1) ^ 0x82F63B78 if _c & 1 else _c >> 1
+    _CRC32C.append(_c)
+
+
+def crc32c(data: bytes) -> int:
+    """CRC-32C (Castagnoli), the checksum of a btrfs superblock."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc = _CRC32C[(crc ^ byte) & 0xFF] ^ (crc >> 8)
+    return crc ^ 0xFFFFFFFF
 
 
 @unittest.skipUnless(
     all(TOOLS.values()),
-    "needs util-linux, sleuthkit, dosfstools and btrfs-progs",
+    "needs util-linux, sleuthkit, dosfstools, btrfs-progs and e2fsprogs",
 )
 class PartitionPlanTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -78,6 +96,9 @@ class PartitionPlanTest(unittest.TestCase):
 
     def btrfs(self) -> bytes:
         return self.filesystem("root.img", 128, str(TOOLS["mkfs.btrfs"]), "-q", "-f")
+
+    def ext4(self) -> bytes:
+        return self.filesystem("ext4.img", 16, str(TOOLS["mkfs.ext4"]), "-q", "-F")
 
     def swap(self) -> bytes:
         return self.filesystem("swap.img", 8, str(TOOLS["mkswap"]))
@@ -369,6 +390,41 @@ class PartitionPlanTest(unittest.TestCase):
         garbage.write_bytes(b"\x01" * MIB)
         error = self.refused("vfat_structures_size", str(garbage), "0", str(MIB))
         self.assertIn("cannot read its layout", error)
+
+    # --- a journal or log tree no carver replays -----------------------------
+
+    def test_an_ext4_journal_left_unreplayed_stops_the_carve(self) -> None:
+        image = self.disk([(LINUX, 16 * MIB, self.ext4())])
+        settled = self.call("fs_settled", str(image), "ext4", str(MIB))
+        self.assertEqual(settled.returncode, 0, settled.stderr)
+        part = self.dir / "ext4.img"
+        subprocess.run(
+            [str(TOOLS["debugfs"]), "-w", "-R", "feature needs_recovery", str(part)],
+            check=True,
+            capture_output=True,
+            env=self.env,
+        )
+        image = self.disk([(LINUX, 16 * MIB, part.read_bytes())])
+        error = self.refused("fs_settled", str(image), "ext4", str(MIB))
+        self.assertIn("needs_recovery", error)
+
+    def test_a_btrfs_log_tree_stops_the_carve(self) -> None:
+        # A log tree btrfs restore would not replay: log_root set to the root
+        # tree's block, a block that exists, with the superblock checksum kept
+        # valid so btrfs-progs reads it.
+        clean = self.btrfs()
+        image = self.disk([(LINUX, 128 * MIB, clean)])
+        settled = self.call("fs_settled", str(image), "btrfs", str(MIB))
+        self.assertEqual(settled.returncode, 0, settled.stderr)
+        logged = bytearray(clean)
+        super_block = 65536
+        root = struct.unpack_from("<Q", logged, super_block + 80)[0]
+        struct.pack_into("<Q", logged, super_block + 96, root)
+        checksum = crc32c(bytes(logged[super_block + 32 : super_block + 4096]))
+        struct.pack_into("<I", logged, super_block, checksum)
+        image = self.disk([(LINUX, 128 * MIB, bytes(logged))])
+        error = self.refused("fs_settled", str(image), "btrfs", str(MIB))
+        self.assertIn(f"log tree (log_root {root})", error)
 
 
 if __name__ == "__main__":

@@ -149,9 +149,9 @@ of this changelog for that version becomes the release notes word for word, and
   read-only mount, and its boot sector and allocation tables by their bytes, a small partition with
   no filesystem whole by its bytes, and the partition table and every gap no partition covers by
   their bytes. A partition holding any other filesystem, a table mmls cannot read or that does not
-  list the root, and an image with a filesystem at byte 0 beside a partition table each stop the
-  run. Before, only plaso's limit to one partition stopped a disk of several, and only where a
-  timeline runs.
+  list the root, an image with a filesystem at byte 0 beside a partition table, and an ext4 journal
+  or btrfs log tree the carve would not replay each stop the run. Before, only plaso's limit to one
+  partition stopped a disk of several, and only where a timeline runs.
 - The oracle real-image nightly also images a real btrfs decoy: a stock Fedora 44 Cloud disk, kept
   whole before, after a plain reboot, after a second plain reboot and after a hidden session and the
   way back, then scanned without the timeline, once with the session and once with the second plain

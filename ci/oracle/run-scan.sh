@@ -48,8 +48,9 @@
 # a small partition holding no filesystem (a BIOS boot partition) as one file
 # holding its bytes, and every stretch no partition covers, the partition
 # table among them, as files holding their bytes. A partition with any other
-# filesystem stops the run, since its files would go uncompared
-# (ci/oracle/partitions.sh). The bulk_extractor and plaso channels
+# filesystem stops the run, since its files would go uncompared, and so does a
+# filesystem whose journal or log tree waits to be replayed, which no carver
+# here does (ci/oracle/partitions.sh). The bulk_extractor and plaso channels
 # take the image itself and run the same either way, but plaso has to open its
 # file system: it cannot open btrfs, so a btrfs image runs no timeline
 # (above), and log2timeline, run unattended without --partitions, stops on a
@@ -244,6 +245,12 @@ carve_loop=""
 # channel empty: see the `*)` arm.
 carve_restore() {
   local img=$1 dest=$2 fstype=$3 off=$4 size=$5 src=$1 log rc=0
+  case "$fstype" in
+    btrfs | ext2 | ext3 | ext4)
+      # Neither carver replays a journal or a log tree (fs_settled).
+      fs_settled "$img" "$fstype" "$off" || exit 1
+      ;;
+  esac
   case "$fstype" in
     btrfs)
       if [ "$off" -gt 0 ]; then

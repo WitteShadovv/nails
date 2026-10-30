@@ -5,8 +5,8 @@
 # What a disk image the forensic oracle scans holds, and how the restore
 # channel compares each part of it. ci/oracle/run-scan.sh sources this file,
 # and ci/tests runs these functions on disk images it builds, which needs no
-# root: they read the image file with mmls (sleuthkit), blkid (util-linux)
-# and od, and never attach or mount it.
+# root: they read the image file with mmls (sleuthkit), blkid (util-linux),
+# debugfs (e2fsprogs) and btrfs-progs, and never attach or mount it.
 
 # table_slots: read mmls's listing of a partition table on stdin and print one
 # "<byte-offset> <byte-size>" line per partition in it. mmls lists the
@@ -197,4 +197,43 @@ vfat_structures_size() {
     return 1
   fi
   printf '%s\n' "$bytes"
+}
+
+# fs_settled <image> <fstype> <byte-offset>: succeed when the filesystem at
+# <byte-offset> holds no writes that wait in a journal or log tree, and fail
+# with the reason when it does or that cannot be read. Neither carver replays
+# one (debugfs rdump and btrfs restore read the filesystem as it lies), so the
+# files they recover would be older than the ones the decoy would mount:
+# ext{2,3,4} with needs_recovery set, and btrfs with a log tree (log_root
+# not 0).
+fs_settled() {
+  local img=$1 fstype=$2 off=$3 src features log
+  case "$fstype" in
+    ext2 | ext3 | ext4)
+      src=$img
+      if [ "$off" -gt 0 ]; then src="$img?offset=$off"; fi
+      features=$(debugfs -R "stats -h" "$src" 2>/dev/null \
+        | awk -F: '$1 == "Filesystem features" { print $2; exit }') || features=""
+      if [ -z "$features" ]; then
+        echo "run-scan: debugfs cannot read the features of the $fstype filesystem at byte $off of $img; failing closed" >&2
+        return 1
+      fi
+      if grep -qw needs_recovery <<<"$features"; then
+        echo "run-scan: the $fstype filesystem at byte $off of $img holds writes its journal has not replayed (needs_recovery), which the carve would miss; failing closed" >&2
+        return 1
+      fi
+      ;;
+    btrfs)
+      log=$(btrfs inspect-internal dump-super --bytenr $((off + 65536)) "$img" 2>/dev/null \
+        | awk '$1 == "log_root" { print $2; exit }') || log=""
+      if ! [[ "$log" =~ ^[0-9]+$ ]]; then
+        echo "run-scan: btrfs-progs cannot read the superblock of the btrfs filesystem at byte $off of $img; failing closed" >&2
+        return 1
+      fi
+      if [ "$log" -ne 0 ]; then
+        echo "run-scan: the btrfs filesystem at byte $off of $img holds a log tree (log_root $log) that btrfs restore does not replay, which the carve would miss; failing closed" >&2
+        return 1
+      fi
+      ;;
+  esac
 }
