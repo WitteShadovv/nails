@@ -505,7 +505,9 @@ soft-reboots with `py/nails_e2e/session.py`:
 - `session-fresh-pids`: after a session that pushed the kernel's process
   numbers far on, the getty the decoy starts on the way back and its records
   in `/var/log/wtmp` carry numbers in the range a fresh boot of the same image
-  gives them, and a plain soft-reboot, as a positive control, does not;
+  gives them, as they do after a second session beside a unit that every
+  soft-reboot leaves running with a lower number, and a plain soft-reboot, as
+  a positive control, does not;
 - `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
   with its store on the root disk under NixOS's read-only bind, a store path
   bound after it, a read-only bind stacked on an fstab filesystem and its ESP

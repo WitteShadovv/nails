@@ -523,6 +523,16 @@ after a login that ended within that minute is not told apart. When the getty is
 passed over, the measure goes by logind, and no test checks where the getty
 lands then.
 
+A process that a soft-reboot leaves running, in a unit with
+`SurviveFinalKillSignal=yes` or a root storage daemon whose `argv[0]` begins
+with `@`, keeps the number and the start time it started with, and after a way
+back it still runs in the decoy's root. It is left out of both readings, so in
+the second and later sessions without a power-off between them the entry reads
+the decoy's start that the last way back ran, as the first entry reads the boot.
+Left in, such a unit kept from the cold boot could hold a lower number than
+every unit of that start and pass for its first process, and the getty and
+logind, started long after it, would fall outside that minute.
+
 Without a getty or logind to measure by, the counter goes to just below the
 lowest number the decoy's own userspace held at entry. No test checks where the
 getty lands from there. Only the getty, or logind, is measured: the decoy's

@@ -583,12 +583,15 @@ of this changelog for that version becomes the release notes word for word, and
   of its start that still runs, such as a getty started again after a logout, is passed over. When
   the getty is passed over, the way back measures by logind, and without either the counter goes
   just below the lowest number the decoy's own userspace held at entry. No test checks where the
-  getty lands then. The decoy's other units are not measured, so their numbers can land further from
-  their boot's. The step is best effort and never stops the way back. Where it cannot set the
-  counter (no number recorded, or a kernel without `CONFIG_CHECKPOINT_RESTORE`), `deactivate` warns
-  before the switch. The forensic oracle's allowlist no longer holds the getty records of the way
-  back: in the oracle-images test they now fall in the range of a fresh boot's getty and subtract
-  like it, so a getty record of another range fails the oracle again.
+  getty lands then. A process that a soft-reboot leaves running, in a unit with
+  `SurviveFinalKillSignal=yes` or a root storage daemon, is left out of the measure, so the second
+  and later sessions without a power-off measure by the getty the last way back started, as the
+  first does by the boot's. The decoy's other units are not measured, so their numbers can land
+  further from their boot's. The step is best effort and never stops the way back. Where it cannot
+  set the counter (no number recorded, or a kernel without `CONFIG_CHECKPOINT_RESTORE`),
+  `deactivate` warns before the switch. The forensic oracle's allowlist no longer holds the getty
+  records of the way back: in the oracle-images test they now fall in the range of a fresh boot's
+  getty and subtract like it, so a getty record of another range fails the oracle again.
 - Ctrl+C at the `deactivate` and `discard` prompts cancels at once, with the cancelled notice and
   exit 130 (under `--json` the cancel envelope). The signal handlers these commands install restart
   an interrupted read, so Ctrl+C only echoed `^C` there, and a "y" typed afterwards went on. The

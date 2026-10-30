@@ -39,6 +39,17 @@
 //! passed over, the measure goes by logind, and the getty's own number is not
 //! measured.
 //!
+//! A process a soft-reboot leaves running ([`survives_soft_reboot`]: a unit
+//! with `SurviveFinalKillSignal=yes`, or a root storage daemon) keeps the
+//! number and the start time it started with, and after a way back it still
+//! runs in the decoy's root beside the units the way back's start ran. It is
+//! left out of both readings. So in the second and later sessions without a
+//! power-off between them, the entry reads the decoy's start that the last way
+//! back ran as the first entry reads the boot: its floor and the getty it
+//! started. Left in, such a unit kept from the cold boot could hold a lower
+//! number than every unit of that start and pass for its first process, and
+//! the getty and logind, started long after it, would fall outside the window.
+//!
 //! Without an anchor to measure by, the counter goes to just below the floor.
 //! The decoy's start then numbers its units from where its own boot's
 //! userspace began; no test measures how close its getty lands to its own
@@ -160,7 +171,9 @@ impl Process {
 /// at `proc` (`/proc` on the real system): neither PID 1 nor a kernel thread
 /// nor a zombie, nor a process kept from the initrd or running in another root
 /// (a chroot or a container), whose numbers say nothing about where this
-/// root's start began.
+/// root's start began, nor one a soft-reboot leaves running
+/// ([`survives_soft_reboot`]), whose number and start can come from an
+/// earlier start.
 fn processes(proc: &Path) -> Vec<Process> {
     let Some(root) = file_id(&proc.join("1").join("root")) else {
         return Vec::new();
@@ -168,6 +181,7 @@ fn processes(proc: &Path) -> Vec<Process> {
     let Ok(dir) = std::fs::read_dir(proc) else {
         return Vec::new();
     };
+    let cgroups = cgroups_beside(proc);
     dir.flatten()
         .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
         .filter(|&pid| pid > 1)
@@ -177,6 +191,7 @@ fn processes(proc: &Path) -> Vec<Process> {
             if stat.is_kernel_thread()
                 || stat.state == 'Z'
                 || file_id(&dir.join("root")) != Some(root)
+                || survives_soft_reboot(&dir, &cgroups)
             {
                 return None;
             }
@@ -191,14 +206,79 @@ fn processes(proc: &Path) -> Vec<Process> {
         .collect()
 }
 
+/// The extended attribute systemd sets on the cgroup of a unit with
+/// `SurviveFinalKillSignal=yes`, and the one it reads where the first is
+/// absent (a kernel before 5.7 has no `user` attributes on cgroups).
+const SURVIVE_XATTRS: [&str; 2] = [
+    "user.survive_final_kill_signal",
+    "trusted.survive_final_kill_signal",
+];
+
+/// The unified cgroup hierarchy beside the procfs at `proc`:
+/// `/sys/fs/cgroup` for `/proc`.
+fn cgroups_beside(proc: &Path) -> PathBuf {
+    proc.parent()
+        .unwrap_or(Path::new("/"))
+        .join(crate::cgroup::CGROUP_ROOT.trim_start_matches('/'))
+}
+
+/// Whether a soft-reboot leaves the process at `dir` (`/proc/<pid>`) running,
+/// as systemd decides before the switch, when it kills every other userspace
+/// process: it sits in a cgroup systemd marked for a unit with
+/// `SurviveFinalKillSignal=yes` (in the hierarchy at `cgroups`), or it runs
+/// as root with an `argv[0]` that begins with `@`, as a root storage daemon
+/// does. A file that cannot be read counts for neither.
+fn survives_soft_reboot(dir: &Path, cgroups: &Path) -> bool {
+    in_surviving_cgroup(dir, cgroups) || is_storage_daemon(dir)
+}
+
+/// Whether the cgroup of the process at `dir` carries one of
+/// [`SURVIVE_XATTRS`] set to true, the first that is there counting.
+fn in_surviving_cgroup(dir: &Path, cgroups: &Path) -> bool {
+    let Some(path) = std::fs::read_to_string(dir.join("cgroup"))
+        .ok()
+        .and_then(|content| crate::cgroup::v2_path(&content))
+    else {
+        return false;
+    };
+    let cgroup = crate::cgroup::dir(cgroups, &path);
+    SURVIVE_XATTRS.iter().find_map(|name| {
+        let mut value = [0u8; 16];
+        let len = rustix::fs::getxattr(&cgroup, *name, &mut value[..]).ok()?;
+        Some(is_true(&value[..len]))
+    }) == Some(true)
+}
+
+/// Whether the attribute value `value` reads as true, as systemd parses a
+/// boolean: up to a NUL, `1`, `yes`, `y`, `true`, `t` or `on` in any case.
+fn is_true(value: &[u8]) -> bool {
+    let text = value.split(|&b| b == 0).next().unwrap_or_default();
+    ["1", "yes", "y", "true", "t", "on"]
+        .iter()
+        .any(|yes| text.eq_ignore_ascii_case(yes.as_bytes()))
+}
+
+/// Whether the process at `dir` runs as root (its real uid) with an
+/// `argv[0]` that begins with `@`, which systemd's soft-reboot leaves running
+/// as a root storage daemon.
+fn is_storage_daemon(dir: &Path) -> bool {
+    std::fs::read(dir.join("cmdline")).is_ok_and(|argv| argv.first() == Some(&b'@'))
+        && std::fs::read_to_string(dir.join("status"))
+            .ok()
+            .and_then(|status| crate::proc::parse_status_uid(&status))
+            == Some(0)
+}
+
 /// The lowest number of a live userspace process in the root PID 1 runs in
-/// (see [`processes`]). `None` when there is none.
+/// (see [`processes`]), under the procfs at `proc` and the cgroup hierarchy
+/// beside it. `None` when there is none.
 pub fn boot_floor(proc: &Path) -> Option<u32> {
     processes(proc).iter().map(|p| p.pid).min()
 }
 
 /// The entry's part of the record, read in the decoy under the procfs at
-/// `proc`: the floor ([`boot_floor`]) and, for each of [`ANCHORS`], the
+/// `proc` and the cgroup hierarchy beside it (`/sys/fs/cgroup` for `/proc`):
+/// the floor ([`boot_floor`]) and, for each of [`ANCHORS`], the
 /// lowest-numbered such process that the floor's start ran
 /// ([`START_WINDOW`]), when it sits no more than [`ANCHOR_SPAN`] above the
 /// floor.
