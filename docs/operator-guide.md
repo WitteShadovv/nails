@@ -503,12 +503,17 @@ journal that starts late:
   machine power off instead of returning; without `nft` the nftables tables it
   added stay; and without `iw` a Wi-Fi interface it added on the decoy's
   radios, the one iwd makes in place of the decoy's included, makes the
-  machine power off instead. Beyond that, the step runs with no output after
-  the session has ended, so nothing tells you what it left, or why it powered
-  off: take a VPN connection down with its own tool (`wg-quick down`,
-  `nmcli connection down`, the app's disconnect), end monitor mode with
-  `airmon-ng stop`, and stop the containers and virtual machines of the
-  session before you deactivate, and end a session with
+  machine power off instead. It also says first when the way back is bound to
+  power off over what is there now: a link the kernel keeps when it is deleted
+  (the fallback device a tunnel module makes when it loads, `tunl0` for
+  `ipip`), which never goes, or a link or MAC address of the session's it
+  finds no `ip` or `iw` for, unless that changes before it runs; a plain
+  `emergency` says the same in its report. Beyond that, the step runs with no
+  output after the session has ended, so nothing tells you what it left, or
+  why it powered off: take a VPN connection down with its own tool
+  (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
+  monitor mode with `airmon-ng stop`, and stop the containers and virtual
+  machines of the session before you deactivate, and end a session with
   `deactivate --poweroff` (or `emergency --poweroff`) when none of its network
   state may reach the decoy.
 - on a volatile decoy, a journal that starts at the return. The way back

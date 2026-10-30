@@ -215,6 +215,32 @@ pub fn way_back_lacks(root: &Path, decoy_system: Option<&Path>) -> Vec<NetworkTo
         .collect()
 }
 
+/// What the last step of the way back could not undo of the links and MAC
+/// addresses in the tree at `root` (`/`, but in tests) as they are now
+/// ([`network::foresee`]): it reads the record entry took from the runtime
+/// directory and finds its tools where that step will ([`way_back_finds`]).
+/// The hidden session tells it before the switch, which the step cannot.
+pub fn way_back_foresees(root: &Path, decoy_system: Option<&Path>) -> network::Foreseen {
+    let below = |path: &str| root.join(path.trim_start_matches('/'));
+    let places = network::Places {
+        run: below("/run"),
+        sys_class_net: below(network::SYS_CLASS_NET),
+        proc_hostname: below(network::PROC_HOSTNAME),
+        proc_sys: below(network::PROC_SYS),
+    };
+    let tool = |name| tools::find_for_system(root, decoy_system, name);
+    let tools = network::NetTools {
+        ip: tool("ip"),
+        iw: tool("iw"),
+        nft: tool("nft"),
+    };
+    let record = std::fs::read(
+        below(nails_teardown::whole_root::plan::RUNTIME_DIR).join(network::RECORD_NAME),
+    )
+    .ok();
+    network::foresee(&places, &tools, record.as_deref())
+}
+
 /// Prepare the way back and enqueue the soft-reboot (or power off).
 pub fn leave(
     paths: &Paths,
@@ -399,6 +425,43 @@ mod tests {
             way_back_lacks(root, None),
             [NetworkTool::Ip, NetworkTool::Nft]
         );
+    }
+
+    /// The step's record and links are read below the tree's `/run` and
+    /// `/sys`, its tools looked for where it will find them: on NixOS in the
+    /// decoy's system. A fallback tunnel device counts whatever the tools; a
+    /// Wi-Fi interface the session added on a decoy radio only without `iw`.
+    #[test]
+    fn the_way_back_foresees_from_the_record_and_the_links_in_the_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let decoy = Some(Path::new(DECOY_SYSTEM));
+        link(root, "lo", 1, None);
+        link(root, "wlan0", 3, Some("phy0"));
+        assert_eq!(way_back_foresees(root, decoy), network::Foreseen::default());
+        let places = network::Places {
+            run: root.join("run"),
+            sys_class_net: root.join("sys/class/net"),
+            proc_hostname: root.join("proc/sys/kernel/hostname"),
+            proc_sys: root.join("proc/sys"),
+        };
+        let record = network::NetworkRecord::capture(&places, &network::NetTools::default());
+        let at = root.join("run/overlay-runtime").join(network::RECORD_NAME);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, record.encode()).unwrap();
+        assert!(!way_back_foresees(root, decoy).powers_off());
+        link(root, "tunl0", 7, None);
+        link(root, "wlan1", 9, Some("phy0"));
+        let foreseen = way_back_foresees(root, decoy);
+        assert_eq!(foreseen.kernel_kept, ["tunl0"]);
+        assert_eq!(foreseen.wifi_without_iw, ["wlan1"]);
+        // The hidden system's iw is not the one the step finds.
+        put(root, "run/current-system/sw/bin/iw");
+        assert_eq!(way_back_foresees(root, decoy), foreseen);
+        put(root, "nix/store/aaa-nixos-system-decoy/sw/bin/iw");
+        let foreseen = way_back_foresees(root, decoy);
+        assert_eq!(foreseen.kernel_kept, ["tunl0"]);
+        assert!(foreseen.wifi_without_iw.is_empty(), "{foreseen:?}");
     }
 
     /// On NixOS every tool counts only in the decoy's system: one the hidden

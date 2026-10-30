@@ -15,6 +15,7 @@ use std::path::Path;
 
 use nails_api::ExitStatus;
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport, Side};
+use nails_teardown::whole_root::network::Foreseen;
 use nails_teardown::whole_root::plan::{Plan, default_plan_path};
 use serde::Serialize;
 
@@ -32,6 +33,21 @@ pub fn run_hot_path(finish: Finish) -> HotReport {
     let mut host = emergency::Host::system();
     host.act = nix::unistd::geteuid().is_root();
     emergency::run(plan, &host, finish)
+}
+
+/// What the way back the hot path enqueued is bound to leave of the links and
+/// MAC addresses as they are once the hidden programs are killed, which makes
+/// its last step power off instead of returning
+/// ([`way_back_foresees`](crate::session::leave::way_back_foresees)).
+/// Nothing unless the hot path enqueued a return from the hidden root.
+pub fn foresee(report: &HotReport) -> Foreseen {
+    if report.side != Side::Hidden || report.dispatched != Some(Finish::Return) {
+        return Foreseen::default();
+    }
+    let decoy_system = Plan::load(&default_plan_path())
+        .ok()
+        .and_then(|plan| plan.decoy.system);
+    crate::session::leave::way_back_foresees(Path::new("/"), decoy_system.as_deref())
 }
 
 /// The exit status for a hot-path report.
@@ -183,6 +199,16 @@ mod tests {
             act: false,
         };
         emergency::run(plan, &host, finish)
+    }
+
+    /// Only a return from the hidden root has a way back to foresee.
+    #[test]
+    fn only_a_return_from_the_hidden_root_foresees_its_way_back() {
+        let report = simulated(None, Finish::Return);
+        assert_eq!(foresee(&report), Foreseen::default());
+        let mut hidden = simulated(None, Finish::Poweroff);
+        hidden.side = Side::Hidden;
+        assert_eq!(foresee(&hidden), Foreseen::default());
     }
 
     #[test]

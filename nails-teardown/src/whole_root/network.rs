@@ -109,6 +109,15 @@ const IP_BUDGET: Duration = Duration::from_secs(3);
 /// `<linux/if.h>`), set by `ip link set up` and cleared by `ip link set down`.
 const IFF_UP: u32 = 0x1;
 
+/// The fallback devices the kernel's tunnel modules make when they load
+/// (`ipip` makes `tunl0`, `sit` makes `sit0`, `ip_gre` makes `gre0`, `gretap0`
+/// and `erspan0`). The kernel keeps such a device when it is asked to delete
+/// it: `ip link delete` succeeds and the link stays, so the way back of a
+/// session that loaded one of these modules powers off.
+pub const KERNEL_KEPT_LINKS: [&str; 9] = [
+    "tunl0", "sit0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0",
+];
+
 /// Where the network state is read and written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Places {
@@ -317,6 +326,72 @@ pub fn plan(record: &NetworkRecord, current: &[Link], current_hostname: &[u8]) -
         }
     }
     plan
+}
+
+/// What the way back cannot undo, as far as the hidden session can tell
+/// before the switch ([`foresee`]). Each makes it power off instead of
+/// returning, unless it is gone by the time the way back runs: a link the
+/// kernel keeps never is.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Foreseen {
+    /// The session's links the kernel keeps when they are deleted
+    /// ([`KERNEL_KEPT_LINKS`]).
+    pub kernel_kept: Vec<String>,
+    /// The other links of the session's that the way back deletes with `ip`
+    /// and finds none for.
+    pub links_without_ip: Vec<String>,
+    /// The decoy's devices that have another MAC address than at entry,
+    /// which the way back sets back with `ip` and finds none for.
+    pub addresses_without_ip: Vec<String>,
+    /// The session's Wi-Fi interfaces on the decoy's radios, which the way
+    /// back deletes with `iw` and finds none for.
+    pub wifi_without_iw: Vec<String>,
+}
+
+impl Foreseen {
+    /// Whether the way back powers off over what is there now, unless it is
+    /// gone by then.
+    pub fn powers_off(&self) -> bool {
+        !(self.kernel_kept.is_empty()
+            && self.links_without_ip.is_empty()
+            && self.addresses_without_ip.is_empty()
+            && self.wifi_without_iw.is_empty())
+    }
+}
+
+/// What the way back, run now with `tools`, could not undo of the links and
+/// MAC addresses at `places` ([`Foreseen`]): what [`restore_with`] sets out to
+/// undo and finds no tool for, and the links the kernel keeps. Nothing with
+/// no record, or a record without the links, as the way back then leaves them
+/// alone. Reading only; the rules and tables it does not look at, since only
+/// listing them again would tell.
+pub fn foresee(places: &Places, tools: &NetTools, record_bytes: Option<&[u8]>) -> Foreseen {
+    let Some(record) = record_bytes.and_then(NetworkRecord::decode) else {
+        return Foreseen::default();
+    };
+    let Some(current) = observe_links(&places.sys_class_net) else {
+        return Foreseen::default();
+    };
+    let plan = plan(&record, &current, &record.hostname);
+    let (kernel_kept, deleted): (Vec<String>, Vec<String>) = plan
+        .delete
+        .into_iter()
+        .partition(|name| KERNEL_KEPT_LINKS.contains(&name.as_str()));
+    let without_ip = tools.ip.is_none();
+    Foreseen {
+        kernel_kept,
+        links_without_ip: if without_ip { deleted } else { Vec::new() },
+        addresses_without_ip: if without_ip {
+            plan.set_mac.into_iter().map(|(name, _)| name).collect()
+        } else {
+            Vec::new()
+        },
+        wifi_without_iw: if tools.iw.is_none() {
+            plan.delete_wireless
+        } else {
+            Vec::new()
+        },
+    }
 }
 
 /// Read the links the kernel lists under `sys_class_net`; `None` when the list

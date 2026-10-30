@@ -10,8 +10,10 @@
 //! the switch (the soft-reboot stops its terminal), so the operation is split:
 //! [`prepare`] builds the manager and refuses, before anything is asked, outside
 //! a hidden session and in a hidden root whose session plan cannot be read,
-//! where the way back is unknown; [`ReadyDeactivation::warnings`] names what
-//! the return will not put back, for the front end to show before it asks;
+//! where the way back is unknown; [`ReadyDeactivation::foresee`] tells what
+//! the return is bound to leave, which makes it power off instead, and
+//! [`ReadyDeactivation::warnings`] names what the return will not put back,
+//! for the front end to show before it asks;
 //! [`ReadyDeactivation::lock`] takes the exclusive state lock once the front
 //! end has confirmed; and [`LockedDeactivation::leave`], on the only handle
 //! that leaves, commits the way back once the front end has, for a person,
@@ -20,6 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
+use nails_teardown::whole_root::network::Foreseen;
 use nails_teardown::whole_root::plan::Plan;
 
 use super::lock::LockError;
@@ -76,20 +79,34 @@ impl ReadyDeactivation {
         &self.manager.config().state_file_path
     }
 
+    /// What the return to the decoy is bound to leave of the links and MAC
+    /// addresses as they are now, which makes its last step power off instead
+    /// ([`way_back_foresees`](crate::session::leave::way_back_foresees)).
+    /// Nothing for a power-off.
+    pub fn foresee(&self, to: LeaveTo) -> Foreseen {
+        if to == LeaveTo::Poweroff {
+            return Foreseen::default();
+        }
+        crate::session::leave::way_back_foresees(&self.root, self.plan.decoy.system.as_deref())
+    }
+
     /// What the return to the decoy will not put back, as far as the hidden
     /// session can tell before the switch, one sentence each, for the front
-    /// end to show before it asks: its last step, which cannot report, finds
-    /// no `ip` to delete the session's virtual links and policy-routing rules
-    /// and set the MAC addresses back with, no `nft` to delete the session's
-    /// nftables tables with, or, where a link is a Wi-Fi interface, no `iw` to
-    /// delete the Wi-Fi interfaces the session added on the decoy's radios
-    /// with ([`way_back_lacks`](crate::session::leave::way_back_lacks)). None
-    /// for a power-off, after which the decoy starts afresh.
-    pub fn warnings(&self, to: LeaveTo) -> Vec<String> {
+    /// end to show before it asks: what it is bound to leave (`foreseen`,
+    /// from [`foresee`](Self::foresee)), which makes it power off instead;
+    /// then that its last step, which cannot report, finds no `ip` to delete
+    /// the session's virtual links and policy-routing rules and set the MAC
+    /// addresses back with, no `nft` to delete the session's nftables tables
+    /// with, or, where a link is a Wi-Fi interface, no `iw` to delete the
+    /// Wi-Fi interfaces the session added on the decoy's radios with
+    /// ([`way_back_lacks`](crate::session::leave::way_back_lacks)). None for
+    /// a power-off, after which the decoy starts afresh.
+    pub fn warnings(&self, to: LeaveTo, foreseen: &Foreseen) -> Vec<String> {
         way_back_warnings(
             to,
             &self.plan,
             &crate::session::leave::way_back_lacks(&self.root, self.plan.decoy.system.as_deref()),
+            foreseen,
         )
     }
 
@@ -181,9 +198,90 @@ fn prepared(manager: NailsManager<RealFilesystem>, view: SessionView) -> Prepare
     }
 }
 
-/// The warnings for leaving `to` with `plan`, one for each network tool the
-/// last step of the way back `lacks`.
-fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<String> {
+/// Why the way back is bound to power off instead of returning, for a person
+/// to read before the switch ([`power_off_reason`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowerOffReason {
+    /// What the way back cannot undo, as the start of a sentence: "The way
+    /// back cannot delete tunl0, which the kernel keeps".
+    pub what: String,
+    /// Whether it powers off whatever happens before it runs: a link the
+    /// kernel keeps never goes, where the session's own stop may still take
+    /// another link down or set an address back.
+    pub certain: bool,
+}
+
+impl PowerOffReason {
+    /// "unless that changes before it runs, " where the power-off is not
+    /// [`certain`](Self::certain), for the clause before the power-off.
+    pub fn unless(&self) -> &'static str {
+        if self.certain {
+            ""
+        } else {
+            "unless that changes before it runs, "
+        }
+    }
+}
+
+/// Why the way back is bound to power off, from what it is bound to leave
+/// (`foreseen`); `None` when nothing there makes it.
+pub fn power_off_reason(foreseen: &Foreseen) -> Option<PowerOffReason> {
+    let mut clauses = Vec::new();
+    if !foreseen.kernel_kept.is_empty() {
+        clauses.push(format!(
+            "cannot delete {}, which the kernel keeps",
+            joined(&foreseen.kernel_kept)
+        ));
+    }
+    let mut with_ip = Vec::new();
+    if !foreseen.links_without_ip.is_empty() {
+        with_ip.push(format!("delete {}", joined(&foreseen.links_without_ip)));
+    }
+    match foreseen.addresses_without_ip.as_slice() {
+        [] => {}
+        [one] => with_ip.push(format!("set the MAC address of {one} back")),
+        many => with_ip.push(format!("set the MAC addresses of {} back", joined(many))),
+    }
+    let mut missing = Vec::new();
+    if !with_ip.is_empty() {
+        missing.push(format!("no `ip` to {} with", with_ip.join(" or ")));
+    }
+    if !foreseen.wifi_without_iw.is_empty() {
+        missing.push(format!(
+            "no `iw` to delete {} with",
+            joined(&foreseen.wifi_without_iw)
+        ));
+    }
+    if !missing.is_empty() {
+        clauses.push(format!("finds {}", missing.join(" and ")));
+    }
+    if clauses.is_empty() {
+        return None;
+    }
+    Some(PowerOffReason {
+        what: format!("The way back {}", clauses.join(", and ")),
+        certain: !foreseen.kernel_kept.is_empty(),
+    })
+}
+
+/// `names` in a sentence: `a`, `a and b`, or `a, b and c`.
+fn joined(names: &[String]) -> String {
+    match names.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The warnings for leaving `to` with `plan`: why the way back is bound to
+/// power off (`foreseen`), then one for each network tool its last step
+/// `lacks`.
+fn way_back_warnings(
+    to: LeaveTo,
+    plan: &Plan,
+    lacks: &[NetworkTool],
+    foreseen: &Foreseen,
+) -> Vec<String> {
     use crate::next_step::{NextStep, sudo_line};
     if to == LeaveTo::Poweroff {
         return Vec::new();
@@ -194,9 +292,17 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<Str
         "in the hidden session's system directories"
     };
     let poweroff = sudo_line(NextStep::DeactivatePoweroff);
-    lacks
-        .iter()
-        .map(|tool| {
+    let bound = power_off_reason(foreseen).map(|reason| {
+        format!(
+            "{}, so {}the machine powers off instead of returning to the decoy. `{poweroff}` \
+             powers off at once.",
+            reason.what,
+            reason.unless()
+        )
+    });
+    bound
+        .into_iter()
+        .chain(lacks.iter().map(|tool| {
             let (tool, stays) = match tool {
                 NetworkTool::Ip => (
                     "`ip` (iproute2)",
@@ -222,7 +328,7 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<Str
                 "The return finds no {tool} {place}, so {stays}. `{poweroff}` leaves none of \
                  them."
             )
-        })
+        }))
         .collect()
 }
 
@@ -269,6 +375,20 @@ mod tests {
             "hidden": {"init": "/sbin/init"},
         });
         Box::new(Plan::from_json(&json.to_string()).expect("a minimal plan"))
+    }
+
+    /// Nothing the way back is bound to leave.
+    fn none() -> Foreseen {
+        Foreseen::default()
+    }
+
+    /// A way back bound to leave the link the kernel keeps once a session
+    /// loads `ipip`.
+    fn kept() -> Foreseen {
+        Foreseen {
+            kernel_kept: vec!["tunl0".to_string()],
+            ..Foreseen::default()
+        }
     }
 
     /// The locked handle of `ready`, taking the lock beside its state file
@@ -364,7 +484,7 @@ mod tests {
         let poweroff = sudo_line(NextStep::DeactivatePoweroff);
         let fhs = plan();
         assert_eq!(
-            way_back_warnings(LeaveTo::Decoy, &fhs, &NetworkTool::ALL),
+            way_back_warnings(LeaveTo::Decoy, &fhs, &NetworkTool::ALL, &none()),
             [
                 format!(
                     "The return finds no `ip` (iproute2) in the hidden session's system \
@@ -388,12 +508,12 @@ mod tests {
                 ),
             ]
         );
-        assert!(way_back_warnings(LeaveTo::Decoy, &fhs, &[]).is_empty());
-        assert!(way_back_warnings(LeaveTo::Poweroff, &fhs, &NetworkTool::ALL).is_empty());
+        assert!(way_back_warnings(LeaveTo::Decoy, &fhs, &[], &none()).is_empty());
+        assert!(way_back_warnings(LeaveTo::Poweroff, &fhs, &NetworkTool::ALL, &kept()).is_empty());
 
         let mut nixos = plan();
         nixos.decoy.system = Some("/nix/store/aaa-nixos-system-decoy".into());
-        let warnings = way_back_warnings(LeaveTo::Decoy, &nixos, &[NetworkTool::Nft]);
+        let warnings = way_back_warnings(LeaveTo::Decoy, &nixos, &[NetworkTool::Nft], &none());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
             warnings[0].starts_with(
@@ -402,6 +522,92 @@ mod tests {
             ),
             "{warnings:?}"
         );
+    }
+
+    /// What the way back is bound to leave comes first, as one sentence that
+    /// says why the machine powers off instead of returning, and whether
+    /// anything before the way back runs can still change it: a link the
+    /// kernel keeps never goes, a link or address it finds no tool for may.
+    #[test]
+    fn a_way_back_bound_to_power_off_says_so_first() {
+        use crate::next_step::{NextStep, sudo_line};
+        let poweroff = sudo_line(NextStep::DeactivatePoweroff);
+        let fhs = plan();
+        let warnings = way_back_warnings(LeaveTo::Decoy, &fhs, &[NetworkTool::Iw], &kept());
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(
+            warnings[0],
+            format!(
+                "The way back cannot delete tunl0, which the kernel keeps, so the machine powers \
+                 off instead of returning to the decoy. `{poweroff}` powers off at once."
+            )
+        );
+        assert!(
+            warnings[1].starts_with("The return finds no `iw`"),
+            "{warnings:?}"
+        );
+        let without_iw = Foreseen {
+            wifi_without_iw: vec!["wlan1".to_string()],
+            ..Foreseen::default()
+        };
+        assert_eq!(
+            way_back_warnings(LeaveTo::Decoy, &fhs, &[], &without_iw),
+            [format!(
+                "The way back finds no `iw` to delete wlan1 with, so unless that changes before \
+                 it runs, the machine powers off instead of returning to the decoy. `{poweroff}` \
+                 powers off at once."
+            )]
+        );
+    }
+
+    /// The reason names each thing the way back cannot undo, the links the
+    /// kernel keeps first, then by the tool it finds none of; it is certain
+    /// only with a link the kernel keeps.
+    #[test]
+    fn the_reason_names_what_the_way_back_cannot_undo() {
+        assert_eq!(power_off_reason(&none()), None);
+        let reason = power_off_reason(&kept()).unwrap();
+        assert_eq!(
+            reason.what,
+            "The way back cannot delete tunl0, which the kernel keeps"
+        );
+        assert!(reason.certain);
+        assert_eq!(reason.unless(), "");
+        let names = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let all = Foreseen {
+            kernel_kept: names(&["tunl0", "sit0"]),
+            links_without_ip: names(&["wg0"]),
+            addresses_without_ip: names(&["eth0", "eth1"]),
+            wifi_without_iw: names(&["wlan1", "wlan2", "mon0"]),
+        };
+        assert_eq!(
+            power_off_reason(&all).unwrap().what,
+            "The way back cannot delete tunl0 and sit0, which the kernel keeps, and finds no `ip` \
+             to delete wg0 or set the MAC addresses of eth0 and eth1 back with and no `iw` to \
+             delete wlan1, wlan2 and mon0 with"
+        );
+        let address = Foreseen {
+            addresses_without_ip: names(&["eth0"]),
+            ..Foreseen::default()
+        };
+        let reason = power_off_reason(&address).unwrap();
+        assert_eq!(
+            reason.what,
+            "The way back finds no `ip` to set the MAC address of eth0 back with"
+        );
+        assert!(!reason.certain);
+        assert_eq!(reason.unless(), "unless that changes before it runs, ");
+    }
+
+    /// A power-off is bound to leave nothing: the decoy starts afresh.
+    #[test]
+    fn a_power_off_foresees_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = ready_at(dir.path());
+        assert_eq!(ready.foresee(LeaveTo::Poweroff), none());
+        // Without the record entry takes, a return is bound to leave nothing
+        // either: the way back then leaves the links alone.
+        assert_eq!(ready.foresee(LeaveTo::Decoy), none());
     }
 
     /// Put an empty file at `path` below `root`.
@@ -432,17 +638,18 @@ mod tests {
         use NetworkTool::{Ip, Iw, Nft};
         let fhs = tempfile::tempdir().unwrap();
         let ready = ready_at(fhs.path());
-        let warned = |lacks: &[NetworkTool]| way_back_warnings(LeaveTo::Decoy, &ready.plan, lacks);
-        assert_eq!(ready.warnings(LeaveTo::Decoy), warned(&[Ip, Nft]));
-        assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
+        let warned =
+            |lacks: &[NetworkTool]| way_back_warnings(LeaveTo::Decoy, &ready.plan, lacks, &none());
+        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), warned(&[Ip, Nft]));
+        assert!(ready.warnings(LeaveTo::Poweroff, &none()).is_empty());
         put(fhs.path(), "usr/bin/ip");
-        assert_eq!(ready.warnings(LeaveTo::Decoy), warned(&[Nft]));
+        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), warned(&[Nft]));
         put(fhs.path(), "usr/sbin/nft");
-        assert!(ready.warnings(LeaveTo::Decoy).is_empty());
+        assert!(ready.warnings(LeaveTo::Decoy, &none()).is_empty());
         put_wifi_link(fhs.path());
-        assert_eq!(ready.warnings(LeaveTo::Decoy), warned(&[Iw]));
+        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), warned(&[Iw]));
         put(fhs.path(), "sbin/iw");
-        assert!(ready.warnings(LeaveTo::Decoy).is_empty());
+        assert!(ready.warnings(LeaveTo::Decoy, &none()).is_empty());
 
         let nixos = tempfile::tempdir().unwrap();
         let mut ready = ready_at(nixos.path());
@@ -451,16 +658,16 @@ mod tests {
         for tool in ["ip", "nft", "iw"] {
             put(nixos.path(), &format!("run/current-system/sw/bin/{tool}"));
         }
-        let warned = way_back_warnings(LeaveTo::Decoy, &ready.plan, &NetworkTool::ALL);
+        let warned = way_back_warnings(LeaveTo::Decoy, &ready.plan, &NetworkTool::ALL, &none());
         assert_eq!(warned.len(), 3, "{warned:?}");
-        assert_eq!(ready.warnings(LeaveTo::Decoy), warned);
+        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), warned);
         for tool in ["ip", "nft", "iw"] {
             put(
                 nixos.path(),
                 &format!("nix/store/aaa-nixos-system-decoy/sw/bin/{tool}"),
             );
         }
-        assert!(ready.warnings(LeaveTo::Decoy).is_empty());
-        assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
+        assert!(ready.warnings(LeaveTo::Decoy, &none()).is_empty());
+        assert!(ready.warnings(LeaveTo::Poweroff, &none()).is_empty());
     }
 }

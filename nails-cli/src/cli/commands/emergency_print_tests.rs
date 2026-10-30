@@ -66,6 +66,22 @@ fn left_open() -> HotReport {
     report
 }
 
+/// A return from the hidden root whose way back is enqueued: exit 0.
+fn returned() -> HotReport {
+    let mut report = report(Side::Hidden, &[]);
+    report.dispatched = Some(Finish::Return);
+    report
+}
+
+/// Why a way back is bound to power off over the link `tunl0` the kernel
+/// keeps once a session loads `ipip`.
+fn bound_over_tunl0() -> Option<PowerOffReason> {
+    power_off_reason(&nails_teardown::whole_root::network::Foreseen {
+        kernel_kept: vec!["tunl0".to_string()],
+        ..Default::default()
+    })
+}
+
 fn quiet() -> OutputSettings {
     OutputSettings {
         verbosity: nails_core::Verbosity::Quiet,
@@ -87,10 +103,12 @@ fn subprocess_print_entrypoint() {
         "json-clean" => print_json(&clean()),
         "json-degraded" => print_json(&degraded()),
         "json-left-open" => print_json(&left_open()),
-        "human-clean" => render_human(&loud, &clean()),
-        "quiet-clean" => render_human(&quiet(), &clean()),
-        "quiet-degraded" => render_human(&quiet(), &degraded()),
-        "quiet-left-open" => render_human(&quiet(), &left_open()),
+        "human-clean" => render_human(&loud, &clean(), None),
+        "quiet-clean" => render_human(&quiet(), &clean(), None),
+        "quiet-degraded" => render_human(&quiet(), &degraded(), None),
+        "quiet-left-open" => render_human(&quiet(), &left_open(), None),
+        "human-return" => render_human(&loud, &returned(), None),
+        "human-return-bound" => render_human(&loud, &returned(), bound_over_tunl0().as_ref()),
         other => panic!("unknown emergency printer case: {other}"),
     }
     crate::cli::output::flush_stdio();
@@ -216,6 +234,33 @@ fn the_quiet_human_printer_still_names_a_device_left_open() {
             "  ! {}",
             crate::cli::output::deactivate::backend_left_open_warning("hidden-crypt")
         )),
+        "{lines:?}"
+    );
+}
+
+/// A return ends with where the machine ends: at the decoy's login screen, or
+/// off when the way back cannot undo what it sets out to; off, and why, where
+/// it is bound to power off instead.
+#[test]
+fn the_human_printer_says_where_a_return_ends() {
+    let lines = stdout_lines("human-return");
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some(
+            "  The decoy starts at its own login screen; log in there with the decoy password (a \
+             display manager set to log an account in automatically logs it in again, as at \
+             boot). The machine powers off instead if a link, MAC address, rule or table the way \
+             back sets out to undo is still the session's afterwards."
+        ),
+        "{lines:?}"
+    );
+    let lines = stdout_lines("human-return-bound");
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some(
+            "  The way back cannot delete tunl0, which the kernel keeps: the machine powers off \
+             instead of returning to the decoy."
+        ),
         "{lines:?}"
     );
 }
