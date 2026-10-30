@@ -213,8 +213,9 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<Str
                 NetworkTool::Iw => (
                     "`iw`",
                     "a Wi-Fi interface the session added on one of the decoy's radios (a \
-                     monitor or access point interface) makes the machine power off instead of \
-                     returning",
+                     monitor or access point interface, or the one iwd makes in place of the \
+                     decoy's, as it does by default when it starts) makes the machine power off \
+                     instead of returning",
                 ),
             };
             format!(
@@ -381,7 +382,8 @@ mod tests {
                 format!(
                     "The return finds no `iw` in the hidden session's system directories, so a \
                      Wi-Fi interface the session added on one of the decoy's radios (a monitor \
-                     or access point interface) makes the machine power off instead of \
+                     or access point interface, or the one iwd makes in place of the decoy's, as \
+                     it does by default when it starts) makes the machine power off instead of \
                      returning. `{poweroff}` leaves none of them."
                 ),
             ]
