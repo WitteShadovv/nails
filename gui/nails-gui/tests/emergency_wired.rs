@@ -11,29 +11,24 @@
 
 mod screen;
 mod support;
+mod wired;
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
-use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+use i_slint_backend_testing::AccessibleRole;
 use nails_api::Event;
-use nails_api::protocol::{EmergencyArgs, Frame, Op, Request};
-use nails_gui::client::ours;
+use nails_api::protocol::{DeactivateArgs, EmergencyArgs, Op};
 use nails_gui::emergency::{EMERGENCY_ID, Emergency, Outcome};
 use nails_gui::mailbox::Mailbox;
 use nails_gui::model::Model;
 use nails_gui::text;
-use nails_gui::worker::{Ask, Connect, Kind, Update, Worker, spawn};
+use nails_gui::worker::{Ask, Connect, Kind, Update, spawn};
 use screen::Screen;
 use serde_json::json;
-use support::{FakeHelper, FakePowerOff, event, hello_answer, result};
-
-/// How long a test waits for the worker, the helper or the emergency.
-const PATIENCE: Duration = Duration::from_secs(20);
-
-/// How long the emergency waits for the helper here.
-const GRACE: Duration = Duration::from_millis(500);
+use support::{FakePowerOff, event, result};
+use wired::{GRACE, PATIENCE, Wired, helper, hold, next_request};
 
 /// The emergency's own request, as the helper reads it.
 fn emergency_op() -> Op {
@@ -41,108 +36,6 @@ fn emergency_op() -> Op {
         poweroff: true,
         reboot: false,
     })
-}
-
-/// A fake helper that answers the hello and passes every other request to
-/// `respond`, telling `seen` of each one.
-fn helper<F>(seen: Sender<Request>, mut respond: F) -> (std::os::unix::net::UnixStream, FakeHelper)
-where
-    F: FnMut(&Request) -> Vec<Frame> + Send + 'static,
-{
-    FakeHelper::start(ours(), move |request| {
-        let _ = seen.send(request.clone());
-        Some(match &request.op {
-            Op::Hello(hello) => vec![hello_answer(request.id, hello)],
-            _ => respond(request),
-        })
-    })
-}
-
-/// The window, its worker and its emergency, wired as `main` wires them,
-/// but for the updates, which the test hands over itself.
-struct Wired {
-    screen: Screen,
-    worker: Worker,
-    heard: Receiver<Update>,
-    outcomes: Receiver<Outcome>,
-}
-
-impl Wired {
-    fn new(connect: Connect, power_off: &FakePowerOff) -> Self {
-        let (tell, outcomes) = channel();
-        let emergency = Emergency::start(power_off.fallback(GRACE), move |outcome| {
-            let _ = tell.send(outcome);
-        });
-        let (tell, heard) = channel();
-        let worker = spawn(connect, Some(emergency.clone()), move |update| {
-            let _ = tell.send(update);
-        });
-        let model =
-            Model::new(Some(PathBuf::from("/mnt/data/nails")), false).in_hidden_session(true);
-        let screen = Screen::with_emergency(
-            model,
-            Box::new(move || {
-                emergency.fire();
-            }),
-        );
-        Self {
-            screen,
-            worker,
-            heard,
-            outcomes,
-        }
-    }
-
-    /// Hand the worker the window's asks and the window the worker's
-    /// updates, until one for which `last` holds was handed over.
-    fn pump_until(&self, last: impl Fn(&Update) -> bool) {
-        let deadline = Instant::now() + PATIENCE;
-        loop {
-            for ask in self.screen.asks() {
-                assert!(self.worker.ask(ask), "the worker listens");
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            let update = self.heard.recv_timeout(left).expect("the worker reports");
-            let done = last(&update);
-            self.screen.update(update);
-            if done {
-                for ask in self.screen.asks() {
-                    assert!(self.worker.ask(ask), "the worker listens");
-                }
-                return;
-            }
-        }
-    }
-
-    fn outcome(&self) -> Outcome {
-        self.outcomes
-            .recv_timeout(PATIENCE)
-            .expect("the emergency reports")
-    }
-}
-
-/// The Emergency control at rest.
-fn control(screen: &Screen) -> ElementHandle {
-    screen.find_with(text::EMERGENCY, AccessibleRole::Button)
-}
-
-/// The person's gesture: hold the control until its bar is full, let go.
-fn hold(screen: &Screen) {
-    let at = screen.middle(&control(screen));
-    screen.press_at(at);
-    screen.wait_ms(1100);
-    screen.release_at(at);
-    assert_eq!(screen.emergencies(), 1, "the emergency fired");
-}
-
-/// The next request the helper read that is not a hello.
-fn next_request(seen: &Receiver<Request>) -> Request {
-    loop {
-        let request = seen.recv_timeout(PATIENCE).expect("the helper reads");
-        if !matches!(request.op, Op::Hello(_)) {
-            return request;
-        }
-    }
 }
 
 #[test]
@@ -154,11 +47,11 @@ fn a_worker_stuck_on_a_request_does_not_hold_the_emergency_up() {
         _ => vec![],
     });
     let power_off = FakePowerOff::new("exit 0");
-    let wired = Wired::new(Connect::Stream(stream), &power_off);
+    let wired = Wired::new(Connect::Stream(stream), &power_off, true);
     wired.pump_until(|update| *update == Update::Running(Kind::Status));
     assert_eq!(next_request(&requests).op, Op::Status);
 
-    hold(&wired.screen);
+    wired.hold();
     assert!(wired.screen.shows(text::EMERGENCY_NOW));
     let request = next_request(&requests);
     assert_eq!((request.id, request.op), (EMERGENCY_ID, emergency_op()));
@@ -188,7 +81,7 @@ fn an_open_question_does_not_hold_the_emergency_up_nor_answer_itself() {
         _ => vec![],
     });
     let power_off = FakePowerOff::new("exit 0");
-    let wired = Wired::new(Connect::Stream(stream), &power_off);
+    let wired = Wired::new(Connect::Stream(stream), &power_off, true);
     wired.pump_until(|update| matches!(update, Update::Answered(Kind::Status, _)));
     wired
         .screen
@@ -197,14 +90,14 @@ fn an_open_question_does_not_hold_the_emergency_up_nor_answer_itself() {
     wired.pump_until(|update| matches!(update, Update::Planned(_)));
     assert!(wired.screen.window.get_question_open());
 
-    hold(&wired.screen);
+    wired.hold();
     assert!(!wired.screen.window.get_question_open());
     let ops: Vec<Op> = (0..3).map(|_| next_request(&requests).op).collect();
     assert_eq!(
         ops,
         [
             Op::Status,
-            Op::DeactivatePlan(nails_api::protocol::DeactivateArgs { poweroff: false }),
+            Op::DeactivatePlan(DeactivateArgs { poweroff: false }),
             emergency_op()
         ],
         "the plan was neither applied nor withdrawn first"
@@ -280,11 +173,12 @@ fn a_window_without_a_helper_powers_off_by_itself() {
             std::path::Path::new("/mnt/data/nails"),
         ),
         &power_off,
+        true,
     );
     wired.pump_until(|update| matches!(update, Update::Ended(_)));
     assert!(wired.screen.shows(text::NOT_STARTED));
     let start = Instant::now();
-    hold(&wired.screen);
+    wired.hold();
     assert_eq!(wired.outcome(), Outcome::PowerOffAsked);
     assert!(start.elapsed() < PATIENCE);
     assert_eq!(power_off.calls(), ["poweroff --no-ask-password"]);
