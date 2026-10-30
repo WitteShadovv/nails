@@ -3,47 +3,60 @@
 
 //! The worker against a fake helper: what the window hears for each ask,
 //! the plan that waits for its apply or is withdrawn, the session that ends,
-//! and pkexec's own way of ending before the helper speaks.
+//! an activation the window hangs up on before and after its point of no
+//! return, and pkexec's own way of ending before the helper speaks.
 
 mod support;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
 use nails_api::protocol::{
-    CheckArgs, DiscardPlanArgs, Frame, Hello, Op, PROTOCOL_VERSION, Request, Token,
+    ActivateArgs, CheckArgs, DiscardPlanArgs, Frame, Hello, Op, PROTOCOL_VERSION, Request, Token,
 };
 use nails_api::{CheckOutcome, Event};
 use nails_gui::client::{Plan, PlanData, ours};
-use nails_gui::worker::{Ask, Connect, Failure, Kind, Update, spawn};
+use nails_gui::worker::{Ask, Connect, Failure, HangUp, Kind, Update, Worker, spawn};
 use serde_json::json;
-use support::{FakeHelper, event, hello_answer, result};
+use support::{Act, FakeHelper, event, hello_answer, result};
+
+/// How long the window waits to hear from the worker before the test fails.
+const PATIENCE: Duration = Duration::from_secs(10);
 
 /// The window's side of a worker: its asks and what it hears.
 struct Window {
-    asks: std::sync::mpsc::Sender<Ask>,
+    worker: Worker,
     heard: Receiver<Update>,
 }
 
 impl Window {
     fn on(connect: Connect) -> Self {
         let (tell, heard) = channel();
-        let asks = spawn(connect, move |update| {
+        let worker = spawn(connect, move |update| {
             let _ = tell.send(update);
         });
-        Self { asks, heard }
+        Self { worker, heard }
     }
 
     fn next(&self) -> Update {
         self.heard
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(PATIENCE)
             .expect("the worker reports")
     }
 
     fn ask(&self, ask: Ask) {
-        self.asks.send(ask).expect("the worker listens");
+        assert!(self.worker.ask(ask), "the worker listens");
+    }
+
+    /// Whether the worker has ended: it reports nothing more and drops its
+    /// end of the channel.
+    fn worker_ended(&self) -> bool {
+        matches!(
+            self.heard.recv_timeout(PATIENCE),
+            Err(RecvTimeoutError::Disconnected)
+        )
     }
 }
 
@@ -316,4 +329,145 @@ fn pkexec_that_cannot_be_started_is_said_so() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+fn activate_plan() -> serde_json::Value {
+    json!({"schema_version": 2, "command": "activate", "ok": true, "data": {
+        "warning": null, "defaults_notice": null, "builds_hidden_system": false, "token": token(),
+    }})
+}
+
+fn step(id: u64) -> Act {
+    Act::Send(event(
+        id,
+        Event::Step {
+            phase: "runtime".to_string(),
+            label: "Staging the runtime".to_string(),
+            index: 1,
+            total: 6,
+        },
+    ))
+}
+
+/// A helper whose activation's apply plays `apply` (given the request's id).
+fn activation_helper(apply: fn(u64) -> Vec<Act>) -> (Window, FakeHelper) {
+    let (stream, helper) = FakeHelper::scripted(ours(), move |request| {
+        let id = request.id;
+        Some(match &request.op {
+            Op::Hello(hello) => vec![Act::Send(hello_answer(id, hello))],
+            Op::ActivatePlan(_) => vec![Act::Send(result(id, 0, activate_plan()))],
+            Op::ActivateApply(_) => apply(id),
+            _ => return None,
+        })
+    });
+    let window = Window::on(Connect::Stream(stream));
+    assert_eq!(window.next(), Update::Connected(ours()));
+    window.ask(Ask::Plan(Plan::Activate(ActivateArgs::default())));
+    assert_eq!(window.next(), Update::Running(Kind::Plan));
+    assert!(matches!(
+        window.next(),
+        Update::Planned(PlanData::Activate(_))
+    ));
+    window.ask(Ask::Apply);
+    assert_eq!(window.next(), Update::Running(Kind::Apply));
+    (window, helper)
+}
+
+#[test]
+fn a_hang_up_before_the_point_of_no_return_cancels_and_its_answer_is_the_last() {
+    let (window, helper) = activation_helper(|id| {
+        vec![
+            step(id),
+            // The real helper's watch on its pipe trips the cancel here.
+            Act::AwaitHangUp,
+            Act::Send(result(
+                id,
+                130,
+                json!({"schema_version": 2, "command": "activate", "ok": false, "error": {
+                    "code": "cancelled", "message": "Activation cancelled; nothing was changed.",
+                    "next": null}}),
+            )),
+        ]
+    });
+    assert!(matches!(window.next(), Update::Event(Event::Step { .. })));
+    let line = window.worker.hang_up();
+    assert!(line.hang_up(), "the window hangs up");
+    assert!(!line.hang_up(), "once");
+    match window.next() {
+        Update::Answered(Kind::Apply, answer) => {
+            assert_eq!(answer.exit, 130);
+            assert_eq!(answer.envelope["error"]["code"], "cancelled");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(window.worker_ended(), "the answer was the session's last");
+    let ops: Vec<Op> = helper.requests().into_iter().map(|r| r.op).collect();
+    assert_eq!(ops.len(), 3, "hello, plan, apply and nothing more: {ops:?}");
+}
+
+#[test]
+fn a_hang_up_past_the_point_of_no_return_changes_nothing() {
+    let (window, helper) = activation_helper(|id| {
+        vec![
+            Act::Send(event(id, Event::PointOfNoReturn)),
+            // Past the point, the helper finishes the switch all the same.
+            Act::AwaitHangUp,
+            Act::Send(result(
+                id,
+                0,
+                json!({"schema_version": 2, "command": "activate", "ok": true,
+                    "data": {"status": "entering"}}),
+            )),
+        ]
+    });
+    assert_eq!(window.next(), Update::Event(Event::PointOfNoReturn));
+    assert!(window.worker.hang_up().hang_up());
+    match window.next() {
+        Update::Answered(Kind::Apply, answer) => {
+            assert_eq!(answer.exit, 0);
+            assert_eq!(answer.envelope["data"]["status"], "entering");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(window.worker_ended());
+    assert_eq!(helper.requests().len(), 3);
+}
+
+#[test]
+fn an_activation_the_window_does_not_hang_up_on_keeps_its_session() {
+    let (window, _helper) = activation_helper(|id| {
+        vec![Act::Send(result(
+            id,
+            4,
+            json!({"schema_version": 2, "command": "activate", "ok": false,
+                "data": {"status": "failed"},
+                "error": {"code": "not_ready", "message": "Pre-flight checks failed", "next": null}}),
+        ))]
+    });
+    assert!(matches!(
+        window.next(),
+        Update::Answered(Kind::Apply, answer) if answer.exit == 4
+    ));
+    // The session goes on: the next ask is served (here, the helper of this
+    // test closes on a status).
+    window.ask(Ask::Status);
+    assert_eq!(window.next(), Update::Running(Kind::Status));
+    assert_eq!(
+        window.next(),
+        Update::Ended(Failure::Lost { in_flight: true })
+    );
+}
+
+#[test]
+fn a_hang_up_does_nothing_without_a_session() {
+    assert!(!HangUp::default().hang_up());
+    let window = Window::on(Connect::Pkexec {
+        program: PathBuf::from("/nonexistent/pkexec"),
+        engine: PathBuf::from("/mnt/data/nails"),
+    });
+    assert!(matches!(
+        window.next(),
+        Update::Ended(Failure::NotStarted(_))
+    ));
+    assert!(!window.worker.hang_up().hang_up());
 }

@@ -5,9 +5,10 @@
 //!
 //! The [`Controller`] lives on the window's thread. It hands each
 //! [`Update`] to the [`Model`], passes on the asks that follow, and draws the
-//! page the model gives; the window's controls come back to it as asks of
-//! their own. It never touches the pipe: [`Controller::new`] takes the way to
-//! the worker as a function, so the tests can stand in for the worker.
+//! page the model gives; the window's controls come back to it as the
+//! effects the model gives for them. It never touches the pipe:
+//! [`Controller::new`] takes the way to the worker as functions, so the tests
+//! can stand in for the worker.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,33 +16,36 @@ use std::rc::Rc;
 use nails_api::CheckOutcome;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::model::{Asker, Model, Page};
+use crate::model::{ActionKind, Asker, Effect, Model, Page};
+use crate::text;
 use crate::worker::{Ask, Update};
-use crate::{AppWindow, CheckLine, Fact, Outcome};
+use crate::{AppWindow, CheckLine, Fact, Outcome, StepLine};
+
+/// The ways from the window to the worker and the window itself.
+pub struct Hooks {
+    /// Hand the worker an ask.
+    pub ask: Box<dyn Fn(Ask)>,
+    /// Hang up on the helper: shut the window's writing half of the pipe.
+    pub hang_up: Box<dyn Fn()>,
+    /// Close the window (the person's Close, or a dismissed password dialog).
+    pub close: Box<dyn Fn()>,
+}
 
 /// The window's half of a session.
 pub struct Controller {
     window: slint::Weak<AppWindow>,
     model: Model,
-    ask: Box<dyn Fn(Ask)>,
-    close: Box<dyn Fn()>,
+    hooks: Hooks,
 }
 
 impl Controller {
-    /// Take over `window` with `model`: `ask` reaches the worker, and `close`
-    /// closes the window (the person's Close, or a dismissed password
-    /// dialog).
-    pub fn new(
-        window: &AppWindow,
-        model: Model,
-        ask: impl Fn(Ask) + 'static,
-        close: impl Fn() + 'static,
-    ) -> Rc<RefCell<Self>> {
+    /// Take over `window` with `model`, reaching the worker and the window
+    /// through `hooks`.
+    pub fn new(window: &AppWindow, model: Model, hooks: Hooks) -> Rc<RefCell<Self>> {
         let controller = Rc::new(RefCell::new(Self {
             window: window.as_weak(),
             model,
-            ask: Box::new(ask),
-            close: Box::new(close),
+            hooks,
         }));
         wire(window, &controller);
         controller.borrow().draw();
@@ -51,10 +55,10 @@ impl Controller {
     /// Take in what the worker reported.
     pub fn update(&mut self, update: Update) {
         for ask in self.model.apply(update) {
-            (self.ask)(ask);
+            (self.hooks.ask)(ask);
         }
         if self.model.quits() {
-            (self.close)();
+            (self.hooks.close)();
         }
         self.draw();
     }
@@ -63,7 +67,7 @@ impl Controller {
     /// screen of an operation the engine confirms first calls.
     pub fn plan(&mut self, plan: crate::client::Plan, asker: Asker) {
         let ask = self.model.plan(plan, asker);
-        (self.ask)(ask);
+        (self.hooks.ask)(ask);
         self.draw();
     }
 
@@ -79,15 +83,40 @@ impl Controller {
         }
     }
 
-    fn action(&mut self) {
-        if let Some(ask) = self.model.action() {
-            (self.ask)(ask);
+    fn effect(&self, effect: Option<Effect>) {
+        match effect {
+            Some(Effect::Ask(ask)) => (self.hooks.ask)(ask),
+            Some(Effect::HangUp) => (self.hooks.hang_up)(),
+            None => {}
         }
     }
 
+    fn action(&mut self) {
+        let effect = self.model.action();
+        self.effect(effect);
+        self.draw();
+    }
+
+    fn escape(&mut self) {
+        let effect = self.model.escape();
+        self.effect(effect);
+        self.draw();
+    }
+
+    fn allow(&mut self, index: usize) {
+        self.model.allow(index);
+        self.draw();
+    }
+
+    fn typed(&mut self, typed: &str) {
+        self.model.typed(typed);
+        self.draw();
+    }
+
     fn answer(&mut self, confirmed: bool) {
-        let ask = self.model.answer(confirmed);
-        (self.ask)(ask);
+        if let Some(ask) = self.model.answer(confirmed) {
+            (self.hooks.ask)(ask);
+        }
         self.draw();
     }
 }
@@ -96,13 +125,31 @@ fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     let weak = Rc::downgrade(controller);
     window.on_close_window(move || {
         if let Some(controller) = weak.upgrade() {
-            (controller.borrow().close)();
+            (controller.borrow().hooks.close)();
         }
     });
     let weak = Rc::downgrade(controller);
     window.on_action_activated(move || {
         if let Some(controller) = weak.upgrade() {
             controller.borrow_mut().action();
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_escape_pressed(move || {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().escape();
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_allow_requested(move |index| {
+        if let (Some(controller), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
+            controller.borrow_mut().allow(index);
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_question_typed(move |typed| {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().typed(&typed);
         }
     });
     let weak = Rc::downgrade(controller);
@@ -130,6 +177,15 @@ pub fn draw(window: &AppWindow, page: &Page) {
         })
         .collect();
     window.set_facts(ModelRc::new(VecModel::from(facts)));
+    let steps: Vec<StepLine> = page
+        .steps
+        .iter()
+        .map(|step| StepLine {
+            label: step.label.as_str().into(),
+            state: step.state.into(),
+        })
+        .collect();
+    window.set_steps(ModelRc::new(VecModel::from(steps)));
     let checks: Vec<CheckLine> = page
         .checks
         .iter()
@@ -138,25 +194,41 @@ pub fn draw(window: &AppWindow, page: &Page) {
             word: check.word.as_str().into(),
             message: check.message.as_str().into(),
             fix: check.fix.as_str().into(),
+            allow: if check.allow.is_some() {
+                text::ALLOW
+            } else {
+                ""
+            }
+            .into(),
         })
         .collect();
     window.set_checks(ModelRc::new(VecModel::from(checks)));
     window.set_fix(page.fix.as_str().into());
     window.set_action(page.action.unwrap_or_default().into());
+    window.set_action_plain(page.action_kind == ActionKind::Plain);
+    window.set_takes_input(!page.no_input);
     match &page.question {
         Some(question) => {
             window.set_question_heading(question.heading.as_str().into());
             window.set_question_body(question.body.as_str().into());
             window.set_question_confirm(question.confirm.as_str().into());
             window.set_question_destructive(question.destructive);
+            window.set_question_prompt(question.prompt.as_deref().unwrap_or_default().into());
+            window.set_question_locked(question.locked);
             window.set_question_open(true);
         }
         None => {
+            let was_open = window.get_question_open();
             window.set_question_open(false);
             window.set_question_heading(SharedString::default());
             window.set_question_body(SharedString::default());
             window.set_question_confirm(SharedString::default());
             window.set_question_destructive(false);
+            window.set_question_prompt(SharedString::default());
+            window.set_question_locked(false);
+            if was_open {
+                window.invoke_focus_page();
+            }
         }
     }
 }

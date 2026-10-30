@@ -93,8 +93,8 @@ fn terminal_lines_name_the_engine_on_the_hidden_volume() {
         "Open a terminal and run: sudo /mnt/data/nails gui"
     );
     assert_eq!(
-        activate_from_terminal(Some(engine)),
-        "Activate from a terminal: sudo /mnt/data/nails activate"
+        open_again(Some(engine)),
+        "To go on, open the window again from a terminal: sudo /mnt/data/nails gui"
     );
     assert_eq!(
         deactivate_from_terminal(Some(Path::new("/mnt/a gui/nails"))),
@@ -104,6 +104,19 @@ fn terminal_lines_name_the_engine_on_the_hidden_volume() {
         engine_fix("Run `sudo /mnt/data/nails recover` to reset the record"),
         "Run sudo /mnt/data/nails recover to reset the record"
     );
+}
+
+#[test]
+fn an_allowed_risk_is_named_and_its_word_prompted() {
+    assert_eq!(
+        allowed_by_you(RISK_PERSISTENT_DECOY),
+        "Allowed by you: a persistent record on this computer's disk."
+    );
+    assert_eq!(type_to_continue(ALLOW_WORD), "Type allow to continue");
+    // The buttons that open a question end in the ellipsis character.
+    for label in [ACTIVATE, ALLOW] {
+        assert!(label.ends_with('\u{2026}'), "{label}");
+    }
 }
 
 #[test]
