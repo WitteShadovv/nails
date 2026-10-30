@@ -2,7 +2,8 @@ name: CI
 
 # The pull request gate. The work jobs run in parallel, each gated only on the
 # path filter in `changes`, and `gate` is the one status to require: it fails
-# when a job failed or was cancelled and passes when the filter skipped one.
+# when a job failed or was cancelled, or when `changes` set no filters, and
+# passes when the filter skipped a job.
 # Pushes to main run every job and report a red run through report-status.
 # Pull requests into and pushes to `next`, the integration branch, run the
 # same way.
@@ -537,7 +538,9 @@ jobs:
     if: needs.changes.outputs.sbom == 'true'
     uses: ./.github/workflows/sbom.yml
 
-  # The one required status. A job the path filter skipped counts as passed.
+  # The one required status. A job the path filter skipped counts as passed,
+  # but only once changes has set the filters: a changes job that was skipped
+  # or set none skips every work job, and nothing would be left to fail.
   gate:
     name: gate
     needs: [changes, lint, rust, shuffle, side-tests, deps, gui-vet, privileged-mounts, nix-build, lint-misc, docs-check, sbom]
@@ -557,6 +560,10 @@ jobs:
           red=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key] | join(", ")' <<< "$NEEDS")
           if [ -n "$red" ]; then
             echo "::error::Failed or cancelled: $red"
+            exit 1
+          fi
+          if ! jq -e '.changes.outputs | length > 0 and all(. == "true" or . == "false")' <<< "$NEEDS" > /dev/null; then
+            echo "::error::changes did not set the path filters the work jobs run on"
             exit 1
           fi
 
