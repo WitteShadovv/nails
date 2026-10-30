@@ -64,7 +64,9 @@
 //! PID 1's PID namespace, when the counter is already lower or cannot be
 //! written (a kernel built without `CONFIG_CHECKPOINT_RESTORE` has no such
 //! file), the numbers continue as before. The transition cannot report that,
-//! so `deactivate` checks before the switch ([`way_back_can_lower`]) and warns.
+//! so `deactivate` checks before the switch ([`way_back_can_lower`]) and warns,
+//! as it does when it finds nothing to measure by ([`counter`]) and the
+//! counter can only go just below the floor.
 //!
 //! The emergency and `deactivate` measure the counter on their way out, so the
 //! measure must not wait on a filesystem: it tells a process's root by the
