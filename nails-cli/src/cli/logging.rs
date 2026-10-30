@@ -67,10 +67,11 @@ pub fn init_subscriber(
 
 /// Print a notice about logging setup itself, before the subscriber exists.
 ///
-/// Warnings are dropped under `--quiet`; errors are always shown.
+/// Warnings are dropped under `--quiet`; errors are always shown, where
+/// stderr still takes them.
 fn emit_logging_init_message(settings: &OutputSettings, is_error: bool, message: &str) {
     if let Some(line) = logging_init_line(settings, is_error, message) {
-        eprintln!("{line}");
+        crate::cli::output::eprintln_tolerating_broken_pipe(&line);
     }
 }
 

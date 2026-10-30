@@ -38,7 +38,11 @@ pub(crate) const PANIC_TARGET: &str = "panic";
 /// The console layer for `settings`, writing to `writer`.
 ///
 /// The level follows the verbosity (`-q` errors only, default INFO, `-v`
-/// DEBUG, `-vv` TRACE), and colour follows `settings.color_stderr`.
+/// DEBUG, `-vv` TRACE), and colour follows `settings.color_stderr`. A line
+/// stderr no longer takes is dropped: the fmt layer's own report of the
+/// failed write would go to that stderr with `eprintln!`, which panics there.
+/// An emergency's kill takes the terminal its stderr leads to, and the
+/// command still logs and records the session after it.
 pub(super) fn layer<S, W>(settings: &OutputSettings, writer: W) -> Box<dyn Layer<S> + Send + Sync>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
@@ -48,6 +52,7 @@ where
     let filter = filter_fn(move |meta| meta.target() != PANIC_TARGET && *meta.level() <= level);
     let base = fmt_layer::layer()
         .with_ansi(settings.color_stderr)
+        .log_internal_errors(false)
         .with_writer(writer);
     if settings.verbosity >= Verbosity::Verbose {
         // No timestamps even here: the elapsed time is reported by the progress

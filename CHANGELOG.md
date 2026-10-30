@@ -402,6 +402,10 @@ of this changelog for that version becomes the release notes word for word, and
   `xterm -e sudo nails emergency &`, which dies with the display server moments later, and a
   window manager started from a login shell that starts the command in a process group but not a
   session of its own.
+- A console log line that stderr no longer takes is dropped. The log's own report of the failed
+  write went to the same stderr and panicked there, so an emergency run with `--verbose` whose
+  kill took the terminal or the pipe reader its stderr led to exited 1 at its first log line,
+  without recording the session as ended. A notice about the log file itself is dropped there too.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
