@@ -700,6 +700,45 @@ fn a_skip_whose_pulls_cannot_all_be_told_is_masked_with_a_warning() {
 }
 
 #[test]
+fn a_unit_masked_because_its_lines_disagree_is_warned_of() {
+    // The decoy's line requires /srv/data, the hidden generation's has it
+    // nofail: the hidden systemd reads the latter, but a skip made for the
+    // former could leave a checker of the latter free, so it is masked. And
+    // where the line the hidden systemd reads requires it, its target is not
+    // reached: say so.
+    let decoy = Decoy::new();
+    let hidden = "/dev/vdc1 /srv/data ext4 defaults,nofail 0 2\n";
+    let mut decisions = decide_data();
+    decisions.extend(policy::decide_all(
+        &crate::session::fstab::parse_fstab(hidden),
+        &parse_mountinfo(ROOT_ONLY),
+        Path::new(HIDDEN),
+        &|_| true,
+    ));
+    let (kept, warnings) = decoy.kept_off(&format!("{DATA}{hidden}"), &decisions);
+    assert_eq!(kept.masks, ["srv-data.mount"]);
+    assert_eq!(
+        kept.required_masks,
+        [RequiredMask {
+            unit: "srv-data.mount".into(),
+            cause: MaskCause::ConflictingLines,
+            device: None,
+        }]
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    for part in [
+        "srv-data.mount is masked rather than skipped",
+        "disagree",
+        "will not reach that target",
+    ] {
+        assert!(warnings[0].contains(part), "{part}: {}", warnings[0]);
+    }
+    // Lines that agree warn of nothing.
+    let (_, warnings) = decoy.kept_off(DATA, &decide_data());
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
 fn a_directory_of_links_that_cannot_be_listed_refuses_the_entry() {
     for (link, dir) in [
         (
