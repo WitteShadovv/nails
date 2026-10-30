@@ -173,7 +173,7 @@ pub const EMERGENCY_RELEASE: &str = "Release to End";
 pub const EMERGENCY_HOLD_HINT: &str = "Hold to End the Session";
 /// After the keyboard's first press.
 pub const EMERGENCY_AGAIN: &str = "Press Enter Again to End Now";
-/// Once the emergency fired: what `nails emergency` prints too.
+/// Once the emergency fired.
 pub const EMERGENCY_NOW: &str = "Ending the hidden session now.";
 /// The way out that needs nothing of the window or of NAILS.
 pub const POWER_BUTTON_IF_STILL_ON: &str =
