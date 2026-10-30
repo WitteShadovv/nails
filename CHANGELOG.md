@@ -42,6 +42,24 @@ of this changelog for that version becomes the release notes word for word, and
   duplicate field, another protocol version and an argument of the wrong shape (a relative path, or
   two options the CLI refuses together), and ends the session; a libFuzzer target
   (`helper_request`) covers it.
+- The window's helper changes settings too, as `config set` and `config unset` do: a
+  `config_edit_plan` request names the keys to set, each with its value as JSON (a boolean, a whole
+  number, a string or a list of strings), and the keys to unset; the helper reads its own
+  configuration, makes and checks the change as the CLI does and writes nothing, and answers with
+  each key's value before and after and a single-use token. Only a `config_edit_apply` with that
+  token, as the next request, writes the file, and only while the file is still what the plan
+  read: a file changed in between refuses the apply as `plan_stale`. A plan holds no lock, a
+  change the file already holds answers as the CLI does with no token, and a refusal or a failure
+  is the CLI's envelope for it, the refusal included of a change that moves the hidden volume root
+  or the state file away from where a hidden session recorded them while one runs, is entering or
+  was left behind. A cancel of the helper stops an apply before the new file replaces the old one,
+  as it stops `config set`. The decoder refuses a change that names no key or more than 32, a key
+  twice, a key that is not shaped as one of `nails.toml`, and a value over 4 KiB, with a control
+  character or of no kind a key takes; the `helper_request` fuzz target covers it. An empty list
+  of names is refused as `config set` refuses no value, and `config_edit_plan` with `unset` is the
+  way back to the default. `config show --json` names the source of each key of a table too, as
+  `persona.mode`, beside the table's own: a table the file holds, even as an empty header an unset
+  left, no longer makes each of its keys look set by the file.
 - The launcher for the coming window, `nails gui`, built only with the `gui` cargo feature like the
   helper (the flake check proves the released binary refuses it too). Run as
   `sudo <hidden-root>/nails gui`, it starts the helper as root and the window's program

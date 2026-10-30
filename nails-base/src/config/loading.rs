@@ -77,8 +77,9 @@ pub fn discover_config_path(config_override: Option<&Path>) -> PathBuf {
     }
 }
 
-/// A strictly parsed config file: the resolved config and the top-level keys
-/// the file set explicitly.
+/// A strictly parsed config file: the resolved config and the keys the file
+/// set explicitly, each top-level key and each key of a table, written
+/// `table.key`.
 pub(super) struct ParsedFile {
     pub(super) config: Config,
     pub(super) keys: BTreeSet<String>,
@@ -96,7 +97,14 @@ pub(super) fn parse_config_file(path: &Path, contents: &str) -> Result<ParsedFil
         toml::from_str(contents).map_err(|e| invalid_config(path, contents, &e))?;
     let table: toml::Table =
         toml::from_str(contents).map_err(|e| invalid_config(path, contents, &e))?;
-    let keys: BTreeSet<String> = table.keys().cloned().collect();
+    let mut keys: BTreeSet<String> = table.keys().cloned().collect();
+    // A table the file holds may set some of its keys and leave the others
+    // at their defaults, or be an empty header that an unset left.
+    for (name, value) in &table {
+        if let toml::Value::Table(inner) = value {
+            keys.extend(inner.keys().map(|key| format!("{name}.{key}")));
+        }
+    }
 
     if config.hidden_volume_root.as_os_str().is_empty() {
         return Err(NailsError::ConfigError(format!(
