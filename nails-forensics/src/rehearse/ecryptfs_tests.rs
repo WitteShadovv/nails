@@ -668,7 +668,7 @@ fn more_devices_below_an_ecryptfs_folder_than_the_scan_follows_leave_it_unable_t
     // folder, and says why. A mapping it did read still holds it.
     let sysfs = Sysfs::two_disks();
     let mut below = SDB.to_string();
-    let top = super::scan::MAX_HOLDING_DEVICES;
+    let top = super::ecryptfs::MAX_HOLDING_DEVICES;
     for n in 0..=top {
         let dir = format!("/sys/devices/virtual/block/dm-{n}");
         sysfs
