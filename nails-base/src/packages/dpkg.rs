@@ -31,6 +31,14 @@ pub const STATUS: &str = "var/lib/dpkg/status";
 /// `<name>.md5sums`, its maintainer scripts), relative to the root.
 pub const INFO: &str = "var/lib/dpkg/info";
 
+/// dpkg's journal, relative to the root: dpkg writes each package it changes
+/// to a file of its own here first, and writes [`STATUS`] again with them
+/// and deletes them only at the end of its run or after 250 of them
+/// (`modstatdb_note`, `modstatdb_checkpoint` in lib/dpkg/dbmodify.c). A run
+/// stopped half way leaves them, and dpkg adds them to its record when it
+/// next runs.
+pub const UPDATES: &str = "var/lib/dpkg/updates";
+
 /// The state of a package, the last word of its `Status` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum State {
@@ -214,6 +222,16 @@ pub fn info_owner(file_name: &str) -> Option<(&str, Option<&str>)> {
         }
         _ => None,
     }
+}
+
+/// Whether `file_name`, the name of an entry of dpkg's journal
+/// ([`UPDATES`]), is a change dpkg has not added to its record yet: a name of
+/// digits alone, as dpkg names them (`0000`, `0001`, ...) and reads them back
+/// (`update_file_filter` in lib/dpkg/dbmodify.c), and as apt looks for them
+/// before it says dpkg was interrupted. dpkg's own file being written there,
+/// `tmp.i`, is none.
+pub fn is_journal(file_name: &str) -> bool {
+    !file_name.is_empty() && file_name.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// The packages dpkg's status file below `root` records ([`read_status_file`]
