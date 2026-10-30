@@ -917,6 +917,113 @@ fn only_conf_drop_ins_apply_each_name_from_the_first_directory_that_has_it() {
 }
 
 #[test]
+fn the_drop_ins_of_a_unit_s_name_prefixes_and_of_its_type_apply_too() {
+    // A vendor tmpfs unit, and an administrator's drop-in for every mount
+    // unit whose name begins with `srv-` that makes it mount a disk.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/usr/lib/systemd/system/srv-ram.mount",
+        "[Mount]\nWhat=tmpfs\nWhere=/srv/ram\nType=tmpfs\n",
+    );
+    decoy.link(
+        "/usr/lib/systemd/system/local-fs.target.wants/srv-ram.mount",
+        "../srv-ram.mount",
+    );
+    assert!(matches!(
+        decoy.decide(ROOT_ONLY, true)[..],
+        [Decision::Leave { .. }]
+    ));
+    decoy.write(
+        "/etc/systemd/system/srv-.mount.d/disk.conf",
+        "[Mount]\nWhat=/dev/vdb1\nType=ext4\n",
+    );
+    assert_eq!(
+        policy::masked_units(&decoy.decide(ROOT_ONLY, true)),
+        ["srv-ram.mount"]
+    );
+    // The unit's own drop-in of that name comes first and hides the prefix's.
+    decoy.write(
+        "/etc/systemd/system/srv-ram.mount.d/disk.conf",
+        "[Mount]\nWhat=tmpfs\nType=tmpfs\n",
+    );
+    assert!(matches!(
+        decoy.decide(ROOT_ONLY, true)[..],
+        [Decision::Leave { .. }]
+    ));
+    // One for every mount unit applies too, in the order of the names.
+    decoy.write(
+        "/usr/lib/systemd/system/mount.d/zz-disk.conf",
+        "[Mount]\nWhat=/dev/vdb2\nType=ext4\n",
+    );
+    let Load::Loaded { unit, .. } = decoy.dirs().load("srv-ram.mount") else {
+        panic!("the unit loads");
+    };
+    assert_eq!(unit.last("Mount", "What"), Some("/dev/vdb2"));
+    assert_eq!(
+        policy::masked_units(&decoy.decide(ROOT_ONLY, true)),
+        ["srv-ram.mount"]
+    );
+}
+
+#[test]
+fn the_drop_in_directories_are_those_of_the_name_and_each_prefix_up_to_a_dash() {
+    for (name, stems) in [
+        ("srv-data.mount", &["srv-data.mount", "srv-.mount"][..]),
+        (
+            "srv-data-old.mount",
+            &["srv-data-old.mount", "srv-data-.mount", "srv-.mount"][..],
+        ),
+        ("srv-.mount", &["srv-.mount"][..]),
+        ("a--b.mount", &["a--b.mount", "a--.mount", "a-.mount"][..]),
+        ("-.mount", &["-.mount"][..]),
+        ("-x.mount", &["-x.mount"][..]),
+        (
+            "srv-my\\x2ddisk.mount",
+            &["srv-my\\x2ddisk.mount", "srv-.mount"][..],
+        ),
+        ("data.swap", &["data.swap"][..]),
+    ] {
+        assert_eq!(unit_dirs::dropin_stems(name), stems, "{name}");
+    }
+}
+
+#[test]
+fn the_link_directories_of_every_target_of_a_prefix_and_upholds_are_read() {
+    let decoy = Decoy::new();
+    for name in ["srv-a", "srv-b", "srv-c", "srv-d"] {
+        decoy.write(&format!("/etc/systemd/system/{name}.mount"), NATIVE_MOUNT);
+    }
+    for link in [
+        "target.wants/srv-a.mount",
+        "multi-user.target.upholds/srv-b.mount",
+        "target.requires/srv-c.mount",
+        "local-.target.requires/srv-d.mount",
+    ] {
+        let name = link.rsplit('/').next().unwrap();
+        decoy.link(
+            &format!("/etc/systemd/system/{link}"),
+            &format!("../{name}"),
+        );
+    }
+    let unit = |name: &str, required_by: Option<&str>| NativeUnit {
+        name: name.into(),
+        required_by: required_by.map(str::to_string),
+    };
+    assert_eq!(
+        read(decoy.dirs()).unwrap(),
+        [
+            unit(
+                "srv-d.mount",
+                Some("every target whose name begins with local-")
+            ),
+            unit("srv-b.mount", None),
+            unit("srv-c.mount", Some("every target")),
+            unit("srv-a.mount", None),
+        ]
+    );
+}
+
+#[test]
 fn a_ram_filesystem_over_a_disk_unit_s_mount_point_is_put_in_place_not_left_to_the_unit() {
     // The unit mounts a disk, and the decoy has a tmpfs mounted over its mount
     // point now. Left to the hidden systemd, the unit would mount the disk
