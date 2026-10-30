@@ -13,7 +13,7 @@ use nails_teardown::whole_root::disk_guard::{RULE_DIR, RULE_NAME};
 use nails_teardown::whole_root::nextroot::NEXTROOT;
 use nails_teardown::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
 use nails_teardown::whole_root::transition::{
-    DROPIN_DIR, DROPIN_NAME, STOP_GUARD_NAME, runtime_guards, stop_guard_dir,
+    DROPIN_DIR, DROPIN_NAME, QUIET_MOUNTS_TEXT, STOP_GUARD_NAME, runtime_guards, stop_guard_dir,
 };
 
 /// Where runtime unit files live.
@@ -117,8 +117,10 @@ impl<F: Filesystem> Verifier<F> {
 
     /// Flag what a session leaves in `/run` when verify runs on the decoy: a
     /// populated `/run/nextroot`, the runtime directory and the plan in it, the
-    /// transition drop-in on `systemd-soft-reboot.service`, and the session's
-    /// own units or masks among the runtime unit files and generators. Inside
+    /// transition drop-in on `systemd-soft-reboot.service`, the runtime guards
+    /// (the one that quiets the carried filesystems' mount units among them),
+    /// and the session's own units or masks among the runtime unit files and
+    /// generators. Inside
     /// the hidden root all of these are expected, so it reports that as
     /// information instead.
     pub(super) fn check_session_leftovers(
@@ -234,6 +236,14 @@ impl<F: Filesystem> Verifier<F> {
         Ok(findings)
     }
 
+    /// Whether the drop-in directory `dir` holds the drop-in an entry writes
+    /// to quiet the carried filesystems' mount units.
+    fn quiets_mounts(&self, dir: &Path) -> bool {
+        self.filesystem
+            .read_file_content(&dir.join(STOP_GUARD_NAME))
+            .is_ok_and(|text| text == QUIET_MOUNTS_TEXT)
+    }
+
     fn leftover_units_in(&self, dir: &Path) -> Result<Vec<Finding>> {
         if !self.filesystem.is_directory(dir)? {
             return Ok(Vec::new());
@@ -253,6 +263,19 @@ impl<F: Filesystem> Verifier<F> {
                         Severity::Critical,
                         "session",
                         format!("the hidden session's unit {} is left", path.display()),
+                    )
+                    .with_fix_guidance(recover_fix()),
+                );
+            } else if name.ends_with("-.mount.d") && self.quiets_mounts(&path) {
+                findings.push(
+                    Finding::new(
+                        Severity::Critical,
+                        "session",
+                        format!(
+                            "the session's runtime guard {} is left: the mount units it names \
+                             report nothing until the next boot",
+                            path.join(STOP_GUARD_NAME).display()
+                        ),
                     )
                     .with_fix_guidance(recover_fix()),
                 );
