@@ -52,6 +52,14 @@ pub use args::{
 /// are equal.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The release this contract belongs to: the version of the NAILS workspace
+/// the engine is built from, which `nails --version` prints. Both ends name it
+/// in their [`Hello`] as `engine`. The window is built in a workspace of its
+/// own with a version of its own, and links this crate from the engine's
+/// tree, so this constant is how it names the engine release it was built
+/// for.
+pub const RELEASE: &str = env!("CARGO_PKG_VERSION");
+
 /// The longest request line the helper reads, in bytes, without its newline.
 /// No request needs more than a few hundred; a longer line ends the session
 /// before it is parsed.
