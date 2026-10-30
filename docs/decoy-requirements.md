@@ -127,6 +127,13 @@ accept that what the decoy logs around each soft-reboot may survive on the
 decoy disk, and that a kernel crash during the session can leave a dump of its
 memory there.
 
+The `locate-database` check refuses as well, and no flag lifts its refusal:
+an updatedb that runs now, or that a timer, a path unit, an enabled service or
+a cron job it reads starts, and that does not skip the hidden volume would
+write the name of every file on the volume into the decoy's locate database
+(see [The locate database](#the-locate-database), which also names what it
+does not read).
+
 kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
 kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or
 `kdump.service` (Fedora) is enabled or active. The soft-reboot into the hidden
@@ -311,6 +318,10 @@ logind.
   `services.syslog-ng`, `services.syslogd` or `security.auditd` / the audit
   framework on the decoy.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
+- **The locate database skips the hidden volume** (`locate-database`): leave
+  `services.locate` disabled, or for a volume mounted below `/mnt` add
+  `services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];` (see
+  [The locate database](#the-locate-database)).
 - **Core dumps kept off the disk**:
   `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
@@ -451,6 +462,10 @@ logind.
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
 - Mount the root with `noatime`; disable swap and hibernation.
+- With plocate installed, add the directory the hidden volume is mounted in to
+  `PRUNEPATHS` in `/etc/updatedb.conf`, or mask and stop
+  `plocate-updatedb.timer` (`sudo systemctl mask --now`)
+  (`locate-database`; see [The locate database](#the-locate-database)).
 - Keep `nftables` installed, and `iw` on a machine with Wi-Fi
   (`apt install nftables iw`), so the way back can delete the firewall tables
   and Wi-Fi interfaces a session adds (`network-tools`).
@@ -473,6 +488,10 @@ logind.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
+- With plocate installed, the directory the hidden volume is mounted in in
+  `PRUNEPATHS` of `/etc/updatedb.conf`, or `plocate-updatedb.timer` masked and
+  stopped (`locate-database`; see
+  [The locate database](#the-locate-database)).
 - `nftables`, and `iw` on a machine with Wi-Fi (`apt install nftables iw`), so
   the way back can delete the firewall tables and Wi-Fi interfaces a session
   adds (`network-tools`).
@@ -723,6 +742,181 @@ the Kerberos tickets its ticket cache kept, which nothing reaches while
 `sssd-kcm` is off. On Fedora, turning `sssd-kcm` off also turns off the ticket
 cache that `kinit` uses by default.
 
+## The locate database
+
+updatedb, the indexer behind `locate` (plocate, mlocate, and NixOS's
+`services.locate`), walks the whole tree and writes the name of every file it
+finds into the locate database on the decoy disk:
+`/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, or
+`/var/cache/locatedb` on NixOS. A run while the hidden volume is mounted on the
+decoy, before activation or after the way back, writes every name on the
+volume there, where `locate` lists it. plocate's and NixOS's timers run daily
+with `Persistent=true`, which catches a missed run up right after boot, when
+the volume is unlocked for a session. Fedora installs and enables plocate by
+default. The default `PRUNEPATHS` of Debian 13, Ubuntu 26.04, Fedora 44 and
+NixOS do not skip `/mnt`; Arch Linux's does.
+
+The `locate-database` check refuses activation while an updatedb that runs now,
+or that a timer, a path unit, an enabled service or a cron job it reads (below)
+starts, does not skip the hidden volume, whatever flags the run is given. It
+warns instead, and does not refuse, where it cannot tell: an
+`/etc/updatedb.conf` it cannot read, or one that updatedb refuses and stops
+on; a command or option it does not follow; findutils' updatedb, whose prune
+options it does not read; a unit directory, crontab, cron script,
+`/etc/passwd` or process it cannot read, or a `/proc` that hides processes
+from it; a timer it cannot ask the system manager about. An unprivileged
+`nails check` cannot read root's crontab or a cron directory only root may
+list, so run it with sudo. It also warns when updatedb is installed but only a person starts it
+and does not skip the volume. When every run skips it, the check passes and
+names the rule that does.
+
+What it reads:
+
+- **Services.** A service runs updatedb when a command of its `[Service]`
+  section (`ExecStart=`, `ExecStartPre=`, `ExecStartPost=`, `ExecCondition=`,
+  `ExecReload=`, `ExecStop=`, `ExecStopPost=`) runs a program named `updatedb`
+  or `updatedb.*`, or passes such a word to the program it runs (`nice`,
+  `flock`, `sh -c updatedb`). Only a plain path counts as such a word: the
+  whole script of `sh -c '…'`, or any word with a blank, a quote, `;`, `|`,
+  `&` or `$` in it, is a script NAILS cannot tell about, however it ends. It
+  runs now when the system manager shows it active. It is scheduled when a
+  timer or path unit starts it (its first `Unit=` systemd takes, or the
+  service of its own name) that is enabled, or that the system manager runs
+  as `systemctl list-units` shows it: one started with `systemctl start`, an
+  instance of a template, a transient one as `systemd-run --on-calendar`
+  makes it in `/run/systemd/transient`, and one masked, or whose file is
+  gone, since it started (systemd leaves no file that says a timer runs, and
+  the file of a transient one may stay a while after it stops); and when it
+  is enabled itself: an entry for it in a `.wants`, `.requires` or `.upholds`
+  directory, as `systemctl enable` and `systemctl add-wants` make. Such a
+  service runs again at the soft-reboot back to the decoy. Where NAILS cannot
+  ask the system manager, a transient trigger whose file is there counts, and
+  one that is not enabled may run all the same, which warns. Units are read
+  from every directory systemd loads them from (`/etc/systemd/system.control`,
+  `/run/systemd/system.control`, `/run/systemd/transient`, the generator
+  directories, `/etc/systemd/system`, `/run/systemd/system`, their
+  `.attached` siblings, `/usr/local/lib/systemd/system`,
+  `/usr/lib/systemd/system` and `/lib/systemd/system`), with the drop-ins of
+  the unit, of its template and of its name's prefixes, and an instance is read
+  from its template. Users' managers count too: the units in each home
+  `/etc/passwd` names, in the other directories of `/home` and in the other
+  numbers of `/run/user` (`~/.config/systemd/user`,
+  `~/.local/share/systemd/user`, `/run/user/<uid>/systemd/…`), and those every
+  user shares (`/etc/systemd/user`, `/usr/lib/systemd/user` and the others).
+  Of a user's timers only an enabled or a transient one counts: NAILS asks no
+  user's manager what it runs.
+  `plocate-updatedb.service`, `mlocate-updatedb.service` and
+  `update-locatedb.service` with nothing starting them are ones a person
+  starts. A unit file that is empty or a link to `/dev/null` masks its unit.
+- **Cron.** `/etc/crontab`, the files of `/etc/cron.d`, root's and the users'
+  crontabs (`/var/spool/cron/crontabs`, `/var/spool/cron`), `/etc/anacrontab`,
+  and the scripts of `/etc/cron.hourly`, `daily`, `weekly` and `monthly`. A
+  crontab line is a job when it starts with its schedule, after the `-` with
+  which cronie (Fedora, Arch) runs a job it does not log; its command ends at
+  the first `%` no backslash escapes, and cron feeds the rest to it as input,
+  each further `%` a newline, which a shell reads as a script: that is read as
+  one too. anacron hands its command to the shell as it is. Comments and
+  settings are no jobs. A
+  command or script is read as the shell splits it: quotes and backslashes,
+  commands split at `;`, `&`, `|`, `&&`, `||` and parentheses, comments,
+  redirections, and the first `updatedb` word of a command as the program,
+  whatever runs it. A command whose updatedb gets a word the shell expands (a
+  variable, a backquoted command, a glob), or that names updatedb in a
+  variable or in the script of `sh -c '…'`, is one NAILS cannot tell about: it
+  does not follow variables. Debian's and Ubuntu's `/etc/cron.daily/plocate`
+  ends at once where systemd runs, so it does not count while that test is its
+  first command (after `set -e` and plain assignments).
+- **Processes.** A process whose name or program is an updatedb runs now, one
+  started by hand among them, and is judged by its own command line. One whose
+  name is `updatedb` but whose program is a shell runs a script, such as
+  findutils' updatedb, which NAILS does not read. A `/proc` NAILS cannot list,
+  one that hides process 1 from it (mounted with `hidepid`), and processes it
+  cannot read may hide an updatedb, which warns.
+- **Programs.** An updatedb in `/usr/bin`, `/usr/sbin`, `/bin`, `/sbin`,
+  `/usr/local` or NixOS's system profile is one a person starts.
+- **What a run skips.** `/etc/updatedb.conf`, or the file `--config-file`
+  names (plocate 1.1.24 and later, as Fedora 44, Arch and NixOS ship; a file it
+  names that does not exist stops updatedb), read as plocate and mlocate read
+  it (`PRUNEPATHS`, `PRUNENAMES`, `PRUNEFS`), with the options of the run's
+  command line on top, read as updatedb's `getopt_long()` reads them (a unique
+  prefix such as `--data`, a cluster such as `-vU/mnt/data`):
+  `--prunepaths`, `--prunefs` and `--prunenames` replace the file's list,
+  `--add-prunepaths` (`-e`), `--add-single-prunepath`, `--add-prunefs` and
+  `--add-prunenames` add to it, and `--database-root` (`-U`) starts the scan
+  in another directory. A relative path resolves from where updatedb runs: for
+  a service without `WorkingDirectory=`, `/` under the system manager and the
+  user's home under a user's, and a process's own working directory. A
+  relative path in a cron job, in a unit every user's manager runs, or in a
+  service that sets `WorkingDirectory=`, is one NAILS cannot tell about. An
+  `ExecStart=` is read as systemd reads it, an escape systemd does not know
+  keeping its backslash.
+- **The volume.** The hidden root where its links lead, and every other mount
+  of the filesystem mounted there. updatedb skips it when a `PRUNEPATHS` entry
+  is exactly one of the directories from the scan root down to it (`/mnt` or
+  `/mnt/data` skip `/mnt/data`, `/mnt/` skips nothing), when a `PRUNENAMES`
+  entry is the name of one of them below the scan root, when a `PRUNEFS` entry
+  is, in any ASCII case, the type of a filesystem mounted on the way below the
+  scan root where the device changes, or when the scan starts elsewhere.
+  `PRUNE_BIND_MOUNTS` does not count: a volume mounted from its device is no
+  bind mount.
+
+It does not see:
+
+- a script that a service or a cron job runs by its name and that runs
+  updatedb itself;
+- a service another unit pulls in with `Wants=` or `Requires=` in its own
+  file, or that a socket, a udev rule or a target starts;
+- `at` and `batch` jobs, which it does not read;
+- a user's timer started with `systemctl --user start` and not enabled, as no
+  user's manager is asked what it runs, and a user's updatedb running now
+  other than by its process.
+
+The check writes nothing. It opens each file it reads with `O_NOATIME`, so run
+as root it changes none of their access times (an unprivileged `nails check`
+cannot ask for that, and the links a lookup follows still get theirs), and it
+reads no file that a link leads onto the hidden volume. It runs `systemctl
+list-units`, which does change the access time of `systemctl` and the libraries
+it loads, at most once a day under the default `relatime`, as activation's own
+`systemctl` calls do.
+
+Make updatedb skip the directory the volume is mounted in long before you use
+the volume again, since a change made just before a session dates it, and keep
+the volume locked until then:
+
+- On NixOS, leave `services.locate` disabled, or add the directory:
+
+  ```nix
+  services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];
+  ```
+
+  `lib.mkOptionDefault` adds to the default list, and only while no other
+  definition sets the option; a plain list replaces the default, and `/tmp`,
+  `/nix/store` and the rest of it are then indexed. Where the configuration
+  sets `services.locate.prunePaths` itself, the check sees a list other than
+  the default and says to add `/mnt` to that list. Another definition joins it
+  only at the same priority: a plain list joins a plain list, replaces one set
+  with `lib.mkDefault` or `lib.mkOptionDefault`, and is dropped beside one set
+  with `lib.mkForce`. A configuration that sets exactly the default list looks
+  like none to the check, whose `lib.mkOptionDefault` line then does nothing:
+  add `/mnt` to that list. The line names
+  `/mnt`, not the mount point `/mnt/data`, so the `suspicious-nails-reference`
+  check does not refuse it; a mount of the volume below its root is pruned
+  with it. For a volume mounted right below `/`, leave `services.locate`
+  disabled: an entry that skips it would name its mount point.
+- On Debian, Ubuntu and Fedora, add the directory to `PRUNEPATHS` in
+  `/etc/updatedb.conf`, or stop what starts updatedb: mask and stop the timer
+  with `sudo systemctl mask --now plocate-updatedb.timer` (a mask alone leaves
+  a running timer running), mask a service that is enabled itself, stop a
+  transient timer, remove the cron job. The check names each one it finds.
+  With the timer masked and `PRUNEPATHS` as it was, the check still warns,
+  since a run by hand indexes the volume. A run that reads another file with
+  `--config-file`, or replaces the list with its own options, needs the
+  directory there.
+
+The check cannot see a run that already happened. A database written while the
+volume was mounted lists the volume's files until updatedb runs again with the
+volume locked.
+
 ## Session-time records
 
 Some records do not hold what the session did, only that the machine was
@@ -848,6 +1042,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
 | [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent. | `examiner-audit` |
 | [Armed kdump](#fail-closed-activation-is-refused) (`kdump`) | `/var/crash` | all | `decoy-persistence` (refuses) | none: the crash-dumps row probes /var/crash, where kdump writes its dumps | Disable kdump on the decoy (Ubuntu: kdump-tools, Fedora: kdump). | none: a VM test would have to reserve crash kernel memory and panic the guest kernel; the refusal is unit tested |
+| [Locate database](#the-locate-database) (`locate-database`) | `/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, `/var/cache/locatedb` | all | `locate-database` (refuses) | path probe (info) | Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now, or that a timer, path unit, enabled service or cron job the check reads starts, does not skip it; the docs name what the check does not read. | none: the refusal and its fixes are unit tested |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
