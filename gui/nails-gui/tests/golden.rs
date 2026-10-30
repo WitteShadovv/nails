@@ -256,6 +256,7 @@ fn ready_check() -> Value {
             check["status"] = json!("pass");
             if let Some(row) = check.as_object_mut() {
                 row.remove("remediation");
+                row.remove("allowable");
             }
         }
         match check["status"].as_str() {

@@ -104,6 +104,7 @@
         "status": "warn"
       },
       {
+        "allowable": "persistent_decoy",
         "message": "decoy keeps a persistent record of the hidden session: systemd-journald keeps a persistent journal on the decoy disk (/var/log/journal); set Storage=volatile under [Journal] in /etc/systemd/journald.conf or in a drop-in such as /etc/systemd/journald.conf.d/50-volatile.conf (drop-ins override the main file); rsyslog is active and writes logs to the decoy disk.",
         "name": "decoy-persistence",
         "remediation": "Make the decoy amnesic (Storage=volatile for journald, set in journald.conf or a journald.conf.d/*.conf drop-in; no active syslog or audit daemon, such as rsyslog, syslog-ng, a syslogd or auditd), or pass --allow-persistent-decoy to allow the risk for this run. See docs/decoy-requirements.md.",

@@ -12,7 +12,7 @@
 //! [`SCHEMA_VERSION`] is refused. A command's data is read for the fields the
 //! window shows, and the fields it does not show are left alone.
 
-use nails_api::SCHEMA_VERSION;
+use nails_api::{Allowable, SCHEMA_VERSION};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -205,6 +205,11 @@ pub struct CheckRow {
     /// What fixes a failure, when the check says.
     #[serde(default)]
     pub remediation: Option<String>,
+    /// The override that accepts a failure for one run, when a CLI flag
+    /// covers it. A name this window does not know makes the whole answer
+    /// unreadable, so nothing is offered that the window cannot name.
+    #[serde(default)]
+    pub allowable: Option<Allowable>,
 }
 
 /// How one check came out.

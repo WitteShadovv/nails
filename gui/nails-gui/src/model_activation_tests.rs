@@ -360,7 +360,8 @@ fn an_activation_whose_plan_was_gone_never_started() {
 fn persistent(model: &mut Model, more: bool) {
     let mut checks = vec![json!({"name": "decoy-persistence", "status": "fail",
         "message": "decoy keeps a persistent record of the hidden session: a journal on disk",
-        "remediation": "make the decoy amnesic, or pass --allow-persistent-decoy"})];
+        "remediation": "make the decoy amnesic, or pass --allow-persistent-decoy",
+        "allowable": "persistent_decoy"})];
     if more {
         checks.push(json!({"name": "swap", "status": "fail", "message": "swap is on"}));
     }
@@ -438,6 +439,225 @@ fn a_risk_the_cli_lets_one_allow_is_allowed_only_behind_its_word() {
         }))),
         "Check Again keeps what was allowed"
     );
+}
+
+/// The engine's own words for discards over the hidden volume (the
+/// `backend-detect` check): its refusal and fix, and its warning once
+/// `--allow-discards` accepted them for the run. No volume with discards on
+/// can be opened where the tests run, so they are the engine's constants, not
+/// a recording.
+const DISCARD_REFUSAL: &str = "Discards are enabled over the hidden volume. Forwarding TRIM to the \
+     physical device leaves a readable map of used and free blocks there, so a volume that should \
+     look like uniform random data no longer does, and writing an outer volume with discards on \
+     can destroy a hidden volume inside it.";
+const DISCARD_REMEDIATION: &str = "Re-open the hidden volume with discards off. A LUKS2 header \
+     that stores the flag keeps enabling them: run `cryptsetup refresh --persistent` without \
+     `--allow-discards`, then check that `cryptsetup luksDump` reports `(no flags)`. See \
+     docs/backends.md.";
+const DISCARD_ACCEPTED: &str = "Discards are enabled over the hidden volume, accepted for this \
+     run: TRIM leaves a readable map of used and free blocks on the physical device, where a \
+     deniable volume should look like uniform random data.";
+
+/// Discards over the hidden volume are allowed as the persistent record is:
+/// behind the typed word, for the next check and the activation, and the
+/// question names them.
+#[test]
+fn discards_over_the_hidden_volume_are_allowed_only_behind_the_word() {
+    let mut model = decoy();
+    checked(
+        &mut model,
+        json!([{"name": "backend-detect", "status": "fail", "message": DISCARD_REFUSAL,
+            "remediation": DISCARD_REMEDIATION, "allowable": "discards"}]),
+        1,
+        "fresh-home",
+    );
+    assert_eq!(model.page().checks[0].allow, Some(Risk::Discards));
+    model.allow(0);
+    let question = model.page().question.expect("the question is open");
+    assert!(
+        question
+            .body
+            .starts_with("Discards are enabled over the hidden volume.")
+    );
+    assert!(question.locked, "the word comes first");
+    assert_eq!(model.answer(true), None, "not without the word");
+    model.allow(0);
+    model.typed("allow");
+    assert_eq!(
+        model.answer(true),
+        Some(Ask::Check(CheckArgs {
+            allow_discards: true,
+            ..CheckArgs::default()
+        }))
+    );
+    checked(
+        &mut model,
+        json!([{"name": "backend-detect", "status": "warn", "message": DISCARD_ACCEPTED}]),
+        0,
+        "fresh-home",
+    );
+    let page = model.page();
+    assert_eq!(page.heading, text::READY);
+    assert!(page.facts.contains(&(
+        "Allowed by you".to_string(),
+        text::RISK_DISCARDS.to_string()
+    )));
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Activate(ActivateArgs {
+            allow_discards: true,
+            ..ActivateArgs::default()
+        }))))
+    );
+    model.apply(plan(None, None, false));
+    let body = model.page().question.unwrap().body;
+    assert!(
+        body.lines()
+            .any(|line| line == "Allowed by you: discards over the hidden volume."),
+        "{body}"
+    );
+}
+
+/// The check of a hidden volume that binds a folder of the build server's
+/// own disk, as the real helper gave it: refused, and then with
+/// `--allow-decoy-storage`.
+fn recorded_storage_check(model: &mut Model, allowed: bool) {
+    let recorded: Value = serde_json::from_str(if allowed {
+        include_str!("../tests/fixtures/check-decoy-storage-allowed.json")
+    } else {
+        include_str!("../tests/fixtures/check-decoy-storage.json")
+    })
+    .unwrap();
+    model.apply(Update::Running(Kind::Check));
+    model.apply(answered(Kind::Check, recorded));
+}
+
+/// A hidden volume on this computer's disk is allowed as the persistent
+/// record is: behind the typed word, for the next check and the activation.
+/// Only its own refusal offers it.
+#[test]
+fn a_hidden_volume_on_this_computers_disk_is_allowed_only_behind_the_word() {
+    let mut model = decoy();
+    recorded_storage_check(&mut model, false);
+    let page = model.page();
+    assert_eq!(page.heading, text::NOT_READY);
+    let offered: Vec<(&str, Option<Risk>)> = page
+        .checks
+        .iter()
+        .filter(|check| check.allow.is_some())
+        .map(|check| (check.message.as_str(), check.allow))
+        .collect();
+    assert!(
+        offered
+            .iter()
+            .any(|(message, risk)| *risk == Some(Risk::DecoyStorage)
+                && message.starts_with(
+                    "/mnt/data is not a volume of its own: it is a bind mount of a folder of"
+                )),
+        "{offered:?}"
+    );
+    // The recording's other refusals (a computer that keeps its journal on
+    // disk names its own override) offer nothing but what they name.
+    assert!(
+        offered
+            .iter()
+            .all(|(_, risk)| matches!(risk, Some(Risk::DecoyStorage | Risk::PersistentDecoy))),
+        "{offered:?}"
+    );
+    let index = page
+        .checks
+        .iter()
+        .position(|check| check.allow == Some(Risk::DecoyStorage))
+        .unwrap();
+    model.allow(index);
+    let question = model.page().question.expect("the question is open");
+    assert!(question.locked, "the word comes first");
+    assert!(
+        question
+            .body
+            .starts_with("/mnt/data is not a volume of its own"),
+        "{}",
+        question.body
+    );
+    assert_eq!(model.answer(true), None, "not without the word");
+    model.allow(index);
+    model.typed("allow");
+    assert_eq!(
+        model.answer(true),
+        Some(Ask::Check(CheckArgs {
+            allow_decoy_storage: true,
+            ..CheckArgs::default()
+        }))
+    );
+    recorded_storage_check(&mut model, true);
+    let page = model.page();
+    assert!(
+        page.checks
+            .iter()
+            .all(|check| check.allow != Some(Risk::DecoyStorage)),
+        "the refusal is a warning now"
+    );
+    assert!(
+        page.checks.iter().any(|check| check
+            .message
+            .starts_with("--allow-decoy-storage: using /mnt/data although")),
+        "{:?}",
+        page.checks
+    );
+    assert!(page.facts.contains(&(
+        "Allowed by you".to_string(),
+        text::RISK_DECOY_STORAGE.to_string()
+    )));
+    // Check Again keeps it, and so would the activation.
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Check(CheckArgs {
+            allow_decoy_storage: true,
+            ..CheckArgs::default()
+        })))
+    );
+    assert_eq!(
+        activation::activate_args(&BTreeSet::from([Risk::DecoyStorage])),
+        ActivateArgs {
+            allow_decoy_storage: true,
+            ..ActivateArgs::default()
+        }
+    );
+}
+
+/// A refusal offers an override only where the check names one: not under
+/// the name of a check that has one, not on a warning, and a name the window
+/// does not know makes the answer unreadable rather than offer anything.
+#[test]
+fn an_override_is_offered_only_where_the_check_names_it() {
+    let mut model = decoy();
+    checked(
+        &mut model,
+        json!([
+            // A check that could not run fails without a flag that helps.
+            {"name": "decoy-persistence", "status": "fail",
+                "message": "Check execution error: permission denied"},
+            {"name": "backend-detect", "status": "warn", "message": DISCARD_ACCEPTED,
+                "allowable": "discards"},
+        ]),
+        1,
+        "fresh-home",
+    );
+    let page = model.page();
+    assert_eq!(page.checks.len(), 2);
+    assert!(page.checks.iter().all(|check| check.allow.is_none()));
+
+    let mut model = decoy();
+    checked(
+        &mut model,
+        json!([{"name": "swap", "status": "fail", "message": "swap is on",
+            "allowable": "no_preflight"}]),
+        1,
+        "fresh-home",
+    );
+    let page = model.page();
+    assert_eq!(page.heading, text::UNREADABLE);
+    assert!(page.checks.is_empty());
 }
 
 #[test]

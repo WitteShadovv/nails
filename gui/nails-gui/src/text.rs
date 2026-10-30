@@ -76,6 +76,13 @@ pub const FACT_ALLOWED: &str = "Allowed by you";
 /// The risk of a decoy that keeps a persistent record, allowed by the
 /// person (`--allow-persistent-decoy`).
 pub const RISK_PERSISTENT_DECOY: &str = "a persistent record on this computer's disk";
+/// The risk of a hidden volume on storage this computer uses, allowed by the
+/// person (`--allow-decoy-storage`): what is written there lands on that
+/// storage.
+pub const RISK_DECOY_STORAGE: &str = "a hidden volume on this computer's disk";
+/// The risk of discards over the hidden volume, allowed by the person
+/// (`--allow-discards`).
+pub const RISK_DISCARDS: &str = "discards over the hidden volume";
 /// The button under a problem that can be allowed for one activation: it
 /// opens the question first.
 pub const ALLOW: &str = "Allow for This Activation\u{2026}";
