@@ -13,14 +13,16 @@
 //! own validation (every path absolute with no control character, a token of
 //! 32 lowercase hexadecimal digits, no two options the CLI refuses together),
 //! and that an accepted request, written back as the window writes it, is
-//! read again as the same request, or refused as too long where the written
-//! form, which names every field, no longer fits.
+//! read again as the same request: through the decoder where the written form
+//! fits, and past its length check where that form, which names every field,
+//! no longer does.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use nails_api::protocol::{
-    ErrorCode, MAX_LINE_BYTES, Op, PROTOCOL_VERSION, RehearseScanArgs, VerifyArgs, decode_request,
+    ErrorCode, MAX_LINE_BYTES, Op, PROTOCOL_VERSION, RehearseScanArgs, Request, VerifyArgs,
+    decode_request, validate,
 };
 
 /// A path the helper may hand the engine.
@@ -123,10 +125,16 @@ fuzz_target!(|data: &[u8]| {
     let again = decode_request(line.as_bytes());
     if line.len() > MAX_LINE_BYTES {
         // Written back with every field, a request accepted close to the limit
-        // can be longer than the form it came in: the helper refuses that line
-        // as too long, as it refuses any other.
+        // can be longer than the form it came in. The helper refuses that line
+        // as too long before it parses it, so it is read here past the length
+        // check: it must still be the same request, of the same shape.
         let refused = again.map_err(|refusal| refusal.error.code);
         assert_eq!(refused, Err(ErrorCode::TooLong), "{line}");
+        let parsed: Request =
+            serde_json::from_str(&line).unwrap_or_else(|error| panic!("{error}: {line}"));
+        assert_eq!(parsed, request, "{line}");
+        assert_eq!(validate(&parsed.op), Ok(()), "{line}");
+        assert!(shaped(&parsed.op), "{line}");
     } else {
         assert_eq!(again.as_ref(), Ok(&request), "{line}");
     }
