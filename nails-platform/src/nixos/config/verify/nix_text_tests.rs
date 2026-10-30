@@ -65,6 +65,98 @@ fn a_path_ends_at_a_component_boundary() {
     }
 }
 
+/// The kernel reads a run of slashes as one, so a path counts however many
+/// separate its parts; the text reported is the path as written. A path
+/// that only begins at a doubled slash inside another one is that other
+/// path (`/srv//mnt/data` is `/srv/mnt/data`), and a unit name keeps the
+/// rule it had: a `/` before it is no part of its name.
+#[test]
+fn a_path_counts_however_many_slashes_part_it() {
+    let path = Pattern::Path("/mnt/data".into());
+    for (hit, text) in [
+        ("fileSystems.\"/mnt//data\" = {", "/mnt//data"),
+        ("imports = [ /mnt///data/nixos ];", "/mnt///data"),
+        ("x = \"//mnt/data\";", "/mnt/data"),
+        ("x = \"///mnt//data//nixos\";", "/mnt//data"),
+        ("url = \"git+file:///mnt//data/nixos\";", "/mnt//data"),
+        ("# mount it at /MNT//DATA first", "/mnt//data"),
+    ] {
+        assert_eq!(found(&path, hit).as_deref(), Some(text), "{hit}");
+    }
+    for miss in [
+        "x = \"/mnt//data2\";",
+        "x = \"/mnt//data-old\";",
+        "x = \"/mnt///database\";",
+        "x = \"/srv//mnt/data\";",
+        "x = \"/srv///mnt//data\";",
+        "x = \"srv//mnt/data\";",
+        "x = \"/mnt/./data\";",
+    ] {
+        assert_eq!(found(&path, miss), None, "{miss}");
+    }
+    let device = Pattern::Path("/dev/mapper/data".into());
+    for (hit, text) in [
+        ("device = \"/dev/mapper//data\";", "/dev/mapper//data"),
+        ("device = \"/dev//mapper/data\";", "/dev//mapper/data"),
+    ] {
+        assert_eq!(found(&device, hit).as_deref(), Some(text), "{hit}");
+    }
+    for miss in [
+        "device = \"/dev/mapper//data2\";",
+        "device = \"/dev/mapper//data-swap\";",
+    ] {
+        assert_eq!(found(&device, miss), None, "{miss}");
+    }
+    let unit = Pattern::Path("mnt-data.mount".into());
+    assert_eq!(
+        found(&unit, "x = \"/etc/systemd/system/mnt-data.mount\";").as_deref(),
+        Some("mnt-data.mount")
+    );
+}
+
+/// systemd allows prefixes before a path in a setting (`-` for a file that
+/// may be missing, `+`, `!`, `!!`, `@`, `:`): a run of them that starts a
+/// value, after `=`, a quote, a blank or at the start of the line, is no
+/// part of the path. A prefix inside a word or after a slash is.
+#[test]
+fn a_path_after_systemd_s_prefixes_counts() {
+    let path = Pattern::Path("/mnt/data".into());
+    for (hit, text) in [
+        (
+            "serviceConfig.EnvironmentFile = \"-/mnt/data/app.env\";",
+            "/mnt/data",
+        ),
+        (
+            "serviceConfig.ExecStart = \"+/mnt/data/bin/x\";",
+            "/mnt/data",
+        ),
+        (
+            "serviceConfig.ExecStart = \"@/mnt/data/bin/x x\";",
+            "/mnt/data",
+        ),
+        (
+            "serviceConfig.ReadWritePaths = [ \"-/mnt/data\" ];",
+            "/mnt/data",
+        ),
+        ("text = ''\n  ExecStart=!!-/mnt/data/x\n'';", "/mnt/data"),
+        ("text = ''\n-//mnt//data/app.env\n'';", "/mnt//data"),
+        ("x = ''-/mnt/data'';", "/mnt/data"),
+        ("# EnvironmentFile= -/mnt/data/app.env", "/mnt/data"),
+    ] {
+        assert_eq!(found(&path, hit).as_deref(), Some(text), "{hit}");
+    }
+    for miss in [
+        "x = \"x-/mnt/data\";",
+        "x = \"/srv/-/mnt/data\";",
+        "x = \"a+/mnt/data\";",
+        "x = \"user@/mnt/data\";",
+        "x = \"-/mnt/data2\";",
+        "x = \"./-/mnt/data\";",
+    ] {
+        assert_eq!(found(&path, miss), None, "{miss}");
+    }
+}
+
 #[test]
 fn a_word_is_bounded_by_non_identifier_bytes() {
     let word = Pattern::Word("nails".into());
@@ -199,6 +291,8 @@ fn a_dm_uuid_link_counts_when_it_is_the_mapping_s_whole_name() {
         "/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data",
         "/dev/disk/by-id/dm-uuid-crypt-plain-data",
         "/dev/disk/by-id/dm-uuid-crypt-tcrypt-data",
+        "/dev/disk//by-id/dm-uuid-crypt-plain-data",
+        "/dev//disk/by-id//dm-uuid-crypt-luks2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data",
     ] {
         assert_eq!(
             found(&link, &format!("# device = \"{path}\";")).as_deref(),
@@ -211,6 +305,9 @@ fn a_dm_uuid_link_counts_when_it_is_the_mapping_s_whole_name() {
         "device = \"/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-root\";",
         "device = \"/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-data2\";",
         "device = \"/srv/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-data\";",
+        "device = \"/srv//dev/disk/by-id/dm-uuid-crypt-plain-data\";",
+        "device = \"/dev/disk//by-id/dm-uuid-crypt-plain-data2\";",
+        "device = \"/dev/disk/by-id/dm-uuid-crypt--data\";",
         "device = \"/dev/disk/by-id/dm-uuid-lvm-abcdef-data\";",
     ] {
         assert_eq!(found(&link, miss), None, "{miss}");

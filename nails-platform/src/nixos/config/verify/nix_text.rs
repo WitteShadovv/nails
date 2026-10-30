@@ -20,12 +20,17 @@ pub(super) enum Pattern {
     /// Plain text anywhere.
     Text(String),
     /// A path, or the name of a systemd unit made from one. It must begin a
-    /// path (the byte before it cannot continue a file name; a `/` may
-    /// precede it, as in `file:///mnt/data`) and end at the end of a path
-    /// component (the byte after it cannot continue a file name). So
-    /// `/mnt/data` matches `/mnt/data/nixos` but not `/mnt/data2` or
-    /// `/srv/mnt/data`, and `mnt-data.mount` does not match
-    /// `srv-mnt-data.mount`.
+    /// path and end at the end of a path component (the byte after it cannot
+    /// continue a file name), and each `/` after its first byte may be
+    /// written as several, as the kernel reads a path. A path begins where
+    /// the byte before it, past the slashes in front of it, cannot continue
+    /// a file name (`file:///mnt/data`, `//mnt/data`), or after the prefixes
+    /// systemd allows before a path where they start a value
+    /// (`EnvironmentFile=-/mnt/data/app.env`); a unit name begins where the
+    /// byte before it cannot continue a file name. So `/mnt/data` matches
+    /// `/mnt//data` and `/mnt/data/nixos` but not `/mnt/data2`,
+    /// `/srv/mnt/data`, `/srv//mnt/data` or `x-/mnt/data`, and
+    /// `mnt-data.mount` does not match `srv-mnt-data.mount`.
     Path(String),
     /// A word between bytes that cannot be part of a Nix identifier: `nails`
     /// matches `config.nails.enable` but not `snails`.
@@ -62,9 +67,7 @@ impl Pattern {
     pub(super) fn find(&self, line: &[u8], context: &Context) -> Option<Range<usize>> {
         match self {
             Pattern::Text(text) => find_where(line, text, |_, _| true),
-            Pattern::Path(path) => find_where(line, path, |before, after| {
-                !continues_file_name(before) && !continues_file_name(after)
-            }),
+            Pattern::Path(path) => find_path(line, path.as_bytes()),
             Pattern::Word(word) => find_where(line, word, bounded),
             Pattern::Name { name, escaped } => mapping_name(line, name, escaped, context),
             Pattern::DmUuid(name) => dm_uuid_link(line, name),
@@ -234,16 +237,15 @@ fn file_device(fields: &[u8]) -> bool {
 
 /// A `/dev/disk/by-id/dm-uuid-crypt-<type>-…` path whose last component is
 /// cryptsetup's whole name for the mapping `name`: `<type>-<name>` or
-/// `<type>-<32 hex digits>-<name>`, the type without a dash. The range of
-/// the whole path.
+/// `<type>-<32 hex digits>-<name>`, the type without a dash. Its slashes may
+/// be doubled, as in a [`Pattern::Path`]. The range of the whole path.
 fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
-    const PREFIX: &str = "/dev/disk/by-id/dm-uuid-crypt-";
-    let mut from = 0;
-    while let Some(found) = find_where(&line[from..], PREFIX, |before, _| {
-        !continues_file_name(before)
-    }) {
-        let start = from + found.start;
-        let tail = from + found.end;
+    const PREFIX: &[u8] = b"/dev/disk/by-id/dm-uuid-crypt-";
+    (0..line.len()).find_map(|start| {
+        let tail = path_end(line, start, PREFIX)?;
+        if !begins_path(line, start) {
+            return None;
+        }
         let end = tail
             + line[tail..]
                 .iter()
@@ -254,19 +256,85 @@ fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
             .iter()
             .take_while(|b| b.is_ascii_alphanumeric())
             .count();
-        if kind > 0
-            && let Some(rest) = last[kind..].strip_prefix(b"-")
-        {
-            let after_uuid = rest.get(32) == Some(&b'-')
-                && rest[..32].iter().all(u8::is_ascii_hexdigit)
-                && rest[33..] == *name.as_bytes();
-            if rest == name.as_bytes() || after_uuid {
-                return Some(start..end);
-            }
+        let rest = last[kind..].strip_prefix(b"-").filter(|_| kind > 0)?;
+        let after_uuid = rest.get(32) == Some(&b'-')
+            && rest[..32].iter().all(u8::is_ascii_hexdigit)
+            && rest[33..] == *name.as_bytes();
+        (rest == name.as_bytes() || after_uuid).then_some(start..end)
+    })
+}
+
+/// The first place in `line` where the path or unit name `path` stands, as
+/// [`Pattern::Path`] describes.
+fn find_path(line: &[u8], path: &[u8]) -> Option<Range<usize>> {
+    // A run of slashes in the marker itself counts once, as one in the text.
+    let mut path = path.to_vec();
+    path.dedup_by(|byte, previous| *byte == b'/' && *previous == b'/');
+    let rooted = path.first() == Some(&b'/');
+    (0..line.len()).find_map(|start| {
+        let end = path_end(line, start, &path)?;
+        let begins = if rooted {
+            begins_path(line, start)
+        } else {
+            !continues_file_name(start.checked_sub(1).map(|i| line[i]))
+        };
+        (begins && !continues_file_name(line.get(end).copied())).then_some(start..end)
+    })
+}
+
+/// Where `path`, read in `line` from `start`, ends: each `/` after its first
+/// byte stands for a run of slashes, as the kernel reads a path
+/// (`/mnt//data` is `/mnt/data`). `path` holds no run of its own. `None`
+/// when `path` is not there.
+fn path_end(line: &[u8], start: usize, path: &[u8]) -> Option<usize> {
+    let mut at = start;
+    for (index, &byte) in path.iter().enumerate() {
+        if line.get(at) != Some(&byte) {
+            return None;
         }
-        from = tail;
+        at += 1;
+        if index > 0 && byte == b'/' {
+            at += line[at..].iter().take_while(|&&b| b == b'/').count();
+        }
     }
-    None
+    (!path.is_empty()).then_some(at)
+}
+
+/// The prefixes systemd allows before a path in a setting: `-` for a file
+/// that may be missing (`EnvironmentFile=-/mnt/data/app.env`), `+`, `!` and
+/// `!!` for privileges, `@` for the program's own name, `:` for no
+/// environment expansion.
+const SYSTEMD_PREFIXES: &[u8] = b"-+@!:";
+
+/// Whether a path that starts at `start` in `line` begins there: the byte
+/// before it, past the slashes in front of it, cannot continue a file name,
+/// or ends a run of systemd's prefixes that itself starts a value, at the
+/// start of the line or after `=`, a quote or a blank. `file:///mnt/data`,
+/// `//mnt/data` and `"-/mnt/data/app.env"` name `/mnt/data`;
+/// `/srv//mnt/data` and `/srv/-/mnt/data` do not.
+fn begins_path(line: &[u8], start: usize) -> bool {
+    let Some(at) = line[..start].iter().rposition(|&b| b != b'/') else {
+        return true;
+    };
+    if !continues_file_name(Some(line[at])) {
+        return true;
+    }
+    // No prefix leaves `at` itself, a byte of a file name, as the one
+    // before the value: no value starts there.
+    let prefixes = line[..=at]
+        .iter()
+        .rev()
+        .take_while(|b| SYSTEMD_PREFIXES.contains(b))
+        .count();
+    starts_value(line, at + 1 - prefixes)
+}
+
+/// Whether a value starts at `at` in `line`: at the start of the line, or
+/// after `=`, a quote or a blank.
+fn starts_value(line: &[u8], at: usize) -> bool {
+    at.checked_sub(1)
+        .map(|before| line[before])
+        .is_none_or(|b| matches!(b, b'=' | b'"' | b'\'' | b' ' | b'\t'))
 }
 
 /// `<tag>=<value>`, the value quoted or not: the range of the value. The
