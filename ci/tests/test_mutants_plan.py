@@ -99,6 +99,20 @@ API = "nails-api"
 CORE = "nails-core"
 
 
+def minutes_with(packages: list[str], shards: int) -> int:
+    """The box the dearest of ``shards`` slices of ``packages`` needs."""
+    return max(
+        mutants_plan.shard_minutes(packages[part.start : part.stop])
+        for part in slices(len(packages), shards)
+    )
+
+
+def best_count(needs: dict[int, int]) -> int:
+    """The fewest shards of those that need the shortest box."""
+    shortest = min(needs.values())
+    return min(count for count, minutes in needs.items() if minutes == shortest)
+
+
 def cargo_mutants_arguments(recipe: str) -> list[str]:
     """The arguments that a justfile recipe passes to `cargo mutants`."""
     text = JUSTFILE.read_text(encoding="utf-8")
@@ -190,8 +204,9 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(mutants_plan.plan([BASE] * 65), Plan(65, 3, 22, 15))
         self.assertEqual(mutants_plan.plan([BASE] * 384), Plan(384, 12, 32, 15))
 
-    def test_a_diff_beyond_twelve_ordinary_shards_gets_longer_boxes(self) -> None:
-        self.assertEqual(mutants_plan.plan([BASE] * 385), Plan(385, 12, 33, 16))
+    def test_a_diff_no_count_fits_in_the_ordinary_box_gets_longer_boxes(self) -> None:
+        # Eleven shards of 35 and twelve of 33 both need 16 minutes: the fewer.
+        self.assertEqual(mutants_plan.plan([BASE] * 385), Plan(385, 11, 35, 16))
         self.assertEqual(mutants_plan.plan([BASE] * 409), Plan(409, 12, 35, 16))
         self.assertEqual(mutants_plan.plan([BASE] * 1176), Plan(1176, 12, 98, 30))
 
@@ -221,17 +236,34 @@ class PlanTest(unittest.TestCase):
             mutants_plan.shard_minutes(together[slices(80, 2)[1].start :]), 18
         )
 
+    def test_the_box_a_mix_needs_does_not_shrink_with_every_shard(self) -> None:
+        # A run of dear mutants among cheap ones: as the slices move over it,
+        # twelve shards need a longer box than ten, longer than the lane gives.
+        mix = [API] * 150 + [CORE] * 70 + [API] * 400
+        needs = {count: minutes_with(mix, count) for count in range(7, 13)}
+        self.assertEqual(needs, {7: 28, 8: 37, 9: 33, 10: 25, 11: 30, 12: 31})
+        self.assertEqual(mutants_plan.plan(mix), Plan(620, 10, 62, 25))
+        # Within the lane's boxes, the fewest of the counts that need the
+        # shortest box: ten and eleven need 20 minutes, twelve 21.
+        mix = [API] * 10 + [CORE] * 50 + [API] * 300
+        needs = {count: minutes_with(mix, count) for count in range(9, 13)}
+        self.assertEqual(needs, {9: 22, 10: 20, 11: 20, 12: 21})
+        self.assertEqual(mutants_plan.plan(mix), Plan(360, 10, 36, 20))
+
     def test_every_plan_fits_its_bounds(self) -> None:
         layouts = {
             "nails-base": lambda n: [BASE] * n,
             "dear ones last": lambda n: [API] * (n - n // 4) + [CORE] * (n // 4),
+            "dear ones inside": lambda n: (
+                [API] * (n // 4) + [CORE] * (n // 8) + [API] * (n - n // 4 - n // 8)
+            ),
             "mixed": lambda n: [
                 (BASE, SESSION, API, CORE, "nails-oracle")[i % 5] for i in range(n)
             ],
         }
         # Every small diff, where shards fall empty, then a sample up to past
         # the largest the lane tests, with the sizes where the plan changes.
-        sizes = {*range(1, 200), *range(200, 1400, 7), 384, 385, 1176, 1177}
+        sizes = {*range(1, 200), *range(200, 1400, 7), 384, 385, 620, 1176, 1177}
         for layout, packages_of in layouts.items():
             for mutants in sorted(sizes):
                 packages = packages_of(mutants)
@@ -242,21 +274,23 @@ class PlanTest(unittest.TestCase):
     def check_bounds(self, packages: list[str], planned: Plan) -> None:
         mutants = len(packages)
         self.assertEqual(planned.mutants, mutants)
-
-        def needs(shards: int) -> int:
-            return max(
-                mutants_plan.shard_minutes(packages[part.start : part.stop])
-                for part in slices(mutants, shards)
-            )
-
-        def fills(shards: int) -> bool:
-            return all(slices(mutants, shards))
-
-        largest = max(n for n in range(1, mutants_plan.MAX_SHARDS + 1) if fills(n))
+        # Every count of shards up to the bound that leaves none empty, and
+        # the box each needs.
+        needs = {
+            count: minutes_with(packages, count)
+            for count in range(1, mutants_plan.MAX_SHARDS + 1)
+            if all(slices(mutants, count))
+        }
+        shortest = min(needs.values())
         if planned.too_large:
-            # Even every shard there is would need more than the longest box.
-            self.assertGreater(needs(largest), mutants_plan.MAX_SHARD_MINUTES)
-            self.assertEqual(planned.minutes, needs(largest))
+            # No count fits even the longest box, and the plan names the
+            # shortest box any count needs.
+            self.assertGreater(shortest, mutants_plan.MAX_SHARD_MINUTES)
+            self.assertEqual(planned.minutes, shortest)
+            self.assertEqual(
+                planned.per_shard,
+                max(len(part) for part in slices(mutants, best_count(needs))),
+            )
             return
         self.assertGreaterEqual(planned.shards, 1)
         self.assertLessEqual(planned.shards, mutants_plan.MAX_SHARDS)
@@ -270,13 +304,11 @@ class PlanTest(unittest.TestCase):
         parts = slices(mutants, planned.shards)
         self.assertTrue(all(parts))
         self.assertEqual(max(len(part) for part in parts), planned.per_shard)
-        self.assertEqual(needs(planned.shards), planned.minutes)
-        # The fewest shards that fit the ordinary box, or every shard there is.
-        for fewer in range(1, planned.shards):
-            if fills(fewer):
-                self.assertGreater(needs(fewer), mutants_plan.SHARD_MINUTES)
-        if planned.minutes > mutants_plan.SHARD_MINUTES:
-            self.assertEqual(planned.shards, largest)
+        self.assertEqual(needs[planned.shards], planned.minutes)
+        # The shortest box any count needs, the ordinary one when a count fits
+        # it, and the fewest shards that need that box.
+        self.assertEqual(planned.minutes, shortest)
+        self.assertEqual(planned.shards, best_count(needs))
 
     def test_the_matrix_names_each_shard_of_the_plan(self) -> None:
         # Each shard's time box, and the limit of its job five minutes later.
@@ -394,9 +426,10 @@ class MainTest(unittest.TestCase):
         self.assertEqual(json.loads(outputs["matrix"]), {"include": []})
         message = (
             "The diff holds 1200 mutants (nails-base 1200), more than the lane can "
-            "test: in 12 shards of at most 100 they would need 31-minute time "
-            "boxes, and the lane gives a shard 30 minutes at most. No shard runs, "
-            "so none of the diff's mutants is tested, and the lane fails."
+            "test: split the best way, in 12 shards of at most 100, they would "
+            "need 31-minute time boxes, and the lane gives a shard 30 minutes at "
+            "most. No shard runs, so none of the diff's mutants is tested, and the "
+            "lane fails."
         )
         self.assertIn(
             "::error title=Diff too large for mutation testing::" + message, err
