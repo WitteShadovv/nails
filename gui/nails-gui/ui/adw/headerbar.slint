@@ -18,6 +18,9 @@ component CloseButton {
 
     width: 34px;
     height: 34px;
+    // Dimmed where it does nothing: behind a question, and on a page that
+    // takes no input.
+    opacity: root.reachable ? 1 : 0.5;
     forward-focus: focus;
     accessible-role: button;
     accessible-label: "Close";
@@ -95,6 +98,10 @@ export component HeaderBar {
     in property <string> title;
     // False while a dialog covers the window.
     in property <bool> reachable: true;
+    // The width a control at the start of the bar takes (the Emergency
+    // control of a hidden session). The title, centred, gives way where the
+    // two would meet; the bar keeps its name for a screen reader.
+    in property <length> start-reserved;
     callback close-clicked();
 
     min-height: 46px;
@@ -114,6 +121,7 @@ export component HeaderBar {
         horizontal-alignment: center;
         vertical-alignment: center;
         overflow: elide;
+        visible: (root.width - self.preferred-width) / 2 >= root.start-reserved + 8px;
     }
 
     CloseButton {
