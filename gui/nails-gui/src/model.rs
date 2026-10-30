@@ -24,6 +24,10 @@
 //! into the apply or the withdrawal. An activation and a deactivation are
 //! such operations too, whose questions the model words itself; a
 //! deactivation's offers a second action ([`Model::alternative`]).
+//!
+//! The main page, once it settled, has rows that open the window's tools
+//! ([`tools`]): Verify and Rehearsal. A tool's page has a Back of its own
+//! ([`Model::back`]), and Escape goes back too.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -39,10 +43,12 @@ use crate::worker::{Ask, Failure, Kind, Update};
 pub mod activation;
 pub mod deactivation;
 mod pages;
+pub mod tools;
 
 use activation::{Activation, Outcome, Risk};
 use deactivation::{Applied, Deactivation, Ending};
 use pages::{busy_page, join, recovered};
+use tools::{Link, Tool, ToolKind};
 
 /// How long a switch may take once the engine asked for it, before its page
 /// offers a way out: the logout of an activation, and the end of a
@@ -111,6 +117,26 @@ pub enum ActionKind {
     Plain,
 }
 
+/// A titled group of rows on a tool's page: what an operation found, read
+/// or did not check.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Group {
+    /// What the rows are.
+    pub title: String,
+    /// The rows, each with its word and its sentence.
+    pub rows: Vec<CheckView>,
+}
+
+/// Which page shows: the session's own, or a tool's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    /// The session's page: the decoy's check or the hidden session.
+    #[default]
+    Session,
+    /// The page of a tool.
+    Tool(ToolKind),
+}
+
 /// The page the window draws.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Page {
@@ -144,6 +170,17 @@ pub struct Page {
     /// The Emergency control shows and acts: on every page of a hidden
     /// session until it fires.
     pub emergency: bool,
+    /// Which page this is.
+    pub view: View,
+    /// Rows that open the window's tools, on the session's page once it
+    /// settled.
+    pub links: Vec<Link>,
+    /// Titled groups of rows, on a tool's page.
+    pub groups: Vec<Group>,
+    /// The page has Back, to the session's page.
+    pub back: bool,
+    /// A second action beside the main one, as a plain button.
+    pub secondary: Option<&'static str>,
 }
 
 /// What the window does for a control the person used.
@@ -214,6 +251,13 @@ pub struct Model {
     allowed: BTreeSet<Risk>,
     activation: Option<Activation>,
     deactivation: Option<Deactivation>,
+    /// The tool whose page shows, over the session's.
+    tool: Option<Tool>,
+    /// The rehearsal's test words were planted in this hidden session, as
+    /// far as the window learnt it on a Rehearsal page: it planted them, or
+    /// the engine refused a scan for that reason. The window lives in one
+    /// session only, which the switch ends.
+    planted_here: bool,
     hung_up: bool,
     /// Whether the window runs in a hidden session, by its own reading of
     /// the mount table: the Emergency control shows from the start then.
@@ -246,6 +290,8 @@ impl Model {
             allowed: BTreeSet::new(),
             activation: None,
             deactivation: None,
+            tool: None,
+            planted_here: false,
             hung_up: false,
             in_hidden_session: false,
             emergency_fired: false,
@@ -328,6 +374,9 @@ impl Model {
             }
             Update::Answered(kind, answer) => {
                 self.running = None;
+                if self.answers_tool(kind) {
+                    return self.tool_answered(kind, &answer);
+                }
                 self.answered(kind, &answer.envelope)
             }
             Update::Planned(data) => {
@@ -430,7 +479,11 @@ impl Model {
 
     /// What the page's main action does, while the page has one.
     pub fn action(&mut self) -> Option<Effect> {
-        match self.page().action? {
+        let label = self.page().action?;
+        if self.tool.is_some() {
+            return self.tool_action(label);
+        }
+        match label {
             text::CHECK_AGAIN => Some(Effect::Ask(Ask::Check(activation::check_args(
                 &self.allowed,
             )))),
@@ -464,6 +517,9 @@ impl Model {
     pub fn escape(&mut self) -> Option<Effect> {
         if self.question.is_some() {
             return None;
+        }
+        if self.tool.is_some() {
+            return self.back().map(Effect::Ask);
         }
         self.cancel()
     }
@@ -591,6 +647,8 @@ impl Model {
 
     fn answered(&mut self, kind: Kind, value: &serde_json::Value) -> Vec<Ask> {
         match kind {
+            // A tool's answer with no tool open to show it: nothing follows.
+            Kind::Verify | Kind::Rehearse => Vec::new(),
             Kind::Status => match envelope::read::<StatusData>(value, "status") {
                 Ok(envelope) => {
                     self.status = envelope.data;
@@ -723,7 +781,7 @@ impl Model {
             Stage::Connected => match (&self.activation, self.deactivation) {
                 (Some(activation), _) => activation.page(),
                 (None, Some(deactivation)) => deactivation.page(),
-                (None, None) => self.session_page(),
+                (None, None) => self.tool_page().unwrap_or_else(|| self.session_page()),
             },
         };
         if self.switch_overdue && self.switch_pending() {
@@ -733,9 +791,12 @@ impl Model {
             page.note = join(notice, &page.note);
         }
         // Nothing to press while a request runs, but the Cancel of the
-        // activation that runs.
+        // activation that runs: the helper serves one request at a time.
         if self.running.is_some() && page.action != Some(text::CANCEL) {
             page.action = None;
+            page.secondary = None;
+            page.links.clear();
+            page.back = false;
         }
         page.question.clone_from(&self.question);
         page.emergency = self.shows_emergency();

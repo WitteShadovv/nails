@@ -1,0 +1,10 @@
+{
+  "command": "rehearse",
+  "data": {
+    "channels": [],
+    "next_step": "Step 1 of 3: activate a hidden session, then run `sudo /mnt/data/nails rehearse plant`.",
+    "phase": "none"
+  },
+  "ok": true,
+  "schema_version": 2
+}

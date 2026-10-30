@@ -217,3 +217,122 @@ export component CheckRow {
         y: root.height - 1px;
     }
 }
+
+// A row that opens a page, as libadwaita's activatable action row: its
+// title, a dimmed line under it, and an arrow at its end. A click, Space or
+// Return opens it; it is a button to a screen reader, named by its title.
+export component NavRow {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> first;
+    in property <bool> last;
+    in property <bool> reachable: true;
+    callback activated();
+
+    property <bool> focus-visible;
+
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-description: root.subtitle;
+    accessible-enabled: root.reachable;
+    accessible-action-default => {
+        if (root.reachable) {
+            root.activated();
+        }
+    }
+
+    Rectangle {
+        border-top-left-radius: root.first ? Adw.card-radius : 0px;
+        border-top-right-radius: root.first ? Adw.card-radius : 0px;
+        border-bottom-left-radius: root.last ? Adw.card-radius : 0px;
+        border-bottom-right-radius: root.last ? Adw.card-radius : 0px;
+        background: touch.pressed ? Adw.button-active : touch.has-hover ? Adw.button-hover : transparent;
+    }
+
+    HorizontalLayout {
+        min-height: 52px;
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 12px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.title;
+                color: Adw.card-fg;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+
+            if root.subtitle != "": Text {
+                text: root.subtitle;
+                color: Adw.window-fg-dim;
+                font-size: Adw.font-size-small;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            // An arrow of two strokes, drawn here rather than taken from an
+            // icon theme.
+            Path {
+                width: 8px;
+                height: 12px;
+                viewbox-width: 8;
+                viewbox-height: 12;
+                stroke: Adw.window-fg-dim;
+                stroke-width: 1.5px;
+                commands: "M 1.5 1 L 6.5 6 L 1.5 11";
+                accessible-role: none;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.reachable;
+        clicked => {
+            root.activated();
+        }
+    }
+
+    focus := FocusScope {
+        width: root.width;
+        height: root.height;
+        enabled: root.reachable;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (root.reachable && (event.text == Key.Space || event.text == Key.Return)) {
+                root.activated();
+                return accept;
+            }
+            reject
+        }
+        focus-gained(reason) => {
+            root.focus-visible = reason == FocusReason.tab-navigation;
+            Adw.focused-label = root.title;
+        }
+        focus-lost(reason) => {
+            if (Adw.focused-label == root.title) {
+                Adw.focused-label = "";
+            }
+        }
+    }
+
+    if focus.has-focus && root.focus-visible: RowFocusRing {
+        first: root.first;
+        last: root.last;
+    }
+
+    if !root.last: RowSeparator {
+        y: root.height - 1px;
+    }
+}

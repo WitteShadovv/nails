@@ -59,4 +59,4 @@ mod markup {
     slint::include_modules!();
 }
 
-pub use markup::{Adw, AppWindow, CheckLine, Fact, Outcome, StepLine};
+pub use markup::{Adw, AppWindow, CheckLine, Fact, Outcome, RowGroup, StepLine, ToolLink};
