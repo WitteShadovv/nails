@@ -3,9 +3,9 @@
 # runs several soft-reboots at once. The re-entry hang was found only by paired,
 # repeated activations under that kind of host load, never by a one-shot test,
 # so this lane exists to keep it closed: it asserts that every re-entry reaches
-# the hidden root's backdoor within the deadline, and that every canary a
-# hidden session wrote stays in the upper and never reaches the decoy disk,
-# over hundreds of cycles.
+# the hidden root's backdoor within the deadline, that every canary a hidden
+# session wrote stays in the upper and never reaches the decoy disk, over
+# hundreds of cycles, and that no neighbour stops switching meanwhile.
 #
 # It is heavy (a cycle is ~10-15 s, so the soaker alone runs well over an hour)
 # and is not a gate: the `soak` tag keeps it out of `all`, the tag groups, the
@@ -37,6 +37,11 @@ let
   # lifecycle's generous backdoor deadline, which the stall report fires before.
   deadlineSeconds = 600;
 
+  # A neighbour that completes no switch for this long while the soaker cycles
+  # is stuck. A neighbour switches every 5 to 20 s on a hosted runner, the slow
+  # ones included.
+  neighbourStallSeconds = 120;
+
   nailsPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.nails;
 
   # A plain decoy node: the standard VM with the nails binary, as the lifecycle
@@ -49,10 +54,10 @@ let
   # A neighbour node: a decoy that, once the test arms it, performs one
   # transition on every boot. The soft-reboot that a transition enqueues ends
   # this oneshot with userspace, and the next boot runs it again, so the
-  # neighbour churns on its own without the driver steering it. It is a
-  # best-effort load source: every step ignores its own failure, and the test
-  # asserts nothing about the neighbours, so a neighbour that falls behind only
-  # lightens the host load and never fails the run.
+  # neighbour churns on its own without the driver steering it. Every step
+  # ignores its own failure, but the test watches each neighbour's switches: a
+  # switch that never ends is the defect the soak hunts, on any node, so a
+  # neighbour that stops switching fails the run with what its PID 1 waits on.
   neighbourNode = {
     imports = [ ./../../lib/vm-config.nix ];
     environment.systemPackages = [ nailsPackage ];
@@ -128,8 +133,9 @@ in
 
   testScript = _: ''
     import secrets
+    import time
 
-    from nails_e2e import session
+    from nails_e2e import session, stall
 
     ${testHelpers.readStatusJsonFn}
     ${testHelpers.canonicalActivateFn}
@@ -140,6 +146,7 @@ in
     PEEK = "/run/decoy-peek"
     CYCLES = ${toString cycles}
     DEADLINE_S = ${toString deadlineSeconds}.0
+    NEIGHBOUR_STALL_S = ${toString neighbourStallSeconds}.0
     # The decoy-clean check remounts the decoy root read-only, which is too slow
     # to do every cycle; run it this often, and always on the last cycle.
     DEEP_CHECK_EVERY = 25
@@ -192,6 +199,56 @@ in
         assert not leaked, f"hidden canaries reached the decoy disk: {leaked}"
 
 
+    class NeighbourWatch:
+        """Each neighbour's switches, counted on its console as the soaker
+        cycles.
+
+        A switch has ended once the new userspace's backdoor announces itself
+        on the console. A neighbour that announces none for NEIGHBOUR_STALL_S,
+        or whose QEMU exits, fails the soak: a stuck one with what its PID 1
+        waits on and the SysRq dumps, the report a stuck soaker gives. The
+        silence counts from the check that last saw a switch, so it never runs
+        ahead of the real one."""
+
+        def __init__(self, nodes):
+            now = time.monotonic()
+            self.nodes = nodes
+            self.seen = {node.name: len(node.full_console_log) for node in nodes}
+            self.switches = {node.name: 0 for node in nodes}
+            self.since = {node.name: now for node in nodes}
+
+        def check(self):
+            now = time.monotonic()
+            for node in self.nodes:
+                name = node.name
+                lines = node.full_console_log
+                end = len(lines)
+                new = sum(
+                    session.BACKDOOR_MARKER in line
+                    for line in lines[self.seen[name] : end]
+                )
+                self.seen[name] = end
+                if new:
+                    self.switches[name] += new
+                    self.since[name] = now
+                    continue
+                silent = now - self.since[name]
+                exited = node.process.poll()
+                if exited is None and silent <= NEIGHBOUR_STALL_S:
+                    continue
+                node.log("last console lines:\n" + "\n".join(lines[-150:]))
+                if exited is not None:
+                    raise AssertionError(
+                        f"{name}: QEMU exited (status {exited}) after "
+                        f"{self.switches[name]} switches"
+                    )
+                why = stall.report(node, f"{name} stalled")
+                raise AssertionError(
+                    f"{name}: no switch for {silent:.0f} s after "
+                    f"{self.switches[name]} switches ({why})"
+                )
+
+
     def end_neighbour(node):
         """Stop a neighbour's QEMU, bounded, so the driver counts it as down.
 
@@ -230,6 +287,9 @@ in
         setup(neighbour)
         neighbour.succeed("touch /var/lib/nails-soak-armed")
         neighbour.execute("systemctl start --no-block nails-soak.service")
+    # Checked after every switch of the soaker, so a stuck neighbour fails the
+    # soak within one switch of the soaker after the stall timeout.
+    watch = NeighbourWatch([globals()[name] for name in neighbours])
 
     setup(soaker)
 
@@ -246,6 +306,7 @@ in
             canonical_activate(
                 CONFIG, "--overlay-only", f"soak-{cycle}", deadline_s=DEADLINE_S
             )
+            watch.check()
             session.assert_hidden_root(soaker, UPPER)
             reached += 1
             # A canary written in the hidden session must land in the upper and
@@ -254,6 +315,7 @@ in
             soaker.succeed(f"echo {canary} > /root/{canary} && sync")
             written.append(canary)
             canonical_deactivate(CONFIG, f"soak-{cycle}-back")
+            watch.check()
             deep = (cycle + 1) % DEEP_CHECK_EVERY == 0 or cycle + 1 == CYCLES
             if deep:
                 soaker.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -268,6 +330,7 @@ in
                 )
 
     assert reached == CYCLES, f"only {reached} of {CYCLES} re-entries reached the backdoor"
+    watch.check()
     soaker.log(f"soak complete: {reached} re-entries, decoy clean")
 
     # The neighbours were load for the soaker's cycles, which are done.

@@ -429,6 +429,8 @@ on the `CI red: Soak` issue.
   re-entry reaches the hidden root's backdoor within the deadline. Every 25
   cycles, and after the last, it checks that each canary the hidden sessions
   wrote so far is in the upper and that none of them reached the decoy disk.
+  A neighbour that completes no switch for two minutes meanwhile fails it too,
+  with the same report of what its PID 1 waits on that a stuck soaker gives.
   It keeps the soft-reboot re-entry hang closed, which only paired, repeated
   activations under parallel-VM host load ever exposed.
 
