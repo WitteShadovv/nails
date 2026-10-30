@@ -699,6 +699,42 @@ fn device_id_names_the_filesystem_of_the_resolved_path() {
 }
 
 #[test]
+fn inode_names_the_file_a_path_leads_to_and_none_where_nothing_is() {
+    use std::os::unix::fs::MetadataExt;
+
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("probe");
+    fs::write(&file, "x").unwrap();
+    let link = temp_dir.path().join("link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let hard = temp_dir.path().join("hard");
+    fs::hard_link(&file, &hard).unwrap();
+
+    let expected = fs::metadata(&file).unwrap().ino();
+    assert_eq!(fs.inode(&file).unwrap(), Some(expected));
+    // A symlink is followed, and a hard link is the same file.
+    assert_eq!(fs.inode(&link).unwrap(), Some(expected));
+    assert_eq!(fs.inode(&hard).unwrap(), Some(expected));
+    assert_eq!(fs.inode(&temp_dir.path().join("missing")).unwrap(), None);
+
+    // A namespace file names its namespace, which a thread shares with its
+    // process.
+    let mnt = fs.inode(Path::new("/proc/self/ns/mnt")).unwrap();
+    assert!(mnt.is_some());
+    assert_eq!(
+        fs.inode(Path::new("/proc/thread-self/ns/mnt")).unwrap(),
+        mnt
+    );
+
+    // A lookup through a file is an error, not a missing path.
+    let below_file = file.join("child");
+    let (path, err) = io_error(fs.inode(&below_file));
+    assert_eq!(path, below_file);
+    assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+}
+
+#[test]
 fn supports_symlinks_reports_a_missing_directory_as_an_error() {
     let fs = RealFilesystem;
     let temp_dir = tempfile::tempdir().unwrap();

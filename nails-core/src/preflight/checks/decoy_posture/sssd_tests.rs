@@ -20,14 +20,36 @@ fn run_process(fs: &MockFilesystem, comm: &str, cmdline: &str) {
     fs.mock_add_file("/proc/731/cmdline", cmdline);
 }
 
-/// Run one process for each `comm` on `fs`, from pid 731 on.
+/// Run one process for each `comm` on `fs`, from pid 731 on, as an
+/// unprivileged user.
 fn run_processes(fs: &MockFilesystem, comms: &[&str]) {
+    let processes: Vec<(&str, u32)> = comms.iter().map(|comm| (*comm, 1000)).collect();
+    run_processes_as(fs, &processes);
+}
+
+/// The inode of PID 1's mount namespace on the mock decoy.
+const HOST_MNT: u64 = 4_026_531_841;
+
+/// Run one process for each `(comm, uid)` on `fs`, from pid 731 on, its
+/// status giving `uid` as its real, effective, saved and file system user,
+/// each in PID 1's mount namespace.
+fn run_processes_as(fs: &MockFilesystem, processes: &[(&str, u32)]) {
     let pids: Vec<PathBuf> = (731..)
-        .take(comms.len())
+        .take(processes.len())
         .map(|pid| PathBuf::from(format!("/proc/{pid}")))
         .collect();
-    for (pid, comm) in pids.iter().zip(comms) {
-        fs.mock_add_file(&format!("{}/comm", pid.display()), &format!("{comm}\n"));
+    fs.mock_set_inode(Path::new("/proc/1/ns/mnt"), HOST_MNT);
+    for (pid, (comm, uid)) in pids.iter().zip(processes) {
+        fs.mock_set_inode(&pid.join("ns/mnt"), HOST_MNT);
+        let pid = pid.display();
+        fs.mock_add_file(&format!("{pid}/comm"), &format!("{comm}\n"));
+        fs.mock_add_file(
+            &format!("{pid}/status"),
+            &format!(
+                "Name:\t{comm}\nUmask:\t0022\nState:\tS (sleeping)\n\
+                 Uid:\t{uid}\t{uid}\t{uid}\t{uid}\nGid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+            ),
+        );
     }
     fs.mock_set_directory_contents(Path::new("/proc"), pids);
 }
@@ -357,12 +379,18 @@ fn a_socket_name_that_is_not_text_hides_no_listener() {
 }
 
 #[test]
-fn a_socket_another_ticket_cache_daemon_serves_is_not_sssd() {
-    // Heimdal's kcm binds the same socket itself and runs while it is its.
+fn a_socket_heimdals_daemon_serves_as_root_is_not_sssd() {
+    // Heimdal's kcm binds the same socket itself and runs as root.
     let fs = MockFilesystem::new();
     kcm_socket_with(&fs, &[listening("/var/run/.heim_org.h5l.kcm-socket")]);
-    run_processes(&fs, &["systemd", "kcm"]);
+    run_processes_as(&fs, &[("systemd", 0), ("kcm", 0)]);
     assert_eq!(finding(&fs), None);
+
+    // So it is when the table cannot tell.
+    let untold = MockFilesystem::new();
+    untold.mock_set_path_type("/run/.heim_org.h5l.kcm-socket", PathKind::File);
+    run_processes_as(&untold, &[("kcm", 0)]);
+    assert_eq!(finding(&untold), None);
 
     // Beside an active sssd the warning names sssd's own signs, never that
     // socket, and its advice deletes nothing a daemon listens on.
@@ -377,15 +405,169 @@ fn a_socket_another_ticket_cache_daemon_serves_is_not_sssd() {
 }
 
 #[test]
-fn only_a_daemon_named_kcm_takes_the_socket_from_sssd() {
+fn an_unprivileged_process_named_kcm_leaves_the_warning() {
+    // prctl(PR_SET_NAME) lets any process call itself kcm, so a uid 1000 one
+    // takes nothing from sssd.
+    let fs = MockFilesystem::new();
+    kcm_socket_with(&fs, &[listening("/run/.heim_org.h5l.kcm-socket")]);
+    run_processes_as(&fs, &[("kcm", 1000)]);
+    let message = finding(&fs).expect("an unprivileged kcm must leave the warning");
+    assert!(
+        message.starts_with(&format!("sssd is in use on the decoy ({KCM_LISTENS}). ")),
+        "{message}"
+    );
+
+    // Nor does a set-user-ID one whose real user is not root.
+    let fs = MockFilesystem::new();
+    kcm_socket_with(&fs, &[listening("/run/.heim_org.h5l.kcm-socket")]);
+    run_processes_as(&fs, &[("kcm", 0)]);
+    fs.mock_add_file("/proc/731/status", "Name:\tkcm\nUid:\t1000\t0\t0\t0\n");
+    let message = finding(&fs).expect("a set-user-ID kcm must leave the warning");
+    assert!(message.contains(KCM_LISTENS), "{message}");
+}
+
+#[test]
+fn only_a_root_process_whose_comm_is_kcm_takes_the_socket_from_sssd() {
     // sssd's own responder and names that only begin like Heimdal's daemon
-    // leave the socket sssd's.
-    for comms in [&["sssd_kcm"][..], &["kcminit", "kcmshell6", "kcm_"]] {
+    // leave the socket sssd's, as root too.
+    for comms in [
+        &[("sssd_kcm", 0)][..],
+        &[("kcminit", 0), ("kcmshell6", 0), ("kcm_", 0)],
+    ] {
         let fs = MockFilesystem::new();
         kcm_socket_with(&fs, &[listening("/run/.heim_org.h5l.kcm-socket")]);
-        run_processes(&fs, comms);
+        run_processes_as(&fs, comms);
         let message = finding(&fs).unwrap_or_else(|| panic!("{comms:?} must warn"));
         assert!(message.contains(KCM_LISTENS), "{comms:?}: {message}");
+    }
+    // A root process that only its argv[0] calls kcm.
+    let fs = MockFilesystem::new();
+    kcm_socket_with(&fs, &[listening("/run/.heim_org.h5l.kcm-socket")]);
+    run_processes_as(&fs, &[("renamed", 0)]);
+    fs.mock_add_file("/proc/731/cmdline", "/usr/sbin/kcm\0");
+    let message = finding(&fs).expect("argv[0] alone must not take the socket");
+    assert!(message.contains(KCM_LISTENS), "{message}");
+}
+
+/// The decoy of the Heimdal tests: the ticket cache's socket listening, and
+/// a root process whose comm is kcm in PID 1's mount namespace.
+fn heimdal_decoy() -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    kcm_socket_with(&fs, &[listening("/run/.heim_org.h5l.kcm-socket")]);
+    run_processes_as(&fs, &[("kcm", 0)]);
+    fs
+}
+
+/// Make every directory of the unit directory `dir`, relative to the root,
+/// one that is there and no link.
+fn unit_directory(fs: &MockFilesystem, dir: &str) {
+    let mut path = PathBuf::from("/");
+    for component in Path::new(dir).components() {
+        path.push(component);
+        fs.mock_set_path_type(&path.display().to_string(), PathKind::Dir);
+    }
+}
+
+#[test]
+fn sssds_socket_unit_keeps_the_socket_sssds() {
+    // The Heimdal decoy without a unit file of sssd-kcm.socket.
+    assert_eq!(finding(&heimdal_decoy()), None);
+
+    // Where sssd-kcm.socket is installed the socket stays sssd's, even beside
+    // a root kcm, in each unit directory the check knows.
+    for dir in UNIT_PATH {
+        let fs = heimdal_decoy();
+        unit_directory(&fs, dir);
+        fs.mock_set_path_type(&format!("/{dir}/sssd-kcm.socket"), PathKind::File);
+        let message = finding(&fs).unwrap_or_else(|| panic!("{dir} must keep the warning"));
+        assert!(message.contains(KCM_LISTENS), "{dir}: {message}");
+    }
+
+    // A masked unit is a link, counted without following it.
+    let fs = heimdal_decoy();
+    unit_directory(&fs, "etc/systemd/system");
+    fs.mock_set_is_symlink("/etc/systemd/system/sssd-kcm.socket", true);
+    assert!(finding(&fs).is_some_and(|message| message.contains(KCM_LISTENS)));
+}
+
+#[test]
+fn a_unit_directory_the_check_cannot_rule_out_keeps_the_socket_sssds() {
+    // A link on the way to a unit directory is not followed, so the
+    // directory may hold the unit: /lib on a merged /usr, or a NixOS layout
+    // the check did not take for NixOS.
+    for link in ["/lib", "/etc/systemd/system", "/usr/lib/systemd"] {
+        let fs = heimdal_decoy();
+        unit_directory(&fs, "usr/lib/systemd/system");
+        unit_directory(&fs, "etc/systemd");
+        fs.mock_set_is_symlink(link, true);
+        let message = finding(&fs).unwrap_or_else(|| panic!("a link at {link} must count"));
+        assert!(message.contains(KCM_LISTENS), "{link}: {message}");
+    }
+
+    // So may one a lookup fails in, or on the way to.
+    for failed in ["/usr/lib", "/usr/lib/systemd/system/sssd-kcm.socket"] {
+        let fs = heimdal_decoy();
+        unit_directory(&fs, "usr/lib/systemd/system");
+        fs.mock_set_inode_error(Path::new(failed), std::io::ErrorKind::PermissionDenied);
+        let message =
+            finding(&fs).unwrap_or_else(|| panic!("a failed lookup of {failed} must count"));
+        assert!(message.contains(KCM_LISTENS), "{failed}: {message}");
+    }
+}
+
+#[test]
+fn on_nixos_heimdals_daemon_never_takes_the_socket() {
+    // Its unit directories are links into the Nix store, which the check
+    // does not follow.
+    let message = finding_on_nixos(&heimdal_decoy()).expect("NixOS must keep the warning");
+    assert!(message.contains(KCM_LISTENS), "{message}");
+}
+
+#[test]
+fn a_root_kcm_outside_pid_1s_mount_namespace_leaves_the_warning() {
+    // A root process in a container without a user namespace of its own, whose
+    // daemon serves the container's own /run.
+    let fs = heimdal_decoy();
+    fs.mock_set_inode(Path::new("/proc/731/ns/mnt"), HOST_MNT + 1);
+    let message = finding(&fs).expect("a container's kcm must leave the warning");
+    assert!(message.contains(KCM_LISTENS), "{message}");
+
+    // A check that cannot read either namespace cannot tell.
+    for unreadable in ["/proc/1/ns/mnt", "/proc/731/ns/mnt"] {
+        let fs = heimdal_decoy();
+        fs.mock_set_inode_error(Path::new(unreadable), std::io::ErrorKind::PermissionDenied);
+        let message = finding(&fs).unwrap_or_else(|| panic!("{unreadable} must count"));
+        assert!(message.contains(KCM_LISTENS), "{unreadable}: {message}");
+    }
+}
+
+#[test]
+fn only_a_process_directory_is_read_as_a_process() {
+    // /proc/self names nails itself: an entry whose name is not a number is
+    // no process to count, whatever its files say.
+    let fs = MockFilesystem::new();
+    kcm_socket_with(&fs, &[listening("/run/.heim_org.h5l.kcm-socket")]);
+    fs.mock_set_directory_contents(Path::new("/proc"), vec![PathBuf::from("/proc/self")]);
+    fs.mock_add_file("/proc/self/comm", "kcm\n");
+    fs.mock_add_file("/proc/self/status", "Name:\tkcm\nUid:\t0\t0\t0\t0\n");
+    let message = finding(&fs).expect("an entry that is no process must take nothing");
+    assert!(message.contains(KCM_LISTENS), "{message}");
+}
+
+#[test]
+fn only_a_real_and_effective_root_user_is_root() {
+    assert!(runs_as_root(
+        "Name:\tkcm\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n"
+    ));
+    for status in [
+        "Name:\tkcm\nUid:\t1000\t1000\t1000\t1000\n",
+        "Uid:\t1000\t0\t0\t0\n",
+        "Uid:\t0\t1000\t1000\t1000\n",
+        "Name:\tkcm\nGid:\t0\t0\t0\t0\n",
+        "Uid:\n",
+        "",
+    ] {
+        assert!(!runs_as_root(status), "{status:?}");
     }
 }
 
@@ -625,6 +807,10 @@ fn the_probes_leave_the_decoy_access_times_alone() {
         unix_table(&[listening("/run/.heim_org.h5l.kcm-socket")]),
     )
     .unwrap();
+    // On a merged /usr, /lib is a link to usr/lib: the unit directory under
+    // it is not looked in, so the link is never followed.
+    std::fs::create_dir_all(root.join("usr/lib/systemd/system")).unwrap();
+    std::os::unix::fs::symlink("usr/lib", root.join("lib")).unwrap();
 
     let watched: Vec<PathBuf> = [
         "var/lib/sss",
@@ -633,6 +819,8 @@ fn the_probes_leave_the_decoy_access_times_alone() {
         "var/lib/sss/mc",
         "var/lib/sss/mc/cache",
         "var/lib/sss/mc/passwd",
+        "lib",
+        "usr/lib/systemd/system",
     ]
     .iter()
     .map(|path| root.join(path))

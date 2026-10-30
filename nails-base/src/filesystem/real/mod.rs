@@ -100,6 +100,10 @@ impl Filesystem for RealFilesystem {
         file_ops::device_id(path)
     }
 
+    fn inode(&self, path: &Path) -> Result<Option<u64>> {
+        file_ops::inode(path)
+    }
+
     fn loop_backing_device(&self, node: &Path) -> Result<u64> {
         loop_ops::loop_backing_device(node)
     }

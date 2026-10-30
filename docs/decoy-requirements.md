@@ -610,11 +610,25 @@ is in use on the decoy:
   snapshot: the kernel writes it a page at a time, and a socket closed between
   two pages can make one read skip a line. Where `/proc` hides other users'
   processes from an unprivileged `nails check`, the table cannot be read, and
-  the warning says that `nails check` run with sudo can tell.
-  That socket is where every ticket cache of the KCM kind listens, so while
-  Heimdal's `kcm` daemon runs, the socket counts as its and not as sssd's. A
-  socket file that the table shows nothing listening on, which a stopped
-  socket leaves until the next boot, does not count;
+  the warning says that `nails check` run with sudo can tell. That socket is
+  where every ticket cache of the KCM kind listens, Heimdal's among them, so
+  it does not count either on a decoy that is not NixOS where no unit file of
+  `sssd-kcm.socket` can be in `/etc/systemd/system.control`,
+  `/run/systemd/system.control`, `/run/systemd/transient`,
+  `/run/systemd/generator.early`, `/etc/systemd/system`,
+  `/etc/systemd/system.attached`, `/run/systemd/system`,
+  `/run/systemd/system.attached`, `/run/systemd/generator`,
+  `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system`,
+  `/lib/systemd/system` or `/run/systemd/generator.late`, and a process whose
+  name (`comm`) is `kcm` runs as root in PID 1's mount namespace, as Heimdal's
+  KCM daemon does. A directory a link leads to, or one a lookup on the way to
+  fails, can hold one, since the check follows no link: so on a merged `/usr`,
+  where `/lib` is a link, and on NixOS a socket something listens on always
+  counts. Any process can take that name, so root is read from the real and
+  effective user on the `Uid:` line of its status, and a root process in a
+  container without a user namespace of its own runs in a mount namespace
+  other than PID 1's. A socket file that the table shows nothing listening on,
+  which a stopped socket leaves until the next boot, does not count;
 - `/var/lib/sss` holds one of nine files sssd writes when it runs: its two
   configuration databases (`db/config.ldb`, `db/config_kcm.ldb`), the four
   memory caches of its NSS responder (`mc/passwd`, `mc/group`,
@@ -651,13 +665,14 @@ units, so `systemctl disable` cannot change them: set `services.sssd.enable`
 and `services.sssd.kcm` to `false` and run `nixos-rebuild switch` in place of
 the two `systemctl` commands.
 
-Stopping sssd leaves those of the nine it wrote in place until they are
-deleted, and each of them keeps the warning, so the warning names the ones it
-finds and the `rm` that deletes them. The socket file stays in `/run` until the
-next boot, but once `sssd-kcm.socket` is stopped, PID 1's socket table shows
-nothing listening on it and it no longer counts, so nothing here deletes it.
-Where that table cannot be read, the socket file counts until the next boot.
-The rest of sssd's state under
+Stopping sssd leaves those of the nine it wrote in place until they are deleted,
+and each of them keeps the warning, so the warning names the ones it finds and
+the `rm` that deletes them. The socket file stays in `/run` until the next boot,
+but once `sssd-kcm.socket` is stopped, PID 1's socket table shows nothing
+listening on it and it no longer counts, so nothing here deletes it. Where that
+table cannot be read, the socket file counts until the next boot. Another daemon
+listening on that socket, such as Heimdal's `kcm`, keeps it counting unless the
+check rules sssd's unit out as above. The rest of sssd's state under
 `/var/lib/sss`, such as the cache of each domain, neither keeps the warning nor
 goes with that `rm`: the warning can clear while it is still on the decoy disk.
 Deleting the nine files once sssd is stopped is safe: sssd builds its

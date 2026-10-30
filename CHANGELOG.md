@@ -94,16 +94,20 @@ of this changelog for that version becomes the release notes word for word, and
   daemon, its Kerberos ticket cache listening on its socket (`sssd-kcm.socket`, which Fedora 44
   Cloud enables by default, so a decoy made from it warns), or one of nine files sssd writes under
   `/var/lib/sss` when it runs. The socket counts while either of two reads of PID 1's socket table
-  lists something listening on it, or the table cannot be read, and Heimdal's `kcm`, which serves
-  the same socket, does not run. An unprivileged `check` cannot read that table where `/proc` hides
-  other users' processes, and the warning then says that `check` with sudo can tell. On the decoy
-  disk the probes read only file metadata, so no access time there changes. Following its advice
-  clears it where the check can read the socket table: the advice turns sssd off (`systemctl disable
-  --now`, or the `services.sssd` options on NixOS) and names the `rm` of each of those nine files it
-  finds, which would keep the warning, and never deletes the socket. The check looks for the nine by
-  name and lists no directory, so the rest of sssd's state under `/var/lib/sss`, such as the cache
-  of each domain, neither keeps the warning nor goes with that `rm`. docs/decoy-requirements.md says
-  why deleting the nine is safe.
+  lists something listening on it, or the table cannot be read, as an unprivileged `check` cannot
+  read it where `/proc` hides other users' processes; the warning then says that `check` with sudo
+  can tell. It does not count on a decoy that is not NixOS where no `sssd-kcm.socket` unit file can
+  be in any of the thirteen unit directories docs/decoy-requirements.md lists, none of them reached
+  through a link, and a process whose `comm` is `kcm` runs as root in PID 1's mount namespace, as
+  Heimdal's KCM daemon, which serves the same socket, does. So on a merged `/usr`, where `/lib` is a
+  link, and on NixOS, a socket something listens on always counts. On the decoy disk the probes read
+  only file metadata, so no access time there changes. Following its advice clears it where the
+  check can read the socket table and nothing else listens on the socket: the advice turns sssd off
+  (`systemctl disable --now`, or the `services.sssd` options on NixOS) and names the `rm` of each of
+  those nine files it finds, which would keep the warning, and never deletes the socket. The check
+  looks for the nine by name and lists no directory, so the rest of sssd's state under
+  `/var/lib/sss`, such as the cache of each domain, neither keeps the warning nor goes with that
+  `rm`. docs/decoy-requirements.md says why deleting the nine is safe.
 - The residue catalog in docs/decoy-requirements.md lists a pending offline update, with what
   systemd's offline-update mechanism does across a soft-reboot and the way back, and sssd on a decoy
   joined to a domain, which docs/threat-model.md also lists among its residual channels. `verify`

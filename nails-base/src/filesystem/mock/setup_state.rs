@@ -224,6 +224,24 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), device_id);
     }
 
+    /// Set the inode [`Filesystem::inode`](crate::Filesystem::inode) reports
+    /// for `path`, as for the namespace files of two processes that share one.
+    pub fn mock_set_inode(&self, path: &Path, inode: u64) {
+        self.inodes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), Ok(inode));
+    }
+
+    /// Make [`Filesystem::inode`](crate::Filesystem::inode) fail for `path`
+    /// with an error of `kind`, as a lookup the caller may not make does.
+    pub fn mock_set_inode_error(&self, path: &Path, kind: std::io::ErrorKind) {
+        self.inodes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), Err(kind));
+    }
+
     /// Set the device of the file the loop device `node` is bound to, as
     /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device)
     /// reports it. Unset, the node cannot be read, as without root.
