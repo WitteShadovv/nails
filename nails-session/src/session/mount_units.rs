@@ -15,8 +15,10 @@
 //! decoy has mounted now would be missing from the hidden session.
 //!
 //! [`read`] finds every unit with a `.mount`, `.swap` or `.automount` suffix
-//! linked into a target's `.wants` or `.requires` directory (the initrd's
-//! targets aside), in the unit directories of the next root
+//! linked into a target's `.wants`, `.requires` or `.upholds` directory, one
+//! of a target name's prefix (`local-.target.wants`) or the one of every
+//! target (`target.wants`), the initrd's targets aside, in the unit
+//! directories of the next root
 //! (`/etc/systemd/system`, `/usr/local/lib/systemd/system`,
 //! `/usr/lib/systemd/system`, `/lib/systemd/system`) and of `/run`
 //! (`/run/systemd/system` and the generator directories the decoy's start
@@ -26,10 +28,11 @@
 //! point, automount or swap device makes. A copy of a generated unit
 //! elsewhere (`systemctl edit --full` writes one to `/etc/systemd/system`,
 //! which outranks the generator's) is decided like any other unit, and so is
-//! a generated unit no decided line makes. Each is read
-//! from the first unit directory in systemd's order that has it, with its own
-//! drop-ins ([`unit_dirs`], [`unit_file`]); a `.requires` link says a target
-//! requires it. A directory of links that cannot be listed refuses the entry
+//! a generated unit no decided line makes. Each is read from the first unit
+//! directory in systemd's order that has it, with its drop-ins, those of its
+//! name's prefixes (`srv-.mount.d`) and of its type (`mount.d`) included
+//! ([`unit_dirs`], [`unit_file`]); a `.requires` link says a target requires
+//! it. A directory of links that cannot be listed refuses the entry
 //! ([`Unlisted`]). No other unit is read: a mount unit that only another
 //! unit pulls in (its `Requires=` or `Wants=`, a service's `.wants`
 //! directory, a `RequiresMountsFor=` path) is not decided, and the hidden
@@ -125,21 +128,48 @@ pub struct NativeUnit {
     pub required_by: Option<String>,
 }
 
+/// The targets a directory of links named `name` pulls units into, and
+/// whether they require them, as systemd reads such a directory for a
+/// target: `<target>.wants`, `.requires` (which requires them) and
+/// `.upholds` of one target, of every target whose name begins with a
+/// prefix ending in a dash (`local-.target.wants`), or of every target
+/// (`target.wants`). `None` for any other name, and for the initrd's
+/// targets, which only an initrd runs.
+fn target_links(name: &str) -> Option<(String, bool)> {
+    let (stem, required) = [(".wants", false), (".requires", true), (".upholds", false)]
+        .into_iter()
+        .find_map(|(suffix, required)| Some((name.strip_suffix(suffix)?, required)))?;
+    if stem.starts_with("initrd") {
+        return None;
+    }
+    let targets = if stem == "target" {
+        "every target".to_string()
+    } else {
+        let prefix = stem.strip_suffix(".target")?;
+        if prefix.ends_with('-') {
+            format!("every target whose name begins with {prefix}")
+        } else {
+            stem.to_string()
+        }
+    };
+    Some((targets, required))
+}
+
 /// The mount, swap and automount units the targets pull in, in the order
 /// the unit directories list them (see the module docs), each once. `Err`
 /// names a directory of them that cannot be listed.
 pub fn read(dirs: UnitDirs<'_>) -> Result<Vec<NativeUnit>, Unlisted> {
     let mut units: Vec<NativeUnit> = Vec::new();
-    let mut links: Vec<String> = Vec::new();
+    let mut links: Vec<(String, String, bool)> = Vec::new();
     for name in dirs.list("")? {
-        let target_link = name.ends_with(".target.wants") || name.ends_with(".target.requires");
-        // The initrd's targets: only an initrd runs them.
-        if target_link && !name.starts_with("initrd") && !links.contains(&name) {
-            links.push(name);
+        if let Some((targets, required)) = target_links(&name)
+            && !links.iter().any(|(seen, ..)| *seen == name)
+        {
+            links.push((name, targets, required));
         }
     }
-    for link in links {
-        let required_by = link.strip_suffix(".requires").map(str::to_string);
+    for (link, targets, required) in links {
+        let required_by = required.then_some(targets);
         for name in dirs.list(&link)? {
             if !valid_unit_name(&name)
                 || ![".mount", ".swap", ".automount"]
