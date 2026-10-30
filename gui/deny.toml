@@ -1,10 +1,10 @@
 # cargo-deny configuration for the gui/ workspace
 #
 # The policy of the main deny.toml at the repository root, which explains each
-# setting, applied to the dependency graph of the graphical interface. The
-# toolkit the interface will be built on brings a large graph of its own; this
-# file is in place before it, so that every crate it brings in is checked from
-# the first. Every line that differs from the main deny.toml is marked "GUI:".
+# setting, applied to the dependency graph of the window. The toolkit the
+# window will be drawn with brings a large graph of its own; this file is in
+# place before it, so that every crate it brings in is checked from the
+# first. Every line that differs from the main deny.toml is marked "GUI:".
 #
 # The justfile checks this file in the recipes, and at the scopes, that check
 # the main one:
@@ -40,12 +40,17 @@ ignore = []
 [licenses]
 confidence-threshold = 0.8
 
-# GUI: no licence is allowed yet, as the workspace has no third-party crate.
-# The main deny.toml lists only the licences its graph uses, and here too a
-# licence joins the list with the first crate that needs it. A licence the main
-# list does not hold, and an exception for a single crate, go in with their
-# reason in the change that brings that crate in, not ahead of it.
-allow = []
+# GUI: the licences of the workspace's graph, which is the wire contract's
+# (serde and serde_json) and rustix's. As in the main deny.toml, a licence
+# joins the list with the first crate that needs it, and a licence the main
+# list does not hold, or an exception for a single crate, goes in with its
+# reason in the change that brings that crate in.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # unicode-ident, through serde's derive macros.
+    "Unicode-3.0",
+]
 
 # The workspace's own crates are not checked.
 [licenses.private]

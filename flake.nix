@@ -213,12 +213,16 @@
       });
 
       # The gui/ workspace is a Cargo workspace of its own and builds from its
-      # own manifest and lock. Only what cargo reads is in its source, so a
-      # change to its cargo-deny policy, its supply-chain records or its
-      # coverage floor rebuilds nothing.
+      # own manifest and lock. It links one crate of the main tree, nails-api
+      # (the wire contract), which takes its version, edition and lints from
+      # the root manifest, so both are in its source too. Only what cargo reads
+      # is, so a change to its cargo-deny policy, its supply-chain records or
+      # its coverage floor rebuilds nothing.
       guiSourceFiles = lib.fileset.toSource {
-        root = ./gui;
+        root = ./.;
         fileset = lib.fileset.unions [
+          ./Cargo.toml
+          ./nails-api
           ./gui/Cargo.toml
           ./gui/Cargo.lock
           ./gui/nails-gui
@@ -245,6 +249,8 @@
 
         src = guiSourceFiles;
         cargoLock.lockFile = ./gui/Cargo.lock;
+        cargoRoot = "gui";
+        buildAndTestSubdir = "gui";
 
         strictDeps = true;
 
