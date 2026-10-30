@@ -6,17 +6,23 @@
 //!
 //! A path is looked up one component at a time, each seen not to be a
 //! symbolic link before the next is looked up below it, so no lookup follows
-//! a link on the decoy. In the upper, a whiteout or a link on the way is a
+//! a link on the decoy; a package's file rpm records through a link is looked
+//! up where the link leads by rpm's own records ([`rpm::Links`]), never by
+//! the link on the disk. In the upper, a whiteout or a link on the way is a
 //! deletion or a replacement by a hidden session. A directory a hidden
 //! session deleted and made again (an opaque one) counts as merged with the
 //! decoy's: no package manager does that to its database.
 //!
 //! Where the mount table cannot be read, the decoy's filesystems are told
-//! from the kernel's own word on each directory above a database: `statx`
-//! says whether a path is the root of a mount ([`Filesystem::is_mount_root`]).
+//! from the kernel's own word on each directory above a database or a
+//! package's file: `statx` says whether a path is the root of a mount
+//! ([`Filesystem::mount_root`]). It is asked from the top down, and a link,
+//! an automount point and a directory the decoy lacks end the walk: the
+//! lookup of anything below the first follows it, of anything below the
+//! second mounts it, and below the third is no mount point of the decoy's.
 
 use super::{Database, Doubt, RpmKey, Verdict, judge_dpkg, judge_pacman, judge_rpm, rpm_differing};
-use crate::filesystem::Filesystem;
+use crate::filesystem::{Filesystem, MountRoot};
 use crate::session::layout::Layout;
 use nails_base::NailsError;
 use nails_base::packages::{self, dpkg, pacman, rpm};
@@ -87,6 +93,19 @@ enum OnDecoy {
     Present,
 }
 
+/// What the kernel said of a directory of the decoy, without the mount
+/// table.
+#[derive(Debug, Clone, Copy)]
+enum Probed {
+    /// The root of a mount.
+    Mount,
+    /// No mount's root.
+    Plain,
+    /// A symbolic link, or nothing the decoy has: nothing below it is asked
+    /// about.
+    End,
+}
+
 /// What the upper holds at a path.
 enum InUpper {
     /// Nothing: the decoy's shows through.
@@ -118,8 +137,8 @@ struct Reader<'a, F: Filesystem> {
     /// The mount table, for the options of the decoy's filesystems.
     table: Option<&'a [MountEntry]>,
     /// Without the mount table: what the kernel said of a directory, as the
-    /// decoy sees it, being a mount point.
-    probed: RefCell<BTreeMap<PathBuf, bool>>,
+    /// decoy sees it.
+    probed: RefCell<BTreeMap<PathBuf, Probed>>,
     /// The names of the entries of each directory of an upper listed for
     /// rpm's files: `None` for one that does not exist.
     listed: RefCell<BTreeMap<PathBuf, Option<BTreeSet<OsString>>>>,
@@ -201,41 +220,60 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Without the mount table: the deepest directory above `path` (as the
-    /// decoy sees it) that the kernel says is a mount point, other than `/`.
+    /// decoy sees it), other than `/`, that the kernel says is a mount point.
+    /// The directories are asked about from the top down, and the walk ends
+    /// at a link and at a directory the decoy lacks ([`Self::probe_dir`]).
     fn probe(&self, path: &Path) -> std::result::Result<Option<PathBuf>, Verdict> {
-        for dir in path.ancestors().skip(1) {
-            if dir == Path::new("/") {
-                break;
-            }
-            if let Some(&mount) = self.probed.borrow().get(dir) {
-                if mount {
-                    return Ok(Some(dir.to_path_buf()));
-                }
-                continue;
-            }
-            let on_decoy = self.root.join(dir.strip_prefix("/").unwrap_or(dir));
-            let mount = match self.fs.is_mount_root(&on_decoy) {
-                Ok(Some(mount)) => mount,
-                Ok(None) => {
-                    return Err(Verdict::Unknown(Doubt::Other(format!(
-                        "the mount table cannot be read, and the kernel does not say whether {} \
-                         is a mount point",
-                        dir.display()
-                    ))));
-                }
-                Err(e) => {
-                    return Err(Verdict::Unknown(Doubt::Other(format!(
-                        "the mount table cannot be read, nor whether {} is a mount point ({e})",
-                        dir.display()
-                    ))));
-                }
-            };
-            self.probed.borrow_mut().insert(dir.to_path_buf(), mount);
-            if mount {
-                return Ok(Some(dir.to_path_buf()));
+        let dirs: Vec<&Path> = path
+            .ancestors()
+            .skip(1)
+            .filter(|dir| *dir != Path::new("/"))
+            .collect();
+        let mut deepest = None;
+        for dir in dirs.into_iter().rev() {
+            match self.probe_dir(dir)? {
+                Probed::Mount => deepest = Some(dir.to_path_buf()),
+                Probed::Plain => {}
+                Probed::End => break,
             }
         }
-        Ok(None)
+        Ok(deepest)
+    }
+
+    /// What the kernel says of `dir` (as the decoy sees it), all of whose
+    /// directories above were seen to be neither links nor automount points:
+    /// one `statx` that follows no link and mounts nothing there
+    /// ([`Filesystem::mount_root`]). Below a link nothing is asked about, since
+    /// the lookup of anything there would follow it and change its access
+    /// time, nor below an automount point, which the lookup would mount, and a
+    /// path the decoy lacks is no mount point.
+    fn probe_dir(&self, dir: &Path) -> std::result::Result<Probed, Verdict> {
+        if let Some(&probed) = self.probed.borrow().get(dir) {
+            return Ok(probed);
+        }
+        let on_decoy = self.root.join(dir.strip_prefix("/").unwrap_or(dir));
+        // One `statx` that follows no link and mounts no automount point.
+        let probed = match self.fs.mount_root(&on_decoy) {
+            Ok(MountRoot::Link | MountRoot::Automount) => Probed::End,
+            Ok(MountRoot::Entry(Some(true))) => Probed::Mount,
+            Ok(MountRoot::Entry(Some(false))) => Probed::Plain,
+            Ok(MountRoot::Entry(None)) => {
+                return Err(Verdict::Unknown(Doubt::Other(format!(
+                    "the mount table cannot be read, and the kernel does not say whether {} is \
+                     a mount point",
+                    dir.display()
+                ))));
+            }
+            Err(e) if missing(&e) => Probed::End,
+            Err(e) => {
+                return Err(Verdict::Unknown(Doubt::Other(format!(
+                    "the mount table cannot be read, nor whether {} is a mount point ({e})",
+                    dir.display()
+                ))));
+            }
+        };
+        self.probed.borrow_mut().insert(dir.to_path_buf(), probed);
+        Ok(probed)
     }
 
     /// What the upper `base` holds at `rel`, the path of the filesystem

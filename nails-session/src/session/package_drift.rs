@@ -74,7 +74,7 @@
 //! format does not hold, an rpm transaction stopped half way (SQLite rolls
 //! back its journal only when it next opens the database, so neither state is
 //! the one rpm will see), and, without the mount table, a kernel that does
-//! not say what is a mount point.
+//! not say what is a mount point or a directory it cannot be asked about.
 
 use crate::error::Result;
 use crate::filesystem::Filesystem;
@@ -668,8 +668,9 @@ impl PackageDriftCheck {
 /// The advisory an entry shows when hidden sessions' package database does
 /// not follow the decoy's, read through `fs` as root: the decoy root `root`,
 /// hidden sessions' copies in `layout`, and the decoy's filesystems in
-/// `mounts` (`None` when the mount table cannot be read, which no verdict
-/// that needs hidden sessions' copy passes). `None` when it follows.
+/// `mounts` (`None` when the mount table cannot be read: the kernel then says
+/// which directories are mount points, see [`verdicts`]). `None` when it
+/// follows.
 pub fn advisory<F: Filesystem>(
     fs: &F,
     root: &Path,

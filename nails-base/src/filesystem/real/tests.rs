@@ -14,7 +14,7 @@
 
 use super::RealFilesystem;
 use crate::NailsError;
-use crate::filesystem::{Filesystem, MockFilesystem};
+use crate::filesystem::{Filesystem, MockFilesystem, MountRoot};
 use std::fs;
 use std::path::Path;
 
@@ -1075,14 +1075,14 @@ fn the_kernel_says_a_plain_directory_is_no_mount_point() {
     let real = RealFilesystem;
     // A kernel without the attribute (before 5.8) does not say.
     assert!(matches!(
-        real.is_mount_root(dir.path()).unwrap(),
-        Some(false) | None
+        real.mount_root(dir.path()).unwrap(),
+        MountRoot::Entry(Some(false) | None)
     ));
     assert!(matches!(
-        real.is_mount_root(Path::new("/")).unwrap(),
-        Some(true) | None
+        real.mount_root(Path::new("/")).unwrap(),
+        MountRoot::Entry(Some(true) | None)
     ));
-    assert!(real.is_mount_root(&dir.path().join("missing")).is_err());
+    assert!(real.mount_root(&dir.path().join("missing")).is_err());
 }
 
 #[test]
@@ -1090,8 +1090,6 @@ fn a_link_to_a_mount_point_is_no_mount_point_itself() {
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("root");
     std::os::unix::fs::symlink("/", &link).unwrap();
-    assert!(matches!(
-        RealFilesystem.is_mount_root(&link).unwrap(),
-        Some(false) | None
-    ));
+    // A link is one, never the mount point it leads to.
+    assert_eq!(RealFilesystem.mount_root(&link).unwrap(), MountRoot::Link);
 }
