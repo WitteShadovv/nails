@@ -13,7 +13,8 @@
 //! own validation (every path absolute with no control character, a token of
 //! 32 lowercase hexadecimal digits, no two options the CLI refuses together),
 //! and that an accepted request, written back as the window writes it, is
-//! read again as the same request.
+//! read again as the same request, or refused as too long where the written
+//! form, which names every field, no longer fits.
 
 #![no_main]
 
@@ -119,9 +120,14 @@ fuzz_target!(|data: &[u8]| {
     assert!(shaped(&request.op), "accepted out of shape: {request:?}");
     let line = request.to_line();
     assert!(!line.contains('\n'), "{line}");
-    assert_eq!(
-        decode_request(line.as_bytes()).as_ref(),
-        Ok(&request),
-        "{line}"
-    );
+    let again = decode_request(line.as_bytes());
+    if line.len() > MAX_LINE_BYTES {
+        // Written back with every field, a request accepted close to the limit
+        // can be longer than the form it came in: the helper refuses that line
+        // as too long, as it refuses any other.
+        let refused = again.map_err(|refusal| refusal.error.code);
+        assert_eq!(refused, Err(ErrorCode::TooLong), "{line}");
+    } else {
+        assert_eq!(again.as_ref(), Ok(&request), "{line}");
+    }
 });
