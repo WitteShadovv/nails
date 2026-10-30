@@ -72,12 +72,18 @@ const QUOTA_OPTIONS: &[&str] = &[
     "prjquota",
 ];
 
+/// The target that requires a `_netdev` swap line: the fstab generator links
+/// every swap into `swap.target` up to systemd 260, and a `_netdev` one into
+/// `remote-fs.target` from 261 on. Which systemd the hidden session runs is
+/// not told here, so both are named.
+const NETDEV_SWAP_TARGET: &str = "swap.target (remote-fs.target from systemd 261)";
+
 /// What requires the unit systemd's fstab generator makes for `entry` (its
 /// automount, if it has one) at boot, as the generator links it: the entry's
 /// boot target, `local-fs.target`, or `remote-fs.target` for a network
-/// filesystem, or `swap.target` for swap (`remote-fs.target` for a `_netdev`
-/// swap); or the units its `x-systemd.required-by=` options name, which then
-/// take the target's place. `None` when nothing requires it: `nofail` (the
+/// filesystem, or `swap.target` for swap ([`NETDEV_SWAP_TARGET`] for a
+/// `_netdev` swap); or the units its `x-systemd.required-by=` options name,
+/// which then take the target's place. `None` when nothing requires it: `nofail` (the
 /// target only wants the unit), `noauto` without an automount (nothing pulls
 /// it in), `x-systemd.wanted-by=` alone, or an NFS `bg` mount, which the
 /// generator makes `nofail`.
@@ -87,7 +93,7 @@ pub fn required_by(entry: &FstabEntry) -> Option<String> {
             return None;
         }
         let target = if entry.has_option("_netdev") {
-            "remote-fs.target"
+            NETDEV_SWAP_TARGET
         } else {
             "swap.target"
         };
@@ -138,13 +144,16 @@ pub fn waits_for(entry: &FstabEntry) -> Option<PathBuf> {
 }
 
 /// The units systemd's fstab generator has the unit of `entry` pull in that
-/// act on its device or filesystem, and which therefore start before the unit
-/// tests its own start condition: for an entry on a device its fsck (whatever
-/// its pass number: a unit nothing pulls in is skipped for nothing), and its
-/// makefs or, for swap, its mkswap (`x-systemd.makefs`); for a mount its
-/// growfs (`x-systemd.growfs`), pcrfs (`x-systemd.pcrfs`) and validatefs
-/// (`x-systemd.validatefs`), and its quota check and activation (a quota
-/// option).
+/// act on its device or filesystem: for an entry on a device its fsck
+/// (whatever its pass number: a unit nothing pulls in is skipped for
+/// nothing), and its makefs or, for swap, its mkswap (`x-systemd.makefs`);
+/// for a mount its growfs (`x-systemd.growfs`), pcrfs (`x-systemd.pcrfs`) and
+/// validatefs (`x-systemd.validatefs`), and its quota check and activation (a
+/// quota option). The fsck, makefs and mkswap units start before the unit
+/// tests its own start condition, so a skip that left them free would have
+/// them act on the decoy disk. The others are bound to the mount and ordered
+/// after it, so they cannot start while it is skipped: they are skipped with
+/// it for caution alone.
 pub fn checkers(entry: &FstabEntry) -> Vec<String> {
     let mut units = Vec::new();
     let device = waits_for(entry).map(|device| escape_path(&device));
