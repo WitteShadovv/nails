@@ -339,7 +339,10 @@ WHAT HAPPENS:
   shares with the hidden session, so a volatile decoy's journal starts again
   at the return. The hidden volume is unmounted and its encryption mapping
   closed by the switch itself. Deactivation warns when the return will find no
-  ip or nft, or no iw on a machine with Wi-Fi.
+  ip or nft, or no iw on a machine with Wi-Fi, and when it is bound to power
+  off: over a link the kernel keeps when it is deleted (the fallback device a
+  tunnel module makes when it loads, tunl0 for ipip), or a link or MAC address
+  of the session's it finds no ip or iw for.
 
 EXAMPLES:
   nails deactivate                    Soft-reboot back to the decoy

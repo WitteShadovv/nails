@@ -5,7 +5,7 @@ use crate::cli::args::DeactivateArgs;
 use crate::cli::output::test_support::{envelope, stdout_lines};
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::NailsError;
-use nails_core::app::deactivate::{Prepared, ReadyDeactivation};
+use nails_core::app::deactivate::{PowerOffReason, Prepared, ReadyDeactivation};
 use nails_core::session::{LeaveReport, LeaveTo};
 use std::path::Path;
 
@@ -97,11 +97,16 @@ fn subprocess_deactivate_entrypoint() {
             &[][..],
         )),
         "json-ready-unconfirmed" => Some((json(), DeactivateArgs::default(), &[][..])),
+        "human-ready-kernel-kept" => Some((ascii, yes, all)),
+        "json-ready-kernel-kept" => Some((json(), yes, all)),
         _ => None,
     } {
         let root = tempfile::tempdir().unwrap();
         for tool in tools {
             put(root.path(), &format!("usr/bin/{tool}"));
+        }
+        if case.ends_with("kernel-kept") {
+            put_kernel_kept_link(root.path());
         }
         // A stand-in for the lock step and the way back: what the operator
         // reads up to the switch.
@@ -109,8 +114,8 @@ fn subprocess_deactivate_entrypoint() {
             &settings,
             &args,
             Prepared::Ready(Box::new(ready_at(root.path()))),
-            |_ready, to, warnings| {
-                super::leave_and_report(&settings, to, warnings, Ok(()), |_| {
+            |_ready, to, warnings, bound| {
+                super::leave_and_report(&settings, to, warnings, bound.as_ref(), Ok(()), |_| {
                     crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
                     Ok(LeaveReport::default())
                 })
@@ -129,6 +134,7 @@ fn subprocess_deactivate_entrypoint() {
             &settings,
             LeaveTo::Decoy,
             Vec::new(),
+            None,
             Err(blocked()),
             |_| {
                 crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
@@ -152,7 +158,7 @@ fn subprocess_deactivate_entrypoint() {
     } else {
         Vec::new()
     };
-    let status = super::leave_and_report(&settings, to, warnings, Ok(()), |_| {
+    let status = super::leave_and_report(&settings, to, warnings, None, Ok(()), |_| {
         crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
         outcome
     });
@@ -225,9 +231,85 @@ fn no_nft_warning() -> String {
 const RETURN_LINES: [&str; 3] = [
     "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
     "  The decoy starts at its own login screen in a few seconds (a display manager set to log \
-     an account in automatically logs it in again, as at boot).",
+     an account in automatically logs it in again, as at boot), or the machine powers off \
+     instead if a link, MAC address, rule or table the way back sets out to undo is still the \
+     session's afterwards.",
     ENQUEUED,
 ];
+
+/// The lines a person reads of a return whose way back is bound to power off
+/// over `tunl0`, up to the switch.
+const BOUND_LINES: [&str; 3] = [
+    "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
+    "  The way back cannot delete tunl0, which the kernel keeps: the machine powers off in a few \
+     seconds instead of returning to the decoy.",
+    ENQUEUED,
+];
+
+/// What a person reads before the question when the way back is bound to
+/// power off over `tunl0`.
+fn kernel_kept_warning() -> String {
+    use nails_core::next_step::{NextStep, sudo_line};
+    format!(
+        "The way back cannot delete tunl0, which the kernel keeps, so the machine powers off \
+         instead of returning to the decoy. `{}` powers off at once.",
+        sudo_line(NextStep::DeactivatePoweroff)
+    )
+}
+
+/// Give the tree at `root` the record entry takes of its links (`lo` alone)
+/// and then the link `tunl0` the kernel keeps once a session loads `ipip`.
+fn put_kernel_kept_link(root: &Path) {
+    use nails_teardown::whole_root::network::{self, NetTools, NetworkRecord, Places};
+    let link = |name: &str, index: u32| {
+        let dir = root.join("sys/class/net").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
+    };
+    link("lo", 1);
+    let places = Places {
+        run: root.join("run"),
+        sys_class_net: root.join("sys/class/net"),
+        proc_hostname: root.join("proc/sys/kernel/hostname"),
+        proc_sys: root.join("proc/sys"),
+    };
+    let record = NetworkRecord::capture(&places, &NetTools::default());
+    let at = root.join("run/overlay-runtime").join(network::RECORD_NAME);
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::fs::write(at, record.encode()).unwrap();
+    link("tunl0", 7);
+}
+
+/// Where the way back is bound to power off, a person reads why before the
+/// question, first, and then that the machine powers off, not that the decoy
+/// starts; under `--json` the envelope carries the same warning.
+#[test]
+fn a_person_reads_before_the_question_that_the_way_back_powers_off() {
+    let output = run_subprocess("human-ready-kernel-kept");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        [format!("[WARN] {}", kernel_kept_warning())],
+        "{output:?}"
+    );
+    assert_eq!(stdout_lines(&output), BOUND_LINES, "{output:?}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let output = run_subprocess("json-ready-kernel-kept");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let lines = stdout_lines(&output);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the stand-in's line, one envelope: {output:?}"
+    );
+    let value = envelope("deactivate", &lines[1]);
+    assert_eq!(
+        value["data"]["warnings"],
+        serde_json::json!([kernel_kept_warning()]),
+        "{value}"
+    );
+}
 
 /// A person reads that the return leaves the session's network state on the
 /// decoy where its last step finds no `ip`, or no `nft`, one line each on
@@ -316,7 +398,13 @@ fn an_unconfirmed_deactivation_off_a_terminal_is_refused_before_anything() {
 #[test]
 fn the_lock_step_refuses_a_hidden_root_that_is_no_mount_point() {
     let root = tempfile::tempdir().unwrap();
-    let status = super::lock_and_leave(&json(), ready_at(root.path()), LeaveTo::Decoy, Vec::new());
+    let status = super::lock_and_leave(
+        &json(),
+        ready_at(root.path()),
+        LeaveTo::Decoy,
+        Vec::new(),
+        None,
+    );
     assert_eq!(status, ExitStatus::PreflightRefused);
     // Only the stand-in for the procfs files ready_at staged is there.
     let left: Vec<_> = std::fs::read_dir(root.path())
@@ -551,15 +639,21 @@ fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
     }
 }
 
-/// The prompt as it is shown before the answer.
-fn prompt(poweroff: bool) -> String {
+/// The prompt as it is shown before the answer, where the way back is
+/// `bound` to power off, if it is.
+fn prompt_bound(poweroff: bool, bound: Option<&PowerOffReason>) -> String {
     let settings = OutputSettings {
         ascii: true,
         ..OutputSettings::default()
     };
     let mut out = Vec::new();
-    super::write_prompt(&settings, poweroff, &mut out);
+    super::write_prompt(&settings, poweroff, bound, &mut out);
     String::from_utf8(out).unwrap()
+}
+
+/// The prompt as it is shown before the answer.
+fn prompt(poweroff: bool) -> String {
+    prompt_bound(poweroff, None)
 }
 
 #[test]
@@ -575,6 +669,36 @@ fn the_prompt_says_where_the_session_ends_before_asking() {
         "{}",
         prompt(true)
     );
+    // Where the way back is bound to power off, the prompt says so too, and
+    // whether anything before it runs can still change that.
+    let certain = PowerOffReason {
+        what: "The way back cannot delete tunl0, which the kernel keeps".to_string(),
+        certain: true,
+    };
+    assert!(
+        prompt_bound(false, Some(&certain)).starts_with(
+            "[WARN] This ends the hidden session now, and the machine powers off instead of \
+             returning to the decoy.\n"
+        ),
+        "{}",
+        prompt_bound(false, Some(&certain))
+    );
+    let likely = PowerOffReason {
+        what: "The way back finds no `iw` to delete wlan1 with".to_string(),
+        certain: false,
+    };
+    assert!(
+        prompt_bound(false, Some(&likely)).starts_with(
+            "[WARN] This ends the hidden session now, and unless that changes before it runs, \
+             the machine powers off instead of returning to the decoy.\n"
+        ),
+        "{}",
+        prompt_bound(false, Some(&likely))
+    );
+    assert!(
+        prompt_bound(true, Some(&certain))
+            .starts_with("[WARN] This ends the hidden session and powers off now.\n")
+    );
 }
 
 /// An answer other than yes reads as `activate`'s cancel: the neutral notice
@@ -586,7 +710,7 @@ fn a_declined_or_interrupted_deactivation_is_a_neutral_notice_and_exits_130() {
     let ask = |answer: Answer| {
         let mut err = Vec::new();
         let status =
-            super::confirm_or_cancel(&OutputSettings::default(), false, &mut err, || answer);
+            super::confirm_or_cancel(&OutputSettings::default(), false, None, &mut err, || answer);
         (status, String::from_utf8(err).unwrap())
     };
     let notice = "\u{25cb} Deactivation cancelled; nothing was changed.\n";
