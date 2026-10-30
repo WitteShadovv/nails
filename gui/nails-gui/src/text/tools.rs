@@ -41,6 +41,8 @@ pub const TRACES_FOUND: &str = "Traces Found";
 pub const VERIFY_FAILED: &str = "Verify Could Not Run";
 /// The group of what a verify found.
 pub const GROUP_FOUND: &str = "Found";
+/// The group of a verify's notes, when it found nothing else.
+pub const GROUP_NOTED: &str = "Noted";
 /// The group of what a verify did not look at.
 pub const GROUP_NOT_CHECKED_RUN: &str = "Not checked by this run";
 /// A finding that is a trace.
@@ -67,8 +69,9 @@ pub fn verify_secure(checks: usize, deep: bool) -> String {
 #[must_use]
 pub fn possible_traces(n: usize) -> String {
     format!(
-        "Verify found {}. Each one says what it is and how to deal with it.",
-        count(n, "possible trace", "possible traces")
+        "Verify found {}. {} what it is and how to deal with it.",
+        count(n, "possible trace", "possible traces"),
+        each_says(n)
     )
 }
 
@@ -76,10 +79,15 @@ pub fn possible_traces(n: usize) -> String {
 #[must_use]
 pub fn traces_found(n: usize) -> String {
     format!(
-        "Verify found {} that a hidden session can leave. Each one says what it is and how \
-         to deal with it.",
-        count(n, "trace", "traces")
+        "Verify found {} that a hidden session can leave. {} what it is and how to deal with \
+         it.",
+        count(n, "trace", "traces"),
+        each_says(n)
     )
+}
+
+fn each_says(n: usize) -> &'static str {
+    if n == 1 { "It says" } else { "Each one says" }
 }
 
 /// The row that opens Rehearsal, and its page's title.
@@ -290,6 +298,8 @@ pub const DELETING: &str = "Deleting the hidden changes";
 pub const DISCARDED: &str = "Hidden Changes Discarded";
 /// A discard that failed.
 pub const DISCARD_FAILED: &str = "Discard Failed";
+/// A discard the engine refused before it changed anything.
+pub const NOT_DISCARDED: &str = "Hidden Changes Not Discarded";
 /// The group of what a discard deleted.
 pub const GROUP_DELETED: &str = "Deleted";
 /// One of them.
@@ -403,7 +413,7 @@ pub fn count(n: usize, one: &str, many: &str) -> String {
 pub fn size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["kB", "MB", "GB", "TB", "PB"];
     if bytes < 1000 {
-        return format!("{bytes} B");
+        return format!("{bytes}\u{a0}B");
     }
     #[allow(clippy::cast_precision_loss)]
     let mut value = bytes as f64 / 1000.0;
@@ -412,10 +422,11 @@ pub fn size(bytes: u64) -> String {
         value /= 1000.0;
         unit += 1;
     }
+    // A space that keeps the number and its unit on one line.
     if value < 10.0 {
-        format!("{value:.1} {}", UNITS[unit])
+        format!("{value:.1}\u{a0}{}", UNITS[unit])
     } else {
-        format!("{value:.0} {}", UNITS[unit])
+        format!("{value:.0}\u{a0}{}", UNITS[unit])
     }
 }
 

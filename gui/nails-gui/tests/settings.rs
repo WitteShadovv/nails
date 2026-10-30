@@ -112,10 +112,10 @@ fn the_list_names_every_setting_its_value_and_where_it_comes_from() {
     assert_eq!(screen.labels(AccessibleRole::Button), buttons);
     for (title, line) in [
         ("Hidden volume", "/mnt/data. The folder NAILS runs from"),
-        ("Space to keep free", "500 MB. The default"),
+        ("Space to keep free", "500\u{a0}MB. The default"),
         ("Home in the session", "Decoy home. The default"),
         ("Hidden NixOS system", "Not set. The default"),
-        ("Failure delay", "15 s. The default"),
+        ("Failure delay", "15\u{a0}s. The default"),
     ] {
         let row = screen.find_with(title, AccessibleRole::Button);
         assert_eq!(row.accessible_description().as_deref(), Some(line));

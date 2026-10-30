@@ -125,6 +125,12 @@ pub const CLEANING_UP: &str = "Cleaning Up";
 pub const RESET_RECORD: &str = "Reset Record";
 /// While it runs.
 pub const RESETTING_RECORD: &str = "Resetting the Record";
+/// What Clean Up does, under its page: the window's button in place of the
+/// command a terminal would run.
+pub const CLEAN_UP_WHAT: &str = "Clean Up removes them. This computer's disk is not changed.";
+/// What Reset Record does, and what to do after it.
+pub const RESET_RECORD_WHAT: &str = "Reset Record writes a new record that says no hidden \
+     session is active. Before you activate again, use Verify and check the hidden volume.";
 /// A clean-up that removed what an interrupted activation left.
 pub const CLEANED_UP: &str = "Cleaned up what the interrupted activation left in memory.";
 /// A clean-up that found nothing left.
@@ -180,7 +186,7 @@ pub const EMERGENCY_HOLD_HINT: &str = "Hold to End the Session";
 /// After the keyboard's first press.
 pub const EMERGENCY_AGAIN: &str = "Press Enter Again to End Now";
 /// Once the emergency fired.
-pub const EMERGENCY_NOW: &str = "Ending the hidden session now.";
+pub const EMERGENCY_NOW: &str = "The computer powers off now.";
 /// The way out that needs nothing of the window or of NAILS.
 pub const POWER_BUTTON_IF_STILL_ON: &str =
     "If the computer does not turn off, hold the power button until it is off.";
@@ -216,7 +222,7 @@ pub const DECOY_ENDED_ABNORMALLY: &str = "Decoy. The last hidden session did not
 /// The decoy with a disk over the hidden volume.
 pub const DECOY_VOLUME_COVERED: &str = "Decoy. A disk is mounted over the hidden volume.";
 /// An activation under way.
-pub const ACTIVATING_WHERE: &str = "Activating. The hidden session opens at the next login screen.";
+pub const ACTIVATING_WHERE: &str = "The hidden session opens at the next login screen.";
 /// What the power button does when nothing else can help.
 pub const HOLD_POWER_BUTTON: &str = "Hold the power button until the computer is off.";
 
@@ -412,7 +418,9 @@ pub fn mismatch(
 }
 
 /// A sentence of the engine's, as the window shows it: with a capital first
-/// letter and a full stop.
+/// letter and a full stop. A first word that names something as a program or
+/// a file writes it (`systemd`, `soft-reboot.target`, `apt/dpkg`) keeps its
+/// case.
 #[must_use]
 pub fn sentence(text: &str) -> String {
     let text = text.trim();
@@ -420,11 +428,39 @@ pub fn sentence(text: &str) -> String {
     let Some(first) = chars.next() else {
         return String::new();
     };
-    let mut out: String = first.to_uppercase().chain(chars).collect();
+    let named = text.split_whitespace().next().is_some_and(is_a_name);
+    let mut out: String = if named {
+        text.to_string()
+    } else {
+        first.to_uppercase().chain(chars).collect()
+    };
     if !out.ends_with(['.', '?', ':']) {
         out.push('.');
     }
     out
+}
+
+/// Whether `word` names something the way a program or a file writes it:
+/// with a character no word of prose has (a dot, a slash, a hyphen, a digit,
+/// a quote), or as one of the programs the engine starts a sentence with.
+fn is_a_name(word: &str) -> bool {
+    const PROGRAMS: &[&str] = &[
+        "auditd",
+        "cryptsetup",
+        "iw",
+        "ip",
+        "journald",
+        "logind",
+        "nft",
+        "pkexec",
+        "rsyslog",
+        "sudo",
+        "systemd",
+        "timesyncd",
+        "zram",
+    ];
+    let word = word.trim_end_matches([',', ':', ';', '.', '!', '?']);
+    word.chars().any(|c| !c.is_alphabetic()) || PROGRAMS.contains(&word)
 }
 
 fn trim_end_stop(text: &str) -> &str {

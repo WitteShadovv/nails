@@ -138,6 +138,8 @@ impl Discard {
             (Some(data), _) if data.removed.is_empty() => Outcome::Nothing(data.target),
             (Some(data), _) => {
                 self.deleted = true;
+                // Done: the folder goes, so Discard… waits for the next one.
+                self.folder.clear();
                 Outcome::Discarded(data)
             }
             (None, error) => Outcome::Failed {
@@ -178,7 +180,7 @@ impl Discard {
                 heading: if *applied {
                     text::DISCARD_FAILED
                 } else {
-                    text::DISCARD
+                    text::NOT_DISCARDED
                 }
                 .to_string(),
                 note: message.clone(),

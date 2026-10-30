@@ -535,8 +535,9 @@ fn shown(setting: &keys::Setting, value: Option<&Value>) -> String {
                 .collect::<Vec<_>>()
                 .join(", "),
         },
+        // A space that keeps the number and its unit on one line.
         (KeyKind::Integer, Some(Value::Number(number))) => match text::unit(setting.key) {
-            Some(unit) => format!("{number} {unit}"),
+            Some(unit) => format!("{number}\u{a0}{unit}"),
             None => number.to_string(),
         },
         (_, Some(Value::String(text))) => text.clone(),
