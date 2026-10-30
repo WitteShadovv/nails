@@ -242,8 +242,11 @@ in
         )
         machine.wait_until_succeeds("test -S /tmp/.X11-unix/X7", timeout=60)
         command = " ".join(shlex.quote(word) for word in argv)
+        # Only the window goes to the background, with its streams on
+        # /dev/null: a background list would keep the driver's output open
+        # for as long as the window runs.
         machine.succeed(
-            f"su testuser -c 'cd && DISPLAY=:7 XDG_RUNTIME_DIR=/run/user/{uid} "
+            f"su testuser -c 'cd; DISPLAY=:7 XDG_RUNTIME_DIR=/run/user/{uid} "
             f"setsid {command} < /dev/null > /dev/null 2>&1 &'"
         )
         window = machine.wait_until_succeeds("pgrep -u testuser -x session", timeout=60).strip()
