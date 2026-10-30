@@ -101,6 +101,34 @@ pub const ACTIVATION_CANCELLED: &str = "Activation Cancelled";
 /// An activation that failed.
 pub const ACTIVATION_FAILED: &str = "Activation Failed";
 
+/// The main action of the page of an interrupted activation.
+pub const CLEAN_UP: &str = "Clean Up";
+/// While it runs.
+pub const CLEANING_UP: &str = "Cleaning Up";
+/// The main action of the page of a record that cannot be read.
+pub const RESET_RECORD: &str = "Reset Record";
+/// While it runs.
+pub const RESETTING_RECORD: &str = "Resetting the Record";
+/// A clean-up that removed what an interrupted activation left.
+pub const CLEANED_UP: &str = "Cleaned up what the interrupted activation left in memory.";
+/// A clean-up that found nothing left.
+pub const NOTHING_TO_CLEAN_UP: &str = "Nothing was left to clean up.";
+/// A record that was reset: the words `nails recover` prints too.
+pub const RECORD_RESET: &str = "The record on the hidden volume could not be read or trusted. It \
+     was reset: no hidden session is active.";
+/// A device of the hidden volume a clean-up had to leave open.
+pub const DEVICE_IN_USE: &str = "A device of the hidden volume is still open and in use: its key \
+     stays in memory until you unmount the hidden volume and close it.";
+
+/// The mounts a clean-up had to leave, which a restart clears.
+#[must_use]
+pub fn mounts_stayed(mounts: &[String]) -> String {
+    format!(
+        "Still mounted until this computer restarts: {}.",
+        mounts.join(", ")
+    )
+}
+
 /// A hidden session runs.
 pub const HIDDEN_SESSION: &str = "Hidden Session";
 /// An activation runs.
