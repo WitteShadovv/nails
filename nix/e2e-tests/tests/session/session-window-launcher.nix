@@ -8,10 +8,10 @@
 #
 # The engine here is the static musl `nails` with that feature, run from the
 # hidden volume as an operator runs it (sudo from testuser), with the gui
-# workspace's binary in place of the window. A driver plays the window
-# (helper_driver.py): it activates through the helper, sees each step and
-# the point of no return come before the answer, and comes back the same way.
-# In the hidden session the test shows:
+# workspace's window beside it. A driver plays the window (helper_driver.py):
+# it activates through the helper, sees each step and the point of no return
+# come before the answer, and comes back the same way. In the hidden session
+# the test shows:
 #
 #   - the entry, valid for desktop-file-validate, runs the window with the
 #     engine whose helper it starts;
@@ -25,6 +25,10 @@
 #     matches the engine and its first argument only, so it also covers
 #     `<engine> helper --stdio --config <file>`; the helper refuses that one
 #     and starts nothing;
+#   - the entry's own command, run as the desktop runs it on an X server of
+#     the test's, opens the window, which starts the helper through pkexec:
+#     the helper runs as root, the window's child, and keeps its session
+#     with the window until the window closes;
 #   - both files lie on the hidden volume, and the decoy root, mounted
 #     read-only beside the session, has neither;
 #   - the helper plans a deactivation with its token for each ending;
@@ -37,6 +41,7 @@
 # their text.
 { self, pkgs, ... }:
 let
+  inherit (pkgs) lib;
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
   packages = self.packages.x86_64-linux;
@@ -49,6 +54,25 @@ let
       "gui"
     ];
   });
+  # The window's program with the libraries its toolkit opens at run time on
+  # its RPATH: NixOS has no system library directory, and the window clears
+  # LD_LIBRARY_PATH from its environment.
+  windowProgram = pkgs.runCommand "session-window" { nativeBuildInputs = [ pkgs.patchelf ]; } ''
+    install -D -m 0755 ${packages.nails-gui}/bin/session $out/bin/session
+    patchelf --add-rpath ${
+      lib.makeLibraryPath [
+        pkgs.fontconfig.lib
+        pkgs.libxkbcommon
+        pkgs.libx11
+        pkgs.libxcb
+        pkgs.libxcursor
+        pkgs.libxext
+        pkgs.libxi
+        pkgs.libxrandr
+        pkgs.libxrender
+      ]
+    } $out/bin/session
+  '';
 in
 {
   name = "session-window-launcher";
@@ -79,14 +103,18 @@ in
         pkgs.desktop-file-utils
         pkgs.python3
       ];
+      # A font for the window's pages.
+      fonts.packages = [ pkgs.dejavu_fonts ];
       system.extraDependencies = [
         windowEngine
-        packages.nails-gui
+        windowProgram
+        pkgs.xvfb
       ];
     };
 
   testScript = _: ''
     import json
+    import shlex
 
     ${diskForensics.pythonSetup}
 
@@ -162,7 +190,7 @@ in
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("install -m 0755 ${windowEngine}/bin/nails /mnt/data/nails")
         machine.succeed(
-            "install -D -m 0755 ${packages.nails-gui}/bin/session /mnt/data/gui/bin/session"
+            "install -D -m 0755 ${windowProgram}/bin/session /mnt/data/gui/bin/session"
         )
         machine.succeed(
             "mkdir -p /mnt/data/config && "
@@ -263,6 +291,54 @@ in
         print(refused)
         assert '"hello"' not in refused, refused
         assert "only as `helper --stdio`" in refused, refused
+
+    with subtest("the entry's own command opens the window, whose pkexec starts the helper"):
+        # The command the desktop runs for the entry, read from the entry.
+        exec_line = next(
+            line.removeprefix("Exec=") for line in entry.splitlines() if line.startswith("Exec=")
+        )
+        argv = shlex.split(exec_line)
+        assert argv == ["/mnt/data/gui/bin/session", "--engine", "/mnt/data/nails"], argv
+        uid = machine.succeed("id -u testuser").strip()
+        # What a desktop session gives it: the operator's runtime directory
+        # in RAM, which logind makes at a login (nothing here logs in), and a
+        # display, the test's own X server.
+        machine.succeed(f"install -d -m 0700 -o testuser -g users /run/user/{uid}")
+        machine.succeed("install -d -m 1777 /tmp/.X11-unix")
+        machine.succeed(
+            "su testuser -c 'setsid ${pkgs.xvfb}/bin/Xvfb :7 -nolisten tcp "
+            "-screen 0 1024x768x24 < /dev/null > /dev/null 2>&1 &'"
+        )
+        machine.wait_until_succeeds("test -S /tmp/.X11-unix/X7", timeout=60)
+        command = " ".join(shlex.quote(word) for word in argv)
+        machine.succeed(
+            f"su testuser -c 'cd && DISPLAY=:7 XDG_RUNTIME_DIR=/run/user/{uid} "
+            f"setsid {command} < /dev/null > /dev/null 2>&1 &'"
+        )
+        window = machine.wait_until_succeeds("pgrep -u testuser -x session", timeout=60).strip()
+        # pkexec became root: it started the helper, which runs as the
+        # window's child.
+        helper_of_window = f"pgrep -u root -P {window} -f '^/mnt/data/nails helper --stdio$'"
+        helper = machine.wait_until_succeeds(helper_of_window, timeout=90).strip()
+
+        def field(pid, key):
+            return machine.succeed(f"grep '^{key}:' /proc/{pid}/status | cut -f2").strip()
+
+        assert field(helper, "Uid") == "0", "the helper does not run as root"
+        assert field(helper, "NoNewPrivs") == "0", "pkexec ran under no_new_privs"
+        assert field(window, "NoNewPrivs") == "1", "the window did not limit itself"
+        # The window took the helper's hello and keeps the session: a window
+        # that refused it, or could not open, would have closed its end of
+        # the pair, and the helper would have ended with it.
+        # sync-lint: allow sleep -- the window and its helper must still run five seconds after the hello
+        machine.sleep(5)
+        machine.succeed(f"kill -0 {window} && {helper_of_window}")
+        # Closing the window closes its end: the helper ends too.
+        machine.succeed(f"kill {window}")
+        machine.wait_until_fails(f"kill -0 {helper}", timeout=30)
+        machine.wait_until_fails(f"kill -0 {window}", timeout=30)
+        machine.succeed("pkill -u testuser -x Xvfb")
+        machine.wait_until_fails("pgrep -u testuser -x Xvfb", timeout=30)
 
     with subtest("both files lie on the hidden volume, and the decoy has neither"):
         machine.succeed(f"test -f {UPPER}{ENTRY} && test -f {UPPER}{ACTION}")
