@@ -116,11 +116,14 @@ of this changelog for that version becomes the release notes word for word, and
   are all `session`. Its command line is its name alone, `session` (`session --engine -` once a menu
   entry's start ran again), so a log that quotes it, such as dbus-daemon's line for a service the
   window's bus traffic starts, names no place. Its toolkit starts no program, on X11 or on Wayland:
-  its winit backend is a patched copy of Slint's (`gui/patches/i-slint-backend-winit`) that draws no
-  window decorations, whose Wayland frame ran `dbus-send`, `gsettings` and `fc-match` even for a
-  window without one, and that reads the settings portal without starting it. A process list still
-  shows `nails` while the window is open: the helper runs as `<hidden-root>/nails helper --stdio`.
-  Its tests run without a display, on Slint's testing platform.
+  its winit backend is a patched copy of Slint's (`gui/patches/i-slint-backend-winit`) that builds
+  winit without sctk-adwaita. winit still builds its Wayland client-side frame and hides it, since
+  the window has no frame, but that frame is now smithay's fallback frame, which starts no program,
+  where sctk-adwaita's ran `dbus-send`, `gsettings` and `fc-match`. The copy also reads the settings
+  portal without starting it, and `just vet gui` holds it to the published crate plus its patch,
+  byte for byte. A process list still shows `nails` while the window is open: the helper runs as
+  `<hidden-root>/nails helper --stdio`. Its tests run without a display, on Slint's testing
+  platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
