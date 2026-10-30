@@ -381,6 +381,32 @@ fn a_directory_that_resolves_into_the_store_is_refused() {
     assert_eq!(std::fs::read_dir(&store).unwrap().count(), 0);
 }
 
+/// A store link higher up (`~/.local/share`, with no `applications` in the
+/// store path yet) is refused before the missing directory is made in there.
+#[test]
+fn a_store_link_on_the_way_is_refused_before_anything_is_made_in_the_store() {
+    let root = tempfile::tempdir().unwrap();
+    let share = root.path().join("nix/store/abc-home-manager-files/share");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::create_dir_all(root.path().join("home/alice/.local")).unwrap();
+    std::os::unix::fs::symlink(
+        "/nix/store/abc-home-manager-files/share",
+        root.path().join("home/alice/.local/share"),
+    )
+    .unwrap();
+    let alice = me(Path::new("/home/alice"));
+    let written = put_in_place(root.path(), true, Some(&alice), &launcher("/mnt/data"));
+    assert_eq!(
+        written,
+        [PathBuf::from("/etc/polkit-1/actions/session.open.policy")]
+    );
+    assert_eq!(
+        std::fs::read_dir(&share).unwrap().count(),
+        0,
+        "nothing was made in the store path"
+    );
+}
+
 #[test]
 fn a_link_planted_at_the_file_s_name_is_replaced_and_not_followed() {
     let root = tempfile::tempdir().unwrap();
