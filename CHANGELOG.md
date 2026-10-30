@@ -104,7 +104,11 @@ of this changelog for that version becomes the release notes word for word, and
 - The residue catalog in docs/decoy-requirements.md lists a pending offline update, with what
   systemd's offline-update mechanism does across a soft-reboot and the way back, and sssd on a decoy
   joined to a domain, which docs/threat-model.md also lists among its residual channels. `verify`
-  lists both among its areas not checked, each with the reason no scan of the decoy sees it.
+  lists both among its areas not checked, each with the reason it does not report them: a scan of
+  the decoy disk sees part of each, a link staged on the decoy and the caches and logs of the
+  decoy's own sssd, but that is the decoy's own state, while a link a session staged sits in the
+  upper on the hidden volume and the domain controller keeps its records out of reach of any scan
+  of this computer.
 - `nails discard` takes `--allow-decoy-storage`, as `init`, `activate` and `check` do, for a hidden
   root that this computer's own storage seems to hold. Without it, discard refused such a root even
   when activation had accepted it, so nothing could be discarded there.
