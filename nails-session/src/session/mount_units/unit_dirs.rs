@@ -186,6 +186,16 @@ impl UnitDirs<'_> {
     /// priority order and the names of each sorted. `Err` names the first
     /// one that is there but cannot be listed.
     pub(super) fn list(&self, name: &str) -> Result<Vec<String>, Unlisted> {
+        Ok(self
+            .list_marked(name)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect())
+    }
+
+    /// [`Self::list`], each name with whether its unit directory is one a
+    /// generator writes to.
+    pub(super) fn list_marked(&self, name: &str) -> Result<Vec<(String, bool)>, Unlisted> {
         let mut names = Vec::new();
         for &(base, dir) in UNIT_DIRS {
             let (root, path) = self.locate(base, dir, name);
@@ -209,7 +219,10 @@ impl UnitDirs<'_> {
                 }
             };
             here.sort();
-            names.extend(here);
+            names.extend(
+                here.into_iter()
+                    .map(|name| (name, generator_dir(base, dir))),
+            );
         }
         Ok(names)
     }
