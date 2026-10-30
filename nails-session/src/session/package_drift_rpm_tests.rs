@@ -667,3 +667,154 @@ fn a_kernel_update_through_lib_in_a_hidden_session_is_its_own() {
         "{result:?}"
     );
 }
+
+/// Without the mount table: the decoy's directories above the database and
+/// the packages' files that the kernel says are no mount points.
+fn without_the_mount_table(fs: &MockFilesystem, dirs: &[&str]) {
+    fs.mock_set_mount_table_error("permission denied");
+    for dir in ["usr", "usr/lib", "usr/lib/sysimage", "usr/lib/sysimage/rpm"]
+        .iter()
+        .chain(dirs)
+    {
+        fs.mock_set_mount_root(&format!("{ROOT}/{dir}"), false);
+    }
+}
+
+#[test]
+fn without_the_mount_table_a_directory_the_decoy_lacks_is_no_mount_point() {
+    let fs = fedora(DECOY, Some(HIDDEN));
+    upper(&fs, &[&[DB], OWN].concat(), OWN_REMOVED);
+    without_the_mount_table(
+        &fs,
+        &[
+            "usr/bin",
+            "usr/share",
+            "usr/share/alpha",
+            "usr/share/beta",
+            "usr/share/delta",
+            "usr/share/kernel-core",
+        ],
+    );
+    // The decoy removed gamma with its directory and never had epsilon's:
+    // there the kernel finds nothing to say anything of.
+    for dir in ["usr/share/gamma", "usr/share/epsilon"] {
+        fs.mock_set_mount_root_error(&format!("{ROOT}/{dir}"), std::io::ErrorKind::NotFound);
+    }
+    let result = run(&check(), &fs);
+    assert!(
+        result.message().contains("removed 4 packages since"),
+        "{result:?}"
+    );
+    // A directory the kernel cannot be asked about leaves the verdict open.
+    fs.mock_set_mount_root_error(
+        &format!("{ROOT}/usr/share/beta"),
+        std::io::ErrorKind::PermissionDenied,
+    );
+    let result = run(&check(), &fs);
+    assert!(
+        result.message().contains(
+            "the mount table cannot be read, nor whether /usr/share/beta is a mount point"
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn without_the_mount_table_nothing_below_a_link_on_the_decoy_is_asked_about() {
+    // Hidden sessions' own changes lie below /usr/share alone.
+    let fs = fedora(DECOY, Some(HIDDEN));
+    upper(
+        &fs,
+        &[DB, "usr/share/alpha/1.1", "usr/share/epsilon/0.5"],
+        &["usr/share/alpha/1.0"],
+    );
+    without_the_mount_table(&fs, &["usr/bin"]);
+    // The decoy's /usr/share is a link. Asked about what lies below it, the
+    // kernel would follow the link, and here it would say each package's
+    // directory is a filesystem of its own, whose upper holds nothing.
+    fs.mock_set_path_type(&format!("{ROOT}/usr/share"), PathKind::Symlink);
+    for name in ["alpha", "beta", "delta", "epsilon", "gamma", "kernel-core"] {
+        fs.mock_set_mount_root(&format!("{ROOT}/usr/share/{name}"), true);
+    }
+    let result = run(&check(), &fs);
+    assert!(
+        result.message().contains("removed 4 packages since"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn without_the_mount_table_nothing_below_an_automount_point_is_asked_about() {
+    // As below a link: the kernel, asked about what lies below the decoy's
+    // automount point, would mount it, and here it would say each package's
+    // directory is a filesystem of its own, whose upper holds nothing.
+    let fs = fedora(DECOY, Some(HIDDEN));
+    upper(
+        &fs,
+        &[DB, "usr/share/alpha/1.1", "usr/share/epsilon/0.5"],
+        &["usr/share/alpha/1.0"],
+    );
+    without_the_mount_table(&fs, &["usr/bin"]);
+    fs.mock_set_automount(&format!("{ROOT}/usr/share"));
+    for name in ["alpha", "beta", "delta", "epsilon", "gamma", "kernel-core"] {
+        fs.mock_set_mount_root(&format!("{ROOT}/usr/share/{name}"), true);
+    }
+    let result = run(&check(), &fs);
+    assert!(
+        result.message().contains("removed 4 packages since"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn without_the_mount_table_the_reads_follow_no_link_on_the_decoy() {
+    use crate::filesystem::RealFilesystem;
+    use std::os::unix::fs::MetadataExt;
+
+    let decoy = tempfile::tempdir().unwrap();
+    let hidden = tempfile::tempdir().unwrap();
+    let database = decoy.path().join(DB);
+    std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+    std::fs::write(&database, DECOY).unwrap();
+    // The decoy's /usr/share is a link to a directory that holds nothing of
+    // the packages'.
+    std::fs::create_dir_all(decoy.path().join("usr/share-elsewhere")).unwrap();
+    let link = decoy.path().join("usr/share");
+    std::os::unix::fs::symlink("share-elsewhere", &link).unwrap();
+    let upper = hidden.path().join("root/upper");
+    std::fs::create_dir_all(upper.join(DB).parent().unwrap()).unwrap();
+    std::fs::write(upper.join(DB), HIDDEN).unwrap();
+    for own in OWN {
+        let path = upper.join(own);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"").unwrap();
+    }
+    let old = rustix::fs::Timestamps {
+        last_access: rustix::fs::Timespec {
+            tv_sec: 1_000_000_000,
+            tv_nsec: 0,
+        },
+        last_modification: rustix::fs::Timespec {
+            tv_sec: 0,
+            tv_nsec: rustix::fs::UTIME_OMIT,
+        },
+    };
+    rustix::fs::utimensat(
+        rustix::fs::CWD,
+        &link,
+        &old,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .unwrap();
+    let atime = || {
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        (meta.atime(), meta.atime_nsec())
+    };
+    let before = atime();
+
+    let layout = crate::session::layout::Layout::new(hidden.path());
+    let verdicts = verdicts(&RealFilesystem, decoy.path(), &layout, None, true);
+    assert_eq!(atime(), before, "the link was followed");
+    let (_, _, rpm) = &verdicts[2];
+    assert!(matches!(rpm, Verdict::Drifted(_)), "{rpm:?}");
+}

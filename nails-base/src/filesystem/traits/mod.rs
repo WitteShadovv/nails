@@ -8,6 +8,19 @@ use crate::filesystem::MountEntry;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
+/// What a path itself is, as [`Filesystem::mount_root`] gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountRoot {
+    /// A symbolic link.
+    Link,
+    /// An automount point nothing is mounted on yet: looking at anything
+    /// below it mounts it.
+    Automount,
+    /// Anything else: the root of a mount or not, or `None` where the kernel
+    /// does not say (before Linux 5.8).
+    Entry(Option<bool>),
+}
+
 /// Total and available space for a filesystem, taken from a single `statvfs`
 /// call so the status path never has to walk directories to report usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,11 +209,17 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// most systems let only root and the `disk` group do.
     fn loop_backing_device(&self, node: &Path) -> Result<u64>;
 
-    /// Whether `path` itself (never a symlink's target) is the root of a
-    /// mount, as the kernel's `statx` says (`STATX_ATTR_MOUNT_ROOT`, Linux
-    /// 5.8): `None` when the kernel does not say. A bind mount counts, as it
-    /// does in the mount table. Looking it up changes no access time.
-    fn is_mount_root(&self, path: &Path) -> Result<Option<bool>>;
+    /// What `path` itself is, as one `statx` says that neither follows a
+    /// symbolic link there nor triggers an automount: a link, an automount
+    /// point nothing is mounted on yet, or anything else, with whether it is
+    /// the root of a mount (`STATX_ATTR_MOUNT_ROOT`, Linux 5.8; a bind mount
+    /// counts, as it does in the mount table). An error when the path cannot
+    /// be looked up, one that does not exist among them. Looking it up changes
+    /// no access time of the path itself, but a link on the way to it is
+    /// followed, and its access time changes, and an automount point on the
+    /// way is mounted: a caller that must do neither looks at each directory
+    /// on the way first.
+    fn mount_root(&self, path: &Path) -> Result<MountRoot>;
 
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;

@@ -76,6 +76,11 @@ pub enum MockOp {
     },
 }
 
+/// What `mount_root` says of each path set, or the kind of the error it
+/// gives there.
+type MountRoots =
+    HashMap<PathBuf, std::result::Result<crate::filesystem::MountRoot, std::io::ErrorKind>>;
+
 /// Mock filesystem for testing (no root privileges required)
 ///
 /// Uses in-memory state tracking to simulate filesystem operations.
@@ -128,10 +133,10 @@ pub struct MockFilesystem {
     /// [`Filesystem::read_file_bytes`](crate::Filesystem::read_file_bytes)
     /// gives and text reads refuse.
     pub(super) file_bytes: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>>,
-    /// What [`Filesystem::is_mount_root`](crate::Filesystem::is_mount_root)
-    /// says of a path; a path not here gets `None`, as from a kernel that does
-    /// not say.
-    pub(super) mount_roots: Arc<Mutex<HashMap<PathBuf, bool>>>,
+    /// What [`Filesystem::mount_root`](crate::Filesystem::mount_root)
+    /// says of a path that is no link, or the kind of the error it gives; a
+    /// path not here is one of which the kernel does not say.
+    pub(super) mount_roots: Arc<Mutex<MountRoots>>,
     #[allow(clippy::type_complexity)]
     pub(super) files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>,
     /// Device, dm name and label backing a mount point, keyed by mount point.

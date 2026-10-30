@@ -32,7 +32,7 @@ pub use noatime::{EntryType, NoatimeEntry, OpenKind, open_noatime, read_dir_noat
 /// user-home write path.
 pub(crate) use file_ops::unique_temp_name;
 
-use super::{Filesystem, MountEntry, MountSource};
+use super::{Filesystem, MountEntry, MountRoot, MountSource};
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
@@ -112,8 +112,8 @@ impl Filesystem for RealFilesystem {
         file_ops::is_symlink(path)
     }
 
-    fn is_mount_root(&self, path: &Path) -> Result<Option<bool>> {
-        file_ops::is_mount_root(path)
+    fn mount_root(&self, path: &Path) -> Result<MountRoot> {
+        file_ops::mount_root(path)
     }
 
     fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
