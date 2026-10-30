@@ -15,7 +15,9 @@
 //! [`TargetUser`] centralises that decision so every subsystem agrees on who the
 //! operator is. Resolution order, highest priority first:
 //!
-//! 1. `NAILS_TARGET_UID` — forwarded across the detached `systemd-run` boundary.
+//! 1. `NAILS_TARGET_UID` — set by NAILS itself, as root, for a process it starts
+//!    on the operator's behalf: forwarded across the detached `systemd-run`
+//!    boundary, and given by `nails gui` to the window's helper.
 //! 2. `PKEXEC_UID`, `SUDO_UID`, `DOAS_UID` — set by the privilege-escalation tool.
 //!    `PKEXEC_UID` comes first because pkexec of polkit 127 and later sets
 //!    `SUDO_UID` and `SUDO_GID` too: where both are set, pkexec started this
@@ -48,7 +50,9 @@ use std::path::{Path, PathBuf};
 // — and nowhere else in the crate — is what lets every other module drop its
 // bespoke lookup and defer to this one resolver.
 const ENV_SUDO_UID: &str = "SUDO_UID";
-const ENV_PKEXEC_UID: &str = "PKEXEC_UID";
+/// The variable pkexec names the account that asked it with: the one a
+/// process takes as the sign that pkexec started it.
+pub const ENV_PKEXEC_UID: &str = "PKEXEC_UID";
 const ENV_DOAS_UID: &str = "DOAS_UID";
 const ENV_SUDO_USER: &str = "SUDO_USER";
 const ENV_DOAS_USER: &str = "DOAS_USER";

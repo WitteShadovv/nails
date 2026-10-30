@@ -111,9 +111,12 @@ pub struct RuntimeEnv {
     pub doas_uid: Option<String>,
     /// `DOAS_USER` — operator login name set by `doas`.
     pub doas_user: Option<String>,
-    /// `NAILS_TARGET_UID` — operator uid forwarded across the detach boundary.
+    /// `NAILS_TARGET_UID` — operator uid NAILS sets for a process it starts as
+    /// root on the operator's behalf: forwarded across the detach boundary, and
+    /// given by `nails gui` to the window's helper.
     pub nails_target_uid: Option<String>,
-    /// `NAILS_TARGET_USER` — operator login name forwarded across the detach boundary.
+    /// `NAILS_TARGET_USER` — operator login name forwarded across the detach
+    /// boundary, and the account a rehearsal plant names.
     pub nails_target_user: Option<String>,
 
     /// `DISPLAY` — X11 display, forwarded to a desktop alert.
