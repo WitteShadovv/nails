@@ -45,6 +45,26 @@ EVERYTHING = {
     "sbom": True,
 }
 
+# The filters each work job of ci.yml runs on, the || terms of the job's own
+# if:. A job that loses one is skipped on a change only that filter matches, and
+# gate passes the change untested: without testdata, for one, a change to a file
+# only the Rust tests read would skip the rust job. Each needs changes alone: a
+# job that also needs another is skipped whenever that one is, whatever its own
+# filters say.
+JOB_FILTERS = {
+    "lint": ("rust", "fuzz", "side"),
+    "rust": ("rust", "testdata"),
+    "shuffle": ("rust",),
+    "side-tests": ("rust", "side"),
+    "deps": ("rust", "deps"),
+    "gui-vet": ("rust", "side", "nix"),
+    "privileged-mounts": ("rust",),
+    "nix-build": ("rust", "nix", "side"),
+    "lint-misc": ("nix", "workflows"),
+    "docs-check": ("docs",),
+    "sbom": ("sbom",),
+}
+
 
 def only(*names: str) -> dict[str, bool]:
     return {**NOTHING, **dict.fromkeys(names, True)}
@@ -65,6 +85,12 @@ def e2e_filter() -> re.Pattern[str] | None:
     return re.compile(match[1]) if match else None
 
 
+def ci_jobs() -> list[str]:
+    """The names of the jobs of ci.yml."""
+    jobs = CI_WORKFLOW.read_text(encoding="utf-8").partition("\njobs:\n")[2]
+    return re.findall(r"^  ([\w-]+):$", jobs, re.M)
+
+
 def ci_job(name: str) -> str:
     """The lines of job ``name`` in ci.yml, up to the comment or job after it."""
     jobs = CI_WORKFLOW.read_text(encoding="utf-8").partition("\njobs:\n")[2]
@@ -72,6 +98,19 @@ def ci_job(name: str) -> str:
     if match is None:
         raise AssertionError(f"ci.yml has no job {name}")
     return match[1]
+
+
+def ci_needs(name: str) -> list[str]:
+    """The jobs that job ``name`` of ci.yml needs."""
+    match = re.search(r"^ {4}needs: (.+)$", ci_job(name), re.M)
+    if match is None:
+        return []
+    return [job.strip() for job in match[1].strip("[]").split(",")]
+
+
+def ci_gated_jobs() -> list[str]:
+    """The jobs of ci.yml that gate must wait for: all but gate and those after it."""
+    return [job for job in ci_jobs() if job != "gate" and "gate" not in ci_needs(job)]
 
 
 def ci_step(job: str, step_id: str) -> str:
@@ -372,7 +411,7 @@ class E2EFilterTest(unittest.TestCase):
 
 
 class WorkflowTest(unittest.TestCase):
-    """ci.yml acts on every filter that select() sets.
+    """ci.yml acts on every filter that select() sets, and gate on every job.
 
     A filter the workflow drops, or a job that no longer reads one, passes the
     tests above and every check of the pull request: the job just never runs.
@@ -402,22 +441,49 @@ class WorkflowTest(unittest.TestCase):
         )
         self.assertCountEqual(passed_on, [(name, name) for name in changes.FILTERS])
 
+    def test_each_job_runs_on_its_filters(self) -> None:
+        # Only the job's own if: counts. Read over the whole file, the filter a
+        # job dropped would still turn up where another job, or one of the
+        # job's steps, reads it. Every job before gate but changes is a work
+        # job, whatever it needs, so none can escape the table.
+        work = [job for job in ci_gated_jobs() if job != "changes"]
+        self.assertCountEqual(work, list(JOB_FILTERS))
+        for job, filters in JOB_FILTERS.items():
+            with self.subTest(job=job):
+                self.assertEqual(ci_needs(job), ["changes"])
+                condition = re.search(r"^ {4}if: (.+)$", ci_job(job), re.M)
+                if condition is None:
+                    raise AssertionError(f"ci.yml's {job} job has no if:")
+                self.assertCountEqual(
+                    [term.strip() for term in condition[1].split("||")],
+                    [f"needs.changes.outputs.{name} == 'true'" for name in filters],
+                )
+
+    def test_gate_waits_for_every_job(self) -> None:
+        # gate never sees the result of a job it does not need, so that job
+        # could fail and gate still pass. That holds for every job but those
+        # that run after gate, whether it needs changes or not.
+        self.assertCountEqual(ci_needs("gate"), ci_gated_jobs())
+
+    def test_gate_always_runs_and_fails_on_what_it_finds(self) -> None:
+        # Without always(), gate is skipped as soon as a job it needs was
+        # skipped or failed, and a required check that was skipped counts as
+        # passed. With continue-on-error, or with its step skipped, gate passes
+        # whatever the step finds.
+        job = ci_job("gate")
+        self.assertEqual(re.findall(r"^ {4}if:(.*)$", job, re.M), [" always()"])
+        self.assertNotRegex(job, r"(?m)^ +continue-on-error:")
+        self.assertNotRegex(job, r"(?m)^ {8}if:")
+
     def test_the_jobs_read_the_filters_and_nothing_else(self) -> None:
-        # An output that changes.py does not print is empty, so a job gated on
-        # it alone would never run. A filter that no job reads gates nothing.
+        # An output that changes.py does not print is empty, so a job or a step
+        # gated on it alone would never run. A filter that no job runs on gates
+        # nothing.
         text = CI_WORKFLOW.read_text(encoding="utf-8")
         read = set(re.findall(r"\bneeds\.changes\.outputs\.(\w+)", text))
-        self.assertEqual(read, set(changes.FILTERS))
-
-    def test_the_testdata_filter_runs_the_rust_job(self) -> None:
-        # Without this clause a change to a file only the Rust tests read would
-        # skip the rust job, and gate would pass it untested.
-        condition = re.search(r"^ {4}if: (.+)$", ci_job("rust"), re.M)
-        if condition is None:
-            raise AssertionError("ci.yml's rust job has no if:")
-        terms = [term.strip() for term in condition[1].split("||")]
-        self.assertIn("needs.changes.outputs.testdata == 'true'", terms)
-        self.assertIn("needs.changes.outputs.rust == 'true'", terms)
+        self.assertLessEqual(read, set(changes.FILTERS))
+        runs_on = {name for filters in JOB_FILTERS.values() for name in filters}
+        self.assertEqual(runs_on, set(changes.FILTERS))
 
 
 def git(repo: Path, *args: str) -> str:
