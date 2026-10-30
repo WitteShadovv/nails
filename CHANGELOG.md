@@ -419,7 +419,8 @@ of this changelog for that version becomes the release notes word for word, and
   device gone by the switch has its units masked then. Entries with `nofail` stay masked. `verify`
   reports a skip drop-in left on the decoy. `nails status` lists each such unit, skipped or masked,
   with why (`required_units` in `status --json`): its device was not there, NAILS could not tell
-  what it is or pulls in, or two fstab lines for it disagree.
+  what it is or pulls in, or the fstab lines or unit files for it disagree, which `nails check` and
+  `nails activate` now warn of too.
 - An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
   reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
   left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and
