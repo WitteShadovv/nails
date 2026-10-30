@@ -279,6 +279,33 @@ fn json_rendering_carries_path_existence_config_and_sources() {
     assert!(json["config"].get("loaded_config_path").is_none());
 }
 
+/// A table the file holds is the file's, and each of its keys is the file's
+/// only where the file sets it: one key of [persona], and the empty header
+/// of [sleep_policy] that an unset leaves.
+#[test]
+fn json_sources_name_each_key_of_a_table() {
+    let file = write_config("[persona]\nmode = \"fresh-home\"\n\n[sleep_policy]\n");
+    let loaded = LoadedConfig::load(file.path()).unwrap();
+
+    let sources = &loaded.to_json().unwrap()["sources"];
+    assert_eq!(sources["persona"], "file");
+    assert_eq!(sources["persona.mode"], "file");
+    assert_eq!(sources["persona.mask_inherited"], "default");
+    assert_eq!(sources["sleep_policy"], "file");
+    assert_eq!(sources["sleep_policy.mode"], "default");
+    assert_eq!(sources["backend_watch"], "default");
+    assert_eq!(sources["backend_watch.debounce_secs"], "default");
+    // Every key of every table has one.
+    let config = &loaded.to_json().unwrap()["config"];
+    for (table, keys) in config.as_object().unwrap() {
+        for key in keys.as_object().into_iter().flat_map(serde_json::Map::keys) {
+            let key = format!("{table}.{key}");
+            assert!(sources[&key].is_string(), "{key}");
+        }
+    }
+    assert_eq!(loaded.source("persona.mode"), ValueSource::File);
+}
+
 #[test]
 fn example_config_is_valid_as_is_and_fully_uncommented() {
     let example = Config::example_config();

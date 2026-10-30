@@ -1,0 +1,1 @@
+{"v":1,"id":9,"op":{"config_edit_plan":{"set":[{"key":"persona.mode","value":"fresh-home"},{"key":"minimum_space_mb","value":2000},{"key":"show_opsec_reminders","value":false},{"key":"persona.mask_inherited","value":["dropbox","syncthing.service"]}],"unset":["nixos_flake"]}}}

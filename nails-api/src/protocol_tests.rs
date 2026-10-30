@@ -83,6 +83,28 @@ fn every_operation_round_trips_through_its_line() {
             no_hardware_config: false,
         }),
         Op::InitApply(Token { token: token() }),
+        Op::ConfigEditPlan(ConfigEditArgs {
+            set: vec![
+                SettingArg {
+                    key: "persona.mode".to_string(),
+                    value: SettingValue::Text("fresh-home".to_string()),
+                },
+                SettingArg {
+                    key: "minimum_space_mb".to_string(),
+                    value: SettingValue::Integer(2000),
+                },
+                SettingArg {
+                    key: "show_opsec_reminders".to_string(),
+                    value: SettingValue::Bool(false),
+                },
+                SettingArg {
+                    key: "persona.mask_inherited".to_string(),
+                    value: SettingValue::List(vec!["dropbox".to_string(), "*".to_string()]),
+                },
+            ],
+            unset: vec!["nixos_flake".to_string()],
+        }),
+        Op::ConfigEditApply(Token { token: token() }),
     ];
     for (id, op) in ops.into_iter().enumerate() {
         let request = Request {
@@ -124,6 +146,26 @@ fn the_wire_shapes_are_the_documented_ones() {
         Op::DiscardPlan(DiscardPlanArgs {
             target: "/home".to_string(),
             allow_decoy_storage: false,
+        })
+    );
+    let edit = decode(
+        r#"{"v":1,"id":10,"op":{"config_edit_plan":{"set":[{"key":"sleep_policy.mode","value":"block"},{"key":"backend_watch.poll_interval_secs","value":3}]}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        edit.op,
+        Op::ConfigEditPlan(ConfigEditArgs {
+            set: vec![
+                SettingArg {
+                    key: "sleep_policy.mode".to_string(),
+                    value: SettingValue::Text("block".to_string()),
+                },
+                SettingArg {
+                    key: "backend_watch.poll_interval_secs".to_string(),
+                    value: SettingValue::Integer(3),
+                },
+            ],
+            unset: Vec::new(),
         })
     );
 }
@@ -182,6 +224,19 @@ fn anything_but_exactly_a_request_is_malformed() {
         r#"{"v":1,"id":1,"op":{"check":{"overlay_only":"yes"}}}"#,
         r#"{"v":1,"id":1,"op":{"hello":{"protocol":1}}}"#,
         r#"{"v":1,"id":1,"op":"status"} {"v":1,"id":2,"op":"status"}"#,
+        // A configuration value of no type a key takes, or a change of
+        // another shape.
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":[{"key":"minimum_space_mb","value":1.5}]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":[{"key":"minimum_space_mb","value":-1}]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":[{"key":"nixos_flake","value":null}]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":[{"key":"persona","value":{"mode":"x"}}]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":[{"key":"persona.mask_inherited","value":[1]}]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":[{"key":"persona.mode"}]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":[{"key":"a","value":true,"why":1}]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"set":{"persona.mode":"fresh-home"}}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"unset":"nixos_flake"}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"unset":[],"unset":["a"]}}}"#,
+        r#"{"v":1,"id":1,"op":{"config_edit_plan":{"path":"/etc/nails.toml"}}}"#,
     ] {
         assert_eq!(code(line), ErrorCode::Malformed, "{line}");
         assert_eq!(decode(line).unwrap_err().id, None, "{line}");
@@ -251,6 +306,42 @@ fn arguments_of_the_wrong_shape_are_refused_with_the_id() {
         token_of("x").replace("discard_apply", "activate_apply"),
         token_of("x").replace("discard_apply", "deactivate_apply"),
         token_of("x").replace("discard_apply", "init_apply"),
+        token_of("x").replace("discard_apply", "config_edit_apply"),
+        // A configuration change that names no key, one twice, or a key or a
+        // value of no shape a setting has.
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"set":[],"unset":[]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"set":[{"key":"persona.mode","value":"x"}],"unset":["persona.mode"]}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"unset":["a","a"]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"unset":["Persona.mode"]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"unset":["a.b.c"]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"unset":[".mode"]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"unset":[""]}}}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"unset":["a b"]}}}"#.to_string(),
+        format!(
+            r#"{{"v":1,"id":3,"op":{{"config_edit_plan":{{"unset":["{}"]}}}}}}"#,
+            "a".repeat(MAX_KEY_BYTES + 1)
+        ),
+        format!(
+            r#"{{"v":1,"id":3,"op":{{"config_edit_plan":{{"unset":[{}]}}}}}}"#,
+            (0..=MAX_SETTINGS)
+                .map(|n| format!("\"k{n}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"set":[{"key":"nixos_flake","value":"/a\nb"}]}}}"#
+            .to_string(),
+        format!(
+            r#"{{"v":1,"id":3,"op":{{"config_edit_plan":{{"set":[{{"key":"nixos_flake","value":"{}"}}]}}}}}}"#,
+            "a".repeat(MAX_SETTING_BYTES + 1)
+        ),
+        format!(
+            r#"{{"v":1,"id":3,"op":{{"config_edit_plan":{{"set":[{{"key":"persona.mask_inherited","value":[{}]}}]}}}}}}"#,
+            vec!["\"x\""; MAX_LIST_ENTRIES + 1].join(",")
+        ),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"set":[{"key":"persona.mask_inherited","value":["a\u0000"]}]}}}"#
+            .to_string(),
     ];
     for line in &lines {
         let error = decode(line).expect_err(line);
@@ -287,6 +378,18 @@ fn arguments_of_the_right_shape_are_accepted() {
         r#"{"v":1,"id":3,"op":"recover"}"#.to_string(),
         r#"{"v":1,"id":3,"op":"rehearse_status"}"#.to_string(),
         r#"{"v":1,"id":3,"op":"rehearse_reset"}"#.to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"unset":["nixos_flake","persona.mode"]}}}"#
+            .to_string(),
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"set":[{"key":"persona.mask_inherited","value":[]}]}}}"#
+            .to_string(),
+        format!(
+            r#"{{"v":1,"id":3,"op":{{"config_edit_plan":{{"set":[{{"key":"{}","value":"{}"}}]}}}}}}"#,
+            "a".repeat(MAX_KEY_BYTES),
+            "b".repeat(MAX_SETTING_BYTES)
+        ),
+        // Which keys exist, and what each takes, is the engine's to judge.
+        r#"{"v":1,"id":3,"op":{"config_edit_plan":{"set":[{"key":"bogus","value":1}]}}}"#
+            .to_string(),
     ] {
         assert!(decode(&line).is_ok(), "{line}");
     }
@@ -301,6 +404,7 @@ fn only_an_apply_carries_a_token() {
         Op::ActivateApply(token.clone()),
         Op::DeactivateApply(token.clone()),
         Op::InitApply(token.clone()),
+        Op::ConfigEditApply(token.clone()),
     ] {
         assert_eq!(op.apply_token(), Some(token.token.as_str()), "{op:?}");
     }

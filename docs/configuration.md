@@ -61,7 +61,7 @@ in the `message` of its JSON error.
 | Command | Purpose |
 |---|---|
 | `nails config path` | Print the resolved file and whether it exists |
-| `nails config show` | Print every effective value and its source: `default`, `file`, `cli` or `derived` |
+| `nails config show` | Print every effective value and its source: `default`, `file`, `cli` or `derived` (with `--json`, also of each key of a table, as `persona.mode`) |
 | `nails config show --example` | Print a commented example that lists every key |
 | `nails config validate [PATH]` | Check a file strictly without using it |
 | `nails config set KEY VALUE...` | Set one key, keeping the file's comments and every other key |
