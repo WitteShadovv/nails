@@ -250,6 +250,7 @@ fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
         unit("srv-native.mount", "masked", "undetermined", None),
         unit("data.mount", "masked", "conflicting_lines", None),
         unit("srv-old.mount", "masked", "skip_undone", None),
+        unit("srv-pa-child.mount", "masked", "pulls_in_mount", None),
     ];
     let lines = status_lines(&active, false, plain(), &chrono::Utc).join("\n");
     for line in [
@@ -263,6 +264,8 @@ fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
          hidden systemd reads has a boot target require it, that target is not reached",
         "srv-old.mount: masked, as a drop-in of the decoy's would undo its skip; the boot target \
          that requires it is not reached",
+        "srv-pa-child.mount: masked, as its skip would pull in a decoy mount the session does \
+         not keep off; the boot target that requires it is not reached",
     ] {
         assert!(lines.contains(line), "{line}: {lines}");
     }
@@ -290,6 +293,7 @@ fn the_units_a_boot_target_requires_are_listed_with_why_in_both_forms() {
             { "unit": "srv-native.mount", "action": "masked", "reason": "undetermined" },
             { "unit": "data.mount", "action": "masked", "reason": "conflicting_lines" },
             { "unit": "srv-old.mount", "action": "masked", "reason": "skip_undone" },
+            { "unit": "srv-pa-child.mount", "action": "masked", "reason": "pulls_in_mount" },
         ])
     );
 }

@@ -1318,3 +1318,6 @@ fn a_ram_filesystem_over_a_disk_unit_s_mount_point_is_put_in_place_not_left_to_t
         [Decision::Leave { .. }]
     ));
 }
+
+#[path = "mount_units/pulls_tests.rs"]
+mod pulls_tests;

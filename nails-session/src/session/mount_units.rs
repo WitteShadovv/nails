@@ -68,10 +68,14 @@
 //! ordered after it, so they could not start while it is skipped, and are
 //! skipped for caution. Every other unit it pulls in still starts. Where
 //! NAILS cannot tell them all, the unit is masked instead, and the boot
-//! target that requires it is not reached. The generators run again in the
+//! target that requires it is not reached. So it is where one of them is a
+//! mount, swap or automount the session neither keeps off nor puts in place,
+//! the mount of a parent directory among them, which the hidden systemd
+//! would mount from the decoy's disk ([`pulls`]). The generators run again in the
 //! hidden session; what they made in the decoy is taken as what they make
 //! there.
 
+mod pulls;
 pub mod unit_dirs;
 pub mod unit_file;
 
@@ -376,16 +380,22 @@ fn skip_undone(dirs: UnitDirs<'_>, unit: &str) -> Option<String> {
 /// that act on their device or file ([`pulled_in`]), and a warning for each
 /// skip masked instead: one whose units pull in units NAILS cannot tell,
 /// any of which could act on its disk before its condition is tested
-/// ([`MaskCause::Undetermined`]), and one that a drop-in of the decoy's
-/// would undo for one of its units or of those they pull in
-/// ([`MaskCause::SkipUndone`]). A warning goes too for each unit masked
-/// because what describes it disagrees ([`MaskCause::ConflictingLines`]).
+/// ([`MaskCause::Undetermined`]), one that a drop-in of the decoy's would
+/// undo for one of its units or of those they pull in
+/// ([`MaskCause::SkipUndone`]), and one whose units pull in a mount, swap
+/// or automount that the hidden systemd would mount from the decoy's disk
+/// ([`MaskCause::PullsInMount`], [`pulls`]). A warning goes too for each
+/// unit masked because what describes it disagrees
+/// ([`MaskCause::ConflictingLines`]), and for each skipped unit that
+/// requires a unit the session masks, which keeps it, and the boot target
+/// that requires it, from starting.
 pub fn kept_off(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
     decisions: &[Decision],
 ) -> (KeptOff, Vec<String>) {
     let mut kept = policy::runtime_units(fstab, decisions);
+    let covered = covered_units(decisions);
     let mut warnings: Vec<String> = kept
         .required_masks
         .iter()
@@ -411,10 +421,14 @@ pub fn kept_off(
                     .chain(&skip.pulled)
                     .find_map(|unit| skip_undone(dirs, unit));
                 match undone {
-                    None => {
-                        kept.skips.push(skip);
-                        continue;
-                    }
+                    None => match mounted_pull(dirs, &skip, &covered, &kept.masks, fstab) {
+                        Ok(None) => {
+                            kept.skips.push(skip);
+                            continue;
+                        }
+                        Ok(Some(why)) => (why, MaskCause::PullsInMount),
+                        Err(why) => (why.to_string(), MaskCause::Undetermined),
+                    },
                     Some(why) => (why, MaskCause::SkipUndone),
                 }
             }
@@ -433,7 +447,55 @@ pub fn kept_off(
             }
         }
     }
+    for skip in &kept.skips {
+        for unit in &skip.units {
+            let Ok(pulled) = pulls::mount_pulls(dirs, unit, fstab) else {
+                continue;
+            };
+            for pull in pulled
+                .iter()
+                .filter(|pull| pull.required && kept.masks.contains(&pull.unit))
+            {
+                warnings.push(format!(
+                    "{unit} is skipped, but it requires {} ({}), which the session masks: the \
+                     hidden systemd cannot start {unit}, so the boot target that requires it is \
+                     not reached",
+                    pull.unit, pull.how
+                ));
+            }
+        }
+    }
     (kept, warnings)
+}
+
+/// Why `skip` would have the hidden systemd mount a decoy filesystem: a unit
+/// of it, or one it pulls in, pulls in a mount, swap or automount that the
+/// session neither keeps off nor puts in place ([`pulls::fate`]), given
+/// `covered`, the units the decisions keep off or put in place, and `masks`.
+/// `Ok(None)` when it pulls in none, `Err` when NAILS cannot tell what one
+/// of its units pulls in.
+fn mounted_pull(
+    dirs: UnitDirs<'_>,
+    skip: &Skip,
+    covered: &[String],
+    masks: &[String],
+    fstab: &[FstabEntry],
+) -> Result<Option<String>, &'static str> {
+    for unit in skip.units.iter().chain(&skip.pulled) {
+        for pull in pulls::mount_pulls(dirs, unit, fstab)? {
+            if skip.units.contains(&pull.unit) {
+                continue;
+            }
+            if pulls::fate(dirs, &pull.unit, covered, masks, fstab) == pulls::Fate::Mounted {
+                return Ok(Some(format!(
+                    "{unit} pulls in {} ({}), which the session does not keep off, and the hidden \
+                     systemd would mount it from the decoy's disk",
+                    pull.unit, pull.how
+                )));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The value of `key` in `section` of `unit`, with `%%` resolved: `Err` when

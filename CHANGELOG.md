@@ -416,7 +416,12 @@ of this changelog for that version becomes the release notes word for word, and
   validatefs and quota units, for caution; every other unit it pulls in still starts, and a unit
   whose pulls NAILS cannot tell is masked instead, and so is one whose skip a drop-in of the decoy's
   would undo (one of the skip's name that systemd reads in its place, or one that sorts after it and
-  resets the start conditions with an empty `Condition…=`). A skipped mount still waits for its
+  resets the start conditions with an empty `Condition…=`), and so is one whose skip would pull in a
+  mount the session neither keeps off nor puts in place, which the hidden systemd would mount from
+  the decoy's disk first: the mount of a parent directory, which systemd has every mount require
+  (also a `noauto` line's), or one its `Requires=`, `RequiresMountsFor=` or `x-systemd.requires=`
+  names. A skipped unit that requires a masked one, such as an unmounted `nofail` parent, does not
+  start, which `nails check` and `nails activate` warn of. A skipped mount still waits for its
   device, so an entry whose device is not there at activation (its node, with its device unit
   active) is masked as before, and `nails check` and `nails activate` warn that the hidden session
   will not reach its target (attach the device, or give the entry `nofail`, or install a unit file

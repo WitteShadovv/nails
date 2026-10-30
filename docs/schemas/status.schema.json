@@ -77,7 +77,7 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "required_units": {
-          "description": "The units a boot target (local-fs.target, remote-fs.target, swap.target) requires that the session keeps from starting, each with how and why. `skipped`: the unit gets a runtime drop-in whose start condition never holds, so the target is still reached (`required_at_boot`). `masked`: the unit never loads, and a target that still requires it is not reached; its device was not there at the entry or at the switch (`device_absent`, with `device`), NAILS could not tell what the unit is or what it pulls in (`undetermined`), the fstab lines or unit files the hidden systemd may read for it disagree (`conflicting_lines`), or a drop-in of the decoy's would undo its skip, one named like the skip's drop-in that systemd reads in its place or one that sorts after it and resets the start conditions (`skip_undone`). Read from the session plan in /run; empty when there is none.",
+          "description": "The units a boot target (local-fs.target, remote-fs.target, swap.target) requires that the session keeps from starting, each with how and why. `skipped`: the unit gets a runtime drop-in whose start condition never holds, so the target is still reached (`required_at_boot`). `masked`: the unit never loads, and a target that still requires it is not reached; its device was not there at the entry or at the switch (`device_absent`, with `device`), NAILS could not tell what the unit is or what it pulls in (`undetermined`), the fstab lines or unit files the hidden systemd may read for it disagree (`conflicting_lines`), or a drop-in of the decoy's would undo its skip, one named like the skip's drop-in that systemd reads in its place or one that sorts after it and resets the start conditions (`skip_undone`), or its skip would pull in a mount, swap or automount the session neither keeps off nor puts in place, such as the mount of a parent directory or one its Requires= or RequiresMountsFor= names, which the hidden systemd would mount from the decoy's disk (`pulls_in_mount`). Read from the session plan in /run; empty when there is none.",
           "type": "array",
           "items": {
             "type": "object",
@@ -93,7 +93,8 @@
                   "device_absent",
                   "undetermined",
                   "conflicting_lines",
-                  "skip_undone"
+                  "skip_undone",
+                  "pulls_in_mount"
                 ]
               },
               "device": { "type": "string", "minLength": 1 }
