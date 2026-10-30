@@ -515,12 +515,13 @@ records end up depends on the journal:
 
 Hidden-session history never reaches the decoy: every hidden shell runs inside
 the overlay and writes its history file into the upper. On the decoy,
-`nails activate` SIGKILLs the decoy's interactive shells right before it asks
-logind for the switch, keeps killing every interactive shell opened while
-logind holds the switch back (within about a tenth of a second after it
-starts, too soon to have anything to save), and kills them once more when
+`nails activate` SIGKILLs the decoy's interactive shells, the newest first,
+right before it asks logind for the switch, keeps killing every interactive
+shell opened while logind holds the switch back (within about a tenth of a
+second after it starts, too soon to have anything to save), and kills them once more when
 PID 1 holds the switch's job, so a shell that saves history on exit (bash on
-SIGHUP) never writes the activation command (see
+SIGHUP) never writes the activation command, unless a terminal multiplexer
+hangs it up itself (see **Terminal multiplexers** below and
 [bash-history-forensics.md](bash-history-forensics.md)). NAILS does
 **not** configure the decoy's own shells, and a shell that flushes history after
 every command (zsh `INC_APPEND_HISTORY`, `history -a` in `PROMPT_COMMAND`) has
@@ -538,6 +539,13 @@ history yourself so an interactive shell has nowhere to write:
 - **Boot-time enforcement.** A systemd unit that truncates any regular history
   file and re-creates the symlinks early in boot closes the gap before the first
   interactive login.
+- **Terminal multiplexers.** Leave off the options that end a session when its
+  last client goes: tmux's `destroy-unattached` and `exit-unattached`,
+  screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation
+  kills the shells the newest first, so no hangup the kernel sends as one dies
+  reaches a shell still alive, but such a multiplexer hangs up the shells in
+  its panes itself, older ones among them, as the shell that ran its last
+  client dies, and one of them can write its history first.
 
 If the decoy's home is on a wiped-on-boot tmpfs, the history file is discarded
 at power-off anyway, so these steps are defence in depth. In the decoy shell you

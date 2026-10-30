@@ -330,6 +330,11 @@ impl ProcessHandle {
         self.pid
     }
 
+    /// When the process started, in clock ticks since boot.
+    pub fn start_time(&self) -> u64 {
+        self.start_time
+    }
+
     /// Whether the process still runs (not exited, pid not reused).
     pub fn is_alive(&self) -> bool {
         // A zombie has exited: it holds no mount any more.
