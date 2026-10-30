@@ -243,7 +243,7 @@ pub fn exit_on_clap_error(error: clap::Error) -> ! {
 }
 
 /// The usage message for `command` run without the subcommand it needs, naming
-/// the ones it takes: `config needs a subcommand: path, show or validate`.
+/// the ones it takes: `config needs a subcommand: path, show, validate, set or unset`.
 fn missing_subcommand(command: &str) -> String {
     let cli = <crate::cli::Cli as clap::CommandFactory>::command();
     let parent = cli.find_subcommand(command).unwrap_or(&cli);
@@ -328,7 +328,7 @@ mod tests {
     fn a_missing_subcommand_names_the_ones_the_command_takes() {
         assert_eq!(
             missing_subcommand("config"),
-            "config needs a subcommand: path, show or validate"
+            "config needs a subcommand: path, show, validate, set or unset"
         );
         let top = missing_subcommand("nails");
         assert!(

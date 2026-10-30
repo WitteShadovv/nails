@@ -296,19 +296,21 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    it seeds the hidden NixOS layout from
    `/etc/nixos/hardware-configuration.nix`. It ends by printing the next steps.
 
-3. **Optionally review the configuration**, but not on the decoy: an editor
+3. **Optionally change the configuration**, but not on the decoy: an editor
    leaves its own traces there (swap and backup files, `~/.viminfo`, recent-file
-   lists). Every key is optional, and the template `init` writes uses the
-   defaults. Prepare `config/nails.toml` on the separate machine, before you copy
-   it to the hidden volume (`init` keeps a file that is already there), or inside
-   a hidden session as a new file that you move into place after the session, as
-   for a [binary update](docs/operator-guide.md#updating-nails):
+   lists), and so does a command line. Every key is optional, and the template
+   `init` writes uses the defaults. Inside a hidden session, `config set` and
+   `config unset` change a key in place: they keep the file's comments and every
+   other key, check the result as `config validate` does, and write nothing
+   anywhere but the configuration on the hidden volume
+   ([Changing settings](docs/configuration.md#changing-settings)). Or prepare
+   `config/nails.toml` on the separate machine, before you copy it to the hidden
+   volume (`init` keeps a file that is already there):
 
    ```bash
-   # inside a hidden session; the configuration directory is root's
-   sudoedit /mnt/data/config/nails.toml.new
-   sudo /mnt/data/nails config validate /mnt/data/config/nails.toml.new
-   sudo /mnt/data/nails --config /mnt/data/config/nails.toml.new config show   # effective values and their sources
+   # inside a hidden session
+   sudo /mnt/data/nails config set persona.mode fresh-home
+   sudo /mnt/data/nails config show   # effective values and their sources
    ```
 
    Leave `hidden_volume_root` unset to derive it from the binary's location. On

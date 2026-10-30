@@ -63,6 +63,8 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["config", "path", "--help"],
     &["config", "show", "--help"],
     &["config", "validate", "--help"],
+    &["config", "set", "--help"],
+    &["config", "unset", "--help"],
     &["completions", "--help"],
     &["transition", "--help"],
 ];
@@ -887,7 +889,7 @@ fn config_without_a_subcommand_is_the_usage_envelope_in_either_position() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         value["error"]["message"],
-        "config needs a subcommand: path, show or validate"
+        "config needs a subcommand: path, show, validate, set or unset"
     );
     assert!(output.stderr.is_empty(), "{output:?}");
 }

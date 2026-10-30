@@ -107,15 +107,28 @@ pub const CANCEL_EMERGENCY: Message = Message {
     surface: Surface::Cli,
 };
 
+/// The notice a change of the configuration stopped by a cancel prints,
+/// before the file was replaced.
+pub const CANCEL_CONFIG: Message = Message {
+    id: "config.cancelled",
+    text: "Change cancelled; nothing was written.",
+    note: "Shown when a Ctrl+C or a SIGTERM reaches `config set` or `config unset` before the \
+           new file replaced the old one, which stays as it was. A signal after that does not \
+           stop the command, which then reports the change it made. The same text is the --json \
+           error message.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
 /// The `--json` error message of a command a signal ended before it printed
 /// its result.
 pub const CANCEL_INTERRUPTED: Message = Message {
     id: "command.interrupted",
     text: "Interrupted before it finished.",
     note: "The --json error message (code `cancelled`) of a command that a Ctrl+C or a \
-           SIGTERM ended before it printed its result: status, verify, check, config, init or \
-           rehearse. The commands that only read (status, verify, config and the rehearse status \
-           view) changed nothing. An interrupted check may leave a probe file or directory on the \
+           SIGTERM ended before it printed its result: status, verify, check, the config views \
+           (path, show and validate), init or rehearse. The commands that only read (status, \
+           verify, the config views and the rehearse status view) changed nothing. An interrupted check may leave a probe file or directory on the \
            hidden volume, since its probes remove what they wrote only once they finish; init and \
            the rehearse steps that write may have done part of their work.",
     placeholders: &[],
@@ -133,5 +146,6 @@ pub const CATALOG: &[Message] = &[
     CANCEL_DEACTIVATE,
     CANCEL_DISCARD,
     CANCEL_EMERGENCY,
+    CANCEL_CONFIG,
     CANCEL_INTERRUPTED,
 ];

@@ -20,11 +20,13 @@ pub use output::{ExitStatus, OutputSettings};
 /// and OOM pressure.
 ///
 /// The mutating commands take overlays up or down and run a chain of rollback
-/// guards that a signal's default action would skip; for them we install the
-/// cancellation handlers and bias the process away from the OOM killer. Read-only
-/// commands (`status`, `verify`, `check` and its alias `activate --dry-run`,
-/// `config`) and `init` touch no live overlay, so they keep the default signal
-/// behaviour, which `--json` replaces with the cancel envelope
+/// guards that a signal's default action would skip, or replace the
+/// configuration (`config set`, `config unset`), which must either remove its
+/// new file or report the change it made; for them we install the cancellation
+/// handlers and bias the process away from the OOM killer. Read-only commands
+/// (`status`, `verify`, `check` and its alias `activate --dry-run`, the other
+/// `config` commands) and `init` touch no live overlay, so they keep the
+/// default signal behaviour, which `--json` replaces with the cancel envelope
 /// ([`interrupt::report_signals_as_cancel`]).
 fn command_is_mutating(command: &Commands) -> bool {
     match command {
@@ -32,7 +34,8 @@ fn command_is_mutating(command: &Commands) -> bool {
         Commands::Deactivate(_)
         | Commands::Emergency(_)
         | Commands::Recover(_)
-        | Commands::Discard(_) => true,
+        | Commands::Discard(_)
+        | Commands::Config(ConfigCommand::Set { .. } | ConfigCommand::Unset { .. }) => true,
         _ => false,
     }
 }

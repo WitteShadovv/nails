@@ -33,9 +33,10 @@ what you did.
 > - On the decoy you unlock and mount the hidden volume and run `nails check`
 >   and `nails activate` (once, before the first session, `nails init`; when
 >   needed, `nails recover` or `nails discard`). Do nothing else with the
->   tool there, and do not edit its configuration there either: do not read
->   `state.json`, and do not name the hidden volume, its mapper, its mount point
->   or the tool in any other command.
+>   tool there, and do not edit its configuration there either (`nails config
+>   set` belongs in the hidden session): do not read `state.json`, and do not
+>   name the hidden volume, its mapper, its mount point or the tool in any
+>   other command.
 > - Type those commands in a shell with history off — see
 >   [History off on the decoy](#history-off-on-the-decoy). Activation also kills
 >   the decoy's interactive shells, yours included, right before it starts the
@@ -1078,6 +1079,25 @@ afterwards:
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
 hardening you configure yourself.
+
+### Changing settings
+
+Change `nails.toml` here, never on the decoy, and without an editor:
+
+```bash
+sudo <hidden-root>/nails config set persona.mode fresh-home
+sudo <hidden-root>/nails config unset nixos_flake
+sudo <hidden-root>/nails config show   # every effective value and its source
+```
+
+`config set` and `config unset` keep the file's comments and every other key,
+check the result as `config validate` does and replace the file at once, only
+when it lies on the hidden volume `nails` runs from. The backend watcher and the
+sleep guard of the running session keep the settings it started with, so a
+change reaches them at the next activation. The hidden volume root and the
+state file stay where the session recorded them: the way back reads the
+session's state there.
+[Changing settings](configuration.md#changing-settings) has the rules.
 
 ### Changing the hidden configuration
 

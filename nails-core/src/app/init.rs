@@ -440,19 +440,21 @@ fn write_state_file(base: &Path) -> Result<InitItem> {
 ///
 /// Init runs on the decoy, so none of them edits a file there: an editor
 /// leaves its own traces (swap and backup files, `~/.viminfo`, recent-file
-/// lists). The binary is not mentioned: the documented setup runs init from
-/// `<root>/nails` already, and the `binary-location` check warns at `check`
-/// and `activate` when it runs from anywhere else.
+/// lists). A setting changes inside a hidden session, through `config set`,
+/// which keeps the file's comments. The binary is not mentioned otherwise:
+/// the documented setup runs init from `<root>/nails` already, and the
+/// `binary-location` check warns at `check` and `activate` when it runs from
+/// anywhere else.
 pub fn next_steps(base: &Path) -> Vec<String> {
-    use crate::next_step::{NextStep, sudo_line_with};
+    use crate::next_step::{NextStep, shell_word, sudo_line_with};
     let config = base.join("config").join(CONFIG_FILE_NAME);
     let binary = base.join("nails");
     vec![
         format!(
-            "optionally change the configuration, but not on the decoy: prepare {config} on \
-             another machine, or write {config}.new inside a hidden session and move it into \
-             place afterwards",
-            config = config.display()
+            "optionally change a setting, but not on the decoy: prepare {config} on another \
+             machine, or inside a hidden session run sudo {binary} config set <key> <value>",
+            config = config.display(),
+            binary = shell_word(binary.as_os_str())
         ),
         format!(
             "check readiness, leaving no file or mount behind: {}",
