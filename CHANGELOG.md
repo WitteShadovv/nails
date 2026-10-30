@@ -362,6 +362,32 @@ of this changelog for that version becomes the release notes word for word, and
   `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
   no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line. `nails check` does not test this yet; see
   docs/decoy-requirements.md.
+- `--nixos-flake` and `nixos_flake` refuse the decoy's own `/etc/nixos`, and now every directory
+  below it, in more spellings, and compare directories by what they are, their device and inode, so
+  a link and a bind mount of `/etc/nixos` (impermanence's `/persist/etc/nixos`) count. The new
+  spellings: `hg+file:` and every other URL whose transport is a local file, with no authority or
+  an empty one, percent-encoded (`path:/etc/%6Eixos`, a `dir` parameter `dir=%6Eixos`), with a
+  `dir` parameter that starts with a `/` (`path:/etc?dir=/nixos`, which Nix appends to the path),
+  through the repository's `.git` directory (`git+file:///etc/nixos/.git`,
+  `git+file:///etc/.git?dir=nixos`, which Nix fetches from the repository the directory belongs
+  to), with `.` or `..` components, both as the kernel resolves them after the links before them
+  (`/var/run/../etc/nixos`, as Nix reads a path and `git+file:`) and by the text even where a
+  directory on the way does not exist (`/etc/nixos/x/..`, as Nix reads `path:`), and the path
+  relative to the working directory that Nix reads a reference it cannot parse as a URL and an
+  input as (`git+file://../../etc/nixos`, `github:/../../etc/nixos`). The `nixos-build-target`
+  check now passes only what NAILS can tell how Nix reads: a path or a `path:` reference, a URL
+  whose transport is a local file with no authority, and a plain remote reference
+  (`github:owner/repo`, `git+https://example.org/repo`). Anything else fails it whatever it names:
+  a local URL with an authority, a reference such as `a_b:x` or `github:/srv/cfg`, a remote URL
+  with a trailing slash, a percent-escape, an IPv6 host or a `user:token@`, and a registry alias
+  such as `flake:nixos-config`, as the name alone already did. `<hidden-root>/nixos` counts as the
+  decoy's flake the same way, as a link to `/etc/nixos` or a directory below it or as a bind mount
+  of it, where only a link to `/etc/nixos` itself counted. An error looking at
+  `/etc/nixos/flake.nix` or `<hidden-root>/nixos/flake.nix`, other than its absence, refuses too,
+  in discovery as for a named reference, where it passed as "no flake". A git directory of its own
+  that holds the decoy's flake (`git+file:///var/lib/cfg.git`) and `git+ssh://localhost/etc/nixos`,
+  through an SSH login to the machine itself, are not recognised. Name the flake by its absolute
+  path or a plain URL.
 
 ### Fixed
 

@@ -263,6 +263,7 @@ fn test_auto_discovery_refuses_the_decoy_flake_with_instructions() {
 #[test]
 fn a_hidden_flake_linked_to_the_decoy_flake_is_refused_with_instructions() {
     let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/etc/nixos", true);
     fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
     fs.mock_set_path_exists("/mnt/data/nixos/flake.nix", true);
     fs.create_symlink(Path::new("/etc/nixos"), Path::new("/mnt/data/nixos"))
@@ -277,14 +278,15 @@ fn a_hidden_flake_linked_to_the_decoy_flake_is_refused_with_instructions() {
     .run(&fs)
     .unwrap();
     assert!(
-        result
-            .message()
-            .starts_with("/mnt/data/nixos is a link to /etc/nixos, the decoy's own flake"),
+        result.message().starts_with(
+            "/mnt/data/nixos is /etc/nixos or a directory below it, the decoy's own flake"
+        ),
         "{result:?}"
     );
     assert!(
         result.remediation().is_some_and(|fix| fix.starts_with(
-            "Remove the link /mnt/data/nixos. Write a self-contained flake in /mnt/data/nixos"
+            "Remove the link or the bind mount /mnt/data/nixos. Write a self-contained flake in \
+             /mnt/data/nixos"
         )),
         "{result:?}"
     );
