@@ -26,12 +26,12 @@
           "minLength": 1
         },
         "filesystems": {
-          "description": "What happens to each decoy filesystem in the hidden root (read-only, overlaid, masked).",
+          "description": "What happens to each decoy filesystem and swap in the hidden root (read-only, overlaid, masked, skipped), each with why where it is kept off.",
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
         "masked_units": {
-          "description": "The decoy units masked in the hidden root: swap, decoy filesystems it does not mount, and the units that fail or do nothing there (the boot-loader units, systemd-remount-fs.service, systemd-growfs-root.service). The generator masks are not listed.",
+          "description": "The decoy units masked in the hidden root: the swap and the decoy filesystems it keeps off where no boot target requires them, or where it cannot skip them, and the units that fail or do nothing there (the boot-loader units, systemd-remount-fs.service, systemd-growfs-root.service). A unit a boot target requires that is skipped is not masked and is not listed here: filesystems names it as skipped, and status --json lists it in required_units. The generator masks are not listed.",
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
