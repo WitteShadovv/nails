@@ -283,6 +283,18 @@ pub fn pulled_in(dirs: UnitDirs<'_>, name: &str) -> Result<Vec<String>, &'static
     Ok(units)
 }
 
+/// The warning for `unit`, which a boot target requires and which is masked
+/// because what describes it disagrees ([`MaskCause::ConflictingLines`]).
+fn conflict_warning(unit: &str) -> String {
+    format!(
+        "{unit} is masked rather than skipped, as the fstab lines or unit files that describe it \
+         disagree (one has a boot target require it and another does not, or they name two \
+         devices): where the one the hidden systemd reads has a target require it, the hidden \
+         session will not reach that target, and the units only that target pulls in will not \
+         start there. Make them agree before activating"
+    )
+}
+
 /// What the hidden session keeps from starting for `fstab` and the
 /// `decisions` made for it and for the units outside it
 /// ([`policy::runtime_units`]), each skip with the units its units pull in
@@ -290,13 +302,20 @@ pub fn pulled_in(dirs: UnitDirs<'_>, name: &str) -> Result<Vec<String>, &'static
 /// skip masked instead: one whose units pull in units NAILS cannot tell,
 /// any of which could act on its disk before its condition is tested. Such a
 /// skip's units are recorded as masked for that ([`MaskCause::Undetermined`]).
+/// A warning goes too for each unit masked because what describes it
+/// disagrees ([`MaskCause::ConflictingLines`]).
 pub fn kept_off(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
     decisions: &[Decision],
 ) -> (KeptOff, Vec<String>) {
     let mut kept = policy::runtime_units(fstab, decisions);
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = kept
+        .required_masks
+        .iter()
+        .filter(|mask| mask.cause == MaskCause::ConflictingLines)
+        .map(|mask| conflict_warning(&mask.unit))
+        .collect();
     for mut skip in std::mem::take(&mut kept.skips) {
         let pulled: Result<Vec<Vec<String>>, &str> = skip
             .units

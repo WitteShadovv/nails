@@ -24,7 +24,9 @@ fn required_unit_line(unit: &RequiredUnitView) -> String {
         "undetermined" => {
             format!("masked, as NAILS could not tell what it is or pulls in; {UNREACHED}")
         }
-        _ => "masked, as the fstab lines for it disagree".to_string(),
+        _ => "masked, as the fstab lines or unit files for it disagree; where the one the hidden \
+              systemd reads has a boot target require it, that target is not reached"
+            .to_string(),
     }
 }
 
