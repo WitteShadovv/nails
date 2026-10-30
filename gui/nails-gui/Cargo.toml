@@ -118,3 +118,7 @@ required-features = ["testing"]
 [[test]]
 name = "emergency_wired"
 required-features = ["testing"]
+
+[[test]]
+name = "switch"
+required-features = ["testing"]
