@@ -296,6 +296,33 @@ fn the_offline_update_and_domain_rows_say_how_they_are_caught() {
 }
 
 #[test]
+fn the_locate_database_row_says_how_it_is_caught() {
+    // An updatedb that would list the hidden volume refuses activation
+    // through its own check, which no flag lifts; verify notes a database it
+    // finds, which may predate the fix.
+    let row = class("locate-database").expect("the locate-database row");
+    assert_eq!(row.kind, ResidueKind::Session);
+    assert_eq!(row.platforms, Platforms::ALL);
+    assert_eq!(row.preflight, Probe::Check("locate-database"));
+    assert!(row.preflight_blocks);
+    let databases: &[&str] = &[
+        "/var/lib/plocate/plocate.db",
+        "/var/lib/mlocate/mlocate.db",
+        "/var/cache/locatedb",
+    ];
+    assert_eq!(row.channel, Channel::Paths(databases));
+    assert_eq!(
+        row.verify,
+        Probe::Paths {
+            paths: databases,
+            severity: ProbeSeverity::Info,
+        }
+    );
+    assert_eq!(row.doc_anchor, "decoy-requirements.md#the-locate-database");
+    assert!(!row.residual);
+}
+
+#[test]
 fn sync_rewrites_only_marked_blocks() {
     let text = "intro\n<!-- residue-catalog:begin residual -->\nstale\n\
                 <!-- residue-catalog:end residual -->\noutro\n";
