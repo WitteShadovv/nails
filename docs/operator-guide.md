@@ -258,7 +258,9 @@ Keep all of it `root`-owned on the hidden volume.
    activating and `recover` leaves it alone, and the decoy's desktop runs on,
    so activation keeps killing every interactive shell opened meanwhile
    (within about a tenth of a second after it starts), and kills them once
-   more when PID 1 holds the job. When logind refuses the soft-reboot, or
+   more when PID 1 holds the job. A terminal you open on the decoy in that
+   time closes again as soon as its shell is killed. When logind refuses
+   the soft-reboot, or
    drops it (`shutdown -c`), or PID 1 refuses it when logind's delay ends,
    nothing is queued: activation fails with the reason and removes everything
    it built. A soft-reboot dropped or refused that late was refused after
