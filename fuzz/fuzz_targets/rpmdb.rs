@@ -13,13 +13,16 @@
 //! - a database read twice gives the same packages, and read through the
 //!   filesystem (in pieces) the same as from memory;
 //! - its packages judged against themselves follow, and judged against no
-//!   package, with every difference a hidden session's own, follow too.
+//!   package, with every difference a hidden session's own, follow too;
+//! - each directory its packages record, resolved through the links they
+//!   record, is a path shorter than `PATH_MAX` with no link on its way: it
+//!   resolves to itself.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use nails_base::MockFilesystem;
-use nails_base::packages::rpm::{self, Files, parse_database, parse_header};
+use nails_base::packages::rpm::{self, Files, Links, parse_database, parse_header};
 use nails_core::session::package_drift::{Verdict, judge_rpm, rpm_differing};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -74,4 +77,14 @@ fuzz_target!(|data: &[u8]| {
         judge_rpm(&packages, &[], &every),
         Verdict::Follows { .. }
     ));
+
+    let Ok(links) = Links::of(&packages, &mut rpm::Budget::default()) else {
+        return;
+    };
+    for dir in packages.iter().flat_map(|package| &package.dirs) {
+        if let Ok(path) = links.resolve(dir) {
+            assert!(path.len() < rpm::PATH_MAX, "{path}");
+            assert_eq!(links.resolve(&path).as_ref(), Ok(&path), "{dir}");
+        }
+    }
 });
