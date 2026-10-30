@@ -43,8 +43,11 @@
 //!   or deletes, those files in the upper. So a package one of whose own
 //!   files ([`rpm::File::is_own`]: no directory, configuration file or ghost)
 //!   the upper holds or deleted, by the record of either side, is one a
-//!   hidden session changed. The public keys rpm records as `gpg-pubkey`
-//!   packages install no file and are left out.
+//!   hidden session changed. Each file is looked up where rpm installed it,
+//!   through the directory links the records give ([`rpm::Links`]): Fedora
+//!   records a kernel's modules below `/lib`, a link to `usr/lib`. The public
+//!   keys rpm records as `gpg-pubkey` packages install no file and are left
+//!   out.
 //!
 //! The check only warns, never refuses: a package a hidden session installs
 //! on purpose is its own business, and the warning says what drifted and how

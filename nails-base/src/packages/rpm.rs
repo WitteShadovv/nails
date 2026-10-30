@@ -18,8 +18,8 @@
 //! and the log through the [`Filesystem`] seam, and of each header the tags
 //! it judges by: the package's name, epoch, version, release and
 //! architecture, and the files it installed (their paths, flags, modes and
-//! states). A header it cannot read makes the database unreadable: rpm itself
-//! would not trust such a database either.
+//! states, and where its symbolic links point). A header it cannot read makes
+//! the database unreadable: rpm itself would not trust such a database either.
 //!
 //! The database is read one row at a time, and of each row only the package
 //! is kept, within a [`Budget`] of memory that the packages of both databases
@@ -29,12 +29,14 @@
 //! hold does: none of them is one rpm keeps.
 
 mod header;
+mod links;
 
 use super::sqlite::{self, Database, Pages, Value};
 use crate::{Filesystem, NailsError, Result};
 use header::HEADER_MAX;
 #[cfg(test)]
 use header::{kind, tag};
+pub use links::{Links, Unresolved};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
@@ -72,9 +74,17 @@ pub const FILE_LIMIT: u64 = 4 << 30;
 const ROW_MAX: usize = HEADER_MAX + 16;
 
 /// The memory the packages of one judgement's two databases may take, 256
-/// MiB: a desktop's database lists a few hundred thousand files, which take
-/// some tens of MiB here, about 64 bytes each.
+/// MiB, with the links they record and the paths resolved through them: a
+/// desktop's database lists a few hundred thousand files, which take some
+/// tens of MiB here, about 64 bytes each.
 pub const KEPT_LIMIT: usize = 256 << 20;
+
+/// The size a path may not reach on Linux, its closing NUL counted
+/// (`PATH_MAX`): no lookup takes a path that long and no link holds a target
+/// that long. A header that records a directory, a file's path or a link's
+/// target that long is refused, and a path that grows that long as its links
+/// are followed cannot be resolved ([`Unresolved`]).
+pub const PATH_MAX: usize = 4096;
 
 /// A file's flag: a configuration file (`RPMFILE_CONFIG`, bit 0).
 pub const CONFIG: u32 = 0x01;
@@ -84,9 +94,11 @@ pub const GHOST: u32 = 0x40;
 /// A file's state: installed by the package and still its own
 /// (`RPMFILE_STATE_NORMAL`).
 pub const NORMAL: u8 = 0;
-/// The type bits of a file's mode, and those of a directory.
+/// The type bits of a file's mode, and those of a directory and of a
+/// symbolic link.
 const S_IFMT: u16 = 0o170_000;
 const S_IFDIR: u16 = 0o040_000;
+const S_IFLNK: u16 = 0o120_000;
 
 /// What is known of rpm's database without reading it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +111,9 @@ pub struct Stamp {
 
 /// What the packages read from rpm's databases may still take in memory:
 /// what a package keeps is taken from it before it is copied out of its
-/// header, each string as the allocator holds it.
+/// header, each string as the allocator holds it, and so is what is kept of
+/// the links the packages record ([`Links::of`]) and of the paths resolved
+/// through them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
     /// What it started with, in bytes.
@@ -123,7 +137,7 @@ impl Budget {
     }
 
     /// Take `bytes` from it, or say that the packages need more.
-    fn take(&mut self, bytes: usize) -> std::result::Result<(), String> {
+    pub fn take(&mut self, bytes: usize) -> std::result::Result<(), String> {
         self.left = self.left.checked_sub(bytes).ok_or_else(|| {
             format!(
                 "packages that need more than the {} bytes of memory NAILS keeps for rpm's \
@@ -143,7 +157,7 @@ impl Budget {
     /// About what the allocator holds for a string of `len` bytes: its bytes
     /// and a word of its own, rounded up to sixteen. An empty string holds
     /// nothing.
-    fn allocation(len: usize) -> usize {
+    pub fn allocation(len: usize) -> usize {
         if len == 0 {
             0
         } else {
@@ -198,6 +212,11 @@ impl File {
             && self.mode & S_IFMT != S_IFDIR
             && self.state == NORMAL
     }
+
+    /// Whether it is a symbolic link.
+    pub fn is_link(&self) -> bool {
+        self.mode & S_IFMT == S_IFLNK
+    }
 }
 
 /// One package rpm's database records.
@@ -218,6 +237,9 @@ pub struct Package {
     pub dirs: Vec<Box<str>>,
     /// Its files.
     pub files: Vec<File>,
+    /// Where its symbolic links point, as its header records it, each by the
+    /// index of the link among its [`files`](Self::files).
+    pub links: Vec<(u32, Box<str>)>,
 }
 
 impl Package {

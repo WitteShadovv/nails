@@ -527,3 +527,323 @@ fn a_database_or_a_log_larger_than_rpm_keeps_is_refused_unread() {
         );
     }
 }
+
+/// rpm's own databases of the links fixtures: Fedora's directory links, and
+/// the kernel's modules recorded through them.
+const LINKS_DECOY: &[u8] = include_bytes!("fixtures/rpmdb-links-decoy.sqlite");
+const LINKS_HIDDEN: &[u8] = include_bytes!("fixtures/rpmdb-links-hidden.sqlite");
+
+/// The kernel's modules of version `version`, recorded below /lib.
+fn modules(version: &str) -> String {
+    format!("/lib/modules/{version}-200.fc44.x86_64/kernel/drivers/nails/")
+}
+
+#[test]
+fn the_links_a_package_installed_are_read_with_their_targets() {
+    let decoy = parse_database(LINKS_DECOY, None).unwrap();
+    let layout = decoy
+        .iter()
+        .find(|package| package.name == "filesystem")
+        .unwrap();
+    let links: Vec<(String, &str)> = layout
+        .links
+        .iter()
+        .map(|(index, target)| (layout.path(&layout.files[*index as usize]), &**target))
+        .collect();
+    assert_eq!(
+        links,
+        [
+            ("/bin", "usr/bin"),
+            ("/lib", "usr/lib"),
+            ("/lib64", "usr/lib64"),
+            ("/sbin", "usr/sbin"),
+            ("/var/run", "../run"),
+        ]
+        .map(|(path, target)| (path.to_string(), target))
+    );
+    // A link is a file of its package's own; a directory is not.
+    assert!(
+        layout
+            .files
+            .iter()
+            .filter(|file| file.is_link())
+            .all(File::is_own)
+    );
+    let links = links_of(&decoy);
+    assert_eq!(
+        links.resolve(&modules("6.17.1")).as_deref(),
+        Ok("/usr/lib/modules/6.17.1-200.fc44.x86_64/kernel/drivers/nails")
+    );
+    assert_eq!(links.resolve("/var/run/lock").as_deref(), Ok("/run/lock"));
+    // The modules of hidden sessions' kernel, as rpm recorded them.
+    let hidden = parse_database(LINKS_HIDDEN, None).unwrap();
+    let kernel = hidden
+        .iter()
+        .find(|package| package.name == "kernel-modules")
+        .unwrap();
+    assert_eq!(kernel.version, "6.18.0");
+    let paths: Vec<String> = kernel
+        .files
+        .iter()
+        .filter(|file| file.is_own())
+        .map(|file| kernel.path(file))
+        .collect();
+    assert_eq!(paths, [format!("{}nails.ko.xz", modules("6.18.0"))]);
+}
+
+/// A package with the symbolic links `links`, each `(path, target)`, and the
+/// `flags` and `state` of each.
+fn linking(links: &[(&str, &str)], flags: u32, state: u8) -> Package {
+    let mut package = Package {
+        name: "layout".to_string(),
+        arch: Some("noarch".to_string()),
+        epoch: None,
+        version: "1".to_string(),
+        release: "1".to_string(),
+        dirs: Vec::new(),
+        files: Vec::new(),
+        links: Vec::new(),
+    };
+    for (path, target) in links {
+        let (dir, name) = path.split_at(path.rfind('/').unwrap() + 1);
+        package.dirs.push(dir.into());
+        package
+            .links
+            .push((package.files.len() as u32, (*target).into()));
+        package.files.push(File {
+            dir: package.dirs.len() as u32 - 1,
+            name: name.into(),
+            flags,
+            mode: 0o120_777,
+            state,
+        });
+    }
+    package
+}
+
+/// The links `packages` installed, within a budget of [`KEPT_LIMIT`].
+fn links_of<'a>(packages: impl IntoIterator<Item = &'a Package>) -> Links {
+    Links::of(packages, &mut Budget::default()).unwrap()
+}
+
+#[test]
+fn a_path_is_resolved_through_the_links_as_the_kernel_resolves_it() {
+    let links = links_of(&[linking(
+        &[
+            ("/sbin", "usr/sbin"),
+            ("/usr/sbin", "bin"),
+            ("/opt/app", "/srv/app-1.2"),
+            ("/srv/app-1.2/data", "../../var/lib/app"),
+        ],
+        0,
+        NORMAL,
+    )]);
+    for (path, resolved) in [
+        // A relative target from the link's own directory, a chain of two.
+        ("/sbin/ip", "/usr/bin/ip"),
+        // An absolute target from the root, then a relative one with `..`.
+        ("/opt/app/data/state", "/var/lib/app/state"),
+        ("/usr/./lib/../share/", "/usr/share"),
+        ("/", "/"),
+        ("/../etc", "/etc"),
+    ] {
+        assert_eq!(links.resolve(path).as_deref(), Ok(resolved), "{path}");
+    }
+    // A relative path is left as it is, and links in a loop lead nowhere.
+    assert_eq!(links.resolve("usr/bin").as_deref(), Ok("usr/bin"));
+    let looped = links_of(&[linking(&[("/a", "b"), ("/b", "a")], 0, NORMAL)]);
+    assert_eq!(looped.resolve("/a/file"), Err(Unresolved::Loop));
+    // A ghost and a link rpm did not install count for nothing, and of two
+    // packages that record a link at one path the first counts.
+    let first = linking(&[("/lib", "usr/lib")], 0, NORMAL);
+    let ghost = linking(&[("/lib", "elsewhere")], GHOST, NORMAL);
+    let skipped = linking(&[("/lib", "elsewhere")], 0, 2);
+    assert_eq!(
+        links_of([&ghost, &skipped]).resolve("/lib/x").as_deref(),
+        Ok("/lib/x")
+    );
+    assert_eq!(
+        links_of([&first, &ghost]).resolve("/lib/x").as_deref(),
+        Ok("/usr/lib/x")
+    );
+    let second = linking(&[("/lib", "usr/lib32")], 0, NORMAL);
+    assert_eq!(
+        links_of([&first, &second]).resolve("/lib/x").as_deref(),
+        Ok("/usr/lib/x")
+    );
+}
+
+#[test]
+fn link_targets_not_one_for_each_file_are_refused() {
+    let header = alpha();
+    let linktos = entry_of(&header, tag::FILELINKTOS);
+    let error = parse_header(&with(&header, 8 + 16 * linktos + 12, 1)).unwrap_err();
+    assert_eq!(error, "tag 1036 has not one value per file");
+}
+
+#[test]
+fn a_path_longer_than_a_path_can_be_is_refused() {
+    let header = |dir: &str, name: &str, target: Option<&str>| {
+        let mut entries = vec![
+            (tag::NAME, kind::STRING, 1, string_data(&["long"])),
+            (tag::VERSION, kind::STRING, 1, string_data(&["1"])),
+            (tag::RELEASE, kind::STRING, 1, string_data(&["1"])),
+            (tag::DIRNAMES, kind::STRING_ARRAY, 1, string_data(&[dir])),
+            (tag::BASENAMES, kind::STRING_ARRAY, 1, string_data(&[name])),
+            (tag::DIRINDEXES, kind::INT32, 1, 0u32.to_be_bytes().to_vec()),
+        ];
+        if let Some(target) = target {
+            entries.push((
+                tag::FILEMODES,
+                kind::INT16,
+                1,
+                0o120_777u16.to_be_bytes().to_vec(),
+            ));
+            entries.push((
+                tag::FILELINKTOS,
+                kind::STRING_ARRAY,
+                1,
+                string_data(&[target]),
+            ));
+        }
+        parse_header(&build(&entries))
+    };
+    let dir = |len: usize| format!("/{}/", "d".repeat(len - 2));
+    // The longest a path can be, and a byte more.
+    assert!(header(&dir(4000), &"n".repeat(95), None).is_ok());
+    for (header, what) in [
+        (header(&dir(4096), "n", None), "a directory"),
+        (header(&dir(4000), &"n".repeat(96), None), "a file's path"),
+        (
+            header("/", "link", Some(&"t".repeat(4096))),
+            "a link's target",
+        ),
+    ] {
+        assert_eq!(
+            header.unwrap_err(),
+            format!("{what} of 4096 bytes or more, longer than a path can be")
+        );
+    }
+    assert!(header("/", "link", Some(&"t".repeat(4095))).is_ok());
+    // A target of a file that is no link is none NAILS keeps.
+    let mut entries = vec![(tag::NAME, kind::STRING, 1, string_data(&["plain"]))];
+    entries.extend([
+        (tag::VERSION, kind::STRING, 1, string_data(&["1"])),
+        (tag::RELEASE, kind::STRING, 1, string_data(&["1"])),
+        (
+            tag::OLDFILENAMES,
+            kind::STRING_ARRAY,
+            1,
+            string_data(&[dir(4097).as_str()]),
+        ),
+    ]);
+    assert_eq!(
+        parse_header(&build(&entries)).unwrap_err(),
+        "a file's path of 4096 bytes or more, longer than a path can be"
+    );
+}
+
+/// A package of `links` symbolic links, each to `target`, all in one
+/// directory of `dir` bytes.
+fn many_links(dir: usize, links: usize, target: &str) -> Package {
+    let names: Vec<String> = (0..links).map(|i| format!("{i:x}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let dir = format!("/{}/", "d".repeat(dir - 2));
+    parse_header(&build(&[
+        (tag::NAME, kind::STRING, 1, string_data(&["wide"])),
+        (tag::VERSION, kind::STRING, 1, string_data(&["1"])),
+        (tag::RELEASE, kind::STRING, 1, string_data(&["1"])),
+        (
+            tag::DIRNAMES,
+            kind::STRING_ARRAY,
+            1,
+            string_data(&[dir.as_str()]),
+        ),
+        (
+            tag::BASENAMES,
+            kind::STRING_ARRAY,
+            links,
+            string_data(&names),
+        ),
+        (tag::DIRINDEXES, kind::INT8, links, vec![0; links]),
+        (
+            tag::FILEMODES,
+            kind::INT16,
+            links,
+            0o120_777u16.to_be_bytes().repeat(links),
+        ),
+        (
+            tag::FILELINKTOS,
+            kind::STRING_ARRAY,
+            links,
+            string_data(&vec![target; links]),
+        ),
+    ]))
+    .unwrap()
+}
+
+#[test]
+fn the_links_keep_each_name_once_within_the_budget() {
+    // 50000 links in one directory of 4000 bytes: their paths whole would
+    // take 200 MB, the names on their way take a few MB.
+    let package = many_links(4000, 50_000, "t");
+    let mut budget = Budget::default();
+    let links = Links::of([&package], &mut budget).unwrap();
+    let taken = KEPT_LIMIT - budget.left();
+    assert!((1 << 20..16 << 20).contains(&taken), "{taken}");
+    let dir = &package.dirs[0];
+    assert_eq!(
+        links.resolve(&format!("{dir}1f")).as_deref(),
+        Ok(format!("{dir}t").as_str())
+    );
+    // A budget they do not fit refuses them.
+    let error = Links::of([&package], &mut Budget::new(1 << 20)).unwrap_err();
+    assert!(error.contains("more than the 1048576 bytes"), "{error}");
+}
+
+#[test]
+fn a_path_that_grows_too_long_or_loops_through_its_links_cannot_be_resolved() {
+    // A path of two thousand names, none a link.
+    let deep = format!("/{}", "a/".repeat(2000));
+    let none = Links::default();
+    assert_eq!(
+        none.resolve(&deep).as_deref(),
+        Ok(deep.trim_end_matches('/'))
+    );
+    assert_eq!(
+        none.resolve(&format!("{deep}{}", "a".repeat(100))),
+        Err(Unresolved::TooLong)
+    );
+    // A link to itself and two thousand names more, followed again at each
+    // turn: it grows past what a path can be long before it loops.
+    let target = format!("/x{}", "/a".repeat(2000));
+    let looped = links_of(&[linking(&[("/x", target.as_str())], 0, NORMAL)]);
+    assert_eq!(looped.resolve("/x/f"), Err(Unresolved::TooLong));
+    // A link to a name of 3000 bytes, below which lies one of 2000.
+    let long = links_of(&[linking(&[("/l", "b".repeat(3000).as_str())], 0, NORMAL)]);
+    assert!(long.resolve(&format!("/l/{}", "c".repeat(1000))).is_ok());
+    assert_eq!(
+        long.resolve(&format!("/l/{}", "c".repeat(2000))),
+        Err(Unresolved::TooLong)
+    );
+    // Forty links on the way are followed, a forty-first is a loop.
+    let chain: Vec<(String, String)> = (0..41)
+        .map(|i| (format!("/l{i}"), format!("l{}", i + 1)))
+        .collect();
+    let chain: Vec<(&str, &str)> = chain
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let chained = links_of(&[linking(&chain[..40], 0, NORMAL)]);
+    assert_eq!(chained.resolve("/l0/f").as_deref(), Ok("/l40/f"));
+    let chained = links_of(&[linking(&chain, 0, NORMAL)]);
+    assert_eq!(chained.resolve("/l0/f"), Err(Unresolved::Loop));
+    assert_eq!(
+        Unresolved::TooLong.to_string(),
+        "the links on its way lead to a path of 4096 bytes or more"
+    );
+    assert_eq!(
+        Unresolved::Loop.to_string(),
+        "the links on its way make a loop"
+    );
+}

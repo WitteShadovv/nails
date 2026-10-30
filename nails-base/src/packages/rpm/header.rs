@@ -8,9 +8,11 @@
 //! and only what [`Package`] keeps is copied out, each piece taken from a
 //! [`Budget`] before it is. A file's path is its directory and its name, the
 //! directory kept once for all of its files, as the header keeps it: one
-//! header of a few hundred KiB lists hundreds of thousands of files.
+//! header of a few hundred KiB lists hundreds of thousands of files. A
+//! directory, a file's path or a link's target of [`PATH_MAX`] bytes or more
+//! is none a system holds, and the header is refused.
 
-use super::{Budget, File, Package};
+use super::{Budget, File, PATH_MAX, Package};
 use std::collections::BTreeMap;
 
 /// The most index entries and data bytes rpm allows a header
@@ -33,6 +35,7 @@ pub(super) mod tag {
     pub const OLDFILENAMES: u32 = 1027;
     pub const FILESTATES: u32 = 1029;
     pub const FILEMODES: u32 = 1030;
+    pub const FILELINKTOS: u32 = 1036;
     pub const FILEFLAGS: u32 = 1037;
     pub const DIRINDEXES: u32 = 1116;
     pub const BASENAMES: u32 = 1117;
@@ -142,6 +145,7 @@ impl Integers<'_> {
 struct Listing {
     dirs: Vec<Box<str>>,
     files: Vec<File>,
+    links: Vec<(u32, Box<str>)>,
 }
 
 impl<'a> Header<'a> {
@@ -249,8 +253,8 @@ impl<'a> Header<'a> {
 
     /// The files: each one's directory and name, with its flags, mode and
     /// state, which a header without them gives as none, a plain file and
-    /// [`NORMAL`](super::NORMAL). What is kept is taken from `budget` before
-    /// it is copied out.
+    /// [`NORMAL`](super::NORMAL), and where each symbolic link points. What
+    /// is kept is taken from `budget` before it is copied out.
     fn files(&self, budget: &mut Budget) -> std::result::Result<Listing, String> {
         let mut listing = Listing::default();
         match self.strings(tag::BASENAMES)? {
@@ -265,7 +269,11 @@ impl<'a> Header<'a> {
                     budget.take(dirnames.len() * size_of::<Box<str>>())?;
                     listing.dirs.reserve_exact(dirnames.len());
                     for dir in dirnames {
-                        listing.dirs.push(budget.copy(dir?)?);
+                        let dir = dir?;
+                        if dir.len() >= PATH_MAX {
+                            return bad(too_long("a directory"));
+                        }
+                        listing.dirs.push(budget.copy(dir)?);
                     }
                 }
                 budget.take(count * size_of::<File>())?;
@@ -273,8 +281,11 @@ impl<'a> Header<'a> {
                 for (i, name) in basenames.enumerate() {
                     let name = name?;
                     let dir = indexes.as_ref().map_or(0, |indexes| indexes.get(i));
-                    if dir as usize >= listing.dirs.len() {
+                    let Some(directory) = listing.dirs.get(dir as usize) else {
                         return bad("a directory index past the directories");
+                    };
+                    if directory.len() + name.len() >= PATH_MAX {
+                        return bad(too_long("a file's path"));
                     }
                     listing.files.push(File::new(dir, budget.copy(name)?));
                 }
@@ -285,6 +296,9 @@ impl<'a> Header<'a> {
                     listing.files.reserve_exact(paths.len());
                     for path in paths {
                         let path = path?;
+                        if path.len() >= PATH_MAX {
+                            return bad(too_long("a file's path"));
+                        }
                         let (dir, name) = path.split_at(path_dir(path));
                         // rpm lists a package's files in order, so the files
                         // of one directory follow one another.
@@ -309,8 +323,33 @@ impl<'a> Header<'a> {
             file.mode = at(&modes) as u16;
             file.state = at(&states) as u8;
         }
+        if let Some(targets) = self.strings(tag::FILELINKTOS)? {
+            if targets.len() != count {
+                return bad(format!(
+                    "tag {} has not one value per file",
+                    tag::FILELINKTOS
+                ));
+            }
+            for (i, target) in targets.enumerate() {
+                let target = target?;
+                if target.is_empty() || !listing.files[i].is_link() {
+                    continue;
+                }
+                if target.len() >= PATH_MAX {
+                    return bad(too_long("a link's target"));
+                }
+                budget.take(size_of::<(u32, Box<str>)>())?;
+                listing.links.push((i as u32, budget.copy(target)?));
+            }
+        }
         Ok(listing)
     }
+}
+
+/// The reason a header that records `what` of [`PATH_MAX`] bytes or more is
+/// refused.
+fn too_long(what: &str) -> String {
+    format!("{what} of {PATH_MAX} bytes or more, longer than a path can be")
 }
 
 /// Where the directory of `path` ends in it: after its last `/`, none for a
@@ -348,5 +387,6 @@ pub(super) fn parse(blob: &[u8], budget: &mut Budget) -> std::result::Result<Pac
         release,
         dirs: listing.dirs,
         files: listing.files,
+        links: listing.links,
     })
 }

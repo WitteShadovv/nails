@@ -62,6 +62,7 @@ pub fn verdicts<F: Filesystem>(
         table: mounts,
         probed: RefCell::default(),
         listed: RefCell::default(),
+        resolved: RefCell::default(),
         privileged,
     };
     let (rpm_at, rpm) = reader.rpm();
@@ -122,6 +123,9 @@ struct Reader<'a, F: Filesystem> {
     /// The names of the entries of each directory of an upper listed for
     /// rpm's files: `None` for one that does not exist.
     listed: RefCell<BTreeMap<PathBuf, Option<BTreeSet<OsString>>>>,
+    /// Each directory of rpm's files as recorded, and where it lies once the
+    /// links rpm's records give on its way are followed.
+    resolved: RefCell<BTreeMap<Box<str>, String>>,
     privileged: bool,
 }
 
@@ -502,9 +506,13 @@ impl<F: Filesystem> Reader<'_, F> {
             .map_err(|e| unreadable(&format!("{at} on the decoy"), &e))?;
         let hidden = rpm::read_packages(self.fs, &hidden, &mut budget)
             .map_err(|e| unreadable(&format!("hidden sessions' copy of {at}"), &e))?;
+        // The links they record, and the paths resolved through them, from
+        // the same budget.
+        let links = rpm::Links::of(decoy.iter().chain(&hidden), &mut budget)
+            .map_err(|e| too_much(at, &e))?;
         let mut changed: BTreeSet<RpmKey> = BTreeSet::new();
         for (key, packages) in rpm_differing(&decoy, &hidden) {
-            if self.changed_files(&packages)? {
+            if self.changed_files(&packages, &links, at, &mut budget)? {
                 changed.insert(key);
             }
         }
@@ -512,12 +520,20 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Whether the upper holds, or deleted, one of the own files
-    /// ([`rpm::File::is_own`]) of `packages`: whether a hidden session
-    /// installed, updated or removed one of them.
-    fn changed_files(&self, packages: &[&rpm::Package]) -> std::result::Result<bool, Verdict> {
+    /// ([`rpm::File::is_own`]) of `packages`, each where rpm installed it
+    /// ([`Self::installed_at`], through `links`, with what it keeps taken from
+    /// `budget`): whether a hidden session installed, updated or removed one
+    /// of them. `at` is the database's path as hidden sessions see it.
+    fn changed_files(
+        &self,
+        packages: &[&rpm::Package],
+        links: &rpm::Links,
+        at: &str,
+        budget: &mut rpm::Budget,
+    ) -> std::result::Result<bool, Verdict> {
         for package in packages {
             for file in package.files.iter().filter(|file| file.is_own()) {
-                let path = package.path(file);
+                let path = self.installed_at(package, file, links, at, budget)?;
                 let rel = path.trim_start_matches('/');
                 if rel.is_empty() {
                     continue;
@@ -529,6 +545,46 @@ impl<F: Filesystem> Reader<'_, F> {
             }
         }
         Ok(false)
+    }
+
+    /// Where `file` of `package` lies: its directory with the links on its
+    /// way that `links`, rpm's own records, give followed, and its name. rpm
+    /// installs a file through such a link, so the upper holds the kernel's
+    /// modules Fedora records below `/lib`, a link to `usr/lib`, below
+    /// `/usr/lib`. Each directory is resolved once and kept, with what it
+    /// keeps taken from `budget`. A verdict when its links make a loop or
+    /// lead to a path too long for any system ([`rpm::Unresolved`]), or when
+    /// the budget runs out.
+    fn installed_at(
+        &self,
+        package: &rpm::Package,
+        file: &rpm::File,
+        links: &rpm::Links,
+        at: &str,
+        budget: &mut rpm::Budget,
+    ) -> std::result::Result<String, Verdict> {
+        let dir = package.dirs.get(file.dir as usize).map_or("", |dir| dir);
+        if let Some(resolved) = self.resolved.borrow().get(dir) {
+            return Ok(format!("{resolved}{}", file.name));
+        }
+        let mut resolved = links.resolve(dir).map_err(|why| {
+            Verdict::Unknown(Doubt::Other(format!(
+                "rpm's records give links on the way to {dir} that NAILS cannot follow: {why}"
+            )))
+        })?;
+        if !resolved.ends_with('/') {
+            resolved.push('/');
+        }
+        budget
+            .take(
+                RESOLVED
+                    + rpm::Budget::allocation(dir.len())
+                    + rpm::Budget::allocation(resolved.len()),
+            )
+            .map_err(|e| too_much(at, &e))?;
+        let path = format!("{resolved}{}", file.name);
+        self.resolved.borrow_mut().insert(dir.into(), resolved);
+        Ok(path)
     }
 
     /// Whether the upper `base` holds an entry at `rel`, or deleted or
@@ -621,6 +677,19 @@ fn upper_verdict(in_upper: InUpper) -> std::result::Result<PathBuf, Verdict> {
 fn no_package(what: &str) -> Verdict {
     Verdict::Unknown(Doubt::Other(format!(
         "{what} records no package NAILS can read"
+    )))
+}
+
+/// About what the cache of resolved directories holds for one besides the
+/// bytes of the two paths: its entry, twice over for the room a map keeps
+/// spare.
+const RESOLVED: usize = 2 * size_of::<(Box<str>, String)>();
+
+/// The verdict for rpm's databases at `at`, and what they record, that need
+/// more memory than the reader keeps for them (`reason`).
+fn too_much(at: &str, reason: &str) -> Verdict {
+    Verdict::Unknown(Doubt::Other(format!(
+        "{at} on the decoy and hidden sessions' copy of it cannot be read together ({reason})"
     )))
 }
 
