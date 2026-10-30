@@ -1,0 +1,22 @@
+{ config, lib, pkgs, ... }:
+{
+  services.udev.extraRules = ''
+    KERNEL=="sdb2", SYMLINK+="vault"
+    KERNEL=="dm-0", ENV{UDISKS_IGNORE}="1"
+    KERNEL=="sdb20", SYMLINK+="usb"
+    KERNEL=="dm-1", OPTIONS+="watch"
+  '';
+  fileSystems."/mnt//data" = {
+    device = "/dev/mapper//data";
+    fsType = "ext4";
+  };
+  fileSystems."/srv//mnt/data".device = "/dev/dm-1";
+  swapDevices = [ { device = "/dev/block/254:0"; } { device = "/dev/block/8:180"; } ];
+  boot.resumeDevice = "/dev//dm-0";
+  # the vault sits on sdb2, the backup on sdb20 and dm-10
+  systemd.services.trim.script = "echo 1 > /sys/class/block/sdb2/queue/rotational";
+  # device = "/dev/disk//by-id/dm-uuid-CRYPT-LUKS2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data";
+  imports = [ "///mnt///data/nixos/extra.nix" ];
+  systemd.services.app.serviceConfig.EnvironmentFile = "-/mnt/data/app.env";
+  systemd.services.app.serviceConfig.ExecStart = "+/srv/-/mnt/data/bin/app";
+}
