@@ -54,6 +54,10 @@ lto = true
 #   window follows the desktop's appearance where xdg-desktop-portal runs,
 #   and never starts it through D-Bus activation.
 #
-# A new Slint release brings a new copy of the crate with the same changes.
+# The changes are gui/patches/i-slint-backend-winit.patch, and
+# gui/patches/i-slint-backend-winit.sha256 is the checksum of the published
+# crate. `just vet gui` fails unless the copy is that crate with that patch,
+# byte for byte (the gui-patches flake check). A new Slint release brings a
+# new copy of the crate, its checksum and the same changes.
 [patch.crates-io]
 i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }

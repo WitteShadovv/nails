@@ -291,9 +291,19 @@ deny-full *checks="advisories bans licenses sources":
 # drift with an upstream audit update between runs. `just vet` audits the root
 # workspace, advisory only: it runs in its own lane (vet.yml) and never gates a
 # merge. `just vet gui` audits the gui/ workspace against gui/supply-chain/,
-# and the gui-vet job of ci.yml gates the merge on it.
+# and the gui-vet job of ci.yml gates the merge on it. For gui it also runs
+# `gui-patches`: cargo-vet audits the copy of a crate in gui/patches as the
+# published version it copies, and only that check holds the copy to it.
 vet workspace=".":
     cargo vet --locked --manifest-path '{{ workspace }}/Cargo.toml'
+    {{ if workspace == "gui" { just_executable() + " --justfile " + justfile() + " gui-patches" } else { "true" } }}
+
+# Check that the copy of Slint's winit backend in gui/patches (see
+# gui/Cargo.toml) is the published crate plus gui/patches/*.patch, byte for
+# byte: the gui-patches flake check fetches the crate by the checksum in
+# gui/patches/i-slint-backend-winit.sha256, applies the patch and compares.
+gui-patches:
+    nix build --no-link -L --option accept-flake-config false .#checks.x86_64-linux.gui-patches
 
 # --- Nix ---
 
