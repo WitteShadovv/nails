@@ -31,14 +31,22 @@ use crate::cli::output::ExitStatus;
 /// `XDG_CURRENT_DESKTOP` names them. None has yet: until one does, the window
 /// opens only in the hidden session.
 ///
-/// The D-Bus part of that test has to clear what the window says on the
-/// session bus at every start, which its environment cannot turn off: the
-/// accessibility bus lookup of AccessKit (`org.a11y.Bus`), and the settings
-/// portal reads of Slint's winit backend (`ReadOne`, or `Read` on an older
-/// portal, of `org.freedesktop.portal.Settings` for the colour scheme, the
-/// accent colour, the font and the cursor blink, and a `SettingChanged`
-/// subscription). Either starts its service through D-Bus activation where
-/// it is not running, xdg-desktop-portal with the operator's own home.
+/// That test has to clear what the window does at every start that its
+/// environment cannot turn off, which is all on the session bus: its toolkit
+/// starts no program (its winit backend draws no window decorations, see
+/// `gui/Cargo.toml`), and its command line names no path.
+///
+/// - AccessKit, the screen reader's way in, asks the accessibility bus
+///   whether a screen reader listens (`GetAll` of `org.a11y.Status` on
+///   `org.a11y.Bus`, and a `PropertiesChanged` subscription). Where at-spi's
+///   bus launcher does not run, that starts it through D-Bus activation, and
+///   dbus-daemon logs a line that names the window's command line, `session`.
+/// - Slint's winit backend reads the desktop's appearance from the settings
+///   portal (`ReadOne`, or `Read` on an older portal, of
+///   `org.freedesktop.portal.Settings` for the colour scheme, the accent
+///   colour, the font and the cursor blink, and a `SettingChanged`
+///   subscription). Its reads carry `NO_AUTO_START`: where
+///   xdg-desktop-portal does not run they are refused, and nothing starts.
 pub(super) const ADMITTED_DESKTOPS: &[&str] = &[];
 
 /// What the gate knows about a decoy.

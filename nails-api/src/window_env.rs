@@ -25,14 +25,15 @@
 //! manager, the log and debug switches and every secret the starting
 //! environment may hold included.
 //!
-//! Only GTK reads `GDK_DEBUG`. The window's toolkit is Slint, whose winit
-//! backend reads the desktop's appearance from the settings portal on the
-//! session bus at every start (`org.freedesktop.portal.Settings`), and no
-//! variable here turns that off: the session bus stays, since AccessKit, the
-//! screen reader's way in, needs it to find the accessibility bus. Where
-//! xdg-desktop-portal is not running, the read starts it through D-Bus
-//! activation, which the desktop's trace test has to clear (see the list of
-//! admitted desktops in the launcher's gate).
+//! Only GTK reads `GDK_DEBUG`. The window's toolkit is Slint, and the session
+//! bus stays: AccessKit, the screen reader's way in, needs it to find the
+//! accessibility bus, and at every start its status read of `org.a11y.Bus`
+//! starts at-spi's bus launcher through D-Bus activation where that does not
+//! run. The desktop's trace test has to clear it (see the list of admitted
+//! desktops in the launcher's gate). The window's copy of Slint's winit
+//! backend also reads the desktop's appearance from the settings portal
+//! (`org.freedesktop.portal.Settings`), but with `NO_AUTO_START`, so it never
+//! starts xdg-desktop-portal.
 //!
 //! The runtime directory is the one logind made for the operator,
 //! `/run/user/<uid>`, used only when [`judge`] accepts it: the operator's,
