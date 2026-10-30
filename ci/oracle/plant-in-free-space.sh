@@ -64,6 +64,17 @@ fits() {
   done
 }
 
+# is_mirror <fs-byte> <block-size>: whether the block of <block-size> bytes at
+# filesystem byte <fs-byte> overlaps a btrfs superblock copy (4 KiB at 64 MiB,
+# 256 GiB and 1 PiB), which btrfs writes outside its chunks too.
+is_mirror() {
+  local m
+  for m in 67108864 274877906944 1125899906842624; do
+    if [ "$1" -lt "$((m + 4096))" ] && [ "$m" -lt "$(($1 + $2))" ]; then return 0; fi
+  done
+  return 1
+}
+
 # --- btrfs: the device space no chunk is allocated in. -----------------------
 # The btrfs magic sits 64 bytes into the primary superblock, at 64 KiB.
 magic=$(dd if="$img" iflag=skip_bytes,count_bytes skip=$((off + 65536 + 64)) count=8 bs=8 status=none | tr -d '\0') || magic=""
@@ -125,15 +136,6 @@ if [ "$magic" = "_BHRfS_M" ]; then
     if [ "$((s + l))" -gt "$pos" ]; then pos=$((s + l)); fi
   done < <(sort -n -k2,2 <<<"$extents")
   if [ "$total" -gt "$pos" ]; then gaps+=("$pos $total"); fi
-  # is_mirror <fs-byte>: whether the block there overlaps a superblock copy
-  # (64 MiB, 256 GiB, 1 PiB), which btrfs writes outside the chunks too.
-  is_mirror() {
-    local m
-    for m in 67108864 274877906944 1125899906842624; do
-      if [ "$1" -lt "$((m + 4096))" ] && [ "$((m))" -lt "$(($1 + bs))" ]; then return 0; fi
-    done
-    return 1
-  }
   n=$#
   k=0
   for string in "$@"; do
@@ -150,7 +152,7 @@ if [ "$magic" = "_BHRfS_M" ]; then
         a=$(((a + bs - 1) / bs * bs))
         tries=0
         while [ "$((a + bs))" -le "$b" ] && [ "$tries" -lt 64 ]; do
-          if ! is_mirror "$a" && zero_block "$((off + a))"; then
+          if ! is_mirror "$a" "$bs" && zero_block "$((off + a))"; then
             plant_at "$((off + a))" "$string"
             planted=1
             break 3
