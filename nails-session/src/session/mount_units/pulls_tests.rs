@@ -137,6 +137,46 @@ fn a_skip_whose_pulls_mount_nothing_of_a_disk_stays_a_skip() {
 }
 
 #[test]
+fn a_unit_of_another_kind_named_by_a_specifier_is_no_pull() {
+    // The fstab generator's makefs unit for a skipped mount binds to its
+    // device by a specifier: no mount, so the skip holds.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/run/systemd/generator/systemd-makefs@dev-vdc1.service",
+        "[Unit]\nBindsTo=%i.device\nAfter=%i.device\nBefore=systemd-fsck@%i.service srv-data.mount\n\
+         [Service]\nType=oneshot\n",
+    );
+    let (skipped, warnings) = kept(
+        &decoy,
+        "/dev/vdc1 /srv/data ext4 defaults,x-systemd.makefs 0 2\n",
+        ROOT_ONLY,
+    );
+    assert_eq!(skipped.skips.len(), 1, "{:?}", skipped.masks);
+    assert!(
+        skipped.skips[0]
+            .pulled
+            .contains(&"systemd-makefs@dev-vdc1.service".to_string())
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+    // A mount named by a specifier is one NAILS cannot tell.
+    decoy.write(
+        "/run/systemd/generator/systemd-makefs@dev-vdc1.service",
+        "[Unit]\nRequires=srv-%i.mount\n[Service]\nType=oneshot\n",
+    );
+    let (masked, warnings) = kept(
+        &decoy,
+        "/dev/vdc1 /srv/data ext4 defaults,x-systemd.makefs 0 2\n",
+        ROOT_ONLY,
+    );
+    assert!(masked.skips.is_empty(), "{:?}", masked.skips);
+    assert_eq!(
+        causes(&masked),
+        [("srv-data.mount".to_string(), MaskCause::Undetermined)]
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+}
+
+#[test]
 fn a_skip_that_requires_a_masked_mount_is_warned_of() {
     // The parent has nofail and is not mounted now: masked. The child is
     // skipped, but PID 1 cannot start it with its parent masked, so the
