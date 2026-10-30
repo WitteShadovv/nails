@@ -1,54 +1,53 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The mounts a skipped unit pulls in.
+//! What a skipped unit pulls in.
 //!
-//! A skipped unit gets its start job, and PID 1 starts what it requires and
-//! wants before it tests the unit's condition. Among those can be a mount, a
-//! swap or an automount: the mount unit of each parent directory of a mount
-//! or automount (or of a swap file) that has a unit file of its own, which
-//! systemd has it require, also the unit of a `noauto` fstab line; the units
-//! its unit files name in `Requires=`, `BindsTo=`, `Wants=` or `Upholds=`, or
-//! link in its `.requires`, `.wants` or `.upholds` directory; the mount units
-//! of the paths, and their parents, of its `RequiresMountsFor=` and
-//! `WantsMountsFor=`; and those its fstab line names with
-//! `x-systemd.requires=`, `x-systemd.requires-mounts-for=` or
-//! `x-systemd.wants-mounts-for=` ([`mount_pulls`]).
+//! A skipped unit gets its start job, and PID 1 gives a start job to every
+//! unit it requires, binds to, wants or upholds, and to what those pull in in
+//! turn, before it tests the skip's condition, whether such a unit is active
+//! already or not. [`walk`] follows these pulls from a skipped unit as far as
+//! they lead, unit by unit ([`edges`]), with the units they start later (a
+//! trigger, `OnFailure=`) too.
 //!
-//! The hidden systemd would mount such a filesystem read-write from the
-//! decoy's disk unless the session keeps it off or puts it in place
-//! ([`fate`]), so a skip that pulls one in is masked instead
-//! ([`super::kept_off`]). One the session masks keeps a unit that requires it
-//! from starting, and the boot target with it: that is warned of.
+//! A mount, swap or automount it reaches that the session neither keeps off nor
+//! puts in place, and that does not mount the root, a RAM or kernel filesystem
+//! or a host share, the hidden systemd would mount from the decoy's disk
+//! ([`fate`]): the skip is masked instead ([`super::kept_off`]). So it is where
+//! NAILS cannot tell all a unit on the way pulls in: a unit file it cannot
+//! read, a specifier it does not resolve, any specifier in an fstab option, a
+//! unit that does not load (a generator of the hidden session may make it; a
+//! checker of systemd's, which acts on its device alone, aside), a link or a
+//! unit directory it cannot read, or a walk deeper or wider than it follows
+//! ([`MAX_DEPTH`], [`MAX_UNITS`]). The walk stops at the targets the hidden
+//! boot starts anyway ([`boot_targets`](super::deps::boot_targets)), which
+//! bring nothing in that the boot does not, and at scopes. A mount the session
+//! masks keeps a unit that requires it from starting, and the boot target with
+//! it: that is warned of.
 
-use super::unit_dirs::{Load, UnitDirs};
-use super::unit_file::without_specifiers;
-use super::unit_path;
-use crate::session::fstab::{FstabEntry, is_virtual_type, mount_unit};
-use crate::session::policy::Units;
-use nails_teardown::whole_root::runtime_units::valid_unit_name;
+use super::deps::{Graph, edges, is_storage_unit, kind, lines_of};
+use super::unit_dirs::Load;
+use crate::session::fstab::{is_host_share_type, is_virtual_type};
+use nails_teardown::whole_root::plan::MaskCause;
+use std::collections::VecDeque;
 use std::path::Path;
 
-/// A mount, swap or automount unit a unit pulls in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pull {
-    /// The unit pulled in.
-    pub unit: String,
-    /// Whether the unit that pulls it in requires it, and so does not start
-    /// without it, rather than only wanting it.
-    pub required: bool,
-    /// How it is pulled in, for a warning.
-    pub how: &'static str,
-}
+/// How many pulls deep the walk follows a skipped unit.
+pub const MAX_DEPTH: usize = 8;
 
-/// What becomes of a mount, swap or automount unit that a skipped unit
-/// pulls in ([`fate`]).
+/// How many units the walk from one skipped unit reaches at most.
+pub const MAX_UNITS: usize = 256;
+
+/// What becomes of a mount, swap or automount unit the walk reaches
+/// ([`fate`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fate {
-    /// Nothing of a decoy disk: the session puts its mount point in place
-    /// or skips it, it mounts the root, a RAM or kernel filesystem or a host
-    /// share, or it does not load.
+    /// The session puts its mount point in place or skips it, or it mounts
+    /// the root, a RAM or kernel filesystem or a host share: what it pulls
+    /// in is followed in turn.
     Fine,
+    /// No unit file and no fstab line: PID 1 cannot start it.
+    Absent,
     /// The session masks it: a unit that requires it does not start.
     Masked,
     /// The hidden systemd would mount it, or swap onto it, from the decoy's
@@ -56,199 +55,145 @@ pub enum Fate {
     Mounted,
 }
 
-/// Whether `name` is a mount, swap or automount unit.
-fn is_storage_unit(name: &str) -> bool {
-    [".mount", ".swap", ".automount"]
-        .iter()
-        .any(|suffix| name.ends_with(suffix))
-}
-
-/// The mount units of `path` and of each of its parents, the root's left
-/// out (the root overlay is always there): what a `RequiresMountsFor=` of
-/// `path` requires, as far as such units exist.
-pub fn mounts_for(path: &Path) -> Vec<String> {
-    path.ancestors()
-        .filter(|dir| *dir != Path::new("/"))
-        .map(mount_unit)
-        .collect()
-}
-
-/// The parents of the mount point (or swap file) the unit `name` stands
-/// for, whose mount units systemd has it require.
-fn parent_mounts(name: &str) -> Vec<String> {
-    let path = [".mount", ".automount"]
-        .iter()
-        .find_map(|suffix| unit_path(name, suffix))
-        .or_else(|| unit_path(name, ".swap").filter(|path| !path.starts_with("/dev")));
-    path.as_deref()
-        .and_then(Path::parent)
-        .map(mounts_for)
-        .unwrap_or_default()
-}
-
-/// The units a value of `x-systemd.requires=` names: a unit, or the mount
-/// unit of a mount point (a device node names a device unit, no mount).
-fn required_by_option(value: &str) -> Option<String> {
-    if value.starts_with("/dev/") {
-        None
-    } else if value.starts_with('/') {
-        Some(mount_unit(Path::new(value)))
-    } else {
-        Some(value.to_string())
-    }
-}
-
-/// The mount, swap and automount units the unit `name` pulls in when it
-/// starts (see the module docs), each once, its own and the root's left
-/// out. `fstab` holds the decided fstab lines, whose options the line that
-/// makes `name` adds. `Err` with the reason when NAILS cannot tell them all:
-/// its unit files cannot be read or name a mount, swap or automount unit or
-/// a path by a specifier it does not resolve, or a directory of its links
-/// cannot be listed.
-pub fn mount_pulls(
-    dirs: UnitDirs<'_>,
-    name: &str,
-    fstab: &[FstabEntry],
-) -> Result<Vec<Pull>, &'static str> {
-    let mut pulls: Vec<Pull> = Vec::new();
-    let mut add = |unit: String, required: bool, how: &'static str| {
-        if !is_storage_unit(&unit) || unit == name || unit == "-.mount" || !valid_unit_name(&unit) {
-            return;
-        }
-        match pulls.iter_mut().find(|pull| pull.unit == unit) {
-            Some(pull) if required && !pull.required => {
-                pull.required = true;
-                pull.how = how;
-            }
-            Some(_) => {}
-            None => pulls.push(Pull {
-                unit,
-                required,
-                how,
-            }),
-        }
-    };
-    for parent in parent_mounts(name) {
-        add(parent, true, "the mount of a parent directory");
-    }
-    match dirs.load(name) {
-        Load::Loaded { unit, .. } => {
-            for (key, required, how) in [
-                ("Requires", true, "its Requires="),
-                ("BindsTo", true, "its BindsTo="),
-                ("Wants", false, "its Wants="),
-                ("Upholds", false, "its Upholds="),
-            ] {
-                for value in unit.values("Unit", key) {
-                    // A unit of another kind is no mount, whatever a
-                    // specifier in its name stands for (the generator's
-                    // makefs unit binds to `%i.device`).
-                    for word in value
-                        .split_ascii_whitespace()
-                        .filter(|word| is_storage_unit(word))
-                    {
-                        let word = without_specifiers(word).ok_or(super::UNRESOLVED_PULL)?;
-                        add(word, required, how);
-                    }
-                }
-            }
-            for (key, required, how) in [
-                ("RequiresMountsFor", true, "its RequiresMountsFor="),
-                ("WantsMountsFor", false, "its WantsMountsFor="),
-            ] {
-                for value in unit.values("Unit", key) {
-                    for word in value.split_ascii_whitespace() {
-                        let path = without_specifiers(word).ok_or(super::UNRESOLVED_PULL)?;
-                        for mount in mounts_for(Path::new(&path)) {
-                            add(mount, required, how);
-                        }
-                    }
-                }
-            }
-        }
-        Load::Unreadable => return Err(super::UNREADABLE),
-        Load::Masked | Load::Missing => {}
-    }
-    for (kind, required, how) in [
-        ("requires", true, "a link in its .requires directory"),
-        ("wants", false, "a link in its .wants directory"),
-        ("upholds", false, "a link in its .upholds directory"),
-    ] {
-        for unit in dirs
-            .list(&format!("{name}.{kind}"))
-            .map_err(|_| super::UNLISTED_PULL)?
-        {
-            add(unit, required, how);
-        }
-    }
-    for entry in fstab.iter().filter(|entry| {
-        let units = Units::of(entry);
-        units.unit.as_deref() == Some(name) || units.automount.as_deref() == Some(name)
-    }) {
-        for option in &entry.options {
-            if let Some(value) = option.strip_prefix("x-systemd.requires=") {
-                if let Some(unit) = required_by_option(value) {
-                    add(unit, true, "x-systemd.requires= on its fstab line");
-                }
-            } else if let Some(path) = option.strip_prefix("x-systemd.requires-mounts-for=") {
-                for mount in mounts_for(Path::new(path)) {
-                    add(
-                        mount,
-                        true,
-                        "x-systemd.requires-mounts-for= on its fstab line",
-                    );
-                }
-            } else if let Some(path) = option.strip_prefix("x-systemd.wants-mounts-for=") {
-                for mount in mounts_for(Path::new(path)) {
-                    add(
-                        mount,
-                        false,
-                        "x-systemd.wants-mounts-for= on its fstab line",
-                    );
-                }
-            }
-        }
-    }
-    Ok(pulls)
-}
-
-/// What becomes of the unit `pull` in the hidden session when a skipped unit
-/// pulls it in, given `covered`, the units the session's decisions keep off
-/// or put in place, `masks`, those it masks, and `fstab`, the decided lines
-/// (see [`Fate`]). A unit no decision covers is judged by what its fstab
-/// line or its unit files mount; one whose files cannot be read counts as
-/// one that mounts a disk.
-pub fn fate(
-    dirs: UnitDirs<'_>,
-    pull: &str,
-    covered: &[String],
-    masks: &[String],
-    fstab: &[FstabEntry],
-) -> Fate {
+/// What becomes of the mount, swap or automount unit `pull` in the hidden
+/// session, given `masks`, the units the session masks. A unit no decision
+/// covers is judged by what its fstab lines or its unit files mount; one
+/// whose files cannot be read counts as one that mounts a disk.
+pub fn fate(graph: &Graph<'_>, pull: &str, masks: &[String]) -> Fate {
     if masks.iter().any(|unit| unit == pull) {
         return Fate::Masked;
     }
-    if covered.iter().any(|unit| unit == pull) {
+    let lines = lines_of(graph.fstab, pull);
+    let load = graph.dirs.load(pull);
+    if matches!(load, Load::Masked) {
+        return Fate::Masked;
+    }
+    if matches!(load, Load::Missing) && lines.is_empty() {
+        return Fate::Absent;
+    }
+    if graph.covered.iter().any(|unit| unit == pull) {
         return Fate::Fine;
     }
-    let line = fstab.iter().find(|entry| {
-        let units = Units::of(entry);
-        units.unit.as_deref() == Some(pull) || units.automount.as_deref() == Some(pull)
-    });
-    if let Some(entry) = line {
-        return if entry.is_virtual() || entry.is_host_share() || entry.file == Path::new("/") {
-            Fate::Fine
-        } else {
-            Fate::Mounted
-        };
-    }
-    match dirs.load(pull) {
-        Load::Missing | Load::Masked => Fate::Fine,
-        Load::Unreadable => Fate::Mounted,
+    let lines_harmless = lines
+        .iter()
+        .all(|entry| entry.is_virtual() || entry.is_host_share() || entry.file == Path::new("/"));
+    let file_harmless = match load {
+        Load::Missing | Load::Masked => true,
+        Load::Unreadable => false,
+        // A RAM or kernel filesystem, or a host share, as for a line.
         Load::Loaded { unit, .. } => {
-            let ram =
-                pull.ends_with(".mount") && unit.last("Mount", "Type").is_some_and(is_virtual_type);
-            if ram { Fate::Fine } else { Fate::Mounted }
+            kind(pull) == "mount"
+                && unit
+                    .last("Mount", "Type")
+                    .is_some_and(|vfstype| is_virtual_type(vfstype) || is_host_share_type(vfstype))
+        }
+    };
+    if lines_harmless && file_harmless {
+        Fate::Fine
+    } else {
+        Fate::Mounted
+    }
+}
+
+/// Why a skip must be masked instead: what the walk found, and the cause
+/// that names it ([`MaskCause::PullsInMount`] for a mount it would make,
+/// [`MaskCause::Undetermined`] where NAILS cannot tell).
+pub type Blocked = (String, MaskCause);
+
+/// A unit the walk reached: its name, the unit it reached it from (`None`
+/// for the one it starts at), and how that one pulls it in.
+struct Reached {
+    unit: String,
+    from: Option<usize>,
+    how: &'static str,
+}
+
+/// How the walk reached `reached[at]` from where it started: `a (how), which
+/// pulls in b (how)`.
+fn chain(reached: &[Reached], at: usize) -> String {
+    let mut steps: Vec<String> = Vec::new();
+    let mut current = Some(at);
+    while let Some(index) = current {
+        let step = &reached[index];
+        if step.from.is_some() {
+            steps.push(format!("{} ({})", step.unit, step.how));
+        }
+        current = step.from;
+    }
+    steps.reverse();
+    steps.join(", which pulls in ")
+}
+
+/// Walk the pulls of the skipped unit `start` (see the module docs), given
+/// `masks`, the units the session masks. `Ok` with the masked units `start`
+/// requires through a chain of requirements, each with that chain: they
+/// keep it from starting. `Err` when the skip must be masked instead.
+pub fn walk(graph: &Graph<'_>, start: &str, masks: &[String]) -> Result<Vec<String>, Blocked> {
+    let mut reached = vec![Reached {
+        unit: start.to_string(),
+        from: None,
+        how: "",
+    }];
+    let mut queue: VecDeque<(usize, usize, bool)> = VecDeque::from([(0, 0, true)]);
+    let mut masked_required: Vec<String> = Vec::new();
+    let unknown = |why: String| (why, MaskCause::Undetermined);
+    while let Some((at, depth, required)) = queue.pop_front() {
+        let unit = reached[at].unit.clone();
+        if at != 0 {
+            if is_storage_unit(&unit) {
+                match fate(graph, &unit, masks) {
+                    Fate::Masked => {
+                        if required {
+                            masked_required.push(chain(&reached, at));
+                        }
+                        continue;
+                    }
+                    Fate::Absent => continue,
+                    Fate::Mounted => {
+                        return Err((
+                            format!(
+                                "{start} pulls in {}, which the session does not keep off, and \
+                                 the hidden systemd would mount it from the decoy's disk",
+                                chain(&reached, at)
+                            ),
+                            MaskCause::PullsInMount,
+                        ));
+                    }
+                    Fate::Fine => {}
+                }
+            } else if kind(&unit) == "scope" || graph.boot.contains(&unit) {
+                continue;
+            }
+        }
+        if depth >= MAX_DEPTH {
+            return Err(unknown(format!(
+                "{start} pulls in units more than {MAX_DEPTH} deep, which NAILS does not follow"
+            )));
+        }
+        let pulled = edges(graph, &unit).map_err(|why| {
+            let path = if at == 0 {
+                String::new()
+            } else {
+                format!("{start} pulls in {}, and ", chain(&reached, at))
+            };
+            unknown(format!("{path}{why}"))
+        })?;
+        for edge in pulled {
+            if reached.iter().any(|seen| seen.unit == edge.unit) {
+                continue;
+            }
+            if reached.len() >= MAX_UNITS {
+                return Err(unknown(format!(
+                    "{start} pulls in more than {MAX_UNITS} units, which NAILS does not follow"
+                )));
+            }
+            reached.push(Reached {
+                unit: edge.unit,
+                from: Some(at),
+                how: edge.how,
+            });
+            queue.push_back((reached.len() - 1, depth + 1, required && edge.required));
         }
     }
+    Ok(masked_required)
 }
