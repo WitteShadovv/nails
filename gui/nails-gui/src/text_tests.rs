@@ -97,8 +97,8 @@ fn terminal_lines_name_the_engine_on_the_hidden_volume() {
         "To go on, open the window again from a terminal: sudo /mnt/data/nails gui"
     );
     assert_eq!(
-        deactivate_from_terminal(Some(Path::new("/mnt/a gui/nails"))),
-        "Deactivate from a terminal: sudo '/mnt/a gui/nails' deactivate"
+        next_step(Some(Path::new("/mnt/a gui/nails")), "deactivate"),
+        "Next: sudo '/mnt/a gui/nails' deactivate"
     );
     assert_eq!(
         engine_fix("Run `sudo /mnt/data/nails recover` to reset the record"),

@@ -119,6 +119,13 @@ impl Controller {
         }
         self.draw();
     }
+
+    fn alternative(&mut self) {
+        if let Some(ask) = self.model.alternative() {
+            (self.hooks.ask)(ask);
+        }
+        self.draw();
+    }
 }
 
 fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
@@ -156,6 +163,12 @@ fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     window.on_question_answered(move |confirmed| {
         if let Some(controller) = weak.upgrade() {
             controller.borrow_mut().answer(confirmed);
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_question_alternative_chosen(move || {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().alternative();
         }
     });
 }
@@ -215,6 +228,9 @@ pub fn draw(window: &AppWindow, page: &Page) {
             window.set_question_destructive(question.destructive);
             window.set_question_prompt(question.prompt.as_deref().unwrap_or_default().into());
             window.set_question_locked(question.locked);
+            window.set_question_alternative(
+                question.alternative.as_deref().unwrap_or_default().into(),
+            );
             window.set_question_open(true);
         }
         None => {
@@ -226,6 +242,7 @@ pub fn draw(window: &AppWindow, page: &Page) {
             window.set_question_destructive(false);
             window.set_question_prompt(SharedString::default());
             window.set_question_locked(false);
+            window.set_question_alternative(SharedString::default());
             if was_open {
                 window.invoke_focus_page();
             }

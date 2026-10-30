@@ -177,6 +177,7 @@ impl Model {
                 description: text::hidden_volume_covered(status.uptime_seconds, &root),
                 facts: self.volume_fact(status),
                 fix: fix.unwrap_or_default(),
+                action: Some(text::DEACTIVATE),
                 ..Page::default()
             },
             attention => Page {
@@ -191,7 +192,10 @@ impl Model {
                         .unwrap_or_default(),
                 },
                 facts: self.volume_fact(status),
-                fix: fix.unwrap_or_else(|| text::deactivate_from_terminal(self.engine.as_deref())),
+                fix: fix.unwrap_or_default(),
+                // Without the hidden volume the way back has nothing to
+                // return with: the session ends with an emergency.
+                action: (attention != Some(Attention::VolumeLost)).then_some(text::DEACTIVATE),
                 ..Page::default()
             },
         }

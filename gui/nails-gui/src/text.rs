@@ -129,6 +129,27 @@ pub fn mounts_stayed(mounts: &[String]) -> String {
     )
 }
 
+/// The main action of a hidden session's page: it opens the question first.
+pub const DEACTIVATE: &str = "Deactivate\u{2026}";
+/// The question before a deactivation.
+pub const DEACTIVATE_QUESTION: &str = "Deactivate Hidden Session?";
+/// What a deactivation does to the hidden session.
+pub const DEACTIVATE_CONSEQUENCE: &str = "Every program closes. Unsaved work is lost.";
+/// The ending that powers off: the safer one, and the suggested button.
+pub const POWER_OFF: &str = "Power Off";
+/// The ending that returns to the decoy.
+pub const RETURN_TO_DECOY: &str = "Return to Decoy";
+/// While a hidden session ends.
+pub const ENDING: &str = "Ending the Hidden Session";
+/// A deactivation that returns to the decoy.
+pub const RETURNING: &str = "Returning to the decoy's login screen in a few seconds.";
+/// A deactivation that powers off.
+pub const POWERING_OFF: &str = "Powering off in a few seconds.";
+/// A device of the hidden volume the way back could not mark to close,
+/// without its name.
+pub const BACKEND_LEFT_OPEN: &str = "A device of the hidden volume could not be marked to close: \
+     its key stays in memory until the computer is off.";
+
 /// A hidden session runs.
 pub const HIDDEN_SESSION: &str = "Hidden Session";
 /// An activation runs.
@@ -322,15 +343,6 @@ pub fn allowed_by_you(what: &str) -> String {
 #[must_use]
 pub fn type_to_continue(word: &str) -> String {
     format!("Type {word} to continue")
-}
-
-/// What the window says while deactivation is left to the terminal.
-#[must_use]
-pub fn deactivate_from_terminal(engine: Option<&Path>) -> String {
-    format!(
-        "Deactivate from a terminal: {}",
-        launch::sudo_line(engine, "deactivate")
-    )
 }
 
 /// The two releases, when the window and the engine differ.
