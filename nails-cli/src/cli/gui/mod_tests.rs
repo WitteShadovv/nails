@@ -211,6 +211,25 @@ fn the_helper_reads_the_launchers_configuration() {
     assert_eq!(plain, ["helper", "--stdio"].map(OsString::from));
 }
 
+/// The helper starts in `/`: a relative `--config` reaches it made absolute
+/// against the launcher's working directory, so both ends read one file.
+#[test]
+fn a_relative_configuration_reaches_the_helper_as_the_launcher_read_it() {
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(
+        absolute_config(Some(Path::new("config/nails.toml"))).unwrap(),
+        Some(cwd.join("config/nails.toml"))
+    );
+    assert_eq!(
+        absolute_config(Some(Path::new("/mnt/config/nails.toml"))).unwrap(),
+        Some(PathBuf::from("/mnt/config/nails.toml"))
+    );
+    assert_eq!(absolute_config(None).unwrap(), None);
+    let empty = absolute_config(Some(Path::new(""))).unwrap_err();
+    assert_eq!(empty.status, ExitStatus::Config);
+    assert_eq!(empty.body.code, "config");
+}
+
 #[test]
 fn only_a_private_runtime_directory_of_the_operator_in_ram_is_used() {
     let good = DirFacts {
