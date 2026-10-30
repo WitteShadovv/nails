@@ -395,8 +395,8 @@ flowchart LR
 | Step | Runs on | What happens | What you see |
 |---|---|---|---|
 | `activate` | the decoy | Pre-flight checks, a read-only residue baseline of the decoy (report on the hidden volume), the root overlay at `/run/nextroot`, on NixOS the hidden system built into the overlay, then the soft-reboot. Ctrl+C before the switch rolls everything back. | Progress and a summary, then your terminal closes and the screen shows a text console for a few seconds. The hidden session starts at its own login screen; a display manager set to log an account in automatically logs it in again. |
-| `deactivate` | the hidden session | Mounts the decoy root for the way back, marks the hidden volume for closing, and soft-reboots. The orderly shutdown stops every hidden program; the last step scrubs the top of `/run` of what the session added, deletes the runtime journal, which the decoy shares with it, and puts most of the decoy's network state back. When it cannot undo a link, MAC address, policy-routing rule or firewall table the session made or changed, it powers off instead of returning (see the [safety notes](#safety-notes)). | Programs close as at a logout. The decoy starts at its own login screen; a display manager set to log an account in automatically logs it in again. The hidden volume is unmounted and closed. When the last step powers off instead, the machine turns off. |
-| `emergency` | the hidden session | The same way back, but every hidden program is killed at once (`cgroup.kill`). It acts immediately; `--countdown` adds an abortable wait. If the way back cannot be prepared, it powers off, and its last step powers off instead of returning, as after `deactivate`, when it cannot undo the session's network changes. | A few seconds of text console, then the decoy's normal login screen: log in with the decoy password. NAILS logs nobody in; a display manager set to log an account in automatically logs it in again, as at boot. When the last step powers off instead, the machine turns off. |
+| `deactivate` | the hidden session | Mounts the decoy root for the way back, marks the hidden volume for closing, and soft-reboots. The orderly shutdown stops every hidden program; the last step scrubs the top of `/run` of what the session added, deletes the runtime journal, which the decoy shares with it, and puts most of the decoy's network state back. When a link, MAC address, policy-routing rule or nftables table it sets out to undo is still the session's afterwards, or it cannot read them back, it powers off instead of returning (see the [safety notes](#safety-notes)). | Programs close as at a logout. The decoy starts at its own login screen; a display manager set to log an account in automatically logs it in again. The hidden volume is unmounted and closed. When the last step powers off instead, the machine turns off. |
+| `emergency` | the hidden session | The same way back, but every hidden program is killed at once (`cgroup.kill`). It acts immediately; `--countdown` adds an abortable wait. If the way back cannot be prepared, it powers off, and its last step powers off instead of returning wherever it does after `deactivate`. | A few seconds of text console, then the decoy's normal login screen: log in with the decoy password. NAILS logs nobody in; a display manager set to log an account in automatically logs it in again, as at boot. When the last step powers off instead, the machine turns off. |
 | `--poweroff` | either command | Powers off instead of returning to the decoy. | The machine turns off. |
 | `recover` | the decoy | Removes what an interrupted activation left in `/run` and resets the state. Never reboots. | A short report. |
 
@@ -438,12 +438,16 @@ object is the `data` of a one-line versioned envelope (`schema_version` 2);
   deletes the links, policy-routing rules and firewall tables the session
   added and sets MAC addresses, the hostname and the network settings back,
   but the addresses and routes the session gave the decoy's own devices, and
-  the other cases the operator guide lists, stay until power-off. When a
-  link, rule or table it deletes is still there afterwards, a MAC address it
-  sets back does not take, or it cannot read the list of links, rules or
-  tables back, it powers off instead of returning; a hostname or network
-  setting it cannot write back does not count. Take VPN connections down and
-  stop containers and virtual machines before you deactivate, or end with
+  the other cases the operator guide lists, stay until power-off. It powers
+  off instead of returning when what it sets out to undo is still the
+  session's afterwards: a virtual link or a Wi-Fi interface on one of the
+  decoy's radios that the session added, the MAC address of one of the
+  decoy's devices, or a policy-routing rule or nftables table the session
+  added, where activation could list the decoy's own and the way back finds
+  `ip` and `nft`; and when it cannot read the links, rules or tables back. A
+  hostname or network setting it cannot write back does not count, and
+  neither does what it leaves alone. Take VPN connections down and stop
+  containers and virtual machines before you deactivate, or end with
   `deactivate --poweroff`. See the
   [operator guide](docs/operator-guide.md#how-it-works).
 - **Do not suspend during a session.** Suspend keeps the whole hidden session

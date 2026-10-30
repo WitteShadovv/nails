@@ -626,21 +626,23 @@ of this changelog for that version becomes the release notes word for word, and
   cannot be read or holds anything but `0` or `1` is refused the same way.
   `--allow-persistent-decoy` accepts it for one run, with a warning. `nails status` shows an armed
   kdump on the decoy, and `status --json` carries it as `decoy_kdump_armed`.
-- The way back from a hidden session powers off instead of returning to the decoy when it cannot
-  put the decoy's network state back: a device that keeps the MAC address the session gave it, a
-  link, Wi-Fi interface, policy-routing rule or nftables table of the session's that is still
-  there after the delete, or a part it cannot read back (the kernel's list of links, or `ip` or
-  `nft` failing to list the rules or tables). That state lives only in the kernel, so a power-off
-  erases it, where a return would hand it to the decoy, and a changed MAC address can reach a DHCP
-  lease on the decoy disk. `deactivate` and a plain `emergency` behave the same, since both return
-  through the same last step, and nothing on the screen says why: a line there would tell anyone
-  watching that a hidden session had just ended. A missing tool alone changes nothing: activation
-  and `deactivate` still only warn, and a session that left nothing for that tool to undo returns as
-  before. Where the way back sees what the session left without the tool (a changed MAC address or a
-  link without `ip`, a Wi-Fi interface without `iw`, the one iwd makes in place of the decoy's by
-  default included), it powers off as well, and the warnings say so. The network settings, the
-  hostname and the per-link runtime state below `/run` do not count, also when writing them back
-  fails.
+- The way back from a hidden session powers off instead of returning to the decoy when what it sets
+  out to undo of the network state is still the session's afterwards: a device of the decoy's that
+  keeps the MAC address the session gave it, a virtual link or Wi-Fi interface the session added
+  that is still there, a policy-routing rule or nftables table the session added that is still
+  loaded (where activation listed the decoy's own and the way back finds `ip` and `nft`), or a part
+  it cannot read back (the kernel's list of links, or `ip` or `nft` failing to list the rules or
+  tables). That state lives only in the kernel, so a power-off erases it, where a return would hand
+  it to the decoy, and a changed MAC address can reach a DHCP lease on the decoy disk. `deactivate`
+  and a plain `emergency` behave the same, since both return through the same last step, and nothing
+  on the screen says why: a line there would tell anyone watching that a hidden session had just
+  ended. A missing tool alone changes nothing: activation and `deactivate` still only warn, and a
+  session that left nothing for that tool to undo returns as before. Where the way back sees what
+  the session left without the tool (a changed MAC address or a link without `ip`, a Wi-Fi interface
+  without `iw`, the one iwd makes in place of the decoy's by default included), it powers off as
+  well, and the warnings say so. The network settings, the hostname and the per-link runtime state
+  below `/run` do not count, also when writing them back fails, and neither does what the way back
+  leaves alone, such as what the session deleted or added inside a table of the decoy's.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On
