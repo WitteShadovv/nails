@@ -239,19 +239,53 @@ pub struct Env {
     pub now: u64,
     /// The live mount table.
     pub mounts: Vec<MountEntry>,
+    /// Where the way back reads and writes the network state
+    /// ([`network::Places::system`]).
+    pub network: network::Places,
+    /// The tools the way back puts the network state back with, or `None` to
+    /// find them where [`network::restore`] does when it runs: in the system
+    /// directories, once `/run/current-system` names the decoy's system.
+    pub network_tools: Option<network::NetTools>,
+    /// How the way back powers off when it cannot put the network state back.
+    pub power_off: PowerOff,
+}
+
+/// How the way back powers off instead of returning ([`PowerOff::system`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PowerOff {
+    /// How long it waits, once PID 1 took the power-off, before it asks the
+    /// kernel itself.
+    pub grace: std::time::Duration,
+    /// Sync and power off through the kernel, which returns only when the
+    /// kernel did not power the machine off.
+    pub kernel: fn() -> bool,
+}
+
+impl PowerOff {
+    /// The real power-off: [`POWER_OFF_GRACE`], then the kernel's.
+    pub fn system() -> Self {
+        Self {
+            grace: POWER_OFF_GRACE,
+            kernel: crate::whole_root::emergency::kernel_power_off,
+        }
+    }
 }
 
 impl Env {
     /// The real system.
     pub fn system() -> Self {
+        let run = PathBuf::from("/run");
         Self {
-            run: PathBuf::from("/run"),
+            network: network::Places::system(&run),
+            run,
             nextroot: PathBuf::from(NEXTROOT),
             runtime_dir: PathBuf::from(RUNTIME_DIR),
             kmsg: PathBuf::from("/dev/kmsg"),
             systemctl: crate::whole_root::tools::find(None, "systemctl"),
             now: unix_now(),
             mounts: read_mountinfo().unwrap_or_default(),
+            network_tools: None,
+            power_off: PowerOff::system(),
         }
     }
 
@@ -536,7 +570,10 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // network settings back, and put the service manager's per-link runtime
     // state back. A no-op without a record. What could not be put back goes
     // into the outcome, as nothing here may log.
-    let network_kept = network::restore(&network::Places::system(&env.run), network.as_deref());
+    let network_kept = match &env.network_tools {
+        Some(tools) => network::restore_with(&env.network, tools, network.as_deref()),
+        None => network::restore(&env.network, network.as_deref()),
+    };
     // What the restore could not undo, or cannot tell it undid, lives only in
     // the kernel: a power-off erases it, a return hands it to the decoy. So
     // power off instead. This returns only when neither PID 1 nor the kernel
@@ -547,8 +584,8 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
             Path::new(CONSOLE),
             env.systemctl.as_deref(),
             &power_off_line(&failed),
-            POWER_OFF_GRACE,
-            crate::whole_root::emergency::kernel_power_off,
+            env.power_off.grace,
+            env.power_off.kernel,
         );
     }
     // The decoy's copy, taken at entry, names mounts by their IDs at that time;
