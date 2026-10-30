@@ -89,3 +89,28 @@ fn the_decoy_storage_override_reaches_the_attach_gate_only_when_given() {
         nails_core::hidden_root::Allow::DecoyStorage
     );
 }
+
+/// A plan refused in the hidden session is `invalid_state`, exit 6; any other
+/// failure to plan is a plain failure, exit 1. The window's helper answers
+/// with the same pair.
+#[test]
+fn a_plan_that_cannot_be_made_keeps_its_exit() {
+    use nails_core::NailsError;
+    let (status, body) = plan_failure(&NailsError::InvalidState(
+        "discard is refused inside the hidden root".to_string(),
+    ));
+    assert_eq!(status, ExitStatus::InvalidState);
+    assert_eq!(status.code(), 6);
+    assert_eq!(body.code, "discard");
+    assert!(
+        body.message.contains("inside the hidden root"),
+        "{}",
+        body.message
+    );
+    let (status, body) = plan_failure(&NailsError::io(
+        "/mnt/data/root/upper/home",
+        std::io::Error::other("read-only"),
+    ));
+    assert_eq!(status, ExitStatus::Failed);
+    assert_eq!(body.code, "discard");
+}
