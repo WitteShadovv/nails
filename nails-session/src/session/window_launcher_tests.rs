@@ -15,7 +15,7 @@ fn me(home: &Path) -> TargetUser {
 fn launcher(root: &str) -> WindowLauncher {
     WindowLauncher {
         engine: Path::new(root).join("nails"),
-        window: Path::new(root).join("gui/bin/nails-gui"),
+        window: Path::new(root).join("gui/bin/session"),
     }
 }
 
@@ -114,14 +114,14 @@ fn the_entry_runs_the_window_with_the_engine_whose_helper_it_starts() {
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=Session\n\
-         Exec=\"/mnt/data/gui/bin/nails-gui\" --engine \"/mnt/data/nails\"\n\
-         TryExec=/mnt/data/gui/bin/nails-gui\n\
+         Exec=\"/mnt/data/gui/bin/session\" --engine \"/mnt/data/nails\"\n\
+         TryExec=/mnt/data/gui/bin/session\n\
          Terminal=false\n\
          Categories=System;\n"
     );
     assert_eq!(
         exec_args(value(&text, "Exec")),
-        ["/mnt/data/gui/bin/nails-gui", "--engine", "/mnt/data/nails"]
+        ["/mnt/data/gui/bin/session", "--engine", "/mnt/data/nails"]
     );
 }
 
@@ -188,7 +188,7 @@ fn the_action_matches_the_engine_and_its_helper_and_asks_every_time() {
 fn a_path_neither_file_can_carry_is_refused() {
     let relative = WindowLauncher {
         engine: PathBuf::from("nails"),
-        window: PathBuf::from("/mnt/data/gui/bin/nails-gui"),
+        window: PathBuf::from("/mnt/data/gui/bin/session"),
     };
     assert!(desktop_entry(&relative).is_err());
     assert!(policy(&relative).is_err());
@@ -201,7 +201,7 @@ fn a_path_neither_file_can_carry_is_refused() {
                 b"/mnt/\xff/nails".to_vec(),
             ),
         ),
-        window: PathBuf::from("/mnt/data/gui/bin/nails-gui"),
+        window: PathBuf::from("/mnt/data/gui/bin/session"),
     };
     assert!(desktop_entry(&not_utf8).unwrap_err().contains("UTF-8"));
     // A character XML must escape: the entry can carry it, the action not.

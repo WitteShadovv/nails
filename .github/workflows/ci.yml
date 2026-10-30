@@ -471,7 +471,7 @@ jobs:
       # and its protocol, and exits; started any other way here it would
       # refuse to open, as it does outside the launcher and a hidden session.
       - name: Smoke-test the gui/ binary
-        run: result-gui/bin/nails-gui --version
+        run: result-gui/bin/session --version
 
   # The CI tooling tests and the cheap flake checks: nixfmt, statix, deadnix,
   # shellcheck, actionlint, zizmor, the ci/ Python lints and the E2E shard

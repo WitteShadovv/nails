@@ -1,7 +1,7 @@
 # Session: the window's launcher in the hidden session
 #
 # A build with the window (the `gui` cargo feature, and the window's program
-# at <hidden-root>/gui/bin/nails-gui) writes at every activation a menu entry
+# at <hidden-root>/gui/bin/session) writes at every activation a menu entry
 # "Session" and a polkit action for the window's helper. On NixOS both go into
 # the hidden root's upper: the entry into the operator's
 # ~/.local/share/applications, the action into /etc/polkit-1/actions.
@@ -88,8 +88,8 @@ in
     # Text only the launcher writes: none of it may reach the decoy disk.
     TOKENS = [
         "Session needs your password each time it opens.",
-        '"/mnt/data/gui/bin/nails-gui" --engine "/mnt/data/nails"',
-        "TryExec=/mnt/data/gui/bin/nails-gui",
+        '"/mnt/data/gui/bin/session" --engine "/mnt/data/nails"',
+        "TryExec=/mnt/data/gui/bin/session",
         '<annotate key="org.freedesktop.policykit.exec.path">/mnt/data/nails</annotate>',
     ]
     # Written to the decoy on purpose at the end: the scan must find it.
@@ -125,7 +125,7 @@ in
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("install -m 0755 ${windowEngine}/bin/nails /mnt/data/nails")
         machine.succeed(
-            "install -D -m 0755 ${packages.nails-gui}/bin/nails-gui /mnt/data/gui/bin/nails-gui"
+            "install -D -m 0755 ${packages.nails-gui}/bin/session /mnt/data/gui/bin/session"
         )
         machine.succeed(
             "mkdir -p /mnt/data/config && "
@@ -155,8 +155,8 @@ in
         print(entry)
         for line in (
             "Name=Session",
-            'Exec="/mnt/data/gui/bin/nails-gui" --engine "/mnt/data/nails"',
-            "TryExec=/mnt/data/gui/bin/nails-gui",
+            'Exec="/mnt/data/gui/bin/session" --engine "/mnt/data/nails"',
+            "TryExec=/mnt/data/gui/bin/session",
         ):
             assert line in entry.splitlines(), f"{line!r} not in {entry!r}"
         machine.succeed(f"desktop-file-validate {ENTRY}")

@@ -389,7 +389,7 @@ mod tests {
         // `Default::default()` would drop all four to false.
         let launcher = crate::session::WindowLauncher {
             engine: std::path::PathBuf::from("/mnt/data/nails"),
-            window: std::path::PathBuf::from("/mnt/data/gui/bin/nails-gui"),
+            window: std::path::PathBuf::from("/mnt/data/gui/bin/session"),
         };
         let options = ActivateOptions {
             overlay_only: true,

@@ -6,7 +6,7 @@
 //! helper talking from the hello handshake on, detached from the launcher.
 //!
 //! Each test lays out a bundle the way a hidden volume holds one: the engine
-//! (a link to the binary under test) and, beside it, `gui/bin/nails-gui`,
+//! (a link to the binary under test) and, beside it, `gui/bin/session`,
 //! here a shell script that plays the window and records what it got. The
 //! launcher runs without root (the test build does not enforce the root gate)
 //! as the operator itself, so the drop is to the account it already has; its
@@ -46,7 +46,7 @@ impl Bundle {
         if let Some(script) = script {
             let bin = dir.path().join("gui/bin");
             std::fs::create_dir_all(&bin).unwrap();
-            let program = bin.join("nails-gui");
+            let program = bin.join("session");
             let out = dir.path().join("out");
             std::fs::write(
                 &program,

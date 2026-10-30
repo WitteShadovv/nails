@@ -45,32 +45,32 @@ of this changelog for that version becomes the release notes word for word, and
 - The launcher for the coming window, `nails gui`, built only with the `gui` cargo feature like the
   helper (the flake check proves the released binary refuses it too). Run as
   `sudo <hidden-root>/nails gui`, it starts the helper as root and the window's program
-  (`<hidden-root>/gui/bin/nails-gui`) as the operator on the two ends of one socket pair, and
-  returns. On the decoy it first refuses, before any window starts, on a decoy that keeps a
-  persistent record (the findings of the activation's decoy persistence check) and on every desktop
-  whose disk, journal and D-Bus trace test has not passed, which today is every desktop; the refusal
-  names the desktop and each reason and points to `activate`. In a hidden session it always opens.
-  The window gets no supplementary groups, `no_new_privs`, no inherited descriptor beyond its pipe
-  and `/dev/null`, and an environment from an allowlist: the display, the session bus and the
-  locale, a home and XDG directories of its own in the operator's runtime directory (refused unless
-  it is private and in RAM), and settings that turn off shader caches, on-disk settings and the
-  portals of GTK. Slint, the window's toolkit, still reads the desktop's appearance from the
-  settings portal on the session bus at every start, starting xdg-desktop-portal through D-Bus
-  activation where it is not running: no setting of Slint 1.18 turns that off, and the session bus
-  stays, since the screen reader support needs it. The desktop trace test that admits a decoy
-  desktop has to clear it. The helper and the window each lead a session of their own, so closing
-  the terminal, or the shell being killed, signals neither.
+  (`<hidden-root>/gui/bin/session`) as the operator on the two ends of one socket pair, and returns.
+  On the decoy it first refuses, before any window starts, on a decoy that keeps a persistent record
+  (the findings of the activation's decoy persistence check) and on every desktop whose disk,
+  journal and D-Bus trace test has not passed, which today is every desktop; the refusal names the
+  desktop and each reason and points to `activate`. In a hidden session it always opens. The window
+  gets no supplementary groups, `no_new_privs`, no inherited descriptor beyond its pipe and
+  `/dev/null`, and an environment from an allowlist: the display, the session bus and the locale, a
+  home and XDG directories of its own in the operator's runtime directory (refused unless it is
+  private and in RAM), and settings that turn off shader caches, on-disk settings and the portals of
+  GTK. Slint, the window's toolkit, still reads the desktop's appearance from the settings portal on
+  the session bus at every start, starting xdg-desktop-portal through D-Bus activation where it is
+  not running: no setting of Slint 1.18 turns that off, and the session bus stays, since the screen
+  reader support needs it. The desktop trace test that admits a decoy desktop has to clear it. The
+  helper and the window each lead a session of their own, so closing the terminal, or the shell
+  being killed, signals neither.
 - The way into the coming window from a hidden session's menu. A build with the `gui` cargo feature
-  whose window program lies at `<hidden-root>/gui/bin/nails-gui` writes, at every activation, a menu
-  entry "Session" that starts the window as whoever clicks it, and a polkit action that matches
-  only the helper the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its
-  password dialog reads "Session needs your password each time it opens." instead of naming the
-  binary, and it asks for an administrator's password every time. Both go into the hidden root's
-  upper and never onto the decoy: on Debian, Ubuntu, Fedora and Arch into `/usr/share/applications`
-  and `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into the operator's
+  whose window program lies at `<hidden-root>/gui/bin/session` writes, at every activation, a menu
+  entry "Session" that starts the window as whoever clicks it, and a polkit action that matches only
+  the helper the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its password
+  dialog reads "Session needs your password each time it opens." instead of naming the binary, and
+  it asks for an administrator's password every time. Both go into the hidden root's upper and never
+  onto the decoy: on Debian, Ubuntu, Fedora and Arch into `/usr/share/applications` and
+  `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into the operator's
   `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and later). Every
-  path is resolved inside the hidden root, so a decoy directory that is an absolute link cannot
-  take the write onto the decoy disk, and one that leads into the Nix store is refused. A file that
+  path is resolved inside the hidden root, so a decoy directory that is an absolute link cannot take
+  the write onto the decoy disk, and one that leads into the Nix store is refused. A file that
   cannot be written is named on one line and the activation goes on.
 - The window itself, `gui/nails-gui`, a Cargo workspace of its own on the Slint toolkit (its
   software renderer: no GL, no shader cache). It is not part of the release yet. It opens on the
@@ -88,9 +88,10 @@ of this changelog for that version becomes the release notes word for word, and
   confirms first as a plan and its apply, and the question dialog for the answer, which sends the
   plan's token back or withdraws the plan at once, keeps the keyboard until it is answered and
   Escape cancels it, is ready for the operation pages to come, though no page opens it yet. Every
-  control and row is a Tab stop with an accessible name, and the window's title and app id
-  ("Session", `session`) name nothing about NAILS. Its tests run without a display, on Slint's
-  testing platform.
+  control and row is a Tab stop with an accessible name. The names a window list, a process list or
+  an accessibility tool shows are neutral: the title is "Session", and the app id, the program
+  (`<hidden-root>/gui/bin/session`), the process name and the application name a screen reader reads
+  are all `session`. Its tests run without a display, on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

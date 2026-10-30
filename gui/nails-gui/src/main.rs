@@ -1,18 +1,19 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The `nails-gui` binary: the window.
+//! The window's program, `session` (the package `nails-gui`).
 //!
-//! - `nails-gui --version` names the window's version, the engine release it
+//! - `session --version` names the window's version, the engine release it
 //!   was built for and its protocol.
-//! - `nails-gui` opens the window on the socket of the launcher (`sudo
+//! - `session` opens the window on the socket of the launcher (`sudo
 //!   <root>/nails gui`), its standard input.
-//! - `nails-gui --engine <root>/nails`, as the menu entry of a hidden session
+//! - `session --engine <root>/nails`, as the menu entry of a hidden session
 //!   runs it, opens the window and starts that engine's helper through
 //!   pkexec ([`nails_gui::launch`]).
 //!
 //! Anywhere else it prints the launcher's line and exits with 2, before
-//! anything connects to a display or a session bus.
+//! anything connects to a display or a session bus. Whichever way it starts,
+//! the process takes its neutral name first ([`nails_gui::process`]).
 
 use std::cell::RefCell;
 use std::ffi::OsString;
@@ -24,6 +25,7 @@ use nails_api::protocol::{PROTOCOL_VERSION, RELEASE};
 use nails_gui::AppWindow;
 use nails_gui::launch::{self, PKEXEC, Start};
 use nails_gui::model::Model;
+use nails_gui::process;
 use nails_gui::text;
 use nails_gui::ui::Controller;
 use nails_gui::worker::{self, Connect};
@@ -57,6 +59,11 @@ fn parse(args: &[OsString]) -> Option<Args> {
 }
 
 fn main() -> ExitCode {
+    // Before anything else, so every thread the window starts inherits it.
+    if let Err(error) = process::name_neutrally() {
+        eprintln!("The window could not name its process: {error}");
+        return ExitCode::FAILURE;
+    }
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let engine = match parse(&args) {
         Some(Args::Version) => {
@@ -68,7 +75,7 @@ fn main() -> ExitCode {
         }
         Some(Args::Open(engine)) => engine,
         None => {
-            eprintln!("usage: nails-gui [--version | --engine <path>]");
+            eprintln!("usage: {} [--version | --engine <path>]", text::APP_ID);
             return ExitCode::from(2);
         }
     };

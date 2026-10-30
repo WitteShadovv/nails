@@ -1575,7 +1575,7 @@ fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
 fn launcher_on(world: &World) -> WindowLauncher {
     WindowLauncher {
         engine: world.hidden.path().join("nails"),
-        window: world.hidden.path().join("gui/bin/nails-gui"),
+        window: world.hidden.path().join("gui/bin/session"),
     }
 }
 
