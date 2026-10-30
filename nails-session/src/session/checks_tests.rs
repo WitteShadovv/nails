@@ -311,7 +311,7 @@ fn the_decoy_s_units_outside_its_fstab_are_decided_as_activation_decides_them() 
     };
     let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
     // Its disk is not on this host, and a target only wants it: masked.
-    let decisions = decoy_units(dirs, &mounts, Path::new("/mnt/data"));
+    let decisions = decoy_units(dirs, &[], &mounts, Path::new("/mnt/data"));
     assert_eq!(decisions.len(), 1, "{decisions:?}");
     assert_eq!(decisions[0].masked_units(), ["srv-scratch.mount"]);
 }

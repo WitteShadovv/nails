@@ -283,9 +283,10 @@ of this changelog for that version becomes the release notes word for word, and
   of its own swapped onto its disk, and the ESP the GPT auto-generator mounts at `/efi` (Arch Linux)
   was missing from the hidden session. Activation now reads every `.mount`, `.swap` and `.automount`
   unit linked in a target's `.wants` or `.requires` directory of the hidden root and of `/run`, with
-  its own drop-ins, except those the fstab generator made from the fstab: a filesystem the decoy has
-  mounted now is bound read-only or overlaid, one not mounted now is skipped or masked, and the
-  automount of a filesystem put in place is kept off. RAM and kernel filesystems are left to the
+  its own drop-ins, except those the fstab generator made from a line the fstab policy decides (a
+  copy of such a unit in `/etc/systemd/system`, as `systemctl edit --full` makes, is decided as a
+  unit of its own): a filesystem the decoy has mounted now is bound read-only or overlaid, one not
+  mounted now is skipped or masked, and the automount of a filesystem put in place is kept off. RAM and kernel filesystems are left to the
   hidden systemd, and so is a zram swap whose zram device has no backing device. One with a backing
   device is kept off like disk swap. A unit whose files cannot be read, or that names its source by
   a specifier, is masked, and a directory of unit links that cannot be listed refuses the

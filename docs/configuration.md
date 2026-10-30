@@ -180,8 +180,9 @@ a mount the kernel command line names (`systemd.mount-extra=`), zram-generator's
 swap, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
 `.swap` and `.automount` unit linked in a target's `.wants` or `.requires`
 directory (the initrd's targets aside) of the hidden root's unit directories
-and of `/run`, except those the fstab generator made from the fstab, with its
-own drop-ins, and gives each the decision an fstab line with its source, type
+and of `/run`, except those the fstab generator made from a line the fstab
+policy decides, with its own drop-ins, and gives each the decision an fstab
+line with its source, type
 and options would get: a filesystem the decoy has mounted now is bound
 read-only or overlaid, one not mounted now is kept unmounted, skipped where it
 is linked in a target's `.requires` directory, and RAM and kernel filesystems
@@ -189,8 +190,11 @@ is linked in a target's `.requires` directory, and RAM and kernel filesystems
 filesystem put in place is kept off. A unit the decoy masks is left alone, and
 one whose unit files cannot be read, or that names its source by a specifier,
 is masked; where a target requires it, `nails check` and `nails activate` warn
-that the target will not be reached. A directory of unit links that NAILS
-cannot list refuses the activation. The GPT auto-generator does not run in the
+that the target will not be reached. A copy of a generated unit outside the
+generator's directory, such as the one `systemctl edit --full` writes to
+`/etc/systemd/system`, is decided as a unit of its own, and so is a generated
+unit that no line of the fstab makes any more. A directory of unit links that
+NAILS cannot list refuses the activation. The GPT auto-generator does not run in the
 hidden session, but the ESP it mounted in the decoy (at `/efi` on Arch Linux)
 is bound read-only into the hidden root, as an fstab line for `/efi` would be.
 
