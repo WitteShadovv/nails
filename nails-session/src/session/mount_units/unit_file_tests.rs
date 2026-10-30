@@ -152,6 +152,41 @@ fn a_unit_file_systemd_refuses_is_refused() {
 }
 
 #[test]
+fn a_line_is_refused_at_systemd_s_limit_and_a_continued_one_past_it() {
+    // read_line() stops with ENOBUFS once it holds LONG_LINE_MAX bytes,
+    // before it reads the end of the line: the longest line it returns is
+    // one byte shorter, a comment as any other line.
+    let line = |len: usize| {
+        let key = b"What=".as_slice();
+        [
+            b"[Mount]\n".as_slice(),
+            key,
+            &vec![b'a'; len - key.len()],
+            b"\n",
+        ]
+        .concat()
+    };
+    let value = |text: &[u8]| parse(text).map(|unit| unit.last("Mount", "What").map(str::len));
+    assert_eq!(value(&line(LONG_LINE_MAX - 1)), Ok(Some(LONG_LINE_MAX - 6)));
+    assert_eq!(value(&line(LONG_LINE_MAX)), Err(Refused::TooLong));
+    let comment = |len: usize| [b"[Mount]\n#".as_slice(), &vec![b'c'; len - 1], b"\n"].concat();
+    assert_eq!(value(&comment(LONG_LINE_MAX - 1)), Ok(None));
+    assert_eq!(value(&comment(LONG_LINE_MAX)), Err(Refused::TooLong));
+    // A continued line may hold LONG_LINE_MAX bytes, the backslash a space,
+    // and no more.
+    let continued = |len: usize| {
+        let first = [b"What=".as_slice(), &[b'a'; 9], b"\\"].concat();
+        let rest = vec![b'b'; len - first.len()];
+        [b"[Mount]\n".as_slice(), &first, b"\n", &rest, b"\n"].concat()
+    };
+    assert_eq!(
+        value(&continued(LONG_LINE_MAX)),
+        Ok(Some(LONG_LINE_MAX - 5))
+    );
+    assert_eq!(value(&continued(LONG_LINE_MAX + 1)), Err(Refused::TooLong));
+}
+
+#[test]
 fn a_long_line_is_read_up_to_systemd_s_limit_and_a_section_name_may_hold_a_space() {
     let value = "a".repeat(64 * 1024);
     let text = format!("[X-Own Section]\nKey={value}\n");

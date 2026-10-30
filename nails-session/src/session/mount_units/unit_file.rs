@@ -23,11 +23,13 @@
 //! ([`Refused`]): a line that is not valid UTF-8 by systemd's measure (which
 //! also refuses the Unicode noncharacters), a section header without its
 //! closing `]` or whose name holds a control character, a quote or a
-//! backslash, a line longer than systemd reads (`LONG_LINE_MAX`, 1 MiB),
-//! and, as some systemd releases refuse them, a header with an empty name or
-//! one that holds `*`, `?` or `[`.
+//! backslash, a line, comments included, of `LONG_LINE_MAX` (1 MiB) bytes or
+//! more, which `read_line()` refuses before it reads the line's end, a
+//! continued line longer than that, and, as some systemd releases refuse
+//! them, a header with an empty name or one that holds `*`, `?` or `[`.
 
-/// The longest line systemd reads, a continuation included.
+/// systemd's `LONG_LINE_MAX`: `read_line()` refuses a line of this many
+/// bytes, and a continued line may hold this many at most.
 const LONG_LINE_MAX: usize = 1024 * 1024;
 
 /// systemd's `WHITESPACE`.
@@ -163,7 +165,7 @@ pub fn parse(bytes: &[u8]) -> Result<UnitFile, Refused> {
     let mut continuation: Option<Vec<u8>> = None;
     let mut bom_seen = false;
     for buf in read_lines(bytes) {
-        if buf.len() > LONG_LINE_MAX {
+        if buf.len() >= LONG_LINE_MAX {
             return Err(Refused::TooLong);
         }
         // A comment is told by the raw line, before a byte order mark goes.
