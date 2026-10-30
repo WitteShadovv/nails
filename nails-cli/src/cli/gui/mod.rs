@@ -20,7 +20,7 @@
 //! 4. start both ends of one socket pair ([`spawn`]): `<root>/nails helper
 //!    --stdio`, still root, on one end, and the window's program
 //!    (`<root>/gui/bin/session`) on the other, dropped to the operator with
-//!    the environment of [`window_env`] and nothing else.
+//!    the environment of [`nails_api::window_env`] and nothing else.
 //!
 //! Both start a session of their own, so the terminal the line was typed in
 //! can close, and its shell be killed (activation kills it last, before the
@@ -34,7 +34,6 @@
 mod gate;
 mod runtime_dir;
 mod spawn;
-mod window_env;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -124,7 +123,7 @@ fn open(env: &RuntimeEnv, options: HelperOptions<'_>) -> Result<Opened, Refusal>
             uid: operator.uid,
             gid: operator.gid,
         },
-        vars: window_env::vars(&env.inherited, &runtime, &own_dir),
+        vars: nails_api::window_env::vars(env.inherited.iter(), &runtime, &own_dir),
     };
     let (helper_pid, window_pid) =
         spawn::start(&engine, &helper_args(options), window).map_err(|error| {
