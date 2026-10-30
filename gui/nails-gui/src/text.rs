@@ -129,16 +129,25 @@ pub fn hidden_active(uptime_seconds: Option<i64>) -> String {
     }
 }
 
-/// A hidden session without a way back, with the engine's reason.
+/// A hidden session without a way back.
+pub const HIDDEN_NO_WAY_BACK: &str = "Hidden session without a way back.";
+
+/// How the engine's reason for a hidden session without a way back opens:
+/// with what [`HIDDEN_NO_WAY_BACK`] says already.
+const ENGINE_NO_WAY_BACK: &str = "in the hidden root without a way back:";
+
+/// The engine's `reason` for a hidden session without a way back, as the
+/// line under [`HIDDEN_NO_WAY_BACK`]: why there is none, without the words
+/// that line says already.
 #[must_use]
-pub fn hidden_no_way_back(reason: Option<&str>) -> String {
-    match reason {
-        Some(reason) => format!(
-            "Hidden session without a way back: {}.",
-            trim_end_stop(reason)
-        ),
-        None => "Hidden session without a way back.".to_string(),
-    }
+pub fn no_way_back_reason(reason: &str) -> String {
+    let reason = reason.trim();
+    sentence(
+        reason
+            .strip_prefix(ENGINE_NO_WAY_BACK)
+            .unwrap_or(reason)
+            .trim_start(),
+    )
 }
 
 /// A hidden session with a disk mounted over its volume at `root`.

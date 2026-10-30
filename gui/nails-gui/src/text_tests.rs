@@ -43,13 +43,17 @@ fn the_engines_reasons_end_the_sentence_they_are_put_in() {
         decoy_switch_refused(None),
         "Decoy. The last activation stopped at the switch."
     );
+    // The reason as the engine gives it, its opening words left out, since
+    // the page's sentence says them already.
     assert_eq!(
-        hidden_no_way_back(Some("no session plan in /run")),
-        "Hidden session without a way back: no session plan in /run."
+        no_way_back_reason(
+            "in the hidden root without a way back: no session plan in /run (upper /mnt/data/root/upper)"
+        ),
+        "No session plan in /run (upper /mnt/data/root/upper)."
     );
     assert_eq!(
-        hidden_no_way_back(None),
-        "Hidden session without a way back."
+        no_way_back_reason("the plan in /run names another upper."),
+        "The plan in /run names another upper."
     );
     assert_eq!(
         hidden_volume_covered(Some(120), "/mnt/data"),

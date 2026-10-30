@@ -348,15 +348,24 @@ fn a_hidden_session_says_how_long_it_has_run() {
 
 #[test]
 fn a_hidden_session_without_a_way_back_names_the_power_button() {
+    // The reason as the engine's status gives it for a hidden root without
+    // a plan.
     let mut model = connected();
-    model.apply(status(
-        json!({"place": "hidden", "attention": "no_way_back", "reason": "no session plan in /run"}),
-    ));
+    model.apply(status(json!({"place": "hidden", "attention": "no_way_back",
+        "reason": "in the hidden root without a way back: no session plan in /run (upper /mnt/data/root/upper)"})));
     let page = model.page();
     assert_eq!(page.heading, "No Way Back");
+    assert_eq!(page.description, "Hidden session without a way back.");
     assert_eq!(
-        page.description,
-        "Hidden session without a way back: no session plan in /run."
+        page.note,
+        "No session plan in /run (upper /mnt/data/root/upper)."
+    );
+    assert_eq!(
+        format!("{} {}", page.description, page.note)
+            .matches("without a way back")
+            .count(),
+        1,
+        "the page says it once"
     );
     assert_eq!(page.fix, text::HOLD_POWER_BUTTON);
     assert!(page.urgent);
