@@ -731,6 +731,7 @@ fn keep_units_off(
     let more = mount_units::decide(
         dirs,
         &native,
+        &decided.fstab,
         decoy_mounts,
         inputs.hidden_root,
         present,

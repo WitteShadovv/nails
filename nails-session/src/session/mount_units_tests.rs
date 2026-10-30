@@ -59,10 +59,17 @@ impl Decoy {
     }
 
     fn decide(&self, mounts: &str, present: bool) -> Vec<Decision> {
+        self.decide_with("", mounts, present)
+    }
+
+    /// [`Decoy::decide`] with the fstab lines `fstab` decided by the fstab
+    /// policy.
+    fn decide_with(&self, fstab: &str, mounts: &str, present: bool) -> Vec<Decision> {
         let units = read(self.dirs()).expect("the unit directories are listed");
         decide(
             self.dirs(),
             &units,
+            &crate::session::fstab::parse_fstab(fstab),
             &parse_mountinfo(mounts),
             Path::new(HIDDEN),
             &|_| present,
@@ -224,7 +231,7 @@ fn ram_kernel_and_fstab_units_and_the_decoy_s_masks_are_left_to_the_hidden_syste
         "../sysroot.mount",
     );
 
-    let decisions = decoy.decide(ROOT_ONLY, false);
+    let decisions = decoy.decide_with(DATA, ROOT_ONLY, false);
     assert!(
         decisions
             .iter()
@@ -239,6 +246,56 @@ fn ram_kernel_and_fstab_units_and_the_decoy_s_masks_are_left_to_the_hidden_syste
             "/dev/hugepages: left as is (RAM or kernel filesystem)",
             "/proc/sys/fs/binfmt_misc: left as is (RAM or kernel filesystem)",
         ]
+    );
+}
+
+#[test]
+fn a_unit_the_fstab_generator_made_is_left_only_to_a_line_the_policy_decides() {
+    // `systemctl edit --full` copies the generator's unit, `SourcePath=` and
+    // all, to /etc/systemd/system, where it outranks the generator's; then
+    // its fstab line went. The generator's own unit for /srv/old is from the
+    // decoy's start, and no line makes it now.
+    let decoy = Decoy::new();
+    decoy.write(
+        "/etc/systemd/system/srv-data.mount",
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdc1\nWhere=/srv/data\nType=ext4\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.wants/srv-data.mount",
+        "../srv-data.mount",
+    );
+    decoy.write(
+        "/run/systemd/generator/srv-old.mount",
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdd1\nWhere=/srv/old\nType=ext4\n",
+    );
+    decoy.link(
+        "/run/systemd/generator/local-fs.target.requires/srv-old.mount",
+        "../srv-old.mount",
+    );
+    let decided = |fstab: &str| -> (Vec<String>, Vec<String>) {
+        let decisions = decoy.decide_with(fstab, ROOT_ONLY, true);
+        let masked = policy::masked_units(&decisions);
+        let skipped = decisions
+            .iter()
+            .filter_map(Decision::skip)
+            .flat_map(|skip| skip.units.clone())
+            .collect();
+        (masked, skipped)
+    };
+    // Neither is left to the fstab policy: the hidden systemd would mount
+    // both read-write.
+    assert_eq!(
+        decided(""),
+        (vec!["srv-data.mount".into()], vec!["srv-old.mount".into()])
+    );
+    // A line for each: the generator's own unit is the policy's, the copy in
+    // /etc is still decided as a unit of its own.
+    assert_eq!(
+        decided(
+            "/dev/vdc1 /srv/data ext4 defaults 0 2\n\
+             /dev/vdd1 /srv/old ext4 defaults 0 2\n"
+        ),
+        (vec!["srv-data.mount".into()], Vec::new())
     );
 }
 
@@ -811,7 +868,7 @@ fn a_unit_file_of_up_to_four_mebibytes_is_read_and_a_larger_one_is_not() {
         decoy.write("/etc/systemd/system/srv-scratch.mount", &sized(size));
         let load = decoy.dirs().load("srv-scratch.mount");
         if loads {
-            assert!(matches!(load, Load::Loaded(_)), "{size} bytes");
+            assert!(matches!(load, Load::Loaded { .. }), "{size} bytes");
         } else {
             assert!(matches!(load, Load::Unreadable), "{size} bytes");
         }
@@ -843,7 +900,7 @@ fn only_conf_drop_ins_apply_each_name_from_the_first_directory_that_has_it() {
         "/etc/systemd/system/srv-ram.mount.d/30-off.conf.disabled",
         "[Mount]\nType=ext4\n",
     );
-    let Load::Loaded(unit) = decoy.dirs().load("srv-ram.mount") else {
+    let Load::Loaded { unit, .. } = decoy.dirs().load("srv-ram.mount") else {
         panic!("the unit loads");
     };
     let mount = |key: &str, value: &str| ("Mount".to_string(), key.to_string(), value.to_string());
