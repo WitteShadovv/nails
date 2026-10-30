@@ -81,13 +81,16 @@ impl Model {
             .unwrap_or_default();
         let description = match status.attention {
             Some(Attention::Interrupted) => {
+                // Clean Up runs `recover`, which asks nothing, as the
+                // CLI's does: the page says what it does in place of the
+                // command a terminal would run.
                 return Page {
                     heading: text::INTERRUPTED.to_string(),
                     description: text::DECOY_INTERRUPTED.to_string(),
                     busy: (self.running == Some(Kind::Recover))
                         .then(|| text::CLEANING_UP.to_string()),
                     facts: self.volume_fact(status),
-                    fix,
+                    fix: text::CLEAN_UP_WHAT.to_string(),
                     action: Some(text::CLEAN_UP),
                     ..Page::default()
                 };
@@ -225,8 +228,15 @@ impl Model {
             })
             .unwrap_or_default();
         // Only a status of the decoy, which shows no session is active, can
-        // be the reason to reset the record.
+        // be the reason to reset the record. Reset Record runs `recover`,
+        // which asks nothing, as the CLI's does: the page says what it does
+        // in place of the command a terminal would run.
         let on_the_decoy = status.is_some_and(|status| status.place == Place::Decoy);
+        let fix = if on_the_decoy {
+            text::RESET_RECORD_WHAT.to_string()
+        } else {
+            fix
+        };
         Page {
             heading: text::RECORD_UNREADABLE.to_string(),
             description: text::DECOY_RECORD_UNREADABLE.to_string(),
