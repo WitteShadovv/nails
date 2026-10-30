@@ -8,7 +8,9 @@
 //! page the model gives; the window's controls come back to it as the
 //! effects the model gives for them. It never touches the pipe:
 //! [`Controller::new`] takes the way to the worker as functions, so the tests
-//! can stand in for the worker.
+//! can stand in for the worker. The Emergency control's gesture fires the
+//! emergency from its input event, through a function that only signals
+//! ([`crate::emergency::Emergency::fire`]), before the page is drawn again.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -29,6 +31,8 @@ pub struct Hooks {
     pub hang_up: Box<dyn Fn()>,
     /// Close the window (the person's Close, or a dismissed password dialog).
     pub close: Box<dyn Fn()>,
+    /// Fire the emergency. It must not wait for anything.
+    pub emergency: Box<dyn Fn()>,
 }
 
 /// The window's half of a session.
@@ -54,8 +58,15 @@ impl Controller {
 
     /// Take in what the worker reported.
     pub fn update(&mut self, update: Update) {
-        for ask in self.model.apply(update) {
-            (self.hooks.ask)(ask);
+        self.take(std::iter::once(update));
+    }
+
+    /// Take in several of the worker's updates, in order, and draw once.
+    pub fn take(&mut self, updates: impl IntoIterator<Item = Update>) {
+        for update in updates {
+            for ask in self.model.apply(update) {
+                (self.hooks.ask)(ask);
+            }
         }
         if self.model.quits() {
             (self.hooks.close)();
@@ -87,12 +98,19 @@ impl Controller {
         match effect {
             Some(Effect::Ask(ask)) => (self.hooks.ask)(ask),
             Some(Effect::HangUp) => (self.hooks.hang_up)(),
+            Some(Effect::Emergency) => (self.hooks.emergency)(),
             None => {}
         }
     }
 
     fn action(&mut self) {
         let effect = self.model.action();
+        self.effect(effect);
+        self.draw();
+    }
+
+    fn emergency(&mut self) {
+        let effect = self.model.emergency();
         self.effect(effect);
         self.draw();
     }
@@ -139,6 +157,12 @@ fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     window.on_action_activated(move || {
         if let Some(controller) = weak.upgrade() {
             controller.borrow_mut().action();
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_emergency_fired(move || {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().emergency();
         }
     });
     let weak = Rc::downgrade(controller);
@@ -220,6 +244,7 @@ pub fn draw(window: &AppWindow, page: &Page) {
     window.set_action(page.action.unwrap_or_default().into());
     window.set_action_plain(page.action_kind == ActionKind::Plain);
     window.set_takes_input(!page.no_input);
+    window.set_emergency_shown(page.emergency);
     match &page.question {
         Some(question) => {
             window.set_question_heading(question.heading.as_str().into());

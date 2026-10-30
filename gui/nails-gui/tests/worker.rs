@@ -34,7 +34,7 @@ struct Window {
 impl Window {
     fn on(connect: Connect) -> Self {
         let (tell, heard) = channel();
-        let worker = spawn(connect, move |update| {
+        let worker = spawn(connect, None, move |update| {
             let _ = tell.send(update);
         });
         Self { worker, heard }

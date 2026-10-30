@@ -363,6 +363,19 @@ fn report_rows(report: &Readiness, allowed: &BTreeSet<Risk>) -> Vec<CheckView> {
         .collect()
 }
 
+/// The page once the emergency fired: the session ends, and nothing is to
+/// read or answer but the way out that needs neither the window nor NAILS.
+pub(super) fn ending_now_page() -> Page {
+    Page {
+        heading: text::ENDING.to_string(),
+        description: text::EMERGENCY_NOW.to_string(),
+        urgent: true,
+        fix: text::POWER_BUTTON_IF_STILL_ON.to_string(),
+        no_input: true,
+        ..Page::default()
+    }
+}
+
 pub(super) fn busy_page(heading: &str, description: &str) -> Page {
     Page {
         heading: heading.to_string(),
