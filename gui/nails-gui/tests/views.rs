@@ -207,3 +207,26 @@ fn a_dismissed_password_dialog_closes_the_window() {
     screen.update(Update::Ended(Failure::PasswordDismissed));
     assert!(screen.closed());
 }
+
+#[test]
+fn a_status_the_engine_could_not_build_names_no_place() {
+    let screen = Screen::new(false);
+    screen.update(Update::Connected(ours()));
+    screen.update(Update::Answered(
+        Kind::Status,
+        Answer {
+            exit: 3,
+            envelope: json!({"schema_version": 2, "command": "status", "ok": false, "error": {
+                "code": "config", "message": "invalid configuration in /mnt/data/config/nails.toml",
+                "next": null}}),
+        },
+    ));
+    assert!(screen.shows("Settings Cannot Be Read"));
+    assert!(screen.shows("Next: sudo /mnt/data/nails config validate"));
+    assert!(!screen.shows(nails_gui::text::DECOY_RECORD_UNREADABLE));
+    let heading = screen.find_with("Settings Cannot Be Read", AccessibleRole::Text);
+    assert_eq!(
+        heading.accessible_live_region(),
+        Some(i_slint_backend_testing::AccessibleLiveness::Assertive)
+    );
+}

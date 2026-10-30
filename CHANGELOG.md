@@ -77,11 +77,12 @@ of this changelog for that version becomes the release notes word for word, and
   another release or protocol with a page that says so before it sends anything, and reads each
   frame strictly and with a size limit. Its pages: the decoy's check, which runs when the window
   opens and shows each check as it finishes, then the verdict with each problem and its fix; a
-  hidden session's status; and a page for each way a session can end (another release, a refused
-  request, a lost connection, an answer it cannot read, a password pkexec could not get). A
+  hidden session's status; a page for a status the engine could not build, such as settings it
+  cannot read, which names no place; and a page for each way a session can end (another release, a
+  refused request, a lost connection, an answer it cannot read, a password pkexec could not get). A
   dismissed password dialog closes it. An operation the engine confirms first goes through a
-  question whose answer sends the plan's token back or withdraws the plan at once. Every control
-  and row is a Tab stop with an accessible name, an open question keeps the keyboard until it is
+  question whose answer sends the plan's token back or withdraws the plan at once. Every control and
+  row is a Tab stop with an accessible name, an open question keeps the keyboard until it is
   answered and Escape cancels it, and the window's title and app id ("Session", `session`) name
   nothing about NAILS. Its tests run without a display, on Slint's testing platform.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules

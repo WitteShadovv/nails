@@ -296,7 +296,7 @@ impl Model {
     fn session_page(&self) -> Page {
         let Some(status) = &self.status else {
             return match &self.status_error {
-                Some(error) => self.record_unreadable_page(None, Some(error)),
+                Some(error) => self.status_failed_page(error),
                 None => busy_page(text::STARTING, ""),
             };
         };
@@ -308,7 +308,42 @@ impl Model {
                 description: text::ACTIVATING_WHERE.to_string(),
                 ..Page::default()
             },
-            Place::Unknown => self.record_unreadable_page(None, self.status_error.as_ref()),
+            Place::Unknown => self.place_unknown_page(self.status_error.as_ref()),
+        }
+    }
+
+    /// The page of a status the engine could not build at all, with no data
+    /// to say where the machine is: its settings could not be read, or it
+    /// failed otherwise. It names no place.
+    fn status_failed_page(&self, error: &ErrorBody) -> Page {
+        let next = error
+            .next
+            .as_ref()
+            .map(|next| text::next_step(self.engine.as_deref(), &next.command));
+        let (heading, fix) = if error.code == "config" {
+            (
+                text::SETTINGS_UNREADABLE,
+                next.unwrap_or_else(|| text::next_step(self.engine.as_deref(), "config validate")),
+            )
+        } else {
+            (text::STATUS_UNAVAILABLE, next.unwrap_or_default())
+        };
+        Page {
+            heading: heading.to_string(),
+            description: text::sentence(&error.message),
+            note: text::NOTHING_CHANGED.to_string(),
+            urgent: true,
+            fix,
+            ..Page::default()
+        }
+    }
+
+    /// The page of a status whose record could not be read at all, so the
+    /// engine does not guess where the machine is, and neither does the page.
+    fn place_unknown_page(&self, error: Option<&ErrorBody>) -> Page {
+        Page {
+            description: text::PLACE_UNKNOWN.to_string(),
+            ..self.record_unreadable_page(None, error)
         }
     }
 

@@ -224,6 +224,8 @@ fn an_interrupted_activation_or_an_unreadable_record_comes_before_the_check() {
     let mut model = connected();
     assert!(model.apply(decoy(json!("record_unreadable"))).is_empty());
     assert_eq!(model.page().heading, "Record Cannot Be Read");
+    // Here the status says the machine is the decoy, so the page does too.
+    assert_eq!(model.page().description, text::DECOY_RECORD_UNREADABLE);
 }
 
 #[test]
@@ -237,8 +239,60 @@ fn a_status_that_could_not_be_built_is_an_unreadable_record() {
     ));
     let page = model.page();
     assert_eq!(page.heading, "Record Cannot Be Read");
+    assert_eq!(
+        page.description,
+        "The record on the hidden volume cannot be read, so it is not known whether a hidden \
+         session is active."
+    );
+    assert!(
+        !page.description.contains("Decoy"),
+        "the engine does not guess the place, and neither does the page"
+    );
     assert_eq!(page.note, "The record is damaged.");
     assert_eq!(page.fix, "Next: sudo /mnt/data/nails recover");
+}
+
+#[test]
+fn settings_that_cannot_be_read_are_said_wherever_the_window_runs() {
+    // The helper's status answer when it cannot load the settings: an error
+    // and no data, so nothing says where the machine is, in a hidden session
+    // as on the decoy.
+    let mut model = connected();
+    assert!(
+        model
+            .apply(answered(
+                Kind::Status,
+                json!({"schema_version": 2, "command": "status", "ok": false, "error": {
+                    "code": "config",
+                    "message": "invalid configuration in /mnt/data/config/nails.toml: unknown field `accept_persistent_decoy`",
+                    "next": null}}),
+            ))
+            .is_empty(),
+        "no check without a status"
+    );
+    let page = model.page();
+    assert_eq!(page.heading, "Settings Cannot Be Read");
+    assert_eq!(
+        page.description,
+        "Invalid configuration in /mnt/data/config/nails.toml: unknown field `accept_persistent_decoy`."
+    );
+    assert_eq!(page.note, "Nothing was changed.");
+    assert_eq!(page.fix, "Next: sudo /mnt/data/nails config validate");
+    assert!(page.urgent);
+    assert!(!page.description.contains("Decoy") && !page.heading.contains("Record"));
+
+    // Any other failure of the status names no place either, and gives the
+    // engine's next step when there is one.
+    let mut model = connected();
+    model.apply(answered(
+        Kind::Status,
+        json!({"schema_version": 2, "command": "status", "ok": false, "error": {
+            "code": "internal_error", "message": "the status could not be built", "next": {"command": "status"}}}),
+    ));
+    let page = model.page();
+    assert_eq!(page.heading, "Status Not Available");
+    assert_eq!(page.description, "The status could not be built.");
+    assert_eq!(page.fix, "Next: sudo /mnt/data/nails status");
 }
 
 #[test]
