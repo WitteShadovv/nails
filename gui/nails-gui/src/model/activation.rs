@@ -13,7 +13,9 @@
 //!   page and in the question before the activation, and gives the flag to
 //!   that activation. Once its apply is answered or its plan withdrawn, or a
 //!   recovery ran, the window forgets the risk and checks again without the
-//!   flag. Nothing is stored.
+//!   flag. Nothing is stored. No decoy reaches this yet: the launcher's gate
+//!   refuses a decoy that keeps a persistent record before the window opens,
+//!   so only a decoy that starts keeping one afterwards would show it.
 //! - **The question** names what the plan says: the logout, each risk
 //!   allowed, the attach gate's warning, the decoy home, a hidden system to
 //!   build and a missing settings file.
