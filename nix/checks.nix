@@ -113,6 +113,31 @@ in
     '';
   };
 
+  # The copy of Slint's winit backend in gui/patches is the crate crates.io
+  # publishes plus the project's patch, byte for byte. The crate is a
+  # fixed-output fetch by the checksum gui/patches/i-slint-backend-winit.sha256
+  # records, so it is either that crate or no build at all, and the check
+  # needs no network once the store holds it. `just vet gui` builds this
+  # check, so the gui-vet job gates on it.
+  gui-patches =
+    let
+      published = lib.splitString "  " (
+        lib.removeSuffix "\n" (builtins.readFile (root + "/gui/patches/i-slint-backend-winit.sha256"))
+      );
+      crate = pkgs.fetchurl {
+        url = "https://static.crates.io/crates/i-slint-backend-winit/${lib.elemAt published 1}";
+        sha256 = lib.elemAt published 0;
+      };
+    in
+    lint "gui-patches" {
+      files = fs.unions [
+        (root + "/gui/patches")
+        (root + "/scripts/check-gui-patches.sh")
+      ];
+      tools = [ ];
+      script = "bash scripts/check-gui-patches.sh ${crate}";
+    };
+
   # Offline: the build sandbox has no network, and online audits would make
   # the result depend on the GitHub API. The audit policy and the findings
   # that predate this check live in .github/zizmor.yml.
