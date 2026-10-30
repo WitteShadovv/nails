@@ -44,6 +44,14 @@ use activation::{Activation, Outcome, Risk};
 use deactivation::{Applied, Deactivation, Ending};
 use pages::{busy_page, join, recovered};
 
+/// How long a switch may take once the engine asked for it, before its page
+/// offers a way out: the logout of an activation, and the end of a
+/// deactivated hidden session. Once systemd runs the switch, it stops the
+/// session's programs, this window's with them, within seconds (a delay
+/// inhibitor holds logind back 5 s at most by default); the engine says
+/// nothing more after it asked.
+pub const SWITCH_OVERDUE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// One check as a page shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckView {
@@ -211,6 +219,8 @@ pub struct Model {
     /// the mount table: the Emergency control shows from the start then.
     in_hidden_session: bool,
     emergency_fired: bool,
+    /// The switch whose page shows did not come within [`SWITCH_OVERDUE`].
+    switch_overdue: bool,
 }
 
 impl Model {
@@ -239,7 +249,25 @@ impl Model {
             hung_up: false,
             in_hidden_session: false,
             emergency_fired: false,
+            switch_overdue: false,
         }
+    }
+
+    /// Whether the page is that of a switch the window waits for: an
+    /// activation past its point of no return, or a deactivation that ends.
+    /// The window times it ([`SWITCH_OVERDUE`]).
+    #[must_use]
+    pub fn switch_pending(&self) -> bool {
+        !self.emergency_fired
+            && self.stage == Stage::Connected
+            && (matches!(self.activation, Some(Activation::PastThePoint))
+                || self.deactivation.is_some())
+    }
+
+    /// The switch that is pending did not come in time (`true`), or a new
+    /// one began (`false`). An overdue switch's page gives a way out.
+    pub fn set_switch_overdue(&mut self, overdue: bool) {
+        self.switch_overdue = overdue;
     }
 
     /// The window runs in a hidden session (`/` is its overlay), which the
@@ -635,6 +663,19 @@ impl Model {
         }
     }
 
+    /// The way out of the page of a switch that did not come: the window's
+    /// Close works again, and the page says what is left to do.
+    fn overdue(&self, page: &mut Page) {
+        page.no_input = false;
+        if self.activation.is_some() {
+            page.note = text::LOGOUT_LATE.to_string();
+            page.fix = text::see_where_things_stand(self.engine.as_deref());
+        } else {
+            page.note = join(&page.note, text::ENDING_LATE);
+            page.fix = text::END_ANOTHER_WAY.to_string();
+        }
+    }
+
     /// The helper's answer to an activation's apply.
     fn activation_answered(&mut self, value: &serde_json::Value) -> Vec<Ask> {
         // Whatever it says, what was allowed held for this activation only.
@@ -685,6 +726,9 @@ impl Model {
                 (None, None) => self.session_page(),
             },
         };
+        if self.switch_overdue && self.switch_pending() {
+            self.overdue(&mut page);
+        }
         if let Some(notice) = &self.notice {
             page.note = join(notice, &page.note);
         }
@@ -728,3 +772,7 @@ mod deactivation_tests;
 #[cfg(test)]
 #[path = "model_emergency_tests.rs"]
 mod emergency_tests;
+
+#[cfg(test)]
+#[path = "model_switch_tests.rs"]
+mod switch_tests;

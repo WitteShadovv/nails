@@ -11,14 +11,17 @@
 //! can stand in for the worker. The Emergency control's gesture fires the
 //! emergency from its input event, through a function that only signals
 //! ([`crate::emergency::Emergency::fire`]), before the page is drawn again.
+//! While the page is that of a switch the window waits for, a timer of the
+//! controller's runs, and once [`SWITCH_OVERDUE`] passed it tells the model
+//! that the switch did not come.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use nails_api::CheckOutcome;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::model::{ActionKind, Asker, Effect, Model, Page};
+use crate::model::{ActionKind, Asker, Effect, Model, Page, SWITCH_OVERDUE};
 use crate::text;
 use crate::worker::{Ask, Update};
 use crate::{AppWindow, CheckLine, Fact, Outcome, StepLine};
@@ -40,6 +43,12 @@ pub struct Controller {
     window: slint::Weak<AppWindow>,
     model: Model,
     hooks: Hooks,
+    /// The controller itself, for its timer to call back.
+    me: Weak<RefCell<Controller>>,
+    /// Times the switch whose page shows.
+    switch_timer: slint::Timer,
+    /// Whether the timer runs for the page that shows.
+    timing_switch: bool,
 }
 
 impl Controller {
@@ -50,9 +59,13 @@ impl Controller {
             window: window.as_weak(),
             model,
             hooks,
+            me: Weak::new(),
+            switch_timer: slint::Timer::default(),
+            timing_switch: false,
         }));
+        controller.borrow_mut().me = Rc::downgrade(&controller);
         wire(window, &controller);
-        controller.borrow().draw();
+        controller.borrow_mut().refresh();
         controller
     }
 
@@ -71,7 +84,7 @@ impl Controller {
         if self.model.quits() {
             (self.hooks.close)();
         }
-        self.draw();
+        self.refresh();
     }
 
     /// Ask for a plan, whose question `asker` words once it holds: what a
@@ -79,7 +92,7 @@ impl Controller {
     pub fn plan(&mut self, plan: crate::client::Plan, asker: Asker) {
         let ask = self.model.plan(plan, asker);
         (self.hooks.ask)(ask);
-        self.draw();
+        self.refresh();
     }
 
     /// The page drawn now.
@@ -94,6 +107,38 @@ impl Controller {
         }
     }
 
+    /// Draw the page, and time the switch it waits for, if any: a timer
+    /// starts when such a page comes, and stops when it goes.
+    fn refresh(&mut self) {
+        match (self.model.switch_pending(), self.timing_switch) {
+            (true, false) => {
+                self.timing_switch = true;
+                self.model.set_switch_overdue(false);
+                let me = self.me.clone();
+                self.switch_timer
+                    .start(slint::TimerMode::SingleShot, SWITCH_OVERDUE, move || {
+                        if let Some(controller) = me.upgrade() {
+                            controller.borrow_mut().overdue();
+                        }
+                    });
+            }
+            (false, true) => {
+                self.timing_switch = false;
+                self.switch_timer.stop();
+                self.model.set_switch_overdue(false);
+            }
+            _ => {}
+        }
+        self.draw();
+    }
+
+    fn overdue(&mut self) {
+        if self.timing_switch {
+            self.model.set_switch_overdue(true);
+        }
+        self.draw();
+    }
+
     fn effect(&self, effect: Option<Effect>) {
         match effect {
             Some(Effect::Ask(ask)) => (self.hooks.ask)(ask),
@@ -106,43 +151,43 @@ impl Controller {
     fn action(&mut self) {
         let effect = self.model.action();
         self.effect(effect);
-        self.draw();
+        self.refresh();
     }
 
     fn emergency(&mut self) {
         let effect = self.model.emergency();
         self.effect(effect);
-        self.draw();
+        self.refresh();
     }
 
     fn escape(&mut self) {
         let effect = self.model.escape();
         self.effect(effect);
-        self.draw();
+        self.refresh();
     }
 
     fn allow(&mut self, index: usize) {
         self.model.allow(index);
-        self.draw();
+        self.refresh();
     }
 
     fn typed(&mut self, typed: &str) {
         self.model.typed(typed);
-        self.draw();
+        self.refresh();
     }
 
     fn answer(&mut self, confirmed: bool) {
         if let Some(ask) = self.model.answer(confirmed) {
             (self.hooks.ask)(ask);
         }
-        self.draw();
+        self.refresh();
     }
 
     fn alternative(&mut self) {
         if let Some(ask) = self.model.alternative() {
             (self.hooks.ask)(ask);
         }
-        self.draw();
+        self.refresh();
     }
 }
 
