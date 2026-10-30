@@ -64,8 +64,10 @@ WHAT HAPPENS:
   hidden program is killed at once. The machine returns to the plain decoy,
   which shows its normal login screen; log in with the decoy password (a
   display manager set to log an account in automatically logs it in again, as
-  at boot). With --poweroff the machine powers off instead. On the decoy,
-  emergency removes what an interrupted activation left in /run.
+  at boot). With --poweroff the machine powers off instead, and so it does,
+  as after deactivate, when the return cannot undo a link, MAC address,
+  policy-routing rule or nftables table the session made or changed. On the
+  decoy, emergency removes what an interrupted activation left in /run.
 
 EXAMPLES:
   nails emergency                     Kill the hidden session and return now
