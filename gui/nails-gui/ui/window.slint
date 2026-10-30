@@ -243,6 +243,8 @@ export component AppWindow inherits Window {
 
                         if root.busy: Busy {
                             label: root.busy-label;
+                            // What runs, unless the title says it already.
+                            show-label: root.busy-label != root.heading;
                         }
 
                         StatusHead {
@@ -357,6 +359,35 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+
+                // A page longer than its view says so, as a libadwaita view
+                // does: a bar at its edge shows where the view lies in the
+                // page, and a shade over the action bar says that more
+                // follows below. Neither takes input.
+                property <length> overflow: max(0px, flick.content-height - flick.height);
+                if page.overflow > 0px: Rectangle {
+                    property <length> track: flick.height - 8px;
+                    property <length> thumb: max(32px, self.track * flick.height / flick.content-height);
+                    x: page.width - 7px;
+                    y: 4px + (self.track - self.thumb) * min(1, max(0, -flick.content-y / page.overflow));
+                    width: 4px;
+                    height: self.thumb;
+                    border-radius: 2px;
+                    background: Adw.window-fg.with-alpha(0.3);
+                }
+
+                if page.overflow > 0px && -flick.content-y < page.overflow - 1px: Rectangle {
+                    y: flick.height - self.height;
+                    width: page.width;
+                    height: 10px;
+                    background: @linear-gradient(180deg, Adw.window-fg.with-alpha(0) 0%, Adw.window-fg.with-alpha(0.07) 100%);
+
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Adw.window-fg.with-alpha(0.12);
                     }
                 }
 

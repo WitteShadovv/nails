@@ -34,10 +34,13 @@ export component StatusHead {
     }
 }
 
-// Three dots that pulse in turn while an operation runs. Colour alone moves,
-// which the software renderer draws cheaply on every surface.
+// Three dots that pulse in turn while an operation runs, and what runs
+// beside them. Colour alone moves, which the software renderer draws cheaply
+// on every surface.
 export component Busy {
     in property <string> label;
+    // The label shows beside the dots, unless the page's title says it.
+    in property <bool> show-label: true;
 
     property <float> phase: mod(animation-tick() / 1ms, 1200) / 400;
 
@@ -46,13 +49,29 @@ export component Busy {
 
     HorizontalLayout {
         alignment: start;
-        spacing: 6px;
+        spacing: 12px;
 
-        for i in 3: Rectangle {
-            width: 8px;
-            height: 8px;
-            border-radius: 4px;
-            background: Adw.window-fg.with-alpha(abs(root.phase - i - 0.5) < 0.5 ? 0.9 : 0.25);
+        VerticalLayout {
+            alignment: center;
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                for i in 3: Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Adw.window-fg.with-alpha(abs(root.phase - i - 0.5) < 0.5 ? 0.9 : 0.25);
+                    accessible-role: none;
+                }
+            }
+        }
+
+        if root.show-label: Text {
+            text: root.label;
+            color: Adw.window-fg-dim;
+            vertical-alignment: center;
+            wrap: word-wrap;
             accessible-role: none;
         }
     }
