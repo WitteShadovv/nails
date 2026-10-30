@@ -336,6 +336,11 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails discard` takes `--allow-decoy-storage`, as `init`, `activate` and `check` do, for a hidden
   root that this computer's own storage seems to hold. Without it, discard refused such a root even
   when activation had accepted it, so nothing could be discarded there.
+- A refused check in `check --json` names the flag that would accept it for one run as its
+  `allowable`: `persistent_decoy` for `--allow-persistent-decoy`, `decoy_storage` for
+  `--allow-decoy-storage` and `discards` for `--allow-discards`. A refusal no flag covers, such as a
+  hidden root that is a folder, names none, so a front end can offer an override only where it
+  works.
 - `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
   the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
   unexplained; a later successful switch clears it.

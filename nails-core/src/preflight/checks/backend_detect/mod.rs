@@ -12,6 +12,7 @@ use crate::blockdev::{self, DmKind, LoopFollow};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::{MountEntry, parse_mountinfo};
 use crate::{Filesystem, Result};
+use nails_api::Allowable;
 use std::path::{Path, PathBuf};
 
 mod argon2;
@@ -311,7 +312,8 @@ fn assess_with_dev_dir<F: Filesystem>(
     // `--allow-discards`, they become a warning instead. The refusal names no
     // device-mapper node.
     if discards && !allow_discards {
-        return CheckResult::fail_with(DISCARD_REFUSAL, DISCARD_REMEDIATION);
+        return CheckResult::fail_with(DISCARD_REFUSAL, DISCARD_REMEDIATION)
+            .accepted_by(Allowable::Discards);
     }
 
     let mut found = hazards(&layers, &entries);

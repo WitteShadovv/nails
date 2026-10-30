@@ -81,6 +81,7 @@ fn test_hidden_volume_check_fail_when_path_does_not_exist() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
     assert_eq!(result.message(), "/mnt/data does not exist");
+    assert_eq!(result.allowable(), None, "no flag makes a missing root");
     assert!(
         result
             .remediation()
@@ -115,6 +116,8 @@ fn test_hidden_volume_check_fail_when_not_mounted() {
     for backend in ["luks", "veracrypt", "tcrypt", "cryptsetup"] {
         assert!(!remediation.contains(backend), "names {backend}");
     }
+    // The override never covers a folder.
+    assert_eq!(result.allowable(), None);
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 }
 
@@ -301,6 +304,7 @@ fn two_filesystems_at_the_root_fail_before_any_audit_or_probe() {
             result.remediation(),
             Some("Unmount the one that is not the volume, then run the command again.")
         );
+        assert_eq!(result.allowable(), None);
     }
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 }
@@ -328,6 +332,8 @@ fn decoy_storage_fails_without_a_write_probe() {
         result.message(),
         "/mnt/data is not a volume of its own: it is a bind mount of a folder of /"
     );
+    // The one refusal `--allow-decoy-storage` turns into a warning says so.
+    assert_eq!(result.allowable(), Some(Allowable::DecoyStorage));
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 }
 
@@ -375,6 +381,7 @@ fn unjudged_storage_fails_even_with_the_override() {
         result.remediation(),
         Some("Run the command again with sudo.")
     );
+    assert_eq!(result.allowable(), None);
 }
 
 /// [`mount_ok`], with the mount source `data` and `label`.

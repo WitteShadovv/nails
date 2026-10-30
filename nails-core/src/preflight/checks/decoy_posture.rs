@@ -59,6 +59,7 @@ use super::super::{CheckResult, PreFlightCheck};
 use super::journald_storage::journald_persistence_at;
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, Result};
+use nails_api::Allowable;
 use std::path::{Path, PathBuf};
 
 mod coredump;
@@ -440,7 +441,8 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
                     "{remediation}, or pass --allow-persistent-decoy to allow the risk for this \
                      run. See docs/decoy-requirements.md."
                 ),
-            ));
+            )
+            .accepted_by(Allowable::PersistentDecoy));
         }
 
         if !warnings.is_empty() {

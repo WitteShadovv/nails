@@ -39,6 +39,7 @@
 //! ```
 
 use crate::{Filesystem, NailsError, Result};
+use nails_api::Allowable;
 use std::fmt;
 
 /// The reason reported for every check short-circuited because the hidden volume
@@ -78,6 +79,9 @@ pub enum CheckResult {
         message: String,
         /// The one action that fixes it, if there is a specific one.
         remediation: Option<String>,
+        /// The override that accepts this failure for one run, when a CLI
+        /// flag covers what the check refused.
+        allowable: Option<Allowable>,
     },
     /// Check was not run because a prerequisite failed.
     ///
@@ -99,6 +103,7 @@ impl CheckResult {
         CheckResult::Fail {
             message: message.into(),
             remediation: None,
+            allowable: None,
         }
     }
 
@@ -107,6 +112,26 @@ impl CheckResult {
         CheckResult::Fail {
             message: message.into(),
             remediation: Some(remediation.into()),
+            allowable: None,
+        }
+    }
+
+    /// This failure, which `allowable` accepts for one run: the check refused
+    /// for a reason that override turns into a warning. Any other result is
+    /// returned as it is.
+    #[must_use]
+    pub fn accepted_by(self, allowable: Allowable) -> Self {
+        match self {
+            CheckResult::Fail {
+                message,
+                remediation,
+                ..
+            } => CheckResult::Fail {
+                message,
+                remediation,
+                allowable: Some(allowable),
+            },
+            other => other,
         }
     }
 
@@ -159,6 +184,14 @@ impl CheckResult {
     pub fn remediation(&self) -> Option<&str> {
         match self {
             CheckResult::Fail { remediation, .. } => remediation.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The override that accepts this failure for one run, if one does.
+    pub fn allowable(&self) -> Option<Allowable> {
+        match self {
+            CheckResult::Fail { allowable, .. } => *allowable,
             _ => None,
         }
     }
@@ -702,6 +735,26 @@ mod tests {
             CheckResult::fail("fail msg".to_string()).message(),
             "fail msg"
         );
+    }
+
+    #[test]
+    fn only_a_failure_names_the_override_that_accepts_it() {
+        let refused = CheckResult::fail_with("refused", "fix it");
+        assert_eq!(refused.allowable(), None);
+        let accepted = refused.accepted_by(Allowable::Discards);
+        assert_eq!(accepted.allowable(), Some(Allowable::Discards));
+        assert_eq!(accepted.message(), "refused");
+        assert_eq!(accepted.remediation(), Some("fix it"));
+        // A result that refuses nothing has nothing to accept.
+        for result in [
+            CheckResult::Pass("ok".into()),
+            CheckResult::Warn("w".into()),
+            CheckResult::skipped("s"),
+        ] {
+            let kept = result.clone().accepted_by(Allowable::DecoyStorage);
+            assert_eq!(kept, result);
+            assert_eq!(kept.allowable(), None);
+        }
     }
 
     #[test]

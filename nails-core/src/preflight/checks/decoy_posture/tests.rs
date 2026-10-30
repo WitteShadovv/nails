@@ -78,6 +78,11 @@ fn persistent_journal_fails_closed() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail(), "persistent journal must fail: {result:?}");
     assert!(result.remediation().is_some());
+    // It names the override that accepts it for one run.
+    assert_eq!(
+        result.allowable(),
+        Some(nails_api::Allowable::PersistentDecoy)
+    );
 }
 
 #[test]
@@ -191,6 +196,7 @@ fn override_turns_blocker_into_warning() {
     let check = DecoyPersistenceCheck::new(true, true);
     let result = check.run(&fs).unwrap();
     assert!(result.is_warn(), "override must warn, not fail: {result:?}");
+    assert_eq!(result.allowable(), None);
 }
 
 #[test]

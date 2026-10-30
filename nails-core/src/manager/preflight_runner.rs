@@ -519,6 +519,7 @@ impl<F: Filesystem> NailsManager<F> {
                 crate::preflight::CheckResult::Fail {
                     message,
                     remediation,
+                    ..
                 } => {
                     tracing::debug!(check = %name, result = "fail", msg = %message, "Preflight check failed");
                     failed_checks.push((name.clone(), message.clone(), remediation.clone()));
