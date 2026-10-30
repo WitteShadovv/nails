@@ -386,7 +386,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl",
         ),
         platforms: Platforms::ALL,
-        risk: "Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID.",
+        risk: "Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. Where the way back set the process-number counter back, the decoy's units after it can hold numbers below those of kernel threads that started before them, an order neither a cold boot nor a plain soft-reboot gives (`ps -eo pid,lstart,comm --sort=pid` shows it), and a persistent decoy journal can hold the same process numbers twice under one boot ID.",
         preflight: Probe::None("kernel and PID 1 state, not a file"),
         preflight_blocks: false,
         verify: Probe::None("RAM only, gone at power-off"),
