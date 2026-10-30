@@ -365,18 +365,15 @@ fn the_chain_ends_at_another_cgroup() {
 }
 
 #[test]
-fn the_invoking_shells_are_the_ancestry_and_the_session() {
-    let mut tree = terminal();
-    // A child of nails, in the session of `sudo`'s monitor.
-    tree.add(610, 600, 600, 500, PTS1, TERMINAL_SCOPE);
+fn the_shell_that_typed_the_command_is_an_ancestor_but_not_spared() {
+    let tree = terminal();
     let invocation = tree.invocation(600);
     let stat = |pid: u32| tree.0[&pid].stat;
     // The shell that typed the command is an ancestor, though not spared.
-    assert!(invocation.is_invoking(310, Some(&stat(310))));
+    assert!(invocation.ancestry.contains(&310));
     assert!(!invocation.contains(310, Some(&stat(310))));
-    assert!(invocation.is_invoking(610, Some(&stat(610))));
     // The shell's other job is neither.
-    assert!(!invocation.is_invoking(320, Some(&stat(320))));
+    assert!(!invocation.ancestry.contains(&320));
     assert!(!invocation.contains(320, Some(&stat(320))));
 }
 
