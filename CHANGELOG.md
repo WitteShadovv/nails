@@ -482,12 +482,12 @@ of this changelog for that version becomes the release notes word for word, and
   `nft` failing to list the rules or tables). That state lives only in the kernel, so a power-off
   erases it, where a return would hand it to the decoy, and a changed MAC address can reach a DHCP
   lease on the decoy disk. `deactivate` and a plain `emergency` behave the same, since both return
-  through the same last step, and the console shows one line that names what stayed. A missing
-  tool alone changes nothing: activation and `deactivate` still only warn, and a session that left
-  nothing for that tool to undo returns as before. Where the way back sees what the session left
-  without the tool (a changed MAC address or a link without `ip`, a Wi-Fi interface without
-  `iw`), it powers off as well, and the warnings say so. The network settings and the hostname
-  do not count.
+  through the same last step, and nothing on the screen says why: a line there would tell anyone
+  watching that a hidden session had just ended. A missing tool alone changes nothing: activation
+  and `deactivate` still only warn, and a session that left nothing for that tool to undo returns as
+  before. Where the way back sees what the session left without the tool (a changed MAC address or a
+  link without `ip`, a Wi-Fi interface without `iw`), it powers off as well, and the warnings say
+  so. The network settings and the hostname do not count.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On
