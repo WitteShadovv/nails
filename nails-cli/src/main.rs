@@ -52,13 +52,19 @@ fn run(core_dump_error: Option<std::io::Error>) -> std::process::ExitCode {
     // step ends the process itself. Any other command line is left untouched.
     nails::cli::early::dispatch();
 
-    let cli = Cli::parse_checked();
-
     // Read the environment exactly once. Every handler receives this snapshot,
     // and it is installed for the leaf helpers (the process runner, the
     // runtime-safety switch) that sit below every handler; nothing else reads
     // the process environment.
     let runtime_env = nails_core::RuntimeEnv::from_process_env();
+
+    // A helper line that pkexec started is held to `helper --stdio` before
+    // clap, whose help and version answers would exit 0.
+    if let Some(status) = nails::cli::main_guard::refuse_helper_line_under_pkexec(&runtime_env) {
+        return status.to_exit_code();
+    }
+
+    let cli = Cli::parse_checked();
     nails_core::runtime_env::install(runtime_env.clone());
 
     // The window's helper started by pkexec takes no argument but `--stdio`,

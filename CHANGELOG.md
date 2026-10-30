@@ -86,14 +86,14 @@ of this changelog for that version becomes the release notes word for word, and
   the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its password dialog reads
   "Session needs your password each time it opens." instead of naming the binary, and it asks for
   an administrator's password every time. The action matches the engine and its first argument
-  only, so the helper, started by pkexec, refuses any argument but `--stdio` and exits 2: the
-  dialog never covers a command line it does not show. Both go into the hidden root's
-  upper and never onto the decoy: on Debian, Ubuntu, Fedora and Arch into `/usr/share/applications`
-  and `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into the operator's
-  `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and later). Every
-  path is resolved inside the hidden root, so a decoy directory that is an absolute link cannot
-  take the write onto the decoy disk, and one that leads into the Nix store is refused. A file that
-  cannot be written is named on one line and the activation goes on.
+  only, so the helper, started by pkexec, refuses any argument but `--stdio` (`--help` included)
+  and exits 2: the dialog never covers a command line it does not show. Both go into the hidden
+  root's upper and never onto the decoy: on Debian, Ubuntu, Fedora and Arch into
+  `/usr/share/applications` and `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into
+  the operator's `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and
+  later). Every path is resolved inside the hidden root, so a decoy directory that is an absolute
+  link cannot take the write onto the decoy disk, and one that leads into the Nix store is refused.
+  A file that cannot be written is named on one line and the activation goes on.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
