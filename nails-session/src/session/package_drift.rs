@@ -18,8 +18,11 @@
 //! what the upper holds of it, and judges ([`judge_dpkg`], [`judge_pacman`],
 //! [`judge_rpm`]):
 //!
-//! - dpkg rewrites its whole `status` file at each change, so hidden
-//!   sessions keep a copy of it from their first change on. A package whose
+//! - dpkg writes each change to a journal in `/var/lib/dpkg/updates` first
+//!   and its whole `status` file again at the end of a run, so hidden
+//!   sessions keep a copy of it from their first change on. A journal that
+//!   hidden sessions see says a run stopped half way, which their dpkg
+//!   finishes on the record it next reads, so the check cannot tell. A package whose
 //!   record in that copy differs from the decoy's drifted, unless a hidden
 //!   session changed the package itself: dpkg writes, or deletes, a
 //!   package's files in `/var/lib/dpkg/info` whenever it installs, updates or
@@ -71,10 +74,15 @@
 //! that read without root where atimes are kept, a symbolic link on the way to the decoy's database
 //! (a lookup through it changes the link's access time, and no open flag
 //! spares it), a file or a directory that cannot be read, a database whose
-//! format does not hold, an rpm transaction stopped half way (SQLite rolls
+//! format does not hold or that needs more memory than the reader keeps,
+//! links in rpm's records on the way to a package's file that make a loop or
+//! lead to a path longer than any system resolves, an rpm transaction stopped
+//! half way (SQLite rolls
 //! back its journal only when it next opens the database, so neither state is
-//! the one rpm will see), and, without the mount table, a kernel that does
-//! not say what is a mount point or a directory it cannot be asked about.
+//! the one rpm will see), a dpkg run stopped half way (dpkg adds its journal
+//! to its record when it next runs), and, without the mount table, a kernel
+//! that does not say what is a mount point or a directory it cannot be asked
+//! about.
 
 use crate::error::Result;
 use crate::filesystem::Filesystem;
@@ -163,6 +171,14 @@ pub enum Doubt {
     /// It needs the decoy's database read, which only root does without
     /// changing its access time.
     NeedsRoot,
+    /// A dpkg run stopped half way, on the decoy (`on_decoy`) or in a hidden
+    /// session, and left its journal ([`dpkg::UPDATES`]), which hidden
+    /// sessions see and their dpkg adds to the record it next reads: neither
+    /// record is the one their dpkg will see.
+    DpkgInterrupted {
+        /// Whether the decoy's run stopped, rather than a hidden session's.
+        on_decoy: bool,
+    },
     /// Anything else, said as a reason.
     Other(String),
 }
@@ -534,6 +550,23 @@ pub fn report(verdicts: &[(Database, String, Verdict)], allow_decoy_storage: boo
                      access time"
                 ));
                 fix(format!("Run `{}` to see it.", sudo_line(NextStep::Check)));
+            }
+            Verdict::Unknown(Doubt::DpkgInterrupted { on_decoy }) => {
+                let (run, place) = if *on_decoy {
+                    ("on the decoy", "On the decoy")
+                } else {
+                    ("in a hidden session", "In a hidden session")
+                };
+                warnings.push(format!(
+                    "could not tell whether hidden sessions' copy of the {shown} follows the \
+                     decoy's: a dpkg run {run} stopped half way and left its journal in /{}, \
+                     which dpkg adds to its record only when it next runs",
+                    dpkg::UPDATES
+                ));
+                fix(format!(
+                    "{place}, run `sudo dpkg --configure -a`, as apt asks there, so dpkg finishes \
+                     that run."
+                ));
             }
             Verdict::Unknown(Doubt::Other(reason)) => warnings.push(format!(
                 "could not tell whether hidden sessions' copy of the {shown} follows the \

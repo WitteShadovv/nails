@@ -66,9 +66,11 @@ of this changelog for that version becomes the release notes word for word, and
   to the decoy's database, a database or upper that cannot be read (an rpm database or log over 4
   GiB, one that records a path of 4096 bytes or more, or one whose packages need more than those 256
   MiB, counts as one), links in rpm's records that make a loop or lead to such a path, an rpm
-  transaction stopped half way, or, without the mount table, a kernel before 5.8 or a directory the
-  kernel cannot be asked about. The Argon2id advice reads the installed cryptsetup through the same
-  dpkg and pacman readers, which now take dpkg's field names in any case, as dpkg does.
+  transaction or a dpkg run stopped half way (for dpkg's journal in `/var/lib/dpkg/updates` it names
+  the `sudo dpkg --configure -a` that finishes the run), or, without the mount table, a kernel
+  before 5.8 or a directory the kernel cannot be asked about. The Argon2id advice reads the
+  installed cryptsetup through the same dpkg and pacman readers, which now take dpkg's field names
+  in any case, as dpkg does.
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
   derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the installed
   cryptsetup version. No released cryptsetup opens such a volume, and nothing outside the encrypted

@@ -1174,9 +1174,11 @@ distribution's package manager, and the changes land in the upper like any
 other. The package manager keeps its record of what is installed there too,
 and that record is where hidden sessions and the decoy drift apart:
 
-- **dpkg** (Debian, Ubuntu) writes its whole record, `/var/lib/dpkg/status`,
-  again at every change. The first package a hidden session installs, updates
-  or removes gives hidden sessions a copy of the record of their own, which
+- **dpkg** (Debian, Ubuntu) writes each change of a run to its journal in
+  `/var/lib/dpkg/updates` first, and its whole record, `/var/lib/dpkg/status`,
+  again at the end of the run (and after every 250 changes). The first
+  package a hidden session installs, updates or removes gives hidden sessions
+  a copy of the record of their own, which
   they keep whatever the decoy does afterwards: after an update of the decoy
   they run its new files under a record that still lists the old versions,
   does not know the packages the decoy installed since, and lists the ones it
@@ -1253,6 +1255,13 @@ trace or reading what cannot be read:
 - an rpm transaction stopped half way that left a rollback journal: rpm rolls
   it back the next time it opens the database, so the check names neither
   state;
+- a dpkg run stopped half way, in a hidden session or on the decoy, that left
+  its journal in `/var/lib/dpkg/updates` where hidden sessions see it: dpkg
+  adds the journal to its record the next time it runs, so the check names
+  neither record and gives the `sudo dpkg --configure -a` that finishes the
+  run, which apt asks for there too (the decoy's journal counts only once
+  hidden sessions keep a copy of the record, since before that they see the
+  decoy's record as the decoy does);
 - no mount table, and a kernel older than 5.8, which does not say what is a
   mount point, or a directory on the way that the kernel cannot be asked
   about.

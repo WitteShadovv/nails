@@ -93,6 +93,18 @@ enum OnDecoy {
     Present,
 }
 
+/// What the upper holds of dpkg's journal.
+#[derive(Debug, Default)]
+struct Journal {
+    /// An entry of hidden sessions' own: their dpkg stopped half way.
+    own: bool,
+    /// Hidden sessions deleted or replaced the journal's directory, so they
+    /// see none of the decoy's entries.
+    hides_decoy: bool,
+    /// The names of the decoy's entries hidden sessions deleted.
+    deleted: BTreeSet<String>,
+}
+
 /// What the kernel said of a directory of the decoy, without the mount
 /// table.
 #[derive(Debug, Clone, Copy)]
@@ -376,6 +388,16 @@ impl<F: Filesystem> Reader<'_, F> {
         if let Some(verdict) = decoy_verdict(self.on_decoy(dpkg::STATUS, false)) {
             return verdict;
         }
+        // A run of hidden sessions' dpkg stopped half way: their dpkg adds its
+        // journal to the record it sees when it next runs, the decoy's own
+        // where they keep no copy.
+        let journal = match self.upper_journal() {
+            Ok(journal) => journal,
+            Err(verdict) => return verdict,
+        };
+        if journal.own {
+            return Verdict::Unknown(Doubt::DpkgInterrupted { on_decoy: false });
+        }
         let (copy, base, below) = match self.copy_of(dpkg::STATUS, false) {
             Ok(copy) => copy,
             Err(verdict) => return verdict,
@@ -384,8 +406,15 @@ impl<F: Filesystem> Reader<'_, F> {
             Ok(path) => path,
             Err(verdict) => return verdict,
         };
-        if !self.may_read(dpkg::STATUS) {
+        if !self.may_read(dpkg::STATUS) || !self.may_read(dpkg::UPDATES) {
             return Verdict::Unknown(Doubt::NeedsRoot);
+        }
+        // A run of the decoy's dpkg stopped half way: hidden sessions see its
+        // journal too, and their dpkg would add it to their own copy.
+        match self.decoy_journal(&journal) {
+            Ok(false) => {}
+            Ok(true) => return Verdict::Unknown(Doubt::DpkgInterrupted { on_decoy: true }),
+            Err(verdict) => return verdict,
         }
         let on_decoy = format!("/{} on the decoy", dpkg::STATUS);
         let in_hidden = format!("hidden sessions' copy of /{}", dpkg::STATUS);
@@ -419,6 +448,70 @@ impl<F: Filesystem> Reader<'_, F> {
             Err(e) => return unreadable(&format!("hidden sessions' copy of /{}", dpkg::INFO), &e),
         };
         judge_dpkg(&decoy, &hidden, &changed)
+    }
+
+    /// What the upper holds of dpkg's journal ([`dpkg::UPDATES`]).
+    fn upper_journal(&self) -> std::result::Result<Journal, Verdict> {
+        let (held, _, _) = self.copy_of(dpkg::UPDATES, true)?;
+        let dir = match held {
+            InUpper::Here(dir) => dir,
+            InUpper::Nothing => return Ok(Journal::default()),
+            // Hidden sessions see none of the decoy's journal.
+            InUpper::Gone { .. } => {
+                return Ok(Journal {
+                    hides_decoy: true,
+                    ..Journal::default()
+                });
+            }
+            InUpper::Unreadable(reason) => return Err(Verdict::Unknown(Doubt::Other(reason))),
+            InUpper::NeedsRoot => return Err(Verdict::Unknown(Doubt::NeedsRoot)),
+        };
+        let entries = self
+            .fs
+            .list_directory(&dir)
+            .map_err(|e| unreadable(&format!("hidden sessions' copy of /{}", dpkg::UPDATES), &e))?;
+        let mut journal = Journal::default();
+        for entry in &entries {
+            let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !dpkg::is_journal(name) {
+                continue;
+            }
+            // A whiteout that cannot be told from a file counts as one of
+            // their own.
+            if self.fs.is_overlay_whiteout(entry).unwrap_or(false) {
+                journal.deleted.insert(name.to_string());
+            } else {
+                journal.own = true;
+            }
+        }
+        Ok(journal)
+    }
+
+    /// Whether the decoy's dpkg journal holds an entry hidden sessions see:
+    /// one `journal`, what the upper holds of it, did not delete.
+    fn decoy_journal(&self, journal: &Journal) -> std::result::Result<bool, Verdict> {
+        if journal.hides_decoy {
+            return Ok(false);
+        }
+        match self.on_decoy(dpkg::UPDATES, true) {
+            OnDecoy::Missing => return Ok(false),
+            OnDecoy::Linked(at) => {
+                return Err(Verdict::Unknown(Doubt::Other(format!(
+                    "{at} on the decoy is a symbolic link"
+                ))));
+            }
+            OnDecoy::Present => {}
+        }
+        let entries = self
+            .fs
+            .list_directory(&self.root.join(dpkg::UPDATES))
+            .map_err(|e| unreadable(&format!("/{} on the decoy", dpkg::UPDATES), &e))?;
+        Ok(entries
+            .iter()
+            .filter_map(|entry| entry.file_name()?.to_str())
+            .any(|name| dpkg::is_journal(name) && !journal.deleted.contains(name)))
     }
 
     /// pacman's database.
