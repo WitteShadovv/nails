@@ -471,3 +471,25 @@ fn a_hang_up_does_nothing_without_a_session() {
     ));
     assert!(!window.worker.hang_up().hang_up());
 }
+
+#[test]
+fn a_recovery_is_running_and_then_answered() {
+    let (window, helper) = helper(|request| {
+        Some(vec![result(
+            request.id,
+            0,
+            json!({"command": "recover", "data": {"outcome": "record_reset"}}),
+        )])
+    });
+    window.ask(Ask::Recover);
+    assert_eq!(window.next(), Update::Running(Kind::Recover));
+    match window.next() {
+        Update::Answered(Kind::Recover, answer) => {
+            assert_eq!(answer.envelope["data"]["outcome"], "record_reset");
+        }
+        other => panic!("{other:?}"),
+    }
+    drop(window);
+    let ops: Vec<Op> = helper.requests().into_iter().map(|r| r.op).collect();
+    assert_eq!(ops, vec![Op::Hello(ours()), Op::Recover]);
+}

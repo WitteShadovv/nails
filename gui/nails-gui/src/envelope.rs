@@ -221,6 +221,29 @@ pub enum CheckStatus {
     Skipped,
 }
 
+/// The data of `recover` the window shows
+/// (`docs/schemas/recover.schema.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RecoverData {
+    /// `clean`, `rolled_back` or `record_reset`.
+    pub outcome: String,
+    /// Mounts still below the next root, which a restart clears.
+    #[serde(default)]
+    pub remaining_mounts: Vec<String>,
+    /// The hidden volume's devices that were still open.
+    #[serde(default)]
+    pub backend: Vec<BackendDevice>,
+}
+
+/// A device of the hidden volume a recovery found open.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BackendDevice {
+    /// Its device-mapper name, which the window does not show.
+    pub name: String,
+    /// `closed` now, or `in_use` and left open.
+    pub state: String,
+}
+
 /// The tally of a readiness report.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Summary {

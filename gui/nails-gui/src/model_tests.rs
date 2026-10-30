@@ -232,13 +232,14 @@ fn an_interrupted_activation_or_an_unreadable_record_comes_before_the_check() {
         page.fix,
         "Run sudo /mnt/data/nails recover to reset the record"
     );
-    assert_eq!(page.action, None);
+    assert_eq!(page.action, Some("Clean Up"));
 
     let mut model = connected();
     assert!(model.apply(decoy(json!("record_unreadable"))).is_empty());
     assert_eq!(model.page().heading, "Record Cannot Be Read");
     // Here the status says the machine is the decoy, so the page does too.
     assert_eq!(model.page().description, text::DECOY_RECORD_UNREADABLE);
+    assert_eq!(model.page().action, Some("Reset Record"));
 }
 
 #[test]
@@ -263,6 +264,10 @@ fn a_status_that_could_not_be_built_is_an_unreadable_record() {
     );
     assert_eq!(page.note, "The record is damaged.");
     assert_eq!(page.fix, "Next: sudo /mnt/data/nails recover");
+    assert_eq!(
+        page.action, None,
+        "nothing shows that no session is active, so the record is not reset"
+    );
 }
 
 #[test]
