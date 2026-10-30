@@ -9,7 +9,7 @@
 mod support;
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
@@ -269,10 +269,7 @@ impl FakePkexec {
     }
 
     fn connect(&self) -> Connect {
-        Connect::Pkexec {
-            program: self.program.clone(),
-            engine: PathBuf::from("/mnt/data/nails"),
-        }
+        Connect::pkexec(Ok(self.program.clone()), Path::new("/mnt/data/nails"))
     }
 }
 
@@ -317,18 +314,33 @@ fn a_helper_started_through_pkexec_gets_the_same_handshake() {
     }
 }
 
+/// What the window connects with when pkexec is `/nonexistent/pkexec`.
+fn missing_pkexec() -> Connect {
+    Connect::pkexec(
+        Ok(PathBuf::from("/nonexistent/pkexec")),
+        Path::new("/mnt/data/nails"),
+    )
+}
+
 #[test]
 fn pkexec_that_cannot_be_started_is_said_so() {
-    let window = Window::on(Connect::Pkexec {
-        program: PathBuf::from("/nonexistent/pkexec"),
-        engine: PathBuf::from("/mnt/data/nails"),
-    });
+    let window = Window::on(missing_pkexec());
     match window.next() {
         Update::Ended(Failure::NotStarted(why)) => {
             assert!(why.starts_with("pkexec could not be started"), "{why}")
         }
         other => panic!("{other:?}"),
     }
+    // Without a set-user-ID pkexec nothing is started, and the page says why.
+    let why = "no set-user-ID pkexec was found (/run/wrappers/bin/pkexec, /usr/bin/pkexec)";
+    let window = Window::on(Connect::pkexec(
+        Err(why.to_string()),
+        Path::new("/mnt/data/nails"),
+    ));
+    assert_eq!(
+        window.next(),
+        Update::Ended(Failure::NotStarted(why.to_string()))
+    );
 }
 
 fn activate_plan() -> serde_json::Value {
@@ -461,10 +473,7 @@ fn an_activation_the_window_does_not_hang_up_on_keeps_its_session() {
 #[test]
 fn a_hang_up_does_nothing_without_a_session() {
     assert!(!HangUp::default().hang_up());
-    let window = Window::on(Connect::Pkexec {
-        program: PathBuf::from("/nonexistent/pkexec"),
-        engine: PathBuf::from("/mnt/data/nails"),
-    });
+    let window = Window::on(missing_pkexec());
     assert!(matches!(
         window.next(),
         Update::Ended(Failure::NotStarted(_))
