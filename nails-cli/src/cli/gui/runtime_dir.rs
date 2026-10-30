@@ -116,7 +116,11 @@ pub(super) fn make_own_dir(runtime: &Path, operator: &TargetUser) -> Result<Path
         // A fresh name: an entry already there (one the operator made) fails
         // the creation instead of being reused.
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-        hand_over(&dir, operator)?;
+        if let Err(error) = hand_over(&dir, operator) {
+            // Not left behind for the launcher's account.
+            let _ = std::fs::remove_dir(&dir);
+            return Err(error);
+        }
         Ok(dir)
     });
     made.map_err(|error| {
@@ -133,7 +137,7 @@ pub(super) fn make_own_dir(runtime: &Path, operator: &TargetUser) -> Result<Path
 
 /// Give the directory just made to the operator, through a handle that did
 /// not follow a symlink, so a swapped entry is never followed by root.
-fn hand_over(dir: &Path, operator: &TargetUser) -> std::io::Result<()> {
+pub(super) fn hand_over(dir: &Path, operator: &TargetUser) -> std::io::Result<()> {
     use nix::fcntl::{OFlag, open};
     use nix::sys::stat::Mode;
     use nix::unistd::{Gid, Uid, fchown};
