@@ -801,3 +801,79 @@ fn links_that_cannot_be_read_on_the_way_back_are_unverified() {
     assert!(!kept.unknown.contains(&"links"), "{kept:?}");
     assert!(kept.failed());
 }
+
+/// Before the switch the hidden session tells what the way back could not
+/// undo of the links and addresses as they are now: a fallback tunnel device
+/// whatever the tools, and without `ip` the session's other links and the
+/// decoy's changed addresses, without `iw` its Wi-Fi interfaces on a decoy
+/// radio. A tool it finds is never run: nothing changes.
+#[test]
+fn the_way_back_foresees_what_it_could_not_undo_now() {
+    let (_dir, places) = world();
+    let sys = &places.sys_class_net;
+    add_link(sys, "wlan0", 3, "02:00:00:00:00:aa", true);
+    on_radio(sys, "wlan0", "phy0");
+    let record = NetworkRecord::capture(&places, &NetTools::default()).encode();
+    let none = NetTools::default();
+    let all = NetTools {
+        ip: Some(PathBuf::from("/nonexistent/ip")),
+        iw: Some(PathBuf::from("/nonexistent/iw")),
+        nft: Some(PathBuf::from("/nonexistent/nft")),
+    };
+    assert_eq!(foresee(&places, &none, Some(&record)), Foreseen::default());
+    assert!(!foresee(&places, &none, Some(&record)).powers_off());
+
+    add_link(sys, "tunl0", 7, "", false);
+    add_link(sys, "wg0", 9, "", false);
+    add_link(sys, "mon0", 10, "02:00:00:00:00:bb", true);
+    on_radio(sys, "mon0", "phy0");
+    fs::write(sys.join("eth0/address"), "02:00:00:00:00:99\n").unwrap();
+
+    let without_tools = foresee(&places, &none, Some(&record));
+    assert_eq!(
+        without_tools,
+        Foreseen {
+            kernel_kept: vec!["tunl0".to_string()],
+            links_without_ip: vec!["wg0".to_string()],
+            addresses_without_ip: vec!["eth0".to_string()],
+            wifi_without_iw: vec!["mon0".to_string()],
+        }
+    );
+    assert!(without_tools.powers_off());
+    let with_tools = foresee(&places, &all, Some(&record));
+    assert_eq!(
+        with_tools,
+        Foreseen {
+            kernel_kept: vec!["tunl0".to_string()],
+            ..Foreseen::default()
+        }
+    );
+    assert!(with_tools.powers_off());
+    assert_eq!(address(sys, "eth0"), "02:00:00:00:00:99", "nothing changed");
+    assert!(sys.join("wg0").exists() && sys.join("mon0").exists());
+}
+
+/// Nothing is foreseen where the way back leaves the links alone: with no
+/// record, a record without them, or a fallback device the decoy had at
+/// entry; nor where the links cannot be read now.
+#[test]
+fn nothing_is_foreseen_where_the_way_back_leaves_the_links_alone() {
+    let (_dir, places) = world();
+    let sys = &places.sys_class_net;
+    add_link(sys, "tunl0", 7, "", false);
+    let none = NetTools::default();
+    assert_eq!(foresee(&places, &none, None), Foreseen::default());
+    let record = NetworkRecord::capture(&places, &none).encode();
+    assert_eq!(foresee(&places, &none, Some(&record)), Foreseen::default());
+    let without_links = NetworkRecord {
+        links: None,
+        ..NetworkRecord::capture(&places, &none)
+    };
+    add_link(sys, "sit0", 8, "", false);
+    assert_eq!(
+        foresee(&places, &none, Some(&without_links.encode())),
+        Foreseen::default()
+    );
+    fs::write(sys.join("eth0/ifindex"), "two\n").unwrap();
+    assert_eq!(foresee(&places, &none, Some(&record)), Foreseen::default());
+}

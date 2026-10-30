@@ -562,6 +562,14 @@ of this changelog for that version becomes the release notes word for word, and
   keeps the decoy offline); and without `iw` a Wi-Fi interface it added on the decoy's radios, iwd's
   own in place of the decoy's included, makes the machine power off instead. `deactivate --poweroff`
   leaves none of them. Under `--json` each warning is in the envelope's `warnings`.
+- `nails deactivate` says before it asks, and `nails emergency` in its report, when the way back is
+  bound to power off instead of returning over what is there now: a link the kernel keeps when it is
+  deleted (the fallback device a tunnel module makes when it loads, `tunl0` once a session loads
+  `ipip`), or a link or MAC address of the session's it finds no `ip` or `iw` for, unless that
+  changes before it runs. Both said the decoy would start at its own login screen without a
+  condition; where they cannot tell, they now add that the machine powers off instead if a link, MAC
+  address, rule or table the way back sets out to undo is still the session's afterwards. Under
+  `--json`, `deactivate` carries the reason first in `warnings`.
 - `nails check` and activation warn when the decoy has no `nft` (nftables), or has a Wi-Fi interface
   and no `iw` (the new `network-tools` check). Activation lists the decoy's own firewall tables with
   `nft`, and the way back deletes the tables a session added with it, and a Wi-Fi interface a
