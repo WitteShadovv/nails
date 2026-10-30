@@ -196,6 +196,85 @@ mod tests {
         );
     }
 
+    /// The libtest name of [`teardown_beside_the_binary_entrypoint`].
+    const BESIDE_THE_BINARY: &str = "app::config::tests::teardown_beside_the_binary_entrypoint";
+    /// Set only for the run that has a configuration beside the binary.
+    const BESIDE_THE_BINARY_ENV: &str = "NAILS_TEST_TEARDOWN_BESIDE_THE_BINARY";
+
+    /// In a default deployment there is no `--config`: the configuration is
+    /// the file beside the binary, and the teardown takes it as authoritative,
+    /// so recover names the file as its source. The entrypoint runs in a link
+    /// of this test binary with a configuration beside it, where no other test
+    /// looks for one.
+    #[test]
+    fn teardown_takes_the_file_beside_the_binary_as_authoritative() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let exe = std::env::current_exe().unwrap();
+        // Beside the test binary, on its filesystem, so a hard link does.
+        let dir = tempfile::Builder::new()
+            .prefix(".nails-teardown-config-")
+            .tempdir_in(exe.parent().unwrap())
+            .unwrap();
+        let linked = dir.path().join(exe.file_name().unwrap());
+        if std::fs::hard_link(&exe, &linked).is_err() {
+            // cp writes the copy, so this process holds no descriptor of it
+            // that a fork of another test could keep open (ETXTBSY).
+            let copied = Command::new("cp").arg(&exe).arg(&linked).status().unwrap();
+            assert!(copied.success(), "cp {}: {copied}", exe.display());
+        }
+        std::fs::create_dir(dir.path().join("config")).unwrap();
+        std::fs::write(
+            dir.path().join("config/nails.toml"),
+            "hidden_volume_root = \"/mnt/beside-the-binary\"\n",
+        )
+        .unwrap();
+
+        let out = dir.path().join("out");
+        let mut child = Command::new(&linked)
+            .args(["--exact", BESIDE_THE_BINARY, "--nocapture"])
+            .args(["--test-threads", "1"])
+            .env(BESIDE_THE_BINARY_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the run beside the configuration did not end within 120 s");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let output = std::fs::read_to_string(&out).unwrap();
+        assert!(status.success(), "{status}: {output}");
+        // A filter that matches no test passes as well.
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    /// Run with a configuration beside the binary by
+    /// [`teardown_takes_the_file_beside_the_binary_as_authoritative`]; any
+    /// other run returns at once.
+    #[test]
+    fn teardown_beside_the_binary_entrypoint() {
+        if std::env::var_os(BESIDE_THE_BINARY_ENV).is_none() {
+            return;
+        }
+        let (config, source) = load_config_for_teardown(None);
+        assert_eq!(source, ConfigSource::File);
+        assert_eq!(
+            config.hidden_volume_root,
+            PathBuf::from("/mnt/beside-the-binary")
+        );
+    }
+
     #[test]
     fn teardown_without_config_never_claims_an_authoritative_file() {
         // With no `--config` and no binary-relative file present (the test

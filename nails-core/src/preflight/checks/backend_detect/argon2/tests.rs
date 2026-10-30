@@ -61,8 +61,8 @@ fn at_least_is_inclusive_semver_comparison() {
     // patch. Each pair below puts one component in charge of the answer,
     // including the inclusive patch tie, so flipping a branch's comparison
     // to `<` or `==` changes a result here. (Turning the major or minor `>`
-    // into `>=` is an equivalent mutant: that branch runs only when the
-    // component differs, where `>=` and `>` agree, so no test can catch it.)
+    // into `>=` is an equivalent mutant, which .cargo/mutants.toml excludes
+    // with its reason.)
 
     // A version is at least itself (the inclusive patch tie).
     assert!(version("2.8.8").at_least(version("2.8.8")));

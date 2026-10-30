@@ -413,6 +413,9 @@ stress iterations="10":
 # decide nothing: several make safety decisions too (the switch transition, the
 # init check before a switch, the /run scrub, the disk guard and the teardown
 # side of the way back), and widening the sweep to them is a budget decision.
+# The single mutants that no test can kill are another list: .cargo/mutants.toml
+# excludes them, with their reasons, from every cargo-mutants run, the in-diff
+# lane's too.
 mutants_dirs := "nails-base/src/state " + \
     "nails-teardown/src/whole_root " + \
     "nails-session/src/session"
