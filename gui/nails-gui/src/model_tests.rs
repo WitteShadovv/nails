@@ -228,10 +228,9 @@ fn an_interrupted_activation_or_an_unreadable_record_comes_before_the_check() {
     let page = model.page();
     assert_eq!(page.heading, "Activation Interrupted");
     assert_eq!(page.description, text::DECOY_INTERRUPTED);
-    assert_eq!(
-        page.fix,
-        "Run sudo /mnt/data/nails recover to reset the record"
-    );
+    // The button runs `recover`: the page says what it does, not the
+    // command a terminal would run.
+    assert_eq!(page.fix, text::CLEAN_UP_WHAT);
     assert_eq!(page.action, Some("Clean Up"));
 
     let mut model = connected();
@@ -240,6 +239,7 @@ fn an_interrupted_activation_or_an_unreadable_record_comes_before_the_check() {
     // Here the status says the machine is the decoy, so the page does too.
     assert_eq!(model.page().description, text::DECOY_RECORD_UNREADABLE);
     assert_eq!(model.page().action, Some("Reset Record"));
+    assert_eq!(model.page().fix, text::RESET_RECORD_WHAT);
 }
 
 #[test]
@@ -496,7 +496,7 @@ fn every_end_of_the_session_says_what_happened_and_what_fixes_it() {
     ));
     assert_eq!(
         page.description,
-        "The window could not start its controls: Pkexec could not be started."
+        "The window could not start its controls: pkexec could not be started."
     );
 
     assert_eq!(

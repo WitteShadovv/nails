@@ -802,7 +802,8 @@ impl Model {
             page.note = text::LOGOUT_LATE.to_string();
             page.fix = text::see_where_things_stand(self.engine.as_deref());
         } else {
-            page.note = join(&page.note, text::ENDING_LATE);
+            // It did not end in the few seconds the page announced.
+            text::ENDING_LATE.clone_into(&mut page.description);
             page.fix = text::END_ANOTHER_WAY.to_string();
         }
     }

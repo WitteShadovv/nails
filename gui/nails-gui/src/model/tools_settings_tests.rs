@@ -173,13 +173,16 @@ fn the_list_names_each_setting_with_its_value_and_where_it_comes_from() {
     );
     assert_eq!(
         line("minimum_space_mb"),
-        ("Space to keep free", "500 MB. The default")
+        ("Space to keep free", "500\u{a0}MB. The default")
     );
     assert_eq!(line("nixos_flake").1, "Not set. The default");
     assert_eq!(line("persona.mask_inherited").1, "None. The default");
     assert_eq!(line("persona.mode").1, "Decoy home. The default");
     assert_eq!(line("sleep_policy.mode").1, "Warn. The default");
-    assert_eq!(line("backend_watch.debounce_secs").1, "15 s. The default");
+    assert_eq!(
+        line("backend_watch.debounce_secs").1,
+        "15\u{a0}s. The default"
+    );
     assert_eq!(line("show_opsec_reminders").1, "On. The default");
     assert_eq!(line("session_mounts.read_only").1, "Off. The default");
     // Every key has words of its own.
@@ -583,7 +586,7 @@ fn a_file_changed_meanwhile_is_read_again_and_nothing_is_written() {
     model.apply(planned("config-edit-plan-stale"));
     assert_eq!(
         model.page().question.unwrap().body.lines().next(),
-        Some("Space to keep free: from the default to 3000 MB.")
+        Some("Space to keep free: from the default to 3000\u{a0}MB.")
     );
     model.answer(true);
     assert_eq!(
