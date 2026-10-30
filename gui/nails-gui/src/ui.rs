@@ -227,6 +227,11 @@ impl Controller {
         }
         self.refresh();
     }
+
+    fn edited(&mut self, typed: &str) {
+        self.model.edited(typed);
+        self.refresh();
+    }
 }
 
 fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
@@ -281,7 +286,8 @@ fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     wire_tools(window, controller);
 }
 
-/// The controls of the tools: their rows, Back and a page's second action.
+/// The controls of the tools: their rows, Back, a page's second action and
+/// its field.
 fn wire_tools(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     let weak = Rc::downgrade(controller);
     window.on_secondary_activated(move || {
@@ -299,6 +305,12 @@ fn wire_tools(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     window.on_back_activated(move || {
         if let Some(controller) = weak.upgrade() {
             controller.borrow_mut().back();
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_field_edited(move |typed| {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().edited(&typed);
         }
     });
 }
@@ -335,6 +347,8 @@ pub fn draw(window: &AppWindow, page: &Page) {
     window.set_fix(page.fix.as_str().into());
     window.set_action(page.action.unwrap_or_default().into());
     window.set_action_plain(page.action_kind == ActionKind::Plain);
+    window.set_action_destructive(page.action_kind == ActionKind::Destructive);
+    window.set_action_locked(page.action_locked);
     window.set_secondary(page.secondary.unwrap_or_default().into());
     window.set_takes_input(!page.no_input);
     window.set_emergency_shown(page.emergency);
@@ -369,7 +383,7 @@ pub fn draw(window: &AppWindow, page: &Page) {
 }
 
 /// Draw the parts of `page` that the tools add: the rows that open them,
-/// Back and a tool's groups of rows.
+/// Back, a tool's field and its groups of rows.
 fn draw_tools(window: &AppWindow, page: &Page) {
     let links: Vec<ToolLink> = page
         .links
@@ -392,6 +406,22 @@ fn draw_tools(window: &AppWindow, page: &Page) {
         })
         .collect();
     window.set_groups(ModelRc::new(VecModel::from(groups)));
+    match &page.field {
+        Some(field) => {
+            window.set_field_label(field.label.as_str().into());
+            window.set_field_hint(field.hint.as_str().into());
+            // What was typed comes back as it was; setting it again would
+            // move the cursor.
+            if window.get_field_text().as_str() != field.text {
+                window.set_field_text(field.text.as_str().into());
+            }
+        }
+        None => {
+            window.set_field_label(SharedString::default());
+            window.set_field_hint(SharedString::default());
+            window.set_field_text(SharedString::default());
+        }
+    }
 }
 
 fn check_line(check: &CheckView) -> CheckLine {

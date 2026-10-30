@@ -6,8 +6,8 @@
 // groups of rows (what a tool found, read or did not check), a line that
 // names the fix, the rows that open the window's tools, and one main action
 // at the bottom, with a second plain one beside it on some pages. A tool's
-// page starts with Back. Over it, when an operation asks first, its
-// question. What each page says is decided in
+// page starts with Back, and a field when it needs one typed. Over it, when
+// an operation asks first, its question. What each page says is decided in
 // Rust (src/model.rs); this file only lays it out. A page past an
 // activation's point of no return takes no input at all, the window's Close
 // included.
@@ -25,6 +25,7 @@ import { Adw } from "adw/theme.slint";
 import { HeaderBar } from "adw/headerbar.slint";
 import { Button, ButtonKind, ButtonShape } from "adw/button.slint";
 import { BoxedList, ActionRow, CheckRow, NavRow, Outcome } from "adw/lists.slint";
+import { FieldRow } from "adw/entry.slint";
 import { StatusHead, Busy } from "adw/status.slint";
 import { AlertDialog } from "adw/dialog.slint";
 import { EmergencyButton } from "adw/emergency.slint";
@@ -81,10 +82,18 @@ export component AppWindow inherits Window {
     in property <[ToolLink]> links;
     // A tool's page: Back leads to the session's page.
     in property <bool> back-shown;
+    // The field of a tool's page, when its label is not empty.
+    in property <string> field-label;
+    in-out property <string> field-text;
+    in property <string> field-hint;
     // The main action's label; empty for none.
     in property <string> action;
-    // The main action is a plain button rather than the suggested one.
+    // The main action is a plain button rather than the suggested one, or
+    // one that leads to deleting something.
     in property <bool> action-plain;
+    in property <bool> action-destructive;
+    // The main action waits for what the page asks for first.
+    in property <bool> action-locked;
     // The second action's label, a plain button beside the main one; empty
     // for none.
     in property <string> secondary;
@@ -112,6 +121,7 @@ export component AppWindow inherits Window {
     callback secondary-activated();
     callback link-activated(index: int);
     callback back-activated();
+    callback field-edited(text: string);
 
     // Gives the page the keyboard back, once a question that held it closed:
     // the focus was in the question, which is gone.
@@ -233,6 +243,16 @@ export component AppWindow inherits Window {
                             wrap: word-wrap;
                         }
 
+                        if root.field-label != "": FieldRow {
+                            label: root.field-label;
+                            hint: root.field-hint;
+                            text <=> root.field-text;
+                            reachable: root.reachable;
+                            edited(text) => {
+                                root.field-edited(text);
+                            }
+                        }
+
                         if root.facts.length > 0: BoxedList {
                             for fact[i] in root.facts: ActionRow {
                                 title: fact.title;
@@ -329,9 +349,11 @@ export component AppWindow inherits Window {
 
                         action-button := Button {
                             text: root.action;
-                            kind: root.action-plain ? ButtonKind.regular : ButtonKind.suggested;
+                            kind: root.action-plain ? ButtonKind.regular
+                                : root.action-destructive ? ButtonKind.destructive : ButtonKind.suggested;
                             shape: ButtonShape.pill;
                             visible: root.action != "";
+                            enabled: !root.action-locked;
                             reachable: root.action != "" && root.reachable;
                             clicked => {
                                 root.action-activated();
