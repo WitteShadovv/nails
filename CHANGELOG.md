@@ -282,18 +282,20 @@ of this changelog for that version becomes the release notes word for word, and
   line names with `systemd.mount-extra=`) was mounted read-write by the hidden systemd, a swap unit
   of its own swapped onto its disk, and the ESP the GPT auto-generator mounts at `/efi` (Arch Linux)
   was missing from the hidden session. Activation now reads every `.mount`, `.swap` and `.automount`
-  unit linked in a target's `.wants` or `.requires` directory of the hidden root and of `/run`, with
-  its own drop-ins, except those the fstab generator made from a line the fstab policy decides (a
-  copy of such a unit in `/etc/systemd/system`, as `systemctl edit --full` makes, is decided as a
-  unit of its own): a filesystem the decoy has mounted now is bound read-only or overlaid, one not
-  mounted now is skipped or masked, and the automount of a filesystem put in place is kept off. RAM and kernel filesystems are left to the
+  unit linked in a target's `.wants`, `.requires` or `.upholds` directory (also those for every
+  target and for a prefix of its name) of the hidden root and of `/run`, with its drop-ins (those
+  for a prefix of its name and for its type included), except those the fstab generator made from a
+  line the fstab policy decides (a copy of such a unit in `/etc/systemd/system`, as
+  `systemctl edit --full` makes, is decided as a unit of its own): a filesystem the decoy has
+  mounted now is bound read-only or overlaid, one not mounted now is skipped or masked, and the
+  automount of a filesystem put in place is kept off. RAM and kernel filesystems are left to the
   hidden systemd, and so is a zram swap whose zram device has no backing device. One with a backing
   device is kept off like disk swap. A unit whose files cannot be read, or that names its source by
   a specifier, is masked, and a directory of unit links that cannot be listed refuses the
   activation. A mount unit that only another unit pulls in is not decided. `nails check` lists the
   decisions with the fstab's. A mask now also goes into `/run/systemd/system.control`: in
-  `/run/systemd/system` alone it lost to a unit in `/etc/systemd/system`, where NixOS installs
-  every unit, so the hidden systemd started such a unit masked there all the same.
+  `/run/systemd/system` alone it lost to a unit in `/etc/systemd/system`, where NixOS installs every
+  unit, so the hidden systemd started such a unit masked there all the same.
 - A hidden session reaches `local-fs.target`, `remote-fs.target` and `swap.target` when the session
   keeps a decoy filesystem or swap off that the target requires. The session masked such a unit (an
   fstab entry without `nofail` that is not mounted now, a network filesystem, a swap line, the
