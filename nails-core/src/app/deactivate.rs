@@ -299,9 +299,9 @@ mod tests {
     }
 
     /// A [`ReadyDeactivation`] whose hidden volume, state file and root of the
-    /// way back's last step are under `dir`. The live probe still reads the
-    /// real machine, which is never a hidden NAILS overlay root during the
-    /// tests, so its view is the decoy.
+    /// way back's last step are under `dir`. Its handle still leaves from what
+    /// the live probe sees of the machine, so the test that leaves with it
+    /// gives it a `/run` of its own.
     fn ready_at(dir: &Path) -> ReadyDeactivation {
         let mut plan = plan();
         plan.pids = nails_teardown::test_support::stage_pid_measure(dir);
@@ -336,19 +336,37 @@ mod tests {
             .unwrap_or_else(|error| panic!("the lock step refused: {error:?}"))
     }
 
+    /// `leave` commits the real way back, from what the live probe sees. On
+    /// the plain decoy it must surface the refusal rather than quietly return
+    /// an empty success report. The test runs in a PID, user and mount
+    /// namespace of its own with a fresh `/run`: the probe finds no session
+    /// plan there, whatever the host runs, and neither `systemctl` nor
+    /// `busctl` finds the host's service manager or logind, whose sockets are
+    /// in the host's `/run`.
     #[test]
     fn leaving_outside_a_hidden_session_refuses_instead_of_reporting_success() {
-        // `leave` commits the real way back. Off the hidden root the live
-        // view is the decoy, so it must surface the refusal rather than
-        // quietly return an empty success report.
-        let dir = tempfile::tempdir().unwrap();
-        let err = locked(ready_at(dir.path()))
-            .leave(LeaveTo::Decoy)
-            .unwrap_err();
-        assert!(
-            matches!(&err, NailsError::InvalidState(msg) if msg.contains("not in a hidden session")),
-            "expected a refusal, got {err:?}"
-        );
+        let _ = crate::test_support::Rerun::new(crate::test_path!(
+            leaving_outside_a_hidden_session_refuses_instead_of_reporting_success
+        ))
+        .in_pid_ns()
+        .run(|| {
+            nix::mount::mount(
+                Some("tmpfs"),
+                "/run",
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("mode=0755"),
+            )
+            .expect("a fresh /run");
+            let dir = tempfile::tempdir().unwrap();
+            let err = locked(ready_at(dir.path()))
+                .leave(LeaveTo::Decoy)
+                .unwrap_err();
+            assert!(
+                matches!(&err, NailsError::InvalidState(msg) if msg.contains("not in a hidden session")),
+                "expected a refusal, got {err:?}"
+            );
+        });
     }
 
     /// The handle that leaves holds the state lock for as long as it lives,

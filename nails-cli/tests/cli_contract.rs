@@ -1084,6 +1084,12 @@ fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
     // unprivileged). `NAILS_TEST_ENFORCE_ROOT` turns it on for this case; the
     // sandbox runs as a non-root user, so each privileged command must refuse
     // with code 5 and a copy-pasteable sudo hint before touching anything.
+    if running_as_root() {
+        // As root the gate lets them run, and emergency's hot path would act
+        // on a session plan this host has.
+        eprintln!("skipped: as root emergency would act on this host");
+        return;
+    }
     for subcommand in ["activate", "deactivate", "emergency"] {
         let harness = Harness::new();
         let output = nails()

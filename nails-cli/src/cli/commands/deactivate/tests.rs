@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::execute;
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::test_support::{envelope, stdout_lines};
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
@@ -533,11 +532,12 @@ fn without_a_way_back_a_person_gets_the_refusal_and_no_prompt() {
     assert_eq!(output.status.code(), Some(6), "{output:?}");
 }
 
+/// Outside a hidden session deactivate refuses before it asks, locks or
+/// leaves, with `-y --poweroff` as without. The probe's verdict is given here
+/// rather than read from the host: on a host in a hidden session the real
+/// command would take that session's way back, or power the host off.
 #[test]
 fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
-    // The test process runs on its host's own root, never in a hidden root.
-    let config = tempfile::tempdir().unwrap();
-    let missing = config.path().join("absent.toml");
     for args in [
         DeactivateArgs::default(),
         DeactivateArgs {
@@ -545,12 +545,7 @@ fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
             poweroff: true,
         },
     ] {
-        let status = execute(
-            &json(),
-            &nails_core::RuntimeEnv::default(),
-            &args,
-            Some(&missing),
-        );
+        let status = super::deactivate_prepared(&json(), &args, Prepared::NotHidden);
         assert_eq!(status, ExitStatus::InvalidState, "{args:?}");
     }
 }
