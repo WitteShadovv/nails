@@ -9,6 +9,34 @@ use std::os::unix::fs::symlink;
 const TTY1: i32 = 0x0401;
 /// ttyS0's.
 const TTYS0: i32 = 0x0440;
+/// When a fake process started unless a test says otherwise: a second into
+/// the boot, in clock ticks.
+const BOOT: u64 = TICKS_PER_SECOND;
+/// The task flags of a userspace process (`PF_RANDOMIZE | PF_SUPERPRIV`).
+const USER_FLAGS: u64 = 0x0040_0100;
+
+/// `seconds` into the boot, in clock ticks.
+fn at(seconds: u64) -> u64 {
+    seconds * TICKS_PER_SECOND
+}
+
+/// The getty anchor on `tty` with number `pid`.
+fn getty(tty: i32, pid: u32) -> Anchor {
+    Anchor {
+        comm: "agetty".to_string(),
+        tty,
+        pid,
+    }
+}
+
+/// The logind anchor with number `pid`.
+fn logind(pid: u32) -> Anchor {
+    Anchor {
+        comm: "systemd-logind".to_string(),
+        tty: 0,
+        pid,
+    }
+}
 
 /// A fake procfs with PID 1 rooted in `decoy`, and another root beside it.
 struct FakeProc {
@@ -35,22 +63,41 @@ impl FakeProc {
         self.dir.path().join("other")
     }
     /// A process `pid` named `comm` with `state`, the kernel's task `flags`
-    /// and the controlling terminal `tty`, rooted in `root`.
+    /// and the controlling terminal `tty`, rooted in `root`, started at
+    /// [`BOOT`].
     fn add(&self, pid: u32, comm: &str, state: char, flags: u64, tty: i32, root: &Path) {
+        let fields =
+            format!("{state} 1 {pid} {pid} {tty} -1 {flags} 0 0 0 0 0 0 0 0 20 0 1 0 {BOOT}");
+        self.write(pid, comm, &fields, root);
+    }
+    /// The files of process `pid` named `comm`, with the `stat` fields after
+    /// the name up to its start, rooted in `root`.
+    fn write(&self, pid: u32, comm: &str, fields: &str, root: &Path) {
         let dir = self.proc().join(pid.to_string());
         fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("stat"),
-            format!(
-                "{pid} ({comm}) {state} 1 {pid} {pid} {tty} -1 {flags} 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0\n"
-            ),
-        )
-        .unwrap();
+        fs::write(dir.join("stat"), format!("{pid} ({comm}) {fields} 0 0\n")).unwrap();
         fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
         symlink(root, dir.join("root")).unwrap();
     }
     fn user(&self, pid: u32, comm: &str, tty: i32) {
-        self.add(pid, comm, 'S', 0x0040_0100, tty, &self.root());
+        self.user_at(pid, comm, tty, BOOT);
+    }
+    /// A userspace process rooted where PID 1 is, started `start` clock
+    /// ticks into the boot.
+    fn user_at(&self, pid: u32, comm: &str, tty: i32, start: u64) {
+        let fields =
+            format!("S 1 {pid} {pid} {tty} -1 {USER_FLAGS} 0 0 0 0 0 0 0 0 20 0 1 0 {start}");
+        self.write(pid, comm, &fields, &self.root());
+    }
+    /// A fake procfs with PID 1 and the userspace processes `live`, each
+    /// `(pid, comm, tty, start)`.
+    fn with(live: &[(u32, &str, i32, u64)]) -> Self {
+        let fake = Self::new();
+        fake.add(1, "systemd", 'S', 0x100, 0, &fake.root());
+        for &(pid, comm, tty, start) in live {
+            fake.user_at(pid, comm, tty, start);
+        }
+        fake
     }
 }
 
@@ -170,6 +217,88 @@ fn the_way_back_counter_is_measured_on_the_hidden_start() {
 
     record.counter = Some(481);
     assert_eq!(record.way_back_counter(), Some(481));
+}
+
+#[test]
+fn a_unit_started_again_after_the_boot_is_no_anchor() {
+    // The getty of tty1 was started again after a logout, five minutes into
+    // the boot, with a number after everything that ran before it: logind is
+    // the anchor.
+    let restarted = FakeProc::with(&[
+        (388, "systemd-journal", 0, at(3)),
+        (590, "systemd-logind", 0, at(5)),
+        (1100, "agetty", TTY1, at(300)),
+    ]);
+    let found = record(&restarted.proc());
+    assert_eq!(found.floor, Some(388));
+    assert_eq!(found.anchors, [logind(590)]);
+
+    // A getty the boot started is the anchor beside a later one with a lower
+    // number, up to the end of the window after the floor's start; logind, a
+    // tick later, is none.
+    let late = at(3) + START_WINDOW;
+    let fake = FakeProc::with(&[
+        (388, "systemd-journal", 0, at(3)),
+        (590, "systemd-logind", 0, late + 1),
+        (600, "agetty", TTY1, at(300)),
+        (612, "agetty", TTYS0, late),
+    ]);
+    assert_eq!(record(&fake.proc()).anchors, [getty(TTYS0, 612)]);
+}
+
+#[test]
+fn a_hidden_copy_started_again_after_the_switch_is_no_measure() {
+    // In the hidden session the getty of tty1 was started again after a
+    // logout, five minutes after the switch at 9031: its number says how many
+    // the session used, not its start. The measure goes by logind instead.
+    let record = Record {
+        floor: Some(388),
+        anchors: vec![getty(TTY1, 600), logind(590)],
+        at_switch: Some(9031),
+        counter: None,
+    };
+    let restarted = FakeProc::with(&[
+        (9040, "systemd-journal", 0, at(1000)),
+        (9140, "systemd-logind", 0, at(1002)),
+        (9450, "agetty", TTY1, at(1300)),
+    ]);
+    assert_eq!(counter(&record, &restarted.proc()), Some(590 - 109));
+
+    // A copy the hidden start ran counts up to the end of the window after
+    // the start of the first process above the switch, not a tick later.
+    let window = at(1000) + START_WINDOW;
+    let on_time = FakeProc::with(&[
+        (9040, "systemd-journal", 0, at(1000)),
+        (9150, "agetty", TTY1, window),
+    ]);
+    assert_eq!(counter(&record, &on_time.proc()), Some(600 - 119));
+    let too_late = FakeProc::with(&[
+        (9040, "systemd-journal", 0, at(1000)),
+        (9150, "agetty", TTY1, window + 1),
+    ]);
+    assert_eq!(counter(&record, &too_late.proc()), None);
+}
+
+#[test]
+fn the_measured_counter_never_goes_below_the_floor() {
+    // A hidden start that used 300 numbers up to its getty, where the decoy's
+    // boot used 212 from its floor to its own, would give the decoy's units
+    // numbers below the lowest its own boot's userspace held.
+    let mut record = Record {
+        floor: Some(388),
+        anchors: vec![getty(TTY1, 600)],
+        at_switch: Some(9031),
+        counter: None,
+    };
+    let fake = FakeProc::with(&[
+        (9040, "systemd-journal", 0, BOOT),
+        (9331, "agetty", TTY1, BOOT),
+    ]);
+    assert_eq!(counter(&record, &fake.proc()), Some(387));
+    // Nor below 1 in a record without a floor.
+    record.floor = None;
+    record.anchors = vec![getty(TTY1, 300)];
+    assert_eq!(counter(&record, &fake.proc()), Some(1));
 }
 
 /// [`Places`] under `dir`, with the counter at `now` (none when `None`) and

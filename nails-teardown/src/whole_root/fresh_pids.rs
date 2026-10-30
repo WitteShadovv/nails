@@ -27,10 +27,21 @@
 //!    that many below the decoy's anchor ([`counter`]), so the decoy's anchor
 //!    gets about the number its own boot gave it.
 //!
-//! Without an anchor to measure by, the counter goes to just below the floor.
-//! A soft-reboot starts fewer processes than a cold boot (no initrd, no file
-//! system check, no new kernel threads for the devices it finds), so from the
-//! floor the getty lands about a hundred numbers below a cold boot's.
+//! A process counts as one a start ran only when it started at most
+//! [`START_WINDOW`] after the first process of that start still running: the
+//! floor's in the decoy, the first above the switch's counter in the hidden
+//! session. A getty started again after a logout, or on demand for another
+//! terminal, took its number after everything that ran before it, so it is no
+//! anchor and no measure, and the next anchor is tried.
+//!
+//! The counter never goes below the floor: without an anchor to measure by it
+//! goes to just below it, as it does when the measure would put it lower (a
+//! hidden start that used more numbers up to its anchor than the decoy's boot
+//! did from its floor). The decoy's start then numbers its units from where
+//! its own boot's userspace began; no test measures how close its getty lands
+//! to its own boot's from there. Only the anchor is measured: the decoy's
+//! other units get their numbers in the order its start runs them, which a
+//! soft-reboot need not share with a cold boot.
 //!
 //! It is best effort and never blocks the way back: without a record, outside
 //! PID 1's PID namespace, when the counter is already lower or cannot be
@@ -58,6 +69,19 @@ const ANCHOR_SPAN: u32 = 2048;
 /// for the measure to count.
 const START_SPAN: u32 = 4096;
 
+/// The clock ticks a second in which `/proc/<pid>/stat` gives a process's
+/// start (`USER_HZ`, what `sysconf(_SC_CLK_TCK)` returns): 100 on every
+/// architecture NAILS builds for.
+const TICKS_PER_SECOND: u64 = 100;
+
+/// How long after the first process of a start still running a process may
+/// have started to count as one that start ran, in clock ticks: a minute. A
+/// boot or a soft-reboot usually starts its getty and logind within seconds
+/// of its first units; one it starts later, after waiting for a device or a
+/// password, is no anchor. A getty started again after a login that ended
+/// within that minute is not told apart.
+pub const START_WINDOW: u64 = 60 * TICKS_PER_SECOND;
+
 /// A process the entry anchors on: its `comm`, its controlling terminal (the
 /// getty of tty1 is told from a serial one) and its number in the decoy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +106,8 @@ pub struct Record {
     /// The counter as the entry's switch handed over to the hidden root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_switch: Option<u32>,
-    /// The counter the way back sets, measured when it was armed.
+    /// The counter the way back sets, measured when it was armed, no lower than
+    /// just below the floor ([`counter`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counter: Option<u32>,
 }
@@ -96,8 +121,12 @@ impl Record {
     /// The counter the way back sets: the measured one, else just below the
     /// floor.
     pub fn way_back_counter(&self) -> Option<u32> {
-        self.counter
-            .or_else(|| self.floor.map(|floor| floor.saturating_sub(1).max(1)))
+        self.counter.or_else(|| self.below_floor())
+    }
+
+    /// Just below the floor, the lowest counter the way back sets.
+    fn below_floor(&self) -> Option<u32> {
+        self.floor.map(|floor| floor.saturating_sub(1).max(1))
     }
 }
 
@@ -106,6 +135,16 @@ struct Process {
     pid: u32,
     comm: String,
     tty: i32,
+    /// When it started, in clock ticks since boot.
+    start: u64,
+}
+
+impl Process {
+    /// Whether it started at most [`START_WINDOW`] after `first`, the first
+    /// process of a start still running, so that start ran it.
+    fn started_with(&self, first: &Process) -> bool {
+        self.start.saturating_sub(first.start) <= START_WINDOW
+    }
 }
 
 /// Every live userspace process in the root PID 1 runs in, under the procfs
@@ -137,6 +176,7 @@ fn processes(proc: &Path) -> Vec<Process> {
                 pid,
                 comm: comm.trim_end_matches('\n').to_string(),
                 tty: stat.tty,
+                start: stat.start_time,
             })
         })
         .collect()
@@ -150,29 +190,30 @@ pub fn boot_floor(proc: &Path) -> Option<u32> {
 
 /// The entry's part of the record, read in the decoy under the procfs at
 /// `proc`: the floor ([`boot_floor`]) and, for each of [`ANCHORS`], the
-/// lowest-numbered such process that sits no more than [`ANCHOR_SPAN`] above
-/// the floor.
+/// lowest-numbered such process that the floor's start ran
+/// ([`START_WINDOW`]), when it sits no more than [`ANCHOR_SPAN`] above the
+/// floor.
 pub fn record(proc: &Path) -> Record {
     let live = processes(proc);
-    let Some(floor) = live.iter().map(|p| p.pid).min() else {
+    let Some(first) = live.iter().min_by_key(|p| p.pid) else {
         return Record::default();
     };
     let anchors = ANCHORS
         .iter()
         .filter_map(|comm| {
-            let first = live
+            let anchor = live
                 .iter()
-                .filter(|p| p.comm == *comm)
+                .filter(|p| p.comm == *comm && p.started_with(first))
                 .min_by_key(|p| p.pid)?;
-            (first.pid - floor <= ANCHOR_SPAN).then(|| Anchor {
-                comm: first.comm.clone(),
-                tty: first.tty,
-                pid: first.pid,
+            (anchor.pid - first.pid <= ANCHOR_SPAN).then(|| Anchor {
+                comm: anchor.comm.clone(),
+                tty: anchor.tty,
+                pid: anchor.pid,
             })
         })
         .collect();
     Record {
-        floor: Some(floor),
+        floor: Some(first.pid),
         anchors,
         ..Record::default()
     }
@@ -180,23 +221,31 @@ pub fn record(proc: &Path) -> Record {
 
 /// The counter the way back sets, measured in the hidden session under the
 /// procfs at `proc` when it is armed: for the first anchor the hidden start
-/// also runs (the same `comm` on the same terminal), the decoy's number of it
-/// less the numbers the hidden start used up to its own copy. `None` when no
-/// anchor can be measured, which leaves the floor.
+/// also ran (the same `comm` on the same terminal, started with the first
+/// process above the switch's counter still running, [`START_WINDOW`]), the
+/// decoy's number of it less the numbers the hidden start used up to its own
+/// copy, but no lower than just below the floor. `None` when no anchor can be
+/// measured, which leaves the floor.
 pub fn counter(record: &Record, proc: &Path) -> Option<u32> {
     let at_switch = record.at_switch?;
-    let live = processes(proc);
-    record.anchors.iter().find_map(|anchor| {
+    let live: Vec<Process> = processes(proc)
+        .into_iter()
+        .filter(|p| p.pid > at_switch)
+        .collect();
+    let first = live.iter().min_by_key(|p| p.pid)?;
+    let measured = record.anchors.iter().find_map(|anchor| {
         let hidden = live
             .iter()
-            .filter(|p| p.comm == anchor.comm && p.tty == anchor.tty)
+            .filter(|p| p.comm == anchor.comm && p.tty == anchor.tty && p.started_with(first))
             .map(|p| p.pid)
             .min()?;
-        let used = hidden
-            .checked_sub(at_switch)
-            .filter(|&n| n > 0 && n <= START_SPAN)?;
-        anchor.pid.checked_sub(used).filter(|&c| c >= 1)
-    })
+        let used = hidden - at_switch;
+        if used > START_SPAN {
+            return None;
+        }
+        anchor.pid.checked_sub(used)
+    })?;
+    Some(measured.max(record.below_floor().unwrap_or(1)))
 }
 
 /// The device and inode of the file `path` names, following a link: the
