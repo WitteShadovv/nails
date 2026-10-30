@@ -17,10 +17,12 @@ drafts the GitHub release. Publishing the draft is the only manual step after th
 ## Checklist
 
 1. **Set the version.** On a branch, set `version` under `[workspace.package]` in `Cargo.toml`
-   to the release version, run `cargo update --workspace` and `just fuzz-lock`, and commit
-   `Cargo.toml` together with `Cargo.lock` and `fuzz/Cargo.lock`. The release build runs cargo with
-   `--locked` and fails on a stale `Cargo.lock`, and the `lint` job of `ci.yml` on a stale lock of
-   either; `cargo metadata --locked` shows the same failure locally.
+   to the release version, run `cargo update --workspace`, `just fuzz-lock` and `just gui-lock`,
+   and commit `Cargo.toml` together with `Cargo.lock`, `fuzz/Cargo.lock` and `gui/Cargo.lock`
+   (the window's workspace links `nails-api`, which takes the root version). The release build runs
+   cargo with `--locked` and fails on a stale `Cargo.lock`, and the `lint` job of `ci.yml` on a
+   stale lock of any of the three; `cargo metadata --locked` (with `--manifest-path` for the other
+   two) shows the same failure locally.
 2. **Refresh the screenshots.** The README shows real output, rendered from the captures in
    `docs/assets/screenshots/`, and nothing checks that a capture still matches what NAILS
    prints. On the branch, with the version set, run

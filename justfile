@@ -105,6 +105,15 @@ fuzz-lock:
     cp Cargo.lock fuzz/Cargo.lock
     cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
+# Refresh gui/Cargo.lock. The gui/ workspace links nails-api from the main
+# tree, which takes its version from the root workspace, so a version bump
+# changes that entry of gui/Cargo.lock: cargo rewrites it and keeps every
+# other version. A bump leaves gui/Cargo.lock stale, so RELEASING.md runs
+# this with every bump; CI, which runs cargo with --locked, fails on a stale
+# one.
+gui-lock:
+    cargo metadata --manifest-path gui/Cargo.toml --format-version 1 > /dev/null
+
 # The mechanical half of the rule that every parser of bytes NAILS does not
 # control gets a fuzz target (docs/testing-strategy.md), part of `just check`
 # and of CI's lint job: every fuzz target is wired into fuzz/Cargo.toml, is
