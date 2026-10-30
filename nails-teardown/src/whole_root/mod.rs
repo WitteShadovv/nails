@@ -21,6 +21,8 @@
 //!   clean power cycle after the way back;
 //! - [`boot_writer`]: starting the decoy's wtmpdb boot writer so it records
 //!   the way back as a power cycle would;
+//! - [`fresh_pids`]: process numbers after the way back that read like a
+//!   fresh boot;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
@@ -33,6 +35,8 @@
 //!   back) so `status` can say so;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
+//! - [`logind`]: the soft-reboot request of the entry and the way back, and
+//!   what logind holds of it;
 //! - [`emergency`]: the emergency hot path;
 //! - [`tools`]: the bounded `systemctl`, `dmsetup` and `ip` calls.
 
@@ -42,8 +46,10 @@ pub mod carry;
 pub mod decoy_mounts;
 pub mod disk_guard;
 pub mod emergency;
+pub mod fresh_pids;
 pub mod kernel_helpers;
 pub mod kill;
+pub mod logind;
 pub mod network;
 pub mod network_policy;
 pub mod network_run;

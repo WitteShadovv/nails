@@ -26,12 +26,13 @@ repos:
       - id: check-symlinks
 
   # Secret detection. Fuzz seeds are raw inputs, random tokens among them,
-  # where no allowlist pragma can go.
+  # and the status capture is test output copied unedited, with Nix store
+  # hashes in it: no allowlist pragma can go in either.
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
       - id: detect-secrets
-        exclude: (.*\.lock|^fuzz/seeds/.*|^nails-base/src/state/golden/.*|^nix/distro-tests/images\.json$|^ci/tests/test_distro_images\.py$)$
+        exclude: (.*\.lock|^fuzz/seeds/.*|^nails-base/src/state/golden/.*|^nix/distro-tests/images\.json$|^ci/tests/test_distro_images\.py$|^docs/assets/screenshots/status-json\.txt$)$
         additional_dependencies: ["pyyaml", "gibberish-detector"]
 
   # Local hooks for Nix, shell and project-specific checks
@@ -165,10 +166,10 @@ repos:
         pass_filenames: false
         files: ^(gui/)?deny\.toml$
 
-      # Push gate: formatting, clippy, file sizes, the fuzz targets and the full
-      # test suite.
+      # Push gate: formatting, clippy, file sizes, the fuzz targets, the full
+      # test suite and a three-seed shuffle sweep.
       - id: just-check
-        name: just check (fmt, lint, line-count, fuzz-targets, test)
+        name: just check (fmt, lint, line-count, fuzz-targets, test, shuffle)
         entry: just check
         language: system
         pass_filenames: false

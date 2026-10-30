@@ -25,6 +25,7 @@ pub mod activate;
 pub mod check;
 pub mod completions;
 pub mod config;
+pub(crate) mod config_edit;
 pub mod deactivate;
 pub mod discard;
 pub mod emergency;

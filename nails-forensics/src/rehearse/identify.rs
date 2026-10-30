@@ -14,28 +14,42 @@
 //! - a filesystem that can compress file contents (btrfs, bcachefs, an f2fs
 //!   whose superblock carries the compression feature), found by its own
 //!   magic, so a stale signature of another format beside it cannot hide it;
+//! - NTFS, which can compress the files of a folder marked compressed;
+//! - an ext4 or f2fs whose superblock carries the encrypt feature (fscrypt),
+//!   which stores the files of an encrypted directory encrypted;
 //! - an encrypted container (LUKS, BitLocker), of which a raw scan reads only
 //!   ciphertext: its unlocked mapping is what to scan;
 //! - an LVM physical volume, whose logical volumes the scan does not identify;
 //! - storage on which no filesystem is identified at all (zfs, an encrypted
-//!   volume without a header, raw data), even where an ext4, xfs or f2fs
-//!   magic shows over a block size no such filesystem uses;
-//! - a filesystem, a partition, or the disk a GPT was written for, that runs
-//!   past the end of the source, as on an image whose copy stopped early;
+//!   volume without a header, raw data), even where a filesystem's or swap
+//!   area's magic shows over a superblock that records what no such
+//!   filesystem has (a block size it never uses, say);
+//! - a filesystem or swap area (ext4, xfs, f2fs, vfat, exFAT, swap), a
+//!   partition, or the disk a GPT was written for, that runs past the end of
+//!   the source, as on an image whose copy stopped early, even inside the
+//!   superblock, before the feature flags of an ext4 or f2fs;
+//! - an ext4 or f2fs superblock the source ends inside, before its feature
+//!   flags, that records no more than the source holds;
 //! - first blocks that cannot be read.
 //!
 //! A source with a partition table (a whole disk) is classified partition by
 //! partition, and a blind spot on any partition, named by its number, makes
 //! the whole source one.
+//!
+//! A device the mount table names is judged by its mount instead. No mount
+//! option shows the encrypt feature, though, so the scan reads that from the
+//! superblock of a mounted ext4 or f2fs too ([`mounted_blind_spot`]).
 
+use super::ScanBlindSpot;
 use crate::forensic::layout::{self, Partition, RecordedSize, Signature, TableKind};
 use crate::forensic::raw::RawSource;
 use std::io;
 
 /// What a raw plaintext scan can make of one region of a source.
 enum Region {
-    /// A filesystem or format the scan reads verbatim (ext4, xfs, an f2fs made
-    /// without the compression feature, vfat, swap).
+    /// A filesystem or format the scan reads verbatim (an ext4 without the
+    /// encrypt feature, an f2fs without it and made without compression, xfs,
+    /// vfat, exFAT, swap).
     Verbatim,
     /// Storage that can hide the canary from the scan, and why.
     Hidden(String),
@@ -68,11 +82,25 @@ fn unreadable(err: &io::Error) -> String {
     format!("its first blocks could not be read ({err}), so its storage was not identified")
 }
 
-/// Why the scan of a cut-short filesystem is not checked.
-fn truncated(fstype: &str, recorded: u64, available: u64) -> String {
+/// Why a filesystem is not checked when the source ends inside its
+/// superblock, before its feature flags, and the superblock does not show it
+/// cut short.
+fn flags_cut_off(fstype: &str) -> String {
     format!(
-        "the {fstype} filesystem here spans {recorded} bytes, but the source holds only \
-         {available} of them, so the rest was never read"
+        "the source ends inside the {fstype} superblock here, before its feature flags, so the \
+         scan cannot tell whether the filesystem stores file contents verbatim"
+    )
+}
+
+/// Why the scan of a cut-short filesystem or swap area is not checked.
+fn truncated(fstype: &str, recorded: u64, available: u64) -> String {
+    let what = match fstype {
+        "swap" => "swap area".to_string(),
+        _ => format!("{fstype} filesystem"),
+    };
+    format!(
+        "the {what} here spans {recorded} bytes, but the source holds only {available} of \
+         them, so the rest was never read"
     )
 }
 
@@ -106,17 +134,12 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
     // A filesystem that can compress wins over whatever else the region's
     // first blocks show: a stale signature of another format must never make
     // it read as verbatim, nor stand in for it when it is verbatim. An f2fs
-    // compresses only when made with the compression feature, so its
-    // superblock decides.
+    // compresses only when made with the compression feature, so `plain`
+    // reads its superblock for that.
     if let Some(fstype) = layout::compressing_format_at(source, start)? {
-        let blind = if fstype == "f2fs" {
-            super::f2fs_image_blind_spot(layout::f2fs_compression(source, start)?)
-        } else {
-            super::scan_blind_spot(fstype, "")
-        };
-        return match blind {
+        return match super::scan_blind_spot(fstype, "") {
             Some(blind) => Ok(Region::Hidden(blind.reason().to_string())),
-            None => sized(source, start, end, fstype),
+            None => plain(source, start, end, fstype),
         };
     }
     Ok(match layout::signature_at(source, start)? {
@@ -125,25 +148,72 @@ fn region(source: &RawSource, start: u64, end: u64) -> io::Result<Region> {
         Signature::Format("lvm2-pv") => Region::Hidden(VOLUME_GROUP.to_string()),
         Signature::Format(fstype) => match super::scan_blind_spot(fstype, "") {
             Some(blind) => Region::Hidden(blind.reason().to_string()),
-            None => sized(source, start, end, fstype)?,
+            None => plain(source, start, end, fstype)?,
         },
         Signature::Unknown => Region::Unidentified,
     })
 }
 
-/// A filesystem of `fstype` at `start` that a raw plaintext scan reads
-/// verbatim: verbatim when the region to `end` holds all of it.
-fn sized(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<Region> {
-    Ok(match layout::recorded_size(source, start, fstype)? {
-        RecordedSize::Bytes(recorded) if recorded > end - start => {
-            Region::Hidden(truncated(fstype, recorded, end - start))
+/// A filesystem of `fstype` at `start` whose format stores file contents
+/// verbatim unless its superblock's feature flags say otherwise: verbatim
+/// when its superblock records a size such a filesystem can have, its flags
+/// show neither an f2fs's compression nor the encrypt feature, and the region
+/// to `end` holds all of it.
+fn plain(source: &RawSource, start: u64, end: u64, fstype: &str) -> io::Result<Region> {
+    let recorded = layout::recorded_size(source, start, fstype)?;
+    // A magic over a superblock that records what no such filesystem has (a
+    // block size it never uses, say) matched other bytes by chance, the
+    // ciphertext of a volume without a header among them.
+    if recorded == RecordedSize::Implausible {
+        return Ok(Region::Unidentified);
+    }
+    // The flags, where the source holds them. A feature that hides file
+    // contents comes first: a whole copy of such a filesystem is no more
+    // readable than a cut one.
+    let compression = match fstype {
+        "f2fs" => layout::f2fs_compression(source, start)?,
+        _ => Some(false),
+    };
+    let encryption = layout::encryption_feature(source, start, fstype)?;
+    if let Some(blind) = compression.and_then(super::f2fs_image_blind_spot) {
+        return Ok(Region::Hidden(blind.reason().to_string()));
+    }
+    if encryption == Some(true) {
+        return Ok(Region::Hidden(
+            ScanBlindSpot::EncryptionCapable.reason().to_string(),
+        ));
+    }
+    let available = end - start;
+    Ok(match recorded {
+        RecordedSize::Bytes(recorded) if recorded > available => {
+            Region::Hidden(truncated(fstype, recorded, available))
         }
-        // An ext4, xfs or f2fs magic over a superblock with a block size no
-        // such filesystem uses matched other bytes by chance, the ciphertext
-        // of a volume without a header among them.
-        RecordedSize::Implausible => Region::Unidentified,
-        RecordedSize::Bytes(_) | RecordedSize::Unrecorded => Region::Verbatim,
+        // Flags past the end of the source, on a filesystem whose superblock
+        // records no more than the source holds: the superblock contradicts
+        // itself, and nothing shows what the filesystem stores verbatim.
+        _ if compression.is_none() || encryption.is_none() => Region::Hidden(flags_cut_off(fstype)),
+        _ => Region::Verbatim,
     })
+}
+
+/// Why a clean scan of a device the mount table shows as `fstype` is not a
+/// clean result beyond what its type and options tell: an ext2/3/4 or f2fs
+/// whose superblock carries the encrypt feature, which no mount option shows,
+/// or one whose superblock cannot be read or ends before its flags. `None` for
+/// any other type, whose mount says all the scan knows of it.
+pub(super) fn mounted_blind_spot(source: &RawSource, fstype: &str) -> Option<String> {
+    let format = match fstype {
+        "ext2" | "ext3" | "ext4" => "ext2/3/4",
+        "f2fs" => "f2fs",
+        _ => return None,
+    };
+    match layout::encryption_feature(source, 0, format) {
+        Ok(Some(encrypting)) => {
+            encrypting.then(|| ScanBlindSpot::EncryptionCapable.reason().to_string())
+        }
+        Ok(None) => Some(flags_cut_off(format)),
+        Err(err) => Some(unreadable(&err)),
+    }
 }
 
 /// Why a clean scan of `partition` of `source` is not a clean result, or

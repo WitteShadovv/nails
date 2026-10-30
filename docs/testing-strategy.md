@@ -51,8 +51,9 @@ What runs in this tier:
 
 | Tests | Covers |
 | --- | --- |
-| `nails-core/tests/whole_root_kernel.rs` | The session's own mechanics on real mounts: the root overlay and its upper, the SELinux labels copied from the decoy's directories onto an upper and along the way to the operator's home, never onto or through a link (on a host without SELinux), the read-only ESP, the fstab policy, the transition step against a live mount table, the way back, the cgroup kill, rollback of a failed entry, the chrooted NixOS activation and the kept store closure |
+| `nails-core/tests/whole_root_kernel.rs` | The session's own mechanics on real mounts: the root overlay and its upper, the SELinux labels copied from the decoy's directories onto an upper and along the way to the operator's home, never onto or through a link, and the entry that gives them to the roots of its uppers and to the way to the home or is refused and undone (on a host without SELinux), the read-only ESP, the fstab policy, the transition step against a live mount table, the way back, the cgroup kill, rollback of a failed entry, the chrooted NixOS activation and the kept store closure |
 | `nails-core/tests/boot_records_kernel.rs` | The way back's login- and boot-record pieces: `/run` left executable for them and made `noexec` again by the reconcile step, the decoy's wtmp and the wtmpdb writer's unit read without touching their access times on a `strictatime` filesystem, and the wtmpdb writer started in a time namespace whose boot clock starts at the switch, kept from the system bus |
+| The `kernel_tests` modules of `nails-cli/tests/config_write.rs`, `nails-core/src/app/config_edit_tests.rs` and `nails-base/src/filesystem/pinned_dir_tests.rs` | The settings writer on a tmpfs hidden volume, through the real attach gate: `config set` and `config unset` from the binary bound into the volume as `<volume>/nails`, the template's comments kept, an invalid value, a link at the file and a `--config` file off the volume refused with the file elsewhere left as it was, and eight processes at once each landing their change; a volume with no NAILS layout refused; a tmpfs or a file bound inside the volume refused as another filesystem on the way |
 | `nails-cli/tests/early_dispatch.rs` | `emergency` detaching a leftover next root before it reads the configuration |
 | `nails-cli/tests/maintenance_cli.rs` and the `kernel_tests` modules of `rehearse_cli.rs`, `cli_contract.rs`, `activate_gate.rs`, `helper_stdio.rs`, `nails-cli/src/cli/helper/switch_tests.rs` and `maintain_tests.rs` (the window's helper, when the `gui` feature is on), `nails-cli/src/cli/logging/tests.rs` and `nails-cli/src/cli/commands/init/tests.rs` | The real binary's write paths (state, lock, rehearsal state, log file, the init layout) on a tmpfs hidden root, through the real attach gate: the binary they spawn inherits the namespace, so no test hook stands in for a mounted volume. `activate_gate.rs` also mounts a second tmpfs over the root and checks that neither receives a file, and that `activate --json` writes exactly one envelope of its schema to stdout. The helper's tests run a discard, an activation, init and a rehearsal plant through it and compare each answer with the CLI's envelope and exit code for the same command, and check that a window closing its pipe before the point of no return cancels the activation |
 | `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
@@ -105,6 +106,14 @@ runners. On Fedora and Arch, which NAILS does not admit yet, a refusal scenario
 run by hand checks that NAILS refuses them, that a refused `activate` changes
 nothing on the hidden root, and that nothing on the decoy's disk filesystems or
 in its journal names the refused run.
+
+The dummy links of `network_way_back_kernel.rs` take a new MAC address while
+they are up, so the way back's retry for a driver that refuses one (it takes
+the device down for the change and brings it up again) is tested in a VM, by
+`session-mac-restore`: on QEMU's emulated NE2000 card, whose driver refuses a
+live change as many USB Ethernet adapters and Wi-Fi cards do, the card has its
+permanent address back, and is up, after `deactivate` and after a plain
+`emergency`.
 
 ### (d) Contract tests: one body, mock and real
 
@@ -181,6 +190,36 @@ owes one.
 - **VM:** the suites in `nix/e2e-tests`, as its README describes. When a captured
   format changes, refresh the fixture as the fixture README says.
 
+## Mutation testing
+
+cargo-mutants changes the code one spot at a time and runs the tests again: a
+mutant the tests still pass is a gap that no coverage figure shows. It runs
+weekly over the state machine and the session and teardown decision cores, and
+on the lines a pull request into `next` changes ([ci.md](ci.md#important-gate-behavior)
+says how; `just mutants` and `just mutants-in-diff` run the same locally). Both
+run only the tests of the crate that holds the mutant, as cargo-mutants does by
+default, so a mutant that only another crate's tests kill is reported as
+surviving there; `--test-workspace=true` runs the whole workspace's tests.
+
+A surviving mutant is killed with a test that asserts what a caller relies on,
+never with a value picked only to differ from the mutant. The few that no test
+can kill, not even with `--test-workspace=true`, are recorded in
+`.cargo/mutants.toml`, each as an `exclude_re` entry with the reason above it.
+An equivalent mutant behaves like the code on every input (a `^` in place of a
+`|` between flags that share no bit); a near-equivalent one differs only where
+no test can reach (an `O_CLOEXEC` dropped from a descriptor that lives for a
+single read). Every cargo-mutants run reads that file, the weekly sweep and the
+in-diff lane as well as a local one, so such a mutant is not reported again and
+its reason is in one place. An entry names the file, the mutation and the
+function, so it excludes its own mutant and no other;
+`cargo mutants --list --no-config` against `cargo mutants --list` shows what
+the file excludes. A mutant that is not equivalent is never recorded there,
+even when only a VM test kills it, so the runs go on reporting it. When the
+code an entry names changes, the entry is checked again: it must still match
+its mutant, and that mutant must still be equivalent. The files that
+`mutants_skipped` in the justfile names are another matter: the weekly sweep
+leaves them out for its time budget, not because their mutants are equivalent.
+
 ## Fuzzing
 
 The parsers that read what NAILS does not control are also fuzzed, with
@@ -203,16 +242,21 @@ and checks more than that nothing panics or hangs:
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `autologin` | GDM's, SDDM's, Plasma Login Manager's and LightDM's configuration with drop-ins | the accounts listed are the ones each display manager may log in, read with its parser in each order its locale may sort the drop-ins in |
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
+| `config_edit` | an operator's `nails.toml`, then the edits `config set` and `config unset` make of it, one a line | an edit of a file that parses writes TOML that parses; each key set holds the value asked for and each key unset is gone, while every other key, known or not, holds what it held; every comment stays; when no value changes the file comes back byte for byte; the same edits a second time change nothing |
 | `cryptsetup_version` | a decoy's dpkg `status` file, whose lines are also pacman entries and a store path's name | a version read comes from what names cryptsetup and reads back the same; another package's stanza or entry changes nothing |
 | `nix_db` | the dump `run-scan.sh` writes of a decoy's Nix store database for the forensic oracle, one JSON row a line, then after a NUL the rows a session adds | the oracle reads exactly the lines a model of the row reads, one finding each, and reads each row the same under other ids, times and pages; two rows give one finding exactly when the model holds them the same; the verdict fails on exactly the added rows `before` holds none like, as added, and as removed when the session takes them away |
+| `dpkg_status` | dpkg's `status` file, whose lines are also names of files in dpkg's `info` directory | where dpkg's stanza parser accepts a file that ends in a newline, the packages read are the stanzas dpkg reads, less those where a field NAILS keeps runs over two lines; a stanza after the file changes nothing before it; the packages written back read the same; an `info` file's owner is its name up to the last dot |
+| `pacman_local` | the entries of pacman's local database | each entry splits into the name and version libalpm gives it; a package's entry name is its entry; a listing gives the packages of the entries in their order |
+| `rpmdb` | rpm's database file and its write-ahead log, and the same bytes as one rpm header | neither NAILS's SQLite reader nor its reader of rpm's headers panics, nor takes more memory than libFuzzer allows an input, which pages whose cells repeat or overlap and a header of many files in one long directory among the seeds once did; a database read twice, and read in pieces through the filesystem, gives the same packages; its packages judged against themselves follow, and against none, with every difference a hidden session's own, follow too; each directory its packages record, resolved through the links they record, is shorter than `PATH_MAX` and resolves to itself |
+| `package_drift` | a decoy's dpkg `status` and pacman entries, hidden sessions' copies of them in the upper, and the names in the upper's copy of dpkg's `info` directory | a record judged against itself follows, and judged both ways names the same packages with the two sides swapped; a hidden session that changed every package keeps none drifted; a pacman package listed twice has a version on both sides; the `package-drift` row is a pass or a warning, and its warning is the advisory an entry shows |
 | `kernel_config_gzip` | the kernel's own config, `/proc/config.gz`, as a gzip stream, which is also the text of a stream the target writes | a member before the stream adds its text and changes nothing else, so no back-reference leaves its member; a stream that decodes stays within the limit and is refused one byte below it, cut short by a byte or followed by one, and decodes the same when its text is written again in stored blocks; the input written in fixed-Huffman and stored blocks, in two members, decodes back to it |
-| `disk_layout` | the start of a raw disk | partitions and free ranges lie on the disk, in order, apart; what a rehearsal scan reads at the start of each region (its signature, a compressing filesystem's magic, an f2fs's compression feature, the size a superblock records) is read without an error |
+| `disk_layout` | the start of a raw disk | partitions and free ranges lie on the disk, in order, apart; what a rehearsal scan reads at the start of each region (its signature, a compressing filesystem's magic, an f2fs's compression feature, an ext4's or f2fs's encrypt feature, the size a superblock, boot sector or swap header records) is read without an error |
 | `raw_token_scan` | a canary token and a sparse disk image | the windowed scan finds what a scan of the whole image in one buffer finds |
 | `helper_request` | a request line a window writes to the engine's root helper, for any of its operations | a line past the length limit or holding a newline is refused; an accepted request follows the protocol's version, has arguments of the right shape (absolute paths, a well-formed token, no two options the CLI refuses together), and written back reads as the same request |
 
-What systemd, libmount, GLib, GDM, LightDM, SDDM and KConfig do, where a
-target compares NAILS with them, is modelled in `fuzz/src/`, each model
-written from the C or C++ function it follows.
+What systemd, libmount, GLib, GDM, LightDM, SDDM, KConfig, dpkg and libalpm
+do, where a target compares NAILS with them, is modelled in `fuzz/src/`, each
+model written from the C or C++ function it follows.
 Each target starts from its seed corpus in `fuzz/seeds/<target>/`, inputs
 taken from the fixtures and tests, with a dictionary in `fuzz/dicts/`. The
 proptests in `nails-core/src/fuzz/` (`just fuzz`) cover some of the same

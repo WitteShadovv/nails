@@ -6,6 +6,7 @@ expression: redact_status(value)
   "command": "status",
   "data": {
     "attention": "record_unreadable",
+    "decoy_kdump_armed": "[decoy_kdump_armed]",
     "decoy_persistent": "[decoy_persistent]",
     "hidden_root": "[hidden_root]",
     "hidden_root_mounted": false,

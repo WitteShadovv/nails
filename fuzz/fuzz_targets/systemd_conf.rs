@@ -50,10 +50,14 @@ fuzz_target!(|data: &[u8]| {
 
     for (name, section) in CONFIGS {
         let fs = stage(name, &parts[0], local, vendor);
-        let read: Vec<(String, String)> = section_assignments(&fs, Path::new("/"), name, section)
-            .into_iter()
-            .map(|assignment| (assignment.key, assignment.value))
-            .collect();
+        // Every staged file is a regular one and the main file is in /etc,
+        // which every release reads, so the configuration is read.
+        let read: Vec<(String, String)> =
+            section_assignments(&fs, Path::new("/"), name, section, None)
+                .expect("a configuration of regular files is read")
+                .into_iter()
+                .map(|assignment| (assignment.key, assignment.value))
+                .collect();
         // systemd strips its WHITESPACE, " \t\n\r", around both.
         let stripped = |text: &str| text.trim_matches([' ', '\t', '\n', '\r']).len() == text.len();
         for (key, value) in &read {

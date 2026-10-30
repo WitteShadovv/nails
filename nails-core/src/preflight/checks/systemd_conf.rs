@@ -9,18 +9,45 @@
 //!
 //! 1. the main file: the first of `/etc/systemd/NAME.conf`,
 //!    `/run/systemd/NAME.conf`, `/usr/local/lib/systemd/NAME.conf` and
-//!    `/usr/lib/systemd/NAME.conf` that exists (only that one is used);
+//!    `/usr/lib/systemd/NAME.conf` that exists (only that one is used). This
+//!    is how systemd 256 and later look for it; before 256 the daemons read
+//!    the main file from `/etc` alone. NAILS looks where the running release
+//!    looks. When it cannot read the release, a main file found outside `/etc`
+//!    that changes what is read leaves the configuration [`Unread`];
 //! 2. then every `*.conf` drop-in found in `NAME.conf.d/` under the same four
 //!    directories, sorted by file name across all of them. A drop-in in a
 //!    higher-priority directory (`/etc` over `/run` over `/usr/local/lib` over
-//!    `/usr/lib`) shadows a same-named file in a lower one; a drop-in symlinked
-//!    to `/dev/null` (or empty) therefore masks the vendor one.
+//!    `/usr/lib`) shadows a same-named file in a lower one; an empty drop-in
+//!    therefore masks the vendor one.
 //!
 //! The files are applied in that order and, per key, the last assignment wins.
 //! A pre-flight check that reads only `/etc/systemd/NAME.conf` both refuses a
 //! host configured through a drop-in and, worse, accepts one whose drop-in
 //! overrides a safe main file, so every systemd configuration read goes through
 //! [`section_assignments`].
+//!
+//! # Entries that are not regular files
+//!
+//! systemd lists a drop-in by its name alone, whatever is there: a directory,
+//! a device (a link to `/dev/null` among them), a FIFO or a socket with a
+//! drop-in's name shadows the same-named file below it as a regular file does.
+//! The releases then read such an entry differently. Up to 259 they open it:
+//! `/dev/null` reads as empty, while a directory fails the read where its turn
+//! comes, so the files before it count and the rest are skipped. From 260 they
+//! open every drop-in as a regular file before they parse anything, so any
+//! such entry, or such a main file, leaves the whole configuration unread, the
+//! main file included. A link that cannot be followed (a loop) differs as
+//! well: from 258 it is not listed, so the file below it is read, while the
+//! earlier releases fail on it. A link to a path that does not exist is the one
+//! exception, in every release: it shadows the file below and adds nothing.
+//!
+//! A configuration with such an entry is [`Unread`] whatever release runs, and
+//! so is one with a file or drop-in directory that NAILS cannot read where
+//! systemd, running as root, can. The daemons read these files when they
+//! start, and an update can bring another release before they next do, at the
+//! latest when the decoy starts again after the way back. A caller counts an
+//! unread configuration as the setting it guards against, never as the
+//! defaults: what the daemon applies is not known.
 //!
 //! # Syntax
 //!
@@ -71,6 +98,10 @@ const CONF_DIRS: &[&str] = &[
     "usr/lib/systemd",
 ];
 
+/// The first systemd release whose daemons look for their main file in every
+/// one of [`CONF_DIRS`]; the earlier ones read it from `/etc` alone.
+const MAIN_FILE_OUTSIDE_ETC_SINCE: u32 = 256;
+
 /// One `Key=value` assignment, with key and value stripped of whitespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
@@ -91,72 +122,267 @@ pub enum RefusedLine {
     NotUtf8,
 }
 
-/// The files systemd reads for configuration `name` (e.g. `journald.conf`) under
-/// `root`, in application order: the main file first, then the drop-ins.
-pub fn config_files<F: Filesystem>(fs: &F, root: &Path, name: &str) -> Vec<PathBuf> {
-    let mut files = Vec::new();
+/// A configuration NAILS cannot read the way systemd reads it, so what the
+/// daemon applies is not known (see the [module docs](self)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unread {
+    /// The entry that is not read as systemd reads it.
+    pub path: PathBuf,
+    /// Why it is not.
+    pub cause: UnreadCause,
+}
 
-    // Only the first main file found is used.
-    if let Some(main) = CONF_DIRS
-        .iter()
-        .map(|dir| root.join(dir).join(name))
-        .find(|path| fs.path_exists(path).unwrap_or(false) && !is_dir(fs, path))
-    {
-        files.push(main);
+/// Why a configuration is [`Unread`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnreadCause {
+    /// A main file or drop-in that is not a regular file once its links are
+    /// followed: a directory, a device such as `/dev/null`, a FIFO, a socket,
+    /// or a link that cannot be followed. The systemd releases do not read
+    /// such a configuration alike.
+    NotRegular,
+    /// A file, or a drop-in directory, that NAILS cannot read, as an
+    /// unprivileged `check` cannot read one only root may.
+    CannotRead,
+    /// A main file outside `/etc`, which systemd 256 and later read and the
+    /// earlier releases do not, while NAILS cannot read which release runs,
+    /// and reading it changes what is applied.
+    UnknownRelease,
+}
+
+impl Unread {
+    fn new(path: &Path, cause: UnreadCause) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            cause,
+        }
     }
 
-    // Drop-ins: iterate directories in priority order so the first file seen
-    // for a name (the highest-priority one) shadows the others; the map keeps
-    // them sorted by file name, byte-wise like systemd.
+    /// What the operator can do about it, to follow the description.
+    pub fn advice(&self) -> &'static str {
+        match self.cause {
+            UnreadCause::NotRegular => {
+                "systemd releases do not read a configuration with such an entry alike, and from \
+                 260 a directory or a device there leaves all of it unread; put a regular file \
+                 there (an empty one masks a vendor file of the same name)"
+            }
+            UnreadCause::CannotRead => "run the command again with sudo",
+            UnreadCause::UnknownRelease => {
+                "put the main file in /etc/systemd, where every release reads it"
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Unread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.cause {
+            UnreadCause::NotRegular => write!(f, "{} is not a regular file", self.path.display()),
+            UnreadCause::CannotRead => write!(f, "NAILS cannot read {}", self.path.display()),
+            UnreadCause::UnknownRelease => write!(
+                f,
+                "only systemd 256 and later read the main file {}, and NAILS cannot read which \
+                 release runs",
+                self.path.display()
+            ),
+        }
+    }
+}
+
+/// What systemd's reader makes of one configuration path.
+enum Entry {
+    /// A regular file once its links are followed: systemd reads it.
+    Regular,
+    /// No file, or a link to a path that does not exist: systemd's open fails
+    /// with `ENOENT`, which it skips. A drop-in's name still shadows the files
+    /// of that name below it.
+    Missing,
+    /// Anything else: the configuration is not read alike by every release,
+    /// or NAILS cannot see what is there.
+    Unread(UnreadCause),
+}
+
+/// Classify `path` without opening it: a FIFO would block the open, and a
+/// device can be read without end.
+fn entry<F: Filesystem>(fs: &F, path: &Path) -> Entry {
+    if fs.is_regular_file(path).unwrap_or(false) {
+        return Entry::Regular;
+    }
+    if fs.path_exists(path).unwrap_or(true) {
+        return Entry::Unread(UnreadCause::NotRegular);
+    }
+    // Nothing that a lookup reaches: no file, a link to nothing, a link that
+    // cannot be followed (a loop), or a path NAILS may not look up. A path
+    // that resolves all the same is one the in-memory test double holds no
+    // file for (it resolves links without asking whether the target is
+    // there), or one that came into being since the lookup above.
+    match fs.canonicalize(path) {
+        Ok(_) => Entry::Missing,
+        Err(e) => match e.io_kind() {
+            Some(std::io::ErrorKind::NotFound) => Entry::Missing,
+            Some(std::io::ErrorKind::PermissionDenied) => Entry::Unread(UnreadCause::CannotRead),
+            _ => Entry::Unread(UnreadCause::NotRegular),
+        },
+    }
+}
+
+/// The main file and the drop-ins of a configuration, as [`listing`] finds
+/// them.
+struct Listing {
+    /// The main file systemd reads, if any.
+    main: Option<PathBuf>,
+    /// A main file outside `/etc` while the running release is not known:
+    /// systemd 256 and later read it, earlier releases do not.
+    uncertain_main: Option<PathBuf>,
+    /// The drop-ins, in the order systemd applies them.
+    dropins: Vec<PathBuf>,
+}
+
+/// Find the files of configuration `name` under `root` for a systemd of major
+/// version `systemd_major` (`None` when it is not known).
+///
+/// [`Unread`] when the main file systemd would read, or a drop-in that is not
+/// shadowed, is no regular file, or when NAILS cannot read a drop-in directory.
+/// Every drop-in is looked at, wherever a line refused in an earlier file
+/// would stop the reading, because systemd 260 and later open them all first.
+fn listing<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    name: &str,
+    systemd_major: Option<u32>,
+) -> Result<Listing, Unread> {
+    let main_dirs = match systemd_major {
+        Some(major) if major < MAIN_FILE_OUTSIDE_ETC_SINCE => &CONF_DIRS[..1],
+        _ => CONF_DIRS,
+    };
+    let (mut main, mut uncertain_main) = (None, None);
+
+    // Only the first main file found is used; a link to a path that does not
+    // exist is none, so systemd goes on to the next directory.
+    for (index, dir) in main_dirs.iter().enumerate() {
+        let path = root.join(dir).join(name);
+        match entry(fs, &path) {
+            Entry::Missing => continue,
+            Entry::Unread(cause) => return Err(Unread::new(&path, cause)),
+            Entry::Regular if index > 0 && systemd_major.is_none() => uncertain_main = Some(path),
+            Entry::Regular => main = Some(path),
+        }
+        break;
+    }
+
+    // Drop-ins: iterate directories in priority order so the first entry seen
+    // for a name (the highest-priority one) shadows the others, whatever it
+    // is; the map keeps them sorted by file name, byte-wise like systemd.
     let dropin_dir = format!("{name}.d");
     let mut dropins: BTreeMap<OsString, PathBuf> = BTreeMap::new();
     for dir in CONF_DIRS {
-        let Ok(entries) = fs.list_directory(&root.join(dir).join(&dropin_dir)) else {
-            continue;
+        let dir = root.join(dir).join(&dropin_dir);
+        let entries = match fs.list_directory(&dir) {
+            Ok(entries) => entries,
+            // systemd skips a drop-in directory it cannot open, but it runs as
+            // root: one that only NAILS cannot open may hold drop-ins it reads.
+            Err(e) if e.io_kind() == Some(std::io::ErrorKind::PermissionDenied) => {
+                return Err(Unread::new(&dir, UnreadCause::CannotRead));
+            }
+            Err(_) => continue,
         };
-        for entry in entries {
-            let Some(file_name) = entry.file_name() else {
+        for listed in entries {
+            let Some(file_name) = listed.file_name() else {
                 continue;
             };
             let name_bytes = file_name.as_encoded_bytes();
             if name_bytes.starts_with(b".") || !name_bytes.ends_with(b".conf") {
                 continue;
             }
-            if is_dir(fs, &entry) {
-                continue;
-            }
-            dropins.entry(file_name.to_os_string()).or_insert(entry);
+            dropins.entry(file_name.to_os_string()).or_insert(listed);
         }
     }
-    files.extend(dropins.into_values());
-    files
+    let mut files = Vec::new();
+    for path in dropins.into_values() {
+        match entry(fs, &path) {
+            Entry::Regular => files.push(path),
+            Entry::Missing => {}
+            Entry::Unread(cause) => return Err(Unread::new(&path, cause)),
+        }
+    }
+    Ok(Listing {
+        main,
+        uncertain_main,
+        dropins: files,
+    })
 }
 
-fn is_dir<F: Filesystem>(fs: &F, path: &Path) -> bool {
-    fs.is_directory(path).unwrap_or(false)
+/// The files systemd of major version `systemd_major` (`None` when it is not
+/// known) reads for configuration `name` (e.g. `journald.conf`) under `root`,
+/// in application order: the main file first, then the drop-ins.
+///
+/// [`Unread`] as [`listing`] has it, and when only the release can tell
+/// whether a main file outside `/etc` is read.
+pub fn config_files<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    name: &str,
+    systemd_major: Option<u32>,
+) -> Result<Vec<PathBuf>, Unread> {
+    let listing = listing(fs, root, name, systemd_major)?;
+    if let Some(path) = listing.uncertain_main {
+        return Err(Unread::new(&path, UnreadCause::UnknownRelease));
+    }
+    Ok(listing.main.into_iter().chain(listing.dropins).collect())
 }
 
 /// The effective assignments in `[section]` of configuration `name` under
-/// `root`, in the order systemd applies them (so a later entry overrides an
-/// earlier one for the same key). A file that cannot be read contributes
-/// nothing; a line systemd refuses ([`RefusedLine`]) ends the resolution as it
-/// does in systemd.
+/// `root`, for a systemd of major version `systemd_major` (`None` when it is
+/// not known), in the order systemd applies them (so a later entry overrides
+/// an earlier one for the same key). A line systemd refuses ([`RefusedLine`])
+/// ends the resolution as it does in systemd, and a file that is gone by the
+/// time it is read adds nothing, as systemd skips it.
+///
+/// [`Unread`] when NAILS cannot read the configuration as systemd does: an
+/// entry [`listing`] refuses, a file that systemd reads and NAILS cannot, or a
+/// main file outside `/etc` that only the release would tell to read, where
+/// reading it changes what is applied. The caller counts it as the setting it
+/// guards against.
 pub fn section_assignments<F: Filesystem>(
     fs: &F,
     root: &Path,
     name: &str,
     section: &str,
-) -> Vec<Assignment> {
+    systemd_major: Option<u32>,
+) -> Result<Vec<Assignment>, Unread> {
+    let listing = listing(fs, root, name, systemd_major)?;
+    let Some(uncertain) = &listing.uncertain_main else {
+        return read_files(fs, listing.main.iter().chain(&listing.dropins), section);
+    };
+    // 256 and later read this main file and earlier releases do not, so it may
+    // count only where reading it changes nothing.
+    let with_it = read_files(
+        fs,
+        std::iter::once(uncertain).chain(&listing.dropins),
+        section,
+    )?;
+    if with_it != read_files(fs, listing.dropins.iter(), section)? {
+        return Err(Unread::new(uncertain, UnreadCause::UnknownRelease));
+    }
+    Ok(with_it)
+}
+
+/// The assignments in `[section]` of `files`, read in turn as systemd reads
+/// them.
+fn read_files<'a, F: Filesystem>(
+    fs: &F,
+    files: impl Iterator<Item = &'a PathBuf>,
+    section: &str,
+) -> Result<Vec<Assignment>, Unread> {
     let mut out = Vec::new();
-    for file in config_files(fs, root, name) {
-        let Some(text) = read_config_text(fs, &file) else {
+    for file in files {
+        let Some(text) = read_listed_config(fs, file)? else {
             continue;
         };
         if parse_section(&text, section, &mut out).is_err() {
             break;
         }
     }
-    out
+    Ok(out)
 }
 
 /// The text of configuration file `path`, for [`parse_section`] to read the way
@@ -176,14 +402,39 @@ pub fn section_assignments<F: Filesystem>(
 /// `O_NOATIME`, so it leaves no access-time trail on the decoy as the normal
 /// read does. `None` when the file cannot be read.
 pub fn read_config_text<F: Filesystem>(fs: &F, path: &Path) -> Option<String> {
+    read_listed_config(fs, path).ok().flatten()
+}
+
+/// The most a file read for a hint may hold, far beyond any real configuration.
+const MAX_HINT_BYTES: u64 = 1 << 20;
+
+/// The text of `path`, as [`read_config_text`] reads it, for a caller that
+/// only takes a hint from it and does without one: `None` unless it is a
+/// regular file of at most [`MAX_HINT_BYTES`]. The type is looked at without
+/// opening the file, as [`config_files`] looks at it: a FIFO would block the
+/// read, and a device such as `/dev/zero` can be read without end.
+pub fn read_hint_text<F: Filesystem>(fs: &F, path: &Path) -> Option<String> {
+    if !matches!(entry(fs, path), Entry::Regular) || fs.file_size(path).ok()? > MAX_HINT_BYTES {
+        return None;
+    }
+    // A file that grew since its size was read is no hint either.
+    read_config_text(fs, path).filter(|text| text.len() as u64 <= MAX_HINT_BYTES)
+}
+
+/// [`read_config_text`] for a file that [`config_files`] listed: `None` when it
+/// is gone, as systemd skips a file that is gone when it opens it, and
+/// [`Unread`] when it is there and NAILS cannot read it.
+fn read_listed_config<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>, Unread> {
+    let unread = || Unread::new(path, UnreadCause::CannotRead);
     match fs.read_file_content(path) {
-        Ok(text) => Some(text),
-        Err(e) if e.io_kind() == Some(std::io::ErrorKind::InvalidData) => {
-            read_config_bytes_noatime(path)
-                .ok()
-                .map(|bytes| decode_config_bytes(&bytes))
-        }
-        Err(_) => None,
+        Ok(text) => Ok(Some(text)),
+        Err(e) => match e.io_kind() {
+            Some(std::io::ErrorKind::NotFound) => Ok(None),
+            Some(std::io::ErrorKind::InvalidData) => read_config_bytes_noatime(path)
+                .map(|bytes| Some(decode_config_bytes(&bytes)))
+                .map_err(|_| unread()),
+            _ => Err(unread()),
+        },
     }
 }
 
@@ -228,9 +479,17 @@ pub fn decode_config_bytes(bytes: &[u8]) -> String {
     text
 }
 
-/// Whether any file of configuration `name` exists under `root`.
-pub fn config_present<F: Filesystem>(fs: &F, root: &Path, name: &str) -> bool {
-    !config_files(fs, root, name).is_empty()
+/// Whether any file of configuration `name` exists under `root`, for a systemd
+/// of major version `systemd_major`. An [`Unread`] configuration has one.
+pub fn config_present<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    name: &str,
+    systemd_major: Option<u32>,
+) -> bool {
+    !listing(fs, root, name, systemd_major).is_ok_and(|found| {
+        found.main.is_none() && found.uncertain_main.is_none() && found.dropins.is_empty()
+    })
 }
 
 /// Append the assignments of `[section]` in one configuration text to `out`.
@@ -403,526 +662,5 @@ pub fn last_value<'a>(assignments: &'a [Assignment], key: &str) -> Option<&'a st
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::RealFilesystem;
-    use std::fs;
-
-    fn write(root: &Path, rel: &str, content: &str) {
-        let path = root.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, content).unwrap();
-    }
-
-    fn values(root: &Path, key: &str) -> Vec<String> {
-        section_assignments(&RealFilesystem, root, "journald.conf", "Journal")
-            .into_iter()
-            .filter(|a| a.key == key)
-            .map(|a| a.value)
-            .collect()
-    }
-
-    fn parse(text: &str) -> (Vec<(String, String)>, bool) {
-        let mut out = Vec::new();
-        let ok = parse_section(text, "Journal", &mut out).is_ok();
-        (out.into_iter().map(|a| (a.key, a.value)).collect(), ok)
-    }
-
-    fn pair(key: &str, value: &str) -> (String, String) {
-        (key.to_string(), value.to_string())
-    }
-
-    /// systemd drops a byte order mark from the first line that starts with
-    /// one, which need not be the first line, and tells a comment before it
-    /// does. Found by the `systemd_conf` fuzz target with a mark at the start
-    /// of a later line, which NAILS kept.
-    #[test]
-    fn a_byte_order_mark_goes_where_systemd_drops_it() {
-        // On a later line the mark goes, so the header counts.
-        assert_eq!(
-            parse("# a comment\n\u{feff}[Journal]\nStorage=volatile\n"),
-            (vec![pair("Storage", "volatile")], true)
-        );
-        // Only the first mark goes.
-        assert_eq!(
-            parse("\u{feff}[Journal]\n\u{feff}Storage=none\nStorage=volatile\n"),
-            (
-                vec![pair("\u{feff}Storage", "none"), pair("Storage", "volatile")],
-                true
-            )
-        );
-        // A mark before `#` leaves no comment but a key systemd does not know.
-        assert_eq!(
-            parse("[Journal]\n\u{feff}#Storage=none\n"),
-            (vec![pair("#Storage", "none")], true)
-        );
-    }
-
-    /// systemd refuses a section name with a control character, a quote or a
-    /// backslash, and stops reading there as at a header without its `]`.
-    /// Found by the `systemd_conf` fuzz target with a DEL in the name, after
-    /// which NAILS read on into the drop-ins.
-    #[test]
-    fn a_section_name_systemd_refuses_stops_the_reading() {
-        for header in [
-            "[Log\u{7f}in]",
-            "[Lo\tgin]",
-            "[\"Journal\"]",
-            "['Journal']",
-            "[Jour\\nal]",
-        ] {
-            let text = format!("[Journal]\nStorage=volatile\n{header}\n[Journal]\nStorage=none\n");
-            assert_eq!(
-                parse(&text),
-                (vec![pair("Storage", "volatile")], false),
-                "{header}"
-            );
-        }
-    }
-
-    /// systemd ends a line at a carriage return or a NUL too. Found by the
-    /// `systemd_conf` fuzz target: the CR after `[` stayed inside the line,
-    /// which then read as the header of another section, so the assignments
-    /// after it counted, where systemd stops at the malformed header `[`.
-    #[test]
-    fn a_carriage_return_or_a_nul_ends_a_line() {
-        assert_eq!(parse("[\rJournal]\nStorage=persistent\n"), (vec![], false));
-        assert_eq!(
-            parse("[Journal]\rStorage=volatile\r"),
-            (vec![pair("Storage", "volatile")], true)
-        );
-        assert_eq!(
-            parse("[Journal]\r\n\rStorage=none\n\rStorage=auto"),
-            (vec![pair("Storage", "none"), pair("Storage", "auto")], true)
-        );
-        assert_eq!(
-            parse("[Journal]\0Storage=volatile\0\0Storage=none"),
-            (
-                vec![pair("Storage", "volatile"), pair("Storage", "none")],
-                true
-            )
-        );
-        // A continued line goes on past a lone CR as past a newline.
-        assert_eq!(
-            parse("[Journal]\rStorage=vola\\\rtile"),
-            (vec![pair("Storage", "vola tile")], true)
-        );
-    }
-
-    #[test]
-    fn only_the_named_section_counts() {
-        let (out, ok) = parse(
-            "Storage=persistent\n[Other]\nStorage=persistent\n[Journal]\nStorage=volatile\n[X-Foo]\nStorage=auto\n",
-        );
-        assert!(ok);
-        assert_eq!(out, vec![pair("Storage", "volatile")]);
-    }
-
-    #[test]
-    fn keys_and_sections_are_case_sensitive() {
-        let (out, _) = parse("[journal]\nStorage=a\n[Journal]\nstorage=b\nStorage=c\n");
-        assert_eq!(out, vec![pair("storage", "b"), pair("Storage", "c")]);
-    }
-
-    #[test]
-    fn comments_whitespace_and_quoting_follow_systemd() {
-        let text = "\u{feff}[Journal]\n  # Storage=persistent\n\t; Storage=none\n  Storage = \"volatile\"  \nSystemMaxUse=1G # trailing\nno equals sign\n=novalue\n";
-        let (out, ok) = parse(text);
-        assert!(ok);
-        assert_eq!(
-            out,
-            vec![
-                pair("Storage", "\"volatile\""),
-                pair("SystemMaxUse", "1G # trailing"),
-            ]
-        );
-    }
-
-    #[test]
-    fn continuation_lines_join_and_skip_comments() {
-        let (out, _) = parse("[Journal]\nKey=a \\\n# comment\n  b\nEsc=x\\\\\nNext=y\nTail=z\\");
-        assert_eq!(
-            out,
-            vec![
-                pair("Key", "a    b"),
-                pair("Esc", "x\\\\"),
-                pair("Next", "y"),
-                pair("Tail", "z"),
-            ]
-        );
-    }
-
-    #[test]
-    fn malformed_header_stops_the_file() {
-        let (out, ok) = parse("[Journal]\nStorage=volatile\n[Journal\nStorage=persistent\n");
-        assert!(!ok);
-        assert_eq!(out, vec![pair("Storage", "volatile")]);
-    }
-
-    #[test]
-    fn missing_config_yields_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(config_files(&RealFilesystem, tmp.path(), "journald.conf").is_empty());
-        assert!(!config_present(
-            &RealFilesystem,
-            tmp.path(),
-            "journald.conf"
-        ));
-    }
-
-    #[test]
-    fn main_file_is_the_first_found_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "usr/lib/systemd/journald.conf",
-            "[Journal]\nStorage=persistent\n",
-        );
-        assert_eq!(values(root, "Storage"), vec!["persistent"]);
-
-        write(
-            root,
-            "etc/systemd/journald.conf",
-            "[Journal]\nStorage=volatile\n",
-        );
-        assert_eq!(values(root, "Storage"), vec!["volatile"]);
-    }
-
-    #[test]
-    fn drop_in_overrides_main_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "etc/systemd/journald.conf",
-            "[Journal]\nStorage=persistent\n",
-        );
-        write(
-            root,
-            "usr/lib/systemd/journald.conf.d/50-volatile.conf",
-            "[Journal]\nStorage=volatile\n",
-        );
-        let all = section_assignments(&RealFilesystem, root, "journald.conf", "Journal");
-        assert_eq!(last_value(&all, "Storage"), Some("volatile"));
-    }
-
-    #[test]
-    fn etc_drop_in_shadows_same_named_lower_ones() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "usr/lib/systemd/journald.conf.d/50-x.conf",
-            "[Journal]\nStorage=persistent\nCompress=no\n",
-        );
-        write(
-            root,
-            "run/systemd/journald.conf.d/50-x.conf",
-            "[Journal]\nStorage=auto\n",
-        );
-        write(
-            root,
-            "etc/systemd/journald.conf.d/50-x.conf",
-            "[Journal]\nStorage=volatile\n",
-        );
-        assert_eq!(values(root, "Storage"), vec!["volatile"]);
-        assert!(
-            values(root, "Compress").is_empty(),
-            "the shadowed file is not read at all"
-        );
-    }
-
-    #[test]
-    fn drop_ins_are_ordered_by_file_name_across_directories() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "etc/systemd/journald.conf.d/10-a.conf",
-            "[Journal]\nStorage=persistent\n",
-        );
-        write(
-            root,
-            "usr/lib/systemd/journald.conf.d/90-z.conf",
-            "[Journal]\nStorage=volatile\n",
-        );
-        write(
-            root,
-            "run/systemd/journald.conf.d/50-m.conf",
-            "[Journal]\nStorage=none\n",
-        );
-        // Hidden files, other suffixes and directories are not drop-ins.
-        write(
-            root,
-            "etc/systemd/journald.conf.d/99-off.conf.disabled",
-            "[Journal]\nStorage=auto\n",
-        );
-        write(
-            root,
-            "etc/systemd/journald.conf.d/.99-hidden.conf",
-            "[Journal]\nStorage=auto\n",
-        );
-        fs::create_dir_all(root.join("etc/systemd/journald.conf.d/99-dir.conf")).unwrap();
-        assert_eq!(
-            values(root, "Storage"),
-            vec!["persistent", "none", "volatile"]
-        );
-    }
-
-    #[test]
-    fn last_assignment_wins_within_and_across_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "etc/systemd/journald.conf",
-            "[Journal]\nStorage=volatile\nStorage=persistent\n",
-        );
-        write(
-            root,
-            "etc/systemd/journald.conf.d/10-a.conf",
-            "[Journal]\nStorage=none\nStorage=volatile\n",
-        );
-        let all = section_assignments(&RealFilesystem, root, "journald.conf", "Journal");
-        assert_eq!(last_value(&all, "Storage"), Some("volatile"));
-        assert_eq!(last_value(&all, "Missing"), None);
-    }
-
-    #[test]
-    fn malformed_header_skips_the_remaining_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "etc/systemd/journald.conf.d/10-a.conf",
-            "[Journal]\nStorage=volatile\n[Broken\n",
-        );
-        write(
-            root,
-            "etc/systemd/journald.conf.d/20-b.conf",
-            "[Journal]\nStorage=persistent\n",
-        );
-        assert_eq!(values(root, "Storage"), vec!["volatile"]);
-    }
-
-    /// systemd skips a comment whatever its bytes, so a comment that is not
-    /// valid UTF-8 (a Latin-1 byte) does not hide the rest of the file. A
-    /// whole-file UTF-8 read rejects the file outright and would miss the
-    /// `Storage=persistent` below such a comment, reading a persistent decoy
-    /// journal as volatile.
-    #[test]
-    fn a_latin1_comment_does_not_hide_a_later_assignment() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        // 0xFC is 'ü' in Latin-1 and never a valid UTF-8 byte.
-        let mut bytes = b"[Journal]\n# Gr".to_vec();
-        bytes.push(0xFC);
-        bytes.extend_from_slice(b"n\nStorage=persistent\n");
-        let path = root.join("etc/systemd/journald.conf");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, &bytes).unwrap();
-
-        // The whole-file UTF-8 read rejects it with InvalidData...
-        assert_eq!(
-            RealFilesystem
-                .read_file_content(&path)
-                .unwrap_err()
-                .io_kind(),
-            Some(std::io::ErrorKind::InvalidData)
-        );
-        // ...but the config read keeps the valid lines, so the assignment below
-        // the Latin-1 comment is seen.
-        assert_eq!(
-            last_value(
-                &section_assignments(&RealFilesystem, root, "journald.conf", "Journal"),
-                "Storage"
-            ),
-            Some("persistent")
-        );
-    }
-
-    /// The decode puts one U+FFFF, which systemd refuses as it refuses the
-    /// bytes, in place of each sequence that is not UTF-8, and changes
-    /// nothing else: the line ends, comments and continuations stay as
-    /// systemd reads them.
-    #[test]
-    fn decode_config_bytes_marks_each_sequence_that_is_not_utf8() {
-        assert_eq!(
-            decode_config_bytes(b"[Journal]\r\nKey=a\xFF\xFEb\\\0# \xC3\n\xE2\x82x\xE2\x82\xAC"),
-            "[Journal]\r\nKey=a\u{ffff}\u{ffff}b\\\0# \u{ffff}\n\u{ffff}x\u{20ac}"
-        );
-        // Valid UTF-8 comes through unchanged.
-        let text = "\u{feff}[Journal]\nStorage=auto # Grün\r\n\n";
-        assert_eq!(decode_config_bytes(text.as_bytes()), text);
-    }
-
-    /// systemd stops reading at a line that is not valid UTF-8, unless it is a
-    /// comment, as at a malformed section header: the assignments before it
-    /// count, the line and the rest of the file do not. NAILS used to drop
-    /// the line and read on, so a `Storage=volatile` journald never reads
-    /// counted.
-    #[test]
-    fn a_line_that_is_not_utf8_stops_the_reading() {
-        let read = |bytes: &[u8]| {
-            let mut out = Vec::new();
-            let result = parse_section(&decode_config_bytes(bytes), "Journal", &mut out);
-            let pairs: Vec<_> = out.into_iter().map(|a| (a.key, a.value)).collect();
-            (pairs, result)
-        };
-        let stopped = Err(RefusedLine::NotUtf8);
-        // A Latin-1 'ö' and 'ß' in a value: systemd has no trailing comments.
-        assert_eq!(
-            read(b"[Journal]\nStorage=persistent\nSystemMaxUse=200M # Gr\xF6\xDFe\nStorage=volatile\n"),
-            (vec![pair("Storage", "persistent")], stopped)
-        );
-        // A lone invalid byte on a line of its own.
-        assert_eq!(
-            read(b"[Journal]\nStorage=persistent\n\xFF\nCompress=no\n"),
-            (vec![pair("Storage", "persistent")], stopped)
-        );
-        // In another section too: systemd tests every line.
-        assert_eq!(
-            read(b"[Journal]\nStorage=persistent\n[Other]\nKey=\xFC\n[Journal]\nStorage=none\n"),
-            (vec![pair("Storage", "persistent")], stopped)
-        );
-        // A continued line is not applied when a later part of it is bad,
-        // nor when that part ends the file.
-        assert_eq!(
-            read(b"[Journal]\nStorage=persistent\nStorage=vol\\\natile\xFF\nStorage=none\n"),
-            (vec![pair("Storage", "persistent")], stopped)
-        );
-        assert_eq!(
-            read(b"[Journal]\nStorage=persistent\nStorage=none\xFF\\"),
-            (vec![pair("Storage", "persistent")], stopped)
-        );
-        // A comment is skipped whatever its bytes, inside a continuation too.
-        assert_eq!(
-            read(b"[Journal]\n  # Gr\xFCn\n;\xFF\nStorage=vola\\\n# \xFC\ntile\n"),
-            (vec![pair("Storage", "vola tile")], Ok(()))
-        );
-    }
-
-    /// systemd's UTF-8 test refuses the noncharacters as well, which Rust's
-    /// UTF-8 allows, so a line holding one stops the reading even in a file
-    /// that is valid UTF-8; a comment holding one is still skipped.
-    #[test]
-    fn a_noncharacter_stops_the_reading() {
-        for c in [
-            '\u{fdd0}',
-            '\u{fdef}',
-            '\u{fffe}',
-            '\u{ffff}',
-            '\u{1fffe}',
-            '\u{10ffff}',
-        ] {
-            let text = format!("[Journal]\nStorage=persistent\n#{c}\nKey=x{c}\nStorage=none\n");
-            assert_eq!(
-                parse(&text),
-                (vec![pair("Storage", "persistent")], false),
-                "{c:?}"
-            );
-        }
-        // Their neighbours are plain characters.
-        for c in ['\u{fdcf}', '\u{fdf0}', '\u{fffd}', '\u{1fffd}'] {
-            let text = format!("[Journal]\nKey=x{c}\n");
-            assert_eq!(
-                parse(&text),
-                (vec![pair("Key", &format!("x{c}"))], true),
-                "{c:?}"
-            );
-        }
-    }
-
-    /// A line that is not UTF-8 skips every later file, as a malformed header
-    /// does: journald never reads a drop-in's `Storage=volatile` behind a
-    /// Latin-1 value in the main file.
-    #[test]
-    fn a_line_that_is_not_utf8_skips_the_remaining_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let main = root.join("etc/systemd/journald.conf");
-        fs::create_dir_all(main.parent().unwrap()).unwrap();
-        fs::write(
-            &main,
-            b"[Journal]\nStorage=persistent\nSystemMaxUse=200M # Gr\xF6\xDFe\nStorage=auto\n",
-        )
-        .unwrap();
-        write(
-            root,
-            "etc/systemd/journald.conf.d/50-volatile.conf",
-            "[Journal]\nStorage=volatile\n",
-        );
-        assert_eq!(values(root, "Storage"), vec!["persistent"]);
-    }
-
-    /// The UTF-8 byte fallback opens the decoy with `O_NOATIME`, exactly as the
-    /// normal whole-file read does, so a decoy `journald.conf` that only parses
-    /// through the fallback (it holds a non-UTF-8 byte) is still read without
-    /// stamping its access time. Drop the flag and the read leaves an atime
-    /// trail on the decoy — the trace this read path exists to avoid. Skips
-    /// unless the filesystem records a read's atime (`noatime` would prove
-    /// nothing); the test owns the file, so the kernel grants `O_NOATIME`
-    /// rather than refusing it.
-    #[test]
-    fn the_byte_fallback_reads_the_decoy_without_touching_its_atime() {
-        use std::os::unix::fs::MetadataExt;
-        use std::time::{Duration, SystemTime};
-
-        let atime = |p: &Path| {
-            let meta = fs::metadata(p).unwrap();
-            (meta.atime(), meta.atime_nsec())
-        };
-        // Backdate the atime well behind the mtime so even a relatime mount
-        // would update it on the next plain read.
-        let backdate = |p: &Path| {
-            let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-            fs::File::open(p)
-                .unwrap()
-                .set_times(fs::FileTimes::new().set_accessed(old))
-                .unwrap();
-        };
-
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-
-        // A control read proves this filesystem records atime at all.
-        let probe = root.join("probe");
-        fs::write(&probe, b"probe").unwrap();
-        backdate(&probe);
-        let probe_before = atime(&probe);
-        let _ = fs::read(&probe).unwrap();
-        if atime(&probe) == probe_before {
-            eprintln!("skipping: the temp filesystem does not record atime updates");
-            return;
-        }
-
-        // 0xFC is never a valid UTF-8 byte, so the whole-file read rejects the
-        // file and read_config_text falls back to read_config_bytes_noatime.
-        let path = root.join("etc/systemd/journald.conf");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut bytes = b"[Journal]\n# ".to_vec();
-        bytes.push(0xFC);
-        bytes.extend_from_slice(b"\nStorage=persistent\n");
-        fs::write(&path, &bytes).unwrap();
-        assert_eq!(
-            RealFilesystem
-                .read_file_content(&path)
-                .unwrap_err()
-                .io_kind(),
-            Some(std::io::ErrorKind::InvalidData),
-            "the decoy must reach the byte fallback"
-        );
-
-        backdate(&path);
-        let before = atime(&path);
-        let text =
-            read_config_text(&RealFilesystem, &path).expect("the byte fallback reads the decoy");
-        assert!(text.contains("Storage=persistent"), "{text}");
-        assert_eq!(
-            atime(&path),
-            before,
-            "the byte fallback must open the decoy with O_NOATIME"
-        );
-    }
-}
+#[path = "systemd_conf_tests.rs"]
+mod tests;

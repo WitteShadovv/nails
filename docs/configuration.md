@@ -31,7 +31,8 @@ configuration is whatever the upper's `/etc` holds. See the
   `activate` says so before it asks for confirmation, since every opt-in
   protection then keeps its default.
 - `nails init <root>` writes a commented starter file with every assignment
-  commented out.
+  commented out. `nails config set` changes it in place
+  ([Changing settings](#changing-settings)).
 - Activation copies the effective configuration, with the binary, into RAM
   under `/run/overlay-runtime`. The runtime units of the hidden session (the
   backend watcher and the sleep guard) read that copy.
@@ -63,8 +64,56 @@ in the `message` of its JSON error.
 | `nails config show` | Print every effective value and its source: `default`, `file`, `cli` or `derived` |
 | `nails config show --example` | Print a commented example that lists every key |
 | `nails config validate [PATH]` | Check a file strictly without using it |
+| `nails config set KEY VALUE...` | Set one key, keeping the file's comments and every other key |
+| `nails config unset KEY...` | Remove keys, so their defaults apply |
 
-`path`, `show` and `validate` also accept `--json`.
+Every `config` subcommand also accepts `--json`.
+
+### Changing settings
+
+`nails config set` and `nails config unset` change the file in place, so no
+editor touches it. Run them inside a hidden session, as root
+(`sudo /mnt/data/nails config set persona.mode fresh-home`); on the decoy the
+command line would land in the decoy's journal.
+
+- A key is written as the [Keys](#keys) table names it: `persona.mode` is the
+  `mode` key of `[persona]`. `set` takes one value: `true` or `false`, a whole
+  number, a path or a string as it is, without TOML quotes. A list
+  (`persona.mask_inherited`) takes one value per entry. A key or a value the
+  key does not take is refused before the file is read (exit 2).
+- Only the named keys change. The file's comments, its order and every other
+  key stay as they were; a value already set as asked is not rewritten, and
+  then nothing is written at all. A new key goes after the keys of its table,
+  or into a new table at the end, below the comments that end the file, such
+  as the template `init` writes. A removed key's comments stay in the file.
+- The changed file is checked as `config validate` checks one before it is
+  written: a file that would not be valid after the change is not written
+  (exit 3), and a change that makes a file valid again is. A file that is not
+  TOML at all is refused whatever the change.
+- The file is replaced at once: the new text goes to a new file in the same
+  directory, with the old file's owner and mode (a new file is root's alone),
+  is flushed, and is renamed over the old one. Two changes at the same time
+  do not lose one another: each waits for the other, up to ten seconds.
+  Ctrl+C or a SIGTERM stops a change until the rename (exit 130), and the new
+  file is removed again; after the rename the change is reported as made.
+- A setting is written only on the volume the running `nails` lies on: the
+  directory it runs from must pass the
+  [attach gate](threat-model.md#the-attach-gate) and hold the NAILS layout,
+  and the file, the configuration beside the binary or a `--config` file, must
+  lie beneath that directory with no link and no other filesystem on the way,
+  which the kernel checks as it opens the path. A `--config` file anywhere
+  else, the decoy's included, a link at the file or on the way to it, a file
+  with a second name (a hard link), and a filesystem mounted inside the volume
+  are refused (exit 4), and nothing is read or written.
+- While a hidden session runs, while an activation is entering one and
+  while an interrupted entry is left behind, `hidden_volume_root` and
+  `state_file_path` point only where the session recorded them when it began
+  (exit 4): the way back to the decoy and `recover` read the session's state
+  there. A change that points them back there is written, so a file changed
+  by hand can be put right. Make any other such change on another machine,
+  with the hidden volume mounted there. The session's backend watcher and
+  sleep guard read the copy of the configuration activation made, so a
+  change reaches them at the next activation.
 
 ### Path rules
 
@@ -197,7 +246,13 @@ account:
 - `fresh-home`: at the first entry, activation creates the operator's home in
   the upper as an opaque directory, so nothing of the decoy home shows through.
   It stays the hidden home at every later entry. The operator is the account
-  that ran `sudo`, so activation must run through `sudo`.
+  that ran `sudo`, so activation must run through `sudo`. Activation makes the
+  home, and each directory missing on the way to it, only through directories
+  of that upper and never follows a symbolic link there. A hidden session may
+  have replaced `/home`, or a directory below it on the way to the home, with
+  a link (to `/var/home`, say), and the link could lead the new home onto the
+  decoy disk: activation is then refused, makes nothing, and names the link.
+  Delete it from the upper on the hidden volume and activate again.
 
 Test the mode you choose on your own machine before trusting it.
 
@@ -432,8 +487,9 @@ case: `HandleLidSwitch` defaults to `suspend`, and desktops add idle
 auto-suspend.
 
 The `sleep-policy` pre-flight check resolves `logind.conf` the way systemd
-does (the main file from `/etc`, `/run`, `/usr/local/lib` or `/usr/lib`, then
-every `logind.conf.d/*.conf` drop-in by file name, `/etc` shadowing the others)
+does (the main file from `/etc`, `/run`, `/usr/local/lib` or `/usr/lib` on
+systemd 256 and later and from `/etc` alone before, then every
+`logind.conf.d/*.conf` drop-in by file name, `/etc` shadowing the others)
 and **warns** (never blocks) when the effective lid-switch or idle settings
 would suspend an active session, and when a closed lid is set to `ignore` (on
 battery, or on external power), which keeps the session running and unlocked
@@ -457,9 +513,11 @@ watcher) and holds logind inhibitors for the life of the session:
   `handle-lid-switch` **block** inhibitor, which logind always honours: a
   closed lid then does nothing at all, neither suspend nor lock the screen. A
   lid switch set to `lock`, `ignore` or `poweroff` is left to logind and keeps
-  working. A laptop kept running with the lid shut can overheat, so still set
-  the lid switch to `lock`. Both inhibitors are released together at the way
-  back.
+  working, unless NAILS cannot read logind's configuration the way logind does
+  (a drop-in that is no regular file, or a file it cannot read): the guard then
+  takes the lid switch too. A laptop kept running with the lid shut can
+  overheat, so still set the lid switch to `lock`. Both inhibitors are released
+  together at the way back.
 - `teardown` — hold a sleep **delay** inhibitor and, on the host's
   `PrepareForSleep` signal, power the machine off within logind's
   `InhibitDelayMaxSec` window (default 5s) instead of letting it sleep with the

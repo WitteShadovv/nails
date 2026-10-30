@@ -332,6 +332,15 @@ fn a_loop_over_a_regular_file_stops_unless_told_to_follow_it() {
             .and_then(|part| part.disk.as_deref()),
         Some("nvme0n1")
     );
+
+    // Either way the walk reached the bottom it was to reach.
+    for follow in [LoopFollow::default(), LoopFollow::BackingFiles] {
+        let walked = walk(&sysfs.0, Path::new(LOOP0), follow, MAX_STACK_DEVICES);
+        assert!(
+            walked.unplaced_loops.is_empty() && !walked.cut_short,
+            "{follow:?}"
+        );
+    }
 }
 
 #[test]
@@ -369,6 +378,33 @@ fn a_backing_file_in_ram_has_nothing_below() {
     );
     let layers = sysfs.stack(LOOP0, LoopFollow::BackingFiles);
     assert_eq!(layer_names(&layers), vec!["loop0"]);
+
+    // The walk says it was to go on below the loop device and could not; a
+    // walk told to stop at it has nothing to say.
+    let walked = walk(&sysfs.0, Path::new(LOOP0), LoopFollow::BackingFiles, 4);
+    assert_eq!(walked.unplaced_loops, vec!["loop0"]);
+    assert!(!walked.cut_short);
+    let stops = walk(&sysfs.0, Path::new(LOOP0), LoopFollow::BlockDevices, 4);
+    assert!(stops.unplaced_loops.is_empty(), "{stops:?}");
+}
+
+#[test]
+fn a_backing_file_on_an_overlay_cannot_be_placed() {
+    // stat gives a file on an overlay the overlay's own anonymous device,
+    // which sysfs does not list, and the overlay mount names no device of its
+    // own, so the walk cannot go on below the loop device.
+    let sysfs = Sysfs::new();
+    loop_device(&sysfs, "/srv/ov/vault.img");
+    sysfs.0.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         2 1 0:40 / /srv/ov rw - overlay overlay rw,lowerdir=/srv/l,upperdir=/srv/u,workdir=/srv/w\n",
+    );
+    sysfs
+        .0
+        .mock_set_device_id(Path::new("/srv/ov/vault.img"), rustix::fs::makedev(0, 40));
+    let walked = walk(&sysfs.0, Path::new(LOOP0), LoopFollow::BackingFiles, 4);
+    assert_eq!(layer_names(&walked.layers), vec!["loop0"]);
+    assert_eq!(walked.unplaced_loops, vec!["loop0"]);
 }
 
 #[test]
@@ -459,6 +495,15 @@ fn a_device_reached_twice_is_read_once() {
 
     let layers = sysfs.stack(dm3, LoopFollow::default());
     assert_eq!(layer_names(&layers), vec!["dm-3", "dm-1", "dm-2", "sdb"]);
+
+    // At a limit of four the walk reads them all: sdb reached the second time
+    // is no device still to read. At three it stops short of sdb.
+    let whole = walk(&sysfs.0, Path::new(dm3), LoopFollow::default(), 4);
+    assert_eq!(whole.layers, layers);
+    assert!(!whole.cut_short);
+    let short = walk(&sysfs.0, Path::new(dm3), LoopFollow::default(), 3);
+    assert_eq!(layer_names(&short.layers), vec!["dm-3", "dm-1", "dm-2"]);
+    assert!(short.cut_short);
 }
 
 #[test]
@@ -474,6 +519,14 @@ fn the_walk_reads_at_most_the_bound() {
         sysfs.stack(&dir(0), LoopFollow::default()).len(),
         MAX_STACK_DEVICES
     );
+    let walked = walk(
+        &sysfs.0,
+        Path::new(&dir(0)),
+        LoopFollow::default(),
+        MAX_STACK_DEVICES,
+    );
+    assert_eq!(walked.layers.len(), MAX_STACK_DEVICES);
+    assert!(walked.cut_short);
 }
 
 #[test]

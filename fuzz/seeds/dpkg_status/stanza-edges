@@ -1,0 +1,36 @@
+PACKAGE: libfoo1
+status	: install ok unpacked
+VERSION:1.0-1
+architecture :  amd64 
+
+Package: blanks
+Version: 2
+ 	
+Architecture: all
+Description: x
+ 
+ .
+ y
+
+Package: crlf
+Version: 3
+
+Architecture: all
+
+Package: twice
+Version: 1
+version: 2
+
+Package: nocolon
+Version 1
+
+Package: carried
+Version: 1
+ 2
+
+
+
+
+Package: after-blank-lines
+Status: hold ok installed
+Version: 0.1

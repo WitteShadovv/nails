@@ -52,7 +52,7 @@ Options:
       --allow-persistent-decoy
           Allow a persistent decoy posture instead of refusing activation
 
-          By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag allows that risk for this activation only and cannot be stored.
+          By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, an active rsyslog/syslog-ng/auditd, or an armed kdump. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk, and a kernel crash during the session would leave a dump of its memory in /var/crash there. This flag allows that risk for this activation only and cannot be stored.
 
       --ascii
           Use ASCII markers instead of Unicode symbols and box drawing

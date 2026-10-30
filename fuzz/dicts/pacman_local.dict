@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: pacman database entry names, their epochs and
+# releases, and the entry that is no package.
+"-"
+"--"
+"1:"
+"-1"
+".arch1-1"
+"+r22+g"
+"/desc"
+"ALPM_DB_VERSION"
+"linux-"
+"\x0a"

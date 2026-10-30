@@ -24,6 +24,7 @@ pub mod layout;
 pub mod leave;
 pub mod network_state;
 pub mod nixos;
+pub mod package_drift;
 pub mod persona;
 pub mod policy;
 pub mod probe;

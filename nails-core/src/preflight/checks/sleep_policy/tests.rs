@@ -256,7 +256,9 @@ fn etc_drop_in_shadows_vendor_drop_in() {
         "etc/systemd/logind.conf.d/50-lid.conf",
         "[Login]\nIdleAction=suspend\n",
     );
-    let settings = effective_logind_sleep_at(&RealFilesystem, root);
+    // From 256 logind reads the vendor main file; the /etc drop-in shadows
+    // the vendor one of its name.
+    let settings = logind_sleep_under(&RealFilesystem, root, Some(256));
     assert_eq!(settings.effective_lid_switch(), "ignore");
     assert_eq!(settings.effective_idle_action(), "suspend");
 }
@@ -305,6 +307,54 @@ fn idle_suspend_is_reported_with_timeout() {
     assert!(result.is_warn());
     assert!(result.message().contains("IdleActionSec=300"));
     assert!(!result.message().contains("closing the lid"));
+}
+
+/// A logind configuration NAILS cannot read as logind does leaves the lid and
+/// idle actions unknown, however safe the files around it are: the check warns
+/// that either may suspend the host, naming the entry, and that a closed lid
+/// may leave the session unlocked, and the sleep guard's `block` mode takes
+/// the lid switch.
+#[test]
+fn an_unread_configuration_may_suspend_the_host() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        MAIN,
+        "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=lock\nIdleAction=lock\n",
+    );
+    let entry = "/etc/systemd/logind.conf.d/50-x.conf";
+    fs.mock_set_directory_contents(Path::new(DROP_IN_DIR), vec![PathBuf::from(entry)]);
+    fs.mock_set_path_type(entry, crate::filesystem::PathKind::Dir);
+
+    let settings = effective_logind_sleep(&fs);
+    assert_eq!(
+        settings.unread.as_ref().map(|unread| unread.path.as_path()),
+        Some(Path::new(entry))
+    );
+    assert!(settings.lid_switch_sleeps());
+
+    let result = SleepPolicyCheck::new(SleepPolicyMode::Warn)
+        .run(&fs)
+        .unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    let expected = format!(
+        "NAILS cannot tell what logind does on a closed lid or an idle session, so either may \
+         suspend the host: {entry} is not a regular file; systemd releases"
+    );
+    assert!(result.message().contains(&expected), "{}", result.message());
+    assert!(
+        !result.message().contains("HandleLidSwitch="),
+        "{}",
+        result.message()
+    );
+    // The lid may as well be set to ignore, which leaves the session unlocked.
+    assert!(
+        result.message().contains(
+            "A closed lid may leave the active session running and unlocked (logind's lid \
+             settings are not known): whoever opens the lid is in the hidden session."
+        ),
+        "{}",
+        result.message()
+    );
 }
 
 #[test]

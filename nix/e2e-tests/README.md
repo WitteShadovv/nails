@@ -385,7 +385,7 @@ Rules for adding a scenario to a batch:
 
 | Batch | Former tests (aliases) | Node |
 | --- | --- | --- |
-| `preflight-checks` | preflight-nixos-config, preflight-nixos-build-target, preflight-upper-fs-capability, preflight-state-check | base node |
+| `preflight-checks` | preflight-nixos-config, preflight-nixos-build-target, preflight-upper-fs-capability, preflight-state-check; preflight-pending-offline-update was written as a scenario | base node |
 | `preflight-vfat-targets` | preflight-symlink-support | vm-config, nails, dosfstools |
 | `preflight-hidden-root` | preflight-hidden-volume, preflight-mount-namespace | vm-config, nails, e2fsprogs |
 | `init-config` | init-bootstrap, init-idempotency, init-refuse-overwrite, config-unknown-key | base node |
@@ -498,6 +498,16 @@ soft-reboots with `py/nails_e2e/session.py`:
   session's NetworkManager uses stay off the decoy after the way back: out of
   the openresolv records in `/run`, out of the `/etc/resolv.conf` that the
   decoy's `resolvconf.service` writes at its start, and out of its journal;
+- `session-mac-restore`: a network card whose driver refuses a new MAC address
+  while the card is up (QEMU's emulated NE2000) has its permanent address back,
+  and is up, after the hidden session gave it a random one and ended with
+  `deactivate`, and again with a plain `emergency`;
+- `session-fresh-pids`: after a session that pushed the kernel's process
+  numbers far on, the getty the decoy starts on the way back and its records
+  in `/var/log/wtmp` carry numbers in the range a fresh boot of the same image
+  gives them, as they do after a second session beside a unit that every
+  soft-reboot leaves running with a lower number, and a plain soft-reboot, as
+  a positive control, does not;
 - `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
   with its store on the root disk under NixOS's read-only bind, a store path
   bound after it, a read-only bind stacked on an fstab filesystem and its ESP
@@ -554,8 +564,8 @@ Add files under `fixtures/configs/` and reference them from tests via `${./../..
 
 The suite above runs on `pkgs.testers.runNixOSTest`, whose driver backdoor only
 exists in NixOS guests, so it cannot catch a regression on another distribution.
-The distribution tier under `nix/distro-tests/` boots real Debian 13 and Ubuntu
-24.04 cloud images on the same NixOS test driver through
+The distribution tier under `nix/distro-tests/` boots real Debian 13, Ubuntu
+24.04 and Ubuntu 26.04 cloud images on the same NixOS test driver through
 [`numtide/nix-vm-test`](https://github.com/numtide/nix-vm-test), so the
 whole-root session, platform detection, the read-only ESP and the
 decoy-persistence preflight are exercised on a non-NixOS host. Debian 12 is not
@@ -565,11 +575,15 @@ rootfs and cannot exercise journald or a soft-reboot.
 
 Layout:
 
-- `images.nix`: the distribution table, `name -> { distro, image, release }`.
-  `distro` and `image` name a release in `nix-vm-test`, which pins every cloud
-  image as a fixed-output derivation of a dated upstream build; the `flake.lock`
-  pin of `nix-vm-test` therefore fixes exactly what the suite boots. **This is
-  the one place to edit.**
+- `images.json`: the distribution table, one entry per image. Its `source`
+  names a release in `nix-vm-test` (Debian, Ubuntu), which pins every cloud
+  image as a fixed-output derivation of a dated upstream build, so the
+  `flake.lock` pin of `nix-vm-test` fixes exactly what the suite boots, or a
+  hash-pinned upstream image (Fedora, Arch). `enabled` puts the entry in the
+  smoke matrix, and the optional `knownFailedUnits` lists what its image is
+  known to fail ([below](#known-failures)). `images.nix` reads the table and
+  fails evaluation, naming the entry, when one is malformed. **This is the one
+  place to edit.**
 - `lib/distro-vm.nix`: the single call into `nix-vm-test` (`buildVmTest`), so a
   change in its attribute layout is a one-line fix.
 - `lib/hidden-root.nix`: the hidden root (ext4 on a loop device, or LUKS when
@@ -609,7 +623,12 @@ volume keeps the unit's stop from unmounting it; rehearses on that session
 `deactivate` a clean scan of the raw decoy devices in the same boot, which on
 Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
 host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
-NixOS suite) with null and positive controls.
+NixOS suite) with null and positive controls. It lists the failed units five
+times, on the decoy before the first switch and right after each switch (in
+both hidden sessions and on the decoy after both ways back), compares each
+listing with the entry's `knownFailedUnits`, and checks that the `platform` row
+of `check` warns about every unit listed there
+([Known failures](#known-failures)).
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
@@ -619,17 +638,78 @@ disk into `<state_dir>/vm.qcow2` over QMP, where `disk_forensics.snapshot` picks
 it up. A soft-reboot carries `/run` but not the mounts below it, so the scenario
 mounts the 9p share again after every switch.
 
+### Known failures
+
+Some images fail a unit that NAILS cannot fix. On Ubuntu 26.04, after each
+switch, AppArmor denies what chrony sends to the journal's syslog socket and to
+systemd's notification socket, and chrony exits when its notification is
+denied, so it fails to start. The denials in the kernel log name the sockets
+without `/run` (`/systemd/journal/dev-log`, `/systemd/notify`). This is an
+upstream issue that the `platform` row of `nails check` warns about. The line
+chrony exits with still reaches the journal through its standard error, which
+systemd connected to the journal before chrony started, and the scenario looks
+for that line. An entry's `knownFailedUnits` states what the smoke scenario
+must find:
+
+```json
+"knownFailedUnits": {
+  "hiddenSession": {
+    "chrony.service": "Could not send notification to $NOTIFY_SOCKET"
+  },
+  "afterReturn": {
+    "chrony.service": "Could not send notification to $NOTIFY_SOCKET"
+  },
+  "notInImage": [
+    "cups.service"
+  ]
+}
+```
+
+`hiddenSession` and `afterReturn` map each unit that must be failed when the
+scenario lists the failed units in both hidden sessions, or on the decoy after
+both ways back, to a line its failed start logs. `notInImage` lists the units
+the release's warning names that the image does not install, so the scenario
+cannot see them: the cloud image has no CUPS, and the printing half of the
+Ubuntu 26.04 warning rests on a check by hand. Ubuntu 24.04 lists nothing, so
+no unit may be failed there at any of the five listings. Debian 13 has no list
+yet: its failed units are printed, not checked.
+
+A listing sees only the units failed at that moment. It misses a unit that
+fails after the listing of its phase, and one that fails but starts again
+before the listing, which includes a unit that fails while a switch stops the
+old system and that the new system starts again.
+
+The scenario fails when:
+
+- a listing holds a unit that the list does not name: on the decoy before the
+  first switch (where nothing may be failed) or right after a switch;
+- a listed unit failed, but what it logged since its latest start lacks its
+  line, so it fails in another way;
+- a `notInImage` unit is in the image, which asks for it to move to the phases
+  with its line, or for the warning to be narrowed;
+- the `platform` row does not warn, or does not name every listed unit. The
+  rule goes one way: the row never has to pass, so the warning may cover more
+  than the list does;
+- a listed unit is not failed at a listing of its phase, probably fixed in a
+  newer image. Each listing that misses it is printed at once, and the scenario
+  fails at its end, naming them all. Remove the unit from those phases of the
+  list. Then narrow the release's warning (its caveat in
+  `nails-platform/src/platform/family.rs` and `docs/decoy-requirements.md`) to
+  what still fails, after checking what it names beyond the list (the
+  `notInImage` units) on an image that has them, or by hand. The warning goes
+  only when all of it is shown fixed.
+
+`images.nix` and `python3 -m ci.distro_images check` reject a malformed list.
+
 ### Adding a distribution
 
 Once a distribution's backend and detection have landed, add one entry to
-`nix/distro-tests/images.nix`:
-
-```nix
-"fedora-41" = entry "fedora" "41" "41";   # nix-vm-test set, its image key, release
-```
-
-The scenario, the flake's `e2e-distro` attribute and the CI matrix are all
-derived by mapping over this table, so nothing else changes.
+`nix/distro-tests/images.json` with `enabled` set to `true`; an upstream Fedora
+or Arch image is pinned with `python3 -m ci.distro_images repin <name>`. The
+scenario, the flake's `e2e-distro` attribute and the CI matrix are all derived
+by mapping over this table, so nothing else changes. Once its runs have printed
+the failed units of every listing, give it a `knownFailedUnits`, with an empty
+phase where none was failed.
 
 ### The refusal of Fedora and Arch
 
@@ -694,7 +774,9 @@ nix build -L .#legacyPackages.x86_64-linux.e2e-distro.debian-13-smoke
 
 The images are those of the pinned `nix-vm-test` revision. To move forward,
 update that input (`nix flake update nix-vm-test`), check that every
-`distro`/`image` pair in `images.nix` still exists upstream (the `buildVmTest`
-assertion names any that do not), and build the scenarios on a KVM host. An
+`distro`/`image` pair in `images.json` still exists upstream (the `buildVmTest`
+assertion names any that do not), and build the scenarios on a KVM host. A
+newer image can fix a known failure, which fails the scenario until the entry's
+`knownFailedUnits` is narrowed. An
 attribute name containing a dot must be quoted on the command line, e.g.
 `.#legacyPackages.x86_64-linux.e2e-distro."ubuntu-24.04-smoke"`.

@@ -12,6 +12,8 @@
 //!
 //! - [`stack`] walks down from one device: through `slaves/`, and below a
 //!   loop device as far as [`LoopFollow`] allows.
+//! - [`walk()`] does the same within a given number of devices, and says where
+//!   it stopped short of the bottom.
 //! - [`device_of_mount`] finds the device a mount sits on.
 //! - [`resolve_spec`] finds the device an fstab or crypttab spec names.
 //! - [`btrfs_members`] lists every device of a btrfs filesystem.
@@ -24,13 +26,14 @@ mod walk;
 mod tests;
 
 pub use spec::{btrfs_members, resolve_spec};
-pub use walk::{classify_dm, device_of_mount, stack};
+pub use walk::{classify_dm, device_of_mount, stack, walk};
 
 use std::path::{Path, PathBuf};
 
-/// Upper bound on the devices visited in one stack. Real stacks are two to
-/// four deep (a filesystem on LVM on dm-crypt on a partition); the bound only
-/// keeps a pathological sysfs from turning the walk into a loop.
+/// The most devices [`stack`] reads. Real stacks are two to four deep (a
+/// filesystem on LVM on dm-crypt on a partition), so the bound is there to stop
+/// a pathological sysfs, but a stack wider than it (an md array of more
+/// members) is cut short too, which [`walk()`] reports.
 pub const MAX_STACK_DEVICES: usize = 16;
 
 /// Block devices by `major:minor`.
@@ -157,6 +160,21 @@ impl LoopBacking {
             LoopBacking::File(path) | LoopBacking::Block { path, .. } => path,
         }
     }
+}
+
+/// What [`walk()`] read below a device, and where it stopped short of the
+/// bottom.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Walk {
+    /// The devices read, top first, as [`stack`] returns them.
+    pub layers: Vec<Layer>,
+    /// Whether the walk reached its limit with a device still to read, so
+    /// devices below the top are missing from `layers`.
+    pub cut_short: bool,
+    /// The kernel names of the loop devices among `layers` that the walk was
+    /// to continue below but could not: no block device sysfs shows holds what
+    /// one reads (a file on a tmpfs, an overlay, a FUSE or network filesystem).
+    pub unplaced_loops: Vec<String>,
 }
 
 /// How far below a loop device [`stack`] continues.

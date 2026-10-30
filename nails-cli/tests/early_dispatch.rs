@@ -18,7 +18,7 @@
 //! process kills inside the test: the binary sees no process but itself.
 
 mod kernel_tests {
-    use nails_core::test_support::{Rerun, ScratchTmpfs};
+    use nails_core::test_support::{Rerun, ScratchTmpfs, write_executable};
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
@@ -137,6 +137,15 @@ mod kernel_tests {
             use nails_teardown::whole_root::plan::{
                 DecoyRoot, PLAN_VERSION, Plan, RootSide, Tools,
             };
+            // A PID 1 that says logind does not run, so nothing can hold the
+            // entry's soft-reboot and the decoy keeps running.
+            let bin = ScratchTmpfs::new("");
+            let systemctl = bin.path().join("systemctl");
+            write_executable(
+                &systemctl,
+                "#!/bin/sh\ncase \"$*\" in show*) echo inactive ;; esac\n",
+                0o755,
+            );
             let side = RootSide {
                 init: "/usr/lib/systemd/systemd".into(),
                 system: None,
@@ -162,7 +171,10 @@ mod kernel_tests {
                 generator_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
-                tools: Tools::default(),
+                tools: Tools {
+                    systemctl: Some(systemctl),
+                    ..Tools::default()
+                },
                 armed: None,
                 entered_at: None,
                 run_noexec: false,
@@ -171,6 +183,7 @@ mod kernel_tests {
                 read_only_disks: false,
                 failed_at_entry: Vec::new(),
                 kernel_settings: Vec::new(),
+                pids: Default::default(),
             };
             let plan_path = nails_teardown::whole_root::plan::default_plan_path();
             std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();

@@ -1,0 +1,69 @@
+# cargo-mutants configuration. Every run in this workspace reads it: the weekly
+# sweep (`just mutants`), the in-diff lane (`just mutants-in-diff` and its
+# plan) and a local `cargo mutants`. docs/testing-strategy.md says how a
+# surviving mutant is triaged.
+#
+# exclude_re lists the surviving mutants that no test can kill, each with the
+# reason above it: an equivalent mutant behaves like the code on every input,
+# and a near-equivalent one differs only where no test can reach. A mutant
+# that a test can kill is killed instead, and one that only a VM test kills
+# is not listed either: it is not equivalent. Each pattern is matched against
+# the name that `cargo mutants --list` prints (`<file>:<line>:<column>:
+# <mutation>`), and names the file, the mutation and the function it lies in
+# (a constant lies in none), so it excludes its own mutant and no other;
+# `cargo mutants --list --no-config` against `cargo mutants --list` shows what
+# this file excludes. When the code a pattern names changes, check that the
+# pattern still matches its mutant and that the mutant is still equivalent.
+#
+# The files that the weekly sweep leaves out for its time budget are another
+# list, `mutants_skipped` in the justfile.
+
+exclude_re = [
+    # --- Equivalent ---
+
+    # CryptsetupVersion::at_least compares the majors, and then the minors,
+    # with `>` only after `!=` has found them different, where `>=` answers
+    # the same.
+    'nails-core/src/preflight/checks/backend_detect/argon2\.rs:\d+:\d+: replace > with >= in CryptsetupVersion::at_least$',
+
+    # parse_iec_size reads a fraction only when digits follow the `.`. Under
+    # `>=` it also parses `0.` for no digits at all, which is 0.0, the value
+    # the fraction already has.
+    'nails-core/src/preflight/checks/decoy_posture/coredump\.rs:\d+:\d+: replace > with >= in parse_iec_size$',
+
+    # read_config_bytes_noatime opens with `RDONLY | CLOEXEC | noatime`.
+    # RDONLY is 0, and CLOEXEC and noatime (O_NOATIME, or nothing) share no
+    # bit, so `^` in place of either `|` opens with the same flags.
+    'nails-core/src/preflight/checks/systemd_conf\.rs:\d+:\d+: replace \| with \^ in read_config_bytes_noatime$',
+
+    # The family bits that Platforms::FHS and Platforms::ALL join are
+    # distinct, so `^` in place of a `|` between them makes the same set.
+    'nails-forensics/src/residue_catalog/mod\.rs:\d+:\d+: replace \| with \^$',
+
+    # same_mount looks both paths up with `SYMLINK_NOFOLLOW | NO_AUTOMOUNT`,
+    # two distinct bits, so `^` in place of the `|` passes the same flags.
+    'nails-session/src/session/kernel_modules/read\.rs:\d+:\d+: replace \| with \^ in same_mount$',
+
+    # parse_selinux_config skips an empty line or a comment before it looks
+    # for `=`. Under `&&` it skips neither, and both are passed over a step
+    # later all the same: an empty line has no `=`, and a comment's key starts
+    # with `#`, so it is neither SELINUX nor SELINUXTYPE.
+    'nails-platform/src/platform/host_facts\.rs:\d+:\d+: replace \|\| with && in parse_selinux_config$',
+
+    # --- Near-equivalent ---
+
+    # `&` in place of the first `|` of read_config_bytes_noatime's flags
+    # drops CLOEXEC alone. The descriptor is closed before the function
+    # returns, and NAILS starts no program while a check reads a file, so no
+    # program can inherit it. (`&` in place of the second `|` drops O_NOATIME
+    # as well, which the atime test catches.)
+    'nails-core/src/preflight/checks/systemd_conf\.rs:\d+:28: replace \| with & in read_config_bytes_noatime$',
+
+    # The way back enqueues the soft-reboot with the plan's systemctl.
+    # Without the plan, tools::find takes systemctl from the system
+    # directories (/run/current-system/sw/bin, /usr/bin and so on), where
+    # every supported host keeps it, and PID 1 takes the same target from
+    # either. Only a live hidden session takes this arm, and no Rust test has
+    # one.
+    'nails-core/src/app/deactivate\.rs:\d+:\d+: delete match arm SessionView::Hidden\(plan\) in [A-Za-z]+Deactivation::leave$',
+]

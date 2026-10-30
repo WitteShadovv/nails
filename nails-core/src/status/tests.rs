@@ -47,6 +47,7 @@ fn plan(root: &Path) -> Plan {
         read_only_disks: false,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        pids: Default::default(),
     }
 }
 
@@ -59,13 +60,18 @@ fn paths(root: &Path) -> Paths {
 }
 
 fn command(root: &Path) -> StatusCommand<RealFilesystem> {
+    command_on(RealFilesystem, root)
+}
+
+/// A status command under `root` that probes the decoy through `fs`.
+fn command_on<F: Filesystem>(fs: F, root: &Path) -> StatusCommand<F> {
     let config = Config {
         hidden_volume_root: root.to_path_buf(),
         state_file_path: root.join("state.json"),
         log_path: root.join("logs"),
         ..Config::test_default()
     };
-    StatusCommand::new(RealFilesystem, config, root.join("state.json")).with_paths(paths(root))
+    StatusCommand::new(fs, config, root.join("state.json")).with_paths(paths(root))
 }
 
 /// Keep a refused switch's record in `dir`, as the transition does.
@@ -264,6 +270,25 @@ fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
         .report(&SessionView::Decoy, &[], Utc::now())
         .unwrap();
     assert_eq!((report.reason, report.remediation), (None, None));
+}
+
+#[test]
+fn an_armed_kdump_is_reported_on_the_decoy_and_never_in_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = SessionView::Hidden(Box::new(plan(dir.path())));
+    let armed = |kexec_crash_loaded: &str, view: &SessionView| {
+        let fs = crate::filesystem::MockFilesystem::new();
+        fs.mock_add_file("/sys/kernel/kexec_crash_loaded", kexec_crash_loaded);
+        command_on(fs, dir.path())
+            .report(view, &[], Utc::now())
+            .unwrap()
+            .decoy_kdump_armed
+    };
+    assert!(armed("1\n", &SessionView::Decoy), "a loaded crash kernel");
+    assert!(!armed("0\n", &SessionView::Decoy), "no crash kernel loaded");
+    // In the session the field is about a decoy that is not running.
+    assert!(!armed("1\n", &hidden));
+    assert!(!armed("0\n", &hidden));
 }
 
 #[test]

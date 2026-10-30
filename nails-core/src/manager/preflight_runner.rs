@@ -147,8 +147,8 @@ pub fn build_registry<F: Filesystem>(
         SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
-        DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
-        SystemdVersionCheck,
+        DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
+        SoftRebootUnitsCheck, SystemdVersionCheck,
     };
 
     let _ = fs;
@@ -196,6 +196,13 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
         config_layer.is_some(),
+    )));
+    // The switch goes through logind, which a program that blocks shutdown
+    // outright stops; such a program is in the middle of something the switch
+    // would cut short, so the entry is refused before anything is prepared.
+    registry.add_check(Box::new(ShutdownInhibitorsCheck::new(
+        nails_teardown::whole_root::tools::find(None, nails_teardown::whole_root::logind::BUSCTL),
+        nails_teardown::whole_root::tools::find(None, "systemctl"),
     )));
 
     // The way back mounts the decoy root again by device.
@@ -312,11 +319,14 @@ pub fn build_registry<F: Filesystem>(
 
     // Refuses a persistent decoy posture (a persistent journald journal or an
     // active rsyslog/syslog-ng/auditd, where hidden-session records logged before
-    // the overlays are mounted would survive on the decoy disk) unless the
-    // operator allows the risk for this run with --allow-persistent-decoy.
-    // Lower-severity findings (atime, crash-dump channels, sudo logging,
-    // maintenance timers) are always warnings. The check performs no writes, and
-    // its maintenance-timer sub-check applies only on a NixOS host.
+    // the overlays are mounted would survive on the decoy disk, or an armed
+    // kdump, whose crash kernel writes the memory of a session that crashed to
+    // the decoy disk) unless the operator allows the risk for this run with
+    // --allow-persistent-decoy. Lower-severity findings (atime, a disk
+    // core_pattern, a systemd-coredump that keeps cores, pstore records, sudo
+    // logging, sssd in use, maintenance timers) are always warnings. The check
+    // performs no writes, and its maintenance-timer sub-check applies only on a
+    // NixOS host.
     registry.add_check(Box::new(DecoyPersistenceCheck::new(
         inputs.options.allow_persistent_decoy,
         config_layer.is_some(),
@@ -341,6 +351,19 @@ pub fn build_registry<F: Filesystem>(
             paths.root.clone(),
             layout.upper(),
             crate::session::kernel_modules::running_release(),
+        )
+        .allowing_decoy_storage(inputs.options.allow_decoy_storage),
+    ));
+
+    // Warns (never fails) when hidden sessions' package database no longer
+    // follows the decoy's: the decoy installed, updated or removed packages
+    // their own copy of dpkg's or rpm's record does not know, or pacman would
+    // list a package twice there. It reads the decoy's database only as root,
+    // without changing its access time. Read-only.
+    registry.add_check(Box::new(
+        crate::session::package_drift::PackageDriftCheck::new(
+            paths.root.clone(),
+            hidden_root.clone(),
         )
         .allowing_decoy_storage(inputs.options.allow_decoy_storage),
     ));

@@ -31,11 +31,10 @@
 
 use std::path::Path;
 
-use nails_teardown::shells::kill_all_interactive_shells;
-
 use super::lock::LockError;
 use crate::hidden_root::{Allow, Assessment, Refusal};
 use crate::manager::{EnterOptions, EnterOutcome};
+use crate::session::package_drift::Advisory;
 use crate::session::{Entry, RealEntryHost, RealTargetHost};
 use crate::verbosity::Verbosity;
 use crate::{
@@ -209,6 +208,14 @@ impl LockedActivation {
         self.ready.manager.builds_hidden_system(&self.ready.options)
     }
 
+    /// What the operator should read before confirming: the risks that do not
+    /// refuse the entry, such as hidden sessions' package database no longer
+    /// following the decoy's. Read only, and reported to a watching event
+    /// stream as well. The entry lists them again among its warnings.
+    pub fn entry_advisories(&self) -> Vec<Advisory> {
+        self.ready.manager.entry_advisories(&self.ready.options)
+    }
+
     /// Scan the decoy for residue and write a pre-mount baseline report, before
     /// any overlay is mounted. Best-effort: a scan or write failure is logged
     /// and `None` is returned, because the baseline is a convenience for later
@@ -257,16 +264,17 @@ impl LockedActivation {
         ready.manager.enter_session(&ready.options, &RealEntryHost)
     }
 
-    /// The point of no return: kill the decoy's interactive shells (so none
-    /// writes the activation command to its history), then enqueue the
-    /// soft-reboot into the prepared root.
+    /// The point of no return: refuse while a program blocks shutdown, kill
+    /// the decoy's interactive shells (so none writes the activation command
+    /// to its history), then soft-reboot into the prepared root.
     pub fn commit(&mut self, entry: &Entry) -> Result<()> {
         // The decoy's shells write their history when they exit, bash on the
-        // SIGHUP that stopping their login session sends: the soft-reboot would
-        // do that the moment it is enqueued. SIGKILL them first, ours last, so
-        // the activation command never reaches a history file on the decoy disk.
-        kill_all_interactive_shells(&[]);
-        let host = RealTargetHost::for_plan(Some(&entry.plan));
+        // SIGHUP that stopping their login session sends: the soft-reboot does
+        // that the moment PID 1 holds its job. The entry's host SIGKILLs them,
+        // ours last, right before it asks logind, and keeps killing any shell
+        // opened while logind holds the soft-reboot back, so the activation
+        // command never reaches a history file on the decoy disk.
+        let host = RealTargetHost::for_plan(Some(&entry.plan)).killing_shells();
         self.ready.manager.trigger_entry(&host, &RealEntryHost)
     }
 }

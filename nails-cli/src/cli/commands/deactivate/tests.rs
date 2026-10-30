@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::execute;
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::test_support::{envelope, stdout_lines};
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
@@ -40,6 +39,15 @@ const WITHOUT_PLAN: &str = "no session plan in /run (upper /mnt/data/root/upper)
 /// The error the way back returns when systemd refuses the soft-reboot.
 fn refused() -> NailsError {
     NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
+}
+
+/// The refusal of a way back while a program blocks shutdown.
+fn blocked() -> NailsError {
+    NailsError::InvalidState(
+        "apt blocks shutdown (Installing, PID 4242): the switch would cut it short. Let it \
+         finish, then try again"
+            .to_string(),
+    )
 }
 
 /// Report a way back through a stand-in for it that prints [`ENQUEUED`] and
@@ -102,7 +110,7 @@ fn subprocess_deactivate_entrypoint() {
             &args,
             Prepared::Ready(Box::new(ready_at(root.path()))),
             |_ready, to, warnings| {
-                super::leave_and_report(&settings, to, warnings, |_| {
+                super::leave_and_report(&settings, to, warnings, Ok(()), |_| {
                     crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
                     Ok(LeaveReport::default())
                 })
@@ -110,6 +118,23 @@ fn subprocess_deactivate_entrypoint() {
         );
         // The exit runs no destructor: remove the scratch tree first.
         drop(root);
+        crate::cli::chokepoint::exit_process(status.code());
+    }
+    if let Some(settings) = match case.as_str() {
+        "human-blocked" => Some(ascii),
+        "json-blocked" => Some(json()),
+        _ => None,
+    } {
+        let status = super::leave_and_report(
+            &settings,
+            LeaveTo::Decoy,
+            Vec::new(),
+            Err(blocked()),
+            |_| {
+                crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+                Ok(LeaveReport::default())
+            },
+        );
         crate::cli::chokepoint::exit_process(status.code());
     }
     let (settings, to, outcome) = match case.as_str() {
@@ -127,7 +152,7 @@ fn subprocess_deactivate_entrypoint() {
     } else {
         Vec::new()
     };
-    let status = super::leave_and_report(&settings, to, warnings, |_| {
+    let status = super::leave_and_report(&settings, to, warnings, Ok(()), |_| {
         crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
         outcome
     });
@@ -165,7 +190,8 @@ fn ready_at(root: &Path) -> ReadyDeactivation {
         log_path: root.join("logs"),
         ..nails_core::Config::test_default()
     };
-    let plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
+    let mut plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
+    plan.pids = nails_teardown::test_support::stage_pid_measure(root);
     ReadyDeactivation::for_test(config, plan, root)
 }
 
@@ -291,7 +317,13 @@ fn the_lock_step_refuses_a_hidden_root_that_is_no_mount_point() {
     let root = tempfile::tempdir().unwrap();
     let status = super::lock_and_leave(&json(), ready_at(root.path()), LeaveTo::Decoy, Vec::new());
     assert_eq!(status, ExitStatus::PreflightRefused);
-    assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+    // Only the stand-in for the procfs files ready_at staged is there.
+    let left: Vec<_> = std::fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name != "proc")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 /// A way back that marked one backend device to close and not the other.
@@ -415,6 +447,29 @@ fn an_enqueued_way_back_is_one_envelope_printed_after_it() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
+/// A program that blocks shutdown refuses the way back before anything is
+/// printed: a person reads the refusal alone, on stderr, and under `--json`
+/// it is the one envelope.
+#[test]
+fn a_blocked_way_back_is_refused_before_its_banner() {
+    let output = run_subprocess("human-blocked");
+    assert!(stdout_lines(&output).is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("apt blocks shutdown (Installing, PID 4242)"),
+        "{stderr}"
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let output = run_subprocess("json-blocked");
+    let lines = stdout_lines(&output);
+    assert_eq!(lines.len(), 1, "one envelope: {output:?}");
+    let value = envelope("deactivate", &lines[0]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "invalid_state", "{value}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
 /// A person reads the result before the switch, which stops the terminal,
 /// however the switch goes; a failure to enqueue it follows on stderr.
 #[test]
@@ -477,11 +532,12 @@ fn without_a_way_back_a_person_gets_the_refusal_and_no_prompt() {
     assert_eq!(output.status.code(), Some(6), "{output:?}");
 }
 
+/// Outside a hidden session deactivate refuses before it asks, locks or
+/// leaves, with `-y --poweroff` as without. The probe's verdict is given here
+/// rather than read from the host: on a host in a hidden session the real
+/// command would take that session's way back, or power the host off.
 #[test]
 fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
-    // The test process runs on its host's own root, never in a hidden root.
-    let config = tempfile::tempdir().unwrap();
-    let missing = config.path().join("absent.toml");
     for args in [
         DeactivateArgs::default(),
         DeactivateArgs {
@@ -489,12 +545,7 @@ fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
             poweroff: true,
         },
     ] {
-        let status = execute(
-            &json(),
-            &nails_core::RuntimeEnv::default(),
-            &args,
-            Some(&missing),
-        );
+        let status = super::deactivate_prepared(&json(), &args, Prepared::NotHidden);
         assert_eq!(status, ExitStatus::InvalidState, "{args:?}");
     }
 }

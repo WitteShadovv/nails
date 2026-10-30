@@ -3,9 +3,14 @@
 The plan job of mutants-in-diff.yml lists the mutants of a pull request's diff
 (`just mutants-in-diff-plan`: cargo-mutants --list with the options that
 `just mutants-in-diff` tests with, which builds nothing) and passes the list
-here. The plan gives the lane as many shards as keep each one inside its time
-box with a margin, at most MAX_SHARDS. A diff too large for that many shards of
-the ordinary box gets a longer box for each shard, up to MAX_SHARD_MINUTES. A
+here. The plan costs each mutant by the package whose tests run on it, and
+gives the lane the fewest shards that keep each one inside the ordinary time
+box with a margin, at most MAX_SHARDS: it reckons with the very mutants each
+shard gets, since cargo-mutants hands shard k of n the k-th run of
+consecutive mutants of the same list. A diff that no count of shards fits in
+the ordinary box gets the count whose dearest shard needs the shortest box,
+up to MAX_SHARD_MINUTES: with packages of different cost that box does not
+shrink with every shard added, as the slices move over the dear mutants. A
 diff that holds no mutant runs no shard.
 
 A diff too large even for the longest boxes runs no shard either, so none of
@@ -33,35 +38,70 @@ import json
 import math
 import os
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from itertools import accumulate
 from pathlib import Path
 
-# What a shard costs on a hosted ubuntu-26.04 runner, measured on the lane's
-# 83 runs of 22 to 24 October 2026 from GitHub's job times and the timestamps
-# of cargo-mutants' log lines:
-# - From the start of the job to the end of the unmutated baseline (checkout,
-#   toolchain, tools, the copy of the tree, the baseline's build and tests):
-#   27 to 133 s over 186 shards, 67 s in half of them and over 120 s in five.
-# - One mutant: a build of up to 20 s (3 s or less for half of them) and a test
-#   run of up to 29 s, or the 120 s --timeout of `just mutants-in-diff`. The
-#   logs time only the mutants that survived or timed out: 480, of which 17
-#   timed out. A finished shard of 20 mutants or more averaged 2 to 18 s a
-#   mutant, the low end where many mutants did not compile, and the four
-#   shards of 100 or more that a diff of 409 mutants got, all cancelled at 15
-#   minutes, 10 to 19 s up to their last logged mutant.
-# At these figures the longest of the 156 finished shards with mutants would
-# have used 68% of the time box the plan gives it.
+# What a shard costs on a hosted ubuntu-26.04 runner.
+#
+# The setup, from the start of the job to the end of the unmutated baseline
+# (checkout, toolchain, tools, the copy of the tree, the baseline's build and
+# tests): 27 to 133 s over 186 shards of the lane's 83 runs of 22 to 24 October
+# 2026, 67 s in half of them and over 120 s in five, from GitHub's job times and
+# the timestamps of cargo-mutants' log lines; 25 to 121 s over the 25 shards of
+# 29 October 2026 below.
 SETUP_SECONDS = 120
-SECONDS_PER_MUTANT = 20
+# One mutant, by the package whose tests cargo-mutants runs on it: the mean
+# build and test of a mutant that built and was tested (caught or missed),
+# rounded up to the second. Measured on 29 October 2026 from the outcomes.json
+# of the 25 shards that the runs of three pull requests finished or stopped at
+# their time box, 1,004 mutants, leaving out the two shards in which test
+# binaries that had run into the timeout went on running (see TIMEOUT_SECONDS):
+#
+#   nails-api        63 mutants    1.1 s, 1.2 s in nine of ten
+#   nails-base      297           10.4 s, 12.4 s
+#   nails-cli        54           14.8 s, 18.0 s
+#   nails-core       15           20.5 s, 21.3 s
+#   nails-session   299            6.6 s,  7.7 s
+#   nails-teardown   43            5.8 s,  6.2 s
+#
+# A mutant that does not compile costs about a second, and outside those two
+# shards none took longer than 35 s. The flat 20 s that the plan took for every
+# mutant before overstated all but nails-core. A package not measured here, or
+# on too few mutants (nails-forensics, four), costs as much as the dearest one
+# measured.
+SECONDS_PER_MUTANT = {
+    "nails-api": 2,
+    "nails-base": 11,
+    "nails-cli": 15,
+    "nails-core": 21,
+    "nails-session": 7,
+    "nails-teardown": 6,
+}
+UNMEASURED_SECONDS_PER_MUTANT = max(SECONDS_PER_MUTANT.values())
+# A mutant whose tests run into the --timeout of `just mutants-in-diff` costs
+# that much more, and each shard has room for TIMEOUTS_PER_SHARD of them. Of the
+# 1,004 mutants, 6 ran into it, five of them in one shard of 59. There each test
+# binary that ran into it had installed the SIGTERM handler of nails-base's
+# cancel module, outlived the SIGTERM with which cargo-mutants ends a test run
+# and kept a core busy: the shard's mutants built in 9 s before its first
+# timeout and in 27 to 61 s after its third, and it ran out of its 28-minute box
+# after 34 of its mutants. `just mutants-in-diff` now kills such a test binary
+# (ci/mutants_guard.py).
+TIMEOUT_SECONDS = 120
+TIMEOUTS_PER_SHARD = 2
 # A shard's expected time plus this share must fit its time box: room for a
-# slower runner, a slower setup, or a mutant or two that run into the timeout.
+# slower runner, a slower setup, or mutants dearer than the mean of their
+# package.
 MARGIN = Fraction(5, 4)
-# A shard's time box, in minutes: the lane's ordinary box, which holds 30
-# mutants at the cost above, and the longest a diff too large for MAX_SHARDS
-# ordinary shards may get (66 mutants), twice the ordinary one. The box bounds
-# the shard's mutation step, which stops cargo-mutants when it runs out.
+# A shard's time box, in minutes: the lane's ordinary box, and the longest a
+# diff too large for MAX_SHARDS ordinary shards may get, twice the ordinary
+# one. The ordinary box holds 32 mutants of nails-base or 51 of nails-session,
+# the longest 98 or 154. The box bounds the shard's mutation step, which stops
+# cargo-mutants when it runs out.
 SHARD_MINUTES = 15
 MAX_SHARD_MINUTES = 30
 # How much longer than its box a shard's job may run: the checkout and the
@@ -78,10 +118,10 @@ JOB_MINUTES_PAST_BOX = 5
 # this lane's own are left out and 49 when the push, scheduled and dispatched
 # runs count too (from the jobs API, over every run created that day: each job
 # that ran on a runner, from its start to its end). Twelve keeps this lane,
-# which gates nothing, to about a quarter of that peak. Twelve ordinary shards
-# hold 360 mutants: of the pull requests into next from 22 to 24 October,
-# diffed as the lane diffs them now, only one needed more (409, which fit
-# twelve 18-minute boxes), and the next largest held 275.
+# which gates nothing, to about a quarter of that peak. Of the pull requests
+# into next from 22 to 24 October, diffed as the lane diffs them now, only one
+# held more than 360 mutants (409), and the next largest held 275. Three open
+# on 29 October held 185, 388 and 700.
 MAX_SHARDS = 12
 
 TITLE = "Mutation testing on the diff: the plan"
@@ -99,9 +139,11 @@ class Plan:
     # The shards to run: none for a diff without mutants or with too many.
     shards: int = 0
     # The mutants of the largest shard. cargo-mutants gives shard k of n the
-    # k-th slice of ceil(mutants / n) mutants, so no shard holds more.
+    # k-th run of ceil(mutants / n) consecutive mutants, so no shard holds more.
     per_shard: int = 0
-    # The time box of each shard, in minutes.
+    # The time box of each shard, in minutes: the one the dearest shard needs.
+    # For a diff too large for the lane, the shortest box any count of shards
+    # would need, and per_shard is the largest shard of that count.
     minutes: int = 0
 
     @property
@@ -114,52 +156,98 @@ class Plan:
         return self.minutes + JOB_MINUTES_PAST_BOX
 
 
-def shard_minutes(mutants: int) -> int:
-    """The time box of a shard of ``mutants``: never under SHARD_MINUTES."""
-    expected = SETUP_SECONDS + mutants * SECONDS_PER_MUTANT
-    return max(SHARD_MINUTES, math.ceil(expected * MARGIN / 60))
+def mutant_seconds(package: str) -> int:
+    """What one mutant whose tests run in ``package`` costs a shard."""
+    return SECONDS_PER_MUTANT.get(package, UNMEASURED_SECONDS_PER_MUTANT)
 
 
-def capacity(minutes: int) -> int:
-    """How many mutants one shard tests inside a time box of ``minutes``."""
-    seconds = minutes * 60 / MARGIN - SETUP_SECONDS
-    return max(0, math.floor(seconds / SECONDS_PER_MUTANT))
+# What every shard costs besides its mutants: the setup and the room for
+# mutants that run into the timeout.
+_FIXED_SECONDS = SETUP_SECONDS + TIMEOUTS_PER_SHARD * TIMEOUT_SECONDS
 
 
-def most_mutants() -> int:
-    """The largest diff the lane tests: MAX_SHARDS of the longest box."""
-    return MAX_SHARDS * capacity(MAX_SHARD_MINUTES)
+def _box(seconds: int) -> int:
+    """The time box of a shard whose mutants cost ``seconds``."""
+    return max(SHARD_MINUTES, math.ceil((_FIXED_SECONDS + seconds) * MARGIN / 60))
 
 
-def plan(mutants: int) -> Plan:
-    """Split ``mutants`` over the fewest shards that fit their time boxes."""
-    if mutants <= 0:
+def shard_minutes(packages: Sequence[str]) -> int:
+    """The time box of a shard whose mutants run the tests of ``packages``.
+
+    One entry per mutant. Never under SHARD_MINUTES.
+    """
+    return _box(sum(mutant_seconds(package) for package in packages))
+
+
+def capacity(minutes: int, package: str) -> int:
+    """How many mutants of ``package`` one shard tests in ``minutes``."""
+    seconds = minutes * 60 / MARGIN - _FIXED_SECONDS
+    return max(0, math.floor(seconds / mutant_seconds(package)))
+
+
+def slices(mutants: int, shards: int) -> list[range]:
+    """The mutants of each shard, as cargo-mutants slices them.
+
+    Its default sharding (`--sharding=slice`) gives shard k of n the k-th run
+    of ceil(mutants / n) consecutive mutants of the list; the last may be
+    shorter, or empty.
+    """
+    size = math.ceil(mutants / shards)
+    return [
+        range(min(k * size, mutants), min((k + 1) * size, mutants))
+        for k in range(shards)
+    ]
+
+
+def plan(packages: Sequence[str]) -> Plan:
+    """Split the mutants over the shards that fit them best.
+
+    The fewest shards that fit the ordinary time box, and when no count up to
+    MAX_SHARDS does, the count whose dearest shard needs the shortest box, the
+    fewest shards of those that need it. ``packages`` holds the package of each
+    mutant, in the order of the list that cargo-mutants slices.
+    """
+    mutants = len(packages)
+    if mutants == 0:
         return Plan(0)
-    shards = min(MAX_SHARDS, math.ceil(mutants / capacity(SHARD_MINUTES)))
-    per_shard = math.ceil(mutants / shards)
-    minutes = shard_minutes(per_shard)
-    if minutes > MAX_SHARD_MINUTES:
-        return Plan(mutants)
-    return Plan(mutants, shards, per_shard, minutes)
+    # The cost of the first i mutants, so that a slice costs a subtraction.
+    before = list(accumulate(map(mutant_seconds, packages), initial=0))
+    counts: list[Plan] = []
+    for count in range(1, min(MAX_SHARDS, mutants) + 1):
+        parts = slices(mutants, count)
+        # A count that leaves a shard empty splits no finer than the fewer
+        # shards that the same slices fill.
+        if not parts[-1]:
+            continue
+        minutes = max(_box(before[part.stop] - before[part.start]) for part in parts)
+        counts.append(Plan(mutants, count, len(parts[0]), minutes))
+        if minutes == SHARD_MINUTES:
+            break
+    # One shard always holds every mutant, so there is a count to take.
+    best = min(counts, key=lambda counted: (counted.minutes, counted.shards))
+    if best.minutes > MAX_SHARD_MINUTES:
+        return Plan(mutants, per_shard=best.per_shard, minutes=best.minutes)
+    return best
 
 
-def count_mutants(text: str) -> int:
-    """Count the mutants in what `cargo mutants --list --json` printed.
+def listed_packages(text: str) -> list[str]:
+    """The package of each mutant in what `cargo mutants --list --json` printed.
 
     cargo-mutants prints nothing at all, not an empty list, and exits 0 when
     the diff is empty, changes no Rust source file or touches no mutant.
     """
     if not text.strip():
-        return 0
+        return []
     try:
         listed = json.loads(text)
     except ValueError as error:
         raise ListError(f"not JSON: {error}") from None
     if not isinstance(listed, list) or not all(
-        isinstance(mutant, dict) for mutant in listed
+        isinstance(mutant, dict) and isinstance(mutant.get("package"), str)
+        for mutant in listed
     ):
-        raise ListError("not a JSON list of mutants")
-    return len(listed)
+        raise ListError("not a JSON list of mutants, each with its package")
+    return [mutant["package"] for mutant in listed]
 
 
 def matrix(planned: Plan) -> dict[str, list[dict[str, int]]]:
@@ -186,25 +274,35 @@ def _mutants(count: int) -> str:
     return f"{count} mutant" if count == 1 else f"{count} mutants"
 
 
-def describe(planned: Plan) -> str:
+def _by_package(packages: Sequence[str]) -> str:
+    counts = Counter(packages).most_common()
+    return ", ".join(f"{package} {count}" for package, count in counts)
+
+
+def describe(planned: Plan, packages: Sequence[str] = ()) -> str:
     if planned.mutants == 0:
         return "The diff changes no mutable code, so no shard runs."
+    held = _mutants(planned.mutants)
+    if packages:
+        held += f" ({_by_package(packages)})"
     if planned.too_large:
+        # The count of shards whose largest held per_shard mutants.
+        shards = math.ceil(planned.mutants / planned.per_shard)
         return (
-            f"The diff holds {_mutants(planned.mutants)}, more than the lane can "
-            f"test: {MAX_SHARDS} shards of {capacity(MAX_SHARD_MINUTES)}, in "
-            f"{MAX_SHARD_MINUTES}-minute time boxes, hold {most_mutants()}. No "
-            "shard runs, so none of the diff's mutants is tested, and the lane "
-            "fails. `just mutants-in-diff` tests the diff where time allows."
+            f"The diff holds {held}, more than the lane can test: split the best "
+            f"way, in {shards} shards of at most {planned.per_shard}, they would "
+            f"need {planned.minutes}-minute time boxes, and the lane gives a shard "
+            f"{MAX_SHARD_MINUTES} minutes at most. No shard runs, so none of the "
+            "diff's mutants is tested, and the lane fails. `just mutants-in-diff` "
+            "tests the diff where time allows."
         )
     if planned.shards == 1:
         return (
-            f"{_mutants(planned.mutants)} in the diff: one shard, time-boxed at "
-            f"{planned.minutes} minutes."
+            f"{held} in the diff: one shard, time-boxed at {planned.minutes} minutes."
         )
     return (
-        f"{_mutants(planned.mutants)} in the diff: {planned.shards} shards of at "
-        f"most {planned.per_shard}, each time-boxed at {planned.minutes} minutes."
+        f"{held} in the diff: {planned.shards} shards of at most "
+        f"{planned.per_shard}, each time-boxed at {planned.minutes} minutes."
     )
 
 
@@ -236,15 +334,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             text = sys.stdin.read()
         else:
             text = Path(args.listing).read_text(encoding="utf-8")
-        mutants = count_mutants(text)
+        packages = listed_packages(text)
     except (OSError, ListError) as error:
         print(f"{args.listing}: {error}", file=sys.stderr)
         return 1
 
-    planned = plan(mutants)
+    planned = plan(packages)
     print(f"shards={planned.shards}")
     print("matrix=" + json.dumps(matrix(planned), separators=(",", ":")))
-    message = describe(planned)
+    message = describe(planned, packages)
     print(message, file=sys.stderr)
     _write_summary(f"## {TITLE}\n\n{message}\n")
     if planned.too_large:

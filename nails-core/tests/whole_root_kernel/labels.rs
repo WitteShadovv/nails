@@ -29,15 +29,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// A host whose facts report SELinux.
-const REQUIRED: Labels = Labels::Required(Reason::SelinuxReported);
+pub(crate) const REQUIRED: Labels = Labels::Required(Reason::SelinuxRunning);
 /// The labels Fedora's policy gives `/`, `/home` and a home, as they are
 /// stored: with their NUL.
-const ROOT_LABEL: &[u8] = b"system_u:object_r:root_t:s0\0";
-const HOME_ROOT_LABEL: &[u8] = b"system_u:object_r:home_root_t:s0\0";
-const HOME_LABEL: &[u8] = b"unconfined_u:object_r:user_home_dir_t:s0\0";
+pub(crate) const ROOT_LABEL: &[u8] = b"system_u:object_r:root_t:s0\0";
+pub(crate) const HOME_ROOT_LABEL: &[u8] = b"system_u:object_r:home_root_t:s0\0";
+pub(crate) const HOME_LABEL: &[u8] = b"unconfined_u:object_r:user_home_dir_t:s0\0";
 
 /// The label stored on `path` itself, or the kernel's error.
-fn label(path: &Path) -> Result<Vec<u8>, Errno> {
+pub(crate) fn label(path: &Path) -> Result<Vec<u8>, Errno> {
     let mut value = vec![0; 4096];
     let len = rustix::fs::lgetxattr(path, LABEL_XATTR, &mut value[..])?;
     value.truncate(len);
@@ -45,13 +45,13 @@ fn label(path: &Path) -> Result<Vec<u8>, Errno> {
 }
 
 /// Write `value` as the label of `path` itself.
-fn set_label(path: &Path, value: &[u8]) {
+pub(crate) fn set_label(path: &Path, value: &[u8]) {
     rustix::fs::lsetxattr(path, LABEL_XATTR, value, XattrFlags::empty())
         .unwrap_or_else(|e| panic!("label {}: {e}", path.display()));
 }
 
 /// The status change time of `path`, which any attribute written moves.
-fn ctime(path: &Path) -> (i64, i64) {
+pub(crate) fn ctime(path: &Path) -> (i64, i64) {
     let meta = std::fs::symlink_metadata(path).unwrap();
     (meta.ctime(), meta.ctime_nsec())
 }
@@ -64,7 +64,7 @@ fn atime(path: &Path) -> (i64, i64) {
 }
 
 /// Long enough for a write or an access to move a time on tmpfs.
-fn tick() {
+pub(crate) fn tick() {
     std::thread::sleep(Duration::from_millis(20));
 }
 

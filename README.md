@@ -133,7 +133,7 @@ model is written down; read it before relying on NAILS.
 | Requirement | Notes |
 |---|---|
 | A supported host | NixOS, Debian 13, or Ubuntu 24.04 or 26.04, with **systemd 254 or newer**. A later Debian or Ubuntu release runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
-| An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog and audit refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
+| An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no armed kdump, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog, audit and kdump refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
 | Host tools | `systemctl` and `loginctl` (systemd), `ip` (iproute2), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. The way back runs `ip` and `dmsetup`, so activation is refused while one is missing; `nails check` names it and the package that provides it. Keep `nft` (nftables) on the decoy too, and `iw` on a machine with Wi-Fi: without them the firewall tables and Wi-Fi interfaces a session adds stay on the decoy until power-off, which `check` and `activate` warn about. |
@@ -165,6 +165,8 @@ Also refused by the pre-flight checks:
 - active disk swap; only RAM-backed zram is allowed (`swap`);
 - a persistent journal or an active syslog or audit daemon, unless overridden
   (`decoy-persistence`);
+- a pending offline system update, staged on the decoy or left in the root
+  overlay's upper by a hidden session (`pending-offline-update`);
 - a hidden volume that is not storage of its own: a folder, a btrfs subvolume
   or bind mount of a filesystem the decoy uses, a volume stacked on the
   decoy's storage, an image file on a decoy filesystem, a filesystem that shows
@@ -294,19 +296,21 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    it seeds the hidden NixOS layout from
    `/etc/nixos/hardware-configuration.nix`. It ends by printing the next steps.
 
-3. **Optionally review the configuration**, but not on the decoy: an editor
+3. **Optionally change the configuration**, but not on the decoy: an editor
    leaves its own traces there (swap and backup files, `~/.viminfo`, recent-file
-   lists). Every key is optional, and the template `init` writes uses the
-   defaults. Prepare `config/nails.toml` on the separate machine, before you copy
-   it to the hidden volume (`init` keeps a file that is already there), or inside
-   a hidden session as a new file that you move into place after the session, as
-   for a [binary update](docs/operator-guide.md#updating-nails):
+   lists), and so does a command line. Every key is optional, and the template
+   `init` writes uses the defaults. Inside a hidden session, `config set` and
+   `config unset` change a key in place: they keep the file's comments and every
+   other key, check the result as `config validate` does, and write nothing
+   anywhere but the configuration on the hidden volume
+   ([Changing settings](docs/configuration.md#changing-settings)). Or prepare
+   `config/nails.toml` on the separate machine, before you copy it to the hidden
+   volume (`init` keeps a file that is already there):
 
    ```bash
-   # inside a hidden session; the configuration directory is root's
-   sudoedit /mnt/data/config/nails.toml.new
-   sudo /mnt/data/nails config validate /mnt/data/config/nails.toml.new
-   sudo /mnt/data/nails --config /mnt/data/config/nails.toml.new config show   # effective values and their sources
+   # inside a hidden session
+   sudo /mnt/data/nails config set persona.mode fresh-home
+   sudo /mnt/data/nails config show   # effective values and their sources
    ```
 
    Leave `hidden_volume_root` unset to derive it from the binary's location. On
@@ -358,11 +362,19 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
 <details>
 <summary><b>What <code>nails check</code> prints</b></summary>
 
-<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
+<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS, among them the platform row that names the detected release, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
 
 Captured from the `session-readme-captures` NixOS VM test, on a decoy set up as
 [docs/decoy-requirements.md](docs/decoy-requirements.md) recommends; see
 [docs/assets/README.md](docs/assets/README.md) for how each screenshot is made.
+The test VM also has an emulated IOMMU that remaps DMA, so `dma-protection`
+passes there. It warns when the IOMMU is off or in passthrough, or when a
+Thunderbolt or USB4 controller reports no DMA protection, and with Linux 5.14 or
+newer also when an IOMMU group is identity-mapped. A device the IOMMU leaves out
+entirely, such as an integrated GPU excluded with `igfx_off`, has no group and is
+not seen. The
+[operator guide](docs/operator-guide.md#cold-boot-and-running-memory-attacks)
+says how to turn the IOMMU on.
 
 </details>
 
@@ -390,12 +402,12 @@ flowchart LR
 
 Both transitions log you out. Save your work first.
 
-<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, Hidden session prepared in 0.4s with no pre-flight warning, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
+<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, Hidden session prepared in 0.8s with no pre-flight warning, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
 
 <details>
 <summary><b>What <code>nails status --json</code> reports in the hidden session</b></summary>
 
-<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: place hidden, attention null, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
+<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: place hidden, attention null, the hidden system path, the overlaid mounts, the masked boot-loader and root-filesystem units, and the last activation's duration" width="820">
 
 `place` says where the machine is (`decoy`, `hidden` or `activating`, or
 `unknown`, next to an error, when reading the state file was refused, so no
@@ -515,7 +527,8 @@ persona gives it an empty home instead. See
 
 **Does it work on a persistent decoy?** Only with `--allow-persistent-decoy`,
 and then the decoy's journal records the soft-reboots and the activation
-command. Prefer an amnesic decoy.
+command, and an armed kdump can write a crashed session's memory to the decoy
+disk. Prefer an amnesic decoy.
 
 **How do I know it works on my machine?** Run `nails rehearse` (plant a canary in
 a hidden session, then search the raw decoy disk for it) and

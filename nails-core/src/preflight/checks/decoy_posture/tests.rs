@@ -5,10 +5,26 @@ use super::*;
 use crate::RealFilesystem;
 use crate::filesystem::{MockFilesystem, PathKind};
 
-/// Mark a systemd unit active by creating its runtime invocation marker.
+/// An invocation id as systemd writes it: 32 hex digits.
+const INVOCATION_ID: &str = "8028a17235414b4e80c950b24a7487d7";
+
+/// Mark a systemd unit active by creating its runtime invocation marker, as
+/// systemd does: a link to the invocation id.
 fn set_unit_active(fs: &MockFilesystem, unit: &str) {
     let marker = format!("/{}/invocation:{unit}", loggers::INVOCATION_DIR);
-    fs.mock_set_path_exists(&marker, true);
+    fs.create_symlink(Path::new(INVOCATION_ID), Path::new(&marker))
+        .unwrap();
+}
+
+/// Mark a systemd unit active under the scratch `root` the way systemd marks
+/// it: a link to the bare invocation id, which names no file, so the link
+/// dangles.
+fn mark_active(root: &Path, unit: &str) {
+    let dir = root.join(loggers::INVOCATION_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join(format!("invocation:{unit}"));
+    std::os::unix::fs::symlink(INVOCATION_ID, &marker).unwrap();
+    assert!(!marker.exists(), "the marker dangles, as systemd's does");
 }
 
 /// A mountinfo with a single `/` entry of the given fstype and options.
@@ -361,6 +377,79 @@ fn persistent_journald_drop_in_is_refused() {
     assert!(result.message().contains("journald.conf.d"));
 }
 
+/// A journald configuration NAILS cannot read as journald does is refused,
+/// naming its entry, however volatile the files around it are: a drop-in
+/// linked to `/dev/null` reads as empty up to systemd 259, and from 260 it
+/// leaves the whole configuration unread, the main file included.
+#[test]
+fn an_unread_journald_configuration_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    let entry = root.join("etc/systemd/journald.conf.d/10-vendor.conf");
+    std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &entry).unwrap();
+    let result = DecoyPersistenceCheck::new(false, false)
+        .with_root(root)
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(result.is_fail(), "{}", result.message());
+    let expected = format!(
+        "NAILS cannot tell where systemd-journald keeps the journal, so it counts as \
+         persistent: {} is not a regular file; systemd releases",
+        entry.display()
+    );
+    assert!(result.message().contains(&expected), "{}", result.message());
+}
+
+/// Before 256 systemd-coredump reads its main file from `/etc` alone, so a
+/// vendor `coredump.conf` that keeps every core off the disk counts only from
+/// 256 on.
+#[test]
+fn a_vendor_coredump_main_file_counts_only_from_256() {
+    use super::coredump::CoredumpSettings;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "usr/lib/systemd/coredump.conf",
+        "[Coredump]\nStorage=none\nProcessSizeMax=0\n",
+    );
+    assert!(!CoredumpSettings::read_under(&RealFilesystem, root, Some(255)).keeps_cores_off_disk());
+    assert!(CoredumpSettings::read_under(&RealFilesystem, root, Some(256)).keeps_cores_off_disk());
+}
+
+/// A coredump configuration NAILS cannot read as systemd-coredump does keeps
+/// no core off the disk, whatever its files set, and the warning names it.
+#[test]
+fn an_unread_coredump_configuration_keeps_no_core_off_the_disk() {
+    use super::coredump::CoredumpSettings;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/coredump.conf",
+        "[Coredump]\nStorage=none\nProcessSizeMax=0\n",
+    );
+    let entry = root.join("etc/systemd/coredump.conf.d/50-discard.conf");
+    std::fs::create_dir_all(&entry).unwrap();
+    let settings = CoredumpSettings::read(&RealFilesystem, root);
+    assert!(!settings.keeps_cores_off_disk(), "{settings:?}");
+    let finding = settings
+        .finding(false)
+        .expect("an unread configuration is a finding");
+    let expected = format!(
+        "NAILS cannot tell whether systemd-coredump keeps core dumps on the decoy disk: {} \
+         is not a regular file; systemd releases",
+        entry.display()
+    );
+    assert!(finding.starts_with(&expected), "{finding}");
+}
+
 #[test]
 fn volatile_journald_drop_in_passes() {
     let tmp = tempfile::tempdir().unwrap();
@@ -383,7 +472,8 @@ fn volatile_journald_drop_in_passes() {
         .run(&RealFilesystem)
         .unwrap();
     assert!(!result.is_fail(), "{}", result.message());
-    assert!(DecoyPersistenceCheck::blockers(&RealFilesystem, root).is_empty());
+    assert!(DecoyPersistenceCheck::log_blockers(&RealFilesystem, root).is_empty());
+    assert!(DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root).is_none());
 }
 
 #[test]
@@ -407,21 +497,28 @@ fn pstore_records_warn() {
     assert!(result.message().contains("pstore"));
 }
 
-#[test]
-fn kdump_armed_warns() {
+/// A decoy that is clean apart from what a test adds: a volatile journal and a
+/// `noatime` disk root.
+fn amnesic_decoy() -> MockFilesystem {
     let fs = MockFilesystem::new();
     fs.mock_add_file(
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
     fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs
+}
+
+#[test]
+fn armed_kdump_without_the_override_is_refused() {
+    let fs = amnesic_decoy();
     fs.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
 
-    let check = DecoyPersistenceCheck::new(false, true);
-    let result = check.run(&fs).unwrap();
-    assert!(result.is_warn());
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "armed kdump must refuse: {result:?}");
     let message = result.message();
     assert!(message.contains("kdump is armed"), "{message}");
+    assert!(message.contains("a crash kernel is loaded"), "{message}");
     // The finding says where the crash kernel writes, and that the session's
     // overlay does not catch it.
     assert!(
@@ -433,6 +530,109 @@ fn kdump_armed_warns() {
         "{message}"
     );
     assert!(message.contains("encryption key"), "{message}");
+    let remediation = result.remediation().expect("a refusal names its fix");
+    assert!(remediation.starts_with("Disarm kdump"), "{remediation}");
+    assert!(
+        remediation.contains("--allow-persistent-decoy"),
+        "{remediation}"
+    );
+    // Only the kdump fix is offered: the logs are already amnesic.
+    assert!(!remediation.contains("journald"), "{remediation}");
+}
+
+#[test]
+fn armed_kdump_with_the_override_proceeds_with_a_warning() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+
+    let result = DecoyPersistenceCheck::new(true, true).run(&fs).unwrap();
+    assert!(
+        result.is_warn(),
+        "the override turns it into a warning: {result:?}"
+    );
+    let message = result.message();
+    assert!(message.contains("--allow-persistent-decoy"), "{message}");
+    assert!(message.contains("kdump is armed"), "{message}");
+    assert!(
+        message.contains("dump of its memory in /var/crash"),
+        "{message}"
+    );
+    // No log sink was found, so the log sentence stays out.
+    assert!(!message.contains("Records written before"), "{message}");
+}
+
+#[test]
+fn unloaded_crash_kernel_is_clean() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "0\n");
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    assert!(!DecoyPersistenceCheck::decoy_kdump_armed(&fs));
+}
+
+#[test]
+fn a_kernel_without_crash_kernel_support_is_clean() {
+    // No kexec_crash_loaded at all: the kernel cannot load a crash kernel.
+    let fs = amnesic_decoy();
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn unreadable_kexec_crash_loaded_fails_closed() {
+    // The file exists but cannot be read: whether kdump is armed is unknown,
+    // and the check refuses as if it were.
+    let fs = amnesic_decoy();
+    fs.mock_set_path_exists(KEXEC_CRASH_LOADED, true);
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(
+        result.is_fail(),
+        "an unknown kdump state must refuse: {result:?}"
+    );
+    let message = result.message();
+    assert!(
+        message.contains("cannot tell whether kdump is armed"),
+        "{message}"
+    );
+    assert!(message.contains("cannot be read"), "{message}");
+    assert!(DecoyPersistenceCheck::decoy_kdump_armed(&fs));
+
+    // The same override accepts it for one run.
+    let accepted = DecoyPersistenceCheck::new(true, true).run(&fs).unwrap();
+    assert!(accepted.is_warn(), "{accepted:?}");
+}
+
+#[test]
+fn unexpected_kexec_crash_loaded_content_fails_closed() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "yes\n");
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(result.message().contains("not 0 or 1"), "{result:?}");
+}
+
+#[test]
+fn kdump_and_a_log_sink_offer_both_fixes() {
+    let fs = amnesic_decoy();
+    fs.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+    set_unit_active(&fs, "rsyslog.service");
+
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    let remediation = result.remediation().unwrap();
+    assert!(
+        remediation.starts_with("Make the decoy amnesic"),
+        "{remediation}"
+    );
+    assert!(remediation.contains("and disarm kdump"), "{remediation}");
+
+    let accepted = DecoyPersistenceCheck::new(true, true).run(&fs).unwrap();
+    let message = accepted.message();
+    assert!(message.contains("Records written before"), "{message}");
+    assert!(message.contains("dump of its memory"), "{message}");
 }
 
 #[test]
@@ -458,8 +658,8 @@ fn a_syslog_ng_template_instance_fails_closed() {
 
 #[test]
 fn a_logger_running_only_as_a_process_fails_closed() {
-    // A daemon started outside systemd, or one a recent systemd leaves no marker
-    // for, is caught by its process name.
+    // A daemon started outside systemd, which leaves no marker, is caught by its
+    // process name.
     for (comm, needle) in [
         ("rsyslogd", "rsyslog"),
         ("syslog-ng", "syslog-ng"),
@@ -680,7 +880,7 @@ fn the_syslog_alias_is_resolved_on_a_real_unit_directory() {
     .unwrap();
     assert!(loggers::active_logger_blockers(&RealFilesystem, root).is_empty());
 
-    write(root, "run/systemd/units/invocation:nanolog.service", "");
+    mark_active(root, "nanolog.service");
     let found = loggers::active_logger_blockers(&RealFilesystem, root);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].contains("nanolog.service"), "{found:?}");
@@ -707,19 +907,214 @@ fn an_argv0_without_a_matching_comm_still_counts() {
 }
 
 #[test]
-fn kdump_tools_service_warns_without_a_loaded_crash_kernel() {
-    // Ubuntu arms kdump-tools by default (24.10+); the crash kernel may not be
-    // loaded when check runs, but the enabled service still means a panic dumps.
-    let fs = MockFilesystem::new();
-    fs.mock_add_file(
-        "/etc/systemd/journald.conf",
+fn kdump_service_is_refused_without_a_loaded_crash_kernel() {
+    // Ubuntu arms kdump-tools by default (24.10+). An active unit counts even
+    // with no crash kernel loaded yet: its marker does not tell whether it is
+    // still loading one.
+    for unit in ["kdump-tools.service", "kdump.service"] {
+        let fs = amnesic_decoy();
+        fs.mock_add_file(KEXEC_CRASH_LOADED, "0\n");
+        set_unit_active(&fs, unit);
+        let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+        assert!(result.is_fail(), "{unit}: {result:?}");
+        assert!(
+            result.message().contains(&format!("({unit} is active)")),
+            "{result:?}"
+        );
+    }
+
+    let both = amnesic_decoy();
+    both.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+    set_unit_active(&both, "kdump-tools.service");
+    let result = DecoyPersistenceCheck::new(false, false).run(&both).unwrap();
+    assert!(
+        result
+            .message()
+            .contains("a crash kernel is loaded and kdump-tools.service is active"),
+        "{result:?}"
+    );
+}
+
+/// A scratch decoy tree that keeps no journal and has no crash kernel loaded.
+/// The journal is set volatile outright: a test runs without the host's
+/// systemd version, so journald's built-in default would count as persistent.
+fn amnesic_tree() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
-    set_unit_active(&fs, "kdump-tools.service");
-    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
-    assert!(result.is_warn(), "{result:?}");
-    assert!(result.message().contains("kdump"), "{result:?}");
+    write(tmp.path(), "sys/kernel/kexec_crash_loaded", "0\n");
+    tmp
+}
+
+#[test]
+fn an_exited_kdump_unit_is_seen_by_the_marker_systemd_leaves() {
+    // kdump-tools.service and kdump.service are oneshot units that stay active
+    // once they have run: no process and no populated cgroup, only systemd's
+    // invocation marker, a link that dangles. A probe that follows the link
+    // never sees the unit.
+    for unit in ["kdump-tools.service", "kdump.service"] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        let check = DecoyPersistenceCheck::new(false, false).with_root(root);
+        let clean = check.run(&RealFilesystem).unwrap();
+        assert!(!clean.is_fail(), "{unit}: {clean:?}");
+
+        mark_active(root, unit);
+        let result = check.run(&RealFilesystem).unwrap();
+        assert!(result.is_fail(), "{unit}: {result:?}");
+        assert!(
+            result.message().contains(&format!("({unit} is active)")),
+            "{unit}: {result:?}"
+        );
+    }
+}
+
+/// Make `rel` under `root` a symlink to `target`, as `systemctl enable` and
+/// `systemctl mask` make their links.
+fn link(root: &Path, rel: &str, target: &str) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, path).unwrap();
+}
+
+#[test]
+fn an_enabled_kdump_unit_that_is_stopped_is_refused() {
+    // `systemctl stop kdump-tools` unloads the crash kernel and leaves the
+    // unit enabled. The soft-reboot into the hidden session starts the decoy's
+    // enabled units, so the unit loads the crash kernel again there.
+    for (unit, wants) in [
+        ("kdump-tools.service", "basic.target.wants"),
+        ("kdump.service", "multi-user.target.wants"),
+    ] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        write(
+            root,
+            &format!("usr/lib/systemd/system/{unit}"),
+            "[Service]\nType=oneshot\nRemainAfterExit=yes\n",
+        );
+        let check = DecoyPersistenceCheck::new(false, false).with_root(root);
+        assert!(!check.run(&RealFilesystem).unwrap().is_fail(), "{unit}");
+
+        link(
+            root,
+            &format!("etc/systemd/system/{wants}/{unit}"),
+            &format!("/usr/lib/systemd/system/{unit}"),
+        );
+        let result = check.run(&RealFilesystem).unwrap();
+        assert!(result.is_fail(), "{unit}: {result:?}");
+        assert!(
+            result.message().contains(&format!("({unit} is enabled)")),
+            "{unit}: {result:?}"
+        );
+        let remediation = result.remediation().unwrap();
+        assert!(
+            remediation.contains("systemctl disable --now"),
+            "{remediation}"
+        );
+    }
+}
+
+#[test]
+fn a_kdump_unit_counts_as_enabled_by_any_link_that_pulls_it_in() {
+    // A link in a .wants, .requires or .upholds directory of any unit
+    // directory systemd reads, whatever unit the directory belongs to.
+    for rel in [
+        "etc/systemd/system/sysinit.target.wants/kdump-tools.service",
+        "run/systemd/system/multi-user.target.requires/kdump-tools.service",
+        "usr/lib/systemd/system/basic.target.wants/kdump-tools.service",
+        "lib/systemd/system/default.target.upholds/kdump-tools.service",
+    ] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        link(root, rel, "/lib/systemd/system/kdump-tools.service");
+        let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
+        assert!(
+            finding
+                .as_deref()
+                .is_some_and(|f| f.contains("(kdump-tools.service is enabled)")),
+            "{rel}: {finding:?}"
+        );
+    }
+    // systemd takes only links from those directories, and only those
+    // directories pull a unit in: a drop-in directory does not.
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/systemd/system/basic.target.wants/kdump-tools.service",
+        "",
+    );
+    link(
+        root,
+        "etc/systemd/system/basic.target.d/kdump-tools.service",
+        "/lib/systemd/system/kdump-tools.service",
+    );
+    let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
+    assert!(finding.is_none(), "{finding:?}");
+}
+
+#[test]
+fn a_kdump_unit_masked_in_etc_is_not_enabled_by_a_stale_link() {
+    // `systemctl mask kdump-tools` without `disable` leaves the wants link; the
+    // mask in /etc/systemd/system keeps the unit from starting anywhere.
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    link(
+        root,
+        "etc/systemd/system/basic.target.wants/kdump-tools.service",
+        "/lib/systemd/system/kdump-tools.service",
+    );
+    link(root, "etc/systemd/system/kdump-tools.service", "/dev/null");
+    let result = DecoyPersistenceCheck::new(false, false)
+        .with_root(root)
+        .run(&RealFilesystem)
+        .unwrap();
+    assert!(!result.is_fail(), "{result:?}");
+    assert!(DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root).is_none());
+
+    // A mask that lives only in /run is not taken for one, and neither is an
+    // admin unit file that is no link to /dev/null.
+    for (rel, target) in [
+        ("run/systemd/system/kdump-tools.service", "/dev/null"),
+        (
+            "etc/systemd/system/kdump-tools.service",
+            "/lib/systemd/system/kdump-tools.service",
+        ),
+    ] {
+        let tmp = amnesic_tree();
+        let root = tmp.path();
+        link(
+            root,
+            "etc/systemd/system/basic.target.wants/kdump-tools.service",
+            "/lib/systemd/system/kdump-tools.service",
+        );
+        link(root, rel, target);
+        let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root);
+        assert!(finding.is_some(), "{rel} -> {target}");
+    }
+}
+
+#[test]
+fn a_loaded_crash_kernel_and_an_enabled_active_unit_are_named_together() {
+    let tmp = amnesic_tree();
+    let root = tmp.path();
+    write(root, "sys/kernel/kexec_crash_loaded", "1\n");
+    link(
+        root,
+        "etc/systemd/system/basic.target.wants/kdump-tools.service",
+        "/lib/systemd/system/kdump-tools.service",
+    );
+    mark_active(root, "kdump-tools.service");
+    let finding = DecoyPersistenceCheck::kdump_finding(&RealFilesystem, root).unwrap();
+    assert!(
+        finding
+            .contains("(a crash kernel is loaded and kdump-tools.service is enabled and active)"),
+        "{finding}"
+    );
 }
 
 #[test]
@@ -875,6 +1270,14 @@ fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
     auditd.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&auditd, "auditd.service");
     assert!(DecoyPersistenceCheck::decoy_is_persistent(&auditd));
+
+    // An armed kdump is reported on its own: it is no persistent log store.
+    let kdump = amnesic_decoy();
+    kdump.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
+    let before = kdump.mock_ops().len();
+    assert!(!DecoyPersistenceCheck::decoy_is_persistent(&kdump));
+    assert!(DecoyPersistenceCheck::decoy_kdump_armed(&kdump));
+    assert_eq!(kdump.mock_ops().len(), before, "kdump probe must not write");
 }
 
 /// The findings the window's launcher names: none on an amnesic decoy, and

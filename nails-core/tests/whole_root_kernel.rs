@@ -127,6 +127,7 @@ mod kernel_tests {
                 read_only_disks: false,
                 failed_at_entry: Vec::new(),
                 kernel_settings: Vec::new(),
+                pids: Default::default(),
             }
         }
 
@@ -137,6 +138,7 @@ mod kernel_tests {
                 runtime_dir: self.run.path().join("overlay-runtime"),
                 kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
+                pid_places: None,
                 now: nails_teardown::whole_root::plan::unix_now(),
                 mounts: read_mountinfo().unwrap(),
             }
@@ -619,6 +621,9 @@ mod labels_kernel_tests;
 
 #[path = "whole_root_kernel/kernel_modules.rs"]
 mod kernel_modules_kernel_tests;
+
+#[path = "whole_root_kernel/package_drift.rs"]
+mod package_drift_kernel_tests;
 
 mod nixos_kernel_tests {
     //! The chrooted activation of a hidden toplevel:

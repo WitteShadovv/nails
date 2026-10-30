@@ -649,7 +649,8 @@ fn next_steps_keep_editing_and_copying_off_the_decoy() {
     assert!(!text.contains("--dry-run"), "{text}");
     assert!(steps[0].contains("another machine"), "{text}");
     assert!(
-        steps[0].contains("/mnt/data/config/nails.toml.new inside a hidden session"),
+        steps[0]
+            .ends_with("inside a hidden session run sudo /mnt/data/nails config set <key> <value>"),
         "{text}"
     );
     assert!(steps[1].ends_with("sudo /mnt/data/nails check"), "{text}");

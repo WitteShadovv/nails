@@ -8,6 +8,8 @@ import datetime
 import email.message
 import io
 import json
+import pathlib
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
@@ -80,6 +82,99 @@ class ValidateTest(unittest.TestCase):
     def test_bad_upstream_until_is_flagged(self) -> None:
         problems = di.validate({"x": upstream_entry(upstreamUntil="soon")})
         self.assertTrue(any("upstreamUntil" in p for p in problems), problems)
+
+    def test_shipped_table_is_in_the_form_repin_writes(self) -> None:
+        # A repin rewrites the whole file, so a hand edit in another form
+        # would show up as an unrelated diff, and a key the writer dropped
+        # (knownFailedUnits) would be lost.
+        with tempfile.TemporaryDirectory() as tmp:
+            written = pathlib.Path(tmp) / "images.json"
+            di.write_table(di.load_table(), written)
+            self.assertEqual(
+                written.read_text(encoding="utf-8"),
+                di.TABLE_PATH.read_text(encoding="utf-8"),
+            )
+
+
+def known_failed(**overrides: object) -> dict:
+    """A knownFailedUnits table as the Ubuntu 26.04 entry carries it."""
+    line = "Could not send notification to $NOTIFY_SOCKET"
+    known: dict = {
+        "hiddenSession": {"chrony.service": line},
+        "afterReturn": {"chrony.service": line},
+        "notInImage": ["cups.service"],
+    }
+    known.update(overrides)
+    return known
+
+
+class KnownFailedUnitsTest(unittest.TestCase):
+    def problems(self, known: object) -> list[str]:
+        return di.validate({"x": upstream_entry(knownFailedUnits=known)})
+
+    def test_absent_null_empty_and_listed_tables_are_well_formed(self) -> None:
+        self.assertEqual(di.validate({"x": upstream_entry()}), [])
+        empty: dict[str, object] = {
+            "hiddenSession": {},
+            "afterReturn": {},
+            "notInImage": [],
+        }
+        for known in (None, empty, known_failed()):
+            with self.subTest(known=known):
+                self.assertEqual(self.problems(known), [])
+
+    def test_the_three_keys_exactly(self) -> None:
+        missing = known_failed()
+        del missing["notInImage"]
+        malformed: tuple[object, ...] = (
+            missing,
+            known_failed(extra={}),
+            [],
+            "chrony.service",
+        )
+        for known in malformed:
+            with self.subTest(known=known):
+                self.assertEqual(
+                    self.problems(known),
+                    [
+                        "x: knownFailedUnits must be null or have exactly the keys"
+                        " hiddenSession, afterReturn and notInImage"
+                    ],
+                )
+
+    def test_a_phase_maps_unit_names_to_a_logged_line(self) -> None:
+        cases = {
+            "x: knownFailedUnits.afterReturn must be an object": ["chrony.service"],
+            "x: knownFailedUnits.afterReturn: 'chrony' is not a unit name": {
+                "chrony": "a line"
+            },
+            "x: knownFailedUnits.afterReturn: 'a b.service' is not a unit name": {
+                "a b.service": "a line"
+            },
+            "x: knownFailedUnits.afterReturn.chrony.service must be the non-empty"
+            " line its failed start logs": {"chrony.service": ""},
+        }
+        for problem, units in cases.items():
+            with self.subTest(units=units):
+                self.assertEqual(
+                    self.problems(known_failed(afterReturn=units)), [problem]
+                )
+
+    def test_not_in_image_lists_unit_names(self) -> None:
+        self.assertEqual(
+            self.problems(known_failed(notInImage="cups.service")),
+            ["x: knownFailedUnits.notInImage must be a list"],
+        )
+        self.assertEqual(
+            self.problems(known_failed(notInImage=["cups"])),
+            ["x: knownFailedUnits.notInImage: 'cups' is not a unit name"],
+        )
+
+    def test_a_unit_is_either_seen_failing_or_not_in_the_image(self) -> None:
+        self.assertEqual(
+            self.problems(known_failed(notInImage=["cups.service", "chrony.service"])),
+            ["x: knownFailedUnits names chrony.service in notInImage and in a phase"],
+        )
 
 
 def nvt_entry(distro: str, image: str, **overrides: object) -> dict:

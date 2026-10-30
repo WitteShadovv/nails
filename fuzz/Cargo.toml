@@ -39,6 +39,8 @@ nails-session = { path = "../nails-session" }
 nails-teardown = { path = "../nails-teardown" }
 # The model of a Nix store database row the nix_db target reads a dump with.
 serde_json = "1.0"
+# The strict reading of nails.toml the config_edit target compares an edit by.
+toml = "1.1"
 
 # The lint policy of the workspace (Cargo.toml's [workspace.lints]), which a
 # workspace of its own does not inherit: no unsafe code.
@@ -86,6 +88,13 @@ bench = false
 [[bin]]
 name = "os_release"
 path = "fuzz_targets/os_release.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_edit"
+path = "fuzz_targets/config_edit.rs"
 test = false
 doc = false
 bench = false
@@ -139,6 +148,27 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "dpkg_status"
+path = "fuzz_targets/dpkg_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pacman_local"
+path = "fuzz_targets/pacman_local.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "package_drift"
+path = "fuzz_targets/package_drift.rs"
+test = false
+doc = false
+bench = false
+
 # Line numbers in a crash's stack trace.
 [profile.release]
 debug = 1
@@ -146,6 +176,13 @@ debug = 1
 [[bin]]
 name = "helper_request"
 path = "fuzz_targets/helper_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rpmdb"
+path = "fuzz_targets/rpmdb.rs"
 test = false
 doc = false
 bench = false

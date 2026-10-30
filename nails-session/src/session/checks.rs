@@ -10,6 +10,9 @@
 //!   back;
 //! - `session-state`: neither in the hidden root already nor with leftovers of
 //!   an interrupted entry;
+//! - `shutdown-inhibitors`: no program blocks shutdown outright: one that does
+//!   is in the middle of something the switch would cut short (a package or
+//!   firmware update);
 //! - `fstab-policy`: every decoy filesystem the hidden systemd would mount has a
 //!   safe decision ([`super::policy`]);
 //! - `kernel-modules`: no hidden session deleted or replaced the running
@@ -30,6 +33,7 @@ use crate::filesystem::Filesystem;
 use crate::platform::{HostProfile, upgrade_hint};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
+use nails_teardown::whole_root::logind;
 use std::path::{Path, PathBuf};
 
 pub use super::kernel_modules::KernelModulesCheck;
@@ -234,6 +238,55 @@ impl<F: Filesystem> PreFlightCheck<F> for SessionStateCheck {
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
         Ok(judge_session(&probe::probe(&self.paths, &self.hidden_root)))
+    }
+}
+
+/// Judge what logind says blocks shutdown. A logind that did not answer
+/// fails the check as well: only PID 1's word that it does not run means
+/// nothing can block the switch through it ([`logind::blocking`]).
+pub fn judge_blocking(blocking: &logind::Blocking) -> CheckResult {
+    let why = blocking.refusal().unwrap_or_default();
+    match blocking {
+        logind::Blocking::Nothing => CheckResult::Pass("no program blocks shutdown".to_string()),
+        logind::Blocking::By(_) => CheckResult::fail_with(
+            format!("{why}: the switch would cut it short"),
+            "Let it finish, then activate again.".to_string(),
+        ),
+        logind::Blocking::Unknown => CheckResult::fail_with(
+            format!("{why}, and the switch would cut such a program short"),
+            "Make sure systemd-logind runs and answers, then activate again.".to_string(),
+        ),
+    }
+}
+
+/// `shutdown-inhibitors`: asks logind with `busctl`, and PID 1 with
+/// `systemctl` whether logind runs when it does not answer.
+#[derive(Debug)]
+pub struct ShutdownInhibitorsCheck {
+    busctl: Option<PathBuf>,
+    systemctl: Option<PathBuf>,
+}
+
+impl ShutdownInhibitorsCheck {
+    /// The check through `busctl` and `systemctl` (`None`: that one is not
+    /// asked).
+    pub fn new(busctl: Option<PathBuf>, systemctl: Option<PathBuf>) -> Self {
+        Self { busctl, systemctl }
+    }
+}
+
+impl<F: Filesystem> PreFlightCheck<F> for ShutdownInhibitorsCheck {
+    fn name(&self) -> &'static str {
+        "shutdown-inhibitors"
+    }
+    fn description(&self) -> &'static str {
+        "no program blocks shutdown"
+    }
+    fn run(&self, _fs: &F) -> Result<CheckResult> {
+        Ok(judge_blocking(&logind::blocking(
+            self.busctl.as_deref(),
+            self.systemctl.as_deref(),
+        )))
     }
 }
 

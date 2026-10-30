@@ -54,6 +54,43 @@ The decoy also has to be one the session can enter and leave:
   where the way back does, never in `PATH`: in `/run/current-system/sw/bin`
   (on NixOS, the decoy's system), `/usr/bin`, `/bin`, `/usr/sbin` and
   `/sbin`.
+- **SELinux labels on the hidden volume**, where the host may run SELinux:
+  where the mount table (`/proc/self/mounts`) lists a selinuxfs, where it
+  cannot be read while `/sys/fs/selinux` exists or `/etc/selinux/config` sets
+  `SELINUX=` or `SELINUXTYPE=`, and where NAILS cannot detect the host. A policy sees a directory without a
+  label as `unlabeled_t`, which confined services may not even look up. So at
+  every activation NAILS copies onto these directories on the hidden volume
+  the SELinux label of the decoy directory each stands for: the root of each
+  upper, which becomes the hidden `/` or the root of a decoy filesystem the
+  session overlays (a separate `/home`, say), and each directory the upper
+  holds below it on the way to your home, the whole way in the `fresh-home`
+  persona, which makes your home there. It reads the decoy's labels without
+  changing anything on the decoy, not even an access time, and writes each one
+  before the overlay over that upper is mounted. It copies no label onto any
+  other directory it makes on the hidden volume (see the
+  [threat model](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
+  A label it cannot copy refuses the activation, which is undone. So on such a
+  host:
+  - the hidden volume's filesystem must store `security.selinux` attributes,
+    as ext4, xfs and btrfs do, and the policy must let NAILS write them there;
+  - the decoy's `/` and the root of each decoy filesystem the session
+    overlays must carry labels;
+  - whatever the upper holds on the way to your home must be a directory,
+    not a link or a file, and its counterpart on the decoy must exist and
+    carry a label. In the `fresh-home` persona your account therefore needs a
+    home on the decoy. In the `shared-home` persona the same holds for a home
+    of yours that the upper holds and the decoy lacks, such as one a refused
+    `fresh-home` activation leaves behind or a hidden session makes: every
+    activation you run is refused until the decoy has that home or it is
+    removed from the upper (the refusal names its path there).
+
+  Elsewhere a label is copied only where the decoy has one, so a decoy
+  without labels gets the hidden root it got before. That includes a host
+  that keeps an empty `/sys/fs/selinux`, or an `/etc/selinux/config` that
+  sets `SELINUX=` or `SELINUXTYPE=` as SELinux packages installed once leave
+  it, while its mount table lists no selinuxfs: SELinux does not run there,
+  and the activation says so in one line. `nails check` does not test any of
+  this yet.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
@@ -75,16 +112,45 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 | [Persistent systemd journal](#fail-closed-activation-is-refused) | The decoy journal records the sudo command line (including the hidden-root binary path) before the soft-reboot, and the decoy's own shutdown and start around each transition. |
 | [Classic syslog daemon](#fail-closed-activation-is-refused) | A syslog daemon (rsyslog, syslog-ng, a syslogd, metalog or socklog) writes every logged line to /var/log on the decoy disk, outside the journal. |
 | [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
+| [Armed kdump](#fail-closed-activation-is-refused) | If the kernel crashes during a hidden session, kdump's crash kernel mounts the decoy root by its device, outside the session's overlay, and writes a dump of kernel memory (which can hold the hidden volume's key) and the session's kernel log to /var/crash on the decoy disk. |
 <!-- residue-catalog:end fail-closed -->
 
 Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
 only if you understand and
 accept that what the decoy logs around each soft-reboot may survive on the
-decoy disk.
+decoy disk, and that a kernel crash during the session can leave a dump of its
+memory there.
+
+kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` (a crash
+kernel is loaded), or when `kdump-tools.service` (Ubuntu, Debian) or
+`kdump.service` (Fedora) is enabled or active. The soft-reboot into the hidden
+session starts the decoy's enabled units, so an enabled unit that was stopped
+before activation, with no crash kernel loaded, starts again there and loads
+it. An active unit counts too, because the check cannot tell whether it is
+still loading the crash kernel. A unit is enabled when a link to it sits in a
+`.wants`, `.requires` or `.upholds` directory under `/etc/systemd/system`,
+`/run/systemd/system`, `/usr/lib/systemd/system` or `/lib/systemd/system`,
+unless a link to `/dev/null` in `/etc/systemd/system` masks it. If the
+kernel crashes during a hidden session, the crash kernel mounts the decoy root
+by its device, outside the session's overlay, and writes a dump of kernel
+memory, which can hold the hidden volume's encryption key and the names of the
+files the session used, and the session's kernel log to `/var/crash` on the
+decoy disk. Ubuntu arms kdump-tools by default from 24.10, so 26.04 among them.
+Disarm it on the decoy with `sudo systemctl disable --now kdump-tools`
+(Fedora: `sudo systemctl disable --now kdump`). When `kexec_crash_loaded`
+exists but cannot be read, or holds anything but `0` or `1`, NAILS cannot tell
+and refuses as if kdump were armed. A kernel without that file has no crash
+kernel support, so nothing can be loaded. `nails status` shows an armed kdump
+on the decoy (`decoy_kdump_armed` in `--json`).
 
 NAILS reads journald's `Storage=` the way journald does. The main
-`journald.conf` and every `journald.conf.d/*.conf` drop-in come first, and
-systemd stops reading them at the first line that is not valid UTF-8, unless
+`journald.conf` and every `journald.conf.d/*.conf` drop-in come first. From
+systemd 256 the main file is the first one in `/etc`, `/run`, `/usr/local/lib`
+or `/usr/lib/systemd`, while earlier releases read `/etc/systemd/journald.conf`
+alone, and NAILS looks where the running release looks; when it cannot read
+the release, a main file outside `/etc` that changes the result counts as
+persistent. systemd stops reading these files at the first line that is not
+valid UTF-8, unless
 it is a comment, so a setting below that line or in a later drop-in counts for
 nothing. Keep these files in UTF-8. When no file sets `Storage=`, the
 `journal.storage` credential decides, from systemd 256 on. journald accepts
@@ -94,6 +160,20 @@ systemd 259, which persists when `/var/log/journal` exists on disk, and from
 259 `persistent`, or the default the distribution's own
 `/usr/lib/systemd/journald.conf` documents. A systemd whose version cannot be
 read counts as persistent.
+
+Keep every main file and drop-in a regular file. systemd lists a drop-in by
+its name alone, so a directory or a link to `/dev/null` with a drop-in's name
+shadows the drop-in of that name below it, and the systemd releases do not read
+such an entry alike: from systemd 260 a directory or a device there leaves the
+whole configuration unread, the main file included. NAILS counts such a
+configuration, and one with a file it cannot read, as persistent whatever
+release runs, and names the entry: journald reads these files when it starts,
+and an update can bring 260 before it next does, at the latest when the decoy
+starts again after the way back. To mask a vendor
+drop-in, put an empty file of its name in `/etc/systemd/journald.conf.d/`. The
+same goes for logind's and systemd-coredump's configuration: `sleep-policy`
+then warns that the host may suspend an active session, and
+`decoy-persistence` that core dumps may reach the disk.
 
 NAILS reads the credential from the copy journald received, in
 `/run/credentials/systemd-journald.service/`, which only root can read. An
@@ -106,8 +186,8 @@ volatile can count as persistent. Run them with sudo.
 - **atime policy** — a root mounted without `noatime`/`relatime` records read
   access, leaving an atime trail on the decoy.
 - **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump with
-  any setting other than `Storage=none` together with `ProcessSizeMax=0`,
-  registered pstore records, or an armed kdump. Each can persist process or
+  any setting other than `Storage=none` together with `ProcessSizeMax=0`, or
+  registered pstore records. Each can persist process or
   kernel memory (which may contain hidden-session data) to the decoy disk or
   firmware-backed storage. systemd-coredump writes every core it processes to
   `/var/lib/systemd/coredump` first, so `Storage=none` alone still puts each
@@ -115,14 +195,8 @@ volatile can count as persistent. Run them with sudo.
   processing, and with both set it only logs that a program crashed. Keep
   systemd-coredump running with those two settings rather than turning it off:
   without it the kernel writes a `core` file into the crashing program's
-  working directory. kdump is the one that reaches past the session entirely:
-  if the kernel crashes during a hidden session, kdump's crash kernel mounts
-  the decoy root by its device, outside the session's overlay, and writes a
-  dump of kernel memory, which can hold the hidden volume's encryption key and
-  the names of the files the session used, and the session's kernel log to
-  `/var/crash` on the decoy disk. Ubuntu arms kdump-tools by default from
-  24.10, so 26.04 among them; disable it on the decoy (Ubuntu: `kdump-tools`,
-  Fedora: `kdump`).
+  working directory. An armed kdump, which reaches past the session entirely,
+  is refused (see above).
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
   module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
@@ -134,10 +208,28 @@ volatile can count as persistent. Run them with sudo.
   `LOG_INPUT:`/`LOG_OUTPUT:` command tags, stored under `iolog_dir`) records
   whole terminal sessions, keystrokes and output included. Both write to the
   decoy disk, outside the journal.
+- **sssd** — sssd in use on the decoy: one of its units or daemons running,
+  its Kerberos ticket cache listening on its socket, or one of nine state
+  files it writes under `/var/lib/sss`. NAILS is not tested on a decoy joined
+  to a domain, whose domain controller records the hidden session's logins;
+  see [Decoys joined to a domain](#decoys-joined-to-a-domain).
 
 The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
 stamps described below. It warns or notes them and never blocks.
+
+## Package updates
+
+Update the system on the decoy. Hidden sessions run the decoy's programs and
+see its updates until a hidden session installs, updates or removes a package
+itself: from then on hidden sessions keep a record of their own of what is
+installed, which a later update of the decoy does not reach (dpkg's and rpm's
+whole record, pacman's entries of the packages they changed). The
+`package-drift` check warns, and never refuses, when that record no longer
+follows the decoy's, and activation shows the warning before it asks to log
+you out. [Package changes in hidden
+sessions](operator-guide.md#package-changes-in-hidden-sessions) says what
+drifts for dpkg, pacman and rpm, and how to bring hidden sessions back in line.
 
 ## Suspend and the lid switch
 
@@ -311,7 +403,12 @@ logind.
   the clock is not synchronized and printing times out. After the way back the
   decoy lists chrony as failed until its next full reboot, which hints that a
   soft-reboot happened. A plain `systemctl soft-reboot` into another root,
-  without NAILS, breaks chrony the same way.
+  without NAILS, breaks chrony the same way. The distribution tests boot Ubuntu
+  26.04 and expect chrony to fail in the hidden session and after the way back,
+  so they show when a newer image fixes it. Their image has no CUPS, so the
+  printing half rests on a check by hand. They also require the warning that
+  `nails check` gives on 26.04 to name chrony and CUPS until each is shown
+  fixed.
 - **Volatile journald**: set `Storage=volatile` under `[Journal]` in
   `/etc/systemd/journald.conf`, or in a drop-in such as
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
@@ -319,6 +416,12 @@ logind.
   drop-in that sets `Storage=persistent` is caught too.
 - Remove or disable `rsyslog`, any other syslog daemon and `auditd` if
   installed.
+- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off.
+  With it, the decoy installs its pending updates at every activation, as at
+  every shutdown: they land on the decoy disk, and the switch waits for them.
+  logind waits up to 30 seconds, then PID 1 stops the helper, which writes its
+  SIGTERM line to its log on the decoy disk after all and stops the update,
+  for which PID 1 waits up to 30 minutes.
 - If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
@@ -336,6 +439,12 @@ logind.
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable the syslog daemon (`rsyslog`, `syslog-ng`,
   `inetutils-syslogd`, `busybox-syslogd`, `sysklogd`) and `auditd`.
+- Leave unattended-upgrades' `Unattended-Upgrade::InstallOnShutdown` off.
+  With it, the decoy installs its pending updates at every activation, as at
+  every shutdown: they land on the decoy disk, and the switch waits for them.
+  logind waits up to 30 seconds, then PID 1 stops the helper, which writes its
+  SIGTERM line to its log on the decoy disk after all and stops the update,
+  for which PID 1 waits up to 30 minutes.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
@@ -381,9 +490,13 @@ records end up depends on the journal:
 
 Hidden-session history never reaches the decoy: every hidden shell runs inside
 the overlay and writes its history file into the upper. On the decoy,
-`nails activate` SIGKILLs the decoy's interactive shells as its last step, so a
-shell that saves history on exit (bash on SIGHUP) never writes the activation
-command (see [bash-history-forensics.md](bash-history-forensics.md)). NAILS does
+`nails activate` SIGKILLs the decoy's interactive shells right before it asks
+logind for the switch, keeps killing every interactive shell opened while
+logind holds the switch back (within about a tenth of a second after it
+starts, too soon to have anything to save), and kills them once more when
+PID 1 holds the switch's job, so a shell that saves history on exit (bash on
+SIGHUP) never writes the activation command (see
+[bash-history-forensics.md](bash-history-forensics.md)). NAILS does
 **not** configure the decoy's own shells, and a shell that flushes history after
 every command (zsh `INC_APPEND_HISTORY`, `history -a` in `PROMPT_COMMAND`) has
 already written it; the `incremental-history-flush` check warns about that. If you type on the decoy — and the
@@ -442,6 +555,148 @@ during it; `nails deactivate` unmounts them before the way back (see
 `verify` cannot tell what a session wrote there, but
 [`nails rehearse`](operator-guide.md#rehearsing-before-you-rely-on-it) scans
 every mounted disk for its canary.
+
+In the `fresh-home` persona activation itself writes into an upper, before
+the overlay over it is mounted: it makes your home there at the first entry,
+with the directories missing on the way to it. These writes pass through no
+overlay, so activation looks up and makes each of those directories inside
+the upper without following a symbolic link. A hidden session that replaced
+`/home`, or a directory below it on the way to your home, with a link (to
+`/var/home`, say, or a relative one) would otherwise have the new home made
+wherever the link leads, which can be the decoy disk. While such a link
+stands there, activation is refused and makes nothing (see
+[Persona modes](configuration.md#persona-modes)).
+
+## Pending offline updates
+
+Desktop updaters that use PackageKit, such as GNOME Software, and
+`dnf system-upgrade` can stage an update to be installed offline: they link
+`/system-update` (or `/etc/system-update`) to it. At the next start of the
+service manager, `systemd-system-update-generator` sees the link and starts
+`system-update.target` instead of the default target, where the updater
+deletes the link, installs the update and reboots.
+
+A soft-reboot starts the service manager again, and its generators run in the
+new root as at a boot. A link the hidden root shows would turn the start of the
+hidden session into the update: the decoy's updater would install it into the
+upper on the hidden volume and then reboot or power off the machine, so the
+session ends without its way back. That run deletes the link only in the upper,
+so the decoy keeps its own and installs the update itself at its next boot.
+
+So activation is refused while a link is staged (`pending-offline-update`),
+on the decoy or in the root overlay's upper. A dangling link counts; a link a
+session deleted (a whiteout in the upper) does not. Install or cancel a pending
+update on the decoy before you activate. A link a hidden session staged stays
+in the upper: the way back is a soft-reboot into the decoy root, which does not
+show the upper, so the decoy starts as usual, and the next activation is
+refused until `nails discard` deletes the link, as the refusal says.
+
+The check runs before activation prepares the hidden root, so it does not see
+an update staged after it and before the service manager starts again in the
+hidden root. On every family that window spans the setup of the hidden root and
+the soft-reboot, which stops the decoy's services before it switches. On NixOS,
+unless activation runs with `--overlay-only`, it also spans the build of the
+hidden system, the copy of its closure onto the hidden volume and its
+activation, which can take minutes.
+
+## Decoys joined to a domain
+
+A decoy joined to a domain (Active Directory or FreeIPA, through sssd) checks
+logins and account lookups with the domain controller. The controller keeps
+its own records of them, with their times: the hidden session's logins reach it
+as the decoy's do, and nothing NAILS does on this computer reaches those
+records. sssd also keeps caches of the domain's accounts and credentials under
+`/var/lib/sss` and logs under `/var/log/sssd`. In the hidden session these
+writes land in the upper on the hidden volume. The decoy's own sssd, stopped
+before the switch and started again after the way back, logs both under
+`/var/log/sssd` on the decoy disk by default, as at any shutdown and boot.
+
+NAILS is not tested on decoys joined to a domain, and no VM test runs a domain
+controller. `nails check` and activation warn (`decoy-persistence`) while sssd
+is in use on the decoy:
+
+- one of its service units is active, or one of its daemons runs (`sssd`, or
+  a responder or back end named `sssd_<name>`);
+- its Kerberos ticket cache may listen: the socket file
+  `/run/.heim_org.h5l.kcm-socket` (`sssd-kcm.socket`) is in place, and PID 1's
+  socket table, `/proc/1/net/unix`, lists a socket listening on it in either
+  of two reads, cannot be read, or does not begin with the header the kernel
+  writes. That table lists the sockets of the network namespace systemd runs
+  in, whichever one `nails check` runs in. It is read twice because it is no
+  snapshot: the kernel writes it a page at a time, and a socket closed between
+  two pages can make one read skip a line. Where `/proc` hides other users'
+  processes from an unprivileged `nails check`, the table cannot be read, and
+  the warning says that `nails check` run with sudo can tell. That socket is
+  where every ticket cache of the KCM kind listens, Heimdal's among them, so
+  it does not count either on a decoy that is not NixOS where no unit file of
+  `sssd-kcm.socket` can be in `/etc/systemd/system.control`,
+  `/run/systemd/system.control`, `/run/systemd/transient`,
+  `/run/systemd/generator.early`, `/etc/systemd/system`,
+  `/etc/systemd/system.attached`, `/run/systemd/system`,
+  `/run/systemd/system.attached`, `/run/systemd/generator`,
+  `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system`,
+  `/lib/systemd/system` or `/run/systemd/generator.late`, and a process whose
+  name (`comm`) is `kcm` runs as root in PID 1's mount namespace, as Heimdal's
+  KCM daemon does. A directory a link leads to, or one a lookup on the way to
+  fails, can hold one, since the check follows no link: so on a merged `/usr`,
+  where `/lib` is a link, and on NixOS a socket something listens on always
+  counts. Any process can take that name, so root is read from the real and
+  effective user on the `Uid:` line of its status, and a root process in a
+  container without a user namespace of its own runs in a mount namespace
+  other than PID 1's. A socket file that the table shows nothing listening on,
+  which a stopped socket leaves until the next boot, does not count;
+- `/var/lib/sss` holds one of nine files sssd writes when it runs: its two
+  configuration databases (`db/config.ldb`, `db/config_kcm.ldb`), the four
+  memory caches of its NSS responder (`mc/passwd`, `mc/group`,
+  `mc/initgroups`, `mc/sid`), the database of its Kerberos ticket cache
+  (`secrets/secrets.ldb`) and the sockets of its NSS and PAM responders
+  (`pipes/nss`, `pipes/pam`). Only root can see some of them, so run
+  `nails check` with sudo to see them all.
+
+The probes read file metadata and `/proc`, `/run` and `/sys`, never a file or
+a directory listing on the decoy disk, so no access time there changes. That is
+also why the check looks for those nine files by name: sssd keeps more under
+`/var/lib/sss`, such as the cache of each domain, named after the domain, and
+finding those would take a listing of its directories. Fedora 44 Cloud enables
+`sssd-kcm.socket` by default, so a decoy made from it warns even when it is not
+joined to a domain.
+
+Use a decoy that is not joined to a domain. Where nothing on the decoy needs
+sssd, disable it, then delete the nine state files the warning looks for:
+
+```bash
+sudo systemctl disable --now sssd.service
+sudo systemctl disable --now sssd-kcm.socket
+sudo rm -f /var/lib/sss/db/config.ldb /var/lib/sss/db/config_kcm.ldb \
+  /var/lib/sss/mc/passwd /var/lib/sss/mc/group /var/lib/sss/mc/initgroups \
+  /var/lib/sss/mc/sid /var/lib/sss/secrets/secrets.ldb \
+  /var/lib/sss/pipes/nss /var/lib/sss/pipes/pam
+```
+
+Skip the second command where `sssd-kcm.socket` does not exist: Debian and
+Ubuntu install it only with the `sssd-kcm` package. Keep the two commands
+apart: systemd before 257 refuses a `disable` that names a unit it does not
+have and leaves every unit as it was. On NixOS the configuration owns the
+units, so `systemctl disable` cannot change them: set `services.sssd.enable`
+and `services.sssd.kcm` to `false` and run `nixos-rebuild switch` in place of
+the two `systemctl` commands.
+
+Stopping sssd leaves those of the nine it wrote in place until they are deleted,
+and each of them keeps the warning, so the warning names the ones it finds and
+the `rm` that deletes them. The socket file stays in `/run` until the next boot,
+but once `sssd-kcm.socket` is stopped, PID 1's socket table shows nothing
+listening on it and it no longer counts, so nothing here deletes it. Where that
+table cannot be read, the socket file counts until the next boot. Another daemon
+listening on that socket, such as Heimdal's `kcm`, keeps it counting unless the
+check rules sssd's unit out as above. The rest of sssd's state under
+`/var/lib/sss`, such as the cache of each domain, neither keeps the warning nor
+goes with that `rm`: the warning can clear while it is still on the decoy disk.
+Deleting the nine files once sssd is stopped is safe: sssd builds its
+configuration databases again from `sssd.conf` at every start, and makes its
+memory caches, its sockets and an empty ticket database anew. What is lost is
+the Kerberos tickets its ticket cache kept, which nothing reaches while
+`sssd-kcm` is off. On Fedora, turning `sssd-kcm` off also turns off the ticket
+cache that `kinit` uses by default.
 
 ## Session-time records
 
@@ -545,12 +800,12 @@ Disable VeraCrypt's history, harden the decoy shell history (see
 
 ## Residue catalog
 
-Generated from `nails-forensics/src/residue_catalog/rows.rs`; do not edit the
-tables by hand. A unit test fails when they drift; regenerate them with
+Generated from the rows under `nails-forensics/src/residue_catalog/rows/`; do
+not edit the tables by hand. A unit test fails when they drift; regenerate them with
 `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`.
 
 A row with "none" in the pre-flight or verify column says why nothing at that
-point can see the class; verify lists those classes among the areas it did not
+point checks the class; verify lists those classes among the areas it did not
 check. A row with "none" in the VM-test column says why no VM test asserts it.
 
 ### Session residue
@@ -566,7 +821,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
-| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, send other core dumps nowhere persistent, and disarm kdump on the decoy. | `examiner-audit` |
+| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, and send other core dumps nowhere persistent. | `examiner-audit` |
+| [Armed kdump](#fail-closed-activation-is-refused) (`kdump`) | `/var/crash` | all | `decoy-persistence` (refuses) | none: the crash-dumps row probes /var/crash, where kdump writes its dumps | Disable kdump on the decoy (Ubuntu: kdump-tools, Fedora: kdump). | none: a VM test would have to reserve crash kernel memory and panic the guest kernel; the refusal is unit tested |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
@@ -576,9 +832,9 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes the runtime journal and logind's session state whole, and whatever else the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry; it puts the decoy's name-server records below /run/resolvconf back, gives the decoy's utab lines back to the mounts it restores, under their new mount IDs, and never touches sockets or /run/udev. | `session-lifecycle`, `session-emergency`, `session-dns-records` |
 | [An interrupted entry's runtime files in /run](threat-model.md#residual-channels) (`interrupted-entry`) | an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in | all | `session-state` (refuses) | `session-leftovers` | The transition drop-in is installed before the next root is populated, so an unarmed entry is disarmed by any soft-reboot; `nails recover` removes the leftovers. | `session-interrupted-entry` |
 | [Hidden kernel records imported by the decoy journal](threat-model.md#residual-channels) (`kmsg-import`) | journald reads /dev/kmsg from its stored sequence number after every soft-reboot | all | `decoy-persistence` | `journal-scan` | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `soft-reboot-mechanics` |
-| [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state across the switch, so the links, addresses, routes, policy-routing rules, firewall tables and network settings the hidden session set up, and any MAC address or hostname it changed, are still live when the way back begins | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | A deactivate or a plain emergency puts most of it back on its own. Stop VPN apps, containers and virtual machines in the session before you deactivate (wg-quick down, nmcli connection down, the app's own disconnect), keep nftables installed on the decoy so the way back sees the firewall tables, and end the session with `--poweroff` when none of its network state may reach the decoy. | `session-dns-records`, `session-nixos-hidden-system` |
+| [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state across the switch, so the links, addresses, routes, policy-routing rules, firewall tables and network settings the hidden session set up, and any MAC address or hostname it changed, are still live when the way back begins | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | A deactivate or a plain emergency puts most of it back on its own. Stop VPN apps, containers and virtual machines in the session before you deactivate (wg-quick down, nmcli connection down, the app's own disconnect), keep nftables installed on the decoy so the way back sees the firewall tables, and end the session with `--poweroff` when none of its network state may reach the decoy. | `session-dns-records`, `session-nixos-hidden-system`, `session-mac-restore` |
 | [Soft-reboot counter and boot ID](threat-model.md#residual-channels) (`soft-reboot-counter`) | SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl | all | none: kernel and PID 1 state, not a file | none: RAM only, gone at power-off | Power off after the session; keep the decoy journal volatile. | `soft-reboot-mechanics` |
-| [Login and boot records around a switch](threat-model.md#residual-channels) (`login-boot-records`) | the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records) | all | none: the records are written by the decoy's own units after the switch, not before it | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. The process numbers of the records written after the way back still continue from the decoy's boot; only ending the session with --poweroff, which has no way back, leaves none of them. | none: asserted against a power cycle past five minutes of uptime by the cross-distro login- and boot-record test under nix/distro-tests (Debian 13 and Ubuntu 24.04), run on a KVM host outside the NixOS e2e suite |
+| [Login and boot records around a switch](threat-model.md#residual-channels) (`login-boot-records`) | the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records) | all | none: the records are written by the decoy's own units after the switch, not before it | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. As its last step before the decoy starts, the way back also sets the kernel's process-number counter back: the entry records the number the decoy's boot gave its getty (else logind), the hidden session's own start shows how many numbers a start uses up to its copy of it, and the counter goes that many below. Where the getty is what it measures by, the decoy's getty gets about the number its own boot gave it, as far as the hidden start runs about as many processes up to its getty as the decoy's does. A getty or logind started more than a minute after the oldest process of its start that still runs, such as a getty started again after a logout, is passed over. When the getty is passed over, the measure goes by logind, or, without logind either, the counter goes to just below the lowest number the decoy's own userspace held at entry, and no test checks where the getty lands then. The decoy's other units are not measured. That step is best effort: where it cannot write the counter, deactivate warns before the switch and the numbers continue from the decoy's boot, and where it has neither a getty nor logind to measure by, deactivate warns as well; only ending the session with --poweroff, which has no way back, leaves none of them then. | none: asserted against a power cycle past five minutes of uptime by the cross-distro login- and boot-record test under nix/distro-tests (Debian 13 and Ubuntu 24.04), run on a KVM host outside the NixOS e2e suite; the process numbers of the getty and its records after the way back, in a first session and in a second one beside a unit every soft-reboot leaves running, are asserted against two fresh boots by the NixOS test session-fresh-pids |
 | [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) (`decoy-mount-table`) | the mount table after the way back: the decoy's mounts made again with new mount IDs and peer groups, its root and its initrd's mounts (the store bind) included; /run/credentials a mount of its own; the boot's mounts below /run gone | all | none: the mount table is kernel state; activation warns about a decoy mount the way back cannot make again at a place the session carries, and about one a plain soft-reboot keeps | none: RAM only, gone at power-off | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | `session-decoy-mount-table`, `session-emergency` |
 | [EFI NVRAM, RTC and firmware pstore](threat-model.md#invariant) (`firmware-state`) | EFI variables, the real-time clock, firmware-backed pstore | all | none: not filesystem state, so nothing on the decoy root shows it | none: EFI variables and firmware storage are not part of a disk image | NAILS never writes NVRAM; avoid firmware tools inside the session. | `uefi-esp-nvram-invariant` |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) (`ram-remanence`) | DRAM contents until power-off | all | `memory-wipe` | `memory-swap` | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | none: memory forensics is out of scope; no VM test images RAM |
@@ -592,6 +848,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Snapper timeline snapshots](#session-time-records) (`snapper-timeline`) | `/.snapshots`, `/var/lib/snapper` | all | path probe (info) | path probe (info) | Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity. | none: asserted on a btrfs decoy with snapper by the cross-distro forensic probe once those images boot |
 | [Copy-on-write and compressed storage history](threat-model.md#residual-channels) (`btrfs-cow-history`) | old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs, zfs or an f2fs mount with compression | all | none: a copy-on-write or compressed decoy is a property of the decoy's own storage, not a session write | none: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean: a mounted one (a zfs dataset included) by its mount, an image or an unmounted device by its superblock, and a whole disk partition by partition, where an encrypted partition, or one on which no filesystem is identified, is not checked either | Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean. | none: the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems |
 | [Fedora GRUB boot-success state](#session-time-records) (`grubenv-boot-success`) | `/boot/grub2/grubenv`, `/boot/efi/EFI/fedora/grubenv` | Fedora | none: Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it | path probe (info) | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | none: asserted on the Fedora decoy by the cross-distro forensic probe once its image boots |
+| [Pending offline update](#pending-offline-updates) (`pending-offline-update`) | systemd's offline updates: a /system-update or /etc/system-update link to a staged update makes the next start of the service manager, a soft-reboot's included, start system-update.target instead of the default target | all | `pending-offline-update` (refuses) | none: a link staged on the decoy is on the decoy disk, where a scan sees it, but it is the decoy's own state, not a trace of a session; a link a session staged sits in the upper on the hidden volume, where the next activation finds it and refuses | Activation refuses while a link is staged on the decoy or in the upper: install or cancel the decoy's pending update before activating, and delete a link a session staged with `nails discard`. | `preflight-checks` |
+| [sssd and the domain controller's records](#decoys-joined-to-a-domain) (`sssd-domain-records`) | the domain controller's own records of the logins and account lookups sssd makes on a decoy joined to a domain, and sssd's caches under /var/lib/sss and logs under /var/log/sssd | all | `decoy-persistence` | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: no VM test runs a domain controller; the warning is unit-tested |
 <!-- residue-catalog:end session -->
 
 ### Setup traces

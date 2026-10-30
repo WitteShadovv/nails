@@ -1,0 +1,144 @@
+Package: base-files
+Essential: yes
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 362
+Maintainer: base-files maintainers <base-files@packages.debian.org>
+Architecture: amd64
+Multi-Arch: foreign
+Version: 13.8
+Replaces: base, dpkg (<= 1.15.0), miscutils
+Provides: base
+Pre-Depends: awk
+Breaks: debian-security-support (<< 2019.04.25), initscripts (<< 2.88dsf-13.3), sendfile (<< 2.1b.20080616-5.2~)
+Conffiles:
+ /etc/debian_version 4ec5d5d4e5b6a7f0b0cc7a7e36c6f6b8
+ /etc/dpkg/origins/debian c47b6815f67ad1aeccb0d4529bd0b990
+ /etc/issue 6fd1b1a6d0f4f3a6b1e8b7f1d0b2c3d4
+Description: Debian base system miscellaneous files
+ This package contains the basic filesystem hierarchy of a Debian system, and
+ several important miscellaneous files, such as /etc/debian_version,
+ /etc/host.conf, /etc/issue, /etc/motd, /etc/profile, and others,
+ and the text of several common licenses in use on Debian systems.
+
+Package: libc6
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 12989
+Maintainer: GNU Libc Maintainers <debian-glibc@lists.debian.org>
+Architecture: amd64
+Multi-Arch: same
+Source: glibc
+Version: 2.41-12
+Depends: libgcc-s1
+Recommends: libidn2-0 (>= 2.0.5~)
+Suggests: glibc-doc, debconf | debconf-2.0, libc-l10n, locales, libnss-nis, libnss-nisplus
+Breaks: aide (<< 0.17.3-4+b3), busybox (<< 1.30.1-6)
+Conffiles:
+ /etc/ld.so.conf.d/x86_64-linux-gnu.conf d4e7a7b88a71b5ffd9e2644e71a0cfab
+Description: GNU C Library: Shared libraries
+ Contains the standard libraries that are used by nearly all programs on
+ the system. This package includes shared versions of the standard C library
+ and the standard math library, as well as many others.
+Homepage: https://www.gnu.org/software/libc/libc.html
+
+Package: libc6
+Status: install ok installed
+Priority: optional
+Section: libs
+Installed-Size: 12340
+Maintainer: GNU Libc Maintainers <debian-glibc@lists.debian.org>
+Architecture: i386
+Multi-Arch: same
+Source: glibc
+Version: 2.41-12
+Depends: libgcc-s1
+Description: GNU C Library: Shared libraries
+ Contains the standard libraries that are used by nearly all programs on
+ the system.
+
+Package: openssh-client
+Status: install ok installed
+Priority: standard
+Section: net
+Installed-Size: 5004
+Maintainer: Debian OpenSSH Maintainers <debian-ssh@lists.debian.org>
+Architecture: amd64
+Multi-Arch: foreign
+Source: openssh
+Version: 1:10.0p1-7
+Replaces: openssh-sk-helper, ssh, ssh-krb5
+Provides: ssh-client
+Depends: adduser, passwd, libc6 (>= 2.38), libedit2 (>= 2.11-20080614-4), libfido2-1 (>= 1.8.0), libgssapi-krb5-2 (>= 1.17), libselinux1 (>= 3.1~), libssl3t64 (>= 3.5.0), libz3-4 (>= 4.8.12), zlib1g (>= 1:1.1.4)
+Recommends: xauth
+Suggests: keychain, libpam-ssh, monkeysphere, ssh-askpass
+Conflicts: sftp
+Conffiles:
+ /etc/ssh/ssh_config 3ab7a1e7e7a4fbd96d3d4b4a5d1f5c2a
+Description: secure shell (SSH) client, for secure access to remote machines
+ This is the portable version of OpenSSH, a free implementation of
+ the Secure Shell protocol as specified by the IETF secsh working
+ group.
+ .
+ Ssh (Secure Shell) is a program for logging into a remote machine
+ and for executing commands on a remote machine.
+Homepage: https://www.openssh.com/
+
+Package: cryptsetup-bin
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 470
+Maintainer: Debian Cryptsetup Team <pkg-cryptsetup-devel@alioth-lists.debian.net>
+Architecture: amd64
+Source: cryptsetup
+Version: 2:2.7.5-2
+Depends: libblkid1 (>= 2.17.2), libc6 (>= 2.38), libcryptsetup12 (>= 2:2.7)
+Description: disk encryption support - command line tools
+ Cryptsetup provides an interface for configuring encryption on block
+ devices (such as /home or swap partitions), using the Linux kernel
+ device mapper target dm-crypt.
+Homepage: https://gitlab.com/cryptsetup/cryptsetup
+
+Package: man-db
+Status: install ok triggers-pending
+Priority: standard
+Section: doc
+Installed-Size: 2786
+Maintainer: man-db maintainers <man-db@packages.debian.org>
+Architecture: amd64
+Version: 2.13.1-1
+Triggers-Pending: /usr/share/man
+Description: tools for reading manual pages
+ This package provides the man command, the primary way of examining the
+ system help files.
+
+Package: rsyslog
+Status: deinstall ok config-files
+Priority: optional
+Section: admin
+Installed-Size: 1888
+Maintainer: rsyslog maintainers <rsyslog@packages.debian.org>
+Architecture: amd64
+Version: 8.2504.0-1
+Config-Version: 8.2504.0-1
+Conffiles:
+ /etc/rsyslog.conf 4b8b9df0c84c0a8de5e8d26bd9e0b9fb
+Description: reliable system and kernel logging daemon
+ Rsyslog is a multi-threaded implementation of syslogd.
+
+Package: nano
+Status: install reinstreq half-installed
+Priority: important
+Section: editors
+Architecture: amd64
+Version: 8.4-1
+Description: small, friendly text editor inspired by Pico
+
+Package: popularity-contest
+Status: purge ok not-installed
+Priority: optional
+Section: misc
+Architecture: all

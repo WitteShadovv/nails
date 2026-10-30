@@ -14,7 +14,7 @@
 
 use super::RealFilesystem;
 use crate::NailsError;
-use crate::filesystem::{Filesystem, MockFilesystem};
+use crate::filesystem::{Filesystem, MockFilesystem, MountRoot};
 use std::fs;
 use std::path::Path;
 
@@ -699,6 +699,42 @@ fn device_id_names_the_filesystem_of_the_resolved_path() {
 }
 
 #[test]
+fn inode_names_the_file_a_path_leads_to_and_none_where_nothing_is() {
+    use std::os::unix::fs::MetadataExt;
+
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("probe");
+    fs::write(&file, "x").unwrap();
+    let link = temp_dir.path().join("link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let hard = temp_dir.path().join("hard");
+    fs::hard_link(&file, &hard).unwrap();
+
+    let expected = fs::metadata(&file).unwrap().ino();
+    assert_eq!(fs.inode(&file).unwrap(), Some(expected));
+    // A symlink is followed, and a hard link is the same file.
+    assert_eq!(fs.inode(&link).unwrap(), Some(expected));
+    assert_eq!(fs.inode(&hard).unwrap(), Some(expected));
+    assert_eq!(fs.inode(&temp_dir.path().join("missing")).unwrap(), None);
+
+    // A namespace file names its namespace, which a thread shares with its
+    // process.
+    let mnt = fs.inode(Path::new("/proc/self/ns/mnt")).unwrap();
+    assert!(mnt.is_some());
+    assert_eq!(
+        fs.inode(Path::new("/proc/thread-self/ns/mnt")).unwrap(),
+        mnt
+    );
+
+    // A lookup through a file is an error, not a missing path.
+    let below_file = file.join("child");
+    let (path, err) = io_error(fs.inode(&below_file));
+    assert_eq!(path, below_file);
+    assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+}
+
+#[test]
 fn supports_symlinks_reports_a_missing_directory_as_an_error() {
     let fs = RealFilesystem;
     let temp_dir = tempfile::tempdir().unwrap();
@@ -1035,4 +1071,61 @@ fn secure_delete_dir_all_wipes_the_contents_even_when_the_directory_stays() {
     );
     assert!(dir.is_dir());
     assert!(!dir.join("secret").exists());
+}
+
+#[test]
+fn a_range_of_a_file_is_read_without_its_access_time_or_a_link() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rpmdb.sqlite");
+    fs::write(&path, b"0123456789").unwrap();
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    fs::File::open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_accessed(old))
+        .unwrap();
+    let atime = || {
+        let meta = fs::metadata(&path).unwrap();
+        (meta.atime(), meta.atime_nsec())
+    };
+    let before = atime();
+
+    let real = RealFilesystem;
+    assert_eq!(real.read_file_range(&path, 2, 3).unwrap(), b"234");
+    // A range past the end gives what the file holds of it.
+    assert_eq!(real.read_file_range(&path, 8, 10).unwrap(), b"89");
+    assert_eq!(real.read_file_range(&path, 20, 1).unwrap(), b"");
+    assert_eq!(atime(), before);
+
+    // A link is not followed.
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    let error = real.read_file_range(&link, 0, 1).unwrap_err();
+    assert!(error.to_string().contains("Failed to read file"), "{error}");
+}
+
+#[test]
+fn the_kernel_says_a_plain_directory_is_no_mount_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = RealFilesystem;
+    // A kernel without the attribute (before 5.8) does not say.
+    assert!(matches!(
+        real.mount_root(dir.path()).unwrap(),
+        MountRoot::Entry(Some(false) | None)
+    ));
+    assert!(matches!(
+        real.mount_root(Path::new("/")).unwrap(),
+        MountRoot::Entry(Some(true) | None)
+    ));
+    assert!(real.mount_root(&dir.path().join("missing")).is_err());
+}
+
+#[test]
+fn a_link_to_a_mount_point_is_no_mount_point_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("root");
+    std::os::unix::fs::symlink("/", &link).unwrap();
+    // A link is one, never the mount point it leads to.
+    assert_eq!(RealFilesystem.mount_root(&link).unwrap(), MountRoot::Link);
 }

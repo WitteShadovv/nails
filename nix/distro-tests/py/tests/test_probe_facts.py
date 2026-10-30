@@ -132,18 +132,46 @@ SourcePath=
 FEDORA_TOOLS = """\
 systemctl: /usr/bin/systemctl
 ip: /usr/bin/ip
+iw:
+nft: /usr/bin/nft
 cryptsetup:
 veracrypt:
 kill: /usr/bin/kill
 """
 
+FEDORA_SYSTEMD = "systemd 259 (259.5-1.fc44)\n"
+
+ARCH_SYSTEMD = "systemd 262 (262-1-arch)\n"
+
+# Fedora journald reads its vendor file, which documents persistent and sets
+# nothing. Arch journald reads a journald.conf in /etc that documents the same,
+# and Arch has no vendor file.
 FEDORA_JOURNALD = """\
 # /usr/lib/systemd/journald.conf
 # /etc/ if the original file is shipped in /usr/), or by creating "drop-ins" in
+[Journal]
 #Storage=persistent
 /run/log/journal
 /var/log/journal
 """
+
+FEDORA_JOURNALD_VENDOR = """\
+[Journal]
+#Storage=persistent
+"""
+
+ARCH_JOURNALD = """\
+# /etc/systemd/journald.conf
+# /etc/ if the original file is shipped in /usr/), or by creating "drop-ins" in
+[Journal]
+#Storage=persistent
+/run/log/journal
+/var/log/journal
+"""
+
+ARCH_JOURNALD_VENDOR = (
+    "grep: /usr/lib/systemd/journald.conf: No such file or directory\n"
+)
 
 FEDORA_MASKED = """\
 serial-getty@hvc0.service  masked disabled
@@ -165,6 +193,17 @@ class QueriesTest(unittest.TestCase):
     def test_cold_boot_labels_are_unique(self) -> None:
         labels = [label for label, _ in pf.cold_boot_queries("fedora")]
         self.assertEqual(len(labels), len(set(labels)))
+
+    def test_the_tools_include_those_of_the_network_record_and_way_back(
+        self,
+    ) -> None:
+        # The entry records the decoy's firewall tables with nft. The way back
+        # deletes the tables a session added with nft, its Wi-Fi interfaces
+        # with iw and its links with ip.
+        tools = dict(pf.cold_boot_queries("arch"))["tools"]
+        for tool in ("ip", "iw", "nft"):
+            self.assertIn(tool, pf.TOOLS)
+            self.assertIn(f" {tool} ", tools)
 
     def test_rpm_is_queried_on_fedora_only(self) -> None:
         self.assertIn("rpm", dict(pf.cold_boot_queries("fedora")))
@@ -585,25 +624,8 @@ class ImageFactsTest(unittest.TestCase):
             {
                 "systemctl": "/usr/bin/systemctl",
                 "ip": "/usr/bin/ip",
+                "nft": "/usr/bin/nft",
                 "kill": "/usr/bin/kill",
-            },
-        )
-
-    def test_journald_default_from_the_vendor_comment(self) -> None:
-        self.assertEqual(
-            pf.parse_journald(FEDORA_JOURNALD),
-            {"storage": "persistent", "sources": []},
-        )
-
-    def test_journald_setting_wins_with_its_file(self) -> None:
-        out = FEDORA_JOURNALD + (
-            "# /etc/systemd/journald.conf.d/50-volatile.conf\nStorage=volatile\n"
-        )
-        self.assertEqual(
-            pf.parse_journald(out),
-            {
-                "storage": "volatile",
-                "sources": ["/etc/systemd/journald.conf.d/50-volatile.conf"],
             },
         )
 
@@ -657,6 +679,263 @@ class ImageFactsTest(unittest.TestCase):
         out = "1a000a8e-fa19-46b8-af38-c098712a40e9\n1\n"
         self.assertEqual(pf.soft_reboots(out), 1)
         self.assertIsNone(pf.soft_reboots(None))
+
+
+class JournaldTest(unittest.TestCase):
+    """``Storage=``, in the order nails-core's journald_storage.rs resolves it."""
+
+    DROP_IN = "/etc/systemd/journald.conf.d/50-volatile.conf"
+
+    def storage(
+        self,
+        config: str = ARCH_JOURNALD,
+        vendor: str = ARCH_JOURNALD_VENDOR,
+        credential: str = "",
+        version: str | None = "systemd 259 (259)",
+    ) -> str | None:
+        found = pf.parse_journald(config, vendor, credential, version)
+        storage = found["storage"]
+        assert storage is None or isinstance(storage, str)
+        return storage
+
+    def test_systemd_version(self) -> None:
+        self.assertEqual(pf.systemd_version(FEDORA_SYSTEMD), FEDORA_SYSTEMD.strip())
+        self.assertEqual(pf.systemd_major(FEDORA_SYSTEMD.strip()), 259)
+        self.assertEqual(pf.systemd_major(ARCH_SYSTEMD.strip()), 262)
+        self.assertEqual(pf.systemd_major("systemd 260~rc1 (260~rc1-1)"), 260)
+        missing = "bash: line 1: systemctl: command not found\n"
+        self.assertIsNone(pf.systemd_version(missing))
+        self.assertIsNone(pf.systemd_version(None))
+        self.assertIsNone(pf.systemd_major(None))
+
+    def test_the_vendor_default_of_fedora(self) -> None:
+        self.assertEqual(
+            pf.parse_journald(
+                FEDORA_JOURNALD, FEDORA_JOURNALD_VENDOR, "", FEDORA_SYSTEMD.strip()
+            ),
+            {
+                "storage": "persistent",
+                "sources": [],
+                "credential": None,
+                "vendorHint": "persistent",
+            },
+        )
+
+    def test_the_version_default_of_arch(self) -> None:
+        self.assertEqual(
+            pf.parse_journald(
+                ARCH_JOURNALD, ARCH_JOURNALD_VENDOR, "", ARCH_SYSTEMD.strip()
+            ),
+            {
+                "storage": "persistent",
+                "sources": [],
+                "credential": None,
+                "vendorHint": None,
+            },
+        )
+
+    def test_a_comment_outside_the_vendor_file_documents_nothing(self) -> None:
+        # Arch's /etc/systemd/journald.conf documents a default too, but only
+        # the vendor file's comment counts, and Arch has none: the version's
+        # default decides, whatever the /etc comment says.
+        etc = ARCH_JOURNALD.replace("#Storage=persistent", "#Storage=volatile")
+        self.assertEqual(self.storage(etc, version="systemd 258 (258)"), "auto")
+        self.assertEqual(self.storage(etc), "persistent")
+        found = pf.parse_journald(etc, ARCH_JOURNALD_VENDOR, "", "systemd 259 (259)")
+        self.assertIsNone(found["vendorHint"])
+
+    def test_the_vendor_hint_replaces_the_default_from_259_only(self) -> None:
+        kept_auto = "[Journal]\n#Storage=auto\n"
+        self.assertEqual(self.storage(vendor=kept_auto), "auto")
+        self.assertEqual(
+            self.storage(vendor="", version="systemd 262 (262)"), "persistent"
+        )
+        documented = "[Journal]\n#Storage=persistent\n"
+        self.assertEqual(
+            self.storage(vendor=documented, version="systemd 258 (258)"), "auto"
+        )
+
+    def test_the_vendor_hint_is_the_last_commented_storage_under_journal(self) -> None:
+        vendor = (
+            "#Storage=volatile\n"
+            "[Journal]\n"
+            "#Storage=none\n"
+            "  ; Storage = auto\n"
+            "#Storage=bogus\n"
+            "[Other]\n"
+            "#Storage=volatile\n"
+        )
+        self.assertEqual(pf.vendor_hint(vendor), "auto")
+        # A value the vendor file sets is a setting, read from cat-config, and
+        # no hint.
+        self.assertIsNone(pf.vendor_hint("[Journal]\nStorage=volatile\n"))
+        self.assertIsNone(pf.vendor_hint(ARCH_JOURNALD_VENDOR))
+        self.assertIsNone(pf.vendor_hint(None))
+
+    def test_a_setting_in_a_file_decides_with_its_file(self) -> None:
+        config = FEDORA_JOURNALD + f"# {self.DROP_IN}\n[Journal]\nStorage=volatile\n"
+        for version in (FEDORA_SYSTEMD.strip(), None):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    pf.parse_journald(config, FEDORA_JOURNALD_VENDOR, "none", version),
+                    {
+                        "storage": "volatile",
+                        "sources": [self.DROP_IN],
+                        "credential": "none",
+                        "vendorHint": "persistent",
+                    },
+                )
+
+    def test_only_a_value_journald_takes_under_journal_sets_storage(self) -> None:
+        config = (
+            "# /etc/systemd/journald.conf\n"
+            "Storage=volatile\n"
+            "[Journal]\n"
+            "Storage = persistent\n"
+            f"# {self.DROP_IN}\n"
+            "[Journal]\n"
+            "Storage=\n"
+            "Storage=Volatile\n"
+            'Storage="none"\n'
+            "Storage=volatile # a comment journald does not have\n"
+            "[Other]\n"
+            "Storage=none\n"
+        )
+        self.assertEqual(
+            pf.journald_settings(config),
+            ("persistent", ["/etc/systemd/journald.conf"]),
+        )
+        # Each file starts outside any section.
+        split = "# /a.conf\n[Journal]\n# /b.conf\nStorage=volatile\n"
+        self.assertEqual(pf.journald_settings(split), (None, []))
+
+    def test_a_section_header_journald_refuses_ends_the_reading(self) -> None:
+        # journald keeps what it read before such a header and reads nothing
+        # after it, in that file or a later one.
+        main = "/etc/systemd/journald.conf"
+        later = "/etc/systemd/journald.conf.d/60-auto.conf"
+
+        def config(header: str) -> str:
+            return (
+                f"# {main}\n[Journal]\nStorage=persistent\n"
+                f"# {self.DROP_IN}\n[Journal]\nStorage=volatile\n"
+                f"{header}\nStorage=none\n"
+                f"# {later}\n[Journal]\nStorage=auto\n"
+            )
+
+        for header in (
+            "[Journal",
+            # journald has no trailing comments.
+            "[Journal] # a comment",
+            "[",
+            "[Jour\tnal]",
+            "[Jour\x01nal]",
+            "[Jour\x7fnal]",
+            '[Jour"nal]',
+            "[Jour'nal]",
+            "[Jour\\nal]",
+        ):
+            with self.subTest(header=header):
+                self.assertEqual(
+                    pf.journald_settings(config(header)),
+                    ("volatile", [main, self.DROP_IN]),
+                )
+        # A header journald takes only selects a section.
+        for header in ("[Journal]", "[Other]", "[]", "[Jour nal]"):
+            with self.subTest(header=header):
+                self.assertEqual(
+                    pf.journald_settings(config(header)),
+                    ("auto", [main, self.DROP_IN, later]),
+                )
+
+    def test_a_file_that_sets_storage_twice_is_one_source(self) -> None:
+        main = "/etc/systemd/journald.conf"
+        config = (
+            f"# {main}\n[Journal]\nStorage=auto\n"
+            f"# {self.DROP_IN}\n[Journal]\nStorage=persistent\nStorage=volatile\n"
+        )
+        self.assertEqual(
+            pf.journald_settings(config), ("volatile", [main, self.DROP_IN])
+        )
+
+    def test_only_the_storage_key_itself_sets_or_documents_storage(self) -> None:
+        for key in ("XStorage", "StorageX", "storage"):
+            with self.subTest(key=key):
+                config = f"# {self.DROP_IN}\n[Journal]\n{key}=volatile\n"
+                self.assertEqual(pf.journald_settings(config), (None, []))
+                self.assertIsNone(pf.vendor_hint(f"[Journal]\n#{key}=volatile\n"))
+
+    def test_the_credential_decides_from_256_when_no_file_sets_storage(self) -> None:
+        for version, credential, expected in (
+            ("systemd 256 (256)", "volatile", "volatile"),
+            ("systemd 259 (259)", "none", "none"),
+            # journald before 256 reads no credential.
+            ("systemd 255 (255)", "volatile", "auto"),
+            # journald strips nothing, so it ignores these.
+            ("systemd 259 (259)", "volatile\n", "persistent"),
+            ("systemd 259 (259)", " volatile", "persistent"),
+            ("systemd 259 (259)", "vola\x00tile", "persistent"),
+        ):
+            with self.subTest(version=version, credential=credential):
+                found = pf.parse_journald(
+                    ARCH_JOURNALD, ARCH_JOURNALD_VENDOR, credential, version
+                )
+                self.assertEqual(found["storage"], expected)
+                self.assertEqual(found["credential"], credential)
+        config = ARCH_JOURNALD + f"# {self.DROP_IN}\n[Journal]\nStorage=auto\n"
+        self.assertEqual(self.storage(config, credential="volatile"), "auto")
+
+    def test_without_a_version_storage_fails_closed_to_persistent(self) -> None:
+        # NAILS uses neither the credential nor the vendor hint of a systemd
+        # whose version it cannot read, and takes persistent.
+        kept_auto = "[Journal]\n#Storage=auto\n"
+        self.assertEqual(self.storage(version=None), "persistent")
+        self.assertEqual(
+            self.storage(credential="volatile", version=None), "persistent"
+        )
+        self.assertEqual(self.storage(vendor=kept_auto, version=None), "persistent")
+        # A file that sets it still decides.
+        config = ARCH_JOURNALD + f"# {self.DROP_IN}\n[Journal]\nStorage=volatile\n"
+        self.assertEqual(self.storage(config, version=None), "volatile")
+
+    def test_facts_hold_the_version_and_the_storage_it_gives(self) -> None:
+        facts = pf.facts(
+            {
+                "systemd-version": FEDORA_SYSTEMD,
+                "journald": FEDORA_JOURNALD,
+                "journald-vendor": FEDORA_JOURNALD_VENDOR,
+                "journald-credential": "",
+            },
+            "fedora",
+        )
+        self.assertEqual(facts["systemdVersion"], "systemd 259 (259.5-1.fc44)")
+        self.assertEqual(facts["journaldVendorConfig"]["storage"], "persistent")
+        # A run that read the configuration but no version records the value
+        # NAILS fails closed to, beside a null systemdVersion.
+        unread = pf.facts(
+            {
+                "systemd-version": "bash: line 1: systemctl: command not found\n",
+                "journald": ARCH_JOURNALD,
+                "journald-vendor": ARCH_JOURNALD_VENDOR,
+                "journald-credential": "volatile",
+            },
+            "arch",
+        )
+        self.assertIsNone(unread["systemdVersion"])
+        self.assertEqual(
+            unread["journaldVendorConfig"],
+            {
+                "storage": "persistent",
+                "sources": [],
+                "credential": "volatile",
+                "vendorHint": None,
+            },
+        )
+        # Nothing read, nothing resolved.
+        self.assertEqual(
+            pf.facts({}, "fedora")["journaldVendorConfig"],
+            {"storage": None, "sources": [], "credential": None, "vendorHint": None},
+        )
 
 
 class RecordTest(unittest.TestCase):
@@ -790,6 +1069,10 @@ class FixtureTest(unittest.TestCase):
                 document = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(list(document), list(empty))
                 self.assertEqual(list(document["facts"]), list(empty["facts"]))
+                journald = "journaldVendorConfig"
+                self.assertEqual(
+                    list(document["facts"][journald]), list(empty["facts"][journald])
+                )
                 self.assertIsInstance(document["enforcing"], bool)
                 self.assertIsInstance(document["recorded"], bool)
 

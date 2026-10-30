@@ -212,6 +212,8 @@ pub struct StatusReport {
     pub last_activation: Option<LastActivation>,
     /// Whether the decoy keeps a persistent posture (journal, syslog).
     pub decoy_persistent: bool,
+    /// Whether kdump is armed on the decoy, or its state cannot be read.
+    pub decoy_kdump_armed: bool,
     /// The persona mode.
     pub persona_mode: PersonaMode,
     /// Why and when the last switch was refused, when it was and the record is
@@ -457,6 +459,8 @@ impl<F: Filesystem> StatusCommand<F> {
             last_activation: state_file.last_activation.clone(),
             decoy_persistent: !view.is_hidden()
                 && crate::preflight::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem),
+            decoy_kdump_armed: !view.is_hidden()
+                && crate::preflight::DecoyPersistenceCheck::decoy_kdump_armed(&self.filesystem),
             persona_mode: self.config.persona.mode,
             switch_refusal,
             opsec_reminders,

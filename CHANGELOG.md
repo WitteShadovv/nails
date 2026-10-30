@@ -166,6 +166,29 @@ of this changelog for that version becomes the release notes word for word, and
   portal without starting it. A process list still shows `nails` while the window is open: the
   helper runs as `<hidden-root>/nails helper --stdio`. Its tests run without a display, on Slint's
   testing platform.
+- `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
+  `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
+  its order and every other key stay as they were, a value already set as asked is not rewritten
+  (and then nothing is written), a new key goes after the keys of its table, or into a new table
+  below the comments that end the file, such as the template `init` writes, and a removed key's
+  comments stay. The result is checked as `config validate` checks a file before it replaces the
+  old one at once: a new file in the same directory with the old one's owner and mode (root's
+  alone for a new file), flushed and renamed over it, under a lock on the directory, so two changes
+  at the same time both land. A setting is written only on the volume the running binary lies on:
+  the directory `nails` runs from must pass the attach gate and hold the NAILS layout, and the
+  kernel refuses a link or another filesystem on the way as it opens the file, so a `--config` file
+  on any other volume, the decoy's included, a link at the file, a file with a second name and a
+  mount inside the volume are refused (exit 4) and nothing is read or written. While a hidden
+  session runs, an activation is entering one or an interrupted entry is left behind, the hidden
+  volume root and the state file point only where the session recorded them, since the way back
+  and `recover` read its state there; a change that points them back there is written. A key or
+  value the file does not take is a usage error (exit 2), a file that would not be valid is the
+  error `config` (exit 3), and Ctrl+C or a SIGTERM before the rename stops the change and removes
+  the new file (exit 130). Both take `--json`, and `docs/schemas/config.schema.json` describes
+  their data, the file named by its absolute path. `init`'s next steps name `config set`
+  inside a hidden session instead of a `.new` file moved into place, and so does the README. A new
+  fuzz target, `config_edit`, checks that an edit keeps every comment and every key it does not
+  name.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
@@ -180,6 +203,40 @@ of this changelog for that version becomes the release notes word for word, and
   kernel, so there a kernel update does not bring them back. Only root can see whether a directory
   was made anew, so an unprivileged `nails check` that needs to know says it cannot tell instead of
   passing. A decoy without `/usr/lib/modules`, such as NixOS, passes.
+- `nails check` and activation warn when hidden sessions' package database no longer follows the
+  decoy's (the `package-drift` check). A package change in a hidden session lands in the overlay
+  upper, and a later update of the decoy does not reach the record hidden sessions keep of their
+  own: dpkg's `status` file and rpm's database are copied whole at a hidden session's first change,
+  and pacman lists a package twice when a hidden session and the decoy both changed it. For dpkg the
+  check names each package the decoy installed, updated or removed since hidden sessions made their
+  copy, with its version on each side, and leaves out the packages a hidden session changed itself
+  (their files under `/var/lib/dpkg/info` in the upper show which); for pacman each package listed
+  twice, or listed without the files a hidden session deleted. For rpm it reads both SQLite
+  databases with a reader of its own (no SQLite library, no `rpm`, nothing written), the committed
+  transactions of each write-ahead log included, row by row and keeping of their packages, with the
+  links they record, no more than 256 MiB, names each package the decoy changed since as for dpkg,
+  and counts a package as a hidden session's own when the upper holds or deleted one of the files
+  the package installs, where rpm installed it through the directory links rpm's own records give
+  (Fedora records a kernel's modules below its link `/lib`, so a kernel update in a hidden session
+  counts as its own). The fix names the package manager's commands to run in a hidden session, and a
+  hidden session that deleted or replaced the database itself draws the `discard` that brings the
+  decoy's back. Activation shows the warning before it asks to log you out (unless `-y` skips the
+  question), lists it again among the warnings of its result (exit 9), and reports it to a window's
+  event stream as an `advisory` event. It never refuses. The decoy's database is read as root, with
+  `O_NOATIME`, or without root only from a filesystem mounted `noatime`, so an unprivileged `nails
+  check` that would need to read it elsewhere says it cannot tell. It also tells where it can
+  without the mount table, from the kernel's own word (`statx`) on which directories are mount
+  points, asked only of directories below no link or automount point and taking one the decoy lacks
+  for none, and passes a dpkg record whose copy holds the same bytes, whatever its format. It still
+  says it cannot tell only where no answer is possible without a trace: a symbolic link on the way
+  to the decoy's database, a database or upper that cannot be read (an rpm database or log over 4
+  GiB, one that records a path of 4096 bytes or more, or one whose packages need more than those 256
+  MiB, counts as one), links in rpm's records that make a loop or lead to such a path, an rpm
+  transaction or a dpkg run stopped half way (for dpkg's journal in `/var/lib/dpkg/updates` it names
+  the `sudo dpkg --configure -a` that finishes the run), or, without the mount table, a kernel
+  before 5.8 or a directory the kernel cannot be asked about. The Argon2id advice reads the
+  installed cryptsetup through the same dpkg and pacman readers, which now take dpkg's field names
+  in any case, as dpkg does.
 - `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
   derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the installed
   cryptsetup version. No released cryptsetup opens such a volume, and nothing outside the encrypted
@@ -204,6 +261,35 @@ of this changelog for that version becomes the release notes word for word, and
   A marker a session deleted (a whiteout in the upper) does not count. For a marker in the upper,
   which neither the decoy's updater nor an `rm` on the decoy reaches, the refusal names the
   `discard` command that deletes it, with `--allow-decoy-storage` when the run was given it.
+- `check` and activation warn (`decoy-persistence`) while sssd is in use on the decoy. NAILS is not
+  tested on a decoy joined to a domain (Active Directory, FreeIPA), whose domain controller records
+  the hidden session's logins and account lookups out of NAILS's reach; the threat model now lists
+  such decoys as out of scope. The warning names what shows sssd: an active unit or a running
+  daemon, its Kerberos ticket cache listening on its socket (`sssd-kcm.socket`, which Fedora 44
+  Cloud enables by default, so a decoy made from it warns), or one of nine files sssd writes under
+  `/var/lib/sss` when it runs. The socket counts while either of two reads of PID 1's socket table
+  lists something listening on it, or the table cannot be read, as an unprivileged `check` cannot
+  read it where `/proc` hides other users' processes; the warning then says that `check` with sudo
+  can tell. It does not count on a decoy that is not NixOS where no `sssd-kcm.socket` unit file can
+  be in any of the thirteen unit directories docs/decoy-requirements.md lists, none of them reached
+  through a link, and a process whose `comm` is `kcm` runs as root in PID 1's mount namespace, as
+  Heimdal's KCM daemon, which serves the same socket, does. So on a merged `/usr`, where `/lib` is a
+  link, and on NixOS, a socket something listens on always counts. On the decoy disk the probes read
+  only file metadata, so no access time there changes. Following its advice clears it where the
+  check can read the socket table and nothing else listens on the socket: the advice turns sssd off
+  (`systemctl disable --now`, or the `services.sssd` options on NixOS) and names the `rm` of each of
+  those nine files it finds, which would keep the warning, and never deletes the socket. The check
+  looks for the nine by name and lists no directory, so the rest of sssd's state under
+  `/var/lib/sss`, such as the cache of each domain, neither keeps the warning nor goes with that
+  `rm`. docs/decoy-requirements.md says why deleting the nine is safe.
+- The residue catalog in docs/decoy-requirements.md lists a pending offline update, with what
+  systemd's offline-update mechanism does across a soft-reboot and the way back, and sssd on a decoy
+  joined to a domain, which docs/threat-model.md also lists among its residual channels. `verify`
+  lists both among its areas not checked, each with the reason it does not report them: a scan of
+  the decoy disk sees part of each, a link staged on the decoy and the caches and logs of the
+  decoy's own sssd, but that is the decoy's own state, while a link a session staged sits in the
+  upper on the hidden volume and the domain controller keeps its records out of reach of any scan
+  of this computer.
 - `nails discard` takes `--allow-decoy-storage`, as `init`, `activate` and `check` do, for a hidden
   root that this computer's own storage seems to hold. Without it, discard refused such a root even
   when activation had accepted it, so nothing could be discarded there.
@@ -306,6 +392,10 @@ of this changelog for that version becomes the release notes word for word, and
   and after the way back the decoy lists chrony as failed until its next full reboot, which hints a
   soft-reboot happened. 26.04 remains a tested release; reboot the decoy fully after a session to
   clear it. The fault is upstream, not in NAILS.
+- Ubuntu 26.04 joins the automated distribution tests, beside Debian 13 and Ubuntu 24.04. They
+  expect chrony's known upstream failure in the hidden session and after the way back, so they show
+  when Ubuntu fixes it. Printing (CUPS), which their image does not install, is still checked by
+  hand.
 - A host that boots from a sealed composefs image is now refused even when it does not set
   `/run/ostree-booted`, recognised by its kernel command line or the composefs runtime directory.
   NAILS cannot overlay an immutable system.
@@ -373,9 +463,47 @@ of this changelog for that version becomes the release notes word for word, and
   what it would delete and confirms first; its `--json` envelope now reports the command and its
   error code as `discard`.
 - The `doctor` alias for `check` is removed. Run `check`.
+- Activation gives the root of each overlay's upper, which becomes the hidden `/` or the root of an
+  overlaid decoy filesystem such as a separate `/home`, and each directory the upper holds below it
+  on the way to the operator's home the SELinux label of the decoy directory it stands for. Without
+  them a host that runs SELinux sees the hidden `/` as `unlabeled_t`, which confined services may
+  not even look up. The labels are read from the decoy without changing anything there, not even an
+  access time, and each is written onto the hidden volume before the overlay over that upper is
+  mounted. No other directory NAILS makes on the hidden volume takes a label from the decoy, so on
+  such a host each shows as `unlabeled_t` unless the volume was relabelled, among them `root`,
+  `root/mounts/<unit>` and the work directories, which the hidden session sees through the hidden
+  volume's bind, and the hidden `/etc/nixos`, with `/etc` where `init` made it, that
+  `init --hardware-config` makes in the root upper. Where the mount table in `/proc/self/mounts`
+  lists a selinuxfs, or cannot be read while `/sys/fs/selinux` exists or `/etc/selinux/config` sets
+  `SELINUX=` or `SELINUXTYPE=`, or the host cannot be detected, a label that cannot be copied
+  refuses the activation and undoes it: a hidden volume whose filesystem
+  stores no labels, a decoy directory without one, a policy that denies the relabel, or an operator
+  without a home on the decoy, in the fresh-home persona and, once the upper holds a home for them,
+  in the shared-home persona. Elsewhere a label is copied only where the decoy has one, so a decoy
+  without labels gets the hidden root it got before. That includes a host that keeps an
+  `/etc/selinux/config` from SELinux packages installed once, or an empty `/sys/fs/selinux`, while
+  no selinuxfs is mounted: SELinux does not run there, and the activation says so in one line. `nails check` does not test this yet; see
+  docs/decoy-requirements.md.
 
 ### Fixed
 
+- Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
+  the programs that wait for logind's shutdown signal end on it before the switch, as at an
+  ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
+  unattended-upgrades shutdown helper was stopped without that signal: on Debian 13 it wrote
+  "SIGTERM or SIGHUP received" to `/var/log/unattended-upgrades/unattended-upgrades-shutdown.log`
+  on the decoy disk at every activation, a line an ordinary shutdown does not write, and on
+  Ubuntu 24.04 and 26.04 it failed (`exit-code`) when the bus stopped under it. Both wait until
+  PID 1 holds the soft-reboot's job, so meanwhile `status` shows the activation in progress and
+  `recover` leaves it alone, and activation keeps killing every interactive shell opened on the
+  decoy until then. A program that holds a shutdown block inhibitor, or a logind that does not
+  answer whether one does, makes them refuse before anything of the switch happens, and a
+  soft-reboot that logind refuses or drops (`shutdown -c`) fails the command with nothing left
+  queued. One that logind still holds past its delay is dropped and fails the command, or, on
+  systemd 256 and older, where logind cannot drop it, is enqueued with PID 1 directly. `recover`
+  refuses while an interrupted activation's soft-reboot may still come, and `emergency` on the
+  decoy drops it, or powers off at once where it may still come. `emergency` in the hidden session
+  still enqueues its soft-reboot directly, without waiting for anything.
 - Units that fail in the hidden root and have no job there are masked there, as the boot-loader
   units already were.
   On Debian 13, `systemd-remount-fs.service` failed in every hidden session, because the root
@@ -402,6 +530,25 @@ of this changelog for that version becomes the release notes word for word, and
   device (a copy that failed, a loop device with no file behind it) is reported as not scanned with
   exit 9 instead of a clean pass with exit 0, and a scan that left a device unread no longer prints
   the green "not found" headline.
+- `nails rehearse scan` reports a bare vfat, exFAT or swap image cut short as "not checked" (exit 9)
+  where it reported a clean pass (exit 0). It reads the size the boot sector or swap header
+  records, as it does for ext4, xfs and f2fs, so an image that ends before its filesystem or swap
+  area does is known to be incomplete. A boot sector or swap header that records what no such
+  filesystem has (a sector size the kernel does not take, no sector at all, a swap header of
+  another version) counts as storage the scan does not identify. An ext4 or f2fs image cut inside
+  its superblock, before its feature flags, is reported as cut short too.
+- `nails rehearse scan` reports file-level encryption and NTFS as "not checked" (exit 9) where it
+  reported a clean pass (exit 0): a raw plaintext scan cannot read what a filesystem stores
+  encrypted or compressed file by file. That covers NTFS, which can compress the files of a folder
+  marked compressed, whether an `ntfs` or `ntfs3` mount, any `fuseblk` mount (the type ntfs-3g
+  mounts NTFS as) or an NTFS image; an ext4 or f2fs with the encrypt feature (fscrypt), which the
+  scan reads from the superblock of a mounted device too; and a device that holds the folder of an
+  eCryptfs mount (an encrypted home or Private folder): the filesystem the folder lies on, or each
+  one it may lie on where the mount table does not show which, and for a `--device` also a whole
+  disk with that filesystem in a partition or a device below or above it (a loop device or a mapping
+  built on the partition), which the scan reads from sysfs. A `--device` the scan cannot place
+  against such a folder is not checked either. The scan sees an eCryptfs folder only while it is
+  mounted, and never in an `--offline` scan, which reads no mount table.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up
@@ -427,6 +574,33 @@ of this changelog for that version becomes the release notes word for word, and
   the assignments before it count and the files after it are not read, so a `Storage=volatile` in a
   later drop-in, which journald never reads, no longer lets a persistent journal pass. Like systemd,
   NAILS counts the Unicode noncharacters (U+FFFF and the like) as not valid UTF-8.
+- A journald, logind or systemd-coredump configuration with a main file or drop-in that is not a
+  regular file is no longer read as if that entry were not there. systemd lists a drop-in by its
+  name alone, so a directory with a drop-in's name shadows the drop-in of that name below it, and
+  NAILS read the one below instead. The releases then read such an entry differently: up to 259 a
+  directory stops the reading where it comes and a link to `/dev/null` reads as empty, while 260
+  and later read none of the configuration, the main file included, when a drop-in or the main
+  file is a directory, a device (`/dev/null` too), a FIFO or a socket. NAILS counts such a
+  configuration as unread whatever release runs, as the daemons read their files when they start
+  and an update can bring another release before they next do, at the latest when the decoy starts
+  again after the way back. So does a configuration with a file or drop-in directory NAILS cannot
+  read where systemd, running as root, can (an unprivileged `check` used to skip such a file):
+  `decoy-persistence` refuses an unread journald configuration and warns about an unread coredump
+  one, `sleep-policy` warns that the lid or an idle session may suspend the host and that a closed
+  lid may leave the session unlocked, and the sleep guard's `block` mode takes the lid switch. Mask
+  a vendor drop-in with an empty file, which every release reads alike. A link to a path that does
+  not exist still shadows the file below it and adds nothing, as in every release.
+- On systemd 255 and older, NAILS reads the main journald, logind and systemd-coredump
+  configuration file from `/etc` alone, as those releases do. It took the first of `/etc`, `/run`,
+  `/usr/local/lib` and `/usr/lib` that has one, as 256 and later look for it, so on Ubuntu 24.04,
+  which runs 255, a `/run/systemd/journald.conf` that sets `Storage=volatile`, with
+  `/etc/systemd/journald.conf` gone, let a decoy pass whose journald keeps its `auto` default and
+  persists to an on-disk `/var/log/journal`. When NAILS cannot read the running release, a main
+  file outside `/etc` that changes what is read leaves the configuration unread.
+- `check` no longer hangs when `/usr/lib/systemd/journald.conf`, whose commented `#Storage=` NAILS
+  takes for the vendor's default, is a FIFO, and no longer reads without end when it is a device
+  such as `/dev/zero`. A vendor file that is no regular file, or one over 1 MiB, gives no such hint,
+  so the default stays the fail-closed one.
 - A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
   equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
   activation, naming the folder, instead of passing the pre-flight check and then failing the
@@ -450,9 +624,8 @@ of this changelog for that version becomes the release notes word for word, and
   unit, a systemd template instance (such as `syslog-ng@default`), the unit `syslog.service` names on
   Debian and Ubuntu, or a bare process, so a logging daemon on the decoy can no longer slip past
   activation. It also reads the systemd 262 kernel coredump socket pattern correctly instead of
-  mis-reporting it as a raw core-dump path, warns on Ubuntu's default-enabled kdump, whose crash
-  kernel writes a dump of kernel memory and the hidden session's kernel log to `/var/crash` on the
-  decoy disk if the kernel crashes during a session, and no longer warns about `sudo` logfile or
+  mis-reporting it as a raw core-dump path, catches Ubuntu's default-enabled kdump (refused, see
+  Security), and no longer warns about `sudo` logfile or
   I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
 - The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
   when the kernel command line is silent, from the running kernel's own `/proc/config.gz` (NixOS and
@@ -509,7 +682,8 @@ of this changelog for that version becomes the release notes word for word, and
   NetworkManager does, leaves a device that was down as it was, and reads every address back. A device
   whose address it still cannot set back keeps the session's address until power-off, and nothing tells
   you so: end a session that changed a MAC address with `--poweroff` when that address must never reach
-  the decoy.
+  the decoy. A VM test checks the change on an emulated NE2000 network card, whose driver refuses it
+  in the same way, after `deactivate` and after a plain `emergency`.
 - `activate --json` and `deactivate --json` print their one envelope only once the soft-reboot (or
   the power-off) is enqueued, so it reports whether that worked. They printed a success envelope
   before enqueueing it, and a failure to enqueue it followed as a second, error envelope: a script
@@ -591,6 +765,16 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
+- An armed kdump on the decoy now refuses activation instead of only warning. If the kernel panics
+  during a hidden session, kdump's crash kernel writes a dump of the session's memory, which can hold
+  the hidden volume's key, and its kernel log to `/var/crash` on the decoy disk, outside the
+  overlay. kdump counts as armed when `/sys/kernel/kexec_crash_loaded` reads `1` or
+  `kdump-tools.service` or `kdump.service` is enabled or active, and Ubuntu arms kdump-tools by
+  default from 24.10. An enabled unit counts even when it is stopped: the soft-reboot into the
+  hidden session starts it again, and it loads the crash kernel there. A `kexec_crash_loaded` that
+  cannot be read or holds anything but `0` or `1` is refused the same way.
+  `--allow-persistent-decoy` accepts it for one run, with a warning. `nails status` shows an armed
+  kdump on the decoy, and `status --json` carries it as `decoy_kdump_armed`.
 - The hidden session masks systemd's GPT auto-generator, which mounts the partitions it finds by
   their type on the root filesystem's disk and turns on a swap partition where the fstab does not
   cover them, so the generator never mounts a decoy partition the fstab policy did not decide on. On
@@ -633,6 +817,29 @@ of this changelog for that version becomes the release notes word for word, and
   Debian 13 is among them although `last` there reads wtmpdb, which keeps no process numbers: its
   getty still writes `/var/log/wtmp`. Only a session ended with `--poweroff`, which has no way back,
   leaves none of them.
+- The way back now sets the kernel's process-number counter back, so that the decoy's getty gets
+  about the process number its own boot gave it where the way back measures by that getty. A
+  soft-reboot keeps the counter, so the getty the decoy started on the way back, and the records it
+  writes to `/var/log/wtmp`, carried numbers that continued from the decoy's boot and the hidden
+  session. Activation records the number the decoy's boot gave its getty (else logind), the hidden
+  session's own start shows how many numbers a start uses up to its copy of it, and the way back's
+  last step, once every hidden process has stopped and before the decoy starts a single unit, sets
+  `/proc/sys/kernel/ns_last_pid` that many below. That assumes a hidden start that runs about as
+  many processes up to its getty as the decoy's. The difference adds up over sessions without a
+  power-off between them. A getty or logind that started more than a minute after the oldest process
+  of its start that still runs, such as a getty started again after a logout, is passed over. When
+  the getty is passed over, the way back measures by logind, and without either the counter goes
+  just below the lowest number the decoy's own userspace held at entry. No test checks where the
+  getty lands then. A process that a soft-reboot leaves running, in a unit with
+  `SurviveFinalKillSignal=yes` or a root storage daemon, is left out of the measure, so the second
+  and later sessions without a power-off measure by the getty the last way back started, as the
+  first does by the boot's. The decoy's other units are not measured, so their numbers can land
+  further from their boot's. The step is best effort and never stops the way back. Where it cannot
+  set the counter (no number recorded, or a kernel without `CONFIG_CHECKPOINT_RESTORE`), or finds
+  neither a getty nor logind to measure by, `deactivate` warns before the switch. The forensic
+  oracle's allowlist no longer holds the getty records of the way back: in the oracle-images test
+  they now fall in the range of a fresh boot's getty and subtract like it, so a getty record of
+  another range fails the oracle again.
 - Ctrl+C at the `deactivate` and `discard` prompts cancels at once, with the cancelled notice and
   exit 130 (under `--json` the cancel envelope). The signal handlers these commands install restart
   an interrupted read, so Ctrl+C only echoed `^C` there, and a "y" typed afterwards went on. The
@@ -680,6 +887,18 @@ of this changelog for that version becomes the release notes word for word, and
   Qt 5 and whole on Qt 6, and GLib judges a language tag beyond ASCII by its own Unicode tables. Only
   regular files are read: a FIFO, socket or device in one of these places is skipped, where `check`,
   the warning and activation could hang reading it.
+- In the `fresh-home` persona, activation no longer follows a symbolic link in the upper when it
+  makes the operator's home. Where a hidden session had replaced `/home`, or a directory below it on
+  the way to the home, with a link, absolute (to `/var/home`, say) or relative, that leads out of
+  the upper, the next activation could make the home, with its mode, owner and opaque attribute,
+  wherever the link led, which can be the decoy disk. Each directory on the way is now opened in the
+  one above it without following a link and made there when it is missing, and a link, or anything
+  else that is not a directory, on the way refuses the activation, which makes nothing and names
+  it: delete the link from the upper on the hidden volume and activate again. A home already in
+  place is kept as it is, as before. A new home now takes its opaque attribute first, and it is
+  removed again when its mode or owner cannot be set either: a home whose mode or owner failed was
+  left without the attribute, and every later activation kept it, with the decoy home showing
+  through.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

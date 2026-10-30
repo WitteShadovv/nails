@@ -19,7 +19,26 @@
 # in the same boot, the hidden root opened again and a scan of the raw decoy
 # devices that runs and finds nothing. On systemd 255 (Ubuntu 24.04), which
 # reports no soft-reboot count, only the session's entry time tells the two
-# apart.
+# apart. The scenario lists the failed units on the decoy before the first
+# switch and right after each switch. Where the image table lists what the
+# image is known to fail (`knownFailedUnits`), each listing must hold exactly
+# the units listed for its phase (none before the first switch), each failed
+# with its known line, and the `platform` row of `check` must warn about every
+# unit listed; without a list they are only printed. A listing sees only what
+# is failed at that moment: a unit that failed while a switch stopped the old
+# system and that the new system started again is not in it, nor is one that
+# fails after it. After the second session, which pushes the kernel's process
+# numbers far on, the getty the decoy starts again carries a number in the
+# power-of-two range the decoy's fresh boot gave it, and logind a number below
+# the one the session pushed the counter to. Each switch goes through logind: a
+# program that blocks shutdown makes the activation refuse, a program that
+# holds the shutdown back (a delay inhibitor) keeps the first entry waiting,
+# with status showing it activating and recover leaving it alone, and one in
+# the second session holds the way back and leaves the proof of logind's
+# signal on the hidden volume. Each entry ends the decoy's unattended-upgrades
+# shutdown helper on logind's signal, as an ordinary shutdown does: the unit
+# does not fail at the switch, and neither its log on the decoy disk nor the
+# session's copy gains a stop line.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -60,8 +79,15 @@ let
     target = "/run/tools";
   };
 in
-# `entry` is one value from images.nix.
-entry:
+# `name` and `entry` are one name and value of images.nix.
+name: entry:
+let
+  # What the image is known to fail, or null, as a file the driver reads: a
+  # line in it passes through neither Nix nor a shell.
+  knownFailedUnits = pkgs.writeText "known-failed-units.json" (
+    builtins.toJSON (entry.knownFailedUnits or null)
+  );
+in
 distroVm.buildVmTest {
   inherit entry;
 
@@ -96,6 +122,15 @@ distroVm.buildVmTest {
     # The decoy's /etc/os-release ID, from the image-table entry. The scenario
     # is otherwise distribution-agnostic; this names the decoy in the log.
     os_id = "${entry.osId}"
+
+    # The entry's name in images.json, and the units its image is known to
+    # fail there (knownFailedUnits), or None to only print the failed units.
+    image_name = "${name}"
+    with open("${knownFailedUnits}") as handle:
+        known_failed = json.load(handle)
+    # Known failures that no longer happen, collected over the run and
+    # asserted at its end, so one run names every phase where one is gone.
+    gone_failures: list[str] = []
 
     ${diskForensics.pythonSetup}
 
@@ -288,6 +323,35 @@ distroVm.buildVmTest {
         prepare_boot()
 
 
+    # The decoy units whose process numbers the scenario reads at the fresh boot
+    # and after the way back. The gettys write theirs into /var/log/wtmp, and
+    # the way back measures by the getty, so theirs must fall in the range a
+    # fresh boot gives them. logind is not measured where a getty runs, and a
+    # soft-reboot starts it in another order, so its number only has to come
+    # from the counter the way back set.
+    NUMBERED_UNITS = ["systemd-logind.service", "getty@tty1.service", "serial-getty@ttyS0.service"]
+    RANGED_UNITS = ["getty@tty1.service", "serial-getty@ttyS0.service"]
+
+
+    def pid_range(pid):
+        # The power-of-two range the forensic oracle keys a process number by.
+        low = 1 << (pid.bit_length() - 1)
+        return (low, 2 * low - 1)
+
+
+    def unit_numbers(label):
+        # The main process numbers of the numbered units that run now.
+        numbers = {}
+        for unit in NUMBERED_UNITS:
+            if vm.execute(f"timeout 60 bash -c 'until systemctl is-active -q {unit}; do sleep 1; done'")[0] != 0:
+                continue
+            pid = int(vm.succeed(f"systemctl show -P MainPID {unit}").strip() or "0")
+            if pid > 0:
+                numbers[unit] = pid
+        print(f"{label}: process numbers {numbers}")
+        return numbers
+
+
     def blk_availability_stop():
         return vm.succeed("systemctl show -P ExecStop blk-availability.service").strip()
 
@@ -340,10 +404,123 @@ distroVm.buildVmTest {
             assert rc != 0, f"{where}: {gpt_auto_mask} is left: {target!r}"
 
 
-    def failed_units(where):
-        # The units failed now, for the log. Never fails.
-        _, out = vm.execute("timeout 30 systemctl --failed --no-pager", check_return=False)
-        print(f"=== failed units: {where} ===\n{out.rstrip()}")
+    def check_failed_units(where, phase=None):
+        # The units failed now. With a list, exactly the ones it names for
+        # `phase` (none before the first switch), each failed with its known
+        # line; a listed one that no longer fails is collected for the end.
+        # Without one, they are only printed.
+        failed = distro_checks.parse_failed_units(
+            vm.succeed(
+                "timeout 30 systemctl list-units --state=failed --all --plain "
+                + "--no-legend --no-pager"
+            )
+        )
+        print(f"=== failed units {where}: {', '.join(sorted(failed)) or 'none'} ===")
+        if known_failed is None:
+            return
+        expected = known_failed[phase] if phase else {}
+        unexpected, missing = distro_checks.failed_unit_mismatch(failed, expected)
+        for unit in unexpected:
+            _, out = vm.execute(
+                f"timeout 30 systemctl status --no-pager -l -n 30 {shlex.quote(unit)}",
+                check_return=False,
+            )
+            print(out.rstrip())
+        assert not unexpected, distro_checks.unexpected_failures(
+            where, image_name, unexpected
+        )
+        for unit in missing:
+            gone = distro_checks.known_failure_gone(
+                unit, where, image_name, phase, known_failed["notInImage"]
+            )
+            print(gone)
+            gone_failures.append(gone)
+        for unit in sorted(failed.intersection(expected)):
+            # What the unit logged since its latest start: the failed start
+            # must have logged the known line, so that another failure of the
+            # same unit does not pass for the known one.
+            quoted = shlex.quote(unit)
+            since = int(
+                vm.succeed(f"systemctl show -P InactiveExitTimestampMonotonic {quoted}")
+            )
+            assert since > 0, f"{unit} failed {where} without a start time"
+            messages = distro_checks.messages_since(
+                vm.succeed(f"timeout 30 journalctl -q -b -u {quoted} -o json --no-pager"),
+                since,
+            )
+            print(f"--- {unit} since its start {where}:\n" + "\n".join(messages))
+            problem = distro_checks.failure_not_known(
+                unit, where, image_name, expected[unit], messages
+            )
+            assert problem is None, problem
+
+
+    # unattended-upgrades' shutdown helper (Debian, Ubuntu) ends on logind's
+    # shutdown signal, which a switch sends as `systemctl soft-reboot` does.
+    # Stopped without it, the decoy's copy fails when the bus stops under it,
+    # or writes a stop line to its log on the decoy disk that an ordinary
+    # shutdown never writes.
+    uu_log = "/var/log/unattended-upgrades/unattended-upgrades-shutdown.log"
+    uu_stop_line = "SIGTERM or SIGHUP received"
+
+
+    def uu_stop_lines():
+        # The helper's stop lines in its log on the decoy disk; 0 without a log.
+        _, out = vm.execute(
+            f"grep -c -F {shlex.quote(uu_stop_line)} {uu_log} 2>/dev/null || true"
+        )
+        return int(out.strip() or "0")
+
+
+    def assert_uu_ended_on_logind(where):
+        # Right after an entry: the decoy's copy of the unit did not fail when
+        # the switch stopped it (the runtime journal still holds that stop).
+        out = vm.succeed(
+            "timeout 30 journalctl -b -u unattended-upgrades.service --no-pager -o cat"
+        )
+        assert "Failed with result" not in out, (
+            f"{where}: unattended-upgrades.service failed at the switch:\n{out}"
+        )
+
+
+    # A program that holds a shutdown delay inhibitor, as an updater or
+    # unattended-upgrades' helper does: once logind's shutdown signal comes, it
+    # writes the time to `seen` (the proof that the switch went through
+    # logind) and holds the switch back for `hold` seconds more.
+    delay_probe_script = "\n".join(
+        (
+            "#!/bin/sh",
+            "until busctl get-property org.freedesktop.login1 /org/freedesktop/login1 "
+            + "org.freedesktop.login1.Manager PreparingForShutdown | grep -q true; do",
+            "  sleep 0.2",
+            "done",
+            "cat /proc/uptime > \"$1\"",
+            "sleep \"$2\"",
+            "",
+        )
+    )
+
+
+    def hold_shutdown(unit, mode, command):
+        # `command` under a shutdown inhibitor of `mode`, as the unit `unit`.
+        vm.succeed(
+            f"systemd-run --unit={unit} --collect systemd-inhibit --what=shutdown "
+            + f"--mode={mode} --who={unit} --why=smoke {command}"
+        )
+        vm.wait_until_succeeds(
+            f"systemd-inhibit --list --no-pager | grep -q {unit}", timeout=30
+        )
+
+
+    def hold_shutdown_back(unit, seen, hold):
+        vm.succeed(
+            "printf %s "
+            + shlex.quote(delay_probe_script)
+            + " > /run/delay-probe"
+        )
+        vm.succeed(f"rm -f {seen}")
+        # Run by sh: /run is noexec on Debian and Ubuntu.
+        hold_shutdown(unit, "delay", f"sh /run/delay-probe {seen} {hold}")
 
 
     def assert_quiet_kernel_log(where):
@@ -454,6 +631,9 @@ distroVm.buildVmTest {
         os.remove(baseline)
         vm.start()
         prepare_boot()
+        fresh_numbers = unit_numbers("fresh boot")
+        assert "systemd-logind.service" in fresh_numbers, fresh_numbers
+        assert any(unit in fresh_numbers for unit in RANGED_UNITS), fresh_numbers
 
     with subtest("decoy-persistence preflight refuses a persistent journal"):
         # Prepare everything else first, so the only finding left is the decoy
@@ -473,6 +653,17 @@ distroVm.buildVmTest {
         # the check pass; the suite exercises the real fix.
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         vm.succeed(f"{nails_cmd} check --overlay-only")
+
+    with subtest("the platform row warns about every unit the image is known to fail"):
+        # One way only: while the list names a unit, the row warns and names
+        # it. The row never has to pass, so a warning broader than the list,
+        # or one given for another reason, is fine.
+        report = json.loads(vm.succeed(f"{nails_cmd} check --overlay-only --json"))
+        row = next((r for r in report["data"]["checks"] if r["name"] == "platform"), None)
+        print(f"platform row on {image_name}: {row}")
+        if known_failed is not None:
+            problem = distro_checks.platform_row_problem(row, known_failed, image_name)
+            assert problem is None, problem
 
     with subtest("blk-availability.service runs on the decoy as lvm2 ships it"):
         # The image's own unit where lvm2 is installed (Ubuntu). Debian's
@@ -517,6 +708,19 @@ distroVm.buildVmTest {
         )
         assert_gpt_auto_masked("the decoy", masked=False)
 
+    with subtest("the decoy's failed units before the first switch"):
+        # None where the image table lists what the image is known to fail.
+        # Read before the Ctrl+C below, whose cancelled activation fails a
+        # unit of its own.
+        check_failed_units("on the decoy before the first switch")
+        # The units the release's warning names that the image does not
+        # install are still not in it, so the warning still covers what this
+        # run cannot see.
+        for unit in (known_failed or {}).get("notInImage", []):
+            state = vm.succeed(f"systemctl show -P LoadState {shlex.quote(unit)}").strip()
+            print(f"{unit} on the decoy: {state}")
+            assert state == "not-found", distro_checks.now_in_image(unit, image_name)
+
     with subtest("Ctrl+C during the pre-flight checks cancels the activation"):
         # A CPU quota stretches the activation, so the interrupt reaches it
         # while it runs its checks; no child process of it dies with the
@@ -548,11 +752,56 @@ distroVm.buildVmTest {
         vm.succeed("systemctl reset-failed cancelled-activation.service || true")
         vm.succeed("rm -f /mnt/data/reports/activation-residue-*.json")
 
+    with subtest("a program that blocks shutdown makes activation refuse"):
+        # A shutdown block inhibitor means a program is in the middle of
+        # something it must not lose (a package or firmware update): the
+        # activation refuses, names it, and leaves nothing behind.
+        hold_shutdown("block-probe", "block", "sleep infinity")
+        rc, out = vm.execute(f"{nails_cmd} activate -y 2>&1")
+        print(out)
+        assert rc != 0 and "block-probe blocks shutdown" in out, (rc, out)
+        vm.fail("mountpoint -q /run/nextroot")
+        vm.fail("test -e /run/overlay-runtime")
+        vm.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
+        session.assert_decoy_root(vm)
+        place = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]["place"]
+        assert place == "decoy", f"after the refusal: {place}"
+        vm.succeed("systemctl stop block-probe.service")
+        vm.succeed("rm -f /mnt/data/reports/activation-residue-*.json")
+
     with subtest("activation soft-reboots into the whole-root overlay"):
+        decoy_uu_stops = uu_stop_lines()
+        # A program holds the shutdown back for a while, as an updater does.
+        # The activation waits for it through logind and stays the entry's
+        # owner meanwhile: status shows it activating, and recover leaves it.
+        seen = "/run/delay-probe.seen"
+        hold_shutdown_back("delay-probe", seen, 8)
+        # The activation kills every interactive shell, the driver's own among
+        # them, so a unit looks while the switch waits and keeps what it saw
+        # in /run, which the switch carries.
+        look = (
+            f"until [ -s {seen} ]; do sleep 0.1; done; "
+            + f"{nails_cmd} status --json > /run/waiting-status.json 2>&1; "
+            + f"{nails_cmd} recover > /run/waiting-recover.out 2>&1; "
+            + "echo $? > /run/waiting-recover.rc; "
+            + "if mountpoint -q /run/nextroot && test -e /run/overlay-runtime; "
+            + "then echo kept; else echo gone; fi > /run/waiting-entry"
+        )
+        vm.succeed(f"systemd-run --unit=switch-look --collect sh -c {shlex.quote(look)}")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
+        print(vm.succeed("cat /run/waiting-status.json /run/waiting-recover.out"))
+        waiting = json.loads(vm.succeed("cat /run/waiting-status.json"))["data"]["place"]
+        assert waiting == "activating", f"while logind held the switch back: {waiting}"
+        recover_rc = vm.succeed("cat /run/waiting-recover.rc").strip()
+        assert recover_rc == "6", f"recover while the switch waited: {recover_rc}"
+        assert vm.succeed("cat /run/waiting-entry").strip() == "kept", (
+            "recover took the waiting entry down"
+        )
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
         session.assert_hidden_root(vm)
+        check_failed_units("in the first hidden session", "hiddenSession")
+        assert_uu_ended_on_logind("the first entry")
         if blk_availability:
             assert_guarded_blk_availability("the first session")
         assert_quiet_kernel_log("the first session")
@@ -634,6 +883,7 @@ distroVm.buildVmTest {
         follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
         pid1_health("after emergency")
         session.assert_decoy_root(vm)
+        check_failed_units("on the decoy after the emergency", "afterReturn")
         vm.fail("mountpoint -q /mnt/data")
         for tree in canary_trees:
             vm.fail(f"test -e /{tree}/nails-canary-{tree}")
@@ -647,6 +897,9 @@ distroVm.buildVmTest {
         )
         assert_gpt_auto_masked("after the emergency", masked=False)
         assert_quiet_kernel_log("after the emergency")
+        assert uu_stop_lines() == decoy_uu_stops, (
+            f"the first entry wrote a stop line to {uu_log} on the decoy disk"
+        )
 
     with subtest("a second session ends with deactivate"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
@@ -667,13 +920,14 @@ distroVm.buildVmTest {
                 vm.succeed(f"umount {target}")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
+        check_failed_units("in the second hidden session", "hiddenSession")
+        assert_uu_ended_on_logind("the second entry")
         vm.succeed("mountpoint -q /mnt/data && test -s /mnt/data/activate-2.log")
         if blk_availability:
             # The unit runs in the hidden session too; its stop stays cleared
             # until the way back has switched.
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
-        failed_units("the second hidden session")
         assert_gpt_auto_masked("the second session", masked=True)
         # The rehearsal's first step, and the refusal of a scan in the
         # planting session.
@@ -687,8 +941,20 @@ distroVm.buildVmTest {
         rc, out, err = rehearse("scan")
         assert rc == 6, (rc, out, err)
         assert json.loads(out)["error"]["code"] == "same_boot", out
+        # Push the kernel's process numbers far past a fresh boot's, so the
+        # numbers after the way back mean something.
+        vm.succeed("for i in $(seq 8000); do /bin/sh -c :; done")
+        reached = int(vm.succeed("sh -c 'echo $$'").strip())
+        assert reached > 4 * max(fresh_numbers.values()), (reached, fresh_numbers)
+        # The way back goes through logind as well: a program in the session
+        # holds it back and leaves its proof on the hidden volume.
+        hold_shutdown_back("delay-probe-hidden", "/mnt/data/delay-probe.seen", 3)
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
+        check_failed_units("on the decoy after deactivate", "afterReturn")
+        assert uu_stop_lines() == decoy_uu_stops, (
+            f"the second entry wrote a stop line to {uu_log} on the decoy disk"
+        )
         vm.fail("mountpoint -q /mnt/data")
         vm.fail("test -e /run/overlay-runtime")
         # A LUKS-backed hidden root's mapping closed itself (a loop-backed one
@@ -704,14 +970,37 @@ distroVm.buildVmTest {
             for target in boot_mounts:
                 vm.succeed(f"mountpoint -q {target}")
         probe_report("after deactivate")
-        failed_units("after deactivate")
         assert_gpt_auto_masked("after deactivate", masked=False)
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
 
+    with subtest("the decoy's gettys after the way back are numbered like a fresh boot's"):
+        back_numbers = unit_numbers("after deactivate")
+        for unit, fresh in fresh_numbers.items():
+            back = back_numbers.get(unit)
+            assert back is not None, f"{unit} ran at the fresh boot and not after the way back"
+            assert back < reached, f"{unit} is {back} after the way back; the session reached {reached}"
+            if unit in RANGED_UNITS:
+                assert pid_range(back) == pid_range(fresh), (
+                    f"{unit} is {back} after the way back, in {pid_range(back)}; the fresh boot "
+                    f"gave it {fresh}, in {pid_range(fresh)}"
+                )
+
     with subtest("the rehearsal's scan runs on the decoy in the planting boot"):
         # As the operator would: unlock and mount the hidden volume again.
         vm.succeed("""${hiddenRoot.reopenHiddenRoot}""")
+        # The program in the session saw logind's shutdown signal at the way
+        # back, and its copy of unattended-upgrades' helper wrote no stop line
+        # into the upper.
+        vm.succeed("test -s /mnt/data/delay-probe.seen")
+        _, out = vm.execute(
+            f"grep -c -F {shlex.quote(uu_stop_line)} /mnt/data/root/upper{uu_log} "
+            + "2>/dev/null || true"
+        )
+        assert int(out.strip() or "0") == decoy_uu_stops, (
+            f"the way back stopped the session's unattended-upgrades helper without "
+            f"logind's signal: {out.strip()} stop lines in its log in the upper"
+        )
         token = json.loads(vm.succeed("cat /mnt/data/rehearse/state.json"))["token"]
         print(vm.succeed("cat /proc/sys/kernel/random/boot_id; systemctl --version | head -1"))
         rc, out, err = rehearse("status")
@@ -766,5 +1055,8 @@ distroVm.buildVmTest {
         assert found == {poison}, (
             f"positive control failed: the scanner did not see the planted token ({found})"
         )
+
+    with subtest("every failure the image is known to show still happens"):
+        assert not gone_failures, "\n\n".join(gone_failures)
   '';
 }

@@ -32,7 +32,7 @@ pub use noatime::{EntryType, NoatimeEntry, OpenKind, open_noatime, read_dir_noat
 /// user-home write path.
 pub(crate) use file_ops::unique_temp_name;
 
-use super::{Filesystem, MountEntry, MountSource};
+use super::{Filesystem, MountEntry, MountRoot, MountSource};
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
@@ -100,12 +100,20 @@ impl Filesystem for RealFilesystem {
         file_ops::device_id(path)
     }
 
+    fn inode(&self, path: &Path) -> Result<Option<u64>> {
+        file_ops::inode(path)
+    }
+
     fn loop_backing_device(&self, node: &Path) -> Result<u64> {
         loop_ops::loop_backing_device(node)
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         file_ops::is_symlink(path)
+    }
+
+    fn mount_root(&self, path: &Path) -> Result<MountRoot> {
+        file_ops::mount_root(path)
     }
 
     fn is_overlay_whiteout(&self, path: &Path) -> Result<bool> {
@@ -181,6 +189,10 @@ impl Filesystem for RealFilesystem {
 
     fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
         file_ops::read_file_bytes(path)
+    }
+
+    fn read_file_range(&self, path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
+        file_ops::read_file_range(path, offset, len)
     }
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {

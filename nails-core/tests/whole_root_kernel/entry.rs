@@ -7,6 +7,7 @@
 
 use nails_core::session::WindowLauncher;
 use nails_core::session::entry::{self, EntryHost, EntryInputs};
+use nails_core::session::labels::Labels;
 use nails_core::session::layout::Paths;
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host, write_executable};
@@ -18,7 +19,7 @@ use nails_teardown::whole_root::plan::{
     UTAB_MOUNTS_NAME, unix_now,
 };
 use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
-use nails_teardown::whole_root::{carry, nextroot, runtime_units};
+use nails_teardown::whole_root::{carry, fresh_pids, nextroot, runtime_units};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,8 @@ struct FakeHost {
     cancel_at_reload: bool,
     /// The files that stand for the kernel's helper paths.
     helpers: Vec<PathBuf>,
+    /// The decoy's process numbers, as the entry reads them.
+    pids: fresh_pids::Record,
 }
 
 impl EntryHost for FakeHost {
@@ -75,6 +78,9 @@ impl EntryHost for FakeHost {
     fn kernel_settings(&self) -> Vec<KernelSetting> {
         let paths: Vec<&str> = self.helpers.iter().filter_map(|p| p.to_str()).collect();
         kernel_helpers::read(&paths)
+    }
+    fn pid_record(&self) -> fresh_pids::Record {
+        self.pids.clone()
     }
 }
 
@@ -178,6 +184,7 @@ impl World {
             backend: vec!["data".into()],
             persona: Default::default(),
             operator: None,
+            labels: Labels::BestEffort,
             rebuild_space_mb: 0,
             read_only_disks: false,
             accepted_decoy_storage: None,
@@ -754,6 +761,7 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             runtime_dir: paths.runtime(),
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
+            pid_places: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
         };
@@ -767,6 +775,57 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         );
         assert!(Plan::load(&paths.plan()).unwrap().entered_at.is_some());
         assert_utab(&world, &carried);
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter() {
+    // The way back numbers the decoy's units by what the entry read in the
+    // decoy before anything ran and by the counter the switch handed over.
+    let _ = Rerun::new(test_path!(
+        the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let paths = world.paths();
+        let host = FakeHost {
+            pids: fresh_pids::Record {
+                floor: Some(388),
+                anchors: vec![fresh_pids::Anchor {
+                    comm: "agetty".to_string(),
+                    tty: 0x0401,
+                    pid: 600,
+                }],
+                ..fresh_pids::Record::default()
+            },
+            ..FakeHost::default()
+        };
+        let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
+        assert_eq!(entry.plan.pids, host.pids);
+        assert_eq!(Plan::load(&paths.plan()).unwrap().pids, host.pids);
+
+        let counter = tempfile::tempdir().unwrap();
+        nails_teardown::test_support::stage_pid_counter(counter.path());
+        let env = Env {
+            run: paths.run.clone(),
+            nextroot: paths.nextroot(),
+            runtime_dir: paths.runtime(),
+            kmsg: paths.run.join("no-kmsg"),
+            systemctl: None,
+            pid_places: Some(fresh_pids::Places::under(counter.path())),
+            now: unix_now(),
+            mounts: read_mountinfo().unwrap(),
+        };
+        assert_eq!(transition::run(&env), Outcome::Entered);
+        assert_eq!(
+            Plan::load(&paths.plan()).unwrap().pids,
+            fresh_pids::Record {
+                at_switch: Some(1625),
+                ..host.pids.clone()
+            }
+        );
         entry::rollback(&paths);
     });
 }
@@ -1208,6 +1267,7 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
             runtime_dir: paths.runtime(),
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
+            pid_places: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
         };
@@ -1297,6 +1357,9 @@ fn a_mount_point_behind_an_absolute_link_is_made_inside_the_next_root() {
         entry::rollback(&paths);
     });
 }
+
+#[path = "entry_fresh_home.rs"]
+mod fresh_home;
 
 #[test]
 fn nothing_the_way_back_mounts_shows_below_the_hidden_volume() {
@@ -1524,14 +1587,18 @@ fn a_shadowed_mount_below_the_next_root_does_not_fail_the_backstop() {
 }
 
 /// An emergency on the decoy, after an entry that cleared `noexec` on `/run`,
-/// sets it again as a rollback does, and detaches the next root.
+/// sets it again as a rollback does, and detaches the next root. The hot path
+/// acts for real here, so it runs as PID 1 of a PID namespace of its own. Were
+/// the entry's soft-reboot still to come, its escape would kill every
+/// interactive shell it sees and power off: it sees no process but the test's,
+/// and the kernel's power-off ends only the namespace.
 #[test]
 fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
     use nails_teardown::whole_root::emergency::{self, Finish, Side};
     let _ = Rerun::new(test_path!(
         an_emergency_on_the_decoy_sets_noexec_on_run_again
     ))
-    .in_user_mount_ns()
+    .in_pid_ns()
     .run(|| {
         let world = World::new();
         let paths = world.paths();
@@ -1550,7 +1617,19 @@ fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
         assert!(!nextroot::is_noexec(&paths.run).unwrap());
         let mut plan = entry.plan.clone();
         plan.backend = Vec::new();
-        plan.tools = Default::default();
+        // A PID 1 that says logind does not run, so nothing can hold the
+        // entry's soft-reboot and the decoy keeps running.
+        let tools = ScratchTmpfs::new("");
+        let systemctl = tools.path().join("systemctl");
+        write_executable(
+            &systemctl,
+            "#!/bin/sh\ncase \"$*\" in show*) echo inactive ;; esac\n",
+            0o755,
+        );
+        plan.tools = nails_teardown::whole_root::plan::Tools {
+            systemctl: Some(systemctl),
+            ..Default::default()
+        };
         let cgroup = ScratchTmpfs::new("");
         let host = emergency::Host {
             run: paths.run.clone(),
@@ -1664,3 +1743,6 @@ fn a_launcher_that_cannot_be_written_never_fails_the_entry() {
         entry::rollback(&paths);
     });
 }
+
+#[path = "entry_labels.rs"]
+mod labels;

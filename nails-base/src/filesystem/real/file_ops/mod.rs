@@ -5,7 +5,7 @@
 
 use super::RealFilesystem;
 use super::noatime::EntryType;
-use crate::filesystem::{DiskUsage, Filesystem, PatternScan};
+use crate::filesystem::{DiskUsage, Filesystem, MountRoot, PatternScan};
 use crate::{IoResultExt, NailsError, Result};
 use std::path::{Path, PathBuf};
 
@@ -34,6 +34,46 @@ pub(super) fn device_id(path: &Path) -> Result<u64> {
     // `metadata` follows symlinks, which is what we want: the attach gate asks
     // about the filesystem the path resolves to, not about a link inode.
     std::fs::metadata(path).map(|meta| meta.dev()).at_path(path)
+}
+
+/// What `path` itself is, as one `statx` says that follows no link and
+/// triggers no automount there: whether it is the root of a mount is `None`
+/// when the kernel has no `statx` or does not report the attribute.
+pub(super) fn mount_root(path: &Path) -> Result<MountRoot> {
+    use rustix::fs::{AtFlags, CWD, FileType, StatxAttributes, StatxFlags, statx};
+
+    match statx(
+        CWD,
+        path,
+        AtFlags::NO_AUTOMOUNT.union(AtFlags::SYMLINK_NOFOLLOW),
+        StatxFlags::TYPE,
+    ) {
+        Ok(stat) => {
+            let says = |attribute| {
+                stat.stx_attributes_mask
+                    .contains(attribute)
+                    .then(|| stat.stx_attributes.contains(attribute))
+            };
+            if FileType::from_raw_mode(u32::from(stat.stx_mode)) == FileType::Symlink {
+                Ok(MountRoot::Link)
+            } else if says(StatxAttributes::AUTOMOUNT) == Some(true) {
+                Ok(MountRoot::Automount)
+            } else {
+                Ok(MountRoot::Entry(says(StatxAttributes::MOUNT_ROOT)))
+            }
+        }
+        Err(rustix::io::Errno::NOSYS) => Ok(MountRoot::Entry(None)),
+        Err(e) => Err(NailsError::io(path, std::io::Error::from(e))),
+    }
+}
+
+pub(super) fn inode(path: &Path) -> Result<Option<u64>> {
+    use std::os::unix::fs::MetadataExt;
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(Some(meta.ino())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).at_path(path),
+    }
 }
 
 pub(super) fn is_symlink(path: &Path) -> Result<bool> {
@@ -161,6 +201,35 @@ pub(super) fn read_file_content(path: &Path) -> Result<String> {
 /// [`read_file_content`] reads text.
 pub(super) fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
     super::noatime::read_to_end_noatime(path).map_err(|e| {
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to read file {}: {}", path.display(), e),
+            ),
+        )
+    })
+}
+
+/// Read `len` bytes from `offset` on of the file at `path`, which must not be
+/// a symbolic link (`O_NOFOLLOW`), without updating its access time: fewer
+/// where the file ends first.
+pub(super) fn read_file_range(path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt;
+
+    let read = || -> std::io::Result<Vec<u8>> {
+        let file = std::fs::File::from(super::noatime::open_noatime(
+            path,
+            super::noatime::OpenKind::FileNoFollow,
+        )?);
+        // What the file holds of the range; a file that shrinks before the
+        // read is an error.
+        let held = file.metadata()?.len().saturating_sub(offset);
+        let mut bytes = vec![0; usize::try_from(held).unwrap_or(usize::MAX).min(len)];
+        file.read_exact_at(&mut bytes, offset)?;
+        Ok(bytes)
+    };
+    read().map_err(|e| {
         NailsError::io(
             path,
             std::io::Error::new(

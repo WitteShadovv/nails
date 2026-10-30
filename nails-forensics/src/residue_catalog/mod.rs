@@ -162,8 +162,8 @@ pub enum Probe {
         /// How loudly a hit is reported.
         severity: ProbeSeverity,
     },
-    /// Nothing at this probe point can see the class; the reason is shown
-    /// wherever the class goes unchecked.
+    /// Nothing at this probe point checks the class; the reason says why, and
+    /// is shown wherever the class goes unchecked.
     None(&'static str),
 }
 

@@ -25,11 +25,14 @@
 //! volume. The token is never printed or logged whole (only a short
 //! fingerprint), so the rehearsal's own output cannot plant it in a log.
 
+mod ecryptfs;
 mod identify;
 mod plant;
 mod scan;
 mod storage;
 
+#[cfg(test)]
+mod ecryptfs_tests;
 #[cfg(test)]
 mod tests;
 

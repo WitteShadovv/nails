@@ -20,8 +20,8 @@
 //!   own name. So the link is followed to the unit it names, which is then
 //!   probed, and a daemon this module does not know is caught that way too;
 //! - the running process itself (`rsyslogd`, `syslog-ng`, `syslogd`, ...),
-//!   read from `<root>/proc`, which catches a daemon started outside systemd and
-//!   a recent systemd that no longer writes an invocation marker for every unit.
+//!   read from `<root>/proc`, which also catches a daemon started outside
+//!   systemd, one with no invocation marker.
 //!
 //! `klogd` is not one of them: it only hands the kernel's messages on to the
 //! syslog daemon, which is caught itself. Every probe reads; nothing here
@@ -33,7 +33,9 @@ use std::path::Path;
 
 /// Directory systemd populates with an `invocation:<unit>` marker per *active*
 /// unit, relative to the root. Its presence is a write-free way to tell a
-/// running unit from an installed-but-stopped one.
+/// running unit from an installed-but-stopped one. The marker is a symlink to
+/// the unit's invocation id, which names no file, so it is looked for as a link:
+/// following it finds nothing.
 pub(super) const INVOCATION_DIR: &str = "run/systemd/units";
 
 /// The name systemd gives the enabled syslog daemon.
@@ -42,7 +44,7 @@ const SYSLOG_ALIAS: &str = "syslog.service";
 /// The unit directories an alias link is looked for in, relative to the root,
 /// in the order systemd reads them: the administrator's, the runtime ones, the
 /// packages'.
-const UNIT_DIRS: &[&str] = &[
+pub(super) const UNIT_DIRS: &[&str] = &[
     "etc/systemd/system",
     "run/systemd/system",
     "usr/lib/systemd/system",
@@ -176,12 +178,17 @@ fn resolve_alias<F: Filesystem>(fs: &F, root: &Path, alias: &str) -> Option<Stri
 /// template instance of the same stem (`<stem>@<instance>.service`) left one, or
 /// when its cgroup under `system.slice` reports a live process. A
 /// stopped-but-installed unit has none of these, so this never fires on a
-/// package that ships a disabled service. Recent systemd no longer writes a
-/// marker for every unit, which the cgroup and the process judge cover.
+/// package that ships a disabled service. The cgroup is a second route to a
+/// running unit. A daemon started outside systemd leaves neither, and its
+/// process is what shows it ([`running_process_names`]). A oneshot unit that
+/// has run and exited, such as `kdump-tools.service`, keeps no process and no
+/// populated cgroup, so its marker is all that shows it.
 pub(super) fn unit_active<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
     let invocations = root.join(INVOCATION_DIR);
+    // The marker is a link to the invocation id (see INVOCATION_DIR): a probe
+    // that follows it, such as `path_exists`, never sees it.
     if fs
-        .path_exists(&invocations.join(format!("invocation:{unit}")))
+        .is_symlink(&invocations.join(format!("invocation:{unit}")))
         .unwrap_or(false)
     {
         return true;

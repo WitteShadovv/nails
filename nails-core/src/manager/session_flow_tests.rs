@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::nixos::NixOSBuilder;
-use crate::platform::FakePlatform;
+use crate::platform::{FakePlatform, Selinuxfs};
 use crate::test_support::{Rerun, ScratchTmpfs, write_executable};
 use crate::{Config, PlatformState, RealFilesystem, StateFile};
 use nails_teardown::mountinfo::parse_mountinfo;
@@ -35,6 +35,8 @@ struct FakeEntryHost {
     reloads: Cell<u32>,
     /// Request a cancel during the first reload, as a Ctrl+C would.
     cancel_at_reload: bool,
+    /// A soft-reboot still comes that cannot be dropped.
+    switch_coming: bool,
 }
 
 impl EntryHost for FakeEntryHost {
@@ -62,16 +64,27 @@ impl EntryHost for FakeEntryHost {
     fn unit_stop_commands(&self, _: &str) -> Result<String> {
         Ok(String::new())
     }
+    fn drop_pending_switch(&self) -> bool {
+        !self.switch_coming
+    }
 }
 
-/// Records the targets started; refuses them when `refuse` is set.
+/// Records the targets started; refuses them when `refuse` is set, and
+/// refuses any switch when `blocked` is (a program blocks shutdown).
 #[derive(Default)]
 struct FakeTarget {
     started: RefCell<Vec<String>>,
     refuse: bool,
+    blocked: bool,
 }
 
 impl TargetHost for FakeTarget {
+    fn may_switch(&self) -> Result<()> {
+        if self.blocked {
+            return Err(NailsError::InvalidState("apt blocks shutdown".into()));
+        }
+        Ok(())
+    }
     fn start_target(&self, target: &str) -> Result<()> {
         self.started.borrow_mut().push(target.to_string());
         if self.refuse {
@@ -149,6 +162,7 @@ fn plan(hidden: &Path) -> Plan {
         read_only_disks: false,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        pids: Default::default(),
     }
 }
 
@@ -330,6 +344,35 @@ fn recovery_refuses_while_an_activation_is_still_entering() {
     );
 }
 
+/// The activation is gone, but its soft-reboot may still come (PID 1 has
+/// started it, or logind holds it and cannot drop it): recovering now would
+/// leave it to soft-reboot the plain decoy, so the leftovers stay for it.
+#[test]
+fn recovery_refuses_while_the_interrupted_entry_soft_reboot_still_comes() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost {
+        switch_coming: true,
+        ..FakeEntryHost::default()
+    };
+
+    let error = m.recover_session_on(&machine, &host).unwrap_err();
+
+    assert!(matches!(error, RecoverError::Switching), "{error:?}");
+    assert!(error.to_string().contains("may still come"), "{error}");
+    assert!(machine.paths.plan().exists(), "the leftovers stay");
+    assert_eq!(host.reloads.get(), 0);
+    assert!(
+        recorded(&hidden).state.is_active(),
+        "the record is untouched"
+    );
+}
+
 #[test]
 fn recovery_in_the_hidden_root_points_to_deactivate() {
     let dir = tempfile::tempdir().unwrap();
@@ -394,6 +437,33 @@ fn leaving_a_hidden_root_without_its_plan_asks_for_a_power_off() {
         recorded(&hidden).state.is_active(),
         "the record is untouched"
     );
+}
+
+/// A way back whose soft-reboot was not started (a program blocks shutdown,
+/// logind refused it or dropped it) leaves the session running: its record
+/// stays active, its way back undone.
+#[test]
+fn a_way_back_that_did_not_start_keeps_the_session_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let target = FakeTarget {
+        refuse: true,
+        ..FakeTarget::default()
+    };
+
+    let error = m
+        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("refused"), "{error}");
+    assert_eq!(*target.started.borrow(), ["poweroff.target"]);
+    assert!(recorded(&hidden).state.is_active(), "the session goes on");
 }
 
 #[test]
@@ -516,6 +586,32 @@ fn a_refused_soft_reboot_rolls_the_entry_back_and_resets_the_record() {
         vec![false],
         "a soft-reboot PID 1 refused ends the activation as a failure"
     );
+}
+
+/// A program that blocks shutdown refuses the entry before its soft-reboot
+/// is asked for: nothing is started, and the entry is rolled back.
+#[test]
+fn a_program_that_blocks_shutdown_refuses_the_entry_before_its_soft_reboot() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    let mut m = manager(&hidden);
+    let target = FakeTarget {
+        blocked: true,
+        ..FakeTarget::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let error = m.trigger_entry_on(&machine, &target, &host).unwrap_err();
+
+    assert!(error.to_string().contains("apt blocks shutdown"), "{error}");
+    assert!(target.started.borrow().is_empty());
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 1);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,6 +1097,116 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
     });
 }
 
+/// A decoy below `decoy` whose dpkg record has libc6 2.41-13, and hidden
+/// sessions on `hidden` whose copy of it still has 2.41-12.
+fn drifted_debian(decoy: &Path, hidden: &Path) {
+    let status = |version: &str| {
+        format!(
+            "Package: libc6\nStatus: install ok installed\nArchitecture: amd64\n\
+             Version: {version}\n"
+        )
+    };
+    std::fs::create_dir_all(decoy.join("var/lib/dpkg")).unwrap();
+    std::fs::write(decoy.join("var/lib/dpkg/status"), status("2.41-13")).unwrap();
+    let copy = hidden.join("root/upper/var/lib/dpkg");
+    std::fs::create_dir_all(&copy).unwrap();
+    std::fs::write(copy.join("status"), status("2.41-12")).unwrap();
+}
+
+/// The advisories a front end asks for before its confirmation reach a
+/// watching event stream as they are read.
+#[test]
+fn the_advisories_before_an_entry_reach_the_event_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let machine = machine(dir.path(), DECOY_TABLE);
+    drifted_debian(&machine.paths.root, &hidden);
+    let m = manager(&hidden);
+
+    let sink = crate::reporter::CollectingSink::new();
+    let advisories = {
+        let reporter = crate::reporter::EventReporter::new(sink.clone());
+        let _scope =
+            crate::reporter::progress::install(crate::reporter::progress::shared(reporter));
+        m.entry_advisories_on(&machine, &EnterOptions::default())
+    };
+    assert_eq!(advisories.len(), 1, "{advisories:?}");
+    let advisory = &advisories[0];
+    assert_eq!(advisory.name, "package-drift");
+    assert!(
+        advisory
+            .message
+            .contains("libc6 (2.41-13 on the decoy, 2.41-12 in hidden sessions)"),
+        "{advisory:?}"
+    );
+    assert_eq!(
+        sink.events(),
+        vec![nails_api::Event::Advisory {
+            name: advisory.name.to_string(),
+            message: advisory.message.clone(),
+            fix: advisory.fix.clone(),
+        }]
+    );
+
+    // A copy that follows the decoy's record raises none.
+    std::fs::remove_file(hidden.join("root/upper/var/lib/dpkg/status")).unwrap();
+    assert!(
+        m.entry_advisories_on(&machine, &EnterOptions::default())
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_entry_lists_the_package_drift_among_its_warnings() {
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_lists_the_package_drift_among_its_warnings
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        drifted_debian(decoy.path(), hidden.path());
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.set_host_profile(FakePlatform::fhs().host_profile());
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+        let EnterOutcome::Prepared { entry, .. } = outcome else {
+            panic!("expected a prepared entry, got {outcome:?}");
+        };
+        // The result lists the drift with its fix on a line of its own, so
+        // `activate` exits 9 (a success with warnings).
+        assert!(
+            entry.warnings.iter().any(|warning| {
+                warning.starts_with("the decoy installed, updated or removed 1 package")
+                    && warning.contains("\nIn a hidden session, run `sudo apt-get update`")
+            }),
+            "{:?}",
+            entry.warnings
+        );
+
+        let target = FakeTarget {
+            refuse: true,
+            ..FakeTarget::default()
+        };
+        assert!(m.trigger_entry_on(&machine, &target, &host).is_err());
+    });
+}
+
 #[test]
 fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
     let _ = Rerun::new(crate::test_path!(
@@ -1049,6 +1255,212 @@ fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
         );
         assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
         assert!(!hidden.path().join("state.json").exists());
+    });
+}
+
+/// The SELinux label stored on `path` itself, or the kernel's error.
+fn selinux_label(path: &Path) -> std::result::Result<Vec<u8>, rustix::io::Errno> {
+    let mut value = vec![0; 4096];
+    let len = rustix::fs::lgetxattr(path, crate::session::labels::LABEL_XATTR, &mut value[..])?;
+    value.truncate(len);
+    Ok(value)
+}
+
+/// [`fhs_decoy`], whose directories carry no SELinux label. Skips on a host
+/// whose kernel labels every file itself (SELinux active): the label copy
+/// under a loaded policy needs a VM.
+fn unlabelled_fhs_decoy() -> ScratchTmpfs {
+    let decoy = fhs_decoy();
+    match selinux_label(decoy.path()) {
+        Err(rustix::io::Errno::NODATA) => decoy,
+        Ok(_) => crate::test_support::skip_host(
+            "the kernel labels new files on this host: SELinux is active, and the label copy \
+             under a loaded policy needs a VM",
+        ),
+        Err(errno) => panic!("the SELinux label of a fresh tmpfs: {errno}"),
+    }
+}
+
+#[test]
+fn an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone() {
+    // Where SELinux runs, where the host facts report it and the mount table
+    // that would tell whether it runs could not be read, and where there are no
+    // facts to rule it out, the root of the upper must take the decoy root's
+    // label, and this decoy root has none.
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let with = |selinuxfs| {
+            let mut profile = FakePlatform::fhs().host_profile();
+            profile.selinux = Some(crate::platform::SelinuxStatus {
+                selinuxfs,
+                enforce: Some(crate::platform::SelinuxMode::Enforcing),
+                config_mode: Some("enforcing".to_string()),
+                config_policy: Some("targeted".to_string()),
+            });
+            profile
+        };
+        for (profile, why) in [
+            (
+                Some(with(Selinuxfs::Mounted)),
+                "SELinux runs on this host (selinuxfs is mounted)",
+            ),
+            (
+                Some(with(Selinuxfs::Unknown)),
+                "/proc/self/mounts could not be read to tell whether selinuxfs is mounted",
+            ),
+            (None, "the host could not be detected and may run SELinux"),
+        ] {
+            let mut m = manager(hidden.path());
+            if let Some(profile) = profile {
+                m.set_host_profile(profile);
+            }
+            let host = FakeEntryHost::default();
+
+            let error = m
+                .enter_session_no_preflight_on(&machine, &options, &host)
+                .unwrap_err();
+
+            let text = error.to_string();
+            assert!(text.contains(why), "{text}");
+            assert!(
+                text.ends_with(&format!(
+                    "must carry the SELinux label of {0}, but {0} has no label",
+                    decoy.path().display()
+                )),
+                "{text}"
+            );
+            // Nothing of the entry is left, and nothing was recorded.
+            let mounts = read_mountinfo().unwrap();
+            assert!(
+                mounts
+                    .iter()
+                    .all(|e| !e.mount_point.starts_with(machine.paths.nextroot())),
+                "the next root is detached"
+            );
+            assert!(!machine.paths.runtime().exists());
+            assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+            assert!(!hidden.path().join("state.json").exists());
+        }
+    });
+}
+
+#[test]
+#[tracing_test::traced_test]
+fn an_entry_on_a_host_configured_for_selinux_without_selinuxfs_goes_on_and_says_so() {
+    // A host that keeps /etc/selinux/config from packages installed once, while
+    // its mount table lists no selinuxfs: no policy reads a label, so the entry
+    // goes on without the labels this decoy lacks, and says why in one line.
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_on_a_host_configured_for_selinux_without_selinuxfs_goes_on_and_says_so
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        let mut profile = FakePlatform::fhs().host_profile();
+        profile.selinux = Some(crate::platform::SelinuxStatus {
+            selinuxfs: Selinuxfs::NotMounted,
+            enforce: None,
+            config_mode: Some("permissive".to_string()),
+            config_policy: Some("default".to_string()),
+        });
+        m.set_host_profile(profile);
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+
+        assert!(
+            matches!(outcome, EnterOutcome::Prepared { .. }),
+            "{outcome:?}"
+        );
+        let upper = crate::session::Layout::new(hidden.path()).upper();
+        assert_eq!(selinux_label(&upper), Err(rustix::io::Errno::NODATA));
+        assert!(logs_contain(
+            "SELinux is configured on this host but selinuxfs is not mounted"
+        ));
+        entry::rollback(&machine.paths);
+    });
+}
+
+#[test]
+fn an_entry_on_a_host_whose_facts_report_no_selinux_writes_no_label() {
+    // The decoy's directories carry no label, as on a host without SELinux:
+    // the hidden root is made as it was before the label copy.
+    let _ = Rerun::new(crate::test_path!(
+        an_entry_on_a_host_whose_facts_report_no_selinux_writes_no_label
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = unlabelled_fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        let profile = FakePlatform::fhs().host_profile();
+        assert_eq!(profile.selinux, None);
+        m.set_host_profile(profile);
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap();
+
+        assert!(
+            matches!(outcome, EnterOutcome::Prepared { .. }),
+            "{outcome:?}"
+        );
+        let upper = crate::session::Layout::new(hidden.path()).upper();
+        for dir in [upper, machine.paths.nextroot()] {
+            assert_eq!(
+                selinux_label(&dir),
+                Err(rustix::io::Errno::NODATA),
+                "{}",
+                dir.display()
+            );
+        }
+        entry::rollback(&machine.paths);
     });
 }
 

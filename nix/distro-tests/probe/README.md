@@ -6,12 +6,13 @@ code, so that each becomes committed test data instead of a guess. The facts
 are the ones the platform notes leave unverified for the families that are not
 admitted yet (Fedora and Arch): the SELinux domain a backdoor-style service
 lands in, the labels and policy loads around a soft-reboot, the kernel and its
-module trees, the image's own mount layout and where each mount, swap and
-automount unit comes from, the host tools actually present, the state of the
-services the decoy-posture checks judge, the vendor journald configuration, the
-units that fail on their own, the `updatedb` prune paths, any AVC denials,
-whether a 9p share works while SELinux is enforcing, the `os-release` values a
-derivative carries, and what one plain soft-reboot changes.
+module trees, the systemd version, the image's own mount layout and where each
+mount, swap and automount unit comes from, the host tools actually present, the
+state of the services the decoy-posture checks judge, the vendor journald
+configuration and the journal storage that results, the units that fail on
+their own, the `updatedb` prune paths, any AVC denials, whether a 9p share
+works while SELinux is enforcing, the `os-release` values a derivative carries,
+and what one plain soft-reboot changes.
 
 These facts need a booted VM, which needs KVM, so they are recorded on a
 KVM-capable host or a hosted runner (the build server has none): one JSON file
@@ -65,6 +66,8 @@ Each file is an object:
     SELinux policy" (list), without the timestamp and the time the load took.
   - `kernelRelease` -- the running kernel (`uname -r`).
   - `moduleDirs` -- the module trees in `/usr/lib/modules` (sorted list).
+  - `systemdVersion` -- the first line `systemctl --version` prints, such as
+    `systemd 259 (259.5-1.fc44)`; `null` when it printed no version.
   - `mounts` -- the image's own mount layout (`findmnt --real`), sorted by
     target: a list of `{ "target": ..., "fstype": ..., "options": ... }`.
   - `fstab` -- the entries of `/etc/fstab` in file order: a list of
@@ -97,10 +100,35 @@ Each file is an object:
     the installed name-version-release (`rpm -q`), or `null` where rpm answers
     that it is not installed; a package rpm gives neither answer for holds what
     the query printed, such as an error. `null` on the other families.
-  - `journaldVendorConfig` -- the effective vendor `Storage=` and the files that
-    set it (`{ "storage": ..., "sources": [ ... ] }`); `sources` is empty when
-    no file sets it, and `storage` is then the compiled-in default the vendor
-    file documents in its commented-out line.
+  - `journaldVendorConfig` -- the `Storage=` the stock journald runs with and
+    what it follows from, resolved in the order NAILS resolves it
+    (`nails-core/src/preflight/checks/journald_storage.rs`):
+    `{ "storage": ..., "sources": [ ... ], "credential": ..., "vendorHint": ... }`.
+    `sources` lists the files that assign `Storage=` a value journald takes,
+    under `[Journal]`, in the order journald reads them
+    (`systemd-analyze cat-config`); the last value assigned is `storage`.
+    When no file assigns one, `storage` is, from systemd 256 on, the
+    `journal.storage` credential journald received, if its whole content is
+    such a value (`credential` holds the content as read, `null` when journald
+    received none or an empty one), and otherwise the built-in default of
+    `systemdVersion`: `auto` before 259; from 259 `vendorHint`, or
+    `persistent` without one. `vendorHint` is the `Storage=` that
+    `/usr/lib/systemd/journald.conf` documents in a commented-out line under
+    `[Journal]`, `null` without one; a commented-out line in any other file,
+    `/etc/systemd/journald.conf` included, counts for nothing. When no file
+    sets it and `systemdVersion` is `null`, `storage` is `persistent`
+    whatever `credential` and `vendorHint` hold: NAILS uses neither for a
+    systemd whose version it cannot read and fails closed to `persistent`,
+    so that `storage` is the value NAILS would act on, not one read from the
+    guest. `storage` is `null` only when the configuration query has not run.
+    A section header journald refuses (a `[` line that does not end in `]`,
+    or a name with a control character, a quote or a backslash) ends the
+    reading where it ends journald's: no line after it counts, in its file or
+    a later one. The query keeps only each file's `# <path>` line and the
+    lines that hold `[` or `Storage`, so `sources` and `storage` assume plain
+    files: no line continued onto the next, no byte order mark, no line
+    journald stops at because it is not UTF-8, and no comment of the form
+    `# /<path>`, which would read as the start of another file.
   - `failedBootUnits` -- the units that show as failed on a plain boot of the
     stock image (list of unit names).
   - `maskedUnits` -- every masked unit (list of unit names). The test harness

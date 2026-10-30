@@ -50,7 +50,7 @@ nix develop
 pre-commit install
 
 # Baseline validation (the justfile is the single source of these commands)
-just check        # formatting, clippy, Rust file sizes, the fuzz targets and the tests
+just check        # formatting, clippy, Rust file sizes, the fuzz targets, the tests and a short shuffle sweep
 nix flake check   # Nix, shell and workflow linters; builds no VM test
 ```
 
@@ -75,8 +75,8 @@ The suite runs in tiers, each with its own command, runtime and prerequisites. E
 
 | Tier | Command | Runtime | Prerequisites |
 |---|---|---|---|
-| Format, lint and unit tests (pre-push gate) | `just check` | about 90 s | dev shell |
-| CI parity, with coverage | `just ci-rust` | a few minutes | dev shell |
+| Format, lint, the tests and a three-seed shuffle sweep (pre-push gate) | `just check` | about 2 min | dev shell |
+| CI's `lint`, `rust` (with coverage), `shuffle` (three seeds) and `side-tests` jobs | `just ci-rust` | a few minutes | dev shell |
 | One fuzz target (see [docs/testing-strategy.md](docs/testing-strategy.md#fuzzing)) | `just fuzz-run mountinfo` | a minute of fuzzing, after a first build of several minutes | dev shell |
 | Real-kernel tests (rootless) | `just kernel-tests` | seconds | dev shell, unprivileged user namespaces |
 | The one root-only overlay test | see `docs/development-guide.md` | seconds | root, an overlayfs-capable kernel |

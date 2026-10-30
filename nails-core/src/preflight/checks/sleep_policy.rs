@@ -21,7 +21,7 @@
 //! effective lid/idle settings so the operator knows whether closing the lid or
 //! walking away will strand a live session. Nothing here writes to the decoy.
 
-use super::systemd_conf::{self, Assignment};
+use super::systemd_conf::{self, Assignment, Unread};
 use crate::config::SleepPolicyMode;
 use crate::preflight::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
@@ -73,6 +73,10 @@ pub struct LogindSleepSettings {
     pub idle_action: Option<String>,
     /// `IdleActionSec`: idle timeout before `IdleAction` fires. Reported verbatim.
     pub idle_action_sec: Option<String>,
+    /// Why NAILS cannot read logind's configuration as logind does, when it
+    /// cannot ([`Unread`]): the settings above are then not known, and a
+    /// closed lid or an idle session may put the host to sleep.
+    pub unread: Option<Unread>,
 }
 
 impl LogindSleepSettings {
@@ -104,15 +108,17 @@ impl LogindSleepSettings {
     /// Whether a closed lid sends the machine to sleep in any of the three
     /// cases logind tells apart (on battery, on external power, docked or
     /// with an external display). The sleep guard's `block` mode then takes
-    /// the lid switch from logind.
+    /// the lid switch from logind. Settings NAILS cannot read count as one
+    /// that does.
     pub fn lid_switch_sleeps(&self) -> bool {
-        [
-            self.effective_lid_switch(),
-            self.effective_lid_switch_external_power(),
-            self.effective_lid_switch_docked(),
-        ]
-        .into_iter()
-        .any(action_sleeps)
+        self.unread.is_some()
+            || [
+                self.effective_lid_switch(),
+                self.effective_lid_switch_external_power(),
+                self.effective_lid_switch_docked(),
+            ]
+            .into_iter()
+            .any(action_sleeps)
     }
 }
 
@@ -175,11 +181,28 @@ pub fn effective_logind_sleep<F: Filesystem>(fs: &F) -> LogindSleepSettings {
     effective_logind_sleep_at(fs, Path::new("/"))
 }
 
-/// [`effective_logind_sleep`] for the system tree rooted at `root`.
+/// [`effective_logind_sleep`] for the system tree rooted at `root`. A
+/// configuration NAILS cannot read as logind does leaves every setting unknown
+/// ([`LogindSleepSettings::unread`]), never at its default.
 pub fn effective_logind_sleep_at<F: Filesystem>(fs: &F, root: &Path) -> LogindSleepSettings {
+    logind_sleep_under(fs, root, super::journald_storage::host_systemd_major())
+}
+
+/// [`effective_logind_sleep_at`] under a service manager of major version
+/// `systemd_major`, `None` when it is not known.
+fn logind_sleep_under<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    systemd_major: Option<u32>,
+) -> LogindSleepSettings {
     let mut settings = LogindSleepSettings::default();
-    for assignment in systemd_conf::section_assignments(fs, root, LOGIND_CONF, LOGIN_SECTION) {
-        apply_logind(&mut settings, &assignment);
+    match systemd_conf::section_assignments(fs, root, LOGIND_CONF, LOGIN_SECTION, systemd_major) {
+        Ok(assignments) => {
+            for assignment in &assignments {
+                apply_logind(&mut settings, assignment);
+            }
+        }
+        Err(unread) => settings.unread = Some(unread),
     }
     settings
 }
@@ -199,7 +222,15 @@ impl SleepPolicyCheck {
     }
 
     /// The ways the effective settings would put an active session to sleep.
+    /// Settings NAILS cannot read are one way, and the only one it can name.
     fn sleep_risks(settings: &LogindSleepSettings) -> Vec<String> {
+        if let Some(unread) = &settings.unread {
+            return vec![format!(
+                "NAILS cannot tell what logind does on a closed lid or an idle session, so \
+                 either may suspend the host: {unread}; {}",
+                unread.advice()
+            )];
+        }
         let mut risks = Vec::new();
         if action_sleeps(settings.effective_lid_switch()) {
             risks.push(format!(
@@ -241,8 +272,11 @@ impl SleepPolicyCheck {
     /// behind a closed lid: `ignore` on battery, or on external power when
     /// assigned there (unset, it follows the battery case, reported already).
     /// The docked case is left out: the session then shows on the external
-    /// display.
+    /// display. Settings NAILS cannot read may set either case to `ignore`.
     fn unlocked_lid(settings: &LogindSleepSettings) -> Vec<String> {
+        if settings.unread.is_some() {
+            return vec!["logind's lid settings are not known".to_string()];
+        }
         let mut out = Vec::new();
         if settings.effective_lid_switch() == "ignore" {
             out.push("HandleLidSwitch=ignore".to_string());
@@ -289,15 +323,16 @@ impl SleepPolicyCheck {
 /// `sleep_policy.mode` changes it: none of them acts on a lid that does not
 /// sleep.
 fn unlocked_warning(settings: &LogindSleepSettings, unlocked: &[String]) -> String {
-    let when = if settings.effective_lid_switch() == "ignore" {
-        "a closed lid"
+    let what = if settings.unread.is_some() {
+        "a closed lid may leave"
+    } else if settings.effective_lid_switch() == "ignore" {
+        "a closed lid leaves"
     } else {
-        "a closed lid on external power"
+        "a closed lid on external power leaves"
     };
     format!(
-        "{when} leaves the active session running and unlocked ({}): whoever opens the lid is \
-         in the hidden session. Set the logind lid switch to lock (see \
-         docs/decoy-requirements.md).",
+        "{what} the active session running and unlocked ({}): whoever opens the lid is in the \
+         hidden session. Set the logind lid switch to lock (see docs/decoy-requirements.md).",
         unlocked.join(", ")
     )
 }

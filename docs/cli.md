@@ -22,6 +22,8 @@ This document contains the help content for the `nails` command-line program.
 * [`nails config path`↴](#nails-config-path)
 * [`nails config show`↴](#nails-config-show)
 * [`nails config validate`↴](#nails-config-validate)
+* [`nails config set`↴](#nails-config-set)
+* [`nails config unset`↴](#nails-config-unset)
 * [`nails completions`↴](#nails-completions)
 
 ## `nails`
@@ -141,7 +143,7 @@ EXAMPLES:
 * `--overlay-only` — NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden /etc and home still apply)
 * `--allow-persistent-decoy` — Allow a persistent decoy posture instead of refusing activation
 
-   By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag allows that risk for this activation only and cannot be stored.
+   By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, an active rsyslog/syslog-ng/auditd, or an armed kdump. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk, and a kernel crash during the session would leave a dump of its memory in /var/crash there. This flag allows that risk for this activation only and cannot be stored.
 * `--allow-decoy-storage` — Use a hidden root that this computer's own storage seems to hold
 
    By default activation refuses a root that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it): everything the session writes there lands on this computer's disk. Use this flag only for storage you know this computer does not use, such as a disk its fstab lists but never mounts. It turns those refusals into a warning, adds a line to the logout confirmation and records the choice for `status`. A folder that is no mount point, a root with a second filesystem mounted over it, storage that cannot be judged, and a decoy entry that opens the volume are still refused.
@@ -330,11 +332,11 @@ Step 3, after deactivating: scan the raw decoy devices for the canary
 
 * `--device <DEVICE>` — Scan this block device instead of the mounted decoy devices (repeatable)
 
-   Name the unlocked decoy filesystem. A mounted device is classified by its mount. One that is not mounted is identified from its raw superblock, a whole disk partition by partition: an encrypted container (scan its unlocked mapping instead), a compressing or copy-on-write filesystem, or storage the scan does not identify is reported not checked rather than clean.
+   Name the unlocked decoy filesystem. A mounted device is classified by its mount, and an ext4 or f2fs also by its superblock, which shows the encrypt feature no mount option does. One that is not mounted is identified from its raw superblock, a whole disk partition by partition. An encrypted container (scan its unlocked mapping instead), a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with the encrypt feature, a device that holds the folder of an eCryptfs mount (the filesystem the folder lies on, a disk with that filesystem in a partition, a device below or above it), or storage the scan does not identify is reported not checked rather than clean.
 * `--offline` — Scan disk images or devices given with --image, not this machine's mounts
 * `--image <IMAGE>` — An image or device to scan in --offline mode (repeatable)
 
-   An image of the unlocked decoy filesystem, or of a whole disk, whose partitions are then classified one by one from their raw superblocks. An encrypted container (scan its unlocked mapping instead), a compressing or copy-on-write filesystem, or storage the scan does not identify is reported not checked rather than clean. So is an image cut short: an ext4, xfs or f2fs image that ends before its filesystem does, or a whole-disk image that ends before a partition its table lists or before the disk its GPT was written for. An empty image is not scanned.
+   An image of the unlocked decoy filesystem, or of a whole disk, whose partitions are then classified one by one from their raw superblocks. An encrypted container (scan its unlocked mapping instead), a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with the encrypt feature, or storage the scan does not identify is reported not checked rather than clean. So is an image cut short: an ext4, xfs, f2fs, vfat, exFAT or swap image that ends before its filesystem or swap area does, or a whole-disk image that ends before a partition its table lists or before the disk its GPT was written for. An empty image is not scanned. An offline scan reads no mount table, so it does not see an eCryptfs folder: scan a live device with --device instead.
 * `--token-file <FILE>` — Read the canary token from this file instead of the hidden volume's rehearsal state (--offline only)
 * `--allow-same-boot` — Scan even in the session the canary was planted in (proves little: the session's writes may not have reached the disk yet)
 * `--max-bytes <BYTES>` — Stop each device after this many bytes
@@ -411,21 +413,25 @@ EXAMPLES:
 
 ## `nails config`
 
-Inspect and check the configuration file (nails.toml)
+Inspect, check and change the configuration file (nails.toml)
 
 **Usage:** `nails config <COMMAND>`
 
 EXAMPLES:
-  nails config path                   Print the resolved config file path
-  nails config show                   Print the effective configuration
-  nails config show --example         Print a commented example config
-  nails config validate ./nails.toml  Strictly check a config file
+  nails config path                         Print the resolved config file path
+  nails config show                         Print the effective configuration
+  nails config show --example               Print a commented example config
+  nails config validate ./nails.toml        Strictly check a config file
+  nails config set persona.mode fresh-home  Change a key, keeping the comments
+  nails config unset nixos_flake            Remove a key, so its default applies
 
 ###### **Subcommands:**
 
 * `path` — Print the resolved configuration file path and whether it exists
 * `show` — Print the effective configuration and where each value comes from
 * `validate` — Check a configuration file strictly (syntax, types, unknown keys)
+* `set` — Set a key in the configuration file, keeping its comments and other keys
+* `unset` — Remove keys from the configuration file, so their defaults apply
 
 
 
@@ -459,6 +465,67 @@ Check a configuration file strictly (syntax, types, unknown keys)
 ###### **Arguments:**
 
 * `<PATH>` — File to check (default: the resolved configuration file)
+
+
+
+## `nails config set`
+
+Set a key in the configuration file, keeping its comments and other keys
+
+**Usage:** `nails config set <KEY> <VALUE>...`
+
+WHAT IT CHANGES:
+  The configuration beside the running nails on its hidden volume, or the
+  file --config names there. Only the keys named change: the comments, the
+  order and every other key stay as they were. The new file is checked as
+  `config validate` checks one, and replaces the old one at once. Nothing is
+  written when it is not valid, when the file lies on another volume, or when
+  a link or another filesystem is on the way to it. Change settings inside a
+  hidden session: the watcher and the sleep guard of a running session keep
+  the settings it started with until the next activation. While a session
+  runs or an activation enters one, the hidden volume root and the state
+  file stay where the session recorded them.
+
+EXAMPLES:
+  nails config set persona.mode fresh-home
+  nails config set minimum_space_mb 2000
+  nails config set persona.mask_inherited dropbox syncthing.service
+  nails config unset persona.mode nixos_flake
+
+###### **Arguments:**
+
+* `<KEY>` — The key, as docs/configuration.md lists it (`persona.mode`)
+* `<VALUE>` — The value; a list such as `persona.mask_inherited` takes one per entry
+
+
+
+## `nails config unset`
+
+Remove keys from the configuration file, so their defaults apply
+
+**Usage:** `nails config unset <KEY>...`
+
+WHAT IT CHANGES:
+  The configuration beside the running nails on its hidden volume, or the
+  file --config names there. Only the keys named change: the comments, the
+  order and every other key stay as they were. The new file is checked as
+  `config validate` checks one, and replaces the old one at once. Nothing is
+  written when it is not valid, when the file lies on another volume, or when
+  a link or another filesystem is on the way to it. Change settings inside a
+  hidden session: the watcher and the sleep guard of a running session keep
+  the settings it started with until the next activation. While a session
+  runs or an activation enters one, the hidden volume root and the state
+  file stay where the session recorded them.
+
+EXAMPLES:
+  nails config set persona.mode fresh-home
+  nails config set minimum_space_mb 2000
+  nails config set persona.mask_inherited dropbox syncthing.service
+  nails config unset persona.mode nixos_flake
+
+###### **Arguments:**
+
+* `<KEY>` — The keys, as docs/configuration.md lists them
 
 
 

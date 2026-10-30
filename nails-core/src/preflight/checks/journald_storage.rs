@@ -26,7 +26,7 @@
 //! Nothing here vacuums or rotates the decoy journal: destroying the decoy's
 //! own log history is itself a deniability tell.
 
-use super::systemd_conf::{self, Assignment};
+use super::systemd_conf::{self, Assignment, Unread};
 use crate::{Filesystem, runtime_safety};
 use std::path::Path;
 
@@ -137,9 +137,11 @@ fn resolve_storage(
 /// hint: a distro that keeps journald's pre-259 `auto` default documents it
 /// there, while a stale `/etc` comment is never trusted. The last commented
 /// `Storage=` under `[Journal]` wins, as journald would fold real assignments.
+/// A vendor file that is no regular file, or a larger one than any real
+/// configuration, gives no hint ([`systemd_conf::read_hint_text`]).
 fn vendor_storage_hint<F: Filesystem>(fs: &F, root: &Path) -> Option<JournaldStorage> {
     let path = root.join(VENDOR_CONF_DIR).join(JOURNALD_CONF);
-    let text = systemd_conf::read_config_text(fs, &path)?;
+    let text = systemd_conf::read_hint_text(fs, &path)?;
     let mut in_section = false;
     let mut hint = None;
     for line in text.lines() {
@@ -195,8 +197,9 @@ fn storage_credential<F: Filesystem>(
 /// The running service manager's major version, or `None` when it cannot be
 /// read or host interaction is skipped (a unit-test binary). `None` makes the
 /// built-in default fail closed, so a decoy of an unknown systemd is treated as
-/// persistent rather than assumed amnesic.
-fn host_systemd_major() -> Option<u32> {
+/// persistent rather than assumed amnesic. The logind and systemd-coredump
+/// readers take it too, to find the main file where the release looks for it.
+pub(super) fn host_systemd_major() -> Option<u32> {
     if runtime_safety::should_skip_host_interaction() {
         return None;
     }
@@ -222,7 +225,8 @@ pub fn effective_journald_storage<F: Filesystem>(fs: &F) -> JournaldStorage {
 /// [`effective_journald_storage`] for the system tree rooted at `root`. When no
 /// configuration file sets a valid `Storage=`, the `journal.storage` credential
 /// decides, and failing that journald's version-dependent built-in default
-/// ([`built_in_default`]).
+/// ([`built_in_default`]). A configuration NAILS cannot read as journald does
+/// ([`Unread`]) counts as persistent.
 pub fn effective_journald_storage_at<F: Filesystem>(fs: &F, root: &Path) -> JournaldStorage {
     storage_under_version(fs, root, host_systemd_major())
 }
@@ -234,13 +238,24 @@ fn storage_under_version<F: Filesystem>(
     root: &Path,
     systemd_major: Option<u32>,
 ) -> JournaldStorage {
-    let assignments = systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION);
-    resolve_storage(
+    resolved_storage(fs, root, systemd_major).unwrap_or(JournaldStorage::Persistent)
+}
+
+/// [`storage_under_version`], or the reason NAILS cannot tell where journald
+/// keeps the journal.
+fn resolved_storage<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    systemd_major: Option<u32>,
+) -> Result<JournaldStorage, Unread> {
+    let assignments =
+        systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION, systemd_major)?;
+    Ok(resolve_storage(
         storage_from(&assignments),
         storage_credential(fs, root, systemd_major),
         vendor_storage_hint(fs, root),
         systemd_major,
-    )
+    ))
 }
 
 /// Whether `/var/log/journal` is a real on-disk directory (not tmpfs, not
@@ -274,12 +289,20 @@ pub fn journald_persists_to_decoy<F: Filesystem>(fs: &F) -> bool {
     journald_persists_to_decoy_at(fs, Path::new("/"))
 }
 
-/// [`journald_persists_to_decoy`] for the system tree rooted at `root`.
+/// [`journald_persists_to_decoy`] for the system tree rooted at `root`. A
+/// configuration NAILS cannot read as journald does persists.
 pub fn journald_persists_to_decoy_at<F: Filesystem>(fs: &F, root: &Path) -> bool {
-    journal_persists_to_disk(
-        effective_journald_storage_at(fs, root),
+    journald_persistence_at(fs, root).unwrap_or(true)
+}
+
+/// Whether the journal persists to the decoy disk under `root`, or why NAILS
+/// cannot tell: journald's configuration holds an entry that the systemd
+/// releases do not read alike, or a file NAILS cannot read ([`Unread`]).
+pub fn journald_persistence_at<F: Filesystem>(fs: &F, root: &Path) -> Result<bool, Unread> {
+    Ok(journal_persists_to_disk(
+        resolved_storage(fs, root, host_systemd_major())?,
         persistent_journal_dir_present(fs, root),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -587,6 +610,58 @@ mod tests {
         assert_eq!(vendor_storage_hint(&RealFilesystem, root), None);
     }
 
+    /// A vendor file that is no regular file gives no hint, and is not opened:
+    /// a FIFO there blocked `check` in the open for good. The read runs on a
+    /// thread with a deadline of its own; past it, the test opens the FIFO's
+    /// other end so the blocked read ends, and fails.
+    #[test]
+    fn a_vendor_fifo_gives_no_hint_and_does_not_block() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let fifo = root.join(VENDOR_CONF_DIR).join(JOURNALD_CONF);
+        std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let reader_root = root.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(vendor_storage_hint(&RealFilesystem, &reader_root));
+        });
+        match receiver.recv_timeout(Duration::from_secs(30)) {
+            Ok(hint) => assert_eq!(hint, None),
+            Err(_) => {
+                use rustix::fs::{Mode, OFlags, open};
+                let _writer = open(&fifo, OFlags::WRONLY | OFlags::NONBLOCK, Mode::empty());
+                panic!("reading the vendor FIFO blocked for 30 s");
+            }
+        }
+    }
+
+    /// A vendor file of up to 1 MiB gives its hint. A larger one, more than
+    /// any real configuration holds, gives none: it is not read into memory,
+    /// and the default stays the fail-closed one.
+    #[test]
+    fn a_vendor_file_over_1_mib_gives_no_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut text = String::from("[Journal]\n#Storage=auto\n#");
+        text.push_str(&"x".repeat((1 << 20) - text.len() - 1));
+        text.push('\n');
+        assert_eq!(text.len(), 1 << 20);
+        write(root, "usr/lib/systemd/journald.conf", &text);
+        assert_eq!(
+            vendor_storage_hint(&RealFilesystem, root),
+            Some(JournaldStorage::Auto)
+        );
+
+        text.insert(text.len() - 1, 'x');
+        write(root, "usr/lib/systemd/journald.conf", &text);
+        assert_eq!(vendor_storage_hint(&RealFilesystem, root), None);
+    }
+
     #[test]
     fn explicit_persistent_persists() {
         let fs = MockFilesystem::new();
@@ -689,12 +764,73 @@ mod tests {
             "run/systemd/journald.conf.d/10-auto.conf",
             "[Journal]\nStorage=auto\n",
         );
-        let storage = effective_journald_storage_at(&RealFilesystem, root);
+        // From 256 journald reads the vendor main file, which the drop-in
+        // overrides.
+        let storage = storage_under_version(&RealFilesystem, root, Some(256));
         assert_eq!(storage, JournaldStorage::Auto);
         // No journal directory in the tree: auto stays volatile.
-        assert!(!journald_persists_to_decoy_at(&RealFilesystem, root));
+        assert!(!journal_persists_to_disk(
+            storage,
+            persistent_journal_dir_present(&RealFilesystem, root)
+        ));
         // With an on-disk journal directory, auto persists. (The tempdir itself
         // may sit on tmpfs, so the directory verdict is supplied directly.)
         assert!(journal_persists_to_disk(storage, true));
+    }
+
+    /// systemd 255, which Ubuntu 24.04 runs, reads journald's main file from
+    /// `/etc` alone. With that file gone, a `/run/systemd/journald.conf` that
+    /// sets `Storage=volatile` is not read: journald keeps its `auto` default
+    /// and persists to an on-disk `/var/log/journal`, where NAILS read the
+    /// `/run` file and passed. From 256 journald reads it; a release NAILS
+    /// cannot read counts as persistent.
+    #[test]
+    fn a_main_file_in_run_counts_only_from_256() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "run/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        let on_255 = storage_under_version(&RealFilesystem, root, Some(255));
+        assert_eq!(on_255, JournaldStorage::Auto);
+        // The tempdir may sit on tmpfs, so the directory verdict is supplied.
+        assert!(journal_persists_to_disk(on_255, true));
+        assert_eq!(
+            storage_under_version(&RealFilesystem, root, Some(256)),
+            JournaldStorage::Volatile
+        );
+        assert_eq!(
+            storage_under_version(&RealFilesystem, root, None),
+            JournaldStorage::Persistent
+        );
+    }
+
+    /// A configuration NAILS cannot read as journald does persists, whatever
+    /// its files set: from systemd 260 journald reads none of it, and its
+    /// default is `persistent` from 259. The reason names the entry.
+    #[test]
+    fn an_unread_configuration_counts_as_persistent() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(MAIN, "[Journal]\nStorage=volatile\n");
+        let entry = "/etc/systemd/journald.conf.d/50-x.conf";
+        fs.mock_set_directory_contents(
+            Path::new("/etc/systemd/journald.conf.d"),
+            vec![std::path::PathBuf::from(entry)],
+        );
+        fs.mock_set_path_type(entry, PathKind::Dir);
+        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Persistent);
+        assert!(journald_persists_to_decoy(&fs));
+        assert_eq!(
+            journald_persistence_at(&fs, Path::new("/")),
+            Err(Unread {
+                path: std::path::PathBuf::from(entry),
+                cause: systemd_conf::UnreadCause::NotRegular,
+            })
+        );
+
+        fs.mock_set_path_type(entry, PathKind::Missing);
+        assert_eq!(journald_persistence_at(&fs, Path::new("/")), Ok(false));
     }
 }

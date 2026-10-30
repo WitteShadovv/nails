@@ -4,13 +4,15 @@ The smoke scenario (``nix/distro-tests/tests/smoke.nix``) runs the same
 whole-root lifecycle on every distribution in the image table. A few of its
 assertions have to know the decoy's own shape -- where a hidden write lands
 depends on whether the tree it writes to is a filesystem of its own, and which
-boot filesystems a distribution mounts differs between families. The refusal
-scenario (``nix/distro-tests/refusal.nix``) compares listings of the hidden root
-and of the decoy's disk filesystems taken before and after NAILS refuses a
-family it has not admitted. Keeping that logic here, as pure functions with a
-unit-test suite, means the scenarios themselves stay thin driver scripts and the
-rules cannot drift unnoticed: the ``distro-checks`` flake check locks them on
-every ``nix flake check``, without a VM.
+boot filesystems a distribution mounts differs between families. It also
+compares the units failed each time it lists them with the failures the image
+table lists as known for the image. The refusal scenario
+(``nix/distro-tests/refusal.nix``) compares listings of the hidden root and of
+the decoy's disk filesystems taken before and after NAILS refuses a family it
+has not admitted. Keeping that logic here, as pure functions with a unit-test
+suite, means the scenarios themselves stay thin driver scripts and the rules
+cannot drift unnoticed: the ``distro-checks`` flake check locks them on every
+``nix flake check``, without a VM.
 
 Nothing here imports Nix or the test driver, so it runs under a plain
 ``python3 -m unittest``. The scenarios load it on the driver the same way they
@@ -22,7 +24,8 @@ from __future__ import annotations
 import json
 import re
 import shlex
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 # The hidden-volume layout the whole-root session writes, mirrored from
 # ``nails_session::session::layout``. A hidden write to a path on the decoy
@@ -538,3 +541,205 @@ def journal_traces(journal_json: str, tokens: Iterable[str]) -> list[str]:
         if any(token in text for token in wanted):
             found.append(_describe(entry))
     return found
+
+
+# --- The failures an image is known to show ----------------------------------
+#
+# An image-table entry can list the units its image is known to fail
+# (``knownFailedUnits`` in nix/distro-tests/images.json): the ones failed in
+# both hidden sessions and on the decoy after both ways back, each with a line
+# its failed start logs, and the ones the release's warning names that the
+# image does not install. The smoke scenario lists the failed units on the
+# decoy before the first switch and right after each switch, and compares each
+# listing with that list: a listing sees only what is failed at that moment,
+# not a unit that failed while a switch stopped the old system and that the new
+# system started again. It checks that each listed failure is the known one,
+# and that the ``platform`` row of ``check`` warns about every unit listed. A
+# known failure that is gone asks for the list, and then the warning, to be
+# narrowed; the scenario never requires the warning to go away.
+
+#: The image table, where a known failure is listed.
+TABLE_FILE = "nix/distro-tests/images.json"
+
+#: Where a release's warning is worded, for the messages that ask to narrow it.
+WARNING_FILES = (
+    "the caveat in nails-platform/src/platform/family.rs and docs/decoy-requirements.md"
+)
+
+#: The phases a ``knownFailedUnits`` table lists failed units for.
+PHASES = ("hiddenSession", "afterReturn")
+
+#: The unit types systemd knows, as the suffix of a unit name.
+UNIT_SUFFIXES = (
+    ".automount",
+    ".device",
+    ".mount",
+    ".path",
+    ".scope",
+    ".service",
+    ".slice",
+    ".socket",
+    ".swap",
+    ".target",
+    ".timer",
+)
+
+# The status circle systemctl puts before a failed unit on a terminal, in a
+# UTF-8 locale and in any other; ``--plain`` leaves it out.
+_STATUS_MARKS = ("\u25cf", "*")
+
+
+def parse_failed_units(output: str) -> set[str]:
+    """The units in ``systemctl list-units --state=failed --all --plain
+    --no-legend --no-pager`` output: the first field of each line.
+
+    A status circle in front of the name, which ``--plain`` leaves out, is not
+    taken for a unit.
+    """
+    units: set[str] = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if fields and fields[0] in _STATUS_MARKS:
+            fields = fields[1:]
+        if fields:
+            units.add(fields[0])
+    return units
+
+
+def failed_unit_mismatch(
+    observed: Iterable[str], expected: Iterable[str]
+) -> tuple[list[str], list[str]]:
+    """How the failed units ``observed`` differ from the ``expected`` ones.
+
+    The result is the unexpected units (failed, not expected) and the missing
+    ones (expected, not failed), each sorted.
+    """
+    seen, wanted = set(observed), set(expected)
+    return sorted(seen - wanted), sorted(wanted - seen)
+
+
+def unit_stem(unit: str) -> str:
+    """A unit name without its type suffix: ``chrony`` for ``chrony.service``."""
+    for suffix in UNIT_SUFFIXES:
+        if unit.endswith(suffix):
+            return unit[: -len(suffix)]
+    return unit
+
+
+def units_not_named(message: str, units: Iterable[str]) -> list[str]:
+    """The ``units`` whose stem ``message`` does not contain, ignoring case.
+
+    A warning that names chrony and CUPS covers ``chrony.service`` and
+    ``cups.service``. The result keeps the order of ``units``.
+    """
+    text = message.lower()
+    return [unit for unit in units if unit_stem(unit).lower() not in text]
+
+
+def listed_units(known: Mapping[str, Any]) -> list[str]:
+    """Every unit a ``knownFailedUnits`` table lists, in a phase or as not in
+    the image, sorted."""
+    units = set(known["notInImage"])
+    for phase in PHASES:
+        units.update(known[phase])
+    return sorted(units)
+
+
+def messages_since(journal_json: str, since_usec: int) -> list[str]:
+    """The messages of the ``journalctl -o json`` entries received at or after
+    ``since_usec``.
+
+    ``since_usec`` is a time on this boot's monotonic clock in microseconds, as
+    ``systemctl show`` gives a unit's ``InactiveExitTimestampMonotonic``, the
+    start of its latest run. Read from ``journalctl -u <unit>``, the result is
+    everything the unit logged since that start, which needs only the unit's
+    name on each entry. A soft-reboot keeps the boot and its clock, so what the
+    unit logged in an earlier phase stays before that start.
+    """
+    found: list[str] = []
+    for entry in _journal_entries(journal_json):
+        stamp = _journal_text(entry.get("__MONOTONIC_TIMESTAMP"))
+        if stamp.isdigit() and int(stamp) >= since_usec:
+            found.append(_journal_text(entry.get("MESSAGE")))
+    return found
+
+
+def unexpected_failures(where: str, name: str, units: Sequence[str]) -> str:
+    """Why the scenario stops on failed units its table does not list."""
+    return (
+        f"units failed {where} that knownFailedUnits does not expect on {name}:"
+        f" {', '.join(units)}. A change to NAILS or to the image made them fail;"
+        " their status is printed above."
+    )
+
+
+def known_failure_gone(
+    unit: str, where: str, name: str, phase: str, not_in_image: Sequence[str]
+) -> str:
+    """What to do when a listed unit no longer fails in a phase."""
+    message = (
+        f"{unit} no longer fails {where} on {name}. The known upstream failure is"
+        " gone there, probably fixed in a newer image. Remove it from"
+        f" knownFailedUnits.{phase} in {TABLE_FILE}."
+    )
+    if not not_in_image:
+        return f"{message} Then narrow the release's warning ({WARNING_FILES})."
+    return (
+        f"{message} The release's warning ({WARNING_FILES}) also covers what this"
+        f" image does not install: {', '.join(not_in_image)}. Check those on an"
+        " image that has them, or by hand, then narrow the warning to what still"
+        " fails. Remove the warning only when all of it is shown fixed."
+    )
+
+
+def failure_not_known(
+    unit: str, where: str, name: str, line: str, messages: Sequence[str]
+) -> str | None:
+    """None when the ``messages`` of a unit's failed start hold its known
+    ``line``; otherwise why its failure is not the known one."""
+    if any(line in message for message in messages):
+        return None
+    logged = "\n".join(messages) or "nothing"
+    return (
+        f"{unit} failed {where} on {name}, but its failed start did not log the"
+        f" known line {line!r}, so it fails in another way. Find out why before"
+        f" knownFailedUnits is changed. It logged:\n{logged}"
+    )
+
+
+def now_in_image(unit: str, name: str) -> str:
+    """What to do when a unit listed as not in the image is in it."""
+    return (
+        f"{unit} is now in the {name} image, so this test can observe it. Move it"
+        " from notInImage to hiddenSession and afterReturn with the line its"
+        " failed start logs, or, if it starts in every phase, narrow the"
+        f" release's warning ({WARNING_FILES}) to what still fails."
+    )
+
+
+def platform_row_problem(
+    row: Mapping[str, Any] | None, known: Mapping[str, Any], name: str
+) -> str | None:
+    """None when the ``platform`` row of ``check --json`` covers every unit the
+    ``knownFailedUnits`` table ``known`` lists; otherwise why it does not.
+
+    The rule goes one way: while the table lists a unit, the row must warn and
+    name it. A table that lists none asks nothing of the row, and the row never
+    has to pass, so a warning broader than the table, or one given for another
+    reason, is fine.
+    """
+    units = listed_units(known)
+    if not units:
+        return None
+    status = row.get("status") if row is not None else "missing"
+    message = str(row.get("message", "")) if row is not None else ""
+    unnamed = units_not_named(message, units)
+    if status == "warn" and not unnamed:
+        return None
+    wanted = unnamed if status == "warn" else units
+    return (
+        f"the platform row on {name} must warn and name {', '.join(wanted)} while"
+        f" knownFailedUnits lists them, but it is {status}: {message!r}. Keep that"
+        " part of the caveat until the unit is shown fixed and removed from the"
+        " table."
+    )

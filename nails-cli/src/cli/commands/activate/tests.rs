@@ -506,6 +506,42 @@ fn check_and_activate_take_the_same_options_from_the_same_flags() {
     }
 }
 
+/// The advisories come before what the switch does, each with its fix
+/// indented below it, so the operator reads them before answering; the
+/// overridden refusal stays with the switch's own lines.
+#[test]
+fn the_advisories_come_before_the_question() {
+    use nails_core::hidden_root::{Refusal, RefusalKind};
+    use nails_core::session::package_drift::Advisory;
+    let style = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    }
+    .stderr_style();
+    let advisory = Advisory {
+        name: "package-drift",
+        message: "the decoy changed 1 package".to_string(),
+        fix: Some("In a hidden session, update it.".to_string()),
+    };
+    let refusal = Refusal::new(
+        RefusalKind::SameDeviceAsRoot,
+        std::path::Path::new("/mnt/data"),
+    );
+    let lines = super::prompt_lines(style, Some(&refusal), &[advisory]);
+    assert_eq!(
+        lines,
+        vec![
+            "[WARN] the decoy changed 1 package".to_string(),
+            "    In a hidden session, update it.".to_string(),
+            "[WARN] Activation soft-reboots into the hidden session.".to_string(),
+            "    Every program closes and you are logged out; unsaved work is lost.".to_string(),
+            format!("    {}.", refusal.warning()),
+        ]
+    );
+    // Without advisories the question is as it was.
+    assert_eq!(super::prompt_lines(style, None, &[]).len(), 2);
+}
+
 /// `n` ends the activation with exit 130 (cancelled), the same as Ctrl+C at the
 /// prompt or any other signal cancel; only `y` goes on.
 #[test]

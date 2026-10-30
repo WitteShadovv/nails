@@ -20,7 +20,7 @@
 //! else. The advice never says to turn systemd-coredump off: without it the
 //! kernel writes a `core` file into the crashing program's working directory.
 
-use super::super::systemd_conf::{self, Assignment};
+use super::super::systemd_conf::{self, Assignment, Unread};
 use crate::Filesystem;
 use std::path::Path;
 
@@ -56,6 +56,9 @@ pub(super) struct CoredumpSettings {
     pub(super) storage: Option<Storage>,
     /// The last valid `ProcessSizeMax=` as written, with its value in bytes.
     pub(super) process_size_max: Option<(String, u64)>,
+    /// Why NAILS cannot read the configuration as systemd-coredump does, when
+    /// it cannot: what it applies is then not known.
+    pub(super) unread: Option<Unread>,
 }
 
 impl CoredumpSettings {
@@ -88,14 +91,36 @@ impl CoredumpSettings {
 
     /// The effective settings under `root`, with every drop-in. When no file
     /// exists at all, the defaults apply: the kernel's pipe to systemd-coredump
-    /// shows it is installed.
+    /// shows it is installed. A configuration NAILS cannot read as
+    /// systemd-coredump does is [`Unread`], which keeps no core off the disk.
     pub(super) fn read<F: Filesystem>(fs: &F, root: &Path) -> Self {
-        Self::from_assignments(&systemd_conf::section_assignments(
+        Self::read_under(
+            fs,
+            root,
+            super::super::journald_storage::host_systemd_major(),
+        )
+    }
+
+    /// [`Self::read`] under a service manager of major version
+    /// `systemd_major`, `None` when it is not known.
+    pub(super) fn read_under<F: Filesystem>(
+        fs: &F,
+        root: &Path,
+        systemd_major: Option<u32>,
+    ) -> Self {
+        match systemd_conf::section_assignments(
             fs,
             root,
             COREDUMP_CONF,
             COREDUMP_SECTION,
-        ))
+            systemd_major,
+        ) {
+            Ok(assignments) => Self::from_assignments(&assignments),
+            Err(unread) => Self {
+                unread: Some(unread),
+                ..Self::default()
+            },
+        }
     }
 
     fn effective_storage(&self) -> Storage {
@@ -103,9 +128,10 @@ impl CoredumpSettings {
     }
 
     /// Whether every core stays off the disk: only `Storage=none` with
-    /// `ProcessSizeMax=0` does that.
+    /// `ProcessSizeMax=0` does that, in a configuration NAILS can read.
     pub(super) fn keeps_cores_off_disk(&self) -> bool {
-        self.effective_storage() == Storage::None
+        self.unread.is_none()
+            && self.effective_storage() == Storage::None
             && self
                 .process_size_max
                 .as_ref()
@@ -115,6 +141,13 @@ impl CoredumpSettings {
     /// The warning for these settings, naming the fix for the platform, or
     /// `None` when no core reaches the disk.
     pub(super) fn finding(&self, is_nixos: bool) -> Option<String> {
+        if let Some(unread) = &self.unread {
+            return Some(format!(
+                "NAILS cannot tell whether systemd-coredump keeps core dumps on the decoy disk: \
+                 {unread}; {}",
+                unread.advice()
+            ));
+        }
         if self.keeps_cores_off_disk() {
             return None;
         }
@@ -259,6 +292,9 @@ mod tests {
             ("0K", Some(0)),
             ("0.0G", Some(0)),
             ("+0", Some(0)),
+            ("1E", Some(1 << 60)),
+            ("2P", Some(2 << 50)),
+            ("3T", Some(3 << 40)),
             ("32G", Some(32 << 30)),
             ("1.5K", Some(1536)),
             ("1G 512M", Some((1 << 30) + (512 << 20))),

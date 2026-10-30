@@ -10,9 +10,9 @@
 <text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" fill="#d5dde6" xml:space="preserve">
 <tspan x="16" y="57"><tspan fill="#9fb7d6">$ </tspan><tspan fill="#d5dde6" font-weight="bold">sudo /mnt/data/nails activate -y --overlay-only</tspan></tspan>
 <tspan x="16" y="75">Pre-activation decoy residue baseline: no known residue -&gt;</tspan>
-<tspan x="16" y="93">    /mnt/data/reports/activation-residue-2026-10-16T07-09-08-355362622-00-00.json</tspan>
+<tspan x="16" y="93">    /mnt/data/reports/activation-residue-2026-10-26T19-05-49-602864190-00-00.json</tspan>
 <tspan x="16" y="111">Preparing the hidden session (pre-flight, next root)...</tspan>
-<tspan x="16" y="129"><tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> Hidden session prepared in 0.4s</tspan>
+<tspan x="16" y="129"><tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> Hidden session prepared in 0.8s</tspan>
 <tspan x="16" y="147">  /nix/.ro-store: overlaid</tspan>
 <tspan x="16" y="165">  /nix/store: overlaid</tspan>
 <tspan x="16" y="183">  /tmp/shared: overlaid</tspan>
@@ -22,7 +22,7 @@
 <tspan x="16" y="255">    the hidden session's login screen (a display manager set to log an account in automatically logs</tspan>
 <tspan x="16" y="273">    it in again, as at boot).</tspan>
 </text>
-<text x="2" y="314" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures),</text>
-<text x="2" y="331" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">2026-10-16, standard output and standard error together, as the test records them. -y skips the confirmation</text>
-<text x="2" y="348" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">prompt. The soft-reboot follows the last line.</text>
+<text x="2" y="314" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output captured from the session-readme-captures NixOS VM test in run ID 40383365802 of the E2E workflow on</text>
+<text x="2" y="331" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">GitHub's hosted runners, 2026-10-26, standard output and standard error together, as the test records them. -y</text>
+<text x="2" y="348" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">skips the confirmation prompt. The soft-reboot follows the last line.</text>
 </svg>

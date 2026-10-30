@@ -184,6 +184,17 @@ pub fn print_activate_json_result(result: &ActivateResult<'_>, duration: f64) {
     crate::cli::output::envelope::print_envelope_line(&activate_envelope_line(result, duration));
 }
 
+/// A warning as the lines a person reads: its first line marked as a
+/// warning, and each line after it (the fix of a warning that has one)
+/// indented below it.
+pub fn warning_lines(style: nails_core::output::Style, warning: &str) -> Vec<String> {
+    let mut lines = warning.lines();
+    let first = style.marked(Mark::Warn, lines.next().unwrap_or_default());
+    std::iter::once(first)
+        .chain(lines.map(|line| format!("    {line}")))
+        .collect()
+}
+
 /// The human lines for a result: results on stdout, failures on stderr.
 fn human_lines(
     result: &ActivateResult<'_>,
@@ -212,7 +223,7 @@ fn human_lines(
                 }
             }
             for warning in &entry.warnings {
-                out.push(out_style.marked(Mark::Warn, warning));
+                out.extend(warning_lines(out_style, warning));
             }
             out.push(String::new());
             out.push(

@@ -61,8 +61,8 @@ fn at_least_is_inclusive_semver_comparison() {
     // patch. Each pair below puts one component in charge of the answer,
     // including the inclusive patch tie, so flipping a branch's comparison
     // to `<` or `==` changes a result here. (Turning the major or minor `>`
-    // into `>=` is an equivalent mutant: that branch runs only when the
-    // component differs, where `>=` and `>` agree, so no test can catch it.)
+    // into `>=` is an equivalent mutant, which .cargo/mutants.toml excludes
+    // with its reason.)
 
     // A version is at least itself (the inclusive patch tie).
     assert!(version("2.8.8").at_least(version("2.8.8")));
@@ -150,6 +150,11 @@ fn dpkg_status(state: &str, version: &str) -> String {
     )
 }
 
+/// The version of `cryptsetup-bin` dpkg's status file `status` records.
+fn dpkg_version_of(status: &str) -> Option<CryptsetupVersion> {
+    dpkg_version(&dpkg::parse_status(status))
+}
+
 #[test]
 fn reads_the_version_dpkg_records() {
     for (version, expected) in [
@@ -159,26 +164,26 @@ fn reads_the_version_dpkg_records() {
         ("2.8.0~rc1-1", CryptsetupVersion::new(2, 8, 0)),
     ] {
         assert_eq!(
-            dpkg_version(&dpkg_status("installed", version)),
+            dpkg_version_of(&dpkg_status("installed", version)),
             Some(expected),
             "{version}"
         );
     }
     // Files left on disk count; a removed package does not.
-    assert!(dpkg_version(&dpkg_status("triggers-pending", "2:2.7.5-2")).is_some());
+    assert!(dpkg_version_of(&dpkg_status("triggers-pending", "2:2.7.5-2")).is_some());
     assert_eq!(
-        dpkg_version(&dpkg_status("config-files", "2:2.7.5-2")),
+        dpkg_version_of(&dpkg_status("config-files", "2:2.7.5-2")),
         None
     );
     assert_eq!(
-        dpkg_version(&dpkg_status("not-installed", "2:2.7.5-2")),
+        dpkg_version_of(&dpkg_status("not-installed", "2:2.7.5-2")),
         None
     );
     // The library's version is not the tool's, and a status without the
     // tool names none.
-    assert_eq!(dpkg_version(""), None);
+    assert_eq!(dpkg_version_of(""), None);
     assert_eq!(
-        dpkg_version(
+        dpkg_version_of(
             "Package: libcryptsetup12\nStatus: install ok installed\nVersion: 2:2.7.5-2\n"
         ),
         None
@@ -396,7 +401,7 @@ proptest::proptest! {
             ),
         );
         proptest::prop_assert_eq!(
-            dpkg_version(&stanzas.join("\n")),
+            dpkg_version_of(&stanzas.join("\n")),
             Some(CryptsetupVersion::new(major, minor, patch))
         );
     }

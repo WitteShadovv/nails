@@ -16,6 +16,7 @@ from unittest import mock
 from ci import changes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 # The crates of the root workspace that the nails binary never links: flake.nix
 # builds it from their manifests alone, so their sources cannot change a VM
 # test, and a change to them must not boot one.
@@ -23,6 +24,7 @@ NOT_IN_THE_BINARY = frozenset({"nails-oracle"})
 
 NOTHING = {
     "rust": False,
+    "testdata": False,
     "fuzz": False,
     "side": False,
     "deps": False,
@@ -33,6 +35,7 @@ NOTHING = {
 }
 EVERYTHING = {
     "rust": True,
+    "testdata": True,
     "fuzz": True,
     "side": True,
     "deps": True,
@@ -62,9 +65,25 @@ def e2e_filter() -> re.Pattern[str] | None:
     return re.compile(match[1]) if match else None
 
 
+def ci_job(name: str) -> str:
+    """The lines of job ``name`` in ci.yml, up to the comment or job after it."""
+    jobs = CI_WORKFLOW.read_text(encoding="utf-8").partition("\njobs:\n")[2]
+    match = re.search(rf"^  {re.escape(name)}:\n((?:    .*\n|\n)*)", jobs, re.M)
+    if match is None:
+        raise AssertionError(f"ci.yml has no job {name}")
+    return match[1]
+
+
 class SelectTest(unittest.TestCase):
     def test_documentation_runs_the_docs_check(self) -> None:
-        paths = ["README.md", "CHANGELOG.md", "ROADMAP.md", "docs/ci.md", "LICENSE"]
+        paths = [
+            "CHANGELOG.md",
+            "ROADMAP.md",
+            "CONTRIBUTING.md",
+            "docs/ci.md",
+            "docs/architecture.md",
+            "LICENSE",
+        ]
         self.assertEqual(changes.select(paths), only("docs"))
 
     def test_no_change_runs_nothing(self) -> None:
@@ -85,6 +104,7 @@ class SelectTest(unittest.TestCase):
             "benches/performance.rs",
             ".cargo/config.toml",
             ".config/nextest.toml",
+            ".config/coverage.toml",
             "rust-toolchain.toml",
             "clippy.toml",
             "justfile",
@@ -104,6 +124,55 @@ class SelectTest(unittest.TestCase):
                 source = changes.select([f"{member}/src/lib.rs"])
                 self.assertEqual(source, only("rust"))
                 self.assertTrue(changes.select([f"{member}/Cargo.toml"])["rust"])
+
+    def test_files_the_rust_tests_read_run_the_rust_job(self) -> None:
+        # The tests read these from outside the crates: a change to one alone
+        # must still run them, or it would pass without the test that checks it.
+        for path in (
+            "copy-lint.toml",
+            "nails.1",
+            "docs/assets/screenshots/help.txt",
+            "docs/schemas/status.schema.json",
+            "docs/schemas/config.schema.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("testdata"))
+        for path in (
+            "README.md",
+            "docs/cli.md",
+            "docs/configuration.md",
+            "docs/decoy-requirements.md",
+            "docs/operator-guide.md",
+            "docs/threat-model.md",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("testdata", "docs"))
+        for path in (
+            "nix/e2e-tests/tests/session/session-lifecycle.nix",
+            "nix/e2e-tests/fixtures/configs/unknown-key.toml",
+            "nix/e2e-tests/fixtures/indicators.json",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("testdata", "nix"))
+
+    def test_files_no_rust_test_reads_leave_the_rust_job_alone(self) -> None:
+        for path in (
+            "docs/README.md",
+            "docs/ci.md",
+            "docs/schemas.md",
+            "docs/assets/screenshots/help.svg",
+            "docs/assets/screenshots/check.txt",
+            "gui/README.md",
+            "nix/e2e-tests/README.md",
+            "nix/e2e-tests/lib/helper.sh",
+            "nix/e2e-tests/fixtures/forensics/fls-sample.txt",
+            "nix/e2e-tests/fixtures/indicators.json.orig",
+            "fuzz/copy-lint.toml",
+            "nails.1.orig",
+        ):
+            with self.subTest(path=path):
+                selected = changes.select([path])
+                self.assertFalse(selected["rust"] or selected["testdata"])
 
     def test_fuzz_crate_runs_its_own_filter(self) -> None:
         for path in (
@@ -293,6 +362,45 @@ class E2EFilterTest(unittest.TestCase):
                 self.assertIsNone(self.relevant.search(path))
 
 
+class WorkflowTest(unittest.TestCase):
+    """ci.yml acts on every filter that select() sets.
+
+    A filter the workflow drops, or a job that no longer reads one, passes the
+    tests above and every check of the pull request: the job just never runs.
+    """
+
+    def test_the_changes_job_passes_on_every_filter(self) -> None:
+        # The step that runs changes.py prints a line per filter, and the job
+        # passes each one on under its own name.
+        job = ci_job("changes")
+        self.assertRegex(
+            job,
+            r"(?m)^ {8}id: filter\n(?: {8,}\S.*\n)*?"
+            r" {8}run: python3 -m ci\.changes ",
+        )
+        passed_on = re.findall(
+            r"^ {6}(\w+): \$\{\{ steps\.filter\.outputs\.(\w+) \}\}$", job, re.M
+        )
+        self.assertCountEqual(passed_on, [(name, name) for name in changes.FILTERS])
+
+    def test_the_jobs_read_the_filters_and_nothing_else(self) -> None:
+        # An output that changes.py does not print is empty, so a job gated on
+        # it alone would never run. A filter that no job reads gates nothing.
+        text = CI_WORKFLOW.read_text(encoding="utf-8")
+        read = set(re.findall(r"\bneeds\.changes\.outputs\.(\w+)", text))
+        self.assertEqual(read, set(changes.FILTERS))
+
+    def test_the_testdata_filter_runs_the_rust_job(self) -> None:
+        # Without this clause a change to a file only the Rust tests read would
+        # skip the rust job, and gate would pass it untested.
+        condition = re.search(r"^ {4}if: (.+)$", ci_job("rust"), re.M)
+        if condition is None:
+            raise AssertionError("ci.yml's rust job has no if:")
+        terms = [term.strip() for term in condition[1].split("||")]
+        self.assertIn("needs.changes.outputs.testdata == 'true'", terms)
+        self.assertIn("needs.changes.outputs.rust == 'true'", terms)
+
+
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(
         [
@@ -376,6 +484,7 @@ class MainTest(unittest.TestCase):
             self.run_main(),
             [
                 "rust=true",
+                "testdata=true",
                 "fuzz=true",
                 "side=true",
                 "deps=true",
@@ -392,6 +501,7 @@ class MainTest(unittest.TestCase):
                 self.run_main("--base", "HEAD^1"),
                 [
                     "rust=true",
+                    "testdata=true",
                     "fuzz=true",
                     "side=true",
                     "deps=true",
@@ -408,6 +518,7 @@ class MainTest(unittest.TestCase):
                 self.run_main("--base", "HEAD^1"),
                 [
                     "rust=false",
+                    "testdata=false",
                     "fuzz=false",
                     "side=false",
                     "deps=true",

@@ -5,7 +5,7 @@
 
 use super::{
     DeviceMapper, DmKind, Layer, LoopBacking, LoopDevice, LoopFollow, MAX_STACK_DEVICES, Partition,
-    SYS_BLOCK, SYS_CLASS_BLOCK, SYS_DEV_BLOCK,
+    SYS_BLOCK, SYS_CLASS_BLOCK, SYS_DEV_BLOCK, Walk,
 };
 use crate::Filesystem;
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
@@ -17,28 +17,40 @@ use std::path::{Path, PathBuf};
 /// as `follow` allows. A device reached twice is read once, and at most
 /// [`MAX_STACK_DEVICES`] devices are read.
 pub fn stack<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow) -> Vec<Layer> {
-    let mut layers = Vec::new();
+    walk(fs, top, follow, MAX_STACK_DEVICES).layers
+}
+
+/// Walk the stack down from `top` as [`stack`] does, reading at most `limit`
+/// devices, and say where the walk stopped short of the bottom: at the limit,
+/// or at a loop device `follow` lets it continue below when no block device
+/// sysfs shows holds what the loop device reads.
+pub fn walk<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow, limit: usize) -> Walk {
+    let mut walk = Walk::default();
     let mut seen = HashSet::new();
     let mut mounts = None;
     let mut pending = VecDeque::from([top.to_path_buf()]);
     while let Some(dir) = pending.pop_front() {
-        if layers.len() >= MAX_STACK_DEVICES {
-            break;
-        }
         let dir = canonical(fs, &dir);
-        if !seen.insert(dir.clone()) {
+        if seen.contains(&dir) {
             continue;
         }
+        if walk.layers.len() >= limit {
+            walk.cut_short = true;
+            break;
+        }
+        seen.insert(dir.clone());
         let mut layer = read_layer(fs, &dir);
         let slaves = sorted_listing(fs, &dir.join("slaves"));
         layer.slaves = names(&slaves);
         pending.extend(slaves);
-        if let Some(below) = below_loop(fs, &layer, follow, &mut mounts) {
-            pending.push_back(below);
+        match below_loop(fs, &layer, follow, &mut mounts) {
+            Below::Device(below) => pending.push_back(below),
+            Below::Unplaced => walk.unplaced_loops.push(layer.name.clone()),
+            Below::Stop => {}
         }
-        layers.push(layer);
+        walk.layers.push(layer);
     }
-    layers
+    walk
 }
 
 /// The sysfs directory of the block device a mount sits on, if any.
@@ -241,14 +253,28 @@ fn read_loop<F: Filesystem>(fs: &F, dir: &Path) -> Option<LoopDevice> {
     })
 }
 
-/// The device below a loop device that `follow` lets the walk continue into.
+/// Where a walk goes on below a device that may be a loop device.
+enum Below {
+    /// Into the device whose sysfs directory this is.
+    Device(PathBuf),
+    /// Nowhere: the device is no bound loop device, or `follow` stops at it.
+    Stop,
+    /// Nowhere it can name: `follow` lets the walk continue below the loop
+    /// device, but no block device sysfs shows holds what it reads.
+    Unplaced,
+}
+
+/// Where the walk goes on below `layer`, as far as `follow` lets it.
 fn below_loop<F: Filesystem>(
     fs: &F,
     layer: &Layer,
     follow: LoopFollow,
     mounts: &mut Option<Vec<MountEntry>>,
-) -> Option<PathBuf> {
-    match &layer.loop_device.as_ref()?.backing {
+) -> Below {
+    let Some(bound) = &layer.loop_device else {
+        return Below::Stop;
+    };
+    let below = match &bound.backing {
         LoopBacking::Block { name, .. } if follow >= LoopFollow::BlockDevices => {
             block_dir(fs, &Path::new(SYS_CLASS_BLOCK).join(name))
         }
@@ -256,8 +282,9 @@ fn below_loop<F: Filesystem>(
             let mounts = mounts.get_or_insert_with(|| fs.mount_table().unwrap_or_default());
             device_holding(fs, path, mounts)
         }
-        _ => None,
-    }
+        _ => return Below::Stop,
+    };
+    below.map_or(Below::Unplaced, Below::Device)
 }
 
 /// The device of the filesystem that holds `file`: the device number its

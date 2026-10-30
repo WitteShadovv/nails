@@ -8,7 +8,7 @@
 
 > **Amnesic decoy first.** NAILS requires a decoy base that keeps no durable
 > record of the hidden session. Activation fails closed on a persistent journald
-> journal or an active syslog/audit daemon. Read
+> journal, an active syslog/audit daemon or an armed kdump. Read
 > [decoy-requirements.md](decoy-requirements.md) and set the decoy up before you
 > rely on NAILS.
 
@@ -33,9 +33,10 @@ what you did.
 > - On the decoy you unlock and mount the hidden volume and run `nails check`
 >   and `nails activate` (once, before the first session, `nails init`; when
 >   needed, `nails recover` or `nails discard`). Do nothing else with the
->   tool there, and do not edit its configuration there either: do not read
->   `state.json`, and do not name the hidden volume, its mapper, its mount point
->   or the tool in any other command.
+>   tool there, and do not edit its configuration there either (`nails config
+>   set` belongs in the hidden session): do not read `state.json`, and do not
+>   name the hidden volume, its mapper, its mount point or the tool in any
+>   other command.
 > - Type those commands in a shell with history off — see
 >   [History off on the decoy](#history-off-on-the-decoy). Activation also kills
 >   the decoy's interactive shells, yours included, right before it starts the
@@ -179,10 +180,17 @@ Keep all of it `root`-owned on the hidden volume.
    `systemd-version` (254 or newer), `soft-reboot-units` (the units that
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
-   session and no leftovers of an interrupted one), `fstab-policy`,
+   session and no leftovers of an interrupted one), `shutdown-inhibitors` (no
+   program blocks shutdown: one that does, such as a package or firmware
+   update, is in the middle of something the switch would cut short; a logind
+   that does not answer whether one does fails it too, unless PID 1 says
+   logind does not run),
+   `fstab-policy`,
    `kernel-modules` (no hidden session deleted or replaced the running
    kernel's module tree or its index; it only warns, see
-   [below](#copy-up-cost-and-shadowed-decoy-updates)),
+   [below](#copy-up-cost-and-shadowed-decoy-updates)), `package-drift`
+   (hidden sessions' package database still follows the decoy's; it only
+   warns, see [below](#package-changes-in-hidden-sessions)),
    `hidden-volume`, `upper-fs-capability`,
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
    decoy's `/etc/nixos` names the hidden volume's device, mount point or the
@@ -229,8 +237,46 @@ Keep all of it `root`-owned on the hidden volume.
    PID 1 will, so a broken tree is refused before the switch instead of freezing
    the machine.
 7. It installs the transition step (a runtime drop-in for
-   `systemd-soft-reboot.service`), prints its result, kills the decoy's
-   interactive shells and soft-reboots. A second runtime drop-in clears the
+   `systemd-soft-reboot.service`) and prints its result. While a program
+   holds a shutdown block inhibitor (a package or firmware update in the
+   middle of its work), or logind does not answer whether one does, it stops
+   here: activation fails with the reason and removes everything it built,
+   with the decoy's shells and every other program left as they were.
+   Otherwise it kills the decoy's interactive shells and soft-reboots the way
+   `systemctl soft-reboot` does, through logind. logind first tells the
+   programs that wait for its shutdown signal that the system is going down
+   and waits for them, as at an ordinary shutdown, for at most
+   `InhibitDelayMaxSec=` (5 seconds by default; unattended-upgrades on Debian
+   and Ubuntu raises it to 30). unattended-upgrades' shutdown helper is one of
+   them: stopped without that signal, it writes a line to its log in
+   `/var/log/unattended-upgrades` that an ordinary shutdown does not. With
+   `Unattended-Upgrade::InstallOnShutdown` set, it installs the pending
+   updates on that signal, at every activation as at every shutdown, and the
+   switch waits for them, past logind's delay too
+   ([decoy requirements](decoy-requirements.md#ubuntu)). Activation stays
+   until PID 1 holds the soft-reboot's job: until then `status` shows it
+   activating and `recover` leaves it alone, and the decoy's desktop runs on,
+   so activation keeps killing every interactive shell opened meanwhile
+   (within about a tenth of a second after it starts), and kills them once
+   more when PID 1 holds the job. A terminal you open on the decoy in that
+   time closes again as soon as its shell is killed. When logind refuses
+   the soft-reboot, or
+   drops it (`shutdown -c`), or PID 1 refuses it when logind's delay ends,
+   nothing is queued: activation fails with the reason and removes everything
+   it built. A soft-reboot dropped or refused that late was refused after
+   logind's signal, so it is not free of traces: every program that waited
+   for the signal has acted on it. unattended-upgrades' helper has sent an
+   upgrade it found running SIGTERM and logged `Unattended-upgrade in progress
+   during shutdown` on the decoy disk, and has exited until the next boot. When
+   logind still holds the soft-reboot past its delay, activation drops it and
+   fails (systemd 257 and newer) or, where logind cannot drop it (systemd 256
+   and older), enqueues it with PID 1 directly, as logind would. It waits out
+   at most 120 seconds of logind's delay, and 10 more for logind and PID 1:
+   with `InhibitDelayMaxSec=` above 120 and a program that holds the switch
+   back that long, activation fails at 130 seconds on systemd 257 and newer,
+   and on 256 and older the direct soft-reboot stops that program, so
+   unattended-upgrades' helper then writes its stop line after all. A second
+   runtime drop-in clears the
    stop command of `blk-availability.service`, which Debian's and Ubuntu's
    lvm2 package enables: its `blkdeactivate -u` would unmount the hidden volume
    below `/run/nextroot` during the switch, or a LUKS or LVM decoy root on the
@@ -351,7 +397,12 @@ holds (the hidden session unmounted a carried filesystem, or mounted something
 on one) stops the way back instead of being left out or replaced: `deactivate`
 then refuses, and `emergency` powers off. It then marks the hidden backend's
 device-mapper stack for deferred removal, records the state as inactive and
-soft-reboots. A device it cannot mark (the hidden session removed `dmsetup`,
+soft-reboots, through logind as activation does. A program that holds a
+shutdown block inhibitor in the session, or a logind that does not answer
+whether one does, makes it refuse before it starts, with the session running
+on (`emergency` does not wait for it). When the soft-reboot is not started
+after all (logind refuses or drops it), the session runs on as well, but the
+disks it unmounted for the switch stay unmounted: `deactivate` names them. A device it cannot mark (the hidden session removed `dmsetup`,
 say) stays open after the switch, its key in RAM, until power-off:
 `deactivate` and `emergency` name it once the soft-reboot is enqueued
 (`backend_left_open` under `--json`). The orderly shutdown stops every hidden
@@ -400,6 +451,12 @@ journal that starts late:
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
   systemd 256 and newer;
 - the same boot ID and continuous uptime across both transitions;
+- where the way back set the kernel's process-number counter back, process
+  numbers out of order: the decoy's units after it can hold numbers below
+  those of kernel threads that started before them, which neither a cold boot
+  nor a plain soft-reboot gives (`ps -eo pid,lstart,comm --sort=pid` shows the
+  start times out of order), and a persistent decoy journal can hold the same
+  process numbers twice under one boot ID;
 - the network state the hidden session set up, as far as the way back does
   not put it back. Before the switch it puts back:
   - the links: it deletes the virtual links the session brought up (a tunnel,
@@ -591,7 +648,11 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
   is still mounted (for example because the configuration lives on it), it
   leaves the devices open and says so: unmount and close the volume yourself
   when you are done. It never reboots. In the hidden session it refuses and
-  points at `deactivate`. A plain `reboot` after an interrupted activation
+  points at `deactivate`. It refuses as well while the interrupted
+  activation's soft-reboot may still come (PID 1 has started it, logind holds
+  it back for a delay inhibitor and cannot drop it, as systemd 256 and older
+  cannot, or logind does not answer, unless PID 1 says logind does not run),
+  and drops one logind can drop first. A plain `reboot` after an interrupted activation
   needs no `recover`: the leftover next root is detached during it and the
   hidden volume's devices are closed, as a full reboot would.
 
@@ -631,7 +692,15 @@ autologin, like a restart of the desktop.
   in `/run`: `sudo /run/overlay-runtime/control emergency`.
 - On the decoy, emergency removes what an interrupted activation left (it
   detaches `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in),
-  like `recover`.
+  like `recover`, and drops the soft-reboot logind may still hold for that
+  activation: that soft-reboot would restart the decoy's userspace a few
+  seconds later, with records an ordinary boot never writes. A plain
+  `emergency` drops it first, and `--poweroff` and `--reboot` right after
+  their power action is enqueued, so they lose no time. Where it may still
+  come (logind cannot drop it on systemd 256 and older, or does not answer,
+  or PID 1 has already started it), emergency powers off (or reboots, as
+  asked) at once, without the orderly stop of the decoy's services, so that
+  soft-reboot cannot run first.
 
 The backend watcher (`[backend_watch]`) and the sleep guard (`[sleep_policy]`)
 run as runtime units of the hidden session from the RAM copy. The watcher's
@@ -984,17 +1053,57 @@ checked, never as clean:
   in its superblock; an f2fs made without it stores every file as it is. A zfs
   dataset has no block device of its own to read, so it is listed as not
   scanned and not checked;
+- NTFS, which can compress the files of a folder marked compressed: an `ntfs`
+  or `ntfs3` mount, an NTFS image or unmounted device, and any `fuseblk`
+  mount, the type ntfs-3g mounts NTFS as, which does not name the format;
+- file-level encryption: an ext4 or f2fs with the encrypt feature (fscrypt),
+  which the scan reads from its superblock whether it is mounted or not, and a
+  device that holds the folder of an eCryptfs mount (an encrypted home or
+  `Private` folder). That is the filesystem the folder lies on, and for a
+  device named with `--device` also a whole disk with that filesystem in a
+  partition, or a device below or above it (the partition under a LUKS or LVM
+  mapping, an md array's member, a loop device or a mapping built on the
+  partition or its disk, and a partition of such a device). Where the path to
+  the folder runs through a mount point that the path to the eCryptfs mount
+  does not, each filesystem mounted there counts, and so does the one below
+  them, since the mount table does not show which of them was there when the
+  folder was mounted. A `--device` the scan cannot place against such a folder,
+  because the folder lies on a tmpfs, an overlay, a FUSE or network filesystem
+  or in an image file stored on one, because more devices lie below its
+  filesystem or below the device than the scan follows, because the device
+  reads through a loop device a path that leads to no file (a deleted file, a
+  device node outside `/dev`), or because sysfs lists no block device at the
+  path, is reported as not checked too;
 - an encrypted container (LUKS or BitLocker), of which a raw read is
   ciphertext: scan its unlocked mapping (`/dev/mapper/<name>`) instead;
 - an LVM physical volume: scan each logical volume (`/dev/mapper/<vg>-<lv>`)
   instead;
 - storage on which the scan identifies no filesystem at all;
-- an image cut short, as a copy that stopped early leaves it: an ext4, xfs or
-  f2fs image that ends before its filesystem does, or a whole-disk image that
-  ends before a partition its table lists, or before the disk its GPT was
-  written for. The scan cannot tell when a bare filesystem of another kind,
-  such as vfat or swap, was cut short, so check that a copy finished before you
-  scan it.
+- an image cut short, as a copy that stopped early leaves it: an ext4, xfs,
+  f2fs, vfat or exFAT image that ends before its filesystem does, a swap image
+  that ends before its swap area does, or a whole-disk image that ends before a
+  partition its table lists, or before the disk its GPT was written for.
+
+File-level encryption escapes that list in these cases, and a device that
+holds it can read as clean:
+
+- an eCryptfs folder that is not mounted while the scan runs, since the scan
+  sees one only through its mount;
+- an eCryptfs mount that was moved (`mount --move`) after it was made, or
+  whose folder's filesystem was moved or detached (`umount -l`), since the
+  scan places the folder by the paths the mount table shows;
+- every eCryptfs folder in an `--offline` scan, which reads no mount table;
+- a device that a program serves from the storage of an eCryptfs folder (an
+  NBD or ublk device), which sysfs does not link to that storage, and one that
+  reaches the image file holding such a folder by another path than its loop
+  device shows (a hard link, another mount of the image's filesystem), as the
+  scan knows an image file by its path;
+- a vault a FUSE tool encrypts (gocryptfs, CryFS or EncFS, as Plasma Vaults
+  use), which the scan does not recognise at all.
+
+Log in as the eCryptfs folder's owner, which mounts it, and scan the decoy's
+devices on the decoy itself rather than an image of them. Do not take a clean
+scan of a disk that holds a FUSE tool's vault as proof.
 
 A mounted device is judged by its mount. A device that is not mounted
 (`--device`) or an image (`--offline --image`) has no mount to judge it by, so
@@ -1037,6 +1146,25 @@ See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, an
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
 hardening you configure yourself.
 
+### Changing settings
+
+Change `nails.toml` here, never on the decoy, and without an editor:
+
+```bash
+sudo <hidden-root>/nails config set persona.mode fresh-home
+sudo <hidden-root>/nails config unset nixos_flake
+sudo <hidden-root>/nails config show   # every effective value and its source
+```
+
+`config set` and `config unset` keep the file's comments and every other key,
+check the result as `config validate` does and replace the file at once, only
+when it lies on the hidden volume `nails` runs from. The backend watcher and the
+sleep guard of the running session keep the settings it started with, so a
+change reaches them at the next activation. The hidden volume root and the
+state file stay where the session recorded them: the way back reads the
+session's state there.
+[Changing settings](configuration.md#changing-settings) has the rules.
+
 ### Changing the hidden configuration
 
 On NixOS, `nixos-rebuild test` applies a change to the running hidden session.
@@ -1066,7 +1194,9 @@ step with what you test.
 
 On Debian and Ubuntu, change the hidden system like any other: `apt`, edits in
 `/etc`, `systemctl enable`. Every change lands in the upper and is the hidden
-configuration from then on.
+configuration from then on. A package change also gives hidden sessions a
+record of their own, which a later update of the decoy does not reach: see
+[Package changes in hidden sessions](#package-changes-in-hidden-sessions).
 
 ### Copy-up cost and shadowed decoy updates
 
@@ -1122,6 +1252,127 @@ seconds or minutes.
   confirms first; discarding `/nix` drops the hidden Nix store and warns first).
   For a separately overlaid filesystem it also removes that filesystem's upper.
   It is refused in the hidden session, where the upper is the live root.
+
+### Package changes in hidden sessions
+
+A hidden session can install, update and remove packages with the
+distribution's package manager, and the changes land in the upper like any
+other. The package manager keeps its record of what is installed there too,
+and that record is where hidden sessions and the decoy drift apart:
+
+- **dpkg** (Debian, Ubuntu) writes each change of a run to its journal in
+  `/var/lib/dpkg/updates` first, and its whole record, `/var/lib/dpkg/status`,
+  again at the end of the run (and after every 250 changes). The first
+  package a hidden session installs, updates or removes gives hidden sessions
+  a copy of the record of their own, which
+  they keep whatever the decoy does afterwards: after an update of the decoy
+  they run its new files under a record that still lists the old versions,
+  does not know the packages the decoy installed since, and lists the ones it
+  removed. Their `apt` then works from that old record.
+- **pacman** (Arch Linux) keeps one directory per package in
+  `/var/lib/pacman/local`, which the overlay merges: hidden sessions see the
+  decoy's packages with their own changes on top. A package that both a
+  hidden session and the decoy changed is listed twice in hidden sessions, and
+  they keep their own, older files of it over the decoy's; one a hidden
+  session removed and the decoy updated since is listed without its files.
+  After a full update in a hidden session and a later one on the decoy, a
+  hidden session can fail to start.
+- **rpm** (Fedora) keeps a SQLite database,
+  `/usr/lib/sysimage/rpm/rpmdb.sqlite`, with its write-ahead log next to it,
+  which hidden sessions copy at their first change and keep from then on, as
+  with dpkg.
+
+The `package-drift` check warns, and never refuses, when hidden sessions'
+record no longer follows the decoy's. For dpkg it names each package the decoy
+installed, updated or removed since hidden sessions made their copy of the
+record, with its version on each side, and leaves out the packages a hidden
+session changed itself: dpkg writes or deletes a package's files in
+`/var/lib/dpkg/info` whenever it changes the package, so their copies in the
+upper show which packages those are. For pacman it names each package listed
+twice or without its files. For rpm it reads both databases with a reader of
+its own (no SQLite library, no `rpm` command, nothing written), the
+transactions rpm committed to the write-ahead log but has not copied into the
+database yet included, and names each package the decoy installed, updated or
+removed since, as for dpkg. rpm keeps no file per package beside its database,
+so a package counts as one a hidden session changed when the upper holds, or
+deleted, one of the files the package installs by either side's record (not
+its directories, configuration files or ghost files, which other packages
+share or the operator edits), at the place rpm installed it: through the
+directory links that rpm's own records give, never read on the decoy. Fedora
+records a kernel's modules below `/lib`, which its `filesystem` package
+installs as a link to `usr/lib`, so a kernel update in a hidden session
+counts as its own by the modules it wrote below `/usr/lib` or the tree it
+deleted there. A package that installs no such file, other
+than the public keys rpm records as `gpg-pubkey`, which the check leaves out,
+is named when its record differs. Activation shows
+the same warning before it asks to log you out (unless `-y` skips the
+question), so you can answer no, and again among the warnings of its result,
+which then exits `9`. A hidden session that deleted or replaced the database
+itself draws a warning that names the `discard` that brings the decoy's back.
+Where the mount table cannot be read, the kernel's own word on each directory
+above a database or a package's file (`statx`) tells whether it lies on a decoy
+filesystem of its own, such as a separate `/var`. The check asks only about a
+directory whose own directories it has seen to be neither symbolic links nor
+automount points, such as an EFI system partition mounted on first use,
+since asking about a path below a link follows the link and asking about one
+below an automount point mounts it, and takes a directory the decoy lacks for
+no mount point.
+
+The check says it cannot tell only where nothing can decide without leaving a
+trace or reading what cannot be read:
+
+- an unprivileged `nails check` that would need to read the decoy's database
+  on a filesystem that keeps access times: only root reads it without changing
+  its access time, so it names the `sudo` line (on a filesystem mounted
+  `noatime` no read changes one, and the check reads it without root);
+- a symbolic link on the way to the decoy's database: following it changes the
+  link's access time;
+- a database or an upper that cannot be read (an I/O error, a file larger than
+  any package database, a dpkg record in a format NAILS does not know whose
+  copy differs from it, an rpm database whose pages or headers do not hold, an
+  rpm database or log over 4 GiB, one that records a directory, a file's path
+  or a link's target of 4096 bytes or more, longer than a path can be, one
+  whose packages, with the links they record and the paths resolved through
+  them, would take more than the 256 MiB of memory the check keeps for both
+  databases, or one rpm wrote while it was read, twice in a row);
+- links in rpm's records on the way to a package's file that make a loop, or
+  that lead to a path of 4096 bytes or more: no system resolves such a path,
+  so the check cannot tell where the file lies;
+- an rpm transaction stopped half way that left a rollback journal: rpm rolls
+  it back the next time it opens the database, so the check names neither
+  state;
+- a dpkg run stopped half way, in a hidden session or on the decoy, that left
+  its journal in `/var/lib/dpkg/updates` where hidden sessions see it: dpkg
+  adds the journal to its record the next time it runs, so the check names
+  neither record and gives the `sudo dpkg --configure -a` that finishes the
+  run, which apt asks for there too (the decoy's journal counts only once
+  hidden sessions keep a copy of the record, since before that they see the
+  decoy's record as the decoy does);
+- no mount table, and a kernel older than 5.8, which does not say what is a
+  mount point, or a directory on the way that the kernel cannot be asked
+  about.
+
+To bring hidden sessions back in line, make the decoy's changes in a hidden
+session too:
+
+- Debian and Ubuntu: `sudo apt-get update` and `sudo apt-get full-upgrade`,
+  then install there what the decoy installed and remove what it removed;
+- Arch Linux: install the decoy's version of each package the warning names
+  again from the decoy's package cache, `sudo pacman -U
+  /var/cache/pacman/pkg/<name>-<version>-<arch>.pkg.tar.zst`, or remove one a
+  hidden session had removed there again with `sudo pacman -R <name>`. A full
+  `pacman -Syu` in a hidden session also updates the kernel package when a
+  newer one is out, which deletes the running kernel's modules for every later
+  session (see [above](#copy-up-cost-and-shadowed-decoy-updates));
+- Fedora: `sudo dnf upgrade --refresh`, then install there what the decoy
+  installed and remove what it removed.
+
+Update the system on the decoy, and install in hidden sessions only what the
+hidden system needs and the decoy must not have. While no hidden session has
+changed a package, hidden sessions see the decoy's record as it is, updates
+included. With dpkg or rpm, the first package change in a hidden session means
+that every later update of the decoy needs the same update in a hidden
+session.
 
 ### On-screen visibility
 
@@ -1597,7 +1848,9 @@ real hardware:
   proprietary driver, docks and external displays;
 - the way back setting a MAC address back on a USB Ethernet adapter or Wi-Fi
   card whose driver refuses the change while the device is up: taking the
-  device down for it is tested against a simulated driver, not a real one;
+  device down for it is tested in a VM on an emulated NE2000 network card,
+  whose driver refuses the change in the same way, not on such an adapter or
+  card;
 - the way back deleting a Wi-Fi interface the session added on one of the
   decoy's radios (a monitor or access point interface): tested against a
   simulated `iw` and radio, not a real card;

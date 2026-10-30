@@ -6,7 +6,7 @@ name: CI
 # Pushes to main run every job and report a red run through report-status.
 # Pull requests into and pushes to `next`, the integration branch, run the
 # same way.
-# The commands live in the justfile, so `just ci-rust` reproduces the Rust
+# The commands live in the justfile, and `just ci-rust` runs most of the Rust
 # jobs locally; the E2E suite has its own workflow and required check.
 
 on:
@@ -44,6 +44,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      testdata: ${{ steps.filter.outputs.testdata }}
       fuzz: ${{ steps.filter.outputs.fuzz }}
       side: ${{ steps.filter.outputs.side }}
       deps: ${{ steps.filter.outputs.deps }}
@@ -96,21 +97,17 @@ jobs:
           save-if: false
 
       - name: Install just
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: just@1.58.0
           fallback: none
 
       # A manifest change (a version bump, a new dependency) without the
-      # matching Cargo.lock update fails here, before anything is built.
-      - name: Check that Cargo.lock is current
-        run: cargo metadata --locked --format-version 1 > /dev/null
-
-      # The fuzz crate is a workspace of its own, whose lock a version bump
-      # or a new dependency of a crate makes stale too; `just fuzz-lock`
-      # rewrites it from Cargo.lock.
-      - name: Check that fuzz/Cargo.lock is current
-        run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+      # matching Cargo.lock update fails here, before anything is built. So
+      # does a fuzz/Cargo.lock that such a change leaves stale: the fuzz crate
+      # is a workspace of its own, and `just fuzz-lock` rewrites its lock.
+      - name: Check that Cargo.lock and fuzz/Cargo.lock are current
+        run: just lock-check
 
       - name: Check formatting
         run: just fmt-check
@@ -127,12 +124,15 @@ jobs:
         run: just fuzz-targets
 
       - name: Check for orphan (undeclared) modules
-        run: ./scripts/check-orphan-modules.sh
+        run: just orphan-modules
 
+  # The tests of the workspace under coverage, and its doctests. It is the one
+  # job the testdata filter runs: the files outside the crates that the tests
+  # read, such as the JSON schemas and the docs they check.
   rust:
     name: rust
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.testdata == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
@@ -156,7 +156,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next' }}
 
       - name: Install test tools
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
@@ -230,11 +230,11 @@ jobs:
 
   # Order-independence gate for the Rust unit tests. The `rust` job runs the
   # suite through nextest, which isolates each test in its own process and so
-  # cannot see a leak through the shared process environment; this job runs both
-  # crates' unit tests threaded over a sweep of shuffled seeds, where such a
-  # leak fails. The libtest shuffle flag is unstable, so RUSTC_BOOTSTRAP lets the
-  # pinned stable compiler accept it (see the `shuffle` justfile recipe); no
-  # nightly toolchain is added.
+  # cannot see a leak through the shared process environment; this job runs the
+  # unit tests of every workspace crate threaded over a sweep of shuffled seeds,
+  # where such a leak fails. The libtest shuffle flag is unstable, so the test
+  # binaries run with RUSTC_BOOTSTRAP, which lets the stable test harness accept
+  # it (see the `shuffle` justfile recipe); no nightly toolchain is added.
   shuffle:
     name: shuffle
     needs: changes
@@ -257,7 +257,7 @@ jobs:
           save-if: false
 
       - name: Install just
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: just@1.58.0
           fallback: none
@@ -293,7 +293,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Install test tools
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
@@ -335,7 +335,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Install policy tools
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-deny@0.20.2,just@1.58.0
           fallback: none

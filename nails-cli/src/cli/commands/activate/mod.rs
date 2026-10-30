@@ -26,6 +26,7 @@ use nails_core::app::activate::{self, ActivateOptions, LockedActivation, Prepare
 use nails_core::hidden_root::Refusal;
 use nails_core::manager::EnterOutcome;
 use nails_core::session::Entry;
+use nails_core::session::package_drift::Advisory;
 use nails_core::{CliOverrides, NailsError, Verbosity};
 use std::io::IsTerminal;
 use std::time::Instant;
@@ -175,7 +176,11 @@ pub fn execute(
         crate::cli::output::eprintln_tolerating_broken_pipe(notice);
     }
     if !args.yes
-        && let Some(status) = stop_status(confirm_logout(settings, begun.locked.accepted()))
+        && let Some(status) = stop_status(confirm_logout(
+            settings,
+            begun.locked.accepted(),
+            &begun.locked.entry_advisories(),
+        ))
     {
         return report_cancelled(settings, status);
     }
@@ -406,27 +411,17 @@ fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration
     }
 }
 
-/// Ask on the terminal before logging the operator out. `accepted` is the
-/// refusal the operator overrode with `--allow-decoy-storage`, repeated here.
-fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> Answer {
-    use nails_core::output::Mark;
+/// Ask on the terminal before logging the operator out, after the lines of
+/// [`prompt_lines`].
+fn confirm_logout(
+    settings: &OutputSettings,
+    accepted: Option<&Refusal>,
+    advisories: &[Advisory],
+) -> Answer {
     use std::io::Write;
-    let style = settings.stderr_style();
     let mut stderr = std::io::stderr();
-    let _ = writeln!(
-        stderr,
-        "{}",
-        style.marked(
-            Mark::Warn,
-            "Activation soft-reboots into the hidden session."
-        )
-    );
-    let _ = writeln!(
-        stderr,
-        "    Every program closes and you are logged out; unsaved work is lost."
-    );
-    if let Some(refusal) = accepted {
-        let _ = writeln!(stderr, "    {}.", refusal.warning());
+    for line in prompt_lines(settings.stderr_style(), accepted, advisories) {
+        let _ = writeln!(stderr, "{line}");
     }
     let _ = write!(stderr, "    Continue? [y/N]: ");
     let _ = stderr.flush();
@@ -436,6 +431,32 @@ fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> Answ
         let _ = writeln!(stderr);
     }
     answer
+}
+
+/// What activation says before it asks to log the operator out: each of the
+/// `advisories`, the risks the entry does not refuse, with its fix below it;
+/// then what the switch does, with `accepted`, the refusal the operator
+/// overrode with `--allow-decoy-storage`, repeated.
+fn prompt_lines(
+    style: nails_core::output::Style,
+    accepted: Option<&Refusal>,
+    advisories: &[Advisory],
+) -> Vec<String> {
+    use nails_core::output::Mark;
+    let mut lines: Vec<String> = advisories
+        .iter()
+        .flat_map(|advisory| output::activate::warning_lines(style, &advisory.text()))
+        .collect();
+    lines.push(style.marked(
+        Mark::Warn,
+        "Activation soft-reboots into the hidden session.",
+    ));
+    lines
+        .push("    Every program closes and you are logged out; unsaved work is lost.".to_string());
+    if let Some(refusal) = accepted {
+        lines.push(format!("    {}.", refusal.warning()));
+    }
+    lines
 }
 
 #[cfg(test)]

@@ -76,6 +76,11 @@ pub enum MockOp {
     },
 }
 
+/// What `mount_root` says of each path set, or the kind of the error it
+/// gives there.
+type MountRoots =
+    HashMap<PathBuf, std::result::Result<crate::filesystem::MountRoot, std::io::ErrorKind>>;
+
 /// Mock filesystem for testing (no root privileges required)
 ///
 /// Uses in-memory state tracking to simulate filesystem operations.
@@ -124,6 +129,14 @@ pub struct MockFilesystem {
     /// reports as unreadable (permission denied) rather than walking.
     pub(super) unreadable_dirs: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) file_contents: Arc<Mutex<HashMap<PathBuf, String>>>,
+    /// Files that hold bytes rather than text, which
+    /// [`Filesystem::read_file_bytes`](crate::Filesystem::read_file_bytes)
+    /// gives and text reads refuse.
+    pub(super) file_bytes: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>>,
+    /// What [`Filesystem::mount_root`](crate::Filesystem::mount_root)
+    /// says of a path that is no link, or the kind of the error it gives; a
+    /// path not here is one of which the kernel does not say.
+    pub(super) mount_roots: Arc<Mutex<MountRoots>>,
     #[allow(clippy::type_complexity)]
     pub(super) files_with_pattern: Arc<Mutex<HashMap<(PathBuf, String), Vec<PathBuf>>>>,
     /// Device, dm name and label backing a mount point, keyed by mount point.
@@ -135,6 +148,11 @@ pub struct MockFilesystem {
     /// and only reads as unattached when a test maps it onto `/`'s id with
     /// [`mock_set_device_id`](Self::mock_set_device_id).
     pub(super) device_ids: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    /// Answers of [`Filesystem::inode`](crate::Filesystem::inode) a test set,
+    /// keyed by path: an inode, or the kind of error the lookup fails with. An
+    /// unset path that exists gets a per-path distinct inode (see
+    /// [`MockFilesystem::inode_impl`]), and one that does not, none.
+    pub(super) inodes: Arc<Mutex<HashMap<PathBuf, std::result::Result<u64, std::io::ErrorKind>>>>,
     /// Backing-file devices reported by
     /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device),
     /// keyed by loop device node. An unset node cannot be read.
@@ -190,9 +208,12 @@ impl MockFilesystem {
             nails_process_matches: Arc::new(Mutex::new(None)),
             unreadable_dirs: Arc::new(Mutex::new(HashSet::new())),
             file_contents: Arc::new(Mutex::new(HashMap::new())),
+            file_bytes: Arc::new(Mutex::new(HashMap::new())),
+            mount_roots: Arc::new(Mutex::new(HashMap::new())),
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
             device_ids: Arc::new(Mutex::new(HashMap::new())),
+            inodes: Arc::new(Mutex::new(HashMap::new())),
             loop_backing_devices: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
@@ -261,6 +282,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.device_ids
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.inodes
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

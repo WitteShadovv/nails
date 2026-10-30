@@ -258,18 +258,58 @@ const F2FS_FEATURES: u64 = 0x400 + 0x884;
 /// (`F2FS_FEATURE_COMPRESSION`).
 const F2FS_FEATURE_COMPRESSION: u32 = 0x2000;
 
+/// The f2fs feature flag of a filesystem that can encrypt
+/// (`F2FS_FEATURE_ENCRYPT`).
+const F2FS_FEATURE_ENCRYPT: u32 = 0x0001;
+
+/// Where an ext2/3/4 superblock keeps its incompatible feature flags:
+/// `s_feature_incompat`, 0x60 bytes into the superblock at 1 KiB.
+const EXT4_INCOMPAT: u64 = 0x400 + 0x60;
+
+/// The ext4 feature flag of a filesystem that can encrypt
+/// (`EXT4_FEATURE_INCOMPAT_ENCRYPT`).
+const EXT4_FEATURE_ENCRYPT: u32 = 0x1_0000;
+
+/// Whether the 32-bit feature flags `at` bytes into the region at `start`
+/// carry `flag`; `None` when the source ends before the flags, so they say
+/// nothing either way.
+fn feature(source: &RawSource, start: u64, at: u64, flag: u32) -> io::Result<Option<bool>> {
+    let mut features = [0u8; 4];
+    let read = source.read_at(&mut features, start.saturating_add(at))?;
+    Ok((read == features.len()).then(|| u32::from_le_bytes(features) & flag != 0))
+}
+
 /// Whether the f2fs at `start` was made with the compression feature
-/// (`mkfs.f2fs -O compression`), from its superblock's feature flags. A
-/// superblock that ends before its flags counts as one with the feature: what
-/// cannot be read is not shown to be verbatim.
+/// (`mkfs.f2fs -O compression`), from its superblock's feature flags; `None`
+/// when the source ends inside the superblock, before its flags.
 ///
 /// # Errors
 ///
 /// Propagates a read error.
-pub fn f2fs_compression(source: &RawSource, start: u64) -> io::Result<bool> {
-    let mut features = [0u8; 4];
-    let read = source.read_at(&mut features, start.saturating_add(F2FS_FEATURES))?;
-    Ok(read < features.len() || u32::from_le_bytes(features) & F2FS_FEATURE_COMPRESSION != 0)
+pub fn f2fs_compression(source: &RawSource, start: u64) -> io::Result<Option<bool>> {
+    feature(source, start, F2FS_FEATURES, F2FS_FEATURE_COMPRESSION)
+}
+
+/// Whether the filesystem of `format` at `start` has the encrypt feature
+/// (fscrypt, which `mkfs.ext4 -O encrypt` or `mkfs.f2fs -O encrypt` sets),
+/// from its superblock's feature flags. An ext2/3/4 or f2fs with it stores the
+/// files of an encrypted directory encrypted; no other format has it. `None`
+/// when the source ends inside the superblock of an ext2/3/4 or f2fs, before
+/// its flags.
+///
+/// # Errors
+///
+/// Propagates a read error.
+pub fn encryption_feature(
+    source: &RawSource,
+    start: u64,
+    format: &str,
+) -> io::Result<Option<bool>> {
+    match format {
+        "ext2/3/4" => feature(source, start, EXT4_INCOMPAT, EXT4_FEATURE_ENCRYPT),
+        "f2fs" => feature(source, start, F2FS_FEATURES, F2FS_FEATURE_ENCRYPT),
+        _ => Ok(Some(false)),
+    }
 }
 
 /// What a filesystem's superblock says about the bytes the filesystem spans.
@@ -279,15 +319,24 @@ pub enum RecordedSize {
     Bytes(u64),
     /// The format keeps no size [`recorded_size`] reads.
     Unrecorded,
-    /// The superblock records a block size the format never uses: its magic
-    /// matched other bytes by chance, and no such filesystem is there.
+    /// The superblock records what no filesystem of the format has, such as
+    /// a block size it never uses: its magic matched other bytes by chance,
+    /// and no such filesystem is there.
     Implausible,
 }
+
+/// The size of a page of a swap area whose magic is at 0xff6: the magic ends
+/// the first page, so it is 4 KiB.
+const SWAP_PAGE: u64 = 0xff6 + 10;
 
 /// How many bytes the filesystem of `format` at `start` says it spans: an
 /// ext2/3/4 superblock's block count times its block size, an xfs
 /// superblock's data blocks times its block size, an f2fs superblock's block
-/// count times its block size.
+/// count times its block size, a FAT, NTFS or exFAT boot sector's sector
+/// count times its sector size, and a swap header's last page plus one times
+/// the page. A boot sector whose sector is no power of two from 512 bytes to
+/// 4 KiB, or that counts no sector, is implausible, and so is a swap header
+/// of a version the kernel does not read or with no page past itself.
 ///
 /// # Errors
 ///
@@ -341,8 +390,71 @@ pub fn recorded_size(source: &RawSource, start: u64, format: &str) -> io::Result
                 RecordedSize::Implausible
             })
         }
+        "vfat" => {
+            // The BIOS parameter block: the bytes per sector at 0x0B and the
+            // sector count at 0x13, or at 0x20 where that one is zero (on a
+            // FAT32, and on any FAT of 65536 sectors or more).
+            let mut bpb = [0u8; 0x24];
+            source.read_at(&mut bpb, start)?;
+            let sectors = match le_u16(&bpb, 0x13) {
+                0 => le_u32(&bpb, 0x20),
+                sectors => sectors,
+            };
+            Ok(in_sectors(le_u16(&bpb, 0x0B), sectors))
+        }
+        "ntfs" => {
+            // The bytes per sector at 0x0B and the sector count at 0x28.
+            let mut bpb = [0u8; 0x30];
+            source.read_at(&mut bpb, start)?;
+            Ok(in_sectors(le_u16(&bpb, 0x0B), le_u64(&bpb, 0x28)))
+        }
+        "exfat" => {
+            // The sector count at 0x48 and log2 of the bytes per sector at
+            // 0x6C.
+            let mut boot = [0u8; 0x6D];
+            source.read_at(&mut boot, start)?;
+            let sector = 1u64.checked_shl(u32::from(boot[0x6C])).unwrap_or(0);
+            Ok(in_sectors(sector, le_u64(&boot, 0x48)))
+        }
+        "swap" => {
+            // The header's version at 1 KiB, then the number of its last
+            // page; past the end of the source both read as zero.
+            let mut info = [0u8; 8];
+            source.read_at(&mut info, start.saturating_add(0x400))?;
+            let last_page = match info {
+                [1, 0, 0, 0, page @ ..] => u32::from_le_bytes(page),
+                // Made on a big-endian machine: the kernel swaps its bytes.
+                [0, 0, 0, 1, page @ ..] => u32::from_be_bytes(page),
+                // The first version kept a map of its pages here, which no
+                // kernel since 2.5 reads.
+                _ => return Ok(RecordedSize::Implausible),
+            };
+            // The kernel refuses a swap area with no page past its header.
+            Ok(if last_page == 0 {
+                RecordedSize::Implausible
+            } else {
+                RecordedSize::Bytes((u64::from(last_page) + 1) * SWAP_PAGE)
+            })
+        }
         _ => Ok(RecordedSize::Unrecorded),
     }
+}
+
+/// The bytes `sectors` sectors of `sector` bytes span, as a FAT, NTFS or
+/// exFAT boot sector records them: implausible unless a sector is a power of
+/// two from 512 bytes to 4 KiB and there is one at least.
+fn in_sectors(sector: u64, sectors: u64) -> RecordedSize {
+    if sector.is_power_of_two() && (512..=4096).contains(&sector) && sectors > 0 {
+        RecordedSize::Bytes(sectors.saturating_mul(sector))
+    } else {
+        RecordedSize::Implausible
+    }
+}
+
+fn le_u16(bytes: &[u8], at: usize) -> u64 {
+    u64::from(u16::from_le_bytes(
+        bytes[at..at + 2].try_into().unwrap_or_default(),
+    ))
 }
 
 fn le_u32(bytes: &[u8], at: usize) -> u64 {

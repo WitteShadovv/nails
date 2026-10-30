@@ -186,7 +186,10 @@ pub enum Commands {
     #[command(name = "discard", hide = true)]
     Discard(DiscardArgs),
     /// Inspect and check the configuration file (nails.toml)
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Inspect, check and change the configuration file (nails.toml)"
+    )]
     Config(ConfigCommand),
     /// Print a shell completion script on stdout (for `source <(...)`)
     Completions(CompletionsArgs),
@@ -298,11 +301,12 @@ pub struct ActivateArgs {
     /// Allow a persistent decoy posture instead of refusing activation
     ///
     /// By default activation refuses a host that keeps forensic traces on the
-    /// decoy disk: a persistent systemd-journald journal, or an active
-    /// rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for
-    /// the soft-reboot, and while it starts again afterwards, would survive on
-    /// the decoy disk. This flag allows that risk for this activation only and
-    /// cannot be stored.
+    /// decoy disk: a persistent systemd-journald journal, an active
+    /// rsyslog/syslog-ng/auditd, or an armed kdump. What the decoy logs while
+    /// it shuts down for the soft-reboot, and while it starts again afterwards,
+    /// would survive on the decoy disk, and a kernel crash during the session
+    /// would leave a dump of its memory in /var/crash there. This flag allows
+    /// that risk for this activation only and cannot be stored.
     #[arg(long)]
     pub allow_persistent_decoy: bool,
 
@@ -530,11 +534,15 @@ pub struct RehearseScanArgs {
     /// Scan this block device instead of the mounted decoy devices (repeatable)
     ///
     /// Name the unlocked decoy filesystem. A mounted device is classified by
-    /// its mount. One that is not mounted is identified from its raw
-    /// superblock, a whole disk partition by partition: an encrypted
-    /// container (scan its unlocked mapping instead), a compressing or
-    /// copy-on-write filesystem, or storage the scan does not identify is
-    /// reported not checked rather than clean.
+    /// its mount, and an ext4 or f2fs also by its superblock, which shows the
+    /// encrypt feature no mount option does. One that is not mounted is
+    /// identified from its raw superblock, a whole disk partition by
+    /// partition. An encrypted container (scan its unlocked mapping instead),
+    /// a compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with
+    /// the encrypt feature, a device that holds the folder of an eCryptfs
+    /// mount (the filesystem the folder lies on, a disk with that filesystem
+    /// in a partition, a device below or above it), or storage the scan does
+    /// not identify is reported not checked rather than clean.
     #[arg(long = "device", value_name = "DEVICE", value_hint = ValueHint::FilePath, conflicts_with = "offline")]
     pub devices: Vec<std::path::PathBuf>,
 
@@ -547,11 +555,14 @@ pub struct RehearseScanArgs {
     /// An image of the unlocked decoy filesystem, or of a whole disk, whose
     /// partitions are then classified one by one from their raw superblocks.
     /// An encrypted container (scan its unlocked mapping instead), a
-    /// compressing or copy-on-write filesystem, or storage the scan does not
-    /// identify is reported not checked rather than clean. So is an image cut
-    /// short: an ext4, xfs or f2fs image that ends before its filesystem does,
-    /// or a whole-disk image that ends before a partition its table lists or
-    /// before the disk its GPT was written for. An empty image is not scanned.
+    /// compressing, copy-on-write or NTFS filesystem, an ext4 or f2fs with the
+    /// encrypt feature, or storage the scan does not identify is reported not
+    /// checked rather than clean. So is an image cut short: an ext4, xfs,
+    /// f2fs, vfat, exFAT or swap image that ends before its filesystem or swap
+    /// area does, or a whole-disk image that ends before a partition its table
+    /// lists or before the disk its GPT was written for. An empty image is not
+    /// scanned. An offline scan reads no mount table, so it does not see an
+    /// eCryptfs folder: scan a live device with --device instead.
     #[arg(long = "image", value_name = "IMAGE", value_hint = ValueHint::FilePath, requires = "offline")]
     pub images: Vec<std::path::PathBuf>,
 
@@ -618,10 +629,12 @@ pub struct CheckArgs {
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 #[command(after_long_help = "\
 EXAMPLES:
-  nails config path                   Print the resolved config file path
-  nails config show                   Print the effective configuration
-  nails config show --example         Print a commented example config
-  nails config validate ./nails.toml  Strictly check a config file")]
+  nails config path                         Print the resolved config file path
+  nails config show                         Print the effective configuration
+  nails config show --example               Print a commented example config
+  nails config validate ./nails.toml        Strictly check a config file
+  nails config set persona.mode fresh-home  Change a key, keeping the comments
+  nails config unset nixos_flake            Remove a key, so its default applies")]
 pub enum ConfigCommand {
     /// Print the resolved configuration file path and whether it exists
     Path,
@@ -645,7 +658,44 @@ pub enum ConfigCommand {
         #[arg(value_hint = ValueHint::FilePath)]
         path: Option<PathBuf>,
     },
+    /// Set a key in the configuration file, keeping its comments and other keys
+    #[command(after_long_help = CONFIG_SET_HELP)]
+    Set {
+        /// The key, as docs/configuration.md lists it (`persona.mode`)
+        key: String,
+
+        /// The value; a list such as `persona.mask_inherited` takes one per entry
+        #[arg(required = true, num_args = 1.., value_name = "VALUE")]
+        values: Vec<String>,
+    },
+    /// Remove keys from the configuration file, so their defaults apply
+    #[command(after_long_help = CONFIG_SET_HELP)]
+    Unset {
+        /// The keys, as docs/configuration.md lists them
+        #[arg(required = true, num_args = 1.., value_name = "KEY")]
+        keys: Vec<String>,
+    },
 }
+
+/// What `config set` and `config unset` change, shown under both.
+const CONFIG_SET_HELP: &str = "\
+WHAT IT CHANGES:
+  The configuration beside the running nails on its hidden volume, or the
+  file --config names there. Only the keys named change: the comments, the
+  order and every other key stay as they were. The new file is checked as
+  `config validate` checks one, and replaces the old one at once. Nothing is
+  written when it is not valid, when the file lies on another volume, or when
+  a link or another filesystem is on the way to it. Change settings inside a
+  hidden session: the watcher and the sleep guard of a running session keep
+  the settings it started with until the next activation. While a session
+  runs or an activation enters one, the hidden volume root and the state
+  file stay where the session recorded them.
+
+EXAMPLES:
+  nails config set persona.mode fresh-home
+  nails config set minimum_space_mb 2000
+  nails config set persona.mask_inherited dropbox syncthing.service
+  nails config unset persona.mode nixos_flake";
 
 /// `nails init` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]

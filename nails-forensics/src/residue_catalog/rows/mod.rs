@@ -4,11 +4,13 @@
 //! The catalog rows. Data only: no logic lives here.
 //!
 //! The rows are split by kind across sibling files — session residue in
-//! [`session`], setup traces in [`setup`] — and concatenated here, session
-//! classes first, into the one [`CATALOG`] the catalog reads. Keeping the split
-//! inside a `rows/` folder lets the catalog's own `mod.rs` keep a single
-//! `mod rows;` and `pub use rows::CATALOG;`, so adding a kind touches only this
-//! file and never the catalog module.
+//! [`session`] and, for the decoy's own services and mechanisms that act
+//! across a switch, in [`decoy_services`]; setup traces in [`setup`] — and
+//! concatenated here, session classes first, into the one [`CATALOG`] the
+//! catalog reads. Keeping the split inside a `rows/` folder lets the catalog's
+//! own `mod.rs` keep a single `mod rows;` and `pub use rows::CATALOG;`, so
+//! adding a kind or a file touches only this file and never the catalog
+//! module.
 //!
 //! Adding a row: give it a detector or a reason there is none, a VM test or a
 //! reason there is none, and a doc anchor that exists. Then regenerate the doc
@@ -17,28 +19,39 @@
 
 use super::ResidueClass;
 
+mod decoy_services;
 mod session;
 mod setup;
 
 /// Every class of residue, session classes first, then setup traces.
 ///
-/// Assembled at compile time from the per-kind row lists so the catalog stays a
+/// Assembled at compile time from the per-file row lists so the catalog stays a
 /// single `&'static [ResidueClass]`: the consumers, the docs generator and the
 /// tests read one slice regardless of how the rows are filed.
 pub const CATALOG: &[ResidueClass] = &{
-    const LEN: usize = session::ROWS.len() + setup::ROWS.len();
+    const PARTS: [&[ResidueClass]; 3] = [session::ROWS, decoy_services::ROWS, setup::ROWS];
+    const LEN: usize = {
+        let mut len = 0;
+        let mut part = 0;
+        while part < PARTS.len() {
+            len += PARTS[part].len();
+            part += 1;
+        }
+        len
+    };
     // ResidueClass is Copy, so the array starts from any row and is then
-    // overwritten in full, session rows first and setup rows after them.
+    // overwritten in full, each part's rows after the previous part's.
     let mut rows = [session::ROWS[0]; LEN];
-    let mut i = 0;
-    while i < session::ROWS.len() {
-        rows[i] = session::ROWS[i];
-        i += 1;
-    }
-    let mut j = 0;
-    while j < setup::ROWS.len() {
-        rows[session::ROWS.len() + j] = setup::ROWS[j];
-        j += 1;
+    let mut at = 0;
+    let mut part = 0;
+    while part < PARTS.len() {
+        let mut i = 0;
+        while i < PARTS[part].len() {
+            rows[at] = PARTS[part][i];
+            at += 1;
+            i += 1;
+        }
+        part += 1;
     }
     rows
 };

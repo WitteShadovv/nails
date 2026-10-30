@@ -224,6 +224,24 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), device_id);
     }
 
+    /// Set the inode [`Filesystem::inode`](crate::Filesystem::inode) reports
+    /// for `path`, as for the namespace files of two processes that share one.
+    pub fn mock_set_inode(&self, path: &Path, inode: u64) {
+        self.inodes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), Ok(inode));
+    }
+
+    /// Make [`Filesystem::inode`](crate::Filesystem::inode) fail for `path`
+    /// with an error of `kind`, as a lookup the caller may not make does.
+    pub fn mock_set_inode_error(&self, path: &Path, kind: std::io::ErrorKind) {
+        self.inodes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path.to_path_buf(), Err(kind));
+    }
+
     /// Set the device of the file the loop device `node` is bound to, as
     /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device)
     /// reports it. Unset, the node cannot be read, as without root.
@@ -345,6 +363,62 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned");
         contents.insert(path_buf, content.to_string());
+    }
+
+    /// Say whether `path` is the root of a mount, as `mount_root` gives it;
+    /// of a path not set it says nothing, as a kernel before 5.8, and a path
+    /// set as a link is one.
+    pub fn mock_set_mount_root(&self, path: &str, mount_root: bool) {
+        self.mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(
+                PathBuf::from(path),
+                Ok(crate::filesystem::MountRoot::Entry(Some(mount_root))),
+            );
+    }
+
+    /// Make `path` an automount point nothing is mounted on, as `mount_root`
+    /// gives it.
+    pub fn mock_set_automount(&self, path: &str) {
+        self.mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(
+                PathBuf::from(path),
+                Ok(crate::filesystem::MountRoot::Automount),
+            );
+    }
+
+    /// Make `mount_root` of `path` fail with an error of `kind`, as the
+    /// kernel's `statx` fails with `NotFound` for a path that does not exist.
+    pub fn mock_set_mount_root_error(&self, path: &str, kind: std::io::ErrorKind) {
+        self.mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(PathBuf::from(path), Err(kind));
+    }
+
+    /// Set a file that holds `bytes`, which need not be text: what
+    /// `read_file_bytes` and `read_file_range` read, and its size what
+    /// `file_size` gives. A text read of it fails as one of a file that is not
+    /// UTF-8 does.
+    pub fn mock_set_file_bytes(&self, path: &str, bytes: &[u8]) {
+        let path_buf = PathBuf::from(path);
+        {
+            let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
+            let entry = paths.entry(path_buf.clone()).or_default();
+            entry.exists = true;
+            entry.is_directory = false;
+        }
+        self.file_contents
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .remove(&path_buf);
+        self.file_bytes
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(path_buf, bytes.to_vec());
     }
 
     /// Set mock file size for file_size() tests

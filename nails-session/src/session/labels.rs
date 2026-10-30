@@ -5,8 +5,8 @@
 //!
 //! An overlay inode takes its SELinux label from the `security.selinux`
 //! attribute of the upper inode, and a file copied up keeps the label of the
-//! decoy file it copies. The directories NAILS itself creates on the hidden
-//! volume are neither: the root of each upper, and the empty home of the
+//! decoy file it copies. The directories NAILS itself creates in the uppers
+//! are neither: the root of each upper, and the empty home of the
 //! fresh-home persona with the parents it needs. On a hidden volume nobody
 //! relabelled they carry no label, or one the kernel derived from their parent
 //! there, so the policy sees the hidden `/` as `unlabeled_t`, and confined
@@ -22,29 +22,36 @@
 //! creates below them then takes its label from the policy, as on the decoy.
 //!
 //! Whether a copy must succeed depends on the host ([`Labels::for_host`]).
-//! Where the host facts report SELinux, a copy that fails refuses the entry: a
-//! hidden volume whose filesystem cannot store labels, a policy that does not
-//! let NAILS relabel, a decoy directory with no label to read. The facts report
-//! SELinux when `/sys/fs/selinux` exists or `/etc/selinux/config` names a mode
-//! or a policy ([`HostProfile::selinux`] is `Some`). That includes a host that
-//! keeps only the configuration file, `SELINUX=disabled` in it: its facts
-//! cannot be told apart from a mounted selinuxfs whose enforce flag could not
-//! be read, and refusing an entry is the safe side of that doubt. A host that
-//! was not detected at all counts the same way, since nothing rules SELinux
-//! out there. Where the facts report no SELinux, nothing reads the labels and
-//! the copy is best effort: a decoy directory without a label (the usual case
-//! there) or none at all, a filesystem without extended attributes, or a link
-//! or a file in place of an upper directory leaves the upper as it was, so such
-//! a host gets the same hidden root as before. Any other failure is an error
-//! either way.
+//! Where SELinux runs, a copy that fails refuses the entry: a hidden volume
+//! whose filesystem cannot store labels, a policy that does not let NAILS
+//! relabel, a decoy directory with no label to read. SELinux runs where the
+//! host facts report it ([`HostProfile::selinux`] is `Some`: `/sys/fs/selinux`
+//! exists, `/etc/selinux/config` names a mode or a policy, or the mount table
+//! lists a selinuxfs) and the mount table lists a selinuxfs
+//! ([`Selinuxfs::Mounted`]). A mount table that could not be read
+//! ([`Selinuxfs::Unknown`]) counts the same way, since nothing rules SELinux
+//! out there, and so does a host that was not detected at all. A host whose
+//! facts report SELinux while its mount table, read, lists no selinuxfs
+//! ([`Selinuxfs::NotMounted`]) does not run it: it keeps the configuration
+//! file of packages installed once, or boots with SELinux off, and no policy
+//! reads a label there. Such a host, and one whose facts report no SELinux,
+//! copies on a best effort basis: a label the decoy directory has is copied
+//! there too, but a decoy directory without a label (the usual case there) or
+//! none at all, a filesystem without extended attributes, or a link or a file
+//! in place of an upper directory leaves the upper as it was, so a decoy
+//! without labels gets the same hidden root there as before. Any other failure
+//! is an error either way. The activation says so in one line on a host that
+//! is configured for SELinux but does not run it
+//! ([`configured_but_not_running`]).
 //!
 //! # Where the copies go
 //!
-//! Nothing calls these yet. The entry is to make one [`Labels`] with
+//! The activation makes one [`Labels`] with
 //! `Labels::for_host(manager.host_profile())`, so a detection that failed
-//! counts as SELinux, carry it in [`EntryInputs`](super::entry::EntryInputs),
-//! and copy at three places, each before the overlay over that upper is
-//! mounted (an upper must not change under a mounted overlay):
+//! counts as SELinux, and carries it in
+//! [`EntryInputs::labels`](super::entry::EntryInputs::labels). The entry
+//! copies at three places, each before the overlay over that upper is mounted
+//! (an upper must not change under a mounted overlay):
 //!
 //! - **the root upper**: `make_layer` in [`super::entry`], after
 //!   `match_attributes(upper, like)`, as `copy_label(like, upper, labels)`.
@@ -56,10 +63,9 @@
 //!   filesystem ([`Paths::decoy`](super::Paths::decoy) of its mount point) for
 //!   the upper of [`Layout::mount_layers`](super::Layout::mount_layers), before
 //!   that filesystem's overlay is mounted;
-//! - **the home and its parents**: where `build` in [`super::entry`] calls
-//!   `fresh_home` for the fresh-home persona, at every entry that knows the
-//!   operator, whatever the persona mode. The home is found as `fresh_home`
-//!   finds it: the upper root is [`Layout::upper`](super::Layout::upper) for a
+//! - **the home and its parents**: `persona_home` in [`super::entry`], at every
+//!   entry that knows the operator, whatever the persona mode. The home is
+//!   found as `fresh_home` finds it: the upper root is [`Layout::upper`](super::Layout::upper) for a
 //!   home on the decoy root, else the upper of [`Layout::mount_layers`](super::Layout::mount_layers)
 //!   of the decoy filesystem `mount` it lives on, and `rest` is the home below
 //!   `mount`. In the fresh-home persona the call is in `fresh_home`, right
@@ -94,11 +100,11 @@
 //! it is when its decoy counterpart does not exist or has no label, or a
 //! filesystem stores no labels, and the walk stops at a link or a file in place
 //! of a directory; with [`Labels::Required`] every directory gets the label or
-//! the entry is refused. The wiring needs an entry test for this: an entry
-//! refused at the copy for a parent of the home, then a later entry, with the
-//! home in place, that labels that parent or is refused again, never one that
-//! goes on without the label, in the fresh-home persona and with the persona
-//! set to shared-home after the refusal.
+//! the entry is refused. The entry tests of the kernel tier hold the entry to
+//! this: an entry refused at the copy for a parent of the home, then a later
+//! entry, with the home in place, labels that parent or is refused again and
+//! never goes on without the label, in the fresh-home persona and with the
+//! persona set to shared-home after the refusal.
 //!
 //! The shared-home walk is for what a refused fresh-home entry leaves in the
 //! upper. An entry refused at its walk (the decoy has no home for the operator,
@@ -124,10 +130,17 @@
 //! entry without an operator walks nothing.
 //!
 //! `nextroot` needs no call: it only mounts the uppers prepared here. Every
-//! other directory the entry creates is made through the next root once the
-//! overlays are mounted (the mount points of the fstab policy and of the
-//! carried decoy filesystems, the persona's masks), and the kernel labels it
-//! by the policy, like a file the hidden session creates.
+//! other directory the entry creates in the hidden root is made through the
+//! next root once the overlays are mounted (the mount points of the fstab
+//! policy and of the carried decoy filesystems, the persona's masks), and the
+//! kernel labels it by the policy, like a file the hidden session creates.
+//! The directories the entry makes directly on the hidden volume beside the
+//! uppers take no label from the decoy: `root` itself, `root/mounts` and
+//! `root/mounts/<unit>`, the work directory of every overlay, and `root/cache`
+//! for a hidden NixOS build. They are no part of a merged view, so no overlay
+//! inode takes its label from them, but the hidden session sees them through
+//! the hidden volume's bind at its path, as `unlabeled_t` on a volume nobody
+//! relabelled.
 //!
 //! The hidden NixOS configuration is not covered yet. `init` writes it into
 //! the upper's `/etc/nixos` directly on the hidden volume, on NixOS and on any
@@ -138,7 +151,7 @@
 //! label onto an upper `/etc` that was not created through the overlay.
 
 use crate::error::{NailsError, Result};
-use nails_platform::HostProfile;
+use nails_platform::{HostProfile, Selinuxfs};
 use rustix::fs::{Mode, OFlags, XattrFlags};
 use rustix::io::Errno;
 use std::os::fd::OwnedFd;
@@ -166,7 +179,8 @@ pub enum Labels {
     /// The hidden root may need every label, for the reason given: a copy that
     /// fails refuses the entry.
     Required(Reason),
-    /// The host facts report no SELinux, so nothing reads the labels: a decoy
+    /// SELinux does not run (the host facts report none, or report it with no
+    /// selinuxfs mounted), so nothing reads the labels: a decoy
     /// directory that has none or does not exist, a filesystem that stores
     /// none, or a link or a file in place of an upper directory leaves that
     /// directory as it was.
@@ -176,9 +190,11 @@ pub enum Labels {
 /// Why [`Labels::Required`] applies, for a refusal to name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// The host facts report SELinux: `/sys/fs/selinux` exists, or
-    /// `/etc/selinux/config` names a mode or a policy.
-    SelinuxReported,
+    /// The mount table lists a selinuxfs: SELinux runs.
+    SelinuxRunning,
+    /// The host facts report SELinux, and the mount table that would tell
+    /// whether it runs could not be read.
+    MountsUnreadable,
     /// The host was not detected, so no facts rule SELinux out.
     HostUndetected,
 }
@@ -186,16 +202,27 @@ pub enum Reason {
 impl Labels {
     /// What a host with this profile needs (the one `NailsManager::host_profile`
     /// returns, `None` where the detection failed): [`Labels::Required`] where
-    /// its facts report SELinux ([`HostProfile::selinux`] is `Some`, see the
-    /// module docs) and where there is no profile at all,
-    /// [`Labels::BestEffort`] where they report none.
+    /// SELinux runs or may run (see the module docs) and where there is no
+    /// profile at all, [`Labels::BestEffort`] where it does not run.
     pub fn for_host(profile: Option<&HostProfile>) -> Self {
-        match profile {
-            None => Self::Required(Reason::HostUndetected),
-            Some(profile) if profile.selinux.is_some() => Self::Required(Reason::SelinuxReported),
-            Some(_) => Self::BestEffort,
+        let Some(profile) = profile else {
+            return Self::Required(Reason::HostUndetected);
+        };
+        match profile.selinux.as_ref().map(|selinux| selinux.selinuxfs) {
+            None | Some(Selinuxfs::NotMounted) => Self::BestEffort,
+            Some(Selinuxfs::Mounted) => Self::Required(Reason::SelinuxRunning),
+            Some(Selinuxfs::Unknown) => Self::Required(Reason::MountsUnreadable),
         }
     }
+}
+
+/// Whether the host facts report SELinux while the mount table, read, lists no
+/// selinuxfs: a host configured for SELinux that does not run it, where
+/// [`Labels::for_host`] copies on a best effort basis.
+pub fn configured_but_not_running(profile: Option<&HostProfile>) -> bool {
+    profile
+        .and_then(|profile| profile.selinux.as_ref())
+        .is_some_and(|selinux| selinux.selinuxfs == Selinuxfs::NotMounted)
 }
 
 /// What [`copy_label`] did.
@@ -412,9 +439,10 @@ fn refusal(decoy: &Path, upper: &Path, labels: Labels, failure: Failure) -> Nail
     NailsError::InvalidState(match labels {
         Labels::Required(reason) => {
             let reason = match reason {
-                Reason::SelinuxReported => {
-                    "the host facts report SELinux (/sys/fs/selinux exists, or \
-                     /etc/selinux/config names a mode or a policy)"
+                Reason::SelinuxRunning => "SELinux runs on this host (selinuxfs is mounted)",
+                Reason::MountsUnreadable => {
+                    "the host facts report SELinux and /proc/self/mounts could not \
+                     be read to tell whether selinuxfs is mounted"
                 }
                 Reason::HostUndetected => "the host could not be detected and may run SELinux",
             };

@@ -92,6 +92,7 @@ fn entry(warnings: Vec<String>) -> Entry {
             read_only_disks: false,
             failed_at_entry: Vec::new(),
             kernel_settings: Vec::new(),
+            pids: Default::default(),
         },
         decisions: vec![
             Decision::ReadOnlyBind {
@@ -199,6 +200,44 @@ fn quiet_entering_output_drops_the_details_but_keeps_the_warnings() {
         "{out:?}"
     );
     assert!(!out.iter().any(|line| line.contains("/boot")), "{out:?}");
+}
+
+/// A warning that carries its fix on a line of its own, as the package
+/// drift advisory does, shows the fix indented below it, and the envelope
+/// keeps both lines in one warning.
+#[test]
+fn a_warning_with_a_fix_shows_the_fix_below_it() {
+    let warning = "the decoy changed 1 package\nIn a hidden session, update it.";
+    let entry = entry(vec![warning.to_string()]);
+    let ascii = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let (out, _) = human_lines(&ActivateResult::Entering(&entry), 3.0, &ascii);
+    let at = out
+        .iter()
+        .position(|line| line == "[WARN] the decoy changed 1 package")
+        .unwrap_or_else(|| panic!("{out:?}"));
+    assert_eq!(out[at + 1], "    In a hidden session, update it.");
+
+    let value = envelope_value(&ActivateResult::Entering(&entry), 3.0);
+    assert_eq!(value["data"]["status"], "entering_with_warnings");
+    assert_eq!(value["data"]["warnings"][0], warning);
+}
+
+#[test]
+fn warning_lines_mark_the_first_line_only() {
+    let style = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    }
+    .stdout_style();
+    assert_eq!(warning_lines(style, "one line"), ["[WARN] one line"]);
+    assert_eq!(
+        warning_lines(style, "what\nfix\nmore"),
+        ["[WARN] what", "    fix", "    more"]
+    );
+    assert_eq!(warning_lines(style, ""), ["[WARN] "]);
 }
 
 #[test]

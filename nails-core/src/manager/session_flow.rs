@@ -46,6 +46,8 @@ use crate::error::{NailsError, Result};
 use crate::filesystem::Filesystem;
 use crate::platform::PlatformKind;
 use crate::session::entry::{self, EntryHost, EntryInputs};
+use crate::session::labels::{self, Labels};
+use crate::session::package_drift::{self, Advisory};
 use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
 use chrono::Utc;
@@ -150,6 +152,10 @@ pub enum RecoverError {
     /// An activation is entering the hidden root right now: its soft-reboot
     /// comes next, and recovering would pull its next root from under it.
     Entering,
+    /// The activation is gone, but its soft-reboot may still come: PID 1 has
+    /// started it, logind holds it and cannot drop it (systemd 256 and
+    /// older), or logind does not answer.
+    Switching,
     /// The recovery itself failed (the record could not be written).
     Failed(NailsError),
 }
@@ -167,6 +173,10 @@ impl std::fmt::Display for RecoverError {
             RecoverError::Entering => {
                 f.write_str("an activation is entering the hidden root right now")
             }
+            RecoverError::Switching => f.write_str(
+                "the interrupted activation's soft-reboot may still come: PID 1 has started it, \
+                 logind holds it and cannot drop it, or logind does not answer",
+            ),
             RecoverError::Failed(error) => write!(f, "{error}"),
         }
     }
@@ -376,6 +386,16 @@ impl<F: Filesystem> NailsManager<F> {
         let accepted_decoy_storage =
             accepted_decoy_storage(&self.filesystem, &hidden_root, self.allow)?;
         let builder = self.hidden_builder(nixos, options);
+        if labels::configured_but_not_running(self.host_profile()) {
+            tracing::info!(
+                "SELinux is configured on this host but selinuxfs is not mounted, so no \
+                 policy reads labels: the hidden root takes the decoy's SELinux labels \
+                 where it has them, best effort"
+            );
+        }
+        // The risks that do not refuse the entry, read before the next root
+        // is mounted: the result lists them with its warnings.
+        let advisories = self.advisories_on(machine, options);
         let inputs = EntryInputs {
             hidden_root: &hidden_root,
             decoy_root,
@@ -387,12 +407,19 @@ impl<F: Filesystem> NailsManager<F> {
             backend,
             persona: self.config.persona.clone(),
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
+            // Fail closed: a host that was not detected, or whose mount table
+            // could not be read, has no facts to rule SELinux out, so it needs
+            // the labels as one that runs it does.
+            labels: Labels::for_host(self.host_profile()),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
             accepted_decoy_storage,
             window_launcher: options.window_launcher.as_ref(),
         };
-        let prepared = entry::prepare(&machine.paths, &inputs, host)?;
+        let mut prepared = entry::prepare(&machine.paths, &inputs, host)?;
+        prepared
+            .warnings
+            .extend(advisories.iter().map(Advisory::text));
         let elapsed = started.elapsed();
         // The last boundary: once recorded, the caller only enqueues the
         // soft-reboot.
@@ -409,6 +436,43 @@ impl<F: Filesystem> NailsManager<F> {
             entry: Box::new(prepared),
             elapsed,
         })
+    }
+
+    /// What the operator should read before confirming an entry with
+    /// `options`: the risks that do not refuse it, which are whether hidden
+    /// sessions' package database still follows the decoy's
+    /// ([`package_drift`]). Read only, as root. Each is also reported to a
+    /// watching event stream, so a window shows it before its own
+    /// confirmation.
+    pub(crate) fn entry_advisories(&self, options: &EnterOptions) -> Vec<Advisory> {
+        self.entry_advisories_on(&Machine::system(), options)
+    }
+
+    fn entry_advisories_on(&self, machine: &Machine, options: &EnterOptions) -> Vec<Advisory> {
+        let advisories = self.advisories_on(machine, options);
+        for advisory in &advisories {
+            crate::reporter::progress::advisory(
+                advisory.name,
+                &advisory.message,
+                advisory.fix.as_deref(),
+            );
+        }
+        advisories
+    }
+
+    /// The advisories of an entry with `options` on `machine`.
+    fn advisories_on(&self, machine: &Machine, options: &EnterOptions) -> Vec<Advisory> {
+        let mounts = machine.mounts().ok();
+        let layout = crate::session::Layout::new(&self.config.hidden_volume_root);
+        package_drift::advisory(
+            &self.filesystem,
+            &machine.paths.root,
+            &layout,
+            mounts.as_deref(),
+            options.allow_decoy_storage,
+        )
+        .into_iter()
+        .collect()
     }
 
     /// Forget why the last switch was refused, wherever it was kept (the hidden
@@ -480,7 +544,13 @@ impl<F: Filesystem> NailsManager<F> {
         target: &dyn TargetHost,
         entry_host: &dyn EntryHost,
     ) -> Result<()> {
-        let enqueued = target.start_target("soft-reboot.target");
+        // A program that blocks shutdown refuses the switch before anything
+        // of it happens: before the decoy's shells die and before logind
+        // tells every program waiting for its signal that the system goes
+        // down.
+        let enqueued = target.may_switch().and_then(|()| {
+            target.start_target(nails_teardown::whole_root::tools::SOFT_REBOOT_TARGET)
+        });
         if enqueued.is_err() {
             entry::rollback(&machine.paths);
             let _ = entry_host.daemon_reload();
@@ -527,9 +597,17 @@ impl<F: Filesystem> NailsManager<F> {
         };
         // Leaving is a new switch: supersede the last one's refusal, if any.
         self.forget_refused_switch(&machine.paths);
+        let before = crate::StateFile::load(&self.state_file_path).ok();
         self.force_state(SystemState::Inactive)?;
         rustix::fs::sync();
-        crate::session::leave(&machine.paths, &mut plan, to, host)
+        let left = crate::session::leave(&machine.paths, &mut plan, to, host);
+        if left.is_err()
+            && let Some(before) = before
+        {
+            // Nothing was started: the session goes on, and so does its record.
+            let _ = self.restore_state_file(before);
+        }
+        left
     }
 
     /// Remove the leftovers of an interrupted entry on the decoy. Refused in
@@ -570,6 +648,11 @@ impl<F: Filesystem> NailsManager<F> {
                 _ => Ok(SessionRecovery::Clean),
             },
             SessionView::Interrupted { .. } => {
+                // A soft-reboot still to come would switch after the leftovers
+                // went: into a plain soft-reboot of the decoy.
+                if !host.drop_pending_switch() {
+                    return Err(RecoverError::Switching);
+                }
                 let paths = &machine.paths;
                 let plan = nails_teardown::whole_root::plan::Plan::load(&paths.plan()).ok();
                 let remaining = entry::rollback(paths);

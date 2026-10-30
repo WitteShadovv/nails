@@ -89,6 +89,11 @@ NAILS does not defend against:
 - **remote-service records**: anything a server, cloud service or peer device
   holds about what the hidden session did (accounts, sync state, mail, messages,
   access logs);
+- **decoys joined to a domain** (Active Directory or FreeIPA, through sssd):
+  the domain controller keeps its own records of the hidden session's logins
+  and account lookups, out of NAILS's reach, and NAILS is not tested on such
+  decoys. `nails check` and activation warn while sssd is in use on the decoy
+  (see [Decoys joined to a domain](decoy-requirements.md#decoys-joined-to-a-domain));
 - correlation through the network identifiers the hidden session shares with
   the decoy (see the next section);
 - operator mistakes such as skipping deactivation or leaving the backend
@@ -193,6 +198,12 @@ upper changes.
   instead, so the decoy home is not visible; see
   [Persona modes](configuration.md#persona-modes) and the
   [operator guide](operator-guide.md#shared-decoy-account-and-persona-modes).
+  Activation makes that home directly in the upper, before the overlay is
+  mounted, so it looks up and makes each directory on the way inside the
+  upper without following a symbolic link: a link a hidden session left
+  there in place of `/home` or a directory below it, absolute or relative,
+  could otherwise lead the new home, its mode, owner and opaque attribute
+  onto the decoy disk. Such a link refuses the activation.
   A separate hidden account does not exist yet.
 - **Inherited system and user units.** Every decoy system service the decoy
   enables starts again in the hidden session (unless a hidden NixOS
@@ -232,6 +243,22 @@ upper changes.
   the way back still cannot set back keeps the random one, until power-off,
   and nothing reports it: end such a session with `deactivate --poweroff` or
   `emergency --poweroff` when that address must never reach the decoy.
+- **SELinux labels.** On a host that runs SELinux, activation gives two kinds
+  of directory on the hidden volume the label of the decoy directory they
+  stand for: the root of each upper, which becomes the hidden `/` or the root
+  of an overlaid decoy filesystem, and each directory the upper holds below it
+  on the way to the operator's home. It only reads the decoy's labels, without
+  changing anything on the decoy, and writes each one onto the hidden volume
+  before the overlay over that upper is mounted. No other directory NAILS
+  makes on the hidden volume takes a label from the decoy, and on a volume
+  nobody relabelled each of them shows as `unlabeled_t`. Among them are
+  `root`, `root/mounts/<unit>` and the work directories (`root/work`,
+  `root/mounts/<unit>/work`), which the hidden session sees through the hidden
+  volume's bind at its path, and, where `init` was given `--hardware-config`,
+  the hidden `/etc/nixos` it makes in the root upper for the hidden NixOS
+  configuration, with the hidden `/etc` where it made that too. Where a label
+  cannot be copied, activation is refused (see the
+  [decoy requirements](decoy-requirements.md)).
 - **Remote state, never rolled back.** Deactivation leaves the upper on the
   hidden volume and changes nothing else. Anything the hidden session sent through a
   shared account, token or sync client lives on the remote, and a decoy sync
@@ -353,7 +380,7 @@ storage.
 
 The whole-root overlay cannot cover these. Each is either bounded by an
 assumption above or documented as a known gap. The table is generated from the residue catalog
-(`nails-forensics/src/residue_catalog/rows.rs`), which also holds the classes the
+(the rows under `nails-forensics/src/residue_catalog/rows/`), which also holds the classes the
 overlay does cover; [decoy-requirements.md](decoy-requirements.md#residue-catalog)
 has the whole catalog.
 
@@ -367,8 +394,8 @@ has the whole catalog.
 | [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) | A disk the hidden session mounts itself is a real disk outside every overlay: a read-write mount takes the session's writes, and mounting it rw already writes its superblock. | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | none: verify cannot tell what a session wrote to another disk |
 | [Hidden kernel records imported by the decoy journal](#residual-channels) | Records logged after the hidden journald stopped (PID 1's stop lines, a late /dev/kmsg writer) would be imported by the decoy journal, on disk with a persistent journal. | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `journal-scan` |
 | [Network state the hidden session created or changed](operator-guide.md#how-it-works) | The way back puts most of this back before the switch, after a deactivate and a plain emergency alike: it deletes the links the session created (its virtual links, and the Wi-Fi interfaces it added on a decoy radio), sets each device's MAC address back (taking the device down for the change when its driver refuses it while the device is up) and the hostname, deletes the policy-routing rules and nftables tables the session added, writes back the network settings for all devices and for new ones (net.ipv4.ip_forward and the all and default keys of net.ipv4.conf and net.ipv6.conf), and puts the per-link NetworkManager and systemd-resolved state under /run back in place, so the decoy's NetworkManager does not adopt a session link or record a profile for it in /var/lib/NetworkManager/timestamps. What it leaves stays until power-off: the addresses and routes the session gave the decoy's own devices, what the session added inside a firewall table the decoy already had or with legacy iptables, the settings of a single device, anything the session deleted or renamed (a decoy Wi-Fi interface that software in the session replaced with its own included, which leaves that radio without Wi-Fi), a MAC address the way back cannot set back, every firewall table on a decoy without nft, and a part of the state activation could not record in full. A firewall table a VPN app leaves to block traffic keeps the decoy offline. | A deactivate or a plain emergency puts most of it back on its own. Stop VPN apps, containers and virtual machines in the session before you deactivate (wg-quick down, nmcli connection down, the app's own disconnect), keep nftables installed on the decoy so the way back sees the firewall tables, and end the session with `--poweroff` when none of its network state may reach the decoy. | none: a link the decoy adopted looks like one the decoy made itself |
-| [Soft-reboot counter and boot ID](#residual-channels) | Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. | Power off after the session; keep the decoy journal volatile. | none: RAM only, gone at power-off |
-| [Login and boot records around a switch](#residual-channels) | A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian 13 with wtmpdb the boot row would be named soft-reboot, or, with the writer kept from the system bus before the kernel has been up for five minutes, dated to the decoy's cold boot, which wtmpdb last lists as a crash; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Ordinary use writes none of these. Where the decoy keeps classic wtmp, the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low; they stay in the file on the decoy disk, next to the low numbers of every earlier boot. | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. The process numbers of the records written after the way back still continue from the decoy's boot; only ending the session with --poweroff, which has no way back, leaves none of them. | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran |
+| [Soft-reboot counter and boot ID](#residual-channels) | Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. Where the way back set the process-number counter back, the decoy's units after it can hold numbers below those of kernel threads that started before them, an order neither a cold boot nor a plain soft-reboot gives (`ps -eo pid,lstart,comm --sort=pid` shows it), and a persistent decoy journal can hold the same process numbers twice under one boot ID. | Power off after the session; keep the decoy journal volatile. | none: RAM only, gone at power-off |
+| [Login and boot records around a switch](#residual-channels) | A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian 13 with wtmpdb the boot row would be named soft-reboot, or, with the writer kept from the system bus before the kernel has been up for five minutes, dated to the decoy's cold boot, which wtmpdb last lists as a crash; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Ordinary use writes none of these. Where the decoy keeps classic wtmp, the getty and login records written after the way back would also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low; they would stay in the file on the decoy disk, next to the low numbers of every earlier boot. | The way back dates the decoy's start with the time of the switch, without masking either writer, so no row goes missing: the wtmpdb boot writer starts in a time namespace whose boot clock starts at the switch and itself writes the ordinary reboot row, and a backdated classic-wtmp boot record is corrected to that time, so the login and boot records read as one clean power cycle. Until the next power-off, anyone with a shell on the decoy sees the one-shot that did this in the journal and both units loaded from files that are gone in systemctl status. As its last step before the decoy starts, the way back also sets the kernel's process-number counter back: the entry records the number the decoy's boot gave its getty (else logind), the hidden session's own start shows how many numbers a start uses up to its copy of it, and the counter goes that many below. Where the getty is what it measures by, the decoy's getty gets about the number its own boot gave it, as far as the hidden start runs about as many processes up to its getty as the decoy's does. A getty or logind started more than a minute after the oldest process of its start that still runs, such as a getty started again after a logout, is passed over. When the getty is passed over, the measure goes by logind, or, without logind either, the counter goes to just below the lowest number the decoy's own userspace held at entry, and no test checks where the getty lands then. The decoy's other units are not measured. That step is best effort: where it cannot write the counter, deactivate warns before the switch and the numbers continue from the decoy's boot, and where it has neither a getty nor logind to measure by, deactivate warns as well; only ending the session with --poweroff, which has no way back, leaves none of them then. | none: the records are the decoy's own; verify reports the pieces the way back leaves in /run when their step never ran |
 | [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) | Anyone with a shell sees with findmnt that the decoy's root and the mounts its initrd made (such as the store bind) were made again after the boot, where a plain soft-reboot keeps them. A mount made after the boot by hand or by a service comes back as well, where a plain soft-reboot unmounts it. A decoy mount the way back cannot make again (a filesystem that another mount covers at a place the session carries, NixOS's /etc overlay) is missing until it is mounted again. | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | none: RAM only, gone at power-off |
 | [EFI NVRAM, RTC and firmware pstore](#invariant) | These are not filesystem writes, so the overlay cannot redirect them; other software in the session can write them. | NAILS never writes NVRAM; avoid firmware tools inside the session. | none: EFI variables and firmware storage are not part of a disk image |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) | RAM holds hidden-session data until the machine is powered off; a warm reboot does not clear it. | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | `memory-swap` |
@@ -382,6 +409,7 @@ has the whole catalog.
 | [Snapper timeline snapshots](decoy-requirements.md#session-time-records) | Snapper keeps timeline snapshots of btrfs subvolumes and a bookkeeping record of each under /.snapshots and /var/lib/snapper, every one stamped with its time. A timeline snapshot taken while the machine runs dates that activity, and an older snapshot preserves decoy state for an examiner to compare. | Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity. | path probe (info) |
 | [Copy-on-write and compressed storage history](#residual-channels) | A copy-on-write filesystem keeps old copies of overwritten or deleted blocks in extents the live tree no longer references, recoverable with filesystem-specific tools. A raw scan reads those extents, so a leaked-then-deleted trace is still found there; but the same filesystems compress file contents, per file or subvolume and invisibly to the mount options, and a raw plaintext scan cannot read a compressed extent. | Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean. | none: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean: a mounted one (a zfs dataset included) by its mount, an image or an unmounted device by its superblock, and a whole disk partition by partition, where an encrypted partition, or one on which no filesystem is identified, is not checked either |
 | [Fedora GRUB boot-success state](decoy-requirements.md#session-time-records) | Fedora's boot-success logic writes boot_success and boot_indeterminate into the GRUB environment block after a boot. The way back is a boot of the decoy, so the block can record it and the counter can move, where a plain power cycle would not. | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | path probe (info) |
+| [sssd and the domain controller's records](decoy-requirements.md#decoys-joined-to-a-domain) | On a decoy joined to a domain (Active Directory or FreeIPA, through sssd) the hidden session's logins and account lookups reach the domain controller as the decoy's do, and the controller keeps its own records of them, with their times, where nothing NAILS does reaches them. In the hidden session sssd's caches and logs land in the upper; the decoy's own sssd, stopped before the switch and started again after the way back, logs both under /var/log/sssd on the decoy disk by default, as at any shutdown and boot. | NAILS is not tested on decoys joined to a domain; check and activation warn while sssd is in use on the decoy. Use a decoy that is not joined to a domain, and where nothing on it needs sssd, disable it. | none: the domain controller keeps its records on the controller, out of reach of any scan of this computer; what a scan of the decoy disk sees of sssd is the decoy's own, its caches under /var/lib/sss and the lines it logs under /var/log/sssd when it stops before the switch and starts after the way back, as at any shutdown and boot |
 <!-- residue-catalog:end residual -->
 
 ## Answer to "cannot trust the OS"
@@ -468,18 +496,71 @@ it and the wtmpdb writer's unit loaded from files that are gone, the writer's
 unit with the start command and the drop-in the way back gave it. `nails
 verify` reports any of the pieces still in `/run` when their step never ran.
 
-One difference is left. Where the decoy keeps classic wtmp, the getty and login
-records written after the way back carry process numbers that continue from the
-decoy's boot, where a fresh kernel starts them low. Ubuntu 24.04 and NixOS keep
-it, and so does Debian 13: its getty still adds a record with its process number
-to `/var/log/wtmp` each time it starts, although `last` there reads wtmpdb.
-These records are written to the decoy disk and stay after any later power-off,
-next to the low numbers of every earlier boot in the same file, so the file
-itself holds the baseline that sets them apart. The way back corrects only a
-backdated boot record in that file and leaves these as they are. wtmpdb keeps no
-process numbers, so on Debian 13 the tell is in `/var/log/wtmp`, not in the
-wtmpdb database. Only a session ended with `deactivate --poweroff` (or
-`emergency --poweroff`), which has no way back, leaves none of it.
+Where the decoy keeps classic wtmp, the getty and login records written after
+the way back would also carry process numbers that continue from the decoy's
+boot, where a fresh kernel starts them low. Ubuntu 24.04 and NixOS keep classic
+wtmp, and so does Debian 13: its getty still adds a record with its process
+number to `/var/log/wtmp` each time it starts, although `last` there reads
+wtmpdb. These records are written to the decoy disk and stay after any later
+power-off, next to the low numbers of every earlier boot in the same file, so
+the file itself would hold the baseline that sets them apart. wtmpdb keeps no
+process numbers.
+
+So the way back sets the kernel's process-number counter back
+(`/proc/sys/kernel/ns_last_pid`) as its last step, once every hidden process has
+stopped and before PID 1 starts a single decoy unit. Where to is measured: the
+entry records the number the decoy's boot gave its getty (else logind), the
+switch into the hidden root records the counter as it hands over, and, when the
+way back is armed, the hidden session's own copy of that getty shows how many
+numbers a start of the service manager uses up to it. The counter goes that many
+below the decoy's number, so where the getty is what the way back measures by,
+the decoy's getty gets about the number its own boot gave it. That assumes the
+hidden start runs about as many processes up to its getty as the decoy's start
+does: where the hidden system starts other units before it, the decoy's getty
+lands off by the difference. The difference adds up over sessions without a
+power-off between them, since each entry anchors on the number the last way back
+gave: in two runs of the Ubuntu 24.04 smoke the getty moved up by 34 and by 74
+numbers over two sessions. The kernel skips a number still in use. Only a getty
+or logind that started at most a minute after the oldest process of the same
+start that still runs counts: one started again after a logout, or on demand for
+another terminal, took its number after everything that ran before it, so it is
+passed over, in the decoy and in the hidden session alike. One started again
+after a login that ended within that minute is not told apart. When the getty is
+passed over, the measure goes by logind, and no test checks where the getty
+lands then.
+
+A process that a soft-reboot leaves running, in a unit with
+`SurviveFinalKillSignal=yes` or a root storage daemon whose `argv[0]` begins
+with `@`, keeps the number and the start time it started with, and after a way
+back it still runs in the decoy's root. It is left out of both readings, so in
+the second and later sessions without a power-off between them the entry reads
+the decoy's start that the last way back ran, as the first entry reads the boot.
+Left in, such a unit kept from the cold boot could hold a lower number than
+every unit of that start and pass for its first process, and the getty and
+logind, started long after it, would fall outside that minute.
+
+Without a getty or logind to measure by, the counter goes to just below the
+lowest number the decoy's own userspace held at entry. No test checks where the
+getty lands from there. Only the getty, or logind, is measured: the decoy's
+other units get their numbers in the order its start runs them, and a
+soft-reboot need not run them in a cold boot's order, so their numbers can
+differ more, also in their power-of-two range (logind's does in the NixOS test
+of this).
+
+This is best effort and never stops the way back: without a record, outside
+PID 1's PID namespace, or where the counter cannot be written (a kernel built
+without `CONFIG_CHECKPOINT_RESTORE` has no such file), the numbers continue as
+before, and `deactivate` warns of that before the switch. It warns as well where
+it finds no getty or logind to measure by, and the counter can only go to just
+below that lowest number. Where the getty itself is measured, its number lands
+near the decoy's own boot's, not on it, and so far in the same power-of-two
+range in every test; an examiner who compares the getty records with those of
+every earlier boot can still see one that sits above the rest, the more so after
+several sessions without a power-off. Until the next power-off, anyone with a
+shell can see the reset itself: the decoy's units can hold numbers below those
+of kernel threads that started before them (the soft-reboot row of the residual
+table above). Only a session ended with `deactivate --poweroff` (or
+`emergency --poweroff`), which has no way back, leaves none of this to chance.
 
 ## Evaluation scope
 
@@ -497,8 +578,8 @@ The forensic claims rest on this configuration:
 That full configuration was evaluated manually, once. The automated E2E
 disk-image checks cover NixOS VMs with a **LUKS2/ext4** hidden backend and, in
 the VeraCrypt backend test, a **VeraCrypt hidden volume** opened with
-`cryptsetup`, plus the Debian 13 and Ubuntu 24.04 smoke runs. Other backends
-and filesystems, and physical hardware (time to the greeter, GPU and Wi-Fi after
-the soft-reboot, TPM-sealed decoy roots, GRUB) are not covered; see
+`cryptsetup`, plus the Debian 13, Ubuntu 24.04 and Ubuntu 26.04 smoke runs.
+Other backends and filesystems, and physical hardware (time to the greeter, GPU
+and Wi-Fi after the soft-reboot, TPM-sealed decoy roots, GRUB) are not covered; see
 [backends.md](backends.md) for the per-backend status. Claims outside this scope
 are unverified.

@@ -13,6 +13,7 @@
     "moduleDirs": [
       "7.2.9-arch1-1"
     ],
+    "systemdVersion": "systemd 262 (262-1-arch)",
     "mounts": [
       {
         "target": "/",
@@ -91,14 +92,6 @@
         "sub": "mounted",
         "fragmentPath": "/run/systemd/generator.late/efi.mount",
         "sourcePath": null
-      },
-      {
-        "unit": "etc-machine\\x2did.mount",
-        "load": "loaded",
-        "active": "active",
-        "sub": "mounted",
-        "fragmentPath": null,
-        "sourcePath": "/proc/self/mountinfo"
       },
       {
         "unit": "home.mount",
@@ -196,6 +189,7 @@
       "journalctl": "/usr/bin/journalctl",
       "dmsetup": "/usr/bin/dmsetup",
       "ip": "/usr/bin/ip",
+      "nft": "/usr/bin/nft",
       "cryptsetup": "/usr/bin/cryptsetup",
       "sh": "/usr/bin/sh",
       "mount": "/usr/bin/mount",
@@ -229,7 +223,9 @@
     "packages": null,
     "journaldVendorConfig": {
       "storage": "persistent",
-      "sources": []
+      "sources": [],
+      "credential": null,
+      "vendorHint": null
     },
     "failedBootUnits": [],
     "maskedUnits": [

@@ -15,16 +15,19 @@
 //! At the start of the disk and of each partition it also reads what a
 //! rehearsal scan classifies a region by: its signature, the magic of a
 //! filesystem that can compress, whether an f2fs was made with compression,
-//! and the size an ext4, xfs or f2fs superblock records. None of them may fail
-//! on an image that reads fine anywhere, and each answers within its range.
+//! whether an ext4 or f2fs has the encrypt feature (or the image ends before
+//! its flags, as a partition in its last sector does), and the size an ext4,
+//! xfs or f2fs superblock, a FAT, NTFS or exFAT boot sector or a swap header
+//! records. None of them may fail on an image that reads fine anywhere, and
+//! each answers within its range.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use nails_forensics::forensic::RawSource;
 use nails_forensics::forensic::layout::{
-    RecordedSize, Signature, TableKind, compressing_format_at, f2fs_compression, read_layout,
-    recorded_size, signature_at,
+    RecordedSize, Signature, TableKind, compressing_format_at, encryption_feature,
+    f2fs_compression, read_layout, recorded_size, signature_at,
 };
 use nails_fuzz::image::MemImage;
 use std::collections::HashSet;
@@ -36,8 +39,12 @@ const DISK: u64 = 1 << 30;
 /// The filesystems that can store file contents compressed.
 const COMPRESSING: &[&str] = &["btrfs", "f2fs", "bcachefs"];
 
-/// The formats whose superblock records the bytes the filesystem spans.
-const SIZED: &[&str] = &["ext2/3/4", "xfs", "f2fs"];
+/// The formats whose superblock, boot sector or header records the bytes the
+/// filesystem spans.
+const SIZED: &[&str] = &["ext2/3/4", "xfs", "f2fs", "vfat", "ntfs", "exfat", "swap"];
+
+/// The formats whose superblock can carry the encrypt feature.
+const ENCRYPTING: &[&str] = &["ext2/3/4", "f2fs"];
 
 static IMAGE: OnceLock<MemImage> = OnceLock::new();
 
@@ -101,6 +108,14 @@ fn classify(source: &RawSource, start: u64) {
             recorded == RecordedSize::Unrecorded,
             !SIZED.contains(&fstype),
             "{fstype}: {recorded:?}"
+        );
+        // Only an ext4 or f2fs can have the encrypt feature, and only their
+        // flags can lie past the end of the image.
+        let encrypting =
+            encryption_feature(source, start, fstype).expect("the image reads at any offset");
+        assert!(
+            encrypting == Some(false) || ENCRYPTING.contains(&fstype),
+            "{fstype}: {encrypting:?}"
         );
     }
 }

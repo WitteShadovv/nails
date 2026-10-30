@@ -19,6 +19,7 @@
     "moduleDirs": [
       "6.19.10-300.fc44.x86_64"
     ],
+    "systemdVersion": "systemd 259 (259.5-1.fc44)",
     "mounts": [
       {
         "target": "/",
@@ -92,7 +93,7 @@
       {
         "name": "/dev/zram0",
         "type": "partition",
-        "size": 2047864832,
+        "size": 2049961984,
         "priority": 100
       }
     ],
@@ -273,6 +274,7 @@
       "journalctl": "/usr/bin/journalctl",
       "dmsetup": "/usr/bin/dmsetup",
       "ip": "/usr/bin/ip",
+      "nft": "/usr/bin/nft",
       "sh": "/usr/bin/sh",
       "mount": "/usr/bin/mount",
       "sync": "/usr/bin/sync",
@@ -310,7 +312,9 @@
     },
     "journaldVendorConfig": {
       "storage": "persistent",
-      "sources": []
+      "sources": [],
+      "credential": null,
+      "vendorHint": "persistent"
     },
     "failedBootUnits": [],
     "maskedUnits": [
@@ -328,10 +332,7 @@
     "avcsAfterSoftReboot": [
       "avc:  denied  { map } for  pid=1 comm=\"systemd\" path=\"/etc/selinux/targeted/policy/policy.35\" dev=\"sda3\" ino=2309 scontext=system_u:system_r:init_t:s0 tcontext=system_u:object_r:semanage_store_t:s0 tclass=file permissive=1",
       "avc:  denied  { setcurrent } for  pid=1 comm=\"systemd\" scontext=system_u:system_r:init_t:s0 tcontext=system_u:system_r:init_t:s0 tclass=process permissive=1",
-      "avc:  denied  { dyntransition } for  pid=1 comm=\"systemd\" scontext=system_u:system_r:init_t:s0 tcontext=system_u:system_r:init_t:s0 tclass=process permissive=1",
-      "avc:  denied  { read } for  pid=1499 comm=\"agetty\" name=\"22_clhm_ens4.issue\" dev=\"sda3\" ino=30514 scontext=system_u:system_r:getty_t:s0-s0:c0.c1023 tcontext=system_u:object_r:NetworkManager_dispatcher_console_var_run_t:s0 tclass=file permissive=1",
-      "avc:  denied  { open } for  pid=1499 comm=\"agetty\" path=\"/etc/issue.d/22_clhm_ens4.issue\" dev=\"sda3\" ino=30514 scontext=system_u:system_r:getty_t:s0-s0:c0.c1023 tcontext=system_u:object_r:NetworkManager_dispatcher_console_var_run_t:s0 tclass=file permissive=1",
-      "avc:  denied  { getattr } for  pid=1499 comm=\"agetty\" path=\"/etc/issue.d/22_clhm_ens4.issue\" dev=\"sda3\" ino=30514 scontext=system_u:system_r:getty_t:s0-s0:c0.c1023 tcontext=system_u:object_r:NetworkManager_dispatcher_console_var_run_t:s0 tclass=file permissive=1"
+      "avc:  denied  { dyntransition } for  pid=1 comm=\"systemd\" scontext=system_u:system_r:init_t:s0 tcontext=system_u:system_r:init_t:s0 tclass=process permissive=1"
     ],
     "selinuxLabelsAfterSoftReboot": {
       "/": "system_u:object_r:root_t:s0",

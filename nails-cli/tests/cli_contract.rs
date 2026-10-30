@@ -63,6 +63,8 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["config", "path", "--help"],
     &["config", "show", "--help"],
     &["config", "validate", "--help"],
+    &["config", "set", "--help"],
+    &["config", "unset", "--help"],
     &["completions", "--help"],
     &["transition", "--help"],
 ];
@@ -445,6 +447,10 @@ fn redact_status(mut value: Value) -> Value {
         // schema (checked on the un-redacted value) still enforces its boolean type.
         if data.contains_key("decoy_persistent") {
             data["decoy_persistent"] = Value::String("[decoy_persistent]".to_string());
+        }
+        // kdump is probed from the live host's /sys/kernel/kexec_crash_loaded.
+        if data.contains_key("decoy_kdump_armed") {
+            data["decoy_kdump_armed"] = Value::String("[decoy_kdump_armed]".to_string());
         }
         if data.contains_key("uptime_seconds") {
             data["uptime_seconds"] = Value::String("[uptime_s]".to_string());
@@ -883,7 +889,7 @@ fn config_without_a_subcommand_is_the_usage_envelope_in_either_position() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         value["error"]["message"],
-        "config needs a subcommand: path, show or validate"
+        "config needs a subcommand: path, show, validate, set or unset"
     );
     assert!(output.stderr.is_empty(), "{output:?}");
 }
@@ -1078,6 +1084,12 @@ fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
     // unprivileged). `NAILS_TEST_ENFORCE_ROOT` turns it on for this case; the
     // sandbox runs as a non-root user, so each privileged command must refuse
     // with code 5 and a copy-pasteable sudo hint before touching anything.
+    if running_as_root() {
+        // As root the gate lets them run, and emergency's hot path would act
+        // on a session plan this host has.
+        eprintln!("skipped: as root emergency would act on this host");
+        return;
+    }
     for subcommand in ["activate", "deactivate", "emergency"] {
         let harness = Harness::new();
         let output = nails()

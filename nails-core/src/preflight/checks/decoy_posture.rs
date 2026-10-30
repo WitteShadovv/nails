@@ -17,7 +17,18 @@
 //! - an active syslog or audit daemon (`rsyslog`, `syslog-ng`, a `syslogd`,
 //!   `metalog`, `socklog`, `auditd`), each of which writes to the decoy disk
 //!   before the overlays are mounted, detected as a unit, a template instance,
-//!   the unit `syslog.service` names, or a process (see [`loggers`]).
+//!   the unit `syslog.service` names, or a process (see [`loggers`]),
+//! - an armed kdump (Ubuntu arms kdump-tools by default from 24.10): a crash
+//!   kernel loaded according to `/sys/kernel/kexec_crash_loaded`, or an enabled
+//!   or active `kdump-tools.service` or `kdump.service` (an enabled one starts
+//!   again in the hidden session and loads the crash kernel there, even when it
+//!   is stopped at activation). A kernel crash during the hidden
+//!   session boots kdump's crash kernel, which mounts the decoy root by its
+//!   device, outside the session's overlay, and writes a dump of kernel memory
+//!   and the session's kernel log to `/var/crash` on the decoy disk. When
+//!   `kexec_crash_loaded` exists but cannot be read, or holds anything but `0`
+//!   or `1`, the check cannot tell and refuses as if kdump were armed. A kernel
+//!   without the file has no crash kernel support, so nothing is loaded.
 //!
 //! Warn (surface the hazard, never block):
 //! - an atime policy that records read access on the decoy (`strictatime` /
@@ -25,18 +36,17 @@
 //! - crash-dump channels that persist memory to the decoy disk: a disk
 //!   `kernel.core_pattern`, a systemd-coredump (reached by its pipe or its
 //!   kernel coredump socket) that is not set to `Storage=none` with
-//!   `ProcessSizeMax=0` (see [`coredump`]), registered pstore records, or an
-//!   armed kdump (Ubuntu arms kdump-tools by default from 24.10). A kernel
-//!   crash during the hidden session boots kdump's crash kernel, which mounts
-//!   the decoy root by its device, outside the session's overlay, and writes a
-//!   dump of kernel memory and the session's kernel log to `/var/crash` on the
-//!   decoy disk; it stays a warning, like the other crash channels,
+//!   `ProcessSizeMax=0` (see [`coredump`]), or registered pstore records,
 //! - the NixOS `nixos-upgrade.timer` (which can rebuild and touch EFI NVRAM
 //!   from the decoy profile while the hidden session runs),
 //! - sudo logging in sudoers (`logfile=`, I/O logging with `log_input`,
 //!   `log_output` and friends, `iolog_dir=`), which records the activation
 //!   command or whole terminal sessions on the decoy disk (see
-//!   [`sudo_logging`]).
+//!   [`sudo_logging`]),
+//! - sssd in use on the decoy, the service through which a decoy joins a
+//!   domain: NAILS is not tested on a decoy joined to a domain, whose domain
+//!   controller records the hidden session's logins out of NAILS's reach (see
+//!   [`sssd`]).
 //!
 //! # No writes
 //!
@@ -46,13 +56,14 @@
 //! test asserts the mock records no write operation after a run.
 
 use super::super::{CheckResult, PreFlightCheck};
-use super::journald_storage::journald_persists_to_decoy_at;
+use super::journald_storage::journald_persistence_at;
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
 mod coredump;
 mod loggers;
+mod sssd;
 mod sudo_logging;
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
@@ -62,10 +73,20 @@ const MOUNTINFO: &str = "/proc/self/mountinfo";
 const CORE_PATTERN: &str = "/proc/sys/kernel/core_pattern";
 /// Persistent crash-record store exposed by the pstore filesystem.
 const PSTORE_DIR: &str = "/sys/fs/pstore";
-/// `1` here means a crash kernel is loaded and kdump will write a dump on panic.
+/// `1` here means a crash kernel is loaded and kdump will write a dump on panic;
+/// a kernel without kexec crash support has no such file.
 const KEXEC_CRASH_LOADED: &str = "/sys/kernel/kexec_crash_loaded";
 /// Enabled-timer marker for the NixOS automatic-upgrade timer.
 const NIXOS_UPGRADE_TIMER: &str = "/etc/systemd/system/timers.target.wants/nixos-upgrade.timer";
+/// The kdump units: kdump-tools on Debian and Ubuntu, kdump on Fedora and
+/// others.
+const KDUMP_UNITS: &[&str] = &["kdump-tools.service", "kdump.service"];
+/// The suffixes of the dependency directories `systemctl enable` links a unit
+/// into, from its `WantedBy=`, `RequiredBy=` and `UpheldBy=`: a link to it in
+/// `<target>.wants/` pulls it in wherever `<target>` starts.
+const DEPENDENCY_DIR_SUFFIXES: &[&str] = &[".wants", ".requires", ".upholds"];
+/// The unit directory whose `/dev/null` link masks a unit above every other.
+const ADMIN_UNIT_DIR: &str = "etc/systemd/system";
 
 /// Pre-flight check that refuses a forensically persistent decoy.
 #[derive(Debug)]
@@ -99,18 +120,25 @@ impl DecoyPersistenceCheck {
         self
     }
 
-    /// Collect the fail-closed findings (persistent log sinks on the decoy).
-    fn blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+    /// The fail-closed log findings: the persistent log sinks on the decoy
+    /// (journald, syslog, audit). The other blocker is [`Self::kdump_finding`].
+    fn log_blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
         let mut out = Vec::new();
-        if journald_persists_to_decoy_at(fs, root) {
-            out.push(
+        match journald_persistence_at(fs, root) {
+            Ok(false) => {}
+            Ok(true) => out.push(
                 "systemd-journald keeps a persistent journal on the decoy disk \
                  (/var/log/journal); set Storage=volatile under [Journal] in \
                  /etc/systemd/journald.conf or in a drop-in such as \
                  /etc/systemd/journald.conf.d/50-volatile.conf (drop-ins override \
                  the main file)"
                     .to_string(),
-            );
+            ),
+            Err(unread) => out.push(format!(
+                "NAILS cannot tell where systemd-journald keeps the journal, so it counts as \
+                 persistent: {unread}; {}",
+                unread.advice()
+            )),
         }
         out.extend(loggers::active_logger_blockers(fs, root));
         out
@@ -126,15 +154,94 @@ impl DecoyPersistenceCheck {
     /// whether or not the operator accepted the risk, so an accepted run still
     /// reports an honest posture. Performs no writes.
     pub fn decoy_is_persistent<F: Filesystem>(fs: &F) -> bool {
-        !Self::persistence_findings(fs).is_empty()
+        !Self::log_blockers(fs, Path::new("/")).is_empty()
     }
 
-    /// Read-only probe: each way the decoy keeps a persistent log or audit
-    /// store, one sentence with its fix each, or none on an amnesic decoy. The
-    /// window's launcher refuses to open on a decoy with any, and names them.
-    /// Performs no writes.
+    /// Read-only probe: each way the decoy keeps a record of a hidden session
+    /// that this check refuses, one sentence with its fix each, or none on an
+    /// amnesic decoy: the persistent log and audit stores and an armed kdump.
+    /// The window's launcher refuses to open on a decoy with any, and names
+    /// them. Performs no writes.
     pub fn persistence_findings<F: Filesystem>(fs: &F) -> Vec<String> {
-        Self::blockers(fs, Path::new("/"))
+        let root = Path::new("/");
+        Self::log_blockers(fs, root)
+            .into_iter()
+            .chain(Self::kdump_finding(fs, root))
+            .collect()
+    }
+
+    /// Read-only probe: whether kdump is armed on the decoy, or its state
+    /// cannot be read (which the pre-flight check refuses as if armed). Shared
+    /// with `status`. Independent of the operator override, and performs no
+    /// writes.
+    pub fn decoy_kdump_armed<F: Filesystem>(fs: &F) -> bool {
+        Self::kdump_finding(fs, Path::new("/")).is_some()
+    }
+
+    /// The kdump blocker, if kdump is armed or its state cannot be told.
+    ///
+    /// A loaded crash kernel dumps memory to the decoy disk on panic. Ubuntu
+    /// arms kdump-tools by default from 24.10 (so 26.04); Fedora and others
+    /// ship it as kdump.service. A kdump unit counts when it is enabled
+    /// ([`unit_enabled`]): the soft-reboot into the hidden session starts the
+    /// decoy's enabled units, so one that is stopped at activation, with no
+    /// crash kernel loaded, starts again there and loads it. An active unit
+    /// counts too, as its marker does not tell whether it is still loading the
+    /// crash kernel. The crash kernel boots from the decoy's root device, never
+    /// through the session's overlay, so what it writes lands on the decoy
+    /// disk past every barrier the session keeps.
+    fn kdump_finding<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
+        // Read below `root` like the unit markers, so a test on a temporary
+        // tree never sees the live host's crash kernel.
+        let path = root.join(KEXEC_CRASH_LOADED.trim_start_matches('/'));
+        let path = path.as_path();
+        let unknown = |why: String| {
+            Some(format!(
+                "cannot tell whether kdump is armed: {KEXEC_CRASH_LOADED} {why}, so it is \
+                 refused as if a crash kernel were loaded"
+            ))
+        };
+        let loaded = match fs.path_exists(path) {
+            // No kexec crash support in this kernel: no crash kernel can load.
+            Ok(false) => false,
+            Ok(true) => match fs.read_file_content(path) {
+                Ok(value) => match value.trim() {
+                    "0" => false,
+                    "1" => true,
+                    other => return unknown(format!("holds {other:?}, not 0 or 1")),
+                },
+                Err(e) => return unknown(format!("cannot be read ({e})")),
+            },
+            Err(e) => return unknown(format!("cannot be probed ({e})")),
+        };
+        let mut armed = Vec::new();
+        if loaded {
+            armed.push("a crash kernel is loaded".to_string());
+        }
+        for unit in KDUMP_UNITS {
+            let state = match (
+                unit_enabled(fs, root, unit),
+                loggers::unit_active(fs, root, unit),
+            ) {
+                (true, true) => "enabled and active",
+                (true, false) => "enabled",
+                (false, true) => "active",
+                (false, false) => continue,
+            };
+            armed.push(format!("{unit} is {state}"));
+        }
+        if armed.is_empty() {
+            return None;
+        }
+        let what = armed.join(" and ");
+        Some(format!(
+            "kdump is armed ({what}): if the kernel crashes during the hidden session, its \
+             crash kernel mounts the decoy root by its device, outside the session's overlay, \
+             and writes a dump of kernel memory (which can hold the hidden volume's encryption \
+             key and the names of the files the session used) and the session's kernel log to \
+             /var/crash on the decoy disk. Disable kdump on the decoy (Ubuntu: systemctl \
+             disable --now kdump-tools; Fedora: systemctl disable --now kdump)"
+        ))
     }
 
     /// The `/` mount entry's options, if the mount table can be read.
@@ -151,7 +258,7 @@ impl DecoyPersistenceCheck {
     }
 
     /// Collect the warning-level findings (atime, crash channels, sudo logging,
-    /// timers).
+    /// sssd, timers).
     fn warnings<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Vec<String> {
         let mut out = Vec::new();
 
@@ -172,6 +279,7 @@ impl DecoyPersistenceCheck {
 
         out.extend(Self::crash_posture(fs, root, is_nixos));
         out.extend(sudo_logging::decoy_sudo_findings(fs, root));
+        out.extend(sssd::sssd_finding(fs, root, is_nixos));
 
         if is_nixos
             && fs
@@ -226,33 +334,48 @@ impl DecoyPersistenceCheck {
             );
         }
 
-        // kdump: a loaded crash kernel dumps memory to the decoy disk on panic.
-        // Ubuntu arms kdump-tools by default from 24.10 (so 26.04); Fedora and
-        // others ship it as kdump.service. Catch the loaded crash kernel and the
-        // enabled service alike. The crash kernel boots from the decoy's root
-        // device, never through the session's overlay, so what it writes lands
-        // on the decoy disk past every barrier the session keeps.
-        let kdump_loaded = fs
-            .read_file_content(Path::new(KEXEC_CRASH_LOADED))
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false);
-        if kdump_loaded
-            || loggers::unit_active(fs, root, "kdump-tools.service")
-            || loggers::unit_active(fs, root, "kdump.service")
-        {
-            out.push(
-                "kdump is armed: if the kernel crashes during the hidden session, its crash \
-                 kernel mounts the decoy root by its device, outside the session's overlay, and \
-                 writes a dump of kernel memory (which can hold the hidden volume's encryption \
-                 key and the names of the files the session used) and the session's kernel log \
-                 to /var/crash on the decoy disk. Disable kdump on the decoy (Ubuntu: \
-                 kdump-tools; Fedora: kdump)"
-                    .to_string(),
-            );
-        }
-
         out
     }
+}
+
+/// Whether `unit` is enabled under `root`: a link to it sits in a dependency
+/// directory ([`DEPENDENCY_DIR_SUFFIXES`]) of a unit directory, and
+/// `/etc/systemd/system` does not mask it.
+///
+/// Only a link counts, as `systemctl enable` makes one. The unit directories
+/// are the ones [`loggers::UNIT_DIRS`] names, the packages' ones among them,
+/// where a package ships the links that pull a unit in without an
+/// `enable`. A mask (`systemctl mask`) is a link to `/dev/null` in
+/// `/etc/systemd/system`, which outranks every link to the unit. It is followed
+/// only once an enabling link was found, so on a decoy without one no unit
+/// link is followed.
+fn unit_enabled<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+    let linked = loggers::UNIT_DIRS.iter().any(|dir| {
+        fs.list_directory(&root.join(dir)).is_ok_and(|entries| {
+            entries.iter().any(|entry| {
+                let dependency_dir = entry
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        DEPENDENCY_DIR_SUFFIXES
+                            .iter()
+                            .any(|suffix| name.ends_with(suffix))
+                    });
+                dependency_dir && fs.is_symlink(&entry.join(unit)).unwrap_or(false)
+            })
+        })
+    });
+    linked && !masked(fs, root, unit)
+}
+
+/// Whether `/etc/systemd/system` under `root` masks `unit`: a link there that
+/// resolves to `/dev/null`.
+fn masked<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+    let unit_file = root.join(ADMIN_UNIT_DIR).join(unit);
+    fs.is_symlink(&unit_file).unwrap_or(false)
+        && fs
+            .canonicalize(&unit_file)
+            .is_ok_and(|target| target == Path::new("/dev/null"))
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
@@ -265,27 +388,63 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let blockers = Self::blockers(fs, &self.root);
+        let log_blockers = Self::log_blockers(fs, &self.root);
+        let kdump_blocker = Self::kdump_finding(fs, &self.root);
         let warnings = Self::warnings(fs, &self.root, self.is_nixos);
+        let logs = !log_blockers.is_empty();
+        let kdump = kdump_blocker.is_some();
 
-        if !blockers.is_empty() {
-            let findings = blockers.join("; ");
+        if logs || kdump {
+            let findings = log_blockers
+                .into_iter()
+                .chain(kdump_blocker)
+                .collect::<Vec<_>>()
+                .join("; ");
             if self.allow_persistent_decoy {
                 let mut msg = format!(
-                    "persistent decoy posture allowed via --allow-persistent-decoy: {findings}. \
-                     Records written before the overlays are mounted may survive on the decoy disk."
+                    "persistent decoy posture allowed via --allow-persistent-decoy: {findings}."
                 );
+                if logs {
+                    msg.push_str(
+                        " Records written before the overlays are mounted may survive on the \
+                         decoy disk.",
+                    );
+                }
+                if kdump {
+                    msg.push_str(
+                        " A kernel crash during the session can leave a dump of its memory in \
+                         /var/crash on the decoy disk.",
+                    );
+                }
                 if !warnings.is_empty() {
                     msg.push_str(&format!(" Also: {}.", warnings.join("; ")));
                 }
                 return Ok(CheckResult::Warn(msg));
             }
+            let mut fixes = Vec::new();
+            if logs {
+                fixes.push(
+                    "make the decoy amnesic (Storage=volatile for journald, set in journald.conf \
+                     or a journald.conf.d/*.conf drop-in; no active syslog or audit daemon, such \
+                     as rsyslog, syslog-ng, a syslogd or auditd)",
+                );
+            }
+            if kdump {
+                fixes.push(
+                    "disarm kdump on the decoy (Ubuntu: systemctl disable --now kdump-tools; \
+                     Fedora: systemctl disable --now kdump)",
+                );
+            }
+            let mut remediation = fixes.join(", and ");
+            if let Some(first) = remediation.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
             return Ok(CheckResult::fail_with(
                 format!("decoy keeps a persistent record of the hidden session: {findings}."),
-                "Make the decoy amnesic (Storage=volatile for journald, set in journald.conf \
-                 or a journald.conf.d/*.conf drop-in; no active syslog or audit daemon, such \
-                 as rsyslog, syslog-ng, a syslogd or auditd), or pass --allow-persistent-decoy \
-                 to allow the risk for this run. See docs/decoy-requirements.md.",
+                format!(
+                    "{remediation}, or pass --allow-persistent-decoy to allow the risk for this \
+                     run. See docs/decoy-requirements.md."
+                ),
             ));
         }
 

@@ -20,12 +20,13 @@
 
 use std::path::{Path, PathBuf};
 
+use nails_teardown::whole_root::fresh_pids;
 use nails_teardown::whole_root::plan::Plan;
 
 use super::lock::LockError;
 use crate::hidden_root::Allow;
 use crate::session::leave::NetworkTool;
-use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView};
+use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView, TargetHost};
 use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv, StateLock};
 
 /// The result of preparing a deactivation.
@@ -63,6 +64,9 @@ pub struct ReadyDeactivation {
     /// The root the way back's last step runs in (`/`, but in tests), where
     /// [`warnings`](Self::warnings) looks for the tools that step runs.
     root: PathBuf,
+    /// Where that step sets the process-number counter, which
+    /// [`warnings`](Self::warnings) checks it can.
+    pid_places: fresh_pids::Places,
 }
 
 impl ReadyDeactivation {
@@ -83,14 +87,23 @@ impl ReadyDeactivation {
     /// and set the MAC addresses back with, no `nft` to delete the session's
     /// nftables tables with, or, where a link is a Wi-Fi interface, no `iw` to
     /// delete the Wi-Fi interfaces the session added on the decoy's radios
-    /// with ([`way_back_lacks`](crate::session::leave::way_back_lacks)). None
-    /// for a power-off, after which the decoy starts afresh.
+    /// with ([`way_back_lacks`](crate::session::leave::way_back_lacks)); or
+    /// it cannot number the decoy's units from where the decoy's own boot
+    /// numbered them ([`fresh_pids::way_back_can_lower`]), or finds no getty
+    /// or logind to measure where by ([`fresh_pids::counter`]). None for a
+    /// power-off, after which the decoy starts afresh.
     pub fn warnings(&self, to: LeaveTo) -> Vec<String> {
-        way_back_warnings(
+        let mut warnings = way_back_warnings(
             to,
             &self.plan,
             &crate::session::leave::way_back_lacks(&self.root, self.plan.decoy.system.as_deref()),
-        )
+        );
+        warnings.extend(pid_warning(
+            to,
+            fresh_pids::way_back_can_lower(&self.plan.pids, &self.pid_places),
+            fresh_pids::counter(&self.plan.pids, &self.root.join("proc")).is_some(),
+        ));
+        warnings
     }
 
     /// Take the exclusive state lock on the hidden volume. Hands out the only
@@ -117,7 +130,8 @@ impl ReadyDeactivation {
     /// A deactivation of the hidden session `plan` describes, for tests of a
     /// front end: its hidden volume and state file where `config` names them,
     /// and the way back's last step running in the tree at `root` instead of
-    /// `/`. Outside tests only [`prepare`] hands one out, and only in a hidden
+    /// `/`, where it also sets the process-number counter. Outside tests only
+    /// [`prepare`] hands one out, and only in a hidden
     /// root with its plan. The lock step is the real one, and the handle it
     /// hands out leaves only from a hidden root the live probe finds.
     pub fn for_test(config: crate::Config, plan: Plan, root: &Path) -> Self {
@@ -126,6 +140,7 @@ impl ReadyDeactivation {
             manager: NailsManager::new(RealFilesystem, config, state_path),
             plan: Box::new(plan),
             root: root.to_path_buf(),
+            pid_places: fresh_pids::Places::under(root),
         }
     }
 }
@@ -139,6 +154,20 @@ pub struct LockedDeactivation {
 }
 
 impl LockedDeactivation {
+    /// Whether the way back may start now: not while a program blocks
+    /// shutdown, or while logind does not answer whether one does
+    /// ([`TargetHost::may_switch`]). [`leave`](Self::leave) asks again
+    /// itself; a caller that shows a person what comes asks first, so that a
+    /// refusal comes before it.
+    pub fn may_leave(&self) -> Result<(), NailsError> {
+        let view = self.ready.manager.session_view();
+        RealTargetHost::for_plan(match &view {
+            SessionView::Hidden(plan) => Some(&**plan),
+            _ => None,
+        })
+        .may_switch()
+    }
+
     /// Commit the way back: enqueue the soft-reboot (or the power-off). A
     /// caller that shows a person the result prints it first, because this
     /// stops the terminal; a machine-readable result waits for the outcome.
@@ -173,6 +202,7 @@ fn prepared(manager: NailsManager<RealFilesystem>, view: SessionView) -> Prepare
             manager,
             plan,
             root: PathBuf::from("/"),
+            pid_places: fresh_pids::Places::system(),
         })),
         SessionView::HiddenWithoutPlan(why) => Prepared::WayBackUnknown(why),
         SessionView::Entering(_) | SessionView::Interrupted { .. } | SessionView::Decoy => {
@@ -223,6 +253,33 @@ fn way_back_warnings(to: LeaveTo, plan: &Plan, lacks: &[NetworkTool]) -> Vec<Str
         .collect()
 }
 
+/// The warning for leaving `to` when the last step of the way back cannot
+/// set the process-number counter back (`lowers` false), or has no getty or
+/// logind to measure by (`measured` false) and can only set it to just below
+/// the lowest number the decoy's own userspace held at entry.
+fn pid_warning(to: LeaveTo, lowers: bool, measured: bool) -> Option<String> {
+    use crate::next_step::{NextStep, sudo_line};
+    if to == LeaveTo::Poweroff || (lowers && measured) {
+        return None;
+    }
+    let poweroff = sudo_line(NextStep::DeactivatePoweroff);
+    Some(if lowers {
+        format!(
+            "The return finds no getty or logind to measure the decoy's process numbers by, so \
+             it numbers the decoy's processes from just below the lowest number its own \
+             userspace held when the session began, and where the decoy keeps classic wtmp, its \
+             getty and login records can carry process numbers that a fresh boot would not give \
+             them. `{poweroff}` leaves none of them."
+        )
+    } else {
+        format!(
+            "The return cannot number the decoy's processes from where its own boot numbered \
+             them, so where the decoy keeps classic wtmp, its getty and login records carry \
+             process numbers that continue from this boot. `{poweroff}` leaves none of them."
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,14 +299,17 @@ mod tests {
     }
 
     /// A [`ReadyDeactivation`] whose hidden volume, state file and root of the
-    /// way back's last step are under `dir`. The live probe still reads the
-    /// real machine, which is never a hidden NAILS overlay root during the
-    /// tests, so its view is the decoy.
+    /// way back's last step are under `dir`. Its handle still leaves from what
+    /// the live probe sees of the machine, so the test that leaves with it
+    /// gives it a `/run` of its own.
     fn ready_at(dir: &Path) -> ReadyDeactivation {
+        let mut plan = plan();
+        plan.pids = nails_teardown::test_support::stage_pid_measure(dir);
         ReadyDeactivation {
             manager: manager_at(dir),
-            plan: plan(),
+            plan,
             root: dir.to_path_buf(),
+            pid_places: fresh_pids::Places::under(dir),
         }
     }
 
@@ -276,19 +336,37 @@ mod tests {
             .unwrap_or_else(|error| panic!("the lock step refused: {error:?}"))
     }
 
+    /// `leave` commits the real way back, from what the live probe sees. On
+    /// the plain decoy it must surface the refusal rather than quietly return
+    /// an empty success report. The test runs in a PID, user and mount
+    /// namespace of its own with a fresh `/run`: the probe finds no session
+    /// plan there, whatever the host runs, and neither `systemctl` nor
+    /// `busctl` finds the host's service manager or logind, whose sockets are
+    /// in the host's `/run`.
     #[test]
     fn leaving_outside_a_hidden_session_refuses_instead_of_reporting_success() {
-        // `leave` commits the real way back. Off the hidden root the live
-        // view is the decoy, so it must surface the refusal rather than
-        // quietly return an empty success report.
-        let dir = tempfile::tempdir().unwrap();
-        let err = locked(ready_at(dir.path()))
-            .leave(LeaveTo::Decoy)
-            .unwrap_err();
-        assert!(
-            matches!(&err, NailsError::InvalidState(msg) if msg.contains("not in a hidden session")),
-            "expected a refusal, got {err:?}"
-        );
+        let _ = crate::test_support::Rerun::new(crate::test_path!(
+            leaving_outside_a_hidden_session_refuses_instead_of_reporting_success
+        ))
+        .in_pid_ns()
+        .run(|| {
+            nix::mount::mount(
+                Some("tmpfs"),
+                "/run",
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("mode=0755"),
+            )
+            .expect("a fresh /run");
+            let dir = tempfile::tempdir().unwrap();
+            let err = locked(ready_at(dir.path()))
+                .leave(LeaveTo::Decoy)
+                .unwrap_err();
+            assert!(
+                matches!(&err, NailsError::InvalidState(msg) if msg.contains("not in a hidden session")),
+                "expected a refusal, got {err:?}"
+            );
+        });
     }
 
     /// The handle that leaves holds the state lock for as long as it lives,
@@ -457,5 +535,58 @@ mod tests {
         }
         assert!(ready.warnings(LeaveTo::Decoy).is_empty());
         assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
+    }
+
+    /// The return warns when its last step will not be able to number the
+    /// decoy's processes from where its own boot did: no floor in the plan, or
+    /// a counter it cannot write. Never for a power-off.
+    #[test]
+    fn the_return_warns_when_it_cannot_set_the_process_numbers_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ready = ready_at(dir.path());
+        for tool in ["usr/bin/ip", "usr/sbin/nft"] {
+            put(dir.path(), tool);
+        }
+        assert!(ready.warnings(LeaveTo::Decoy).is_empty());
+        let warning = pid_warning(LeaveTo::Decoy, false, true).unwrap();
+        assert!(warning.contains("continue from this boot"), "{warning}");
+        let expected = vec![warning];
+        ready.plan.pids.floor = None;
+        assert_eq!(ready.warnings(LeaveTo::Decoy), expected);
+        ready.plan.pids.floor = Some(388);
+        std::fs::remove_file(dir.path().join("proc/sys/kernel/ns_last_pid")).unwrap();
+        assert_eq!(ready.warnings(LeaveTo::Decoy), expected);
+        assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
+        assert_eq!(pid_warning(LeaveTo::Poweroff, false, false), None);
+        assert_eq!(pid_warning(LeaveTo::Decoy, true, true), None);
+        assert_eq!(
+            pid_warning(LeaveTo::Decoy, false, false),
+            expected.first().cloned()
+        );
+    }
+
+    /// The return warns, too, when its last step can set the counter but
+    /// finds no getty or logind that both the decoy's start and the hidden
+    /// start ran to measure where to by, so it can only set it to just below
+    /// the floor. Never for a power-off.
+    #[test]
+    fn the_return_warns_when_it_has_nothing_to_measure_the_process_numbers_by() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = ready_at(dir.path());
+        for tool in ["usr/bin/ip", "usr/sbin/nft"] {
+            put(dir.path(), tool);
+        }
+        let warning = pid_warning(LeaveTo::Decoy, true, false).unwrap();
+        assert!(warning.contains("no getty or logind"), "{warning}");
+        let expected = vec![warning];
+        // The hidden start's getty is gone.
+        std::fs::remove_dir_all(dir.path().join("proc/9150")).unwrap();
+        assert_eq!(ready.warnings(LeaveTo::Decoy), expected);
+        assert!(ready.warnings(LeaveTo::Poweroff).is_empty());
+        // The decoy had none to anchor on.
+        let mut ready = ready_at(dir.path());
+        ready.plan.pids.anchors.clear();
+        assert_eq!(ready.warnings(LeaveTo::Decoy), expected);
+        assert_eq!(pid_warning(LeaveTo::Poweroff, true, false), None);
     }
 }

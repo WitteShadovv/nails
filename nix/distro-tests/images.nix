@@ -33,7 +33,31 @@
 #   prepare        which image-preparation path builds the bootable qcow2
 #                  ("nix-vm-test" for a pinned nix-vm-test release, "fedora" or
 #                  "archlinux" for nix-vm-test's per-family prepare function);
-#   source         where the image comes from (see below).
+#   source         where the image comes from (see below);
+#   knownFailedUnits
+#                  optional: the units the smoke scenario must find failed when
+#                  it lists the failed units, which it does five times: on the
+#                  decoy before the first switch, and right after each switch,
+#                  in both hidden sessions and on the decoy after both ways
+#                  back. Absent or null, the scenario only prints them.
+#                  Otherwise the table has exactly three keys: `hiddenSession`
+#                  and `afterReturn` map each unit that must be failed at the
+#                  listings in both hidden sessions, or at those on the decoy
+#                  after both ways back, to a line its failed start logs, and
+#                  `notInImage` lists the units the release's warning names
+#                  that the image does not install, so the scenario cannot see
+#                  them. Any other unit failed at a listing after a switch, or
+#                  any unit failed at the one before the first switch, fails
+#                  the scenario; so does a listed unit that is not failed at a
+#                  listing of its phase or whose failed start did not log its
+#                  line, a `notInImage` unit the image now has, and a
+#                  `platform` row of `check` that does not warn and name every
+#                  unit listed. An empty table asserts that no unit is failed
+#                  at any of the five listings. A listing sees only what is
+#                  failed at that moment: not a unit that failed and started
+#                  again before it, as one that failed while a switch stopped
+#                  the old system does when the new system starts it, nor one
+#                  that fails after it.
 #
 # A `source` is one of:
 #   { kind = "nix-vm-test"; distro; image; }  a release nix-vm-test already pins,
@@ -68,6 +92,63 @@ let
     "mirror"
     "pending"
   ];
+
+  # A systemd unit name: no slash or space, and a unit type as its suffix.
+  unitTypes = [
+    "automount"
+    "device"
+    "mount"
+    "path"
+    "scope"
+    "service"
+    "slice"
+    "socket"
+    "swap"
+    "target"
+    "timer"
+  ];
+  isUnitName =
+    unit:
+    lib.isString unit
+    && builtins.match "[^/[:space:]]+[.](${lib.concatStringsSep "|" unitTypes})" unit != null;
+
+  # knownFailedUnits is null or exactly the three keys the smoke scenario
+  # reads: two phases that map a unit to a non-empty line, and a list of units
+  # no phase names. ci/distro_images.py checks the same shape.
+  phases = [
+    "hiddenSession"
+    "afterReturn"
+  ];
+  knownFailedKeys = lib.sort lib.lessThan (phases ++ [ "notInImage" ]);
+  checkKnownFailed =
+    name: known:
+    let
+      hasLine = line: lib.isString line && line != "";
+      phaseIsWellFormed =
+        phase:
+        let
+          units = known.${phase};
+        in
+        lib.isAttrs units
+        && lib.all (unit: isUnitName unit && hasLine units.${unit}) (builtins.attrNames units);
+      phaseUnits = lib.concatMap (phase: builtins.attrNames known.${phase}) phases;
+    in
+    known == null
+    || (
+      assert lib.assertMsg (lib.isAttrs known && builtins.attrNames known == knownFailedKeys)
+        "distro image ${name}: knownFailedUnits must be null or have exactly the keys hiddenSession, afterReturn and notInImage";
+      assert lib.all (
+        phase:
+        lib.assertMsg (phaseIsWellFormed phase) "distro image ${name}: knownFailedUnits.${phase} must map each unit name (such as chrony.service) to the non-empty line its failed start logs"
+      ) phases;
+      assert lib.assertMsg (
+        lib.isList known.notInImage && lib.all isUnitName known.notInImage
+      ) "distro image ${name}: knownFailedUnits.notInImage must be a list of unit names";
+      assert lib.assertMsg (
+        lib.intersectLists known.notInImage phaseUnits == [ ]
+      ) "distro image ${name}: knownFailedUnits.notInImage names a unit that a phase names too";
+      true
+    );
 
   # Fail at evaluation with a message that names the offending entry, so a
   # malformed table is caught by any `nix eval` of it rather than deep inside a
@@ -106,6 +187,7 @@ let
       "distro image ${name}: still has the placeholder hash; run `python3 -m ci.distro_images repin ${name}` before enabling it";
     assert (kind == "upstream") -> (requires "url" && requires "name" && requires "sha256");
     assert (kind == "nix-vm-test") -> (requires "distro" && requires "image");
+    assert checkKnownFailed name (entry.knownFailedUnits or null);
     entry;
 in
 lib.mapAttrs checkEntry table

@@ -8,6 +8,19 @@ use crate::filesystem::MountEntry;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
+/// What a path itself is, as [`Filesystem::mount_root`] gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountRoot {
+    /// A symbolic link.
+    Link,
+    /// An automount point nothing is mounted on yet: looking at anything
+    /// below it mounts it.
+    Automount,
+    /// Anything else: the root of a mount or not, or `None` where the kernel
+    /// does not say (before Linux 5.8).
+    Entry(Option<bool>),
+}
+
 /// Total and available space for a filesystem, taken from a single `statvfs`
 /// call so the status path never has to walk directories to report usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +189,16 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// table has shown a volume mounted there.
     fn device_id(&self, path: &Path) -> Result<u64>;
 
+    /// The inode number of the file `path` names, its symlinks followed as
+    /// `stat` follows them, or `None` when nothing is there.
+    ///
+    /// Unlike [`path_exists`](Self::path_exists), a lookup that fails for any
+    /// reason but a missing path is an error, so a caller that must fail
+    /// closed can tell "not there" from "cannot tell". The namespace files of
+    /// two processes, such as `/proc/<pid>/ns/mnt`, give one inode exactly
+    /// when the two share that namespace.
+    fn inode(&self, path: &Path) -> Result<Option<u64>>;
+
     /// The device (`st_dev`) of the file the loop device `node` is bound to,
     /// as the loop driver recorded it when the file was attached
     /// (`LOOP_GET_STATUS64`'s `lo_device`).
@@ -185,6 +208,18 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// is what the file is really on. Reading it opens the device node, which
     /// most systems let only root and the `disk` group do.
     fn loop_backing_device(&self, node: &Path) -> Result<u64>;
+
+    /// What `path` itself is, as one `statx` says that neither follows a
+    /// symbolic link there nor triggers an automount: a link, an automount
+    /// point nothing is mounted on yet, or anything else, with whether it is
+    /// the root of a mount (`STATX_ATTR_MOUNT_ROOT`, Linux 5.8; a bind mount
+    /// counts, as it does in the mount table). An error when the path cannot
+    /// be looked up, one that does not exist among them. Looking it up changes
+    /// no access time of the path itself, but a link on the way to it is
+    /// followed, and its access time changes, and an automount point on the
+    /// way is mounted: a caller that must do neither looks at each directory
+    /// on the way first.
+    fn mount_root(&self, path: &Path) -> Result<MountRoot>;
 
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
@@ -289,6 +324,22 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// does.
     fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
         self.read_file_content(path).map(String::into_bytes)
+    }
+
+    /// Read `len` bytes from `offset` on of the file at `path`, which must
+    /// not be a symbolic link, without updating its access time where the
+    /// implementation reads a disk. Fewer bytes come back only where the file
+    /// ends first.
+    ///
+    /// The default reads the whole file with
+    /// [`read_file_bytes`](Self::read_file_bytes) and takes the range.
+    fn read_file_range(&self, path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let bytes = self.read_file_bytes(path)?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let end = start.saturating_add(len).min(bytes.len());
+        Ok(bytes[start..end].to_vec())
     }
 
     /// Find files matching a pattern in a directory (recursive).

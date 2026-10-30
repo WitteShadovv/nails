@@ -45,6 +45,20 @@ lint:
 line-count:
     ./scripts/check-line-count.sh
 
+# Every Rust file of the crates, the side workspaces and the fuzz crate is a
+# crate root or declared as a module: a file that is neither compiles for
+# nobody and escapes clippy and the tests unseen.
+orphan-modules:
+    ./scripts/check-orphan-modules.sh
+
+# Fail on a Cargo.lock or fuzz/Cargo.lock that does not match the manifests,
+# before anything is built. No other check builds the fuzz crate, a workspace
+# of its own, so none of them would see its lock go stale; `just fuzz-lock`
+# rewrites it.
+lock-check:
+    cargo metadata --locked --format-version 1 > /dev/null
+    cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+
 # Run the unit and integration suite through nextest; the setup and gui crates
 # too.
 test:
@@ -61,9 +75,9 @@ fuzz cases="100000":
 # Run one cargo-fuzz target of fuzz/ (`just fuzz-run mountinfo 600`) built as
 # CI builds it: release, with debug assertions, overflow checks and the address
 # sanitizer. The pinned stable compiler accepts cargo-fuzz's sanitizer flag under
-# RUSTC_BOOTSTRAP, as in `shuffle`. It starts from the target's seeds and
-# dictionary; new inputs collect in fuzz/corpus/, a crash in fuzz/artifacts/. An
-# input that runs longer than 25 seconds is a hang, as in CI.
+# RUSTC_BOOTSTRAP. It starts from the target's seeds and dictionary; new inputs
+# collect in fuzz/corpus/, a crash in fuzz/artifacts/. An input that runs longer
+# than 25 seconds is a hang, as in CI.
 fuzz-run target seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -167,15 +181,20 @@ side-tests: (coverage "gui")
 # shared process environment (they inject a RuntimeEnv instead), and a leak
 # through any remaining shared state surfaces only under a threaded, shuffled
 # run; nextest isolates each test in its own process and would hide it. Hence
-# libtest, not nextest, and `--lib`, where most unit tests live. The `--shuffle-seed` flag is unstable, so the pinned stable
-# compiler is told to accept it with RUSTC_BOOTSTRAP rather than adding a
-# nightly toolchain.
+# libtest, not nextest, and `--lib`, where most unit tests live. The
+# `--shuffle-seed` flag is unstable, so the stable test harness is told to
+# accept it with RUSTC_BOOTSTRAP rather than adding a nightly toolchain. A
+# cargo runner sets it for the test binaries alone: the build scripts of
+# proc-macro2 and others look for nightly features when it is set, so a build
+# that saw it would rebuild them and every crate above them, here and again in
+# the next build without it, such as `just test`.
 shuffle seeds="20":
     #!/usr/bin/env bash
     set -euo pipefail
+    runner="target.'cfg(all())'.runner = ['env', 'RUSTC_BOOTSTRAP=1']"
     for seed in $(seq 1 {{ seeds }}); do
         echo "shuffle seed $seed"
-        RUSTC_BOOTSTRAP=1 cargo test --workspace --all-features --locked --lib \
+        cargo test --config "$runner" --workspace --all-features --locked --lib \
             -- -Z unstable-options --shuffle-seed "$seed"
     done
 
@@ -256,12 +275,17 @@ kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
         -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts) | binary(maintenance_cli) | binary(network_way_back_kernel)'
 
-# The pre-push gate: formatting, lints, file sizes, fuzz-target wiring and the
-# test suite.
-check: fmt-check lint line-count fuzz-targets test
+# The pre-push gate: formatting, lints, file sizes, fuzz-target wiring, the
+# test suite and a three-seed shuffle sweep, which runs the build `test` made.
+check: fmt-check lint line-count fuzz-targets test (shuffle "3")
 
-# Everything the ci.yml Rust jobs run, for reproducing the gate locally.
-ci-rust: fmt-check lint line-count fuzz-targets coverage doctest side-tests
+# The commands of the ci.yml jobs lint, rust, shuffle and side-tests, for
+# reproducing them locally, with three shuffle seeds where CI runs twenty. Left
+# out are the privileged-mounts job, whose tests need root, and what the jobs
+# set around the commands: CI fails a real-kernel test that would skip, as
+# `just kernel-tests` does, and a test run that leaves a file in TMPDIR. The
+# deps and gui-vet jobs run `just deny` and `just vet gui`.
+ci-rust: lock-check fmt-check lint line-count fuzz-targets orphan-modules coverage doctest side-tests (shuffle "3")
 
 # --- Dependency policy ---
 
@@ -398,6 +422,9 @@ stress iterations="10":
 # decide nothing: several make safety decisions too (the switch transition, the
 # init check before a switch, the /run scrub, the disk guard and the teardown
 # side of the way back), and widening the sweep to them is a budget decision.
+# The single mutants that no test can kill are another list: .cargo/mutants.toml
+# excludes them, with their reasons, from every cargo-mutants run, the in-diff
+# lane's too.
 mutants_dirs := "nails-base/src/state " + \
     "nails-teardown/src/whole_root " + \
     "nails-session/src/session"
@@ -496,11 +523,25 @@ mutants_in_diff_options := "--all-features --cargo-arg=--locked --timeout 120"
 # it). `minutes`, when given, is the shard's time box: cargo-mutants is stopped
 # when it runs out, the mutants tested by then are still reported, and the
 # recipe fails, since the rest were never tested. The report goes to
-# target/mutants/mutants.out, with the survivors in the job summary.
+# target/mutants/mutants.out, with the survivors in the job summary. Each test
+# binary runs through ci/mutants_guard.py: each process of the test run may
+# allocate 4 GiB at most, the binary's process group gets the signal that ends
+# the run, and once the binary has ended every process it started is killed,
+# one that left the group for one or a session of its own too (the workspace's
+# process runner starts its children so), although such a process gets no
+# signal before. A mutant that makes a loop endless thus does not outlive its
+# test run, nor fill the runner's memory alone.
 mutants-in-diff diff shard="0" shards="1" minutes="":
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p target/mutants
+    # cargo runs each test binary through its target runner: the guard caps
+    # what each process may allocate, kills the binary's process group when
+    # it outlives the signal that ends its test run, and kills what the
+    # binary started once it has ended.
+    host=$(rustc --print host-tuple)
+    host=${host^^}
+    export "CARGO_TARGET_${host//-/_}_RUNNER=python3 -I {{ justfile_directory() }}/ci/mutants_guard.py"
     # On SIGTERM cargo-mutants ends the build or test it runs and exits,
     # keeping the outcome of every mutant it finished. --foreground leaves it
     # in this shell's process group, so a Ctrl-C still reaches it.

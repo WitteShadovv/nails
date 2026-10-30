@@ -44,6 +44,10 @@ impl Filesystem for MockFilesystem {
         self.device_id_impl(path)
     }
 
+    fn inode(&self, path: &Path) -> Result<Option<u64>> {
+        self.inode_impl(path)
+    }
+
     fn loop_backing_device(&self, node: &Path) -> Result<u64> {
         self.loop_backing_device_impl(node)
     }
@@ -94,6 +98,29 @@ impl Filesystem for MockFilesystem {
 
     fn read_file_content(&self, path: &Path) -> Result<String> {
         self.read_file_content_impl(path)
+    }
+
+    fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
+        self.read_file_bytes_impl(path)
+    }
+
+    fn mount_root(&self, path: &Path) -> Result<crate::filesystem::MountRoot> {
+        if self.is_symlink_impl(path)? {
+            return Ok(crate::filesystem::MountRoot::Link);
+        }
+        match self
+            .mount_roots
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(path)
+        {
+            Some(Ok(mount_root)) => Ok(*mount_root),
+            Some(Err(kind)) => Err(crate::NailsError::io(
+                path,
+                std::io::Error::new(*kind, "Mock: statx fails here"),
+            )),
+            None => Ok(crate::filesystem::MountRoot::Entry(None)),
+        }
     }
 
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
