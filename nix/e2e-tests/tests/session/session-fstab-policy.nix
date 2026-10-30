@@ -28,6 +28,10 @@
 #   - a disk at /srv/later, noauto in the fstab but pulled in by
 #     multi-user.target through x-systemd.wanted-by=, is masked and stays
 #     unchanged: the fstab generator links its mount whatever noauto says;
+#   - a disk at /srv/pa/child, which nails-pull.target requires, is masked
+#     rather than skipped: its mount requires that of its noauto parent
+#     /srv/pa, which a skip would mount. Starting the target fails, and the
+#     parent disk stays unmounted and unchanged;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
@@ -100,6 +104,14 @@ in
           size = 64;
           driveConfig.deviceExtraOpts.serial = "later";
         }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "pa";
+        }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "pc";
+        }
       ];
       boot.kernelModules = [ "zram" ];
       boot.supportedFilesystems = [ "vfat" ];
@@ -135,13 +147,21 @@ in
       # A zram swap of the decoy's own, as zram-generator makes one. The test
       # gives the zram device a backing disk, then leaves the swap off, as the
       # swap check asks of a zram that can write back.
-      systemd.units."dev-zram0.swap" = {
-        wantedBy = [ "swap.target" ];
-        text = ''
+      systemd.units = {
+        "dev-zram0.swap" = {
+          wantedBy = [ "swap.target" ];
+          text = ''
+            [Unit]
+            ConditionPathExists=/run/zram-ready
+            [Swap]
+            What=/dev/zram0
+          '';
+        };
+        # Nothing starts it at boot: the test starts it in the hidden session,
+        # where it requires the mount of a disk below a noauto one.
+        "nails-pull.target".text = ''
           [Unit]
-          ConditionPathExists=/run/zram-ready
-          [Swap]
-          What=/dev/zram0
+          Description=The child disk below a noauto one
         '';
       };
     };
@@ -168,6 +188,9 @@ in
     SPARE_DEVICE_UNIT = "dev-disk-by\\x2did-virtio\\x2dspare.device"
     LATER = "/dev/disk/by-id/virtio-later"
     LATER_UNIT = "srv-later.mount"
+    PARENT = "/dev/disk/by-id/virtio-pa"
+    CHILD = "/dev/disk/by-id/virtio-pc"
+    CHILD_UNIT = "srv-pa-child.mount"
     NOT_READY_RULE = "/run/udev/rules.d/99-spare-not-ready.rules"
     BLK_UNIT = "blk-availability.service"
     BLKDEACTIVATE = "/bin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
@@ -223,6 +246,10 @@ in
         return machine.succeed(f"sha256sum {LATER}").split()[0]
 
 
+    def parent_hash():
+        return machine.succeed(f"sha256sum {PARENT}").split()[0]
+
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mountpoint -q /boot && mountpoint -q /srv/data")
@@ -276,6 +303,18 @@ in
     )
     machine.fail("mountpoint -q /srv/later")
     later_before = later_hash()
+    # A noauto disk at /srv/pa, and below it one that nails-pull.target
+    # requires. systemd has the child's mount require its parent's, so the
+    # child's skip would mount the noauto disk before its condition is tested.
+    machine.succeed(
+        f"mkfs.ext4 -q {PARENT} && mkfs.ext4 -q {CHILD} && "
+        f"echo '{PARENT} /srv/pa ext4 noauto 0 2' >> /etc/fstab && "
+        f"echo '{CHILD} /srv/pa/child ext4 x-systemd.required-by=nails-pull.target 0 2' "
+        ">> /etc/fstab && systemctl daemon-reload && "
+        f"test -L /run/systemd/generator/nails-pull.target.requires/{CHILD_UNIT}"
+    )
+    machine.fail("mountpoint -q /srv/pa")
+    parent_before = parent_hash()
 
     with subtest("blk-availability's stop unmounts the decoy's device-mapper filesystems"):
         # Started at boot, so every soft-reboot runs its stop. Stopping it here
@@ -312,6 +351,8 @@ in
         assert "/srv/native: overlaid" in out, out
         assert "/dev/zram0: masked" in out, out
         assert "/srv/later: masked" in out, out
+        assert f"{CHILD_UNIT} is masked rather than skipped" in out, out
+        assert "srv-pa.mount (the mount of a parent directory)" in out, out
 
     with subtest("check masks a required disk whose device unit is not active"):
         # udev marks the disk not ready: its node is there, but systemd's
@@ -379,6 +420,13 @@ in
         machine.fail("mountpoint -q /srv/later")
         assert later_hash() == later_before, "the hidden session changed the noauto disk"
 
+    with subtest("a skip that would mount its noauto parent is masked instead"):
+        state = machine.succeed(f"systemctl show -p LoadState --value '{CHILD_UNIT}'").strip()
+        assert state == "masked", f"{CHILD_UNIT}: {state}"
+        machine.fail("systemctl start nails-pull.target")
+        machine.fail("mountpoint -q /srv/pa")
+        assert parent_hash() == parent_before, "the hidden session changed the noauto parent disk"
+
     with subtest("decoy swap is masked and never active"):
         state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
         assert state == "masked", f"{SWAP_UNIT}: {state}"
@@ -411,6 +459,11 @@ in
             "unit": SPARE_UNIT,
             "action": "skipped",
             "reason": "required_at_boot",
+        } in required, required
+        assert {
+            "unit": CHILD_UNIT,
+            "action": "masked",
+            "reason": "pulls_in_mount",
         } in required, required
         out = machine.succeed(f"nails --config {CONFIG} status")
         assert f"{SPARE_UNIT}: skipped, as a boot target requires it" in out, out
@@ -445,6 +498,8 @@ in
         assert state != "masked", f"the zram swap mask leaked into the decoy: {state}"
         state = machine.succeed(f"systemctl show -p LoadState --value '{LATER_UNIT}'").strip()
         assert state != "masked", f"the noauto disk's mask leaked into the decoy: {state}"
+        state = machine.succeed(f"systemctl show -p LoadState --value '{CHILD_UNIT}'").strip()
+        assert state != "masked", f"the child disk's mask leaked into the decoy: {state}"
         source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
         assert source == LV, f"/srv/files is {source!r} after the way back"
         assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
