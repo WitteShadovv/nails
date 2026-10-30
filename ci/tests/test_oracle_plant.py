@@ -261,7 +261,10 @@ class PlantInBtrfsTest(unittest.TestCase):
         for i in changed:
             self.assertEqual(blocks(before)[i], bytes(BLOCK), f"block {i}")
             self.assertTrue(self.unallocated(i * BLOCK, extents), f"block {i}")
-        # The superblock copy at 64 MiB, the first string's goal, is kept.
+        # The superblock copy at 64 MiB, the first string's goal, is kept. It
+        # holds data, so the zero check alone keeps it here, and the layout
+        # btrfs-progs gives may put it in a chunk: MirrorTest tests the mirror
+        # check itself.
         mirror = slice(MIRROR, MIRROR + BLOCK)
         self.assertEqual(before[mirror], after[mirror])
         # Nothing btrfs tracks changed: the same device extents, a clean check.
@@ -331,3 +334,54 @@ class PlantInBtrfsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_IS_MIRROR = re.compile(r"^is_mirror\(\) \{\n.*?^\}\n", re.MULTILINE | re.DOTALL)
+
+
+class MirrorTest(unittest.TestCase):
+    """is_mirror, the check that keeps a control off a btrfs superblock copy,
+    which btrfs writes outside its chunks: run on its own, since whether a
+    copy lies in unallocated space at all depends on the layout btrfs-progs
+    gives a filesystem."""
+
+    def is_mirror(self, at: int, size: int) -> bool:
+        function = _IS_MIRROR.search(SCRIPT.read_text())
+        self.assertIsNotNone(function, "is_mirror is not a top-level function")
+        assert function is not None
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                function.group(0) + 'is_mirror "$1" "$2"',
+                "_",
+                str(at),
+                str(size),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertIn(result.returncode, (0, 1), result.stderr)
+        return result.returncode == 0
+
+    def test_a_block_overlapping_a_copy_is_one(self) -> None:
+        for copy in (64 * MIB, 256 * 1024 * MIB, 1024 * 1024 * 1024 * MIB):
+            for at, size in (
+                (copy, BLOCK),
+                (copy - 2048, BLOCK),
+                (copy + 4095, 1),
+                (copy - 32768, 65536),
+            ):
+                self.assertTrue(self.is_mirror(at, size), (copy, at, size))
+
+    def test_a_block_beside_a_copy_is_not(self) -> None:
+        for copy in (64 * MIB, 256 * 1024 * MIB, 1024 * 1024 * 1024 * MIB):
+            for at, size in (
+                (copy - BLOCK, BLOCK),
+                (copy + BLOCK, BLOCK),
+                (copy - 65536, 65536),
+            ):
+                self.assertFalse(self.is_mirror(at, size), (copy, at, size))
+        for at in (0, MIB, 128 * MIB):
+            self.assertFalse(self.is_mirror(at, BLOCK), at)
