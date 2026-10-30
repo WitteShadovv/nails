@@ -402,6 +402,12 @@ journal that starts late:
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
   systemd 256 and newer;
 - the same boot ID and continuous uptime across both transitions;
+- where the way back set the kernel's process-number counter back, process
+  numbers out of order: the decoy's units after it can hold numbers below
+  those of kernel threads that started before them, which neither a cold boot
+  nor a plain soft-reboot gives (`ps -eo pid,lstart,comm --sort=pid` shows the
+  start times out of order), and a persistent decoy journal can hold the same
+  process numbers twice under one boot ID;
 - the network state the hidden session set up, as far as the way back does
   not put it back. Before the switch it puts back:
   - the links: it deletes the virtual links the session brought up (a tunnel,
