@@ -312,7 +312,9 @@ Three things read differently from the ext4 images:
   btrfs keeps compressed inside its metadata, as it does with a file of at most
   one 4 KiB block that compresses well. The restore carve still compares such
   files whole, but what a compressed extent keeps outside the live tree is
-  unseen. And a file stored compressed in the earlier images and partly in
+  unseen, and the verdict names it so (`compressed_extents` under
+  [What it does not see](#what-it-does-not-see)). And a file stored
+  compressed in the earlier images and partly in
   plain blocks in a later one shows bulk_extractor those blocks in the later
   image alone. The decoy's `/var/log/wtmp` does this: it stays inline and
   compressed through before and control, with two boots' records, and once it
@@ -357,6 +359,13 @@ class with its `kind`, and a clean summary line ends with the same classes
   of its carvers saves. The restore channel carves only the live tree, and
   bulk_extractor reports the features it finds in free space, not the bytes
   around them.
+- `compressed_extents`, on a btrfs scan: what a compressed extent holds
+  outside the live tree. bulk_extractor decodes no btrfs compression, so it
+  records no feature in an extent btrfs compressed (on a filesystem mounted
+  with `compress`, as Fedora's is), and content a file left there is unseen
+  whatever value it carries. The restore carve reads the live tree's files
+  decompressed (see
+  [Real btrfs images](#real-btrfs-images-a-fedora-44-decoy)).
 - `skipped_carvers`: a database carved from free space (`sqlite_carved`, named
   in `feature_types`), unless its content carries an e-mail address, a URL or
   a domain the value recorders find.

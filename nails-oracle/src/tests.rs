@@ -2024,3 +2024,33 @@ fn a_carved_login_record_after_lost_is_residue_whatever_the_control_files_hold()
         "{v:?}"
     );
 }
+
+#[test]
+fn a_btrfs_scan_names_what_compressed_extents_hold_as_unseen() {
+    // bulk_extractor reads no extent btrfs compressed, so a btrfs scan names
+    // that content as a class it cannot see, after deleted content, in the
+    // verdict and its summary. A full scan has no btrfs to name.
+    let position = |v: &Verdict| {
+        v.unseen
+            .iter()
+            .position(|u| *u == Unseen::CompressedExtents)
+    };
+    let v = decide_scan(&btrfs_scans(), &complete_policy());
+    assert_eq!(v.status, Status::Partial, "{:?}", v.failures);
+    assert_eq!(position(&v), Some(4), "{:?}", v.unseen);
+    assert!(
+        v.summary
+            .contains("deleted content without a recorded feature, content in compressed btrfs extents outside the live tree, "),
+        "{}",
+        v.summary
+    );
+    let json = serde_json::to_value(&v).expect("serializes");
+    assert_eq!(
+        json["unseen"][4],
+        serde_json::json!({"kind": "compressed_extents"})
+    );
+
+    let full = decide_scan(&complete_scans(), &complete_policy());
+    assert_eq!(position(&full), None, "{:?}", full.unseen);
+    assert!(!full.summary.contains("compressed"), "{}", full.summary);
+}
