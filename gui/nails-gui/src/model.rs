@@ -142,6 +142,16 @@ pub struct Field {
     pub hint: String,
 }
 
+/// A row of a tool's page to pick: a setting on Settings, or one of its
+/// states or options on its own page.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Choice {
+    /// Its title.
+    pub title: String,
+    /// The line under it.
+    pub subtitle: String,
+}
+
 /// Which page shows: the session's own, or a tool's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
@@ -192,6 +202,8 @@ pub struct Page {
     pub links: Vec<Link>,
     /// Titled groups of rows, on a tool's page.
     pub groups: Vec<Group>,
+    /// Rows to pick, on a tool's page.
+    pub choices: Vec<Choice>,
     /// A field to type into, on a tool's page that needs one.
     pub field: Option<Field>,
     /// The page has Back, to the session's page.
@@ -709,7 +721,7 @@ impl Model {
     fn answered(&mut self, kind: Kind, value: &serde_json::Value) -> Vec<Ask> {
         match kind {
             // A tool's answer with no tool open to show it: nothing follows.
-            Kind::Verify | Kind::Rehearse => Vec::new(),
+            Kind::Verify | Kind::Rehearse | Kind::Config => Vec::new(),
             Kind::Status => match envelope::read::<StatusData>(value, "status") {
                 Ok(envelope) => {
                     self.status = envelope.data;
@@ -857,6 +869,7 @@ impl Model {
             page.action = None;
             page.secondary = None;
             page.links.clear();
+            page.choices.clear();
             page.back = false;
         }
         page.question.clone_from(&self.question);

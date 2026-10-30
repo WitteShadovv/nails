@@ -464,6 +464,47 @@ pub enum InitItemStatus {
     AlreadyPresent,
 }
 
+/// The data of `config show` the window shows
+/// (`docs/schemas/config.schema.json` validates it only as an object: its
+/// shape is `nails_base::config::LoadedConfig::to_json`'s).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ConfigShowData {
+    /// The settings file.
+    pub path: String,
+    /// Whether it exists.
+    pub exists: bool,
+    /// The effective configuration, its tables nested.
+    pub config: serde_json::Map<String, serde_json::Value>,
+    /// Where each top-level key's value comes from: `file`, `default`,
+    /// `derived` or `cli`.
+    pub sources: std::collections::BTreeMap<String, String>,
+}
+
+/// The data of `config set` and `config unset`, which the helper's apply of a
+/// change answers with too (`docs/schemas/config.schema.json`, strict).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigEditData {
+    /// The file.
+    pub path: String,
+    /// Whether it was written: false when it said all of it already.
+    pub written: bool,
+    /// One entry per key named, in the order given.
+    pub changes: Vec<ConfigChange>,
+}
+
+/// One key's value as the file wrote it, before and after a change.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigChange {
+    /// The key.
+    pub key: String,
+    /// What the file held; `null` where it did not set the key.
+    pub before: Option<serde_json::Value>,
+    /// What it holds; `null` where its default applies.
+    pub after: Option<serde_json::Value>,
+}
+
 /// The tally of a readiness report.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Summary {

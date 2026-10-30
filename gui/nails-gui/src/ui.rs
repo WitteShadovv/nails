@@ -228,6 +228,13 @@ impl Controller {
         self.refresh();
     }
 
+    fn choose(&mut self, index: usize) {
+        if let Some(ask) = self.model.choose(index) {
+            (self.hooks.ask)(ask);
+        }
+        self.refresh();
+    }
+
     fn edited(&mut self, typed: &str) {
         self.model.edited(typed);
         self.refresh();
@@ -299,6 +306,12 @@ fn wire_tools(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     window.on_link_activated(move |index| {
         if let (Some(controller), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
             controller.borrow_mut().open(index);
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_choice_activated(move |index| {
+        if let (Some(controller), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
+            controller.borrow_mut().choose(index);
         }
     });
     let weak = Rc::downgrade(controller);
@@ -394,6 +407,15 @@ fn draw_tools(window: &AppWindow, page: &Page) {
         })
         .collect();
     window.set_links(ModelRc::new(VecModel::from(links)));
+    let choices: Vec<ToolLink> = page
+        .choices
+        .iter()
+        .map(|choice| ToolLink {
+            title: choice.title.as_str().into(),
+            subtitle: choice.subtitle.as_str().into(),
+        })
+        .collect();
+    window.set_choices(ModelRc::new(VecModel::from(choices)));
     window.set_back_shown(page.back);
     let groups: Vec<RowGroup> = page
         .groups

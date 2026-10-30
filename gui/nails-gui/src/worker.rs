@@ -32,7 +32,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use nails_api::Event;
 use nails_api::protocol::{
-    CheckArgs, Hello, Op, ProtocolError, RehearsePlantArgs, RehearseScanArgs, VerifyArgs,
+    CheckArgs, ConfigShowArgs, Hello, Op, ProtocolError, RehearsePlantArgs, RehearseScanArgs,
+    VerifyArgs,
 };
 
 use crate::client::{Answer, Client, ClientError, Plan, PlanAnswer, PlanData, Planned};
@@ -52,6 +53,8 @@ pub enum Ask {
     Verify(VerifyArgs),
     /// A step of `nails rehearse`.
     Rehearse(Rehearse),
+    /// `nails config show`: every effective setting and where it comes from.
+    ConfigShow,
     /// The plan of an operation the engine confirms first.
     Plan(Plan),
     /// Apply the plan that waits.
@@ -98,6 +101,8 @@ pub enum Kind {
     Verify,
     /// [`Ask::Rehearse`].
     Rehearse,
+    /// [`Ask::ConfigShow`].
+    Config,
     /// [`Ask::Plan`].
     Plan,
     /// [`Ask::Apply`].
@@ -395,6 +400,13 @@ fn serve(
         Ask::Recover => call(client, Kind::Recover, Op::Recover, planned, report),
         Ask::Verify(args) => call(client, Kind::Verify, Op::Verify(args), planned, report),
         Ask::Rehearse(step) => call(client, Kind::Rehearse, step.op(), planned, report),
+        Ask::ConfigShow => call(
+            client,
+            Kind::Config,
+            Op::ConfigShow(ConfigShowArgs::default()),
+            planned,
+            report,
+        ),
         Ask::Plan(plan) => {
             report(Update::Running(Kind::Plan));
             *planned = None;
