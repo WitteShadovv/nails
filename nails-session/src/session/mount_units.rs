@@ -20,8 +20,13 @@
 //! (`/etc/systemd/system`, `/usr/local/lib/systemd/system`,
 //! `/usr/lib/systemd/system`, `/lib/systemd/system`) and of `/run`
 //! (`/run/systemd/system` and the generator directories the decoy's start
-//! filled), less those the fstab generator made from `/etc/fstab`
-//! (`SourcePath=/etc/fstab`), which the fstab policy decides. Each is read
+//! filled), less those the fstab generator made from an fstab line the fstab
+//! policy decides: a unit whose file is in a generator directory and says
+//! `SourcePath=/etc/fstab`, and whose name is the one such a line's mount
+//! point, automount or swap device makes. A copy of a generated unit
+//! elsewhere (`systemctl edit --full` writes one to `/etc/systemd/system`,
+//! which outranks the generator's) is decided like any other unit, and so is
+//! a generated unit no decided line makes. Each is read
 //! from the first unit directory in systemd's order that has it, with its own
 //! drop-ins ([`unit_dirs`], [`unit_file`]); a `.requires` link says a target
 //! requires it. A directory of links that cannot be listed refuses the entry
@@ -221,7 +226,7 @@ fn acts_on_device(name: &str) -> bool {
 pub fn pulled_in(dirs: UnitDirs<'_>, name: &str) -> Result<Vec<String>, &'static str> {
     let mut pulled: Vec<String> = Vec::new();
     match dirs.load(name) {
-        Load::Loaded(unit) => {
+        Load::Loaded { unit, .. } => {
             for key in ["Requires", "BindsTo", "Wants"] {
                 for value in unit.values("Unit", key) {
                     for word in value.split_ascii_whitespace() {
@@ -413,22 +418,36 @@ fn mounted_at<'a>(mounts: &'a [MountEntry], target: &Path) -> Option<&'a MountEn
     mounts.iter().rev().find(|m| m.mount_point == target)
 }
 
+/// The units the fstab generator makes for `fstab`: each line's mount or
+/// swap unit, and its automount.
+fn fstab_units(fstab: &[FstabEntry]) -> Vec<String> {
+    fstab
+        .iter()
+        .flat_map(|entry| {
+            let units = Units::of(entry);
+            units.unit.into_iter().chain(units.automount)
+        })
+        .collect()
+}
+
 /// Decide each of `units` as an fstab line with what its files say would be
-/// decided (see the module docs). `mounts` is the decoy's live mount table,
-/// with the mount points as the decoy sees them, `present` tells whether a
-/// device is there now, and `sys` is the sysfs the decoy's zram devices show
-/// in.
+/// decided (see the module docs). `fstab` holds the lines the fstab policy
+/// decides, `mounts` is the decoy's live mount table, with the mount points
+/// as the decoy sees them, `present` tells whether a device is there now,
+/// and `sys` is the sysfs the decoy's zram devices show in.
 pub fn decide(
     dirs: UnitDirs<'_>,
     units: &[NativeUnit],
+    fstab: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
     present: Present<'_>,
     sys: &Path,
 ) -> Vec<Decision> {
+    let from_fstab = fstab_units(fstab);
     let mut decisions: Vec<Decision> = Vec::new();
     for unit in units {
-        for decision in decide_one(dirs, unit, mounts, hidden_root, present, sys) {
+        for decision in decide_one(dirs, unit, &from_fstab, mounts, hidden_root, present, sys) {
             if !decisions.contains(&decision) {
                 decisions.push(decision);
             }
@@ -438,10 +457,11 @@ pub fn decide(
 }
 
 /// The decisions for one unit: none for one the fstab generator made from
-/// the fstab.
+/// one of the lines that make `from_fstab`, which the fstab policy decides.
 fn decide_one(
     dirs: UnitDirs<'_>,
     native: &NativeUnit,
+    from_fstab: &[String],
     mounts: &[MountEntry],
     hidden_root: &Path,
     present: Present<'_>,
@@ -469,11 +489,16 @@ fn decide_one(
         Load::Missing | Load::Unreadable => {
             return vec![mask(path, vec![name.to_string()], UNREADABLE, required)];
         }
-        Load::Loaded(unit) => unit,
+        Load::Loaded { unit, generated } => {
+            if generated
+                && unit.last("Unit", "SourcePath") == Some(FSTAB_SOURCE)
+                && from_fstab.iter().any(|fstab| fstab == name)
+            {
+                return Vec::new();
+            }
+            unit
+        }
     };
-    if unit.last("Unit", "SourcePath") == Some(FSTAB_SOURCE) {
-        return Vec::new();
-    }
     if suffix == ".swap" && zram_device(&path).is_some_and(|zram| ram_only_zram(sys, zram)) {
         return vec![Decision::Leave {
             target: path,
@@ -484,7 +509,7 @@ fn decide_one(
     let (mount_name, mount_unit) = if automount {
         let mount_name = format!("{}.mount", escape_path(&path));
         match dirs.load(&mount_name) {
-            Load::Loaded(mount) => (mount_name, mount),
+            Load::Loaded { unit: mount, .. } => (mount_name, mount),
             Load::Masked => return Vec::new(),
             Load::Missing | Load::Unreadable => {
                 return vec![mask(
