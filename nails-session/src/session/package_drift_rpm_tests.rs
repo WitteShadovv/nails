@@ -258,6 +258,31 @@ fn an_rpm_database_that_cannot_be_read_cannot_be_judged() {
 }
 
 #[test]
+fn an_rpm_database_larger_than_rpm_keeps_cannot_be_judged() {
+    // Refused unread: the check says it cannot tell, never that nothing
+    // drifted.
+    for path in [format!("{UPPER}/{DB}"), format!("{ROOT}/{DB}")] {
+        let fs = fedora(DECOY, Some(HIDDEN));
+        fs.mock_set_file_size(&path, rpm::FILE_LIMIT + 1);
+        let result = run(&check(), &fs);
+        assert!(result.is_warn(), "{result:?}");
+        assert!(
+            result.message().starts_with(
+                "could not tell whether hidden sessions' copy of the rpm package database \
+                 (/usr/lib/sysimage/rpm/rpmdb.sqlite) follows the decoy's"
+            ),
+            "{path}: {result:?}"
+        );
+        assert!(
+            result
+                .message()
+                .contains("more than rpm keeps in its database or its log"),
+            "{path}: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn an_rpm_database_a_hidden_session_deleted_warns_with_the_discard() {
     let fs = fedora(DECOY, None);
     upper(&fs, &[], &[DB]);
@@ -354,6 +379,7 @@ fn package(name: &str, arch: Option<&str>, version: &str) -> rpm::Package {
         epoch: None,
         version: version.to_string(),
         release: "1".to_string(),
+        dirs: Vec::new(),
         files: Vec::new(),
     }
 }
