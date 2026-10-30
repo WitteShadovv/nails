@@ -385,12 +385,14 @@ of this changelog for that version becomes the release notes word for word, and
   The fsck, makefs and mkswap units its fstab line or unit files pull in would start on the decoy
   disk before that condition is tested, so they are skipped with it, and so are its growfs, pcrfs,
   validatefs and quota units, for caution; every other unit it pulls in still starts, and a unit
-  whose pulls NAILS cannot tell is masked instead. A skipped mount still waits for its device, so an
-  entry whose device is not there at activation (its node, with its device unit active) is masked as
-  before, and `nails check` and `nails activate` warn that the hidden session will not reach its
-  target (attach the device, or give the entry `nofail`, or install a unit file of its own with
-  `WantedBy=` rather than `RequiredBy=`); a device gone by the switch has its units masked then.
-  Entries with `nofail` stay masked. `verify` reports a skip drop-in left on the decoy.
+  whose pulls NAILS cannot tell is masked instead, and so is one whose skip a drop-in of the decoy's
+  would undo (one of the skip's name that systemd reads in its place, or one that sorts after it and
+  resets the start conditions with an empty `Condition…=`). A skipped mount still waits for its
+  device, so an entry whose device is not there at activation (its node, with its device unit
+  active) is masked as before, and `nails check` and `nails activate` warn that the hidden session
+  will not reach its target (attach the device, or give the entry `nofail`, or install a unit file
+  of its own with `WantedBy=` rather than `RequiredBy=`); a device gone by the switch has its units
+  masked then. Entries with `nofail` stay masked. `verify` reports a skip drop-in left on the decoy.
   `nails status` lists each such unit, skipped or masked, with why (`required_units` in
   `status --json`): its device was not there, NAILS could not tell what it is or pulls in, or the
   fstab lines or unit files for it disagree, which `nails check` and `nails activate` now warn of

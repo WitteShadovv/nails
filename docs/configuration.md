@@ -210,20 +210,24 @@ decoy's boot: a unit its fstab line names with `x-systemd.requires=`, a
 `Requires=`, `Wants=` or `BindsTo=` you gave it in a drop-in, the network a
 network filesystem waits for. Where NAILS cannot tell which units it pulls in
 (its unit files cannot be read, name a unit by a specifier such as `%i`, or a
-directory of them cannot be listed), the unit is masked instead. A skipped mount
-or swap still waits for its device, so an entry whose device is not there at
-activation (NAILS also asks systemd whether the device's unit is active, at
-`nails check` as at activation) is masked instead as well; attach the device, or
-give the entry `nofail` (for a unit file of the decoy's own, install it with
-`WantedBy=` rather than `RequiredBy=`). For either mask `nails check` and
-`nails activate` warn that the hidden session will not reach the unit's target.
-A device that is gone by the switch has its units masked then. An entry with
-`nofail` is masked: its target only wants it. In the session `nails status`
-lists each unit a target requires that is kept off, skipped or masked, with why
-(`required_units` in `status --json`): its device was not there at activation or
-at the switch, NAILS could not tell what it is or pulls in, or the fstab lines
-or unit files the hidden systemd may read for it disagree, which `nails check`
-and `nails activate` warn of as well. Status reads them from the session plan in
+directory of them cannot be listed), the unit is masked instead. So is a unit
+whose skip a drop-in of the decoy's would undo, for it or for a unit it pulls
+in: one named like the skip's drop-in (`zz-overlay-runtime.conf`) that systemd
+reads in its place, or one whose name sorts after it and resets the start
+conditions with an empty `Condition…=` assignment. A skipped mount or swap still
+waits for its device, so an entry whose device is not there at activation (NAILS
+also asks systemd whether the device's unit is active, at `nails check` as at
+activation) is masked instead as well; attach the device, or give the entry
+`nofail` (for a unit file of the decoy's own, install it with `WantedBy=` rather
+than `RequiredBy=`). For either mask `nails check` and `nails activate` warn
+that the hidden session will not reach the unit's target. A device that is gone
+by the switch has its units masked then. An entry with `nofail` is masked: its
+target only wants it. In the session `nails status` lists each unit a target
+requires that is kept off, skipped or masked, with why (`required_units` in
+`status --json`): its device was not there at activation or at the switch, NAILS
+could not tell what it is or pulls in, or the fstab lines or unit files the
+hidden systemd may read for it disagree, which `nails check` and
+`nails activate` warn of as well. Status reads them from the session plan in
 `/run`, which is RAM.
 
 The hidden systemd also starts the mount, swap and automount units a target

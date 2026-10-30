@@ -24,6 +24,9 @@ fn required_unit_line(unit: &RequiredUnitView) -> String {
         "undetermined" => {
             format!("masked, as NAILS could not tell what it is or pulls in; {UNREACHED}")
         }
+        "skip_undone" => {
+            format!("masked, as a drop-in of the decoy's would undo its skip; {UNREACHED}")
+        }
         _ => "masked, as the fstab lines or unit files for it disagree; where the one the hidden \
               systemd reads has a boot target require it, that target is not reached"
             .to_string(),

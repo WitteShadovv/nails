@@ -160,6 +160,10 @@ pub enum MaskCause {
     /// disagree (one does not require it, or they name two devices), and a
     /// mask holds for all of them.
     ConflictingLines,
+    /// A drop-in of the decoy's would undo the skip of the unit or of one it
+    /// pulls in: one named like the skip's drop-in that systemd reads in its
+    /// place, or one that sorts after it and resets the start conditions.
+    SkipUndone,
 }
 
 /// A unit a boot target requires that the entry masked rather than skipped,
