@@ -1,0 +1,35 @@
+#! /bin/sh
+
+set -e
+
+UPDATEDB=/usr/sbin/updatedb.plocate
+
+# Skip if systemd timer is available.
+if [ -d /run/systemd/system ]; then
+    exit 0
+fi
+
+[ -x $UPDATEDB ] || exit 0
+
+if which on_ac_power >/dev/null 2>&1; then
+    ON_BATTERY=0
+    on_ac_power >/dev/null 2>&1 || ON_BATTERY=$?
+    if [ "$ON_BATTERY" -eq 1 ]; then
+        exit 0
+    fi
+fi
+
+# See ionice(1).
+IONICE=
+if [ -x /usr/bin/ionice ] &&
+    /usr/bin/ionice -c3 true 2>/dev/null; then
+    IONICE="/usr/bin/ionice -c3"
+fi
+
+# See nocache(1).
+NOCACHE=
+if [ -x /usr/bin/nocache ]; then
+    NOCACHE="/usr/bin/nocache"
+fi
+
+flock --nonblock /run/plocate.daily.lock $NOCACHE $IONICE nice $UPDATEDB

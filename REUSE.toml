@@ -20,6 +20,37 @@ path = "gui/**"
 SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
 SPDX-License-Identifier = "GPL-3.0-only"
 
+# The locate-database check's unit tests read files that distributions ship,
+# copied unchanged, so that the check is tested on what decoys hold; the tests
+# name the package each is taken from. Each stays under the licence of the
+# packaging it comes from. Like the tables below, these come after the
+# catch-all, because the last matching annotation wins.
+#
+# Debian's and Ubuntu's plocate packaging, and a unit plocate's own build
+# writes, as Fedora installs it.
+[[annotations]]
+path = [
+    "nails-core/src/preflight/checks/locate_database/fixtures/debian-13-*",
+    "nails-core/src/preflight/checks/locate_database/fixtures/ubuntu-26.04-*",
+    "nails-core/src/preflight/checks/locate_database/fixtures/fedora-44-plocate-updatedb.service",
+]
+SPDX-FileCopyrightText = "2020 Steinar H. Gunderson"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
+# Fedora's updatedb.conf, which its plocate.spec writes; Fedora's spec files
+# are under the MIT licence.
+[[annotations]]
+path = "nails-core/src/preflight/checks/locate_database/fixtures/fedora-44-updatedb.conf"
+SPDX-FileCopyrightText = "Fedora Project contributors"
+SPDX-License-Identifier = "MIT"
+
+# Arch Linux's updatedb.conf, from its plocate package sources, which Arch
+# Linux licenses as 0BSD.
+[[annotations]]
+path = "nails-core/src/preflight/checks/locate_database/fixtures/arch-updatedb.conf"
+SPDX-FileCopyrightText = "Arch Linux Contributors"
+SPDX-License-Identifier = "0BSD"
+
 # The EFF "large" diceware word list is third-party data under its own licence,
 # not the project's. The last matching table wins, so this one must stay below
 # the catch-all.

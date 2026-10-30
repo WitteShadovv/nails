@@ -1,0 +1,3 @@
+	 
+PRUNENAMES	=	"a	bc" # trailing
+prunepaths = "/x"
