@@ -185,15 +185,21 @@ async fn read_setting(
     setting: &SettingDescriptor,
 ) -> zbus::Result<zbus::zvariant::OwnedValue> {
     let args = (setting.namespace, setting.key);
+    // NAILS: NO_AUTO_START on both reads. The portal is read where it runs
+    // and never started for the window through D-Bus activation: where no one
+    // owns its name, the bus answers NameHasNoOwner, which
+    // `portal_unavailable` takes as a missing portal.
+    let flags = zbus::proxy::MethodFlags::NoAutoStart.into();
     #[cfg_attr(slint_nightly_test, allow(non_exhaustive_omitted_patterns))]
-    match settings_proxy.call("ReadOne", &args).await {
+    let reply = match settings_proxy.call_with_flags("ReadOne", flags, &args).await {
         Err(zbus::Error::MethodError(name, ..))
             if name.as_str() == "org.freedesktop.DBus.Error.UnknownMethod" =>
         {
-            settings_proxy.call("Read", &args).await
+            settings_proxy.call_with_flags("Read", flags, &args).await
         }
         result => result,
-    }
+    };
+    reply?.ok_or_else(|| zbus::Error::Failure("the settings portal sent no reply".into()))
 }
 
 /// Clears the pending flag so the backend creates and shows the first windows.
