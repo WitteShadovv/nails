@@ -41,10 +41,11 @@ use slint::platform::{Key, Platform, PointerEventButton, WindowAdapter, WindowEv
 use slint::{ComponentHandle, LogicalPosition, LogicalSize, SharedString};
 use support::fixture;
 
-/// The window's preferred size, and its minimum width.
+/// The window's preferred size, and its minimum width and height.
 const WIDTH: f32 = 480.0;
 const HEIGHT: f32 = 560.0;
 const NARROW: f32 = 360.0;
+const SHORT: f32 = 400.0;
 /// A pixel differs where one of its channels is further than this from the
 /// golden image's, and a page differs where more than `SPREAD` pixels do: room
 /// for the rounding of another processor, none for a layout that moved.
@@ -189,7 +190,11 @@ impl Win {
     }
 
     fn resize(&self, width: f32) {
-        self.app.window().set_size(LogicalSize::new(width, HEIGHT));
+        self.resize_to(width, HEIGHT);
+    }
+
+    fn resize_to(&self, width: f32, height: f32) {
+        self.app.window().set_size(LogicalSize::new(width, height));
     }
 
     fn press_key(&self, key: Key) {
@@ -292,6 +297,31 @@ fn activation_asked() -> Win {
     win
 }
 
+/// The question before an activation whose plan, recorded from the real
+/// helper, starts with an advisory: hidden sessions' package database no
+/// longer follows the decoy's.
+fn activation_advisory() -> Win {
+    let win = decoy(ready_check(), 0);
+    win.app.invoke_action_activated();
+    let recorded = fixture("activate-plan-advisory");
+    win.update(Update::Planned(PlanData::Activate(
+        serde_json::from_value(recorded["data"].clone()).expect("an activation's plan"),
+    )));
+    win
+}
+
+/// The question before a deactivation whose plan `name`, recorded from the
+/// real helper, says the return powers off instead.
+fn deactivation_asked(name: &str) -> Win {
+    let win = hidden();
+    win.app.invoke_action_activated();
+    let recorded = fixture(name);
+    win.update(Update::Planned(PlanData::Deactivate(
+        serde_json::from_value(recorded["data"].clone()).expect("a deactivation's plan"),
+    )));
+    win
+}
+
 /// The activation under way: four of its six steps streamed.
 fn activating() -> Win {
     let win = activation_asked();
@@ -339,10 +369,89 @@ const PAGES: &[Page] = &[
     ("10-verify-found", verify_found),
     ("11-rehearsal-planting", planting),
     ("12-settings-number", settings_number),
+    ("13-activate-question-advisory", activation_advisory),
+    (
+        "14-activate-question-advisory-narrow",
+        activation_advisory_narrow,
+    ),
+    (
+        "15-activate-question-advisory-short",
+        activation_advisory_short,
+    ),
+    ("16-deactivate-question-powers-off", powers_off),
+    (
+        "17-deactivate-question-powers-off-narrow",
+        powers_off_narrow,
+    ),
+    ("18-deactivate-question-powers-off-short", powers_off_short),
+    ("19-deactivate-question-may-power-off", may_power_off),
+    (
+        "20-deactivate-question-may-power-off-narrow",
+        may_power_off_narrow,
+    ),
+    (
+        "21-deactivate-question-may-power-off-short",
+        may_power_off_short,
+    ),
+    (
+        "22-deactivate-question-may-power-off-short-scrolled",
+        may_power_off_short_scrolled,
+    ),
 ];
 
 fn narrow(win: Win) -> Win {
     win.resize(NARROW);
+    win
+}
+
+/// At the window's least height.
+fn short(win: Win) -> Win {
+    win.resize_to(WIDTH, SHORT);
+    win
+}
+
+fn activation_advisory_narrow() -> Win {
+    narrow(activation_advisory())
+}
+
+fn activation_advisory_short() -> Win {
+    short(activation_advisory())
+}
+
+/// A return the way back turns into a power-off whatever happens first.
+fn powers_off() -> Win {
+    deactivation_asked("deactivate-plan-powers-off")
+}
+
+fn powers_off_narrow() -> Win {
+    narrow(powers_off())
+}
+
+fn powers_off_short() -> Win {
+    short(powers_off())
+}
+
+/// A return that powers off unless that changes before it runs.
+fn may_power_off() -> Win {
+    deactivation_asked("deactivate-plan-may-power-off")
+}
+
+fn may_power_off_narrow() -> Win {
+    narrow(may_power_off())
+}
+
+fn may_power_off_short() -> Win {
+    short(may_power_off())
+}
+
+/// Its sentence read to the end from the keyboard: the page keys move the
+/// view from Cancel, where the focus starts, and stop at the end.
+fn may_power_off_short_scrolled() -> Win {
+    let win = may_power_off_short();
+    let _ = win.render();
+    for _ in 0..40 {
+        win.press_key(Key::PageDown);
+    }
     win
 }
 

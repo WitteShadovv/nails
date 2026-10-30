@@ -435,6 +435,8 @@ export component AppWindow inherits Window {
     if root.question-open: AlertDialog {
         width: root.width;
         height: root.height;
+        // The Emergency control's band (below, 1 px down and 44 px high).
+        top-reserved: root.emergency-shown ? 45px : 0px;
         heading: root.question-heading;
         body: root.question-body;
         confirm-label: root.question-confirm;

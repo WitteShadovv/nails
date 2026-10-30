@@ -35,6 +35,7 @@ use std::path::PathBuf;
 
 use nails_api::CheckOutcome;
 use nails_api::Event;
+use nails_api::protocol::PowerOffInstead;
 
 use crate::client::{Plan, PlanData};
 use crate::envelope::{self, Attention, ErrorBody, Place, Readiness, StatusData};
@@ -286,6 +287,9 @@ pub struct Model {
     allowed: BTreeSet<Risk>,
     activation: Option<Activation>,
     deactivation: Option<Deactivation>,
+    /// Why the return the open question offers powers off instead, as its
+    /// plan said, for the page that follows Return to Decoy.
+    return_instead: Option<PowerOffInstead>,
     /// The tool whose page shows, over the session's.
     tool: Option<Tool>,
     /// The rehearsal's test words were planted in this hidden session, as
@@ -325,6 +329,7 @@ impl Model {
             allowed: BTreeSet::new(),
             activation: None,
             deactivation: None,
+            return_instead: None,
             tool: None,
             planted_here: false,
             hung_up: false,
@@ -465,6 +470,7 @@ impl Model {
             return None;
         }
         self.question = None;
+        self.return_instead = None;
         match self.asking.take() {
             Some(Asking::Allow { risk, typed }) => {
                 if !(confirmed && activation::is_the_word(&typed)) {
@@ -514,8 +520,9 @@ impl Model {
         if !offered || !matches!(self.plan_for, Some(PlanFor::Deactivation)) {
             return None;
         }
+        let instead = self.return_instead.take();
         self.close_question();
-        self.deactivation = Some(Deactivation::ending(Ending::Return));
+        self.deactivation = Some(Deactivation::returning(instead));
         Some(Ask::Apply)
     }
 
@@ -630,6 +637,7 @@ impl Model {
     fn close_question(&mut self) {
         self.question = None;
         self.asking = None;
+        self.return_instead = None;
     }
 
     /// Forget the risks allowed, which hold for one activation: it was
@@ -688,6 +696,7 @@ impl Model {
                     self.plan_for = None;
                     return vec![Ask::Withdraw];
                 }
+                self.return_instead = plan.powers_off_instead.clone();
                 deactivation::question(plan)
             }
             (Some(PlanFor::Screen(asker)), data) => asker(data),
@@ -773,7 +782,7 @@ impl Model {
                 self.close_question();
                 match deactivation::applied(value) {
                     Applied::Enqueued(enqueued) => {
-                        self.deactivation = Some(enqueued);
+                        self.deactivation = Some(enqueued.keeping(self.deactivation.take()));
                         Vec::new()
                     }
                     Applied::Failed(message) => {
@@ -852,7 +861,7 @@ impl Model {
             }
             Stage::Unreadable(why) => self.unreadable_page(why),
             Stage::Ended(failure) => self.failure_page(failure),
-            Stage::Connected => match (&self.activation, self.deactivation) {
+            Stage::Connected => match (&self.activation, &self.deactivation) {
                 (Some(activation), _) => activation.page(),
                 (None, Some(deactivation)) => deactivation.page(),
                 (None, None) => self.tool_page().unwrap_or_else(|| self.session_page()),

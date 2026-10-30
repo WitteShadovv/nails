@@ -11,6 +11,11 @@
 // the confirming button stack the same way where a label does not fit half
 // the dialog's width, at the window's narrowest or for a long label.
 //
+// It is never taller than the window. A sentence longer than the room left
+// between the heading and the answers scrolls there, with the wheel, a drag
+// or the arrow and page keys, and a bar at its edge shows where the view
+// lies in it; the heading, the field and the answers stay in view.
+//
 // It holds the keyboard while it is open. Focus starts on Cancel, or in the
 // field when there is one, and stays where it is when the answers change
 // between side by side and stacked as the window is resized. Tab and
@@ -37,6 +42,10 @@ export component AlertDialog {
     in property <bool> locked;
     // The label of the second action; empty when there is none.
     in property <string> alternative;
+    // The room at the top a control above the question keeps (the
+    // Emergency control in a hidden session): the question never lies
+    // under it.
+    in property <length> top-reserved;
     // Called with true for the confirming button, false for Cancel or Escape.
     callback answered(confirmed: bool);
     // Called for the second action.
@@ -71,6 +80,16 @@ export component AlertDialog {
     // Cancel takes it once, as the question opens without a field.
     property <int> answer-focus;
     property <bool> opened;
+    // How much of the sentence lies outside its view, and about one line of
+    // it.
+    property <length> overflow: max(0px, body-view.content-height - body-view.height);
+    property <length> line: Adw.font-size * 1.25;
+
+    // Move the sentence's view `by` towards its end (back for less than
+    // zero), no further than either end.
+    function scroll-body(by: length) {
+        body-view.content-y = max(-root.overflow, min(0px, body-view.content-y - by));
+    }
 
     // The dimming over the window, and nothing underneath gets the pointer.
     Rectangle {
@@ -87,14 +106,37 @@ export component AlertDialog {
                 root.answered(false);
                 return accept;
             }
+            // A sentence longer than its view scrolls from the keyboard, as
+            // the keys reach here from a button: a line, or a view less a
+            // line.
+            if (root.overflow > 0px) {
+                if (event.text == Key.DownArrow) {
+                    root.scroll-body(root.line);
+                    return accept;
+                }
+                if (event.text == Key.UpArrow) {
+                    root.scroll-body(-root.line);
+                    return accept;
+                }
+                if (event.text == Key.PageDown) {
+                    root.scroll-body(body-view.height - root.line);
+                    return accept;
+                }
+                if (event.text == Key.PageUp) {
+                    root.scroll-body(root.line - body-view.height);
+                    return accept;
+                }
+            }
             reject
         }
 
         sheet := Rectangle {
             width: min(root.width - 24px, 372px);
-            height: content.preferred-height;
+            // As tall as the question, up to the room the window leaves it,
+            // and centred, but never under the room kept at the top.
+            height: min(content.preferred-height, root.height - root.top-reserved - 24px);
             x: round((root.width - self.width) / 2px) * 1px;
-            y: round((root.height - self.height) / 2px) * 1px;
+            y: max(root.top-reserved + 12px, round((root.height - self.height) / 2px) * 1px);
             border-radius: Adw.alert-radius;
             background: Adw.dialog-bg;
             border-width: 1px;
@@ -117,12 +159,20 @@ export component AlertDialog {
                     accessible-role: none;
                 }
 
-                Text {
-                    text: root.body;
-                    color: Adw.dialog-fg;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                    accessible-role: none;
+                // The sentence, in a view of its own: the one part of the
+                // question that gives up room when the window has too little.
+                body-view := Flickable {
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        Text {
+                            text: root.body;
+                            color: Adw.dialog-fg;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            accessible-role: none;
+                        }
+                    }
                 }
 
                 if root.prompt != "": WordEntry {
@@ -291,6 +341,19 @@ export component AlertDialog {
                         }
                     }
                 }
+            }
+
+            // Where the view lies in a sentence longer than it, as the page
+            // shows it. It takes no input.
+            if root.overflow > 0px: Rectangle {
+                property <length> track: body-view.height;
+                property <length> thumb: max(24px, self.track * body-view.height / body-view.content-height);
+                x: sheet.width - 14px;
+                y: body-view.y + (self.track - self.thumb) * min(1, max(0, -body-view.content-y / root.overflow));
+                width: 4px;
+                height: self.thumb;
+                border-radius: 2px;
+                background: Adw.dialog-fg.with-alpha(0.3);
             }
         }
     }
