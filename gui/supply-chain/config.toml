@@ -21,3 +21,78 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[[exemptions.bitflags]]
+version = "2.13.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.13.2. It is in the window through rustix (the window's handling of its standard input). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.itoa]]
+version = "1.0.18"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.18. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.libc]]
+version = "0.2.189"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project: 0.2.189 is the base of the imported delta audits that reach 0.2.190, the version in the lock, and this exemption stands for 0.2.189 itself. It is in the window through rustix (the window's handling of its standard input)."
+
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.12.1. It is in the window through rustix (the window's handling of its standard input). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.memchr]]
+version = "2.8.3"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 2.8.3. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.proc-macro2]]
+version = "1.0.107"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.107. It runs at build time only, through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.rustix]]
+version = "1.1.5"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.1.5. It is in the window through rustix (the window's handling of its standard input). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.229. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_core]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.229. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_derive]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.229. It runs at build time only, through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.serde_json]]
+version = "1.0.154"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.154. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.syn]]
+version = "3.0.9"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 3.0.9. It runs at build time only, through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.unicode-ident]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.27. It runs at build time only, through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 0.61.2. It is in the window through rustix (the window's handling of its standard input). It is built only for a system other than Linux. Exempted at this version only, so a new version needs an audit or a new exemption."
+
+[[exemptions.zmij]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Not audited by this project, and no imported audit covers 1.0.23. It is in the window through nails-api (the wire contract with the engine) and serde_json (the JSON of the protocol with the engine). Exempted at this version only, so a new version needs an audit or a new exemption."

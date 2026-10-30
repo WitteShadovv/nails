@@ -371,3 +371,21 @@ fn every_error_code_has_a_snake_case_name() {
         assert_eq!(serde_json::to_string(&code).unwrap(), name);
     }
 }
+
+/// The release both ends name is one the helper's decoder takes: a window's
+/// hello naming it decodes, so a window and an engine of one build always
+/// pass the handshake's shape check.
+#[test]
+fn the_release_is_an_engine_version_the_decoder_takes() {
+    assert!(valid_engine(RELEASE).is_ok(), "{RELEASE}");
+    let line = Request {
+        v: PROTOCOL_VERSION,
+        id: 1,
+        op: Op::Hello(Hello {
+            protocol: PROTOCOL_VERSION,
+            engine: RELEASE.to_string(),
+        }),
+    }
+    .to_line();
+    assert!(decode(&line).is_ok(), "{line}");
+}
