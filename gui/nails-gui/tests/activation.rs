@@ -112,7 +112,14 @@ fn a_ready_page_activates_through_a_question_that_starts_on_cancel() {
     assert!(screen.shows(text::READY));
     assert_eq!(
         screen.labels(AccessibleRole::Button),
-        ["Close", text::VERIFY, text::REHEARSAL, text::ACTIVATE]
+        [
+            "Close",
+            text::VERIFY,
+            text::REHEARSAL,
+            text::DISCARD,
+            text::SET_UP,
+            text::ACTIVATE
+        ]
     );
     asked(&screen);
     let dialog = screen.find_with(text::ACTIVATE_QUESTION, AccessibleRole::Groupbox);

@@ -4,7 +4,8 @@
 //! The window's tools end to end, without a display: the window on Slint's
 //! headless platform and the real worker against a fake helper that answers
 //! with envelopes recorded from the real CLI. Each flow shows the requests
-//! the helper reads, in their order.
+//! the helper reads, in their order, and that an apply carries the token of
+//! the plan the person answered, and nothing applies without that answer.
 
 mod screen;
 mod support;
@@ -14,7 +15,8 @@ use std::sync::mpsc::{Receiver, channel};
 
 use i_slint_backend_testing::AccessibleRole;
 use nails_api::protocol::{
-    CheckArgs, Op, RehearsePlantArgs, RehearseScanArgs, Request, VerifyArgs,
+    CheckArgs, DiscardPlanArgs, InitArgs, Op, RehearsePlantArgs, RehearseScanArgs, Request, Token,
+    VerifyArgs,
 };
 use nails_gui::text;
 use nails_gui::worker::{Connect, Kind, Update};
@@ -152,4 +154,152 @@ fn on_the_decoy_a_rehearsal_scans_and_removes_through_the_helper() {
             Op::RehearseReset,
         ]
     );
+}
+
+fn token(of: &str) -> String {
+    match of {
+        "discard" => "d".repeat(32),
+        _ => "e".repeat(32),
+    }
+}
+
+/// A decoy's helper that plans and applies a discard of `/home`.
+fn discarding() -> (Wired, Receiver<Request>, FakePowerOff) {
+    let (wired, requests, power_off) = window("decoy", |op| match op {
+        Op::DiscardPlan(args) => Some((
+            0,
+            json!({"schema_version": 2, "command": "discard", "ok": true, "data": {
+                "target": args.target, "removals": ["/mnt/data/root/upper/home"],
+                "resets_nix_store": false, "token": token("discard")}}),
+        )),
+        Op::DiscardApply(_) => Some((
+            0,
+            json!({"schema_version": 2, "command": "discard", "ok": true, "data": {
+                "target": "/home", "removed": ["/mnt/data/root/upper/home"]}}),
+        )),
+        _ => None,
+    });
+    press(&wired, text::DISCARD);
+    while wired.screen.focused() != text::FIELD_FOLDER {
+        wired.screen.press(slint::platform::Key::Tab);
+    }
+    wired.screen.type_text("/home");
+    press(&wired, text::DISCARD_ACTION);
+    wired.pump_until(|update| matches!(update, Update::Planned(_)));
+    assert!(wired.screen.window.get_question_open());
+    (wired, requests, power_off)
+}
+
+#[test]
+fn a_discard_applies_the_token_of_its_plan_once_the_folder_is_typed() {
+    let (wired, requests, _power_off) = discarding();
+    let delete = wired.screen.find_with(text::DELETE, AccessibleRole::Button);
+    assert_eq!(delete.accessible_enabled(), Some(false));
+    wired.screen.type_text("/home");
+    delete.invoke_accessible_default_action();
+    until_answered(&wired, Kind::Apply);
+    assert!(wired.screen.shows(text::DISCARDED));
+    // Back brings the status and, as the discard may change it, the check.
+    press(&wired, text::BACK);
+    until_answered(&wired, Kind::Check);
+    assert!(wired.screen.shows(text::READY));
+    assert_eq!(
+        ops(&requests, 6),
+        [
+            Op::Status,
+            Op::Check(CheckArgs::default()),
+            Op::DiscardPlan(DiscardPlanArgs {
+                target: "/home".to_string(),
+                allow_decoy_storage: false,
+            }),
+            Op::DiscardApply(Token {
+                token: token("discard")
+            }),
+            Op::Status,
+            Op::Check(CheckArgs::default()),
+        ]
+    );
+}
+
+#[test]
+fn a_discard_answered_no_is_withdrawn_and_never_applied() {
+    let (wired, requests, _power_off) = discarding();
+    press(&wired, "Cancel");
+    until_answered(&wired, Kind::Status);
+    assert!(!wired.screen.window.get_question_open());
+    assert!(
+        wired.screen.shows(text::DISCARD_WHAT),
+        "the tool stays open"
+    );
+    assert_eq!(
+        ops(&requests, 4),
+        [
+            Op::Status,
+            Op::Check(CheckArgs::default()),
+            Op::DiscardPlan(DiscardPlanArgs {
+                target: "/home".to_string(),
+                allow_decoy_storage: false,
+            }),
+            // Any other request withdraws the plan on the helper's side.
+            Op::Status,
+        ]
+    );
+}
+
+#[test]
+fn set_up_applies_the_token_of_its_plan_through_the_helper() {
+    let (wired, requests, _power_off) = window("decoy", |op| match op {
+        Op::InitPlan(args) => Some((
+            0,
+            json!({"schema_version": 2, "command": "init", "ok": true, "data": {
+                "path": args.path, "hardware_config": null,
+                "skipped": "host 'debian' has no NixOS config layer", "warnings": [],
+                "token": token("init")}}),
+        )),
+        Op::InitApply(_) => Some((
+            0,
+            json!({"schema_version": 2, "command": "init", "ok": true, "data": {
+                "root": "/mnt/data",
+                "items": [{"path": "/mnt/data/logs", "status": "created"}],
+                "next_steps": ["check readiness"]}}),
+        )),
+        _ => None,
+    });
+    press(&wired, text::SET_UP);
+    press(&wired, text::SET_UP_ACTION);
+    wired.pump_until(|update| matches!(update, Update::Planned(_)));
+    press(&wired, text::SET_UP_CONFIRM);
+    until_answered(&wired, Kind::Apply);
+    assert!(wired.screen.shows(text::SET_UP_DONE));
+    assert_eq!(
+        ops(&requests, 4),
+        [
+            Op::Status,
+            Op::Check(CheckArgs::default()),
+            Op::InitPlan(InitArgs {
+                path: "/mnt/data".to_string(),
+                allow_decoy_storage: false,
+                hardware_config: None,
+                no_hardware_config: false,
+            }),
+            Op::InitApply(Token {
+                token: token("init")
+            }),
+        ]
+    );
+}
+
+#[test]
+fn a_set_up_the_engine_refused_shows_its_words() {
+    let (wired, requests, _power_off) = window("decoy", |op| match op {
+        Op::InitPlan(_) => Some((4, fixture("init-refused"))),
+        _ => None,
+    });
+    press(&wired, text::SET_UP);
+    press(&wired, text::SET_UP_ACTION);
+    until_answered(&wired, Kind::Plan);
+    assert!(wired.screen.shows(text::SET_UP_FAILED));
+    assert!(!wired.screen.window.get_question_open());
+    let ops = ops(&requests, 3);
+    assert!(matches!(ops[2], Op::InitPlan(_)), "{ops:?}");
 }

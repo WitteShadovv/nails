@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! The window's tools on Slint's headless platform: the rows of a settled
-//! page that open them, Back and Escape, and the pages of Verify and
-//! Rehearsal from envelopes recorded from the real CLI (which the helper
-//! answers with word for word), for the keyboard and the screen reader.
+//! page that open them, Back and Escape, the pages of Verify and Rehearsal
+//! from envelopes recorded from the real CLI (which the helper answers with
+//! word for word), and the questions of Discard Hidden Changes and Set Up
+//! Hidden Volume with their typed folder, keyboard and screen reader.
 
 mod screen;
 mod support;
 
 use i_slint_backend_testing::{AccessibleLiveness, AccessibleRole};
-use nails_api::protocol::{RehearseScanArgs, VerifyArgs};
-use nails_gui::client::{Answer, ours};
+use nails_api::protocol::{
+    DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData, RehearseScanArgs, VerifyArgs,
+};
+use nails_gui::client::{Answer, Plan, PlanData, ours};
 use nails_gui::text;
 use nails_gui::worker::{Ask, Kind, Rehearse, Update};
 use screen::Screen;
@@ -287,4 +290,128 @@ fn a_scan_that_found_the_test_words_is_announced_with_where() {
         "Found: /tmp/scratch/hit.img, byte 524288",
         AccessibleRole::ListItem,
     );
+}
+
+fn type_into(screen: &Screen, label: &str, typed: &str) {
+    while screen.focused() != label {
+        screen.press(Key::Tab);
+    }
+    screen.type_text(typed);
+}
+
+#[test]
+fn a_discard_of_a_home_lists_what_goes_and_waits_for_the_folder_typed() {
+    let screen = decoy();
+    press(&screen, text::DISCARD);
+    let field = screen.find_with(text::FIELD_FOLDER, AccessibleRole::TextInput);
+    assert_eq!(field.accessible_value().as_deref(), Some(""));
+    assert!(screen.shows(text::FOLDER_HINT));
+    let discard = screen.find_with(text::DISCARD_ACTION, AccessibleRole::Button);
+    assert_eq!(
+        discard.accessible_enabled(),
+        Some(false),
+        "nothing typed yet"
+    );
+
+    type_into(&screen, text::FIELD_FOLDER, "home");
+    assert!(screen.shows(text::FOLDER_NOT_ABSOLUTE));
+    screen.press(Key::Home);
+    screen.type_text("/");
+    assert!(screen.shows(text::FOLDER_HINT));
+    assert_eq!(discard.accessible_enabled(), Some(true));
+    // Return in the field does nothing: only the button acts.
+    screen.press(Key::Return);
+    assert!(screen.asks().is_empty());
+    discard.invoke_accessible_default_action();
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Plan(Plan::Discard(DiscardPlanArgs {
+            target: "/home".to_string(),
+            allow_decoy_storage: false,
+        }))]
+    );
+    screen.update(Update::Running(Kind::Plan));
+    assert!(screen.shows(text::LOOKING_AT_CHANGES));
+    screen.update(Update::Planned(PlanData::Discard(DiscardPlanData {
+        target: "/home".to_string(),
+        removals: vec!["/mnt/data/root/upper/home".to_string()],
+        resets_nix_store: false,
+        token: "d".repeat(32),
+    })));
+    let dialog = screen.find_with(text::DISCARD_QUESTION, AccessibleRole::Groupbox);
+    let body = dialog.accessible_description().unwrap_or_default();
+    assert_eq!(
+        body.lines().collect::<Vec<_>>(),
+        [
+            text::discard_consequence("/home").as_str(),
+            text::DISCARD_LIST,
+            "/mnt/data/root/upper/home"
+        ]
+    );
+    let prompt = text::discard_type("/home", true);
+    assert_eq!(screen.focused(), prompt, "the field takes the focus");
+    let delete = screen.find_with(text::DELETE, AccessibleRole::Button);
+    assert_eq!(delete.accessible_enabled(), Some(false));
+    screen.type_text("/home");
+    assert_eq!(delete.accessible_enabled(), Some(true));
+    delete.invoke_accessible_default_action();
+    assert_eq!(screen.asks(), vec![Ask::Apply]);
+    screen.update(Update::Running(Kind::Apply));
+    assert!(screen.shows(text::DELETING));
+    screen.update(answered(
+        Kind::Apply,
+        0,
+        json!({"schema_version": 2, "command": "discard", "ok": true,
+            "data": {"target": "/home", "removed": ["/mnt/data/root/upper/home"]}}),
+    ));
+    assert!(screen.shows(text::DISCARDED));
+    screen.find_with(
+        "Deleted: /mnt/data/root/upper/home",
+        AccessibleRole::ListItem,
+    );
+}
+
+#[test]
+fn set_up_asks_first_and_lists_each_part_it_wrote() {
+    let screen = decoy();
+    press(&screen, text::SET_UP);
+    assert!(screen.shows(&text::set_up_what("/mnt/data")));
+    press(&screen, text::SET_UP_ACTION);
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Plan(Plan::Init(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: false,
+            hardware_config: None,
+            no_hardware_config: false,
+        }))]
+    );
+    screen.update(Update::Planned(PlanData::Init(InitPlanData {
+        path: "/mnt/data".to_string(),
+        hardware_config: None,
+        skipped: Some("host 'debian' has no NixOS config layer".to_string()),
+        warnings: vec![],
+        token: "e".repeat(32),
+    })));
+    let dialog = screen.find_with(text::SET_UP_QUESTION, AccessibleRole::Groupbox);
+    assert_eq!(
+        dialog.accessible_description().as_deref(),
+        Some(text::set_up_consequence("/mnt/data").as_str())
+    );
+    assert_eq!(screen.focused(), "Cancel", "the focus starts on Cancel");
+    press(&screen, text::SET_UP_CONFIRM);
+    assert_eq!(screen.asks(), vec![Ask::Apply]);
+    screen.update(answered(
+        Kind::Apply,
+        0,
+        json!({"schema_version": 2, "command": "init", "ok": true, "data": {
+            "root": "/mnt/data",
+            "items": [{"path": "/mnt/data/logs", "status": "created"}],
+            "next_steps": ["check readiness"]}}),
+    ));
+    assert!(screen.shows(text::SET_UP_DONE));
+    screen.find_with("Created: /mnt/data/logs", AccessibleRole::ListItem);
+    assert!(screen.shows(text::SET_UP_NEXT));
+    press(&screen, text::BACK);
+    assert_eq!(screen.asks(), vec![Ask::Status]);
 }

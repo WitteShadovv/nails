@@ -68,3 +68,76 @@ export component WordEntry {
         }
     }
 }
+
+// A field on a page, as libadwaita's entry row: a card with the field's
+// label above what is typed, and a line under the card that says what the
+// field takes. Its label names it for a screen reader, and what is typed is
+// its value. Return in it does nothing: the page's button acts, never the
+// field. It holds no secret.
+export component FieldRow {
+    in property <string> label;
+    in property <string> hint;
+    in-out property <string> text;
+    // False while a dialog covers the field.
+    in property <bool> reachable: true;
+    // Called with the text each time it changes.
+    callback edited(string);
+
+    VerticalLayout {
+        spacing: 6px;
+
+        Rectangle {
+            border-radius: Adw.card-radius;
+            background: Adw.card-bg;
+            border-width: 1px;
+            border-color: Adw.card-shade;
+
+            VerticalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-top: 8px;
+                padding-bottom: 10px;
+                spacing: 2px;
+
+                Text {
+                    text: root.label;
+                    color: Adw.window-fg-dim;
+                    font-size: Adw.font-size-small;
+                    accessible-role: none;
+                }
+
+                input := TextInput {
+                    text <=> root.text;
+                    single-line: true;
+                    color: Adw.card-fg;
+                    enabled: root.reachable;
+                    accessible-label: root.label;
+                    edited => {
+                        root.edited(self.text);
+                    }
+                    // Return never acts from the field.
+                    accepted => { }
+                    changed has-focus => {
+                        if (self.has-focus) {
+                            Adw.focused-label = root.label;
+                        } else if (Adw.focused-label == root.label) {
+                            Adw.focused-label = "";
+                        }
+                    }
+                }
+            }
+
+            if input.has-focus: Rectangle {
+                border-radius: Adw.card-radius;
+                border-width: 2px;
+                border-color: Adw.focus-ring;
+            }
+        }
+
+        if root.hint != "": Text {
+            text: root.hint;
+            color: Adw.window-fg-dim;
+            wrap: word-wrap;
+        }
+    }
+}
