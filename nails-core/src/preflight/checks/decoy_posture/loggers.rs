@@ -183,7 +183,11 @@ fn resolve_alias<F: Filesystem>(fs: &F, root: &Path, alias: &str) -> Option<Stri
 /// process is what shows it ([`running_process_names`]). A oneshot unit that
 /// has run and exited, such as `kdump-tools.service`, keeps no process and no
 /// populated cgroup, so its marker is all that shows it.
-pub(super) fn unit_active<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
+pub(in crate::preflight::checks) fn unit_active<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    unit: &str,
+) -> bool {
     let invocations = root.join(INVOCATION_DIR);
     // The marker is a link to the invocation id (see INVOCATION_DIR): a probe
     // that follows it, such as `path_exists`, never sees it.

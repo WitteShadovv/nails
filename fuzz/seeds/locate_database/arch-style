@@ -1,0 +1,4 @@
+PRUNE_BIND_MOUNTS = "yes"
+PRUNEFS = "autofs fuse tmpfs"
+PRUNENAMES = ".git .hg"
+PRUNEPATHS = "/media /mnt /tmp /var/cache"

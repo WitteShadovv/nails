@@ -255,6 +255,7 @@ and checks more than that nothing panics or hangs:
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `unit_file` | a decoy's systemd unit file | the assignments of the sections NAILS reads are the ones systemd applies, in order, and a unit file systemd refuses is refused |
 | `unit_name` | the name of a mount, swap or automount unit a decoy's unit directory links | a name decodes only to a plain absolute path systemd gives that name, and a path's name decodes back to the path |
+| `locate_database` | a decoy's `/etc/updatedb.conf`, after two NULs in a row an `ExecStart=` value, and after the next two a cron job's shell | the file reads as plocate's `parse_updatedb_conf()` reads it, with the same lists or a refusal on the same line, and its lists written back read the same; the words of the value, quoted and escaped again, split into the same words; shell that names no updatedb runs none, and each updatedb command read from it, its words quoted again, reads back the same; every prune entry, scan root, database and configuration file a command line gives is part of one of its words |
 | `autologin` | GDM's, SDDM's, Plasma Login Manager's and LightDM's configuration with drop-ins | the accounts listed are the ones each display manager may log in, read with its parser in each order its locale may sort the drop-ins in |
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
 | `config_edit` | an operator's `nails.toml`, then the edits `config set` and `config unset` make of it, one a line | an edit of a file that parses writes TOML that parses; each key set holds the value asked for and each key unset is gone, while every other key, known or not, holds what it held; every comment stays; when no value changes the file comes back byte for byte; the same edits a second time change nothing |
@@ -269,8 +270,8 @@ and checks more than that nothing panics or hangs:
 | `raw_token_scan` | a canary token and a sparse disk image | the windowed scan finds what a scan of the whole image in one buffer finds |
 | `helper_request` | a request line a window writes to the engine's root helper, for any of its operations, up to past its length limit | a line past the length limit is refused as too long and one holding a newline is refused; an accepted request follows the protocol's version, has arguments of the shape the protocol states, checked by the target on its own (absolute paths, a well-formed token, no two options the CLI refuses together, a configuration change of 1 to 32 keys of a setting's shape, each named once, with bounded values free of control characters), and written back reads as the same request: through the decoder, or, where the written form, which names every field, no longer fits within the limit, past its length check |
 
-What systemd, libmount, GLib, GDM, LightDM, SDDM, KConfig, dpkg and libalpm
-do, where a target compares NAILS with them, is modelled in `fuzz/src/`, each
+What systemd, libmount, GLib, GDM, LightDM, SDDM, KConfig, dpkg, libalpm and
+plocate do, where a target compares NAILS with them, is modelled in `fuzz/src/`, each
 model written from the C or C++ function it follows.
 Each target starts from its seed corpus in `fuzz/seeds/<target>/`, inputs
 taken from the fixtures and tests, with a dictionary in `fuzz/dicts/`. The
