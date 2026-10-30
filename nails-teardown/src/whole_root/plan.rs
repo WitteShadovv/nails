@@ -155,9 +155,9 @@ pub enum MaskCause {
     /// NAILS could not tell what the unit is or what it pulls in, so it
     /// keeps the unit from starting whatever it is.
     Undetermined,
-    /// Two fstab lines the hidden systemd may read disagree about the unit
-    /// (one does not require it, or they name two devices), and a mask holds
-    /// for both.
+    /// The fstab lines or unit files the hidden systemd may read for the unit
+    /// disagree (one does not require it, or they name two devices), and a
+    /// mask holds for all of them.
     ConflictingLines,
 }
 
