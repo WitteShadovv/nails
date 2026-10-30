@@ -6,16 +6,17 @@
 //! what the window shows after it.
 //!
 //! - **A risk allowed for one activation.** A problem the CLI lets the person
-//!   allow with a flag (`--allow-persistent-decoy`) gets "Allow for This
-//!   Activation…" under it. That opens a question whose button acts only
-//!   once the person typed the word it shows: allowing a risk is never one
-//!   click. The window then checks again with the flag, names the risk on the
-//!   page and in the question before the activation, and gives the flag to
-//!   that activation. Once its apply is answered or its plan withdrawn, or a
-//!   recovery ran, the window forgets the risk and checks again without the
-//!   flag. Nothing is stored. No decoy reaches this yet: the launcher's gate
-//!   refuses a decoy that keeps a persistent record before the window opens,
-//!   so only a decoy that starts keeping one afterwards would show it.
+//!   allow with a flag gets "Allow for This Activation…" under it: the check
+//!   names that flag on the refusal it covers (`allowable`), and on no other.
+//!   That opens a question whose button acts only once the person typed the
+//!   word it shows: allowing a risk is never one click. The window then
+//!   checks again with the flag, names the risk on the page and in the
+//!   question before the activation, and gives the flag to that activation.
+//!   Once its apply is answered or its plan withdrawn, or a recovery ran, the
+//!   window forgets the risk and checks again without the flag. Nothing is
+//!   stored. The launcher's gate refuses a decoy that keeps a persistent
+//!   record before the window opens, so that risk shows only on a decoy that
+//!   starts keeping one afterwards.
 //! - **The question** names what the plan says: the logout, each risk
 //!   allowed, the attach gate's warning, the decoy home, a hidden system to
 //!   build and a missing settings file.
@@ -42,8 +43,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use nails_api::Event;
 use nails_api::protocol::{ActivateArgs, ActivatePlanData, CheckArgs};
+use nails_api::{Allowable, Event};
 
 use super::{ActionKind, Page, Question, StepView};
 use crate::text;
@@ -52,19 +53,24 @@ use crate::text;
 /// refusal a CLI flag turns into a warning for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Risk {
-    /// The decoy keeps a persistent record of the session (the
-    /// `decoy-persistence` check; `--allow-persistent-decoy`).
+    /// The decoy keeps a persistent record of the session
+    /// (`--allow-persistent-decoy`).
     PersistentDecoy,
+    /// The hidden volume lies on storage this computer uses
+    /// (`--allow-decoy-storage`).
+    DecoyStorage,
+    /// Discards are enabled over the hidden volume (`--allow-discards`).
+    Discards,
 }
 
 impl Risk {
-    /// The risk a failed check of `name` can be allowed as, if any. Only the
-    /// refusals whose fix the CLI names a flag for are.
+    /// The risk the override a refused check names allows.
     #[must_use]
-    pub fn of_check(name: &str) -> Option<Risk> {
-        match name {
-            "decoy-persistence" => Some(Risk::PersistentDecoy),
-            _ => None,
+    pub fn of(allowable: Allowable) -> Risk {
+        match allowable {
+            Allowable::PersistentDecoy => Risk::PersistentDecoy,
+            Allowable::DecoyStorage => Risk::DecoyStorage,
+            Allowable::Discards => Risk::Discards,
         }
     }
 
@@ -73,6 +79,8 @@ impl Risk {
     pub fn what(self) -> &'static str {
         match self {
             Risk::PersistentDecoy => text::RISK_PERSISTENT_DECOY,
+            Risk::DecoyStorage => text::RISK_DECOY_STORAGE,
+            Risk::Discards => text::RISK_DISCARDS,
         }
     }
 }
@@ -82,6 +90,8 @@ impl Risk {
 pub fn check_args(allowed: &BTreeSet<Risk>) -> CheckArgs {
     CheckArgs {
         allow_persistent_decoy: allowed.contains(&Risk::PersistentDecoy),
+        allow_decoy_storage: allowed.contains(&Risk::DecoyStorage),
+        allow_discards: allowed.contains(&Risk::Discards),
         ..CheckArgs::default()
     }
 }
@@ -91,6 +101,8 @@ pub fn check_args(allowed: &BTreeSet<Risk>) -> CheckArgs {
 pub fn activate_args(allowed: &BTreeSet<Risk>) -> ActivateArgs {
     ActivateArgs {
         allow_persistent_decoy: allowed.contains(&Risk::PersistentDecoy),
+        allow_decoy_storage: allowed.contains(&Risk::DecoyStorage),
+        allow_discards: allowed.contains(&Risk::Discards),
         ..ActivateArgs::default()
     }
 }

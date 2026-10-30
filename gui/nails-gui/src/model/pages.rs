@@ -373,7 +373,9 @@ fn report_rows(report: &Readiness, allowed: &BTreeSet<Risk>) -> Vec<CheckView> {
                     .as_deref()
                     .map(|fix| format!("Fix: {}", text::engine_fix(fix)))
                     .unwrap_or_default(),
-                allow: Risk::of_check(&row.name)
+                allow: row
+                    .allowable
+                    .map(Risk::of)
                     .filter(|risk| outcome == CheckOutcome::Fail && !allowed.contains(risk)),
             })
     };

@@ -1,0 +1,196 @@
+{
+  "command": "check",
+  "data": {
+    "checks": [
+      {
+        "message": "--allow-decoy-storage: using /mnt/data although it is a bind mount of a folder of /; everything written there lands on that storage",
+        "name": "hidden-volume",
+        "status": "warn"
+      },
+      {
+        "message": "The decoy's configuration names the volume at /mnt/data: /etc/fstab: '/dev/disk/by-uuid/ed286e63-e359-410b-a66f-f67027427e04 / ext4' (it mounts the volume at /mnt/data). Such an entry is stored on the decoy, where an examination reads it, and can open or mount the volume at boot.",
+        "name": "backend-entries",
+        "remediation": "Remove the line long before the next use; open the volume by hand each time.",
+        "status": "fail"
+      },
+      {
+        "message": "on the plain decoy root",
+        "name": "session-state",
+        "status": "pass"
+      },
+      {
+        "message": "Ubuntu 24.04",
+        "name": "platform",
+        "status": "pass"
+      },
+      {
+        "message": "could not read the version of the running systemd",
+        "name": "systemd-version",
+        "remediation": "NAILS needs a systemd host (PID 1 must be systemd 254 or newer).",
+        "status": "fail"
+      },
+      {
+        "message": "soft-reboot.target and systemd-soft-reboot.service are installed",
+        "name": "soft-reboot-units",
+        "status": "pass"
+      },
+      {
+        "message": "no program blocks shutdown",
+        "name": "shutdown-inhibitors",
+        "status": "pass"
+      },
+      {
+        "message": "the decoy root (ext4 on /dev/sda1) can be mounted again for the way back",
+        "name": "decoy-root",
+        "status": "pass"
+      },
+      {
+        "message": "decoy filesystems in the hidden root: /boot/efi: read-only",
+        "name": "fstab-policy",
+        "status": "pass"
+      },
+      {
+        "message": "Cannot read /proc/1/ns/mnt to compare against PID 1's mount namespace (Permission denied (os error 13)). Run activation as root from a host shell, not inside a container.",
+        "name": "mount-namespace",
+        "status": "fail"
+      },
+      {
+        "message": "Required host tools are missing. Install them and retry:\n  systemctl (apt install systemd)\n  loginctl (apt install systemd)\n  ip (apt install iproute2)",
+        "name": "host-tools",
+        "status": "fail"
+      },
+      {
+        "message": "The way back finds nft, and iw where a link is a Wi-Fi interface",
+        "name": "network-tools",
+        "status": "pass"
+      },
+      {
+        "message": "Filesystem at /mnt/data supports symbolic links",
+        "name": "symlink-support",
+        "status": "pass"
+      },
+      {
+        "message": "upper-fs capability not probed; the hidden root is not attached: /mnt/data is not a volume of its own: it is a bind mount of a folder of /",
+        "name": "upper-fs-capability",
+        "status": "skipped"
+      },
+      {
+        "message": "Hidden root backend: ext4 on block device sda1; no backend-specific hazards detected",
+        "name": "backend-detect",
+        "status": "pass"
+      },
+      {
+        "message": "If you use VeraCrypt: the installed cryptsetup 2.7.0 cannot open a volume whose header key is derived with Argon2id (the \"Argon2\" entry in VeraCrypt 1.26.29 and newer), and nothing outside the encrypted header shows which algorithm it used. Make both the outer and the hidden VeraCrypt volume with PBKDF2: keep VeraCrypt's default key-derivation function, or pick any entry other than Argon2. See docs/backends.md.",
+        "name": "cryptsetup-argon2id",
+        "status": "pass"
+      },
+      {
+        "message": "Hidden storage usable; activation will create: root/work/; activation creates /mnt/data/root/upper with the decoy root's mode and owner",
+        "name": "storage-readiness",
+        "status": "warn"
+      },
+      {
+        "message": "no swap can leak memory to persistent storage (RAM-only zram is permitted)",
+        "name": "swap",
+        "status": "pass"
+      },
+      {
+        "message": "The decoy kernel does not zero freed memory: pages the hidden session frees keep their contents in RAM until something reuses them.\nAdd init_on_free=1 to the decoy kernel command line, and power off after a session rather than leaving the machine running.",
+        "name": "memory-wipe",
+        "status": "warn"
+      },
+      {
+        "message": "The kernel is not remapping DMA through an IOMMU (the command line turns it off or into passthrough, /sys lists no active IOMMU, or every IOMMU group is identity-mapped), so any DMA-capable device — Thunderbolt or USB4, built-in PCIe, an NVMe/M.2 or ExpressCard slot — can map and read all of system RAM over the bus.\nNAILS cannot turn DMA protection on for you: it lives in firmware — enable VT-d or AMD-Vi and \"Kernel DMA Protection\" in BIOS/UEFI setup, and, if the kernel still does not remap DMA, add the IOMMU flag to the decoy kernel command line and reboot. Those are NVRAM and boot-configuration changes NAILS refuses to make on your behalf, the same boundary that stops it setting the TCG Memory Overwrite Request (MOR) bit. No IOMMU makes a machine left powered on and unlocked safe against seizure, because a DMA peripheral reads RAM straight off the bus without the CPU; power off (`sudo /opt/nails/nails emergency --poweroff`) before the machine leaves your control.",
+        "name": "dma-protection",
+        "status": "warn"
+      },
+      {
+        "message": "the host would suspend an active session: closing the lid suspends the host (HandleLidSwitch=suspend). A suspend leaves the hidden session resident in RAM behind the hidden session's own lock screen. Set the logind lid switch to lock (see docs/decoy-requirements.md), or set sleep_policy.mode = \"block\" or \"teardown\" in nails.toml.",
+        "name": "sleep-policy",
+        "status": "warn"
+      },
+      {
+        "allowable": "persistent_decoy",
+        "message": "decoy keeps a persistent record of the hidden session: systemd-journald keeps a persistent journal on the decoy disk (/var/log/journal); set Storage=volatile under [Journal] in /etc/systemd/journald.conf or in a drop-in such as /etc/systemd/journald.conf.d/50-volatile.conf (drop-ins override the main file); rsyslog is active and writes logs to the decoy disk.",
+        "name": "decoy-persistence",
+        "remediation": "Make the decoy amnesic (Storage=volatile for journald, set in journald.conf or a journald.conf.d/*.conf drop-in; no active syslog or audit daemon, such as rsyslog, syslog-ng, a syslogd or auditd), or pass --allow-persistent-decoy to allow the risk for this run. See docs/decoy-requirements.md.",
+        "status": "fail"
+      },
+      {
+        "message": "no pending offline update is staged on the decoy",
+        "name": "pending-offline-update",
+        "status": "pass"
+      },
+      {
+        "message": "no hidden session deleted or replaced the running kernel's module tree or its index (/usr/lib/modules/6.8.0-138-generic)",
+        "name": "kernel-modules",
+        "status": "pass"
+      },
+      {
+        "message": "hidden sessions see the decoy's own dpkg package database (/var/lib/dpkg/status)",
+        "name": "package-drift",
+        "status": "pass"
+      },
+      {
+        "message": "no warned residue channel is live (6 catalog probes); noted: timesync-clock (/var/lib/systemd/timesync/clock): Session touches land in the upper; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. (see docs/decoy-requirements.md#session-time-records); timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)",
+        "name": "residue-catalog",
+        "status": "pass"
+      },
+      {
+        "message": "403.3 GB available (826.0x minimum required)",
+        "name": "space",
+        "status": "pass"
+      },
+      {
+        "message": "the running binary /opt/nails/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact",
+        "name": "binary-location",
+        "status": "warn"
+      },
+      {
+        "message": "Target user could not be resolved; inherited decoy state was not inspected",
+        "name": "inherited-autostart",
+        "status": "pass"
+      },
+      {
+        "message": "Target user could not be resolved; shell history-flush settings were not inspected",
+        "name": "incremental-history-flush",
+        "status": "pass"
+      },
+      {
+        "message": "System is inactive - ready for activation",
+        "name": "state",
+        "status": "pass"
+      }
+    ],
+    "config": {
+      "config_file": "/mnt/nails.toml",
+      "hidden_volume_root": "/mnt/data",
+      "log_path": "/mnt/data/logs",
+      "minimum_space_mb": 500,
+      "persona_mode": "shared-home",
+      "state_file": "/mnt/data/state.json"
+    },
+    "filesystems": [
+      "/boot/efi: read-only"
+    ],
+    "inherited": {
+      "entries": [],
+      "inspected": false,
+      "remote_linked": [],
+      "unmatched_masks": []
+    },
+    "profile": {
+      "detail": null,
+      "mode": "none"
+    },
+    "ready": false,
+    "summary": {
+      "failed": 5,
+      "passed": 19,
+      "skipped": 1,
+      "warnings": 6
+    }
+  },
+  "ok": false,
+  "schema_version": 2
+}

@@ -155,23 +155,24 @@ of this changelog for that version becomes the release notes word for word, and
   Out" and takes no input, not even its Close, until the engine says the logout will not come (the
   soft-reboot could not be enqueued), when the page shows that at once with the engine's words, or
   until a minute passed without the logout, when its Close works again and it says how to see where
-  things stand. A refused check that the CLI lets one allow for one run with a flag (a decoy that
-  keeps a persistent record, `--allow-persistent-decoy`) offers "Allow for This Activation…", whose
-  button acts only once the word "allow" is typed (no decoy reaches it yet: the launcher refuses a
-  decoy that keeps a persistent record before the window opens); the window then checks again with
-  the flag, names the risk on the page and in the question, and gives the flag to that one
-  activation, storing nothing: once its apply is answered or its plan withdrawn, or a recovery ran,
-  the window forgets the risk and checks again without it. The page of an interrupted activation
-  offers Clean Up, and that of a record that cannot be read on the decoy Reset Record, both
-  `nails recover`; the window then says what the recovery did, without naming a device, and checks
-  again. A hidden session's page deactivates: Deactivate… asks with what the return to the decoy
-  would not put back, in the engine's words, and offers both endings, Power Off, the suggested one,
-  and Return to Decoy; Power Off asks the engine for the plan of a power-off and applies it without
-  asking again. Where the plan says the way back turns the return into a power-off, the question
-  says first, in the CLI's words, that the session ends with the machine powering off instead of
-  returning, and where that holds whatever happens before the way back runs it offers no Return to
-  Decoy. After Return to Decoy on a plan whose return may power off, the page says so too, in the
-  CLI's words. The page then reads "Ending the Hidden Session", takes no input but the Emergency
+  things stand. A refused check that names the flag the CLI accepts it with for one run (a decoy
+  that keeps a persistent record, `--allow-persistent-decoy`, a hidden volume on this computer's own
+  storage, `--allow-decoy-storage`, and discards over the hidden volume, `--allow-discards`) offers
+  "Allow for This Activation…", whose button acts only once the word "allow" is typed (the launcher
+  refuses a decoy that keeps a persistent record before the window opens); the window then checks
+  again with the flag, names the risk on the page and in the question, and gives the flag to that
+  one activation, storing nothing: once its apply is answered or its plan withdrawn, or a recovery
+  ran, the window forgets the risk and checks again without it. The page of an interrupted
+  activation offers Clean Up, and that of a record that cannot be read on the decoy Reset Record,
+  both `nails recover`; the window then says what the recovery did, without naming a device, and
+  checks again. A hidden session's page deactivates: Deactivate… asks with what the return to the
+  decoy would not put back, in the engine's words, and offers both endings, Power Off, the suggested
+  one, and Return to Decoy; Power Off asks the engine for the plan of a power-off and applies it
+  without asking again. Where the plan says the way back turns the return into a power-off, the
+  question says first, in the CLI's words, that the session ends with the machine powering off
+  instead of returning, and where that holds whatever happens before the way back runs it offers no
+  Return to Decoy. After Return to Decoy on a plan whose return may power off, the page says so as
+  well. The page then reads "Ending the Hidden Session", takes no input but the Emergency
   control and, where the hidden volume could not be marked to close, says so without naming its
   device; a session still there a minute later gets its Close back, and the page names the Emergency
   control and the power button. A hidden session's window has the Emergency control at the start of

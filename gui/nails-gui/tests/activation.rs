@@ -55,7 +55,8 @@ fn persistent() -> Screen {
     decoy(
         json!([{"name": "decoy-persistence", "status": "fail",
             "message": "decoy keeps a persistent record of the hidden session: a journal on disk",
-            "remediation": "make the decoy amnesic, or pass --allow-persistent-decoy"}]),
+            "remediation": "make the decoy amnesic, or pass --allow-persistent-decoy",
+            "allowable": "persistent_decoy"}]),
         1,
     )
 }
@@ -371,4 +372,130 @@ fn the_question_opens_with_the_advisories_of_the_plan() {
     assert!(lines[1].starts_with("In a hidden session, run sudo apt-get update"));
     assert_eq!(lines[2], text::ACTIVATE_CONSEQUENCE);
     assert_eq!(screen.focused(), "Cancel", "the focus starts on Cancel");
+}
+
+/// A decoy whose check gave the envelope recorded as `name`.
+fn decoy_recorded(name: &str) -> Screen {
+    let screen = Screen::new(false);
+    screen.update(Update::Connected(ours()));
+    screen.update(answered(Kind::Status, support::fixture("status-decoy")));
+    screen.update(Update::Running(Kind::Check));
+    screen.update(answered(Kind::Check, support::fixture(name)));
+    screen.asks();
+    screen
+}
+
+/// The buttons that allow a refused check for one activation, in the page's
+/// order.
+fn allow_buttons(screen: &Screen) -> Vec<i_slint_backend_testing::ElementHandle> {
+    screen
+        .with_role(AccessibleRole::Button)
+        .into_iter()
+        .filter(|button| button.accessible_label().as_deref() == Some(text::ALLOW))
+        .collect()
+}
+
+/// A hidden volume that binds a folder of this computer's disk, which the
+/// check refuses and names `--allow-decoy-storage` for, as the real helper
+/// answered on the build server: its row has the button, as the persistent
+/// record the same decoy keeps does and no other refusal; the word comes
+/// first; the next check carries the flag and turns the refusal into a
+/// warning.
+#[test]
+fn a_hidden_volume_on_this_computers_disk_is_allowed_with_the_typed_word() {
+    let screen = decoy_recorded("check-decoy-storage");
+    let buttons = allow_buttons(&screen);
+    assert_eq!(buttons.len(), 2, "the hidden volume's and the record's");
+    buttons[0].invoke_accessible_default_action();
+    let dialog = screen.find_with(text::ALLOW_QUESTION, AccessibleRole::Groupbox);
+    let body = dialog.accessible_description().unwrap_or_default();
+    assert!(
+        body.starts_with(
+            "/mnt/data is not a volume of its own: it is a bind mount of a folder of /."
+        ),
+        "{body}"
+    );
+    let allow = screen.find_with(text::ALLOW_CONFIRM, AccessibleRole::Button);
+    assert_eq!(
+        allow.accessible_enabled(),
+        Some(false),
+        "the word comes first"
+    );
+    allow.invoke_accessible_default_action();
+    assert!(screen.asks().is_empty(), "no click allows it");
+    screen
+        .find_with(
+            &text::type_to_continue(text::ALLOW_WORD),
+            AccessibleRole::TextInput,
+        )
+        .set_accessible_value("allow");
+    allow.invoke_accessible_default_action();
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Check(CheckArgs {
+            allow_decoy_storage: true,
+            ..CheckArgs::default()
+        })]
+    );
+
+    screen.update(Update::Running(Kind::Check));
+    screen.update(answered(
+        Kind::Check,
+        support::fixture("check-decoy-storage-allowed"),
+    ));
+    assert_eq!(
+        allow_buttons(&screen).len(),
+        1,
+        "only the persistent record is left to allow"
+    );
+    let fact = screen.find_with(text::FACT_ALLOWED, AccessibleRole::ListItem);
+    assert_eq!(
+        fact.accessible_description().as_deref(),
+        Some(text::RISK_DECOY_STORAGE)
+    );
+    assert!(
+        screen
+            .labels(AccessibleRole::ListItem)
+            .iter()
+            .any(|row| row.starts_with("Warning: --allow-decoy-storage: using /mnt/data although")),
+        "{:?}",
+        screen.labels(AccessibleRole::ListItem)
+    );
+}
+
+/// Discards over the hidden volume, which the check refuses and the CLI's
+/// `--allow-discards` accepts for one run, get the same button and the same
+/// typed word as a persistent record; the next check carries the flag.
+#[test]
+fn discards_over_the_hidden_volume_are_allowed_with_the_typed_word() {
+    let screen = decoy(
+        json!([{"name": "backend-detect", "status": "fail",
+            "message": "Discards are enabled over the hidden volume. Forwarding TRIM to the \
+                physical device leaves a readable map of used and free blocks there.",
+            "remediation": "Re-open the hidden volume with discards off. See docs/backends.md.",
+            "allowable": "discards"}]),
+        1,
+    );
+    screen
+        .find_with(text::ALLOW, AccessibleRole::Button)
+        .invoke_accessible_default_action();
+    let allow = screen.find_with(text::ALLOW_CONFIRM, AccessibleRole::Button);
+    assert_eq!(
+        allow.accessible_enabled(),
+        Some(false),
+        "the word comes first"
+    );
+    let prompt = text::type_to_continue(text::ALLOW_WORD);
+    screen
+        .find_with(&prompt, AccessibleRole::TextInput)
+        .set_accessible_value("allow");
+    assert_eq!(allow.accessible_enabled(), Some(true));
+    allow.invoke_accessible_default_action();
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Check(CheckArgs {
+            allow_discards: true,
+            ..CheckArgs::default()
+        })]
+    );
 }
