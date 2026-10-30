@@ -18,6 +18,7 @@
   "impermanent-decoy": 35,
   "inherited-autostart": 32,
   "init-config": 26,
+  "locate-database": 110,
   "nix-store-placement": 33,
   "oracle-images": 363,
   "overlay-discard": 37,
