@@ -204,7 +204,7 @@ fn a_required_unit_whose_device_is_not_there_is_masked_with_a_warning() {
     );
     let netdev_swap = decide_line("/dev/sdd2 none swap sw,_netdev 0 0");
     assert!(
-        matches!(&netdev_swap, Decision::Mask { unreached: Some(u), .. } if u.target == "remote-fs.target"),
+        matches!(&netdev_swap, Decision::Mask { unreached: Some(u), .. } if u.target == "swap.target (remote-fs.target from systemd 261)"),
         "{netdev_swap:?}"
     );
 }

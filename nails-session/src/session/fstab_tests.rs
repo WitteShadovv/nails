@@ -141,9 +141,10 @@ fn what_requires_an_entry_s_unit_is_read_as_the_generator_links_it() {
             Some("a.service b.service"),
         ),
         ("/dev/vda5 none swap sw 0 0", Some("swap.target")),
+        // swap.target up to systemd 260, remote-fs.target from 261 on.
         (
             "/dev/vda5 none swap sw,_netdev 0 0",
-            Some("remote-fs.target"),
+            Some("swap.target (remote-fs.target from systemd 261)"),
         ),
         ("/dev/vda5 none swap sw,nofail 0 0", None),
         ("/dev/vda5 none swap noauto 0 0", None),
