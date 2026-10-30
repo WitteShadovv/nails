@@ -291,6 +291,61 @@ fn a_malformed_request_ends_the_session() {
     assert_eq!(helper.child.wait().unwrap().code(), Some(1));
 }
 
+/// pkexec starts the helper on the one command line its polkit action covers,
+/// `<engine> helper --stdio`, whose dialog shows no argument: started by
+/// pkexec with any other, the helper refuses before it reads a configuration
+/// or says hello, and exits 2.
+#[test]
+fn under_pkexec_the_helper_takes_no_argument_but_stdio() {
+    let (_dir, config) = scratch_config();
+    let uid = nix::unistd::getuid().to_string();
+    let run = |args: &[&std::ffi::OsStr]| {
+        Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+            .env("PKEXEC_UID", &uid)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the helper")
+    };
+    let config = config.as_os_str();
+    for args in [
+        &[
+            "helper".as_ref(),
+            "--stdio".as_ref(),
+            "--config".as_ref(),
+            config,
+        ][..],
+        &[
+            "--config".as_ref(),
+            config,
+            "helper".as_ref(),
+            "--stdio".as_ref(),
+        ],
+        &[
+            "helper".as_ref(),
+            "--stdio".as_ref(),
+            "--no-log-file".as_ref(),
+        ],
+        &["helper".as_ref(), "--stdio".as_ref(), "--json".as_ref()],
+    ] {
+        let output = run(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?} said hello: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("only as `helper --stdio`"),
+            "{args:?}: {stderr}"
+        );
+    }
+    // Exactly `helper --stdio` speaks first, and ends with the closed pipe.
+    let output = run(&["helper".as_ref(), "--stdio".as_ref()]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first: Frame = serde_json::from_str(stdout.lines().next().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    assert_eq!(first, Frame::Hello(ours()));
+}
+
 /// Drop the fields of an emergency envelope that time the run.
 fn untimed(mut envelope: Value) -> Value {
     if let Some(data) = envelope.get_mut("data").and_then(Value::as_object_mut) {

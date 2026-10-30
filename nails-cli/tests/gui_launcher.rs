@@ -286,7 +286,9 @@ fn the_window_and_its_helper_talk_detached_and_outlive_a_hangup() {
     let (helper, window) = (started.helper, started.window);
 
     // The handshake, end to end: the helper's hello first, then its answer
-    // to the window's.
+    // to the window's. The launcher ran with PKEXEC_UID set and gave its
+    // helper --config and --no-log-file, so the helper greets only because it
+    // was not taken for one that pkexec started itself.
     bundle.wait_for("greeted");
     match bundle.frame("helper-hello") {
         Frame::Hello(hello) => assert_eq!(hello, ours()),

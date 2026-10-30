@@ -16,10 +16,13 @@
 #   - polkit knows the action (`pkaction --verbose`): the neutral message, an
 #     administrator's password every time, the engine's path and `helper` as
 #     its first argument;
-#   - pkexec takes that action for exactly `<engine> helper --stdio`: a
-#     test-only rule grants this action alone, so the helper starts as root
-#     through pkexec and greets the window that is not there, while another
-#     command line of the engine stays pkexec's own action and is refused;
+#   - pkexec takes that action for `<engine> helper --stdio`: a test-only
+#     rule grants this action alone, so the helper starts as root through
+#     pkexec and greets the window that is not there, while another command
+#     line of the engine stays pkexec's own action and is refused. The action
+#     matches the engine and its first argument only, so it also covers
+#     `<engine> helper --stdio --config <file>`; the helper refuses that one
+#     and starts nothing;
 #   - both files lie on the hidden volume, and the decoy root, mounted
 #     read-only beside the session, has neither.
 #
@@ -179,7 +182,7 @@ in
             assert line in out.splitlines(), f"{line!r} not in {out!r}"
         assert "nails" not in out.split("annotation:")[0], out
 
-    with subtest("pkexec takes the action for the helper's command line and no other"):
+    with subtest("pkexec takes the action for the helper, which takes no other argument"):
         # A session of its own, without the driver's console as a terminal,
         # and no text agent: nothing can wait on a password prompt.
         def pkexec(command):
@@ -195,6 +198,16 @@ in
         # Another command line of the engine is pkexec's own action, which the
         # rule does not grant, and no agent can ask for a password here.
         machine.fail(pkexec("/mnt/data/nails status"))
+        # The action matches the engine and `helper` alone, so it covers a
+        # longer line too, behind the same neutral dialog. The helper refuses
+        # it: no configuration the window names reaches a root helper.
+        machine.succeed("echo 'hidden_volume_root = \"/tmp\"' > /tmp/x.toml")
+        refused = machine.fail(
+            pkexec("/mnt/data/nails helper --stdio --config /tmp/x.toml") + " 2>&1"
+        )
+        print(refused)
+        assert '"hello"' not in refused, refused
+        assert "only as `helper --stdio`" in refused, refused
 
     with subtest("both files lie on the hidden volume, and the decoy has neither"):
         machine.succeed(f"test -f {UPPER}{ENTRY} && test -f {UPPER}{ACTION}")
