@@ -1,0 +1,133 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! A request line from a window, as the engine's root helper decodes it
+//! (`nails_api::protocol::decode_request`). The helper runs as root and the
+//! window as the operator, so these are bytes from a less trusted process.
+//!
+//! The input is one line, up to past the helper's length limit
+//! (`fuzz/options/helper_request.options`). The target checks that a line
+//! past that limit or holding a newline is always refused, that an accepted
+//! request follows the protocol's version and has arguments of the shape the
+//! protocol states, checked here on their own rather than by the decoder's
+//! own validation (every path absolute with no control character, a token of
+//! 32 lowercase hexadecimal digits, no two options the CLI refuses together),
+//! and that an accepted request, written back as the window writes it, is
+//! read again as the same request, or refused as too long where the written
+//! form, which names every field, no longer fits.
+
+#![no_main]
+
+use libfuzzer_sys::fuzz_target;
+use nails_api::protocol::{
+    ErrorCode, MAX_LINE_BYTES, Op, PROTOCOL_VERSION, RehearseScanArgs, VerifyArgs, decode_request,
+};
+
+/// A path the helper may hand the engine.
+fn path_ok(path: &str) -> bool {
+    path.starts_with('/') && !path.chars().any(char::is_control)
+}
+
+fn flake_ok(flake: Option<&String>) -> bool {
+    flake.is_none_or(|flake| !flake.is_empty() && !flake.chars().any(char::is_control))
+}
+
+fn token_ok(token: &str) -> bool {
+    token.len() == 32
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn verify_ok(args: &VerifyArgs) -> bool {
+    args.offline == args.root.is_some()
+        && (args.offline || !args.examiner)
+        && (args.examiner || args.disk.is_none())
+        && args.root.as_deref().is_none_or(path_ok)
+        && args.disk.as_deref().is_none_or(path_ok)
+}
+
+fn scan_ok(args: &RehearseScanArgs) -> bool {
+    !(args.offline && !args.devices.is_empty())
+        && args.offline == !args.images.is_empty()
+        && (args.offline || args.token_file.is_none())
+        && args.devices.iter().all(|path| path_ok(path))
+        && args.images.iter().all(|path| path_ok(path))
+        && args.token_file.as_deref().is_none_or(path_ok)
+}
+
+/// Whether `op` has the shape the protocol states for its arguments.
+fn shaped(op: &Op) -> bool {
+    match op {
+        Op::Hello(hello) => {
+            !hello.engine.is_empty()
+                && hello.engine.len() <= 64
+                && hello.engine.bytes().all(|b| b.is_ascii_graphic())
+        }
+        Op::Check(args) => {
+            !(args.overlay_only && args.nixos_flake.is_some())
+                && flake_ok(args.nixos_flake.as_ref())
+        }
+        Op::ActivatePlan(args) => {
+            !(args.overlay_only && args.nixos_flake.is_some())
+                && flake_ok(args.nixos_flake.as_ref())
+        }
+        Op::ConfigShow(args) => flake_ok(args.nixos_flake.as_ref()),
+        Op::DiscardPlan(args) => path_ok(&args.target),
+        Op::Emergency(args) => !(args.poweroff && args.reboot),
+        Op::Verify(args) => verify_ok(args),
+        Op::RehearsePlant(args) => args.user.as_deref().is_none_or(|user| {
+            !user.is_empty()
+                && user.len() <= 256
+                && !user.chars().any(|c| c.is_control() || c == '/' || c == ':')
+        }),
+        Op::RehearseScan(args) => scan_ok(args),
+        Op::InitPlan(args) => {
+            path_ok(&args.path)
+                && args.hardware_config.as_deref().is_none_or(path_ok)
+                && !(args.no_hardware_config && args.hardware_config.is_some())
+        }
+        Op::DiscardApply(token)
+        | Op::ActivateApply(token)
+        | Op::DeactivateApply(token)
+        | Op::InitApply(token) => token_ok(&token.token),
+        Op::Status
+        | Op::ConfigPath
+        | Op::ConfigValidate
+        | Op::DeactivatePlan(_)
+        | Op::Recover
+        | Op::RehearseStatus
+        | Op::RehearseReset => true,
+    }
+}
+
+fuzz_target!(|data: &[u8]| {
+    let decoded = decode_request(data);
+    if data.len() > MAX_LINE_BYTES {
+        let refused = decoded
+            .as_ref()
+            .expect_err("an overlong request was accepted");
+        assert_eq!(refused.error.code, ErrorCode::TooLong);
+        return;
+    }
+    if data.contains(&b'\n') {
+        assert!(decoded.is_err(), "a multi-line request was accepted");
+    }
+    let Ok(request) = decoded else {
+        return;
+    };
+    assert_eq!(request.v, PROTOCOL_VERSION);
+    assert!(shaped(&request.op), "accepted out of shape: {request:?}");
+    let line = request.to_line();
+    assert!(!line.contains('\n'), "{line}");
+    let again = decode_request(line.as_bytes());
+    if line.len() > MAX_LINE_BYTES {
+        // Written back with every field, a request accepted close to the limit
+        // can be longer than the form it came in: the helper refuses that line
+        // as too long, as it refuses any other.
+        let refused = again.map_err(|refusal| refusal.error.code);
+        assert_eq!(refused, Err(ErrorCode::TooLong), "{line}");
+    } else {
+        assert_eq!(again.as_ref(), Ok(&request), "{line}");
+    }
+});

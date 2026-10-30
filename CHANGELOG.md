@@ -23,6 +23,54 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- A root helper for the coming window, `nails helper --stdio`, built only with the `gui` cargo
+  feature, so the released binary has no such command (a flake check runs the shipped binary to
+  prove it refuses it). The window runs as the operator and drives the engine through the helper's
+  stdin and stdout, one JSON line per request. The helper speaks first and answers nothing until the
+  window's hello names the same release and protocol version; then it runs one request at a time
+  and answers each with the envelope and exit code the CLI gives for the same command under
+  `--json`, with the progress of `check` streamed as events. It serves `status`, `check`, `config
+  path`, `config show` and `config validate` (of its own configuration only, never a path the
+  window names: started by pkexec it takes no argument but `--stdio` and reads the configuration
+  beside the engine, started by `nails gui` it reads the launcher's), `discard`, `activate`, `deactivate` (both endings), `emergency`, `recover`,
+  `verify`, each step of `rehearse`, and `init`. What the CLI confirms, and `init`, runs as a plan
+  and an apply: the plan says what the apply would do (a discard and an activation also take the
+  state lock) and hands out a single-use token, and only the next request, an apply carrying that
+  token, does it. An activation streams its steps and says when it passes its point of no return;
+  a window that closes its pipe before that point cancels the activation, and after it the helper
+  finishes the switch. The helper keeps its stdout and stdin off the pipe, so nothing a command or
+  a child prints can reach the window. The decoder refuses a line over 16 KiB, an unknown or
+  duplicate field, another protocol version and an argument of the wrong shape (a relative path, or
+  two options the CLI refuses together), and ends the session; a libFuzzer target
+  (`helper_request`) covers it.
+- The launcher for the coming window, `nails gui`, built only with the `gui` cargo feature like
+  the helper (the flake check proves the released binary refuses it too). Run as
+  `sudo <hidden-root>/nails gui`, it starts the helper as root and the window's program
+  (`<hidden-root>/gui/bin/nails-gui`) as the operator on the two ends of one socket pair, and
+  returns. On the decoy it first refuses, before any window starts, on a decoy that keeps a
+  persistent record (the findings of the activation's decoy persistence check) and on every
+  desktop whose disk, journal and D-Bus trace test has not passed, which today is every desktop;
+  the refusal names the desktop and each reason and points to `activate`. In a hidden session it
+  always opens. The window gets no supplementary groups, `no_new_privs`, no inherited descriptor
+  beyond its pipe and `/dev/null`, and an environment from an allowlist: the display, the session
+  bus and the locale, a home and XDG directories of its own in the operator's runtime directory
+  (refused unless it is private and in RAM), and settings that turn off shader caches, portals and
+  on-disk settings. The helper and the window each lead a session of their own, so closing the
+  terminal, or the shell being killed, signals neither.
+- The way into the coming window from a hidden session's menu. A build with the `gui` cargo feature
+  whose window program lies at `<hidden-root>/gui/bin/nails-gui` writes, at every activation, a menu
+  entry "Session" that starts the window as whoever clicks it, and a polkit action for the helper
+  the window then asks pkexec for, `<hidden-root>/nails helper --stdio`: its password dialog reads
+  "Session needs your password each time it opens." instead of naming the binary, and it asks for
+  an administrator's password every time. The action matches the engine and its first argument
+  only, so the helper, started by pkexec, refuses any argument but `--stdio` and exits 2: the
+  dialog never covers a command line it does not show. Both go into the hidden root's
+  upper and never onto the decoy: on Debian, Ubuntu, Fedora and Arch into `/usr/share/applications`
+  and `/usr/share/polkit-1/actions`, on NixOS, which reads neither, into the operator's
+  `~/.local/share/applications` and `/etc/polkit-1/actions` (read by polkit 126 and later). Every
+  path is resolved inside the hidden root, so a decoy directory that is an absolute link cannot
+  take the write onto the decoy disk, and one that leads into the Nix store is refused. A file that
+  cannot be written is named on one line and the activation goes on.
 - `nails config set <key> <value>...` and `nails config unset <key>...` change settings in
   `nails.toml` in place, so no editor touches it. Only the keys named change: the file's comments,
   its order and every other key stay as they were, a value already set as asked is not rewritten
@@ -135,6 +183,8 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
+  sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
   f2fs mount with compression) as "not checked" rather than "clean" for leaked-then-deleted traces:
   such a filesystem keeps old copies in unreferenced extents and stores file contents compressed, so a

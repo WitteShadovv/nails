@@ -132,21 +132,31 @@ pub(crate) fn report_lock_error(
     command: &'static str,
     json: bool,
 ) -> ExitStatus {
+    let (status, body) = lock_error_body(error, command);
+    report_error(json, command, status, body)
+}
+
+/// The exit status and error body of a lock step that handed out no handle
+/// ([`report_lock_error`] reports them; the window's helper answers with them).
+pub(crate) fn lock_error_body(
+    error: nails_core::app::lock::LockError,
+    command: &'static str,
+) -> (ExitStatus, ErrorBody) {
     use nails_core::app::lock::LockError;
     use nails_core::next_step::{NextStep, sudo_line};
     match error {
         LockError::Refused(refusal) => {
-            crate::cli::output::refusal::report_refusal(json, command, &refusal)
+            let exe = std::env::current_exe().ok();
+            (
+                ExitStatus::PreflightRefused,
+                crate::cli::output::refusal::refusal_error(&refusal, exe.as_deref()),
+            )
         }
-        LockError::Unavailable(error) => report_error(
-            json,
-            command,
+        LockError::Unavailable(error) => (
             ExitStatus::Failed,
             ErrorBody::new("state_locked", error.to_string()),
         ),
-        LockError::UntrustedState => report_error(
-            json,
-            command,
+        LockError::UntrustedState => (
             ExitStatus::InvalidState,
             ErrorBody::new(
                 "invalid_state",

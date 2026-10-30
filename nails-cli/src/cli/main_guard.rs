@@ -37,6 +37,14 @@ pub fn requires_root(command: &Commands) -> bool {
         | Commands::GuardDevice { .. }
         | Commands::ReconcileRecords { .. }
         | Commands::BootWriter { .. } => true,
+        // The window's helper reads the root-only configuration and runs the
+        // mutating operations for a window that runs as the operator.
+        #[cfg(feature = "gui")]
+        Commands::Helper(_) => true,
+        // The launcher reads the root-only configuration, starts the helper as
+        // root and drops the window to the operator.
+        #[cfg(feature = "gui")]
+        Commands::Gui => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
         // files and the status view are not gated here: they still read the
@@ -72,6 +80,10 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::GuardDevice { .. } => "guard-device",
         Commands::ReconcileRecords { .. } => "reconcile-records",
         Commands::BootWriter { .. } => "boot-writer",
+        #[cfg(feature = "gui")]
+        Commands::Helper(_) => "helper",
+        #[cfg(feature = "gui")]
+        Commands::Gui => "gui",
     }
 }
 
@@ -164,6 +176,63 @@ pub fn enforce_root(
     let message = needs_root_message(argv0.as_deref(), subcommand, &invocation_args());
     emit_needs_root(settings, subcommand, &message);
     Some(ExitStatus::NeedsRoot)
+}
+
+/// The one command line pkexec may start the window's helper with, after the
+/// program: the polkit action the window asks pkexec for matches the program
+/// and this first argument only, so its dialog, which names neither, would
+/// never show a further argument either.
+#[cfg(feature = "gui")]
+const PKEXEC_HELPER_ARGS: [&str; 2] = ["helper", "--stdio"];
+
+/// Refuse the helper when pkexec started it (`PKEXEC_UID` is set) with any
+/// argument but `helper --stdio`: the dialog of its action shows none, so a
+/// window could otherwise hand the root helper a configuration, a log setting
+/// or an output mode of its own choosing behind the dialog the person trusts.
+/// Prints the reason on stderr and returns [`ExitStatus::Usage`], before the
+/// configuration is read, logging set up or the helper started. Every other
+/// command, and the helper started without pkexec, goes on.
+pub fn refuse_helper_options_under_pkexec(
+    command: &Commands,
+    env: &nails_core::RuntimeEnv,
+) -> Option<ExitStatus> {
+    let refusal = pkexec_helper_refusal(command, env.pkexec_uid.is_some(), &invocation_args())?;
+    eprintln!("error: {refusal}");
+    Some(ExitStatus::Usage)
+}
+
+/// Why the helper `command`, started with `args` (`under_pkexec` when pkexec
+/// started it), does not run: `None` unless pkexec started it with an argument
+/// beyond `helper --stdio`.
+#[cfg(feature = "gui")]
+fn pkexec_helper_refusal(
+    command: &Commands,
+    under_pkexec: bool,
+    args: &[std::ffi::OsString],
+) -> Option<String> {
+    if !under_pkexec || !matches!(command, Commands::Helper(_)) {
+        return None;
+    }
+    let exact = args
+        .iter()
+        .map(std::ffi::OsString::as_os_str)
+        .eq(PKEXEC_HELPER_ARGS.iter().map(std::ffi::OsStr::new));
+    (!exact).then(|| {
+        "pkexec starts the window's helper only as `helper --stdio`, with no other \
+         argument: its polkit action matches the program and its first argument alone, \
+         so the password dialog would not show the rest"
+            .to_string()
+    })
+}
+
+/// Without the window's helper there is nothing to refuse.
+#[cfg(not(feature = "gui"))]
+fn pkexec_helper_refusal(
+    _command: &Commands,
+    _under_pkexec: bool,
+    _args: &[std::ffi::OsString],
+) -> Option<String> {
+    None
 }
 
 /// Report the refused privileged command: one error envelope on stdout under
@@ -353,5 +422,65 @@ mod tests {
             "sudo '/mnt/my data/nails' --config '/mnt/my data/it'\\''s.toml' status --details"
         );
         assert_eq!(sudo_command(None, "x", &args(&[""])), "sudo nails ''");
+    }
+
+    /// pkexec runs the helper only on the one command line its action covers:
+    /// every other argument (a configuration above all, but also a log or an
+    /// output setting) is refused, and so is any order but `helper --stdio`.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn pkexec_runs_the_helper_only_as_helper_stdio() {
+        use crate::cli::Cli;
+        let refused = |argv: &[&str], under_pkexec: bool| {
+            let cli =
+                Cli::try_parse_checked_from(std::iter::once("nails").chain(argv.iter().copied()))
+                    .unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            pkexec_helper_refusal(&cli.command, under_pkexec, &args(argv))
+        };
+        assert_eq!(refused(&["helper", "--stdio"], true), None);
+        for argv in [
+            &["helper", "--stdio", "--config", "/home/op/x.toml"][..],
+            &["--config", "/home/op/x.toml", "helper", "--stdio"],
+            &["helper", "--stdio", "-c", "/tmp/x.toml"],
+            &["helper", "--stdio", "--no-log-file"],
+            &["helper", "--stdio", "--json"],
+            &["helper", "--stdio", "-vv"],
+            &["helper", "--stdio", "-q"],
+            &["helper", "--stdio", "--ascii"],
+            &["helper", "--stdio", "--color", "never"],
+            &["-q", "helper", "--stdio"],
+        ] {
+            let why = refused(argv, true).unwrap_or_else(|| panic!("{argv:?} was let through"));
+            assert!(why.contains("`helper --stdio`"), "{why}");
+            // Without pkexec the same line is the launcher's or an operator's,
+            // whose own dialog or terminal showed it.
+            assert_eq!(refused(argv, false), None, "{argv:?}");
+        }
+        // Any other command under pkexec is pkexec's own action, whose dialog
+        // names the whole command line.
+        assert_eq!(refused(&["--config", "/x.toml", "status"], true), None);
+    }
+
+    /// The guard reads `PKEXEC_UID` from the startup snapshot, and the
+    /// arguments from the process: this test binary's own, which are not
+    /// `helper --stdio`.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn the_guard_follows_pkexec_uid_in_the_snapshot() {
+        use crate::cli::Cli;
+        let helper = Cli::try_parse_checked_from(["nails", "helper", "--stdio"]).unwrap();
+        let pkexec = nails_core::RuntimeEnv {
+            pkexec_uid: Some("1000".to_string()),
+            ..nails_core::RuntimeEnv::default()
+        };
+        assert_eq!(
+            refuse_helper_options_under_pkexec(&helper.command, &pkexec),
+            Some(ExitStatus::Usage)
+        );
+        let sudo = nails_core::RuntimeEnv::default();
+        assert_eq!(
+            refuse_helper_options_under_pkexec(&helper.command, &sudo),
+            None
+        );
     }
 }

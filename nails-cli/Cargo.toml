@@ -32,6 +32,11 @@ path = "src/main.rs"
 # systemd-run override and refusal, the real-operations guard). Off by default so
 # the shipped binary carries none of them; pulls in nails-core's hooks too.
 test-hooks = ["nails-core/test-hooks"]
+# The window's root helper, `nails helper --stdio`, and its launcher, `nails
+# gui`. Off by default, so a release built without the window carries no root
+# interface for one; nix/checks.nix asserts that the shipped binary refuses
+# both commands.
+gui = []
 
 [dependencies]
 # Workspace dependencies
@@ -43,7 +48,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-nix = { workspace = true, features = ["user", "poll"] }
+nix = { workspace = true, features = ["fs", "user", "poll"] }
 chrono = { workspace = true }
 
 # The stable machine-readable contract types: the `--json` envelope, the error
