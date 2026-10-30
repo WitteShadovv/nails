@@ -111,6 +111,11 @@ fn open(env: &RuntimeEnv, options: HelperOptions<'_>) -> Result<Opened, Refusal>
             format!("the engine cannot find its own file: {error}"),
         )
     })?;
+    let config = absolute_config(options.config)?;
+    let options = HelperOptions {
+        config: config.as_deref(),
+        ..options
+    };
     let operator = operator(env, &engine)?;
     gate::admit(env, options.config, &engine)?;
     let program = window_program(&engine)?;
@@ -207,8 +212,29 @@ fn window_missing(program: &Path, why: &str) -> Refusal {
     )
 }
 
-/// The helper's command line: the launcher's own `--config` and
-/// `--no-log-file`, so both ends read the same configuration.
+/// `config`, the launcher's `--config`, made absolute against the launcher's
+/// working directory. The helper starts in `/`, so a relative path would name
+/// another file there than the one the gate reads here.
+fn absolute_config(config: Option<&Path>) -> Result<Option<PathBuf>, Refusal> {
+    config
+        .map(|path| {
+            std::path::absolute(path).map_err(|error| {
+                Refusal::new(
+                    ExitStatus::Config,
+                    "config",
+                    format!(
+                        "the configuration path {} cannot be made absolute: {error}",
+                        path.display()
+                    ),
+                )
+            })
+        })
+        .transpose()
+}
+
+/// The helper's command line: the launcher's own `--config` (absolute, see
+/// [`absolute_config`]) and `--no-log-file`, so both ends read the same
+/// configuration.
 fn helper_args(options: HelperOptions<'_>) -> Vec<OsString> {
     let mut args = Vec::new();
     if options.no_log_file {
