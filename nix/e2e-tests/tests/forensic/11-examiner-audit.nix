@@ -106,6 +106,10 @@ in
             f"mkdir -p {image}/var/lib/udisks2 && echo '[Drive]' > {image}/var/lib/udisks2/drive.conf",
             f"mkdir -p {image}/usr/bin && printf '#!/bin/sh\\n' > {image}/usr/bin/veracrypt",
             f"dd if=/dev/urandom of={image}/home/alice/vault.hc bs=1M count=4 status=none",
+            # A start no format the audit knows begins with: a random one is
+            # gzip's two-byte magic in one file of 65536, which is no container.
+            f"printf '\\001\\002\\003\\004\\005\\006\\007\\010'"
+            f" | dd of={image}/home/alice/vault.hc bs=1 count=8 conv=notrunc status=none",
             f"mkdir -p {image}/home/alice/.local/share {image}/home/alice/.config/VeraCrypt",
             f"printf '<xbel>\\n<bookmark href=\"file:///home/alice/vault.hc\"/>\\n</xbel>\\n'"
             f" > {image}/home/alice/.local/share/recently-used.xbel",
