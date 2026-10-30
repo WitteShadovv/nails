@@ -67,6 +67,21 @@ fn the_settings_are_every_key_of_the_reference_in_its_order() {
     assert_eq!(settings, reference_keys());
 }
 
+/// A window builds its settings controls from the wire crate's table: it
+/// names every key this table has, in its order, with the same kind.
+#[test]
+fn the_window_names_every_setting_and_its_kind_as_the_engine_does() {
+    let engine: Vec<(&str, String)> = SETTINGS
+        .iter()
+        .map(|setting| (setting.key, format!("{:?}", setting.kind)))
+        .collect();
+    let window: Vec<(&str, String)> = nails_api::settings::SETTINGS
+        .iter()
+        .map(|setting| (setting.key, format!("{:?}", setting.kind)))
+        .collect();
+    assert_eq!(window, engine);
+}
+
 #[test]
 fn each_kind_fits_the_default_of_its_key() {
     let tree = serde_json::to_value(Config::default()).unwrap();
