@@ -9,12 +9,15 @@ name: Oracle nightly
 # ci/oracle/README.md).
 #
 # Nightly forensic oracle. On GitHub-hosted runners (no KVM): the scan script
-# builds the before, control and after images one at a time (streaming, so peak
-# disk is one image's worth), runs the pinned analysis tools over each, and
-# finishes by rendering the nails-oracle verdict over the outputs. Anything but
-# a clean verdict (residue, a blind scan, a missing canary or a bad allowlist)
-# fails the run. A schedule fires only on the default branch; a
-# workflow_dispatch runs it by hand.
+# builds the synthetic btrfs before, control and after images one at a time
+# (streaming, so peak disk is one image's worth), runs the restore carve and
+# bulk_extractor over each, and finishes by rendering the nails-oracle verdict
+# over the outputs. It passes only on a partial verdict that names the
+# timeline, plaso's, as the one channel left out and finds nothing else wrong:
+# unexplained residue, a blind scan, a missing canary or a bad allowlist fails
+# the run. A
+# schedule fires only on the default branch; a workflow_dispatch runs it by
+# hand.
 
 on:
   schedule:
@@ -60,13 +63,11 @@ jobs:
 
       # OS packages the scan needs. The scan script pins bulk_extractor (built
       # from its source commit, so its build chain and libraries are installed
-      # here) and plaso (pulled by container digest), and reads the verdict it
-      # renders with jq. sleuthkit (mmls) and e2fsprogs (debugfs) carve the
-      # restore channel from real ext4 decoy images in ORACLE_IMAGES_DIR mode,
-      # and sqlite3 reads the rows of a Nix store database such an image holds;
-      # they are harmless for the synthetic btrfs path. Docker is preinstalled
-      # on the GitHub-hosted ubuntu runners, so no apt docker package is added.
-      # No KVM is used.
+      # here), builds and carves the btrfs images with btrfs-progs, and reads
+      # the verdict it renders with jq. sleuthkit (mmls), e2fsprogs (debugfs)
+      # and sqlite3 serve the real-image mode (ORACLE_IMAGES_DIR), which this
+      # template does not use. No docker: no plaso timeline runs on btrfs. No
+      # KVM is used.
       - name: Install analysis tools
         run: |
           sudo apt-get update -q
@@ -77,13 +78,14 @@ jobs:
             libabsl-dev libgcrypt20-dev libgpg-error-dev
 
       # The scan script builds the before/control/after images one at a time,
-      # runs btrfs restore / bulk_extractor / plaso over each into the outputs/
-      # tree described in ci/oracle/README.md, and finishes by rendering the
-      # nails-oracle verdict over that tree (writing verdict.json). It exits
-      # non-zero, failing this step, unless the verdict tool exits 0 and
-      # verdict.json says clean. It needs root for the loop
-      # mounts. The coverage canary is the fixed committed value; set
-      # ORACLE_SEED here to rotate it per run instead.
+      # runs btrfs restore and bulk_extractor over each into the outputs/ tree
+      # described in ci/oracle/README.md, and finishes by rendering the
+      # nails-oracle verdict over that tree (writing verdict.json). The
+      # verdict on btrfs images is partial at best (exit 3), which the script
+      # passes, exiting 0, only when verdict.json says partial and names the
+      # timeline alone as left out; anything else fails this step. It needs
+      # root for the loop mounts. The coverage canary is the fixed committed
+      # value; set ORACLE_SEED here to rotate it per run instead.
       - name: Build images, run the scan and render the verdict
         run: |
           sudo env \
