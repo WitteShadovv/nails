@@ -6,10 +6,12 @@
 //
 // With the pointer: press and hold. A bar fills in about a second, the
 // window's own countdown; releasing once it is full ends the session, and
-// releasing before, or moving off the button, cancels. A short click says to
-// hold it, for two seconds. With the keyboard (it is a Tab stop, and never
+// releasing before, or moving off the button, cancels. Only a press on the
+// control counts: one made beside it and released on it does nothing. A
+// short click says to hold it, for two seconds. With the keyboard (it is a Tab stop, and never
 // where the focus starts): Return or Space asks for a second press, with no
-// time limit, and the second press ends the session; Escape, or the focus
+// time limit, and the second press ends the session (a key held down is one
+// press, however long it repeats); Escape, or the focus
 // moving on, cancels. A screen reader's activate action takes the same two
 // steps. Each change of its label is announced at once.
 //
@@ -27,6 +29,9 @@ export component EmergencyButton {
 
     // How long the pointer holds it.
     property <duration> hold: 1000ms;
+    // The pointer pressed it and has not let go or lost it since: only the
+    // release of a press of its own counts.
+    property <bool> down;
     // When the pointer pressed it.
     property <duration> pressed-at;
     // The pointer moved off since its press.
@@ -98,17 +103,31 @@ export component EmergencyButton {
 
     touch := TouchArea {
         pointer-event(event) => {
+            // A cancel names no button: the press it took away was this one.
+            if (event.kind == PointerEventKind.cancel) {
+                root.down = false;
+                return;
+            }
             if (event.button != PointerEventButton.left) {
                 return;
             }
             if (event.kind == PointerEventKind.down) {
+                root.down = true;
                 root.pressed-at = animation-tick();
                 root.moved-off = false;
                 root.armed = false;
                 root.hinting = false;
-            } else if (event.kind == PointerEventKind.cancel) {
-                root.moved-off = true;
-            } else if (event.kind == PointerEventKind.up && !root.moved-off) {
+            } else if (event.kind == PointerEventKind.up) {
+                // The toolkit hands every release to the control under the
+                // pointer: one of a press made elsewhere, on the header bar
+                // beside it, say, is no gesture.
+                if (!root.down) {
+                    return;
+                }
+                root.down = false;
+                if (root.moved-off) {
+                    return;
+                }
                 if (animation-tick() - root.pressed-at >= root.hold) {
                     root.fired();
                 } else {
@@ -135,7 +154,11 @@ export component EmergencyButton {
         focus-on-click: false;
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == Key.Space) {
-                root.step();
+                // A key held down repeats its press: that is still one press,
+                // and the second step needs a press of its own.
+                if (!event.repeat) {
+                    root.step();
+                }
                 return accept;
             }
             if (event.text == Key.Escape && root.armed) {
