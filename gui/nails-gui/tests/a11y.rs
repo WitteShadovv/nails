@@ -73,9 +73,11 @@ fn every_page_names_each_control_and_row() {
     screen.update(answered(Kind::Check, fixture("check-decoy")));
     assert_named(&screen, "checked");
     assert!(!screen.with_role(AccessibleRole::ListItem).is_empty());
+    // The recorded decoy keeps a persistent record, which can be allowed for
+    // one activation: its row has the button for that.
     assert_eq!(
         screen.labels(AccessibleRole::Button),
-        ["Close", "Check Again"]
+        ["Close", nails_gui::text::ALLOW, "Check Again"]
     );
 
     for failure in [
@@ -101,6 +103,7 @@ fn question(_: &PlanData) -> Question {
         body: "The hidden copy of /srv/notes is deleted.".to_string(),
         confirm: "Discard".to_string(),
         destructive: true,
+        ..Question::default()
     }
 }
 

@@ -14,11 +14,17 @@
 //! [`Ask::Withdraw`]. A withdrawn plan is dropped at once with a status
 //! request, which also releases whatever the helper held for it (the state
 //! lock of an activation or a discard).
+//!
+//! While a request runs the worker waits on the pipe, so the window cannot
+//! reach the helper through it; [`HangUp`] is how it still can: it shuts the
+//! window's writing half of the pipe, which cancels an activation before its
+//! point of no return. The worker reads the answer that follows and ends.
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use nails_api::Event;
 use nails_api::protocol::{CheckArgs, Hello, Op, ProtocolError};
@@ -127,16 +133,90 @@ pub enum Connect {
     },
 }
 
-/// Start the worker: open the session with `connect`, then serve the window's
-/// asks, reporting through `report`. Returns the sender of the asks; the
-/// worker ends when it is dropped or the session is over.
-pub fn spawn(connect: Connect, report: impl Fn(Update) + Send + 'static) -> Sender<Ask> {
-    let (asks, inbox) = channel();
-    std::thread::spawn(move || run(connect, &inbox, &report));
-    asks
+/// The window's way to hang up on its helper, whatever the worker waits on.
+///
+/// It shuts the writing half of the window's end of the pipe. The helper
+/// reads that as the window gone: an activation's apply short of its point
+/// of no return unwinds, as a Ctrl+C would, and once the helper has answered
+/// it ends its session. The window still reads that answer, since only its
+/// writing half is shut. Before the session opens, and after it ended, it
+/// does nothing.
+#[derive(Clone, Default)]
+pub struct HangUp(Arc<Mutex<Line>>);
+
+#[derive(Default)]
+struct Line {
+    /// Another handle on the window's end of the pipe, while the session is
+    /// open.
+    stream: Option<UnixStream>,
+    /// Whether the window hung up.
+    hung_up: bool,
 }
 
-fn run(connect: Connect, inbox: &Receiver<Ask>, report: &dyn Fn(Update)) {
+impl HangUp {
+    /// Hang up; true the one time it did.
+    pub fn hang_up(&self) -> bool {
+        let mut line = self.line();
+        if line.hung_up {
+            return false;
+        }
+        let shut = line
+            .stream
+            .as_ref()
+            .is_some_and(|stream| stream.shutdown(std::net::Shutdown::Write).is_ok());
+        line.hung_up = shut;
+        shut
+    }
+
+    fn line(&self) -> MutexGuard<'_, Line> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn open(&self, stream: UnixStream) {
+        self.line().stream = Some(stream);
+    }
+
+    fn close(&self) {
+        self.line().stream = None;
+    }
+
+    fn hung_up(&self) -> bool {
+        self.line().hung_up
+    }
+}
+
+/// A running worker: where the window's asks go, and its way to hang up.
+pub struct Worker {
+    asks: Sender<Ask>,
+    hang_up: HangUp,
+}
+
+impl Worker {
+    /// Hand the worker `ask`; false once the worker is gone.
+    pub fn ask(&self, ask: Ask) -> bool {
+        self.asks.send(ask).is_ok()
+    }
+
+    /// The handle that hangs up on the helper.
+    #[must_use]
+    pub fn hang_up(&self) -> HangUp {
+        self.hang_up.clone()
+    }
+}
+
+/// Start the worker: open the session with `connect`, then serve the window's
+/// asks, reporting through `report`. The worker ends when the returned
+/// [`Worker`] is dropped, when the session is over, and once the answer that
+/// a hang-up waited for came.
+pub fn spawn(connect: Connect, report: impl Fn(Update) + Send + 'static) -> Worker {
+    let (asks, inbox) = channel();
+    let hang_up = HangUp::default();
+    let line = hang_up.clone();
+    std::thread::spawn(move || run(connect, &inbox, &line, &report));
+    Worker { asks, hang_up }
+}
+
+fn run(connect: Connect, inbox: &Receiver<Ask>, line: &HangUp, report: &dyn Fn(Update)) {
     let (mut client, mut pkexec) = match open(connect) {
         Ok(opened) => opened,
         Err(failure) => {
@@ -144,14 +224,21 @@ fn run(connect: Connect, inbox: &Receiver<Ask>, report: &dyn Fn(Update)) {
             return;
         }
     };
+    if let Ok(stream) = client.hang_up_handle() {
+        line.open(stream);
+    }
     report(Update::Connected(client.engine().clone()));
     let mut planned: Option<Planned> = None;
     while let Ok(ask) = inbox.recv() {
-        match serve(&mut client, ask, &mut planned, report) {
+        let served = serve(&mut client, ask, &mut planned, report);
+        let hung_up = line.hung_up();
+        match served {
+            // The window hung up: the answer it waited for was the last.
+            Ok(()) if hung_up => break,
             Ok(()) => {}
             // A refused token, or a plan withdrawn in between: the plan is
             // gone, the session goes on.
-            Err(error) if !error.ends_session() => report(Update::Withdrawn),
+            Err(error) if !error.ends_session() && !hung_up => report(Update::Withdrawn),
             Err(error) => {
                 // Without its helper the window can do nothing more; pkexec's
                 // child, if any, has ended or ends with its pipe.
@@ -161,6 +248,7 @@ fn run(connect: Connect, inbox: &Receiver<Ask>, report: &dyn Fn(Update)) {
             }
         }
     }
+    line.close();
     drop(client);
     if let Some(child) = pkexec.as_mut() {
         let _ = child.wait();

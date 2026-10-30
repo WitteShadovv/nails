@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use nails_gui::model::Model;
-use nails_gui::ui::Controller;
+use nails_gui::ui::{Controller, Hooks};
 use nails_gui::worker::{Ask, Update};
 use nails_gui::{Adw, AppWindow};
 use slint::ComponentHandle;
@@ -25,6 +25,7 @@ pub struct Screen {
     pub window: AppWindow,
     pub controller: Rc<RefCell<Controller>>,
     asks: Rc<RefCell<Vec<Ask>>>,
+    hang_ups: Rc<Cell<u32>>,
     closed: Rc<Cell<bool>>,
 }
 
@@ -43,15 +44,20 @@ impl Screen {
         }
         let window = AppWindow::new().expect("the window builds");
         let asks = Rc::new(RefCell::new(Vec::new()));
+        let hang_ups = Rc::new(Cell::new(0));
         let closed = Rc::new(Cell::new(false));
         let controller = {
             let asks = Rc::clone(&asks);
+            let hang_ups = Rc::clone(&hang_ups);
             let closed = Rc::clone(&closed);
             Controller::new(
                 &window,
                 Model::new(Some(PathBuf::from("/mnt/data/nails")), waits_for_password),
-                move |ask| asks.borrow_mut().push(ask),
-                move || closed.set(true),
+                Hooks {
+                    ask: Box::new(move |ask| asks.borrow_mut().push(ask)),
+                    hang_up: Box::new(move || hang_ups.set(hang_ups.get() + 1)),
+                    close: Box::new(move || closed.set(true)),
+                },
             )
         };
         window.show().expect("the window shows");
@@ -59,6 +65,7 @@ impl Screen {
             window,
             controller,
             asks,
+            hang_ups,
             closed,
         }
     }
@@ -88,6 +95,24 @@ impl Screen {
         self.closed.get()
     }
 
+    /// How many times the window hung up on the helper.
+    pub fn hang_ups(&self) -> u32 {
+        self.hang_ups.get()
+    }
+
+    /// Type `text` into the control that has the focus, a key at a time.
+    pub fn type_text(&self, text: &str) {
+        for c in text.chars() {
+            let text: slint::SharedString = c.to_string().into();
+            self.window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            self.window
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        }
+    }
+
     /// Press and release `key`.
     pub fn press(&self, key: Key) {
         let text: slint::SharedString = key.into();
@@ -101,6 +126,9 @@ impl Screen {
 
     /// The accessible label of the control that has the keyboard focus.
     pub fn focused(&self) -> String {
+        // A field names itself when its focus changes, in a handler Slint
+        // runs with the timers.
+        slint::platform::update_timers_and_animations();
         self.window.global::<Adw>().get_focused_label().to_string()
     }
 

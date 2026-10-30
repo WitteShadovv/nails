@@ -46,8 +46,60 @@ pub const READY: &str = "Ready to Activate";
 pub const NOT_READY: &str = "Not Ready to Activate";
 /// The check could not run.
 pub const CHECK_FAILED: &str = "Check Failed";
-/// The main action of a decoy page.
+/// The main action of a decoy page that is not ready.
 pub const CHECK_AGAIN: &str = "Check Again";
+
+/// The main action of a ready decoy page: it opens the question first, which
+/// the ellipsis says.
+pub const ACTIVATE: &str = "Activate\u{2026}";
+/// The question before an activation.
+pub const ACTIVATE_QUESTION: &str = "Activate Hidden Session?";
+/// What an activation does to the decoy's session.
+pub const ACTIVATE_CONSEQUENCE: &str = "You will be logged out. Every program closes and unsaved \
+     work is lost. Log in again at the login screen.";
+/// The button that activates.
+pub const LOG_OUT_AND_ACTIVATE: &str = "Log Out and Activate";
+/// An activation that builds a hidden NixOS system first.
+pub const BUILDS_HIDDEN_SYSTEM: &str =
+    "The hidden system is built first. This can take several minutes.";
+/// The session runs in the decoy's home (`persona.mode = "shared-home"`).
+pub const DECOY_HOME: &str =
+    "Home in the session: the decoy home. Its accounts and keys are live there.";
+/// The label of the facts that name the risks allowed for one activation.
+pub const FACT_ALLOWED: &str = "Allowed by you";
+/// The risk of a decoy that keeps a persistent record, allowed by the
+/// person (`--allow-persistent-decoy`).
+pub const RISK_PERSISTENT_DECOY: &str = "a persistent record on this computer's disk";
+/// The button under a problem that can be allowed for one activation: it
+/// opens the question first.
+pub const ALLOW: &str = "Allow for This Activation\u{2026}";
+/// The question before a risk is allowed.
+pub const ALLOW_QUESTION: &str = "Allow for This Activation?";
+/// That allowing a risk holds once.
+pub const ALLOW_ONCE: &str = "This is allowed for one activation only.";
+/// The word to type before a risk is allowed: never one click.
+pub const ALLOW_WORD: &str = "allow";
+/// The button that allows it.
+pub const ALLOW_CONFIRM: &str = "Allow";
+
+/// The first step of an activation: the entry checks this computer again.
+pub const STEP_CHECKING: &str = "Checking this computer";
+/// A step that finished.
+pub const STEP_DONE: &str = "Done";
+/// The step that runs.
+pub const STEP_NOW: &str = "Now";
+/// The button that stops an activation before its point of no return.
+pub const CANCEL: &str = "Cancel";
+/// While a cancelled activation unwinds.
+pub const CANCELLING: &str = "Cancelling";
+/// Past the point of no return.
+pub const LOGGING_OUT: &str = "Logging Out";
+/// What to do next, past the point of no return.
+pub const LOG_IN_AGAIN: &str = "Log in again at the login screen.";
+/// An activation the window cancelled.
+pub const ACTIVATION_CANCELLED: &str = "Activation Cancelled";
+/// An activation that failed.
+pub const ACTIVATION_FAILED: &str = "Activation Failed";
 
 /// A hidden session runs.
 pub const HIDDEN_SESSION: &str = "Hidden Session";
@@ -223,13 +275,25 @@ pub fn open_from_terminal(engine: Option<&Path>) -> String {
     format!("Open a terminal and run: {}", launch::gui_line(engine))
 }
 
-/// What the window says while activation is left to the terminal.
+/// The line that opens the window again, once its session is over.
 #[must_use]
-pub fn activate_from_terminal(engine: Option<&Path>) -> String {
+pub fn open_again(engine: Option<&Path>) -> String {
     format!(
-        "Activate from a terminal: {}",
-        launch::sudo_line(engine, "activate")
+        "To go on, open the window again from a terminal: {}",
+        launch::gui_line(engine)
     )
+}
+
+/// The line that names a risk the person allowed for this activation.
+#[must_use]
+pub fn allowed_by_you(what: &str) -> String {
+    format!("{FACT_ALLOWED}: {what}.")
+}
+
+/// The prompt of the word to type before a risk is allowed.
+#[must_use]
+pub fn type_to_continue(word: &str) -> String {
+    format!("Type {word} to continue")
 }
 
 /// What the window says while deactivation is left to the terminal.

@@ -106,6 +106,7 @@ fn question(_: &PlanData) -> Question {
         body: "The hidden copy of /srv/notes is deleted.".to_string(),
         confirm: "Discard".to_string(),
         destructive: true,
+        ..Question::default()
     }
 }
 
