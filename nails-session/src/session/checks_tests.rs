@@ -226,3 +226,56 @@ fn an_unreadable_fstab_fails_the_policy_check() {
         .unwrap();
     assert!(result.is_pass(), "{result:?}");
 }
+
+fn inhibitor(what: &str, mode: &str) -> logind::Inhibitor {
+    logind::Inhibitor {
+        what: what.to_string(),
+        who: "fwupd".to_string(),
+        why: "Firmware update in progress".to_string(),
+        mode: mode.to_string(),
+        pid: 977,
+    }
+}
+
+/// A program that blocks shutdown outright refuses the entry, named, with what
+/// to do, and so does a logind that did not answer; a delay or a weak block
+/// does not, nor does a logind that does not run.
+#[test]
+fn a_program_that_blocks_shutdown_refuses_the_entry() {
+    let blocked = judge_blocking(&logind::Blocking::By(inhibitor("sleep:shutdown", "block")));
+    assert!(blocked.is_fail());
+    assert!(
+        blocked
+            .message()
+            .contains("fwupd blocks shutdown (Firmware update in progress, PID 977)"),
+        "{}",
+        blocked.message()
+    );
+    assert_eq!(
+        blocked.remediation(),
+        Some("Let it finish, then activate again.")
+    );
+    assert!(judge_blocking(&logind::Blocking::Nothing).is_pass());
+    let unknown = judge_blocking(&logind::Blocking::Unknown);
+    assert!(unknown.is_fail());
+    assert!(
+        unknown
+            .message()
+            .starts_with("logind did not answer whether a program blocks shutdown"),
+        "{}",
+        unknown.message()
+    );
+    assert_eq!(
+        unknown.remediation(),
+        Some("Make sure systemd-logind runs and answers, then activate again.")
+    );
+    for (what, mode) in [
+        ("shutdown", "delay"),
+        ("shutdown", "block-weak"),
+        ("handle-lid-switch", "block"),
+        ("sleep", "block"),
+    ] {
+        assert!(!inhibitor(what, mode).blocks_shutdown(), "{what} {mode}");
+    }
+    assert!(inhibitor("sleep:shutdown", "block").blocks_shutdown());
+}

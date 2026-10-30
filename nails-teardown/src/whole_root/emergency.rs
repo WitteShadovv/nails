@@ -24,9 +24,17 @@
 //!
 //! On the decoy side (an activation was interrupted after building the next
 //! root) it signals the activation, detaches `/run/nextroot` and removes the
-//! runtime pieces, so a later reboot never enters the tree. A requested power
-//! action is enqueued right after that; only a decoy that keeps running gets
-//! PID 1 reloaded and `/run` made `noexec` again, as after a rollback.
+//! runtime pieces, so no later reboot enters the tree, and drops the
+//! soft-reboot logind may still hold for the entry
+//! ([`logind::drop_soft_reboot`]): that soft-reboot would restart the decoy's
+//! userspace when logind lets it go, with records an ordinary boot never
+//! writes. A decoy that is to keep running asks that first; a requested power
+//! action is enqueued first and asks after it. Only a decoy that keeps
+//! running gets PID 1 reloaded and `/run` made `noexec` again, as after a
+//! rollback. Where the soft-reboot may still come (logind cannot drop it, on
+//! systemd 256 and older, or does not answer, or PID 1 has already started
+//! it), it powers off (or reboots, as asked) at once, past PID 1's queue,
+//! where that soft-reboot could otherwise run first.
 //!
 //! Every phase is timed. Nothing here reads the configuration, the state file
 //! or the hidden volume, and nothing logs; the caller prints and logs the
@@ -40,7 +48,7 @@ use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
 use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::tools;
 use crate::whole_root::transition;
-use crate::whole_root::{kernel_helpers, ret, runtime_units};
+use crate::whole_root::{kernel_helpers, logind, ret, runtime_units};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -182,13 +190,7 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     let mut report = HotReport::new(side, requested);
     match (side, plan) {
         (Side::Hidden, Some(mut plan)) => hidden(&mut plan, host, &mut report),
-        (Side::Decoy, Some(plan)) => {
-            let unloaded = decoy(&plan, host, &mut report);
-            if requested != Finish::Return {
-                dispatch(&plan, host, requested, &mut report);
-            }
-            settle(&plan, host, unloaded, &mut report);
-        }
+        (Side::Decoy, Some(plan)) => decoy_side(&plan, host, requested, &mut report),
         _ => {
             if requested != Finish::Return {
                 dispatch_without_plan(host, requested, &mut report);
@@ -197,6 +199,101 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     }
     report.elapsed = start.elapsed();
     report
+}
+
+/// The decoy side: an activation left a plan (and perhaps a next root). A
+/// decoy that is to keep running asks first what is left of the entry's
+/// soft-reboot; a power action leaves no time to lose, so it is enqueued
+/// first and asks after it. Where the soft-reboot may still come, the
+/// emergency powers off (or reboots, as asked) at once ([`decoy_escape`]).
+fn decoy_side(plan: &Plan, host: &Host, requested: Finish, report: &mut HotReport) {
+    report.timed("signal-activation", |_| {
+        if host.act {
+            signal_owner(plan);
+        }
+    });
+    let mut pending = logind::Pending::Nothing;
+    if requested == Finish::Return {
+        pending = drop_switch(plan, host, report);
+    }
+    let unloaded = decoy(plan, host, report);
+    if requested != Finish::Return {
+        dispatch(plan, host, requested, report);
+        pending = drop_switch(plan, host, report);
+    }
+    // What was enqueued, if anything: a power-off stands in for a reboot
+    // PID 1 refused.
+    let asked = report.dispatched.unwrap_or(requested);
+    if let Some((finish, why)) = decoy_escape(asked, pending) {
+        report.fallback = Some(why);
+        force(plan, host, finish, report);
+    }
+    settle(plan, host, unloaded, report);
+}
+
+/// Drop what logind still holds of the entry's soft-reboot, with the tools
+/// the entry recorded, as for everything else here.
+fn drop_switch(plan: &Plan, host: &Host, report: &mut HotReport) -> logind::Pending {
+    report.timed("drop-soft-reboot", |_| {
+        if !host.act {
+            return logind::Pending::Nothing;
+        }
+        logind::drop_soft_reboot(
+            plan.tools.systemctl.as_deref(),
+            plan.tools.busctl.as_deref(),
+        )
+    })
+}
+
+/// What a decoy-side emergency forces past PID 1's queue, and why, when the
+/// entry's soft-reboot may still come (`pending`): a power-off for a decoy
+/// that was to keep running, else the power action asked for. PID 1's queue
+/// would run the soft-reboot as soon as the power action, whichever comes
+/// first, and logind may still add it there.
+fn decoy_escape(requested: Finish, pending: logind::Pending) -> Option<(Finish, String)> {
+    let why = match pending {
+        logind::Pending::Nothing => return None,
+        logind::Pending::Held => "logind may still hold the entry's soft-reboot and cannot drop it",
+        logind::Pending::Started => "PID 1 has started the entry's soft-reboot",
+    };
+    let finish = match requested {
+        Finish::Return => Finish::Poweroff,
+        asked => asked,
+    };
+    let what = if finish == Finish::Reboot {
+        "rebooting"
+    } else {
+        "powering off"
+    };
+    Some((finish, format!("{why}; {what} at once, before it can run")))
+}
+
+/// Power off (or reboot) at once, past PID 1's queue: `systemctl --force`
+/// skips the orderly stop of the units (systemd-shutdown still ends every
+/// process and unmounts every filesystem), so no soft-reboot in that queue
+/// can run first. Only the `systemctl` the entry recorded is asked; without
+/// one, or when it fails, the kernel powers off.
+fn force(plan: &Plan, host: &Host, finish: Finish, report: &mut HotReport) {
+    kill_shells(host, report);
+    report.timed("force", |report| {
+        if !host.act {
+            report.dispatched = Some(finish);
+            return;
+        }
+        let verb = if finish == Finish::Reboot {
+            "reboot"
+        } else {
+            "poweroff"
+        };
+        let forced = plan.tools.systemctl.as_deref().is_some_and(|systemctl| {
+            tools::run(systemctl, &["--force", verb], tools::TOOL_BUDGET) != tools::Outcome::Refused
+        });
+        if forced {
+            report.dispatched = Some(finish);
+        } else {
+            report.kernel_power_off = kernel_power_off();
+        }
+    });
 }
 
 fn hidden(plan: &mut Plan, host: &Host, report: &mut HotReport) {
@@ -308,15 +405,10 @@ fn kernel_power_off() -> bool {
     rustix::system::reboot(rustix::system::RebootCommand::PowerOff).is_ok()
 }
 
-/// The decoy side: an activation left a plan (and perhaps a next root).
-/// Returns whether it removed a drop-in or a mask, which PID 1 keeps loaded
-/// until its next reload.
+/// The decoy side's cleanup: the next root detached and the runtime pieces
+/// removed. Returns whether it removed a drop-in or a mask, which PID 1 keeps
+/// loaded until its next reload.
 fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) -> bool {
-    report.timed("signal-activation", |_| {
-        if host.act {
-            signal_owner(plan);
-        }
-    });
     report.remaining = report.timed("detach-nextroot", |_| {
         if host.act {
             nextroot::detach_tree(&host.nextroot)

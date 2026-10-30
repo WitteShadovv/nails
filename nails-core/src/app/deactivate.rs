@@ -25,7 +25,7 @@ use nails_teardown::whole_root::plan::Plan;
 use super::lock::LockError;
 use crate::hidden_root::Allow;
 use crate::session::leave::NetworkTool;
-use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView};
+use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView, TargetHost};
 use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv, StateLock};
 
 /// The result of preparing a deactivation.
@@ -139,6 +139,20 @@ pub struct LockedDeactivation {
 }
 
 impl LockedDeactivation {
+    /// Whether the way back may start now: not while a program blocks
+    /// shutdown, or while logind does not answer whether one does
+    /// ([`TargetHost::may_switch`]). [`leave`](Self::leave) asks again
+    /// itself; a caller that shows a person what comes asks first, so that a
+    /// refusal comes before it.
+    pub fn may_leave(&self) -> Result<(), NailsError> {
+        let view = self.ready.manager.session_view();
+        RealTargetHost::for_plan(match &view {
+            SessionView::Hidden(plan) => Some(&**plan),
+            _ => None,
+        })
+        .may_switch()
+    }
+
     /// Commit the way back: enqueue the soft-reboot (or the power-off). A
     /// caller that shows a person the result prints it first, because this
     /// stops the terminal; a machine-readable result waits for the outcome.

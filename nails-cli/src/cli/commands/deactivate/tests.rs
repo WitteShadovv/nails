@@ -42,6 +42,15 @@ fn refused() -> NailsError {
     NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
 }
 
+/// The refusal of a way back while a program blocks shutdown.
+fn blocked() -> NailsError {
+    NailsError::InvalidState(
+        "apt blocks shutdown (Installing, PID 4242): the switch would cut it short. Let it \
+         finish, then try again"
+            .to_string(),
+    )
+}
+
 /// Report a way back through a stand-in for it that prints [`ENQUEUED`] and
 /// then succeeds or fails, as the case says, and exit with the status.
 #[test]
@@ -102,7 +111,7 @@ fn subprocess_deactivate_entrypoint() {
             &args,
             Prepared::Ready(Box::new(ready_at(root.path()))),
             |_ready, to, warnings| {
-                super::leave_and_report(&settings, to, warnings, |_| {
+                super::leave_and_report(&settings, to, warnings, Ok(()), |_| {
                     crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
                     Ok(LeaveReport::default())
                 })
@@ -110,6 +119,23 @@ fn subprocess_deactivate_entrypoint() {
         );
         // The exit runs no destructor: remove the scratch tree first.
         drop(root);
+        crate::cli::chokepoint::exit_process(status.code());
+    }
+    if let Some(settings) = match case.as_str() {
+        "human-blocked" => Some(ascii),
+        "json-blocked" => Some(json()),
+        _ => None,
+    } {
+        let status = super::leave_and_report(
+            &settings,
+            LeaveTo::Decoy,
+            Vec::new(),
+            Err(blocked()),
+            |_| {
+                crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+                Ok(LeaveReport::default())
+            },
+        );
         crate::cli::chokepoint::exit_process(status.code());
     }
     let (settings, to, outcome) = match case.as_str() {
@@ -127,7 +153,7 @@ fn subprocess_deactivate_entrypoint() {
     } else {
         Vec::new()
     };
-    let status = super::leave_and_report(&settings, to, warnings, |_| {
+    let status = super::leave_and_report(&settings, to, warnings, Ok(()), |_| {
         crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
         outcome
     });
@@ -413,6 +439,29 @@ fn an_enqueued_way_back_is_one_envelope_printed_after_it() {
     assert_eq!(value["ok"], true, "{value}");
     assert_eq!(value["data"]["status"], "poweroff_requested", "{value}");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+/// A program that blocks shutdown refuses the way back before anything is
+/// printed: a person reads the refusal alone, on stderr, and under `--json`
+/// it is the one envelope.
+#[test]
+fn a_blocked_way_back_is_refused_before_its_banner() {
+    let output = run_subprocess("human-blocked");
+    assert!(stdout_lines(&output).is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("apt blocks shutdown (Installing, PID 4242)"),
+        "{stderr}"
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let output = run_subprocess("json-blocked");
+    let lines = stdout_lines(&output);
+    assert_eq!(lines.len(), 1, "one envelope: {output:?}");
+    let value = envelope("deactivate", &lines[0]);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "invalid_state", "{value}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
 }
 
 /// A person reads the result before the switch, which stops the terminal,

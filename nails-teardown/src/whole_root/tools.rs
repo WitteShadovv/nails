@@ -165,11 +165,6 @@ pub fn ignore_stop_signals(command: &mut Command) {
 /// call was cut short, typically because the shutdown it enqueued is already
 /// stopping the caller.
 pub fn start_target(systemctl: &Path, target: &str) -> Outcome {
-    start_target_within(systemctl, target, TOOL_BUDGET)
-}
-
-/// [`start_target`] bounded by `budget`.
-fn start_target_within(systemctl: &Path, target: &str, budget: Duration) -> Outcome {
     run(
         systemctl,
         &[
@@ -179,38 +174,12 @@ fn start_target_within(systemctl: &Path, target: &str, budget: Duration) -> Outc
             "--",
             target,
         ],
-        budget,
+        TOOL_BUDGET,
     )
 }
 
 /// The target of every soft-reboot.
 pub const SOFT_REBOOT_TARGET: &str = "soft-reboot.target";
-
-/// Soft-reboot the way `systemctl soft-reboot` does, without its wall message:
-/// through logind, which first tells every program that holds a shutdown delay
-/// inhibitor that the system is going down and waits for them to finish (for
-/// at most `InhibitDelayMaxSec=`, 5 s by default), then enqueues
-/// `soft-reboot.target` itself, replacing every other job irreversibly.
-/// unattended-upgrades' shutdown helper (Debian, Ubuntu) is such a program.
-/// Stopped by a bare SIGTERM instead, as [`start_target`] would have it, it
-/// writes a line to its log file on the root filesystem that an ordinary
-/// shutdown never writes, or it fails when the system bus stops under it.
-///
-/// A call not known to have succeeded (logind refused it, because of a block
-/// inhibitor for one, or the call was cut short) falls back to
-/// [`start_target`], so logind can delay the switch by its timeout but never
-/// keep it from happening.
-pub fn soft_reboot(systemctl: &Path) -> Outcome {
-    soft_reboot_within(systemctl, TOOL_BUDGET)
-}
-
-/// [`soft_reboot`] with each call bounded by `budget`.
-fn soft_reboot_within(systemctl: &Path, budget: Duration) -> Outcome {
-    if run(systemctl, &["--no-wall", "soft-reboot"], budget) == Outcome::Done {
-        return Outcome::Done;
-    }
-    start_target_within(systemctl, SOFT_REBOOT_TARGET, budget)
-}
 
 /// Reload the service manager, so a runtime drop-in written to `/run` applies.
 pub fn daemon_reload(systemctl: &Path) -> bool {
@@ -259,6 +228,53 @@ pub fn remove_deferred(dmsetup: &Path, name: &str) -> bool {
 /// Run `program args…` like [`run`] and return its standard output when it
 /// exited 0 in time.
 pub fn run_output(program: &Path, args: &[&str], budget: Duration) -> Option<String> {
+    match run_reading(program, args, budget, Stream::Stdout) {
+        (Ran::Exited(status), text) if status.success() => Some(text),
+        _ => None,
+    }
+}
+
+/// Run `program args…` like [`run`], with the last line it wrote to its
+/// standard error: what a tool that refused says about why.
+pub fn run_explained(program: &Path, args: &[&str], budget: Duration) -> (Outcome, String) {
+    let (ran, text) = run_reading(program, args, budget, Stream::Stderr);
+    let outcome = match ran {
+        Ran::NotStarted => Outcome::Refused,
+        Ran::Overran => Outcome::Unknown,
+        Ran::Exited(status) if status.success() => Outcome::Done,
+        Ran::Exited(status) if status.code().is_some() => Outcome::Refused,
+        Ran::Exited(_) => Outcome::Unknown,
+    };
+    let said = text
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    (outcome, said)
+}
+
+/// Which output stream [`run_reading`] keeps.
+#[derive(Clone, Copy)]
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// How a run of [`run_reading`] ended.
+enum Ran {
+    /// The program could not be started.
+    NotStarted,
+    /// It overran its budget and was killed.
+    Overran,
+    /// It exited, with this status.
+    Exited(std::process::ExitStatus),
+}
+
+/// Run `program args…` bounded by `budget`, keeping the text of `stream` and
+/// dropping the other one.
+fn run_reading(program: &Path, args: &[&str], budget: Duration, stream: Stream) -> (Ran, String) {
+    let piped = |kept: bool| if kept { Stdio::piped() } else { Stdio::null() };
     let mut command = Command::new(program);
     command
         .args(args)
@@ -267,31 +283,62 @@ pub fn run_output(program: &Path, args: &[&str], budget: Duration) -> Option<Str
         .env("LC_ALL", "C")
         .env("SYSTEMD_PAGER", "")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stdout(piped(matches!(stream, Stream::Stdout)))
+        .stderr(piped(matches!(stream, Stream::Stderr)))
         .current_dir("/");
     ignore_stop_signals(&mut command);
-    let mut child = command.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    let Ok(mut child) = command.spawn() else {
+        return (Ran::NotStarted, String::new());
+    };
+    let pipe: Option<Box<dyn std::io::Read + Send>> = match stream {
+        Stream::Stdout => child.stdout.take().map(|p| Box::new(p) as _),
+        Stream::Stderr => child.stderr.take().map(|p| Box::new(p) as _),
+    };
     let reader = std::thread::spawn(move || {
         let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        if let Some(mut pipe) = pipe {
+            let _ = std::io::Read::read_to_string(&mut pipe, &mut text);
+        }
         text
     });
     let deadline = Instant::now() + budget;
-    let status = loop {
+    let ran = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+            Ok(Some(status)) => break Ran::Exited(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break None;
+                break Ran::Overran;
             }
         }
     };
-    let text = reader.join().ok()?;
-    status.filter(|s| s.success()).map(|_| text)
+    (ran, reader.join().unwrap_or_default())
+}
+
+/// One job in PID 1's queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    /// Its number, which `systemctl cancel` takes.
+    pub id: u32,
+    /// Its unit.
+    pub unit: String,
+    /// What it does to the unit: `start`, `stop`, `restart`…
+    pub kind: String,
+}
+
+/// PID 1's queued jobs in `systemctl list-jobs --plain --no-legend` output
+/// (`ID UNIT TYPE STATE` per line).
+pub fn parse_jobs(list: &str) -> Vec<Job> {
+    list.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let id = fields.next()?.parse().ok()?;
+            let unit = fields.next()?.to_string();
+            let kind = fields.next()?.to_string();
+            Some(Job { id, unit, kind })
+        })
+        .collect()
 }
 
 /// The units of PID 1's queued jobs in `systemctl list-jobs --plain
@@ -376,6 +423,25 @@ mod tests {
     }
 
     #[test]
+    fn a_job_list_reads_as_number_unit_and_kind() {
+        assert_eq!(
+            parse_jobs("12 late.service stop running\n7 soft-reboot.target start waiting\nx\n"),
+            [
+                Job {
+                    id: 12,
+                    unit: "late.service".into(),
+                    kind: "stop".into(),
+                },
+                Job {
+                    id: 7,
+                    unit: "soft-reboot.target".into(),
+                    kind: "start".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn the_wait_ends_once_only_our_jobs_are_left_and_times_out_otherwise() {
         use crate::test_support::write_executable;
         assert_eq!(
@@ -415,69 +481,36 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(2));
     }
 
-    /// A `systemctl` stand-in that appends its arguments to `calls` and ends
-    /// `soft-reboot` with `soft_reboot`, any other command with `other` (shell
-    /// code, such as `exit 0`).
-    fn recording_systemctl(dir: &Path, soft_reboot: &str, other: &str) -> (PathBuf, PathBuf) {
-        let calls = dir.join("calls");
-        let tool = dir.join("systemctl");
-        crate::test_support::write_executable(
-            &tool,
-            format!(
-                "#!/bin/sh\necho \"$*\" >> {calls}\n\
-                 if [ \"$2\" = soft-reboot ]; then {soft_reboot}; fi\n{other}\n",
-                calls = calls.display()
+    #[test]
+    fn a_tool_that_refuses_says_why_on_its_last_line_of_stderr() {
+        let sh = find(None, "sh").expect("a shell");
+        assert_eq!(
+            run_explained(
+                &sh,
+                &[
+                    "-c",
+                    "echo out; echo first >&2; echo 'the reason' >&2; echo >&2; exit 1"
+                ],
+                TOOL_BUDGET
             ),
-            0o755,
+            (Outcome::Refused, "the reason".to_string())
         );
-        (tool, calls)
-    }
-
-    fn calls_made(calls: &Path) -> Vec<String> {
-        std::fs::read_to_string(calls)
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-
-    const DIRECT: &str = "start --no-block --job-mode=replace-irreversibly -- soft-reboot.target";
-
-    /// logind takes the soft-reboot, as `systemctl soft-reboot` asks it to:
-    /// nothing is enqueued with PID 1 next to it.
-    #[test]
-    fn a_soft_reboot_goes_through_logind_without_a_wall_message() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tool, calls) = recording_systemctl(dir.path(), "exit 0", "exit 9");
-        assert_eq!(soft_reboot(&tool), Outcome::Done);
-        assert_eq!(calls_made(&calls), ["--no-wall soft-reboot"]);
-    }
-
-    /// When logind refuses, or its call overruns its budget, the soft-reboot
-    /// is enqueued with PID 1 directly; only when that fails too is it refused.
-    #[test]
-    fn a_soft_reboot_logind_does_not_take_is_enqueued_with_pid_1() {
-        for (logind, direct, outcome) in [
-            ("exit 1", "exit 0", Outcome::Done),
-            ("kill -KILL $$", "exit 0", Outcome::Done),
-            ("sleep 5", "exit 0", Outcome::Done),
-            ("exit 1", "exit 1", Outcome::Refused),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let (tool, calls) = recording_systemctl(dir.path(), logind, direct);
-            let start = Instant::now();
-            assert_eq!(
-                soft_reboot_within(&tool, Duration::from_millis(500)),
-                outcome,
-                "{logind} then {direct}"
-            );
-            assert!(start.elapsed() < Duration::from_secs(3), "{logind}");
-            assert_eq!(
-                calls_made(&calls),
-                ["--no-wall soft-reboot", DIRECT],
-                "{logind} then {direct}"
-            );
-        }
+        assert_eq!(
+            run_explained(&sh, &["-c", "exit 0"], TOOL_BUDGET),
+            (Outcome::Done, String::new())
+        );
+        assert_eq!(
+            run_explained(&sh, &["-c", "exec sleep 5"], Duration::from_millis(100)).0,
+            Outcome::Unknown
+        );
+        assert_eq!(
+            run_explained(Path::new("/nonexistent/tool"), &[], TOOL_BUDGET).0,
+            Outcome::Refused
+        );
+        assert_eq!(
+            run_output(&sh, &["-c", "echo kept; echo dropped >&2"], TOOL_BUDGET).as_deref(),
+            Some("kept\n")
+        );
     }
 
     #[test]

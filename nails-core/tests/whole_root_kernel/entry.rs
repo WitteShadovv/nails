@@ -1553,7 +1553,19 @@ fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
         assert!(!nextroot::is_noexec(&paths.run).unwrap());
         let mut plan = entry.plan.clone();
         plan.backend = Vec::new();
-        plan.tools = Default::default();
+        // A PID 1 that says logind does not run, so nothing can hold the
+        // entry's soft-reboot and the decoy keeps running.
+        let tools = ScratchTmpfs::new("");
+        let systemctl = tools.path().join("systemctl");
+        write_executable(
+            &systemctl,
+            "#!/bin/sh\ncase \"$*\" in show*) echo inactive ;; esac\n",
+            0o755,
+        );
+        plan.tools = nails_teardown::whole_root::plan::Tools {
+            systemctl: Some(systemctl),
+            ..Default::default()
+        };
         let cgroup = ScratchTmpfs::new("");
         let host = emergency::Host {
             run: paths.run.clone(),

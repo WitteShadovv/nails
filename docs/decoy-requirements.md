@@ -473,9 +473,13 @@ records end up depends on the journal:
 
 Hidden-session history never reaches the decoy: every hidden shell runs inside
 the overlay and writes its history file into the upper. On the decoy,
-`nails activate` SIGKILLs the decoy's interactive shells as its last step, so a
-shell that saves history on exit (bash on SIGHUP) never writes the activation
-command (see [bash-history-forensics.md](bash-history-forensics.md)). NAILS does
+`nails activate` SIGKILLs the decoy's interactive shells right before it asks
+logind for the switch, keeps killing every interactive shell opened while
+logind holds the switch back (within about a tenth of a second after it
+starts, too soon to have anything to save), and kills them once more when
+PID 1 holds the switch's job, so a shell that saves history on exit (bash on
+SIGHUP) never writes the activation command (see
+[bash-history-forensics.md](bash-history-forensics.md)). NAILS does
 **not** configure the decoy's own shells, and a shell that flushes history after
 every command (zsh `INC_APPEND_HISTORY`, `history -a` in `PROMPT_COMMAND`) has
 already written it; the `incremental-history-flush` check warns about that. If you type on the decoy — and the

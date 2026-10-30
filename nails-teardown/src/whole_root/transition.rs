@@ -149,8 +149,8 @@ pub fn stop_guard_dir(unit: &str) -> PathBuf {
 /// stops it, the bus comes up again in the other root like at boot. A bus
 /// client still running then loses the bus while it stops, which is why the
 /// switch first lets logind's shutdown signal end the programs that wait for
-/// it ([`crate::whole_root::tools::soft_reboot`]). `Conflicts=` adds up
-/// across drop-ins, so no later drop-in can take it back.
+/// it ([`crate::whole_root::logind::request_soft_reboot`]). `Conflicts=` adds
+/// up across drop-ins, so no later drop-in can take it back.
 pub const SHUTDOWN_BOUND_UNITS: [&str; 2] = ["dbus.service", "dbus.socket"];
 
 /// The drop-in text that stops a unit at `shutdown.target`.

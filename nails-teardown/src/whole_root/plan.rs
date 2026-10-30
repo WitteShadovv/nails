@@ -181,6 +181,9 @@ pub struct Tools {
     /// `dmsetup`, to mark the hidden backend for deferred removal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dmsetup: Option<PathBuf>,
+    /// `busctl`, to ask logind what it holds of the soft-reboot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busctl: Option<PathBuf>,
 }
 
 /// Which way the armed transition goes.
