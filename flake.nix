@@ -215,9 +215,10 @@
       # The gui/ workspace is a Cargo workspace of its own and builds from its
       # own manifest and lock. It links one crate of the main tree, nails-api
       # (the wire contract), which takes its version, edition and lints from
-      # the root manifest, so both are in its source too. Only what cargo reads
-      # is, so a change to its cargo-deny policy, its supply-chain records or
-      # its coverage floor rebuilds nothing.
+      # the root manifest, so both are in its source too, and the patched copy
+      # of a Slint crate in gui/patches. Only what cargo reads is, so a change
+      # to its cargo-deny policy, its supply-chain records or its coverage
+      # floor rebuilds nothing.
       guiSourceFiles = lib.fileset.toSource {
         root = ./.;
         fileset = lib.fileset.unions [
@@ -226,6 +227,7 @@
           ./gui/Cargo.toml
           ./gui/Cargo.lock
           ./gui/nails-gui
+          ./gui/patches
         ];
       };
       guiManifest = builtins.fromTOML (builtins.readFile ./gui/Cargo.toml);
