@@ -90,7 +90,7 @@ insta-cmd = "0.7.0"
 # fixtures the E2E suite uses are enforced here against real command output.
 # `default-features = false` drops the HTTP/file `$ref` resolvers and the format
 # assertions the fixtures do not rely on.
-jsonschema = { version = "0.58.4", default-features = false }
+jsonschema = { version = "0.60.1", default-features = false }
 
 # Compile-time code policy shared by every crate and target. `unsafe_code` is
 # denied: each production unsafe site opts in with a scoped
