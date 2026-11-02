@@ -128,6 +128,30 @@ fn fish_reads_the_terminal_after_an_init_command_but_not_with_a_command() {
 }
 
 #[test]
+fn a_private_fish_is_told_by_its_command_line() {
+    for words in [
+        &["fish", "-P"][..],
+        &["fish", "--private"],
+        &["fish", "-lP"],
+        &["fish", "-d", "history", "-P"],
+        &["fish", "--debug", "history", "--private", "-l"],
+    ] {
+        assert!(fish_is_private(&argv(words)), "{words:?}");
+    }
+    for words in [
+        &["fish"][..],
+        &["-fish", "-l"],
+        &["fish", "-d", "P"],
+        &["fish", "-dP"],
+        &["fish", "-C", "-P"],
+        &["fish", "script.fish", "-P"],
+        &["fish", "--", "-P"],
+    ] {
+        assert!(!fish_is_private(&argv(words)), "{words:?}");
+    }
+}
+
+#[test]
 fn nu_reads_the_terminal_unless_it_runs_commands_or_a_script() {
     for words in [
         &["nu"][..],
