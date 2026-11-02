@@ -401,6 +401,7 @@ const PAGES: &[Page] = &[
         "22-deactivate-question-may-power-off-short-scrolled",
         may_power_off_short_scrolled,
     ),
+    ("23-scan-an-image", scan_an_image),
 ];
 
 fn narrow(win: Win) -> Win {
@@ -537,6 +538,16 @@ fn planting() -> Win {
     win.app.invoke_action_activated();
     win.update(Update::Running(Kind::Rehearse));
     wait_ms(200);
+    win
+}
+
+/// Scan an Image, with the examiner's view on and both paths typed.
+fn scan_an_image() -> Win {
+    let win = tool(0);
+    win.app.invoke_choice_activated(0);
+    win.app.invoke_field_edited("/mnt/decoy".into());
+    win.app.invoke_switch_toggled(true);
+    win.app.invoke_field2_edited("/mnt/decoy.img".into());
     win
 }
 

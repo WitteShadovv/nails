@@ -7,14 +7,22 @@
 //! more than the engine found: no known trace is no proof of none. Then what
 //! it found, each with the engine's sentence and fix, and then every area
 //! the run did not check, word for word as the engine lists them.
+//!
+//! **Scan an Image** (`verify --offline --root`) looks at a decoy's disk or
+//! image mounted read-only instead of this computer, with the examiner's
+//! view of its setup traces when that switch is on (`--examiner`), and the
+//! raw disk behind it when one is named (`--disk`). Its result is read as
+//! Verify's is, the examiner's view after it, grouped by what it suggests.
+//! An argument the helper would refuse unread, which would end the window's
+//! session, is never sent: the scan waits for a full path.
 
 use nails_api::CheckOutcome;
-use nails_api::protocol::VerifyArgs;
+use nails_api::protocol::{Op, VerifyArgs, validate};
 
 use super::{Context, ToolKind, error_of, group, row, tool_page};
 use crate::client::Answer;
-use crate::envelope::{self, Severity, VerifyData, VerifyStatus};
-use crate::model::{ActionKind, Page};
+use crate::envelope::{self, ExaminerView, Severity, VerifyData, VerifyStatus};
+use crate::model::{ActionKind, Choice, Field, Page, Switch};
 use crate::text;
 use crate::worker::{Ask, Kind};
 
@@ -25,6 +33,40 @@ pub(crate) struct Verify {
     deep: bool,
     /// How the last verify came out.
     outcome: Option<Outcome>,
+    /// The page that scans an image, while it is open.
+    image: Option<ImageScan>,
+    /// Whether the scan asked for last was of an image.
+    asked_image: bool,
+}
+
+/// What the page that scans an image holds.
+#[derive(Debug, Clone, Default)]
+struct ImageScan {
+    /// Where the image is mounted, as typed.
+    root: String,
+    /// Whether the examiner's view is on.
+    examiner: bool,
+    /// The disk behind it, as typed.
+    disk: String,
+    /// How its last scan came out.
+    outcome: Option<Outcome>,
+}
+
+impl ImageScan {
+    /// The scan's arguments, the paths with spaces around them dropped; the
+    /// disk counts only with the examiner's view, which it belongs to. `None`
+    /// until the helper would take them.
+    fn args(&self) -> Option<VerifyArgs> {
+        let disk = self.disk.trim();
+        let args = VerifyArgs {
+            offline: true,
+            root: Some(self.root.trim().to_string()),
+            examiner: self.examiner,
+            disk: (self.examiner && !disk.is_empty()).then(|| disk.to_string()),
+            ..VerifyArgs::default()
+        };
+        validate(&Op::Verify(args.clone())).ok().map(|()| args)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -36,20 +78,66 @@ enum Outcome {
 impl Verify {
     /// The ask for `label`, one of the page's actions.
     pub(crate) fn action(&mut self, label: &str) -> Option<Ask> {
+        if let Some(image) = &self.image {
+            if label != text::SCAN_IMAGE_ACTION {
+                return None;
+            }
+            let args = image.args()?;
+            self.asked_image = true;
+            self.deep = false;
+            return Some(Ask::Verify(args));
+        }
         self.deep = match label {
             text::VERIFY | text::VERIFY_AGAIN => false,
             text::DEEP_SCAN => true,
             _ => return None,
         };
+        self.asked_image = false;
         Some(Ask::Verify(VerifyArgs {
             deep: self.deep,
             ..VerifyArgs::default()
         }))
     }
 
+    /// The person picked row `index` of the page: Scan an Image, the one
+    /// row Verify's page has.
+    pub(crate) fn choose(&mut self, index: usize) {
+        if index == 0 && self.image.is_none() {
+            self.image = Some(ImageScan::default());
+        }
+    }
+
+    /// Back, from the page that scans an image to Verify's: whether there was
+    /// such a page to leave.
+    pub(crate) fn back(&mut self) -> bool {
+        self.image.take().is_some()
+    }
+
+    /// The field `index` after the switch changed to `typed`: the disk behind
+    /// the image.
+    pub(crate) fn edited_more(&mut self, index: usize, typed: &str) {
+        if let (Some(image), 0) = (&mut self.image, index) {
+            typed.clone_into(&mut image.disk);
+        }
+    }
+
+    /// The field changed to `typed`: where the image is mounted.
+    pub(crate) fn edited(&mut self, typed: &str) {
+        if let Some(image) = &mut self.image {
+            typed.clone_into(&mut image.root);
+        }
+    }
+
+    /// The examiner's view turned `on` or off.
+    pub(crate) fn toggled(&mut self, on: bool) {
+        if let Some(image) = &mut self.image {
+            image.examiner = on;
+        }
+    }
+
     /// Take in the answer of a verify.
     pub(crate) fn answered(&mut self, answer: &Answer) {
-        self.outcome = Some(
+        let outcome = Some(
             match envelope::read::<VerifyData>(&answer.envelope, "verify") {
                 Ok(read) => match read.data {
                     Some(data) => Outcome::Done(data),
@@ -62,10 +150,17 @@ impl Verify {
                 Err(error) => Outcome::Failed(text::sentence(&error.0)),
             },
         );
+        match &mut self.image {
+            Some(image) if self.asked_image => image.outcome = outcome,
+            _ => self.outcome = outcome,
+        }
     }
 
     /// The page.
     pub(crate) fn page(&self, cx: &Context) -> Page {
+        if let Some(image) = &self.image {
+            return image_page(image, cx);
+        }
         if cx.running == Some(Kind::Verify) {
             let mut page = tool_page(ToolKind::Verify, text::VERIFY_WHAT);
             page.heading = text::VERIFYING.to_string();
@@ -95,8 +190,69 @@ impl Verify {
         });
         page.action_kind = ActionKind::Suggested;
         page.secondary = Some(text::DEEP_SCAN);
+        page.choices = vec![Choice {
+            title: text::SCAN_IMAGE_ROW.to_string(),
+            subtitle: text::SCAN_IMAGE_ROW_WHAT.to_string(),
+        }];
         page
     }
+}
+
+/// The page that scans an image: where it is mounted, the examiner's view
+/// and the disk behind it, then the last scan's result.
+fn image_page(image: &ImageScan, cx: &Context) -> Page {
+    if cx.running == Some(Kind::Verify) {
+        return Page {
+            heading: text::SCANNING_IMAGE.to_string(),
+            busy: Some(text::LOOKING_FOR_TRACES.to_string()),
+            ..tool_page(ToolKind::Verify, text::SCAN_IMAGE_WHAT)
+        };
+    }
+    let mut page = match &image.outcome {
+        None => Page {
+            heading: text::SCAN_IMAGE.to_string(),
+            ..tool_page(ToolKind::Verify, text::SCAN_IMAGE_WHAT)
+        },
+        Some(Outcome::Done(data)) => result_page(data),
+        Some(Outcome::Failed(message)) => Page {
+            heading: text::VERIFY_FAILED.to_string(),
+            note: message.clone(),
+            urgent: true,
+            ..tool_page(ToolKind::Verify, text::NOTHING_CHANGED)
+        },
+    };
+    let full = |typed: &str| typed.trim().starts_with('/');
+    page.field = Some(Field {
+        label: text::FIELD_IMAGE_ROOT.to_string(),
+        text: image.root.clone(),
+        hint: if image.root.trim().is_empty() || full(&image.root) {
+            text::IMAGE_ROOT_HINT
+        } else {
+            text::IMAGE_ROOT_NOT_ABSOLUTE
+        }
+        .to_string(),
+    });
+    page.switch = Some(Switch {
+        title: text::SWITCH_EXAMINER.to_string(),
+        subtitle: text::EXAMINER_WHAT.to_string(),
+        on: image.examiner,
+    });
+    if image.examiner {
+        page.more_fields = vec![Field {
+            label: text::FIELD_DISK.to_string(),
+            text: image.disk.clone(),
+            hint: if image.disk.trim().is_empty() || full(&image.disk) {
+                text::DISK_HINT
+            } else {
+                text::DISK_NOT_ABSOLUTE
+            }
+            .to_string(),
+        }];
+    }
+    page.action = Some(text::SCAN_IMAGE_ACTION);
+    page.action_kind = ActionKind::Suggested;
+    page.action_locked = image.args().is_none();
+    page
 }
 
 /// The page of a verify that answered with `data`.
@@ -157,25 +313,80 @@ fn result_page(data: &VerifyData) -> Page {
             )
         })
         .collect();
+    let mut groups: Vec<_> = [
+        // Notes alone are no find: a page that found no known trace calls
+        // them what they are.
+        group(
+            if attention == 0 {
+                text::GROUP_NOTED
+            } else {
+                text::GROUP_FOUND
+            },
+            found,
+        ),
+        group(text::GROUP_NOT_CHECKED_RUN, not_checked),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if let Some(examiner) = &data.examiner {
+        groups.extend(examiner_groups(examiner));
+    }
     Page {
         heading: heading.to_string(),
         urgent,
-        groups: [
-            // Notes alone are no find: a page that found no known trace
-            // calls them what they are.
-            group(
-                if attention == 0 {
-                    text::GROUP_NOTED
-                } else {
-                    text::GROUP_FOUND
-                },
-                found,
-            ),
-            group(text::GROUP_NOT_CHECKED_RUN, not_checked),
-        ]
-        .into_iter()
-        .flatten()
-        .collect(),
+        groups,
         ..tool_page(ToolKind::Verify, &description)
     }
+}
+
+/// The examiner's view of an image: a group for each conclusion with its
+/// traces, where each lies first, then what the view did not look at.
+fn examiner_groups(examiner: &ExaminerView) -> Vec<crate::model::Group> {
+    let mut groups: Vec<_> = examiner
+        .groups
+        .iter()
+        .filter_map(|conclusion| {
+            group(
+                &text::examiner_group(&conclusion.conclusion),
+                conclusion
+                    .findings
+                    .iter()
+                    .map(|finding| {
+                        let (outcome, word) = match finding.severity {
+                            Severity::Critical => (CheckOutcome::Fail, text::SEVERITY_CRITICAL),
+                            Severity::Warn => (CheckOutcome::Warn, text::SEVERITY_WARN),
+                            Severity::Info => (CheckOutcome::Skipped, text::SEVERITY_NOTE),
+                        };
+                        row(
+                            outcome,
+                            word,
+                            format!(
+                                "{}: {}",
+                                finding.location,
+                                text::sentence(&text::engine_fix(&finding.evidence))
+                            ),
+                            String::new(),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    groups.extend(group(
+        text::GROUP_EXAMINER_NOT_CHECKED,
+        examiner
+            .not_checked
+            .iter()
+            .map(|area| {
+                row(
+                    CheckOutcome::Skipped,
+                    text::NOT_CHECKED,
+                    text::sentence(&text::engine_fix(area)),
+                    String::new(),
+                )
+            })
+            .collect(),
+    ));
+    groups
 }

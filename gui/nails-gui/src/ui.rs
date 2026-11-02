@@ -21,7 +21,9 @@ use std::rc::{Rc, Weak};
 use nails_api::CheckOutcome;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::model::{ActionKind, Asker, CheckView, Effect, Model, Page, SWITCH_OVERDUE, View};
+use crate::model::{
+    ActionKind, Asker, CheckView, Effect, Field, Model, Page, SWITCH_OVERDUE, View,
+};
 use crate::text;
 use crate::worker::{Ask, Update};
 use crate::{AppWindow, CheckLine, Fact, Outcome, RowGroup, StepLine, ToolLink};
@@ -239,6 +241,16 @@ impl Controller {
         self.model.edited(typed);
         self.refresh();
     }
+
+    fn edited_more(&mut self, index: usize, typed: &str) {
+        self.model.edited_more(index, typed);
+        self.refresh();
+    }
+
+    fn toggled(&mut self, on: bool) {
+        self.model.toggled(on);
+        self.refresh();
+    }
 }
 
 fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
@@ -324,6 +336,24 @@ fn wire_tools(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     window.on_field_edited(move |typed| {
         if let Some(controller) = weak.upgrade() {
             controller.borrow_mut().edited(&typed);
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_field2_edited(move |typed| {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().edited_more(0, &typed);
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_field3_edited(move |typed| {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().edited_more(1, &typed);
+        }
+    });
+    let weak = Rc::downgrade(controller);
+    window.on_switch_toggled(move |on| {
+        if let Some(controller) = weak.upgrade() {
+            controller.borrow_mut().toggled(on);
         }
     });
 }
@@ -428,20 +458,60 @@ fn draw_tools(window: &AppWindow, page: &Page) {
         })
         .collect();
     window.set_groups(ModelRc::new(VecModel::from(groups)));
-    match &page.field {
+    let field = page.field.as_ref();
+    draw_field(
+        field,
+        |label, hint| {
+            window.set_field_label(label);
+            window.set_field_hint(hint);
+        },
+        || window.get_field_text(),
+        |text| window.set_field_text(text),
+    );
+    draw_field(
+        page.more_fields.first(),
+        |label, hint| {
+            window.set_field2_label(label);
+            window.set_field2_hint(hint);
+        },
+        || window.get_field2_text(),
+        |text| window.set_field2_text(text),
+    );
+    draw_field(
+        page.more_fields.get(1),
+        |label, hint| {
+            window.set_field3_label(label);
+            window.set_field3_hint(hint);
+        },
+        || window.get_field3_text(),
+        |text| window.set_field3_text(text),
+    );
+    let switch = page.switch.clone().unwrap_or_default();
+    window.set_switch_title(switch.title.as_str().into());
+    window.set_switch_subtitle(switch.subtitle.as_str().into());
+    window.set_switch_on(switch.on);
+}
+
+/// Draw `field` into one of the window's field slots: its label and hint
+/// with `labelled`, and its text with `set` unless `get` already holds it
+/// (what was typed comes back as it was, and setting it again would move the
+/// cursor). With no field the slot is emptied, which hides it.
+fn draw_field(
+    field: Option<&Field>,
+    labelled: impl Fn(SharedString, SharedString),
+    get: impl Fn() -> SharedString,
+    set: impl Fn(SharedString),
+) {
+    match field {
         Some(field) => {
-            window.set_field_label(field.label.as_str().into());
-            window.set_field_hint(field.hint.as_str().into());
-            // What was typed comes back as it was; setting it again would
-            // move the cursor.
-            if window.get_field_text().as_str() != field.text {
-                window.set_field_text(field.text.as_str().into());
+            labelled(field.label.as_str().into(), field.hint.as_str().into());
+            if get().as_str() != field.text {
+                set(field.text.as_str().into());
             }
         }
         None => {
-            window.set_field_label(SharedString::default());
-            window.set_field_hint(SharedString::default());
-            window.set_field_text(SharedString::default());
+            labelled(SharedString::default(), SharedString::default());
+            set(SharedString::default());
         }
     }
 }

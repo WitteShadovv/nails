@@ -198,7 +198,11 @@ of this changelog for that version becomes the release notes word for word, and
   for the session's status again. Verify runs `nails verify`, standard or with Deep Scan; its page
   puts the verdict first and never more than the engine found (no known trace is no proof of none),
   then each finding with the engine's fix, then every area the run did not check, as the engine
-  lists it. Rehearsal shows the rehearsal's three steps, where it stands and the action of the next
+  lists it. Scan an Image, from Verify's page, scans a decoy's disk or image mounted read-only
+  instead of this computer (`verify --offline --root`), with the examiner's view of its setup
+  traces, grouped by what they suggest, when its switch is on (`--examiner`), and the raw disk
+  behind it when one is named (`--disk`); the scan waits for full paths. Rehearsal shows the
+  rehearsal's three steps, where it stands and the action of the next
   one: Plant Test Words in a hidden session, for the account its field names (`rehearse plant
   --user`) or else the window's own, and Scan for Test Words once they are planted, but not in the
   session that planted them, which the engine refuses and the window remembers for as long as it is

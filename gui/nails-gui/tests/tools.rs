@@ -82,7 +82,13 @@ fn a_tools_row_opens_its_page_and_back_returns_to_the_session() {
     assert!(screen.shows(text::VERIFY_WHAT));
     assert_eq!(
         screen.labels(AccessibleRole::Button),
-        ["Close", text::BACK, text::VERIFY, text::DEEP_SCAN]
+        [
+            "Close",
+            text::BACK,
+            text::SCAN_IMAGE_ROW,
+            text::VERIFY,
+            text::DEEP_SCAN
+        ]
     );
     // The focus starts again at the page's start: Back is the first stop.
     assert_eq!(screen.focused(), "");
@@ -298,6 +304,46 @@ fn type_into(screen: &Screen, label: &str, typed: &str) {
         screen.press(Key::Tab);
     }
     screen.type_text(typed);
+}
+
+/// Scan an Image, from Verify's page: the mounted image's field, the
+/// examiner's view as a switch a screen reader reads as one, and the disk's
+/// field once that view is on; the scan asks for an offline verify of them.
+#[test]
+fn scan_an_image_takes_its_paths_and_the_examiners_view() {
+    let screen = hidden();
+    press(&screen, text::VERIFY);
+    press(&screen, text::SCAN_IMAGE_ROW);
+    assert!(screen.shows(text::SCAN_IMAGE_WHAT));
+    let scan = || screen.find_with(text::SCAN_IMAGE_ACTION, AccessibleRole::Button);
+    assert_eq!(
+        scan().accessible_enabled(),
+        Some(false),
+        "a path comes first"
+    );
+    type_into(&screen, text::FIELD_IMAGE_ROOT, "/mnt/decoy");
+    assert!(
+        !screen.shows(text::FIELD_DISK),
+        "only with the examiner's view"
+    );
+    let switch = screen.find_with(text::SWITCH_EXAMINER, AccessibleRole::Switch);
+    assert_eq!(switch.accessible_checked(), Some(false));
+    switch.invoke_accessible_default_action();
+    let switch = screen.find_with(text::SWITCH_EXAMINER, AccessibleRole::Switch);
+    assert_eq!(switch.accessible_checked(), Some(true));
+    type_into(&screen, text::FIELD_DISK, "/mnt/decoy.img");
+    assert_eq!(scan().accessible_enabled(), Some(true));
+    scan().invoke_accessible_default_action();
+    assert_eq!(
+        screen.asks(),
+        [Ask::Verify(VerifyArgs {
+            offline: true,
+            root: Some("/mnt/decoy".to_string()),
+            examiner: true,
+            disk: Some("/mnt/decoy.img".to_string()),
+            ..VerifyArgs::default()
+        })]
+    );
 }
 
 /// The plant's field, labelled for a screen reader, names the account the

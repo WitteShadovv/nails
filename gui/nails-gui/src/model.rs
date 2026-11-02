@@ -143,6 +143,17 @@ pub struct Field {
     pub hint: String,
 }
 
+/// An option of a tool's page that is on or off, shown as a switch.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Switch {
+    /// What it turns on, which also names it for a screen reader.
+    pub title: String,
+    /// The line under it.
+    pub subtitle: String,
+    /// Whether it is on.
+    pub on: bool,
+}
+
 /// A row of a tool's page to pick: a setting on Settings, or one of its
 /// states or options on its own page.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -207,6 +218,10 @@ pub struct Page {
     pub choices: Vec<Choice>,
     /// A field to type into, on a tool's page that needs one.
     pub field: Option<Field>,
+    /// The switch that follows the field, if the page has one.
+    pub switch: Option<Switch>,
+    /// The fields that follow the switch, two at most.
+    pub more_fields: Vec<Field>,
     /// The page has Back, to the session's page.
     pub back: bool,
     /// A second action beside the main one, as a plain button.

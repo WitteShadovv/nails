@@ -289,6 +289,41 @@ pub struct VerifyData {
     pub checks_run: usize,
     /// What this run did not look at, one sentence each.
     pub areas_not_checked: Vec<String>,
+    /// The examiner's view of an image scan that asked for it: setup traces
+    /// grouped by what they suggest. It never changes the verdict.
+    #[serde(default)]
+    pub examiner: Option<ExaminerView>,
+}
+
+/// What an examiner would conclude from an image (`verify --offline
+/// --examiner`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ExaminerView {
+    /// The traces, grouped by what they suggest.
+    pub groups: Vec<ExaminerGroup>,
+    /// What the examiner's view did not look at, one sentence each.
+    #[serde(default)]
+    pub not_checked: Vec<String>,
+}
+
+/// Traces that suggest one conclusion.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ExaminerGroup {
+    /// What they suggest, as a sentence.
+    pub conclusion: String,
+    /// Each trace.
+    pub findings: Vec<ExaminerFinding>,
+}
+
+/// One trace an examiner looks for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ExaminerFinding {
+    /// How much it weighs.
+    pub severity: Severity,
+    /// Where it lies.
+    pub location: String,
+    /// What it is.
+    pub evidence: String,
 }
 
 /// A verdict of `verify`.
