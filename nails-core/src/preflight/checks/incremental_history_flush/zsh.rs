@@ -87,36 +87,66 @@ pub(super) struct Start {
     /// Whether it is a login shell, which reads `zprofile` and `zlogin`;
     /// `None` when the check cannot tell.
     pub login: Option<bool>,
-    /// Whether it reads every startup file, as it does without `-f` or `-d`.
-    pub every_file: bool,
+    /// Whether it reads more than `zshenv` in `/etc`, as it does without
+    /// `-f` (zsh's `RCS` option).
+    pub rcs: bool,
+    /// Whether it reads the files in `/etc` other than `zshenv`, as it does
+    /// without `-d` (zsh's `GLOBAL_RCS` option).
+    pub global_rcs: bool,
 }
 
 impl Start {
     /// How the zsh started as `argv` reads its startup files: a login shell
-    /// when `argv[0]` starts with `-` or with `-l` or `--login`, and not every
-    /// file with `-f`, `-d`, `--no-rcs` or `--no-global-rcs`.
+    /// when `argv[0]` starts with `-` or with `-l`, `--login` or `-o login`;
+    /// only `/etc/zshenv` with `-f`, `--no-rcs`, `-o norcs` or `+o rcs`; and
+    /// none of the other files in `/etc` with `-d`, `--no-global-rcs`,
+    /// `-o noglobalrcs` or `+o globalrcs`.
     pub(super) fn of(argv: &[String]) -> Self {
         let mut start = Self {
             login: Some(argv.first().is_some_and(|zero| zero.starts_with('-'))),
-            every_file: true,
+            rcs: true,
+            global_rcs: true,
         };
-        for arg in argv.iter().skip(1).map(String::as_str) {
+        let mut args = argv.iter().skip(1).map(String::as_str);
+        while let Some(arg) = args.next() {
             if matches!(arg, "-" | "--") || !arg.starts_with(['-', '+']) {
                 break;
             }
             if let Some(long) = arg.strip_prefix("--") {
-                let long = long.replace(['-', '_'], "").to_lowercase();
-                match long.as_str() {
-                    "login" => start.login = Some(true),
-                    "norcs" | "noglobalrcs" => start.every_file = false,
-                    _ => {}
+                start.option(long, true);
+            } else {
+                let on = arg.starts_with('-');
+                for flag in arg[1..].chars() {
+                    match flag {
+                        'l' => start.login = Some(on),
+                        'f' => start.rcs = !on,
+                        'd' => start.global_rcs = !on,
+                        'o' => {
+                            if let Some(name) = args.next() {
+                                start.option(name, on);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-            } else if arg.starts_with('-') {
-                start.login = Some(start.login == Some(true) || arg.contains('l'));
-                start.every_file &= !arg.contains(['f', 'd']);
             }
         }
         start
+    }
+
+    /// Set the option `name` (`no_rcs`, `GLOBAL_RCS`, ...) on, or off.
+    fn option(&mut self, name: &str, on: bool) {
+        let name = name.replace(['-', '_'], "").to_lowercase();
+        let (name, on) = match name.strip_prefix("no") {
+            Some(rest) if matches!(rest, "rcs" | "globalrcs" | "login") => (rest.to_string(), !on),
+            _ => (name, on),
+        };
+        match name.as_str() {
+            "login" => self.login = Some(on),
+            "rcs" => self.rcs = on,
+            "globalrcs" => self.global_rcs = on,
+            _ => {}
+        }
     }
 }
 
@@ -453,14 +483,24 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         // when it is the one zsh can read for this stage: a zsh reads its
         // stage's file in /etc or in /etc/zsh, as it was built, and the
         // user's in one ZDOTDIR.
-        let certain = start.every_file && (!login_stage || start.login == Some(true));
-        let system = ["/etc", "/etc/zsh"].map(|dir| Path::new(dir).join(stage));
-        let present = system
-            .iter()
-            .filter(|path| !matches!(fs.inode(path), Ok(None)))
-            .count();
-        for path in &system {
-            reader.file(path, certain && present == 1);
+        // Without `RCS`, zsh reads /etc's zshenv and nothing after it;
+        // without `GLOBAL_RCS`, no other file in /etc.
+        if !start.rcs && stage != "zshenv" {
+            break;
+        }
+        let certain = !login_stage || start.login == Some(true);
+        if start.global_rcs || stage == "zshenv" {
+            let system = ["/etc", "/etc/zsh"].map(|dir| Path::new(dir).join(stage));
+            let present = system
+                .iter()
+                .filter(|path| !matches!(fs.inode(path), Ok(None)))
+                .count();
+            for path in &system {
+                reader.file(path, certain && present == 1);
+            }
+        }
+        if !start.rcs {
+            break;
         }
         // The user's own, from where the files read so far put ZDOTDIR.
         let dirs = reader.zdotdirs.clone();

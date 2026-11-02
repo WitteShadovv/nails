@@ -736,7 +736,9 @@ of this changelog for that version becomes the release notes word for word, and
   file. As root these reads change no file's access time, though a link on the way to one, such as
   NixOS's `/etc/zshrc`, can still have its own access time changed. zsh's files are read as zsh
   reads them and fail closed: in zsh's order, once for each home the shell can run with,
-  `zprofile` and `zlogin` only for a login shell, a line ending in a backslash going on in the
+  `zprofile` and `zlogin` only for a login shell, only `/etc/zshenv` for a zsh started with `-f`,
+  `--no-rcs` or `-o norcs`, and no other file in `/etc` for one started with `-d`, a line ending
+  in a backslash going on in the
   next, a here-document's body as text, not code, in a `$(...)` too, a sourced file read where it
   is sourced when its path resolves (so Home Manager's `dotDir`, whose sourced `.zshenv` sets
   `ZDOTDIR`, is followed), and `INC_APPEND_HISTORY_TIME` named as writing a line once its command

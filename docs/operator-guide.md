@@ -1304,11 +1304,13 @@ afterwards:
   fails closed where it cannot follow them:
 
   - in zsh's order, once for each home the shell can run with, `zprofile`
-    and `zlogin` only for a login shell, a line ending in a backslash going
-    on in the next, the body of a here-document as text, not code, in a
-    `$(...)` too, and a file they source read where it is sourced when its
-    path resolves, so it follows Home Manager's `dotDir`, whose `.zshenv`
-    the home's sources and which sets `ZDOTDIR`;
+    and `zlogin` only for a login shell, only `/etc/zshenv` and what it
+    sources for a zsh started with `-f` (`--no-rcs`, `-o norcs`), and none of
+    `/etc`'s other files for one started with `-d`, a line ending in a
+    backslash going on in the next, the body of a here-document as text, not
+    code, in a `$(...)` too, and a file they source read where it is sourced
+    when its path resolves, so it follows Home Manager's `dotDir`, whose
+    `.zshenv` the home's sources and which sets `ZDOTDIR`;
   - an option counts as on where a `setopt` turns it on, wherever that is,
     and where any other word names it without a `no` prefix, as Home
     Manager's `set_opts=(... SHARE_HISTORY ...)` array, an alias or a test

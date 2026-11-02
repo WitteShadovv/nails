@@ -384,7 +384,8 @@ fn unsure<'a>(program: &'a str, homes: &'a [PathBuf], part: &'a str) -> Judged<'
         argv: &[],
         zsh: zsh::Start {
             login: None,
-            every_file: true,
+            rcs: true,
+            global_rcs: true,
         },
         part,
     }
