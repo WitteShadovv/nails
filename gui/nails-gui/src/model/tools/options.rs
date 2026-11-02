@@ -13,9 +13,9 @@
 //! the window's session, is never sent: the options keep it out until it
 //! holds no control character.
 
-use nails_api::protocol::{CheckArgs, Op, validate};
+use nails_api::protocol::{CheckArgs, Op};
 
-use super::{ToolKind, tool_page};
+use super::{ToolKind, fits, tool_page};
 use crate::model::{Field, Page, Switch};
 use crate::text;
 
@@ -42,7 +42,7 @@ impl Options {
             nixos_flake: Some(flake.to_string()),
             ..CheckArgs::default()
         };
-        validate(&Op::Check(args)).ok().map(|()| flake.to_string())
+        fits(&Op::Check(args)).then(|| flake.to_string())
     }
 
     /// What the checks and the activation take from the options: this

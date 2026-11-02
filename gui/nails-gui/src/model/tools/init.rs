@@ -11,10 +11,10 @@
 //! The apply checks again and writes the layout; its page lists each part,
 //! made or already there, with the engine's warnings and notes.
 
-use nails_api::protocol::{InitArgs, InitPlanData, Op, validate};
+use nails_api::protocol::{InitArgs, InitPlanData, Op};
 use nails_api::{Allowable, CheckOutcome};
 
-use super::{Context, ToolKind, error_of, group, row, tool_page};
+use super::{Context, ToolKind, error_of, fits, group, row, tool_page};
 use crate::client::{Answer, Plan};
 use crate::envelope::{self, InitData, InitItemStatus};
 use crate::model::{Field, Page, Question, Switch};
@@ -72,7 +72,7 @@ impl SetUp {
             hardware_config: (!self.no_layout && !file.is_empty()).then(|| file.to_string()),
             no_hardware_config: self.no_layout,
         };
-        validate(&Op::InitPlan(args.clone())).ok().map(|()| args)
+        fits(&Op::InitPlan(args.clone())).then_some(args)
     }
 
     /// Whether the page offers to allow the hidden volume on this

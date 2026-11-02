@@ -35,6 +35,8 @@
 
 use std::path::{Path, PathBuf};
 
+use nails_api::protocol::{MAX_LINE_BYTES, Op, PROTOCOL_VERSION, Request, validate};
+
 use super::{CheckView, Effect, Group, Model, Page, PlanFor, Question, View};
 use crate::client::{Answer, PlanData};
 use crate::envelope::Place;
@@ -208,6 +210,24 @@ fn storage_question(heading: &str, refusal: &str) -> Question {
         locked: true,
         alternative: None,
     }
+}
+
+/// Whether the helper takes `op` as the window would send it: its shape, as
+/// the helper's decoder checks it, and its line within the helper's limit,
+/// with the longest number a request can carry. The helper refuses either
+/// unread, and such a refusal ends the window's session, so a tool never
+/// sends one.
+pub(super) fn fits(op: &Op) -> bool {
+    if validate(op).is_err() {
+        return false;
+    }
+    let line = Request {
+        v: PROTOCOL_VERSION,
+        id: u64::MAX,
+        op: op.clone(),
+    }
+    .to_line();
+    line.len() < MAX_LINE_BYTES
 }
 
 /// The page every tool's page starts from: its title, Back, and nothing

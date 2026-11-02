@@ -195,14 +195,18 @@ pub const SWITCH_IMAGES: &str = "Scan images";
 /// The line under it.
 pub const IMAGES_WHAT: &str = "Disk images or devices named below, instead of this computer's \
      mounts";
-/// The field of the disks (`--device`, each one).
-pub const FIELD_DISKS: &str = "Disks";
+/// The field of the disk (`--device`).
+pub const FIELD_DISK_SCAN: &str = "Disk";
 /// The line under it.
-pub const DISKS_HINT: &str = "Optional: devices separated by spaces, such as /dev/sdb";
-/// The field of the images (`--image`, each one).
-pub const FIELD_IMAGES: &str = "Images";
+pub const DISK_SCAN_HINT: &str = "A disk or partition by its full path, such as /dev/sdb";
+/// The same, while it is empty: the scan needs one.
+pub const DISK_SCAN_NEEDED: &str = "Name a disk or partition by its full path, such as /dev/sdb.";
+/// The field of the image (`--image`).
+pub const FIELD_IMAGE: &str = "Image";
 /// The line under it.
-pub const IMAGES_HINT: &str = "Images or devices separated by spaces, such as /srv/decoy.raw";
+pub const IMAGE_HINT: &str = "An image or device by its full path, such as /srv/decoy.raw";
+/// The same, while it is empty: the switch needs one.
+pub const IMAGE_NEEDED: &str = "Name an image by its full path, such as /srv/decoy.raw.";
 /// The field of the file the test words' token is read from
 /// (`--token-file`).
 pub const FIELD_TOKEN_FILE: &str = "Token file";
@@ -213,11 +217,8 @@ pub const TOKEN_FILE_HINT: &str = "Optional: read the token from this file inste
 pub const FIELD_STOP_AFTER: &str = "Stop after (MB)";
 /// The line under it.
 pub const STOP_AFTER_HINT: &str = "Optional: stop reading each disk after this many megabytes";
-/// The line under a field whose paths are not all full paths, or whose
-/// number is no whole number.
-pub const PATHS_NOT_ABSOLUTE: &str = "Give full paths, each starting with /.";
-/// The same, for the images, which the switch needs.
-pub const IMAGES_NEEDED: &str = "Name at least one image, by its full path.";
+/// The line under a field whose path is no full path.
+pub const PATH_NOT_ABSOLUTE: &str = "Give the full path, starting with /.";
 /// The same, for the megabytes.
 pub const STOP_AFTER_NOT_A_NUMBER: &str = "Give a whole number of megabytes, or leave it empty.";
 /// While a scan runs.

@@ -601,12 +601,29 @@ fn the_plant_waits_for_a_name_the_helper_takes() {
     assert!(!model.page().action_locked);
 }
 
+/// The page that scans other disks, opened where planted test words are
+/// offered a scan.
+fn other_disks() -> Model {
+    let mut model = decoy();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(
+        Kind::Rehearse,
+        0,
+        fixture("rehearse-status-planted"),
+    ));
+    model.choose(0);
+    model
+}
+
 /// Scan Other Disks, where a scan is offered, asks for `rehearse scan`
-/// with the disks named (`--device`), or with its switch the images
+/// with the disk named (`--device`), or with its switch the image
 /// (`--offline --image`) and the token file (`--token-file`), and where each
-/// read stops (`--max-bytes`, from megabytes). What the helper would refuse
-/// unread is never sent. The scan's result is the rehearsal's, and what was
-/// typed stays for the next.
+/// read stops (`--max-bytes`, from megabytes). Each field takes one full
+/// path, spaces in it included, and a disk must be named: an empty field
+/// would scan this computer's own disks. What the helper would refuse
+/// unread is never sent. The scan's result is the rehearsal's, a scan that
+/// read its token from a file leaves the rehearsal's known phase as it was,
+/// and what was typed stays for the next.
 #[test]
 fn scan_other_disks_asks_for_the_disks_or_images_named() {
     let mut model = decoy();
@@ -624,15 +641,18 @@ fn scan_other_disks_asks_for_the_disks_or_images_named() {
     assert_eq!(page.heading, text::SCAN_OTHER);
     assert!(page.switch_first);
     assert!(!page.switch.unwrap().on);
-    assert_eq!(page.field.unwrap().label, text::FIELD_DISKS);
+    assert!(page.action_locked, "a disk is named first");
+    let field = page.field.unwrap();
+    assert_eq!(field.label, text::FIELD_DISK_SCAN);
+    assert_eq!(field.hint, text::DISK_SCAN_NEEDED);
     let more: Vec<&str> = page.more_fields.iter().map(|f| f.label.as_str()).collect();
     assert_eq!(more, [text::FIELD_STOP_AFTER]);
 
-    model.edited("/dev/sdb dev/sdc");
+    model.edited("dev/sdc");
     let page = model.page();
     assert!(page.action_locked);
-    assert_eq!(page.field.unwrap().hint, text::PATHS_NOT_ABSOLUTE);
-    model.edited(" /dev/sdb  /dev/sdc ");
+    assert_eq!(page.field.unwrap().hint, text::PATH_NOT_ABSOLUTE);
+    model.edited(" /dev/sdb ");
     model.edited_more(0, "64x");
     let page = model.page();
     assert!(page.action_locked);
@@ -642,7 +662,7 @@ fn scan_other_disks_asks_for_the_disks_or_images_named() {
         model.action(),
         Some(Effect::Ask(Ask::Rehearse(Rehearse::Scan(
             RehearseScanArgs {
-                devices: vec!["/dev/sdb".to_string(), "/dev/sdc".to_string()],
+                devices: vec!["/dev/sdb".to_string()],
                 max_bytes: Some(64_000_000),
                 ..RehearseScanArgs::default()
             }
@@ -652,26 +672,27 @@ fn scan_other_disks_asks_for_the_disks_or_images_named() {
     // with what was typed.
     model.apply(Update::Running(Kind::Rehearse));
     assert_eq!(model.page().busy.as_deref(), Some(text::READING_DISKS));
+}
 
-    let mut model = decoy();
-    open(&mut model, ToolKind::Rehearsal);
-    model.apply(answered(
-        Kind::Rehearse,
-        0,
-        fixture("rehearse-status-planted"),
-    ));
-    model.choose(0);
+/// With its switch, Scan Other Disks scans an image (`--offline --image`)
+/// with the token file named (`--token-file`); a scan that read its token
+/// from a file leaves the rehearsal's known phase as it was.
+#[test]
+fn scan_other_disks_asks_for_an_image_and_its_token_file() {
+    let mut model = other_disks();
     model.toggled(true);
     let page = model.page();
     assert!(page.switch.unwrap().on);
-    assert_eq!(page.field.as_ref().unwrap().label, text::FIELD_IMAGES);
-    assert_eq!(page.field.unwrap().hint, text::IMAGES_NEEDED);
+    assert_eq!(page.field.as_ref().unwrap().label, text::FIELD_IMAGE);
+    assert_eq!(page.field.unwrap().hint, text::IMAGE_NEEDED);
     let more: Vec<&str> = page.more_fields.iter().map(|f| f.label.as_str()).collect();
     assert_eq!(more, [text::FIELD_TOKEN_FILE, text::FIELD_STOP_AFTER]);
     assert!(page.action_locked, "the switch needs an image");
     model.edited("/srv/decoy.raw");
     model.edited_more(0, "token");
-    assert!(model.page().action_locked, "a token file is a full path");
+    let page = model.page();
+    assert!(page.action_locked, "a token file is a full path");
+    assert_eq!(page.more_fields[0].hint, text::PATH_NOT_ABSOLUTE);
     model.edited_more(0, "/srv/token");
     model.edited_more(1, "64");
     assert_eq!(
@@ -705,7 +726,55 @@ fn scan_other_disks_asks_for_the_disks_or_images_named() {
         rows.iter().any(|row| row.contains("/srv/decoy.raw")),
         "{rows:?}"
     );
+    // That scan read its token from a file and no rehearsal state: what it
+    // answered of a phase is not the volume's, whose planted test words still
+    // offer their scan, the other disks and their removal.
+    assert_eq!(page.action, Some(text::SCAN));
+    assert_eq!(page.secondary, Some(text::REMOVE_TEST_WORDS));
+    assert_eq!(page.choices.len(), 1);
+}
+
+/// Each field takes one full path, spaces in it included, and none longer
+/// than the line the helper takes: such a request would end the window's
+/// session. Back returns to the rehearsal's page, what was typed kept.
+#[test]
+fn scan_other_disks_takes_one_full_path_per_field() {
+    let mut model = other_disks();
+    model.toggled(true);
+    model.edited("/srv/my images/decoy.raw");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Rehearse(Rehearse::Scan(
+            RehearseScanArgs {
+                offline: true,
+                images: vec!["/srv/my images/decoy.raw".to_string()],
+                ..RehearseScanArgs::default()
+            }
+        ))))
+    );
+    // A path longer than the helper takes in a line is never sent: the
+    // helper would end the window's session.
+    let mut model = other_disks();
+    model.edited(&format!(
+        "/dev/{}",
+        "a".repeat(nails_api::protocol::MAX_LINE_BYTES)
+    ));
+    assert!(model.page().action_locked);
+    assert_eq!(model.action(), None);
+
     // Back from the page leaves the rehearsal's, typed values kept.
+    let mut model = other_disks();
+    model.edited("/dev/sdb");
+    assert_eq!(model.back(), None, "Back returns to the rehearsal's page");
+    assert_eq!(model.page().action, Some(text::SCAN));
+    model.choose(0);
+    assert_eq!(model.page().field.unwrap().text, "/dev/sdb");
+}
+
+/// Scan Again repeats the scan that ran last, of the disk named on Scan
+/// Other Disks too, rather than scanning this computer instead.
+#[test]
+fn scan_again_repeats_the_other_disk_scanned_last() {
     let mut model = decoy();
     open(&mut model, ToolKind::Rehearsal);
     model.apply(answered(
@@ -715,10 +784,19 @@ fn scan_other_disks_asks_for_the_disks_or_images_named() {
     ));
     model.choose(0);
     model.edited("/dev/sdb");
-    assert_eq!(model.back(), None, "Back returns to the rehearsal's page");
-    assert_eq!(model.page().action, Some(text::SCAN));
-    model.choose(0);
-    assert_eq!(model.page().field.unwrap().text, "/dev/sdb");
+    let scan = || {
+        Some(Effect::Ask(Ask::Rehearse(Rehearse::Scan(
+            RehearseScanArgs {
+                devices: vec!["/dev/sdb".to_string()],
+                ..RehearseScanArgs::default()
+            },
+        ))))
+    };
+    assert_eq!(model.action(), scan());
+    model.apply(Update::Running(Kind::Rehearse));
+    model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-scan-clean")));
+    assert_eq!(model.page().action, Some(text::SCAN_AGAIN));
+    assert_eq!(model.action(), scan());
 }
 
 /// Only the plant takes an account: once the test words are planted, the

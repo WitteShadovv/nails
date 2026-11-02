@@ -212,10 +212,10 @@ of this changelog for that version becomes the release notes word for word, and
   open, Scan in This Session… asks first, since such a scan proves little, and its button acts only
   once the word "allow" is typed (`--allow-same-boot`), and whose result never reads as a pass.
   Scan Other Disks, beside the scan, scans the
-  disks named instead of this computer's mounted
-  ones (`rehearse scan --device`), or with its switch images of them (`--offline --image`, with
+  disk named instead of this computer's mounted
+  ones (`rehearse scan --device`), or with its switch an image (`--offline --image`, with
   `--token-file` when one is named), and stops each read after the megabytes given (`--max-bytes`);
-  it waits for full paths and a whole number. Removing the test words (Remove Test Words, `rehearse
+  it waits for full paths and a whole number, and Scan Again repeats it. Removing the test words (Remove Test Words, `rehearse
   reset`) is the decoy's, where no
   window opens yet, so a hidden session's page gives that command instead. A scan's result lists
   first what the scan did not check, a disk whose storage can hide the test words among it, and

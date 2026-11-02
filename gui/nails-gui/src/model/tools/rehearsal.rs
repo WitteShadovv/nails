@@ -39,9 +39,9 @@
 //! engine names for every scan of its kind, word for word.
 
 use nails_api::CheckOutcome;
-use nails_api::protocol::{Op, RehearsePlantArgs, RehearseScanArgs, validate};
+use nails_api::protocol::{Op, RehearsePlantArgs, RehearseScanArgs};
 
-use super::{Context, ToolKind, error_of, group, row, tool_page};
+use super::{Context, ToolKind, error_of, fits, group, row, tool_page};
 use crate::client::Answer;
 use crate::envelope::{self, Channel, DeviceScan, Phase, RehearseData, ScanReport};
 use crate::model::{Choice, Field, Group, Page, Question, StepView, Switch};
@@ -80,6 +80,8 @@ pub(crate) struct Rehearsal {
     account: String,
     /// The page that scans other disks or images, and what was typed there.
     other: OtherDisks,
+    /// The arguments of the last scan asked for, which Scan Again repeats.
+    last_scan: RehearseScanArgs,
 }
 
 /// The page that scans the disks the person names, or images of them,
@@ -101,16 +103,11 @@ struct OtherDisks {
     stop_after: String,
 }
 
-/// The paths `typed` names, separated by spaces.
-fn paths(typed: &str) -> Vec<String> {
-    typed.split_whitespace().map(str::to_string).collect()
-}
-
-/// Whether every path `typed` names is a full path.
-fn full_paths(typed: &str) -> bool {
-    typed
-        .split_whitespace()
-        .all(|path| path.starts_with('/') && !path.chars().any(char::is_control))
+/// The one path `typed` names, spaces around it dropped, when it is a full
+/// path the helper takes; spaces inside it are part of it.
+fn full_path(typed: &str) -> Option<String> {
+    let path = typed.trim();
+    (path.starts_with('/') && !path.chars().any(char::is_control)).then(|| path.to_string())
 }
 
 /// The bytes `typed` megabytes make (a megabyte is a million bytes): none
@@ -134,25 +131,29 @@ impl OtherDisks {
     /// would take them.
     fn args(&self) -> Option<RehearseScanArgs> {
         let max_bytes = megabytes(&self.stop_after).ok()?;
-        let token = self.token_file.trim();
         let args = if self.images {
+            let token = self.token_file.trim();
             RehearseScanArgs {
                 offline: true,
-                images: paths(&self.image_paths),
-                token_file: (!token.is_empty()).then(|| token.to_string()),
+                images: vec![full_path(&self.image_paths)?],
+                token_file: if token.is_empty() {
+                    None
+                } else {
+                    Some(full_path(token)?)
+                },
                 max_bytes,
                 ..RehearseScanArgs::default()
             }
         } else {
+            // A disk is named: an empty field would scan this computer's
+            // own disks, which is the rehearsal's plain scan.
             RehearseScanArgs {
-                devices: paths(&self.disks),
+                devices: vec![full_path(&self.disks)?],
                 max_bytes,
                 ..RehearseScanArgs::default()
             }
         };
-        validate(&Op::RehearseScan(args.clone()))
-            .ok()
-            .map(|()| args)
+        fits(&Op::RehearseScan(args.clone())).then_some(args)
     }
 
     /// Its page: the switch first, as it says what the fields take, then the
@@ -182,31 +183,41 @@ impl OtherDisks {
                 text::STOP_AFTER_NOT_A_NUMBER
             },
         );
+        // The hint of a path field: what it takes, or why what it holds is
+        // not taken, by the same reading the scan's arguments use.
+        let path_hint = |typed: &str, hint: &'static str, needed: &'static str| {
+            if typed.trim().is_empty() {
+                needed
+            } else if full_path(typed).is_none() {
+                text::PATH_NOT_ABSOLUTE
+            } else {
+                hint
+            }
+        };
         if self.images {
-            let hint = if !full_paths(&self.image_paths) {
-                text::PATHS_NOT_ABSOLUTE
-            } else if self.image_paths.trim().is_empty() {
-                text::IMAGES_NEEDED
-            } else {
-                text::IMAGES_HINT
-            };
-            page.field = Some(field(text::FIELD_IMAGES, &self.image_paths, hint));
-            let token_hint = if full_paths(&self.token_file) {
-                text::TOKEN_FILE_HINT
-            } else {
-                text::PATHS_NOT_ABSOLUTE
-            };
+            page.field = Some(field(
+                text::FIELD_IMAGE,
+                &self.image_paths,
+                path_hint(&self.image_paths, text::IMAGE_HINT, text::IMAGE_NEEDED),
+            ));
             page.more_fields = vec![
-                field(text::FIELD_TOKEN_FILE, &self.token_file, token_hint),
+                field(
+                    text::FIELD_TOKEN_FILE,
+                    &self.token_file,
+                    path_hint(
+                        &self.token_file,
+                        text::TOKEN_FILE_HINT,
+                        text::TOKEN_FILE_HINT,
+                    ),
+                ),
                 stop_after,
             ];
         } else {
-            let hint = if full_paths(&self.disks) {
-                text::DISKS_HINT
-            } else {
-                text::PATHS_NOT_ABSOLUTE
-            };
-            page.field = Some(field(text::FIELD_DISKS, &self.disks, hint));
+            page.field = Some(field(
+                text::FIELD_DISK_SCAN,
+                &self.disks,
+                path_hint(&self.disks, text::DISK_SCAN_HINT, text::DISK_SCAN_NEEDED),
+            ));
             page.more_fields = vec![stop_after];
         }
         page.action = Some(text::SCAN);
@@ -243,6 +254,7 @@ impl Rehearsal {
                 planted_here,
                 account: String::new(),
                 other: OtherDisks::default(),
+                last_scan: RehearseScanArgs::default(),
             },
             Ask::Rehearse(Rehearse::Status),
         )
@@ -310,6 +322,7 @@ impl Rehearsal {
     pub(crate) fn scan_same_boot(&mut self) -> Rehearse {
         self.asked = Step::Scan;
         self.notice = None;
+        self.last_scan = RehearseScanArgs::default();
         Rehearse::Scan(RehearseScanArgs {
             allow_same_boot: true,
             ..RehearseScanArgs::default()
@@ -332,11 +345,15 @@ impl Rehearsal {
             text::SCAN if self.other.open => {
                 let args = self.other.args()?;
                 self.other.open = false;
+                self.last_scan = args.clone();
                 (Step::Scan, Rehearse::Scan(args))
             }
-            text::SCAN | text::SCAN_AGAIN => {
+            text::SCAN => {
+                self.last_scan = RehearseScanArgs::default();
                 (Step::Scan, Rehearse::Scan(RehearseScanArgs::default()))
             }
+            // Again what was scanned last, other disks too.
+            text::SCAN_AGAIN => (Step::Scan, Rehearse::Scan(self.last_scan.clone())),
             text::REMOVE_TEST_WORDS if !hidden => (Step::Reset, Rehearse::Reset),
             _ => return None,
         };
@@ -365,12 +382,18 @@ impl Rehearsal {
             }
             return;
         };
-        self.phase = Some(data.phase);
-        if data.phase == Phase::None {
-            // Nothing is planted, here or anywhere.
-            self.planted_here = false;
+        // A scan that read its token from a file read no rehearsal state:
+        // what it answers of one is not the volume's, which stays as the
+        // last answer that read it said.
+        let read_state = !(self.asked == Step::Scan && self.last_scan.token_file.is_some());
+        if read_state {
+            self.phase = Some(data.phase);
+            if data.phase == Phase::None {
+                // Nothing is planted, here or anywhere.
+                self.planted_here = false;
+            }
+            self.channels = data.channels;
         }
-        self.channels = data.channels;
         self.shown = match self.asked {
             Step::Status => None,
             Step::Plant => {
@@ -575,9 +598,7 @@ impl Rehearsal {
         let args = RehearsePlantArgs {
             user: (!name.is_empty()).then(|| name.to_string()),
         };
-        validate(&Op::RehearsePlant(args.clone()))
-            .ok()
-            .map(|()| args)
+        fits(&Op::RehearsePlant(args.clone())).then_some(args)
     }
 }
 
