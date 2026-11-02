@@ -110,7 +110,7 @@ impl Walker<'_> {
             .any(|form| text.contains(form))
         {
             self.zdotdirs += zdotdir_writes(text);
-            self.events.push(Event::ZdotdirDoubt(format!(
+            self.events.push(Event::Doubt(format!(
                 "it cannot follow where `{text}` in {} sets ZDOTDIR",
                 self.place
             )));
@@ -119,51 +119,8 @@ impl Walker<'_> {
 
     /// The events of one simple command, `words`, which ran `after` a
     /// condition (`&&`, `||`) or not, and in a pipeline or the background or
-    /// not; and which options a run of plain `unsetopt`s that certainly turn
-    /// them off has turned off since the last other command.
+    /// not.
     pub(super) fn command(&mut self, words: Vec<Word>, after_condition: bool, piped: bool) {
-        if words.is_empty() {
-            return;
-        }
-        // A turn-off that runs as written: a plain `unsetopt`, at the top
-        // level, alone, with no redirection.
-        let plain = match words[0].text.as_str() {
-            "unsetopt" => true,
-            "builtin" => words.get(1).is_some_and(|word| word.text == "unsetopt"),
-            _ => false,
-        };
-        let alone = plain
-            && self.frames.is_empty()
-            && !after_condition
-            && !piped
-            && !self.pending.redirected;
-        let start = self.events.len();
-        self.run(words, after_condition, piped);
-        let events = &self.events[start..];
-        if alone
-            && events.iter().all(|event| {
-                matches!(
-                    event,
-                    Event::Set {
-                        on: false,
-                        unconditional: true,
-                        ..
-                    }
-                )
-            })
-        {
-            for event in events {
-                if let Event::Set { option, .. } = event {
-                    self.trailing[*option] = true;
-                }
-            }
-        } else {
-            self.trailing = [false; 3];
-        }
-    }
-
-    /// The events of one simple command, `words`.
-    fn run(&mut self, words: Vec<Word>, after_condition: bool, piped: bool) {
         let unconditional = self.certain(after_condition, piped);
         let mut words = words.into_iter().peekable();
         // Assignments before the command word.
@@ -200,7 +157,7 @@ impl Walker<'_> {
                             self.set(&item, on, unconditional);
                         }
                     } else if arg.expands || arg.text.starts_with(['-', '+']) {
-                        self.events.push(Event::OptionDoubt(format!(
+                        self.events.push(Event::Doubt(format!(
                             "it cannot tell which options `{} {}` in {} turns on",
                             command.text, arg.text, self.place
                         )));
@@ -216,7 +173,7 @@ impl Walker<'_> {
                         && let Some(name) = args.next()
                     {
                         if name.expands {
-                            self.events.push(Event::OptionDoubt(format!(
+                            self.events.push(Event::Doubt(format!(
                                 "it cannot tell which options `set {} {}` in {} turns on",
                                 arg.text, name.text, self.place
                             )));

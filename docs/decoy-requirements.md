@@ -575,14 +575,15 @@ history yourself so an interactive shell has nowhere to write:
   Manager's `programs.zsh` through `history.share`, which is on by default,
   and so does Oh My Zsh), keep `history -a` and `history -w` out of bash's
   `PROMPT_COMMAND`, and type the decoy commands in fish only as
-  `fish --private`. Turn a zsh option off where it is set, or with an
-  `unsetopt` at the end of the `.zshrc` in each home the shell can run with
-  (root's and yours for a root shell): the check counts no turn-off it
-  cannot be sure zsh runs. As the last line of `.zshrc`,
-  `unsetopt share_history inc_append_history inc_append_history_time` also
-  settles its doubts about what `.zshrc` ran before it. A history tool that records each command itself,
-  such as atuin, writes as the command runs too. No kill takes back what such
-  a shell has written.
+  `fish --private`. For zsh, the check counts any mention of the three
+  options in a file zsh reads as on, an `unsetopt` too, as no reading of the
+  files can show that a turn-off holds: leave them out of every startup file
+  (on NixOS, out of `programs.zsh.setOptions`), or type the decoy commands in
+  a zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv`.
+  Home Manager names them in `.zshrc` whether it turns them on or off, so
+  with it, `zsh -f` is the way. A history tool that records each command
+  itself, such as atuin, writes as the command runs too. No kill takes back
+  what such a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation

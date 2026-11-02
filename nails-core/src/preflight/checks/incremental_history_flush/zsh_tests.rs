@@ -91,17 +91,19 @@ fn home_manager_s_options_are_read_item_by_item() {
     assert_eq!(
         found.writes,
         vec![Write {
-            what: "/home/alice/.zshrc sets SHARE_HISTORY".to_string(),
+            what: "/home/alice/.zshrc names SHARE_HISTORY".to_string(),
             entered: true,
         }]
     );
     assert!(found.doubts.is_empty(), "{:?}", found.doubts);
 
-    // `history.share = false` turns off what NixOS's /etc/zshrc turned on.
+    // With `history.share = false` it names the option all the same.
     let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
     seed(&fs, "/home/alice/.zshrc", &home_manager_options(false));
-    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zshrc names SHARE_HISTORY"]
+    );
 }
 
 #[test]
@@ -126,7 +128,7 @@ fn home_manager_s_dot_dir_is_followed_through_the_zshenv_it_sources() {
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"]
+        ["/home/alice/.config/zsh/.zshrc names SHARE_HISTORY"]
     );
 }
 
@@ -140,7 +142,7 @@ fn a_setopt_line_goes_on_after_a_backslash() {
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.zshrc sets INC_APPEND_HISTORY"]
+        ["/home/alice/.zshrc names INC_APPEND_HISTORY"]
     );
 }
 
@@ -180,12 +182,17 @@ fn a_turn_off_that_may_not_run_leaves_the_option_on() {
         seed(&fs, "/home/alice/.zshrc", &format!("{off}\n"));
         let found = on(&fs, NOT_LOGIN);
         assert_eq!(found.len(), 1, "{off}: {found:?}");
-        assert!(found[0].ends_with("sets SHARE_HISTORY"), "{off}: {found:?}");
+        assert!(
+            found[0].ends_with("names SHARE_HISTORY"),
+            "{off}: {found:?}"
+        );
     }
 }
 
 #[test]
-fn a_turn_off_that_certainly_runs_counts() {
+fn a_turn_off_never_counts() {
+    // No reading of the files can show that a turn-off holds, so it names
+    // the option as a turn-on does.
     for off in [
         "unsetopt share_history",
         "setopt no_share_history",
@@ -201,78 +208,13 @@ fn a_turn_off_that_certainly_runs_counts() {
         "() { true }\nunsetopt share_history",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
         seed(&fs, "/home/alice/.zshrc", &format!("{off}\n"));
-        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{off}");
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            ["/home/alice/.zshrc names SHARE_HISTORY"],
+            "{off}"
+        );
     }
-}
-
-#[test]
-fn a_frame_that_may_run_elsewhere_forgets_the_arrays_it_assigned() {
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
-    seed(
-        &fs,
-        "/home/alice/.zshrc",
-        "{ set_opts=(NO_SHARE_HISTORY) } &\nfor opt in \"${set_opts[@]}\"; do setopt \"$opt\"; done\n",
-    );
-    assert_eq!(on(&fs, NOT_LOGIN), ["/etc/zshrc sets SHARE_HISTORY"]);
-}
-
-#[test]
-fn a_turn_off_counts_only_in_the_one_file_zsh_reads_for_its_stage() {
-    let off = "unsetopt share_history\n";
-    // In one of two homes, as a root shell that may run with the operator's
-    // home has: with the other, the option stays on.
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
-    seed(&fs, "/home/alice/.zshrc", off);
-    let homes = [PathBuf::from("/root"), PathBuf::from(HOME)];
-    let on_in_both = |fs: &MockFilesystem| -> Vec<String> {
-        zsh(fs, &homes, NOT_LOGIN)
-            .writes
-            .into_iter()
-            .map(|write| write.what)
-            .collect()
-    };
-    assert_eq!(on_in_both(&fs), ["/etc/zshrc sets SHARE_HISTORY"]);
-    // In the files of both, it is off with either.
-    seed(&fs, "/root/.zshrc", off);
-    assert_eq!(on_in_both(&fs), Vec::<String>::new());
-
-    // In one of two ZDOTDIRs, where it counts as a mention, which turns the
-    // option on.
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
-    seed(&fs, "/home/alice/.zshrc", off);
-    seed(
-        &fs,
-        "/home/alice/.zshenv",
-        "[[ -d ~/.config/zsh ]] && export ZDOTDIR=~/.config/zsh\n",
-    );
-    assert_eq!(
-        on(&fs, NOT_LOGIN),
-        ["/home/alice/.zshrc sets SHARE_HISTORY"]
-    );
-
-    // In one of both system files, of which a zsh reads the one it was
-    // built for.
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
-    seed(&fs, "/etc/zsh/zshrc", off);
-    assert_eq!(on(&fs, NOT_LOGIN), ["/etc/zsh/zshrc sets SHARE_HISTORY"]);
-
-    // The one file there is for its stage, below /etc/zsh too, and the one
-    // ZDOTDIR an unconditional assignment leaves.
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zsh/zshrc", "setopt share_history\n");
-    seed(&fs, "/home/alice/.zshrc", off);
-    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
-    seed(&fs, "/home/alice/.zshenv", "export ZDOTDIR=~/.config/zsh\n");
-    seed(&fs, "/home/alice/.config/zsh/.zshrc", off);
-    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
 }
 
 #[test]
@@ -301,12 +243,12 @@ fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
     };
     assert_eq!(
         on_in_both(&fs),
-        ["/home/alice/.config/zsh/.zshrc sets INC_APPEND_HISTORY"]
+        ["/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY"]
     );
     seed(&fs, "/etc/zshenv", "");
     assert_eq!(
         on_in_both(&fs),
-        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
+        ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"]
     );
 
     // An XDG_CONFIG_HOME set under a condition, and the default beside it.
@@ -334,8 +276,8 @@ fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
     assert_eq!(
         on(&fs, NOT_LOGIN),
         [
-            "/home/alice/.cfg/zsh/history.zsh sets SHARE_HISTORY",
-            "/home/alice/.config/zsh/history.zsh sets INC_APPEND_HISTORY_TIME",
+            "/home/alice/.cfg/zsh/history.zsh names SHARE_HISTORY",
+            "/home/alice/.config/zsh/history.zsh names INC_APPEND_HISTORY_TIME",
         ]
     );
 }
@@ -397,7 +339,7 @@ fn a_shift_in_an_arithmetic_command_opens_no_here_document() {
         );
         assert_eq!(
             on(&fs, NOT_LOGIN),
-            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"],
             "{arithmetic}"
         );
     }
@@ -416,27 +358,39 @@ fn a_shift_in_an_arithmetic_command_opens_no_here_document() {
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"]
+        ["/home/alice/.config/zsh/.zshrc names SHARE_HISTORY"]
     );
 
-    // A turn-off after one counts, and two subshells, `((...); ...)`, are
-    // no arithmetic command: a turn-off in them does not count.
+    // After one, a ZDOTDIR set at the top level moves where zsh reads, and
+    // two subshells, `((...); ...)`, are no arithmetic command: one set in
+    // them does not.
     let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
     seed(
         &fs,
-        "/home/alice/.zshrc",
-        "(( x = 1 << 2 ))\nunsetopt share_history\n",
+        "/home/alice/.config/zsh/.zshrc",
+        "setopt inc_append_history\n",
     );
-    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
     seed(
         &fs,
-        "/home/alice/.zshrc",
-        "((cd /tmp); unsetopt share_history)\n",
+        "/home/alice/.zshenv",
+        "(( x = 1 << 2 ))\nexport ZDOTDIR=~/.config/zsh\n",
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.zshrc sets SHARE_HISTORY"]
+        ["/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY"]
+    );
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "((cd /tmp); export ZDOTDIR=~/.config/zsh)\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        [
+            "/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY",
+            "/home/alice/.zshrc names SHARE_HISTORY",
+        ]
     );
 }
 
@@ -467,7 +421,7 @@ fn a_here_document_without_the_line_that_ends_it_is_a_doubt() {
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.zshrc sets SHARE_HISTORY"]
+        ["/home/alice/.zshrc names SHARE_HISTORY"]
     );
 
     // One opened on the last line, and one with no word to end it.
@@ -510,7 +464,7 @@ fn a_quote_in_an_expansion_closes_nothing() {
         assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new(), "{line}");
         assert_eq!(
             on(&fs, NOT_LOGIN),
-            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"],
             "{line}"
         );
     }
@@ -542,7 +496,7 @@ fn an_ansi_c_string_ends_at_its_first_quote_without_a_backslash() {
         assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new(), "{first}");
         assert_eq!(
             on(&fs, NOT_LOGIN),
-            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"],
             "{first}"
         );
     }
@@ -580,7 +534,7 @@ fn a_here_document_or_a_comment_in_a_command_substitution_is_text() {
         );
         assert_eq!(
             on(&fs, NOT_LOGIN),
-            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"],
             "{text:?}"
         );
     }
@@ -669,7 +623,7 @@ fn what_zsh_reads_as_code_after_a_glob_flag_an_arithmetic_quote_or_a_pid_is_read
         assert_eq!(scan(&fs, NOT_LOGIN).doubts, doubts, "{text:?}");
         assert_eq!(
             on(&fs, NOT_LOGIN),
-            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"],
             "{text:?}"
         );
     }
@@ -688,7 +642,7 @@ fn what_zsh_reads_as_code_after_a_glob_flag_an_arithmetic_quote_or_a_pid_is_read
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"]
+        ["/home/alice/.config/zsh/.zshrc names SHARE_HISTORY"]
     );
 }
 
@@ -739,7 +693,7 @@ fn a_source_in_a_case_arm_a_short_form_or_after_a_descriptor_is_followed() {
             );
             assert_eq!(
                 on(&fs, NOT_LOGIN),
-                ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+                ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"],
                 "{text:?}"
             );
         }
@@ -757,26 +711,39 @@ fn a_source_in_a_case_arm_a_short_form_or_after_a_descriptor_is_followed() {
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
+        ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"]
     );
 
-    // A short form's body ends with its line, and `foreach`'s at `end`.
+    // A short form's body ends with its line, so a ZDOTDIR set after it
+    // moves where zsh reads; `foreach`'s body ends at `end`, so one set in it
+    // may not.
     let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
     seed(
         &fs,
-        "/home/alice/.zshrc",
-        "for x ($list) :\nunsetopt share_history\n",
+        "/home/alice/.config/zsh/.zshrc",
+        "setopt inc_append_history\n",
     );
-    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
     seed(
         &fs,
-        "/home/alice/.zshrc",
-        "foreach x ($list)\n  :\n  unsetopt share_history\nend\n",
+        "/home/alice/.zshenv",
+        "for x ($list) :\nexport ZDOTDIR=~/.config/zsh\n",
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.zshrc sets SHARE_HISTORY"]
+        ["/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY"]
+    );
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "foreach x ($list)\n  :\n  export ZDOTDIR=~/.config/zsh\nend\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        [
+            "/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY",
+            "/home/alice/.zshrc names SHARE_HISTORY",
+        ]
     );
 }
 
@@ -857,146 +824,6 @@ fn a_source_the_walk_cannot_follow_as_a_command_is_a_doubt() {
     }
 }
 
-/// The line that, at the end of a `.zshrc`, turns every option off.
-const TURN_OFF: &str = "unsetopt share_history inc_append_history inc_append_history_time\n";
-
-#[test]
-fn a_turn_off_at_the_end_of_the_zshrc_settles_the_doubts_before_it() {
-    let doubted = "eval \"$(starship init zsh)\"\nsource $ZSH_CUSTOM/x.zsh\nsetopt $opts\n";
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
-    seed(&fs, "/home/alice/.zshrc", &format!("{doubted}{TURN_OFF}"));
-    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
-    // A login shell too, which reads no .zlogin here.
-    assert_eq!(scan(&fs, LOGIN), Scan::default());
-
-    // Without it, or with less of it, the check cannot tell.
-    for text in [
-        doubted.to_string(),
-        format!("{doubted}unsetopt share_history\n"),
-        // Not the last commands of the file.
-        format!("{doubted}{TURN_OFF}print done\n"),
-        format!("{TURN_OFF}{doubted}"),
-        format!("{doubted}if true; then\n  {TURN_OFF}fi\n"),
-    ] {
-        seed(&fs, "/home/alice/.zshrc", &text);
-        let found = scan(&fs, NOT_LOGIN);
-        assert!(
-            !found.doubts.is_empty() && !found.lasting,
-            "{text:?}: {found:?}"
-        );
-    }
-
-    // A file sourced after it still counts.
-    seed(
-        &fs,
-        "/home/alice/.zshrc",
-        &format!("{doubted}{TURN_OFF}source ~/.zsh/history.zsh\n"),
-    );
-    seed(
-        &fs,
-        "/home/alice/.zsh/history.zsh",
-        "setopt share_history\n",
-    );
-    assert_eq!(
-        on(&fs, NOT_LOGIN),
-        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
-    );
-}
-
-#[test]
-fn what_may_undo_the_final_line_keeps_it_from_settling() {
-    let init = "eval \"$(starship init zsh)\"\n";
-    for shape in [
-        // `unsetopt`, `setopt` or `builtin` redefined, or a global alias.
-        "alias unsetopt=:",
-        "alias -g share_history=x",
-        "unsetopt() { : }",
-        "function unsetopt { : }",
-        "disable unsetopt",
-        "functions[unsetopt]=:",
-        "aliases[unsetopt]=:",
-        "galiases[x]=y",
-        "alias builtin=:",
-        "setopt() { : }",
-        // A trap, a hook or a plugin loaded later.
-        "TRAPDEBUG() { setopt share_history }",
-        "trap 'setopt share_history' DEBUG",
-        "trap 'setopt share_history' ZERR",
-        "functions -T f",
-        "chpwd() { setopt share_history }",
-        "autoload -Uz add-zsh-hook\nadd-zsh-hook chpwd f",
-        "chpwd_functions+=(f)",
-        "precmd() { : }",
-        "preexec() { : }",
-        "periodic() { : }",
-        "sched +1 setopt share_history",
-        "zshexit() { : }",
-        "zle -N w",
-        "zle -F 0 f",
-        "zle-line-init() { : }",
-        "zsh-defer source ~/.zsh/x.zsh",
-        "zinit ice wait lucid\nzinit snippet OMZL::history.zsh",
-        "zi ice wait",
-        "zplugin ice wait",
-        // What may stop the file before the line.
-        "setopt err_return\nfalse",
-        "setopt errreturn",
-        "set -o errexit",
-        "set -e",
-        "x=${y:?}",
-        "x=${y?}",
-        "readonly r=1",
-        "typeset -r q=1",
-        "x=$(( 1/0 ))",
-        "integer i",
-        "set -o nosuchoption",
-        "fi",
-        "x='open",
-    ] {
-        let fs = MockFilesystem::new();
-        seed(
-            &fs,
-            "/home/alice/.zshrc",
-            &format!("{init}{shape}\n{TURN_OFF}"),
-        );
-        let found = scan(&fs, NOT_LOGIN);
-        assert!(!found.doubts.is_empty(), "{shape:?}: {found:?}");
-        assert!(found.blocked.is_some(), "{shape:?}: {found:?}");
-    }
-
-    // The line not as written: in a group, a loop, the background or a
-    // pipeline, with a redirection, or no plain `unsetopt`.
-    let line = TURN_OFF.trim_end();
-    for last in [
-        format!("{{ {line} }}"),
-        format!("{{ {line} }} &"),
-        format!("for x in a; do {line}; done"),
-        format!("{line} &"),
-        format!("{line} | cat"),
-        format!("{line} 2>/dev/null"),
-        format!("command {line}"),
-        "setopt no_share_history no_inc_append_history no_inc_append_history_time".to_string(),
-        "set +o sharehistory +o incappendhistory +o incappendhistorytime".to_string(),
-    ] {
-        let fs = MockFilesystem::new();
-        seed(&fs, "/home/alice/.zshrc", &format!("{init}{last}\n"));
-        assert!(!scan(&fs, NOT_LOGIN).doubts.is_empty(), "{last:?}");
-    }
-
-    // A plain eval-init configuration still settles, with `builtin unsetopt`
-    // too.
-    for last in [TURN_OFF.to_string(), format!("builtin {TURN_OFF}")] {
-        let fs = MockFilesystem::new();
-        seed(
-            &fs,
-            "/home/alice/.zshrc",
-            &format!("{init}eval \"$(zoxide init zsh)\"\nalias ll='ls -l'\n{last}"),
-        );
-        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{last:?}");
-    }
-}
-
 #[test]
 fn a_dot_from_an_equals_expansion_an_alias_or_eval_is_followed_or_a_doubt() {
     let command =
@@ -1047,43 +874,53 @@ fn a_dot_from_an_equals_expansion_an_alias_or_eval_is_followed_or_a_doubt() {
     assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new());
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
+        ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"]
     );
 }
 
 #[test]
-fn a_turn_off_at_the_end_of_the_zshrc_settles_no_doubt_about_where_zsh_reads() {
-    for (file, text, start) in [
-        // A ZDOTDIR it cannot follow.
-        (
-            "/home/alice/.zshenv",
-            "[[ -n $X ]] && export ZDOTDIR=$(zdotdir)\n",
-            NOT_LOGIN,
-        ),
-        // Code before .zshrc, which may move ZDOTDIR and with it the .zshrc
-        // zsh reads.
-        (
-            "/home/alice/.zshenv",
-            "source $SOMEWHERE/env.zsh\n",
-            NOT_LOGIN,
-        ),
-        // What a login shell reads after .zshrc.
-        ("/home/alice/.zlogin", "eval \"$(tool init zsh)\"\n", LOGIN),
+fn a_final_turn_off_does_not_pass() {
+    // zsh can still end with the option on: a redefined `unsetopt`, a trap
+    // or a hook that sets it again, a `return` the check cannot see, or a
+    // runtime error that stops the file before the line.
+    let last = "unsetopt share_history inc_append_history inc_append_history_time\n";
+    for before in [
+        "",
+        "eval \"$(starship init zsh)\"\n",
+        "alias unsetopt=:\n",
+        "\"unsetopt\"() { : }\n",
+        "\\unsetopt() { : }\n",
+        "c=unsetopt; functions[$c]=:\n",
+        "TRAPDEBUG() { setopt share_history }\n",
+        "precmd() { setopt share_history }\n",
+        "autoload -Uz my_hook; add-zsh-hook precmd my_hook\n",
+        "alias r=return\nr\n",
+        "${:-return}\n",
+        "for f in ~/.zsh/none/*.zsh; do source $f; done\n",
+        "status=1\n",
+        "export 1x=2\n",
+        "(( x = 2#3 ))\n",
+        "typeset -A map; map=(a)\n",
     ] {
         let fs = MockFilesystem::new();
-        seed(&fs, file, text);
-        seed(
-            &fs,
-            "/home/alice/.zshrc",
-            &format!("eval \"$(starship init zsh)\"\n{TURN_OFF}"),
-        );
-        let found = scan(&fs, start);
-        assert_eq!(found.doubts.len(), 1, "{text:?}: {found:?}");
+        seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+        seed(&fs, "/home/alice/.zshrc", &format!("{before}{last}"));
+        let found = on(&fs, NOT_LOGIN);
         assert!(
-            found.lasting && found.writes.is_empty(),
-            "{text:?}: {found:?}"
+            found.contains(&"/home/alice/.zshrc names SHARE_HISTORY".to_string())
+                && found.contains(&"/home/alice/.zshrc names INC_APPEND_HISTORY".to_string()),
+            "{before:?}: {found:?}"
         );
     }
+
+    // What names none of the options, and holds no doubt, passes.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "export EDITOR=vim\nalias ll='ls -l'\nsetopt hist_ignore_dups\n",
+    );
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
 }
 
 #[test]
@@ -1137,7 +974,7 @@ fn what_the_lines_name_beyond_what_the_walk_read_is_on_or_a_doubt() {
         "export ZDOTDIR=~/.config/zsh\nexport ZDOTDIR\n",
         "print -r -- $ZDOTDIR ${ZDOTDIR:-$HOME} ${#ZDOTDIR}\n",
         "find . -name '*.zsh'; cd .\n",
-        "unsetopt share_history\nsetopt no_inc_append_history\n",
+        "setopt hist_ignore_dups\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", text);
@@ -1192,24 +1029,18 @@ fn a_login_shell_s_files_count_for_a_login_shell_only() {
     seed(&fs, "/home/alice/.zlogin", "unsetopt share_history\n");
     seed(&fs, "/home/alice/.zprofile", "setopt inc_append_history\n");
 
-    // A login shell reads both: the turn-off counts, and so does the
-    // turn-on.
-    assert_eq!(
-        on(&fs, LOGIN),
-        ["/home/alice/.zprofile sets INC_APPEND_HISTORY"]
-    );
+    // A login shell reads both, and a shell that may be one too.
+    for start in [LOGIN, UNKNOWN] {
+        assert_eq!(
+            on(&fs, start),
+            [
+                "/home/alice/.zprofile names INC_APPEND_HISTORY",
+                "/home/alice/.zlogin names SHARE_HISTORY",
+            ]
+        );
+    }
     // A shell that is not one reads neither.
-    assert_eq!(on(&fs, NOT_LOGIN), ["/etc/zshrc sets SHARE_HISTORY"]);
-    // One that may be: what they turn on counts, what they turn off does
-    // not.
-    let found = on(&fs, UNKNOWN);
-    assert!(
-        found.contains(&"/home/alice/.zprofile sets INC_APPEND_HISTORY".to_string())
-            && found
-                .iter()
-                .any(|what| what.ends_with("sets SHARE_HISTORY")),
-        "{found:?}"
-    );
+    assert_eq!(on(&fs, NOT_LOGIN), ["/etc/zshrc names SHARE_HISTORY"]);
 }
 
 #[test]
@@ -1251,7 +1082,7 @@ fn a_zsh_started_without_its_startup_files_reads_only_what_it_reads() {
         );
         assert_eq!(
             on(&fs, start),
-            ["/etc/zshenv.local sets SHARE_HISTORY"],
+            ["/etc/zshenv.local names SHARE_HISTORY"],
             "{argv:?}"
         );
     }
@@ -1274,8 +1105,8 @@ fn a_zsh_started_without_its_startup_files_reads_only_what_it_reads() {
         assert_eq!(
             on(&fs, start),
             [
-                "/etc/zshenv sets SHARE_HISTORY",
-                "/home/alice/.zshrc sets INC_APPEND_HISTORY_TIME",
+                "/etc/zshenv names SHARE_HISTORY",
+                "/home/alice/.zshrc names INC_APPEND_HISTORY_TIME",
             ],
             "{argv:?}"
         );
@@ -1352,7 +1183,7 @@ fn a_sourced_file_is_followed_where_its_path_resolves() {
         seed(&fs, path, "setopt share_history\n");
         assert_eq!(
             on(&fs, NOT_LOGIN),
-            [format!("{path} sets SHARE_HISTORY")],
+            [format!("{path} names SHARE_HISTORY")],
             "{line}"
         );
     }
@@ -1386,7 +1217,7 @@ fn a_sourced_file_is_followed_where_its_path_resolves() {
     assert!(found.doubts.is_empty(), "{found:?}");
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["/home/alice/.b.zsh sets INC_APPEND_HISTORY_TIME"]
+        ["/home/alice/.b.zsh names INC_APPEND_HISTORY_TIME"]
     );
 }
 
@@ -1470,7 +1301,7 @@ fn any_other_word_that_names_an_option_turns_it_on() {
     );
     assert_eq!(
         on(&fs, NOT_LOGIN),
-        ["a line of /home/alice/.zshrc that the check cannot read as code sets SHARE_HISTORY"]
+        ["/home/alice/.zshrc names SHARE_HISTORY"]
     );
 }
 
@@ -1506,8 +1337,8 @@ fn a_zdotdir_set_under_a_condition_adds_where_zsh_may_look() {
     assert_eq!(
         found,
         [
-            "/home/alice/.config/zsh/.zshrc sets INC_APPEND_HISTORY",
-            "/home/alice/.zshrc sets SHARE_HISTORY",
+            "/home/alice/.config/zsh/.zshrc names INC_APPEND_HISTORY",
+            "/home/alice/.zshrc names SHARE_HISTORY",
         ]
     );
 

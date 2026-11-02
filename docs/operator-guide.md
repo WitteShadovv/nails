@@ -1409,22 +1409,15 @@ afterwards:
     code, in a `$(...)` too, and a file they source read where it is sourced
     when its path resolves, so it follows Home Manager's `dotDir`, whose
     `.zshenv` the home's sources and which sets `ZDOTDIR`;
-  - an option counts as on where a `setopt` turns it on, wherever that is,
-    and where any other word names it without a `no` prefix, as Home
-    Manager's `set_opts=(... SHARE_HISTORY ...)` array, an alias or a test
-    does; a loop over a list it can read, as Home Manager's over `set_opts`,
-    is read item by item;
-  - an option counts as off again only where an `unsetopt` turns it off
-    unconditionally at the top of a file zsh certainly reads, the one file
-    zsh can read for its stage: not one of both `/etc/zshrc` and
-    `/etc/zsh/zshrc` (a zsh reads the one it was built for), nor one of two
-    `ZDOTDIR`s a condition leaves. One in a condition, a function (an
-    anonymous `() { ... }` one too), an alias, a subshell, a pipeline or the
-    background (a `{ ... }` group or a loop followed by `&` or `|` too),
-    after a `return`, or in a `zlogin` of a shell that may not be a login
-    shell, counts as naming the option, which turns it on. A root shell that
-    can run with your home or root's is read with each, and an option counts
-    as on when it is on with either.
+  - an option counts as on wherever a file zsh reads names it, outside a
+    line that is a comment: a `setopt`, an `unsetopt`, Home Manager's
+    `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a
+    comment at the end of a line. No turn-off counts. zsh can still end with
+    the option on after one: a function or an alias can stand in for
+    `unsetopt`, a trap, a hook or a plugin loaded after the first prompt can
+    set it again, and an error zsh meets as it runs, a glob that matches
+    nothing among them, can stop the file before the line. No reading of the
+    files can show that a turn-off holds, so the check does not try.
 
   It knows that Oh My Zsh turns `SHARE_HISTORY` on, and it reads the
   `/etc/zshrc` where NixOS's `programs.zsh` sets that option by default. It
@@ -1450,36 +1443,23 @@ afterwards:
   stands for `.`, and the `ZDOTDIR` settings, leaving out only a line that is
   a comment. What a line names beyond what it read as code it follows makes
   it fail closed, in case it read the code otherwise than zsh does: such an
-  option counts as on, and the rest makes it warn that it cannot tell. So an
-  option a comment names at the end of a line counts as on, and a `source`
-  or `eval` anywhere but in a command it follows, in an `echo`, a string, an
-  alias or a here-document, makes it warn too, and so does an `eval` of what
-  a command prints (`eval "$(tool init zsh)"`).
+  option counts as on, and the rest makes it warn that it cannot tell. So a
+  `source` or `eval` anywhere but in a command it follows, in an `echo`, a
+  string, an alias or a here-document, makes it warn, and so does an `eval`
+  of what a command prints (`eval "$(tool init zsh)"`).
 
-  When it cannot tell, the warning gives the line that settles it: end the
-  `.zshrc` zsh reads with
-  `unsetopt share_history inc_append_history inc_append_history_time`. zsh
-  runs the file top to bottom, so whatever an `eval` or a sourced file before
-  that line did, the options are off once it has run, and the check counts
-  every doubt before it as settled. It settles none about `ZDOTDIR`, about
-  code zsh reads before `.zshrc` (`.zshenv`, `.zprofile`), which may move
-  `ZDOTDIR` and with it the `.zshrc` zsh reads, or about what a login shell
-  reads after it (`.zlogin`), and the warning says so. It settles nothing,
-  either, unless the line runs as written, a plain `unsetopt` or
-  `builtin unsetopt` at the top level, alone, unconditional and with no
-  redirection, and no file zsh reads holds what may undo it: an alias or a
-  function that redefines `unsetopt`, `setopt` or `builtin`, a global alias,
-  a trap or a hook (`precmd`, `preexec`, `chpwd`, `periodic`, `sched`,
-  `zshexit`, `add-zsh-hook`, a `zle` widget), a plugin manager's deferred
-  loading (zinit's `wait`, `zsh-defer`), `err_return` or `err_exit`, or what
-  may stop the file before the line (`${name:?}`, a read-only variable,
-  arithmetic with a division, `set -o` with an unknown name, a structure the
-  check cannot follow). Then the warning says why, and to type the decoy
-  commands in a shell that keeps no history, such as one started with
-  `zsh -f`. What it cannot see, a hook that an `eval`'s init script installs
-  among it, can still set the options again after the line has run: a
-  `precmd` or `preexec` function, a `periodic` or `sched` job, a `zle`
-  widget, or a plugin a deferred loader brings in after the first prompt.
+  So zsh passes only when no file it reads names the three options and
+  nothing is left the check cannot tell: zsh's default, under which a zsh
+  writes its history only as it exits, which the kill at activation keeps
+  it from doing. If you turn the options off in your `.zshrc`, the check
+  still warns, as it cannot see that the turn-off holds. The fix it gives is
+  one it can see: type the decoy commands in a zsh started as `zsh -f`,
+  which reads no startup file but `/etc/zshenv`, so the check reads only
+  that, and passes when it names none of the options. On NixOS, where
+  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default, you can
+  also take the option out of `programs.zsh.setOptions` and rebuild. Home
+  Manager's `programs.zsh` names the options in `.zshrc` whether it turns
+  them on or off (`history.share`), so with it, `zsh -f` is the way.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
