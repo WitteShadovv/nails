@@ -804,6 +804,15 @@ of this changelog for that version becomes the release notes word for word, and
   too, where its value was taken for a script. A shell that reads a terminal without being
   interactive by its own rule, as `bash 2>/dev/null` does, is killed as well: it keeps no history,
   and the switch would end it anyway.
+- Activation and `emergency` kill mksh, rbash and nu too, and the other common shells the list of
+  shell names missed: ash, ksh93, rksh, lksh, oksh, loksh, pdksh, yash, csh, elvish and xonsh. Such
+  a shell lived on through the kill, and one that saves its history when it ends, as rbash (bash
+  under another name) does, could write the activation command to the decoy disk when the switch
+  ended it. Each one's command line is read with its own syntax, so `nu -e`, `elvish -norc` and the
+  interpreter in front of xonsh's own options are taken for neither a command nor a script, and a
+  shell that a NixOS wrapper starts (`.xonsh-wrapped`) counts under its own name. A shell of any
+  other name is still not killed: the operator guide and `docs/bash-history-forensics.md` list the
+  names.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

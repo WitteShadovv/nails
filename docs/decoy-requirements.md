@@ -558,6 +558,11 @@ history yourself so an interactive shell has nowhere to write:
 - **Boot-time enforcement.** A systemd unit that truncates any regular history
   file and re-creates the symlinks early in boot closes the gap before the first
   interactive login.
+- **A shell NAILS knows.** Activation kills only the shells it knows by the
+  name of their process (bash, zsh, fish, dash, the Korn and C shells, yash,
+  nu, elvish and xonsh; [bash-history-forensics.md](bash-history-forensics.md#the-flush-race)
+  lists every name). Type the decoy commands in one of them, started under its
+  own name.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation

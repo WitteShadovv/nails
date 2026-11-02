@@ -128,12 +128,159 @@ fn fish_reads_the_terminal_after_an_init_command_but_not_with_a_command() {
 }
 
 #[test]
-fn each_shell_name_has_its_syntax_and_no_other_name_is_a_shell() {
+fn nu_reads_the_terminal_unless_it_runs_commands_or_a_script() {
+    for words in [
+        &["nu"][..],
+        &["-nu"],
+        &["nu", "-l"],
+        &["nu", "-e", "print hi"],
+        &["nu", "--execute", "print hi"],
+        &["nu", "--config", "c.nu", "--env-config", "e.nu"],
+        &["nu", "-n", "--no-history", "-t", "4"],
+        &["nu", "--log-level", "info", "-I", "/lib", "-m", "light"],
+    ] {
+        assert!(interactive(Syntax::Nu, words, true), "{words:?}");
+    }
+    for words in [
+        &["nu", "-c", "ls"][..],
+        &["nu", "--commands", "ls"],
+        &["nu", "-i", "-c", "ls"],
+        &["nu", "script.nu"],
+        &["nu", "--config", "c.nu", "script.nu"],
+        &["nu", "-e", "print hi", "script.nu"],
+    ] {
+        assert!(!interactive(Syntax::Nu, words, true), "{words:?}");
+    }
+    assert!(!interactive(Syntax::Nu, &["nu"], false));
+    assert!(interactive(Syntax::Nu, &["nu", "--interactive"], false));
+}
+
+#[test]
+fn elvish_reads_the_terminal_unless_it_runs_code_or_a_script() {
+    for words in [
+        &["elvish"][..],
+        &["elvish", "-norc"],
+        &["elvish", "--norc"],
+        &["elvish", "-rc", "/etc/rc.elv"],
+        &["elvish", "-rc=/etc/rc.elv"],
+        &["elvish", "-log", "/tmp/log", "-deprecation-level", "20"],
+        &["elvish", "-c=false"],
+        &["elvish", "--"],
+    ] {
+        assert!(interactive(Syntax::Elvish, words, true), "{words:?}");
+    }
+    for words in [
+        &["elvish", "-c", "echo"][..],
+        &["elvish", "--c", "echo"],
+        &["elvish", "-c=true", "echo"],
+        &["elvish", "script.elv"],
+        &["elvish", "-rc", "/etc/rc.elv", "script.elv"],
+        &["elvish", "-norc", "script.elv"],
+        &["elvish", "--", "script.elv"],
+        &["elvish", "-"],
+    ] {
+        assert!(!interactive(Syntax::Elvish, words, true), "{words:?}");
+    }
+    assert!(!interactive(Syntax::Elvish, &["elvish"], false));
+}
+
+#[test]
+fn xonsh_s_options_follow_its_interpreter_and_its_path() {
+    for words in [
+        &["/usr/bin/python3", "/usr/bin/xonsh"][..],
+        &["/usr/bin/python3", "-sP", "/usr/bin/xonsh", "--login"],
+        &[
+            "/nix/store/x-python3/bin/python3.13",
+            "/nix/store/y-xonsh/bin/.xonsh-wrapped",
+        ],
+        &["python3", "/usr/bin/xonsh", "--rc", "a.xsh", "b.xsh"],
+        &["python3", "/usr/bin/xonsh", "-DXONSH_DEBUG=1"],
+        &[
+            "python3",
+            "/usr/bin/xonsh",
+            "-D",
+            "XONSH_DEBUG=1",
+            "--shell-type",
+            "readline",
+        ],
+        &["python3", "/usr/bin/xonsh", "--no-rc", "-l"],
+    ] {
+        assert!(interactive(Syntax::Xonsh, words, true), "{words:?}");
+    }
+    for words in [
+        &["python3", "/usr/bin/xonsh", "-c", "echo"][..],
+        &["python3", "/usr/bin/xonsh", "-cecho"],
+        &["python3", "/usr/bin/xonsh", "script.xsh"],
+        &[
+            "python3",
+            "/usr/bin/xonsh",
+            "--rc",
+            "a.xsh",
+            "--",
+            "script.xsh",
+        ],
+        &[
+            "python3",
+            "/usr/bin/xonsh",
+            "--shell-type",
+            "readline",
+            "script.xsh",
+        ],
+    ] {
+        assert!(!interactive(Syntax::Xonsh, words, true), "{words:?}");
+    }
+    assert!(interactive(
+        Syntax::Xonsh,
+        &["python3", "/usr/bin/xonsh", "-i", "script.xsh"],
+        false
+    ));
+}
+
+#[test]
+fn the_common_shells_are_shells_under_their_own_names() {
+    for (name, syntax) in [
+        ("sh", Syntax::Posix),
+        ("bash", Syntax::Posix),
+        ("rbash", Syntax::Posix),
+        ("dash", Syntax::Posix),
+        ("ash", Syntax::Posix),
+        ("ksh", Syntax::Posix),
+        ("ksh93", Syntax::Posix),
+        ("rksh", Syntax::Posix),
+        ("mksh", Syntax::Posix),
+        ("lksh", Syntax::Posix),
+        ("oksh", Syntax::Posix),
+        ("loksh", Syntax::Posix),
+        ("pdksh", Syntax::Posix),
+        ("yash", Syntax::Posix),
+        ("zsh", Syntax::Posix),
+        ("tcsh", Syntax::Posix),
+        ("csh", Syntax::Posix),
+        ("fish", Syntax::Fish),
+        ("nu", Syntax::Nu),
+        ("elvish", Syntax::Elvish),
+        ("xonsh", Syntax::Xonsh),
+    ] {
+        assert_eq!(shell_syntax(name), Some(syntax), "{name}");
+        let wrapped = format!(".{name}-wrapped");
+        assert_eq!(shell_syntax(&wrapped), Some(syntax), "{wrapped}");
+    }
     for (name, syntax) in SHELL_NAMES {
         assert_eq!(shell_syntax(name), Some(*syntax), "{name}");
     }
-    assert_eq!(shell_syntax("fish"), Some(Syntax::Fish));
-    for name in ["sudo", "nails", "script", "bashbug", "zsh-newuser", ""] {
+    for name in [
+        "sudo",
+        "nails",
+        "script",
+        "bashbug",
+        "zsh-newuser",
+        "nu_plugin_query",
+        "python3",
+        "",
+        "xonsh-wrapped",
+        ".xonsh",
+        ".-wrapped",
+    ] {
         assert_eq!(shell_syntax(name), None, "{name}");
     }
 }
@@ -289,10 +436,16 @@ fn settled(comm: &str, pick: impl Fn(&proc::Stat) -> bool) -> u32 {
     }
 }
 
+/// `program` on `PATH`, as a path.
+fn on_path(program: &str) -> Option<std::path::PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|path| path.is_file())
+}
+
 /// Whether `program` is on `PATH`.
 fn installed(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+    on_path(program).is_some()
 }
 
 /// Give the shells `command` starts `home` as their home and their only
@@ -323,12 +476,8 @@ fn in_home(command: &mut Command, home: &std::path::Path) {
 /// Start `command` with `sh -c` on a terminal of its own, a pseudo-terminal
 /// that `script` holds, its shells at home in `home` ([`in_home`]), and
 /// return `script` and the pid of its child named `comm` once that waits for
-/// input. `None`, saying so, when `comm` is not installed.
-fn on_a_terminal(comm: &str, command: &str, home: &std::path::Path) -> Option<(Child, u32)> {
-    if !installed(comm) {
-        eprintln!("skipped {command}: no {comm} on PATH");
-        return None;
-    }
+/// input.
+fn on_a_terminal(comm: &str, command: &str, home: &std::path::Path) -> (Child, u32) {
     let mut script = Command::new("script");
     script
         .args(["-qfec", command, "/dev/null"])
@@ -339,7 +488,7 @@ fn on_a_terminal(comm: &str, command: &str, home: &std::path::Path) -> Option<(C
     let console = script.spawn().expect("spawn script");
     let id = console.id();
     let shell = settled(comm, |stat| stat.ppid == id);
-    Some((console, shell))
+    (console, shell)
 }
 
 #[test]
@@ -353,9 +502,11 @@ fn a_shell_reading_a_terminal_counts_whatever_its_other_descriptors() {
         // keeps no history, and counting it costs nothing.
         ("bash", "exec bash --norc --noprofile 2>/dev/null"),
     ] {
-        let Some((console, shell)) = on_a_terminal(comm, command, home.path()) else {
+        if !installed(comm) {
+            eprintln!("skipped {command}: no {comm} on PATH");
             continue;
-        };
+        }
+        let (console, shell) = on_a_terminal(comm, command, home.path());
         let seen = (
             proc::fd_is_terminal(shell, 0),
             proc::fd_is_terminal(shell, 2),
@@ -364,6 +515,22 @@ fn a_shell_reading_a_terminal_counts_whatever_its_other_descriptors() {
         still_running(console);
         assert_eq!(seen, (true, false, true), "{command}");
     }
+}
+
+#[test]
+fn a_shell_started_through_a_link_counts_under_the_link_s_name() {
+    let Some(bash) = on_path("bash") else {
+        eprintln!("skipped: no bash on PATH");
+        return;
+    };
+    let home = tempfile::tempdir().expect("tempdir");
+    let rbash = home.path().join("rbash");
+    std::os::unix::fs::symlink(bash, &rbash).expect("link rbash to bash");
+    let command = format!("exec {} --norc --noprofile", rbash.display());
+    let (console, shell) = on_a_terminal("rbash", &command, home.path());
+    let seen = is_interactive_shell(shell);
+    still_running(console);
+    assert!(seen, "rbash is bash under the name rbash");
 }
 
 /// Write `line` to the console, as typed on its keyboard.
