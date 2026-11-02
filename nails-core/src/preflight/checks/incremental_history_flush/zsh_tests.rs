@@ -217,6 +217,127 @@ fn a_frame_that_may_run_elsewhere_forgets_the_arrays_it_assigned() {
 }
 
 #[test]
+fn a_turn_off_counts_only_in_the_one_file_zsh_reads_for_its_stage() {
+    let off = "unsetopt share_history\n";
+    // In one of two homes, as a root shell that may run with the operator's
+    // home has: with the other, the option stays on.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zshrc", off);
+    let homes = [PathBuf::from("/root"), PathBuf::from(HOME)];
+    let on_in_both = |fs: &MockFilesystem| -> Vec<String> {
+        zsh(fs, &homes, NOT_LOGIN)
+            .writes
+            .into_iter()
+            .map(|write| write.what)
+            .collect()
+    };
+    assert_eq!(on_in_both(&fs), ["/etc/zshrc sets SHARE_HISTORY"]);
+    // In the files of both, it is off with either.
+    seed(&fs, "/root/.zshrc", off);
+    assert_eq!(on_in_both(&fs), Vec::<String>::new());
+
+    // In one of two ZDOTDIRs, where it counts as a mention, which turns the
+    // option on.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zshrc", off);
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "[[ -d ~/.config/zsh ]] && export ZDOTDIR=~/.config/zsh\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zshrc sets SHARE_HISTORY"]
+    );
+
+    // In one of both system files, of which a zsh reads the one it was
+    // built for.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/etc/zsh/zshrc", off);
+    assert_eq!(on(&fs, NOT_LOGIN), ["/etc/zsh/zshrc sets SHARE_HISTORY"]);
+
+    // The one file there is for its stage, below /etc/zsh too, and the one
+    // ZDOTDIR an unconditional assignment leaves.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zsh/zshrc", "setopt share_history\n");
+    seed(&fs, "/home/alice/.zshrc", off);
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zshenv", "export ZDOTDIR=~/.config/zsh\n");
+    seed(&fs, "/home/alice/.config/zsh/.zshrc", off);
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
+}
+
+#[test]
+fn a_path_is_resolved_in_every_home_and_config_home_it_may_be_in() {
+    // `~` and `$HOME` in each home a root shell may run with.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "source ~/.zsh/history.zsh\n");
+    seed(
+        &fs,
+        "/home/alice/.zsh/history.zsh",
+        "setopt share_history\n",
+    );
+    seed(&fs, "/etc/zshenv", "export ZDOTDIR=$HOME/.config/zsh\n");
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshrc",
+        "setopt inc_append_history\n",
+    );
+    let homes = [PathBuf::from("/root"), PathBuf::from(HOME)];
+    let on_in_both = |fs: &MockFilesystem| -> Vec<String> {
+        zsh(fs, &homes, NOT_LOGIN)
+            .writes
+            .into_iter()
+            .map(|write| write.what)
+            .collect()
+    };
+    assert_eq!(
+        on_in_both(&fs),
+        ["/home/alice/.config/zsh/.zshrc sets INC_APPEND_HISTORY"]
+    );
+    seed(&fs, "/etc/zshenv", "");
+    assert_eq!(
+        on_in_both(&fs),
+        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
+    );
+
+    // An XDG_CONFIG_HOME set under a condition, and the default beside it.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "[[ -d ~/.cfg ]] && export XDG_CONFIG_HOME=~/.cfg\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "source ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/history.zsh\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.cfg/zsh/history.zsh",
+        "setopt share_history\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/history.zsh",
+        "setopt inc_append_history_time\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        [
+            "/home/alice/.cfg/zsh/history.zsh sets SHARE_HISTORY",
+            "/home/alice/.config/zsh/history.zsh sets INC_APPEND_HISTORY_TIME",
+        ]
+    );
+}
+
+#[test]
 fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
     for (line, doubt) in [
         (

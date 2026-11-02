@@ -7,30 +7,34 @@
 //!
 //! zsh reads `zshenv`, then `zprofile` for a login shell, `zshrc` for an
 //! interactive one and `zlogin` for a login shell: each stage's file in `/etc`
-//! and in `/etc/zsh` (where Debian's and Arch's zsh look), then the user's own
+//! or in `/etc/zsh` (where Debian's and Arch's zsh look), then the user's own
 //! in `$ZDOTDIR`, which is the home unless a file read so far sets it. A file
 //! that a startup file sources is read where it is sourced, when its path
-//! resolves.
+//! resolves. A zsh runs with one home, which `~` and `$HOME` name, so for a
+//! shell that may run with several (a root shell with the operator's), the
+//! files are read for each, and an option counts as on when it is on with
+//! any.
 //!
 //! An option counts as on where a `setopt` turns it on (or an `unsetopt` of
 //! its `no` form, or `set -o`), wherever that is, and where any other word
 //! outside a comment names it without a `no` prefix: in an array, a string,
 //! an alias or a test. It counts as off again only where an `unsetopt` turns
 //! it off (or a `setopt` of its `no` form, or `set +o`) unconditionally at the
-//! top level of a file zsh certainly reads: not in a condition, a function
-//! (an anonymous one included), a subshell, a pipeline or the background (a
-//! group or loop followed by `&` or `|` too), not after `&&` or `||`, not in a
-//! loop over something the check cannot list, not after a `return` or `exit`
-//! in the file, and not in a `zprofile` or `zlogin` of a shell that may not be
-//! a login shell. A turn-off anywhere else counts as a mention, which turns
-//! the option on, and so does a word in a here-document's body, which is
-//! text, not code. A loop over a list the check can read, as Home Manager
-//! writes `for opt in "${set_opts[@]}"; do setopt "$opt"; done` after a
-//! literal `set_opts=(...)`, is read item by item. A `setopt` with an
-//! expansion it cannot list, a `source` without a path or with one it cannot
-//! resolve (a process substitution among them), a `ZDOTDIR` it cannot follow
-//! and one set otherwise than by an assignment (`${ZDOTDIR:=...}`) are
-//! doubts.
+//! top level of a file zsh certainly reads: the one file of its stage that zsh
+//! can read (not one of both in `/etc` and in `/etc/zsh`, nor one of several
+//! `ZDOTDIR`s), not in a condition, a function (an anonymous one
+//! included), a subshell, a pipeline or the background (a group or loop
+//! followed by `&` or `|` too), not after `&&` or `||`, not in a loop over
+//! something the check cannot list, not after a `return` or `exit` in the
+//! file, and not in a `zprofile` or `zlogin` of a shell that may not be a
+//! login shell. A turn-off anywhere else counts as a mention, which turns the
+//! option on, and so does a word in a here-document's body, which is text, not
+//! code. A loop over a list the check can read, as Home Manager writes
+//! `for opt in "${set_opts[@]}"; do setopt "$opt"; done` after a literal
+//! `set_opts=(...)`, is read item by item. A `setopt` with an expansion it
+//! cannot list, a `source` without a path or with one it cannot resolve (a
+//! process substitution among them), a `ZDOTDIR` it cannot follow and one set
+//! otherwise than by an assignment (`${ZDOTDIR:=...}`) are doubts.
 
 mod lexer;
 mod walk;
@@ -101,34 +105,44 @@ impl Start {
 /// What the zsh startup files read so far set.
 struct Reader<'a, F: Filesystem> {
     fs: &'a F,
-    /// The homes the shell may run with.
-    homes: &'a [PathBuf],
+    /// The home the shell runs with, if it has one.
+    home: Option<&'a Path>,
     /// Where each of [`OPTIONS`] was last turned on; `None` while off.
     options: [Option<String>; 3],
     /// The directories the user's own startup files may be in; empty once a
     /// file set `ZDOTDIR` to something the check cannot follow.
     zdotdirs: Vec<PathBuf>,
-    /// `XDG_CONFIG_HOME` as a startup file set it, when the check can tell.
-    xdg_config_home: Option<PathBuf>,
+    /// What `XDG_CONFIG_HOME` may be as the files read so far set it: each
+    /// value as written, `None` while unset.
+    xdg_config_homes: Vec<Option<String>>,
     /// The files being followed, outermost first.
     stack: Vec<PathBuf>,
     scan: Scan,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
-    /// The directory `value` names, with `~`, `$HOME`, `$ZDOTDIR`,
-    /// `$XDG_CONFIG_HOME` and their `${...:-...}` defaults in it; `None` when
-    /// it names anything else the check cannot know, or no absolute path.
-    fn resolve(&self, value: &Word) -> Option<PathBuf> {
-        let [home, ..] = self.homes else {
-            return None;
-        };
-        let home = home.to_string_lossy().into_owned();
+    /// The paths `value` may name: one for each value `XDG_CONFIG_HOME` may
+    /// have, each different one once; `None` when one of them is no path the
+    /// check can know.
+    fn resolve(&self, value: &Word) -> Option<Vec<PathBuf>> {
+        let mut paths = Vec::new();
+        for config in &self.xdg_config_homes {
+            let path = self.resolve_in(value, config.as_deref())?;
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        (!paths.is_empty()).then_some(paths)
+    }
+
+    /// The path `value` names with `XDG_CONFIG_HOME` set to `config` as
+    /// written, or unset: with `~`, `$HOME`, `$ZDOTDIR`, `$XDG_CONFIG_HOME`
+    /// and their `${...:-...}` defaults in it; `None` when it names anything
+    /// else the check cannot know, or no absolute path.
+    fn resolve_in(&self, value: &Word, config: Option<&str>) -> Option<PathBuf> {
+        let home = self.home?.to_string_lossy().into_owned();
         let default_config = format!("{home}/.config");
-        let config = self
-            .xdg_config_home
-            .as_ref()
-            .map(|dir| dir.to_string_lossy().into_owned());
+        let config = config.map(str::to_string);
         let zdotdir = match self.zdotdirs.as_slice() {
             [one] => Some(one.to_string_lossy().into_owned()),
             _ => None,
@@ -221,7 +235,12 @@ impl<F: Filesystem> Reader<'_, F> {
                 path,
                 unconditional,
             } => match self.resolve(&path) {
-                Some(file) => self.file(&file, certain && unconditional),
+                Some(files) => {
+                    let one = files.len() == 1;
+                    for file in files {
+                        self.file(&file, certain && unconditional && one);
+                    }
+                }
                 None => self.scan.doubts.push(format!(
                     "it cannot follow the file {place} sources as `{}`",
                     path.text
@@ -232,16 +251,22 @@ impl<F: Filesystem> Reader<'_, F> {
                 value,
                 unconditional,
             } => {
-                let resolved = self.resolve(&value);
                 if name == "XDG_CONFIG_HOME" {
-                    self.xdg_config_home = resolved.filter(|_| certain && unconditional);
+                    let config = Some(value.text);
+                    if certain && unconditional {
+                        self.xdg_config_homes = vec![config];
+                    } else if !self.xdg_config_homes.contains(&config) {
+                        self.xdg_config_homes.push(config);
+                    }
                     return;
                 }
-                match resolved {
-                    Some(dir) if certain && unconditional => self.zdotdirs = vec![dir],
-                    Some(dir) => {
-                        if !self.zdotdirs.contains(&dir) {
-                            self.zdotdirs.push(dir);
+                match self.resolve(&value) {
+                    Some(dirs) if certain && unconditional => self.zdotdirs = dirs,
+                    Some(dirs) => {
+                        for dir in dirs {
+                            if !self.zdotdirs.contains(&dir) {
+                                self.zdotdirs.push(dir);
+                            }
                         }
                     }
                     None => {
@@ -260,16 +285,43 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 }
 
-/// What zsh's startup files below `/etc` and in `homes` (the first being the
-/// home of the account zsh runs as) turn on, read through `fs`, for a zsh
-/// started as `start` says.
+/// What zsh's startup files below `/etc` and in `homes` turn on, read
+/// through `fs`, for a zsh started as `start` says. A zsh runs with one home,
+/// where it reads the user's files and which `~` and `$HOME` name, so the
+/// files are read for each of `homes` the shell may run with, and an option
+/// counts as on when it is on with any of them.
 pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Scan {
+    let homes: Vec<Option<&Path>> = if homes.is_empty() {
+        vec![None]
+    } else {
+        homes.iter().map(|home| Some(home.as_path())).collect()
+    };
+    let mut scan = Scan::default();
+    for home in homes {
+        let one = in_home(fs, home, start);
+        for write in one.writes {
+            if !scan.writes.contains(&write) {
+                scan.writes.push(write);
+            }
+        }
+        for doubt in one.doubts {
+            if !scan.doubts.contains(&doubt) {
+                scan.doubts.push(doubt);
+            }
+        }
+    }
+    scan
+}
+
+/// What zsh's startup files below `/etc` and in `home` turn on, for a zsh
+/// that runs with `home`.
+fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
     let mut reader = Reader {
         fs,
-        homes,
+        home,
         options: Default::default(),
-        zdotdirs: homes.to_vec(),
-        xdg_config_home: None,
+        zdotdirs: home.map(Path::to_path_buf).into_iter().collect(),
+        xdg_config_homes: vec![None],
         stack: Vec::new(),
         scan: Scan::default(),
     };
@@ -278,14 +330,23 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
         if login_stage && start.login == Some(false) {
             continue;
         }
-        // Read whole only by a zsh that certainly reads it.
+        // Read whole only by a zsh that certainly reads it, and a file only
+        // when it is the one zsh can read for this stage: a zsh reads its
+        // stage's file in /etc or in /etc/zsh, as it was built, and the
+        // user's in one ZDOTDIR.
         let certain = start.every_file && (!login_stage || start.login == Some(true));
-        for dir in ["/etc", "/etc/zsh"] {
-            reader.file(&Path::new(dir).join(stage), certain);
+        let system = ["/etc", "/etc/zsh"].map(|dir| Path::new(dir).join(stage));
+        let present = system
+            .iter()
+            .filter(|path| !matches!(fs.inode(path), Ok(None)))
+            .count();
+        for path in &system {
+            reader.file(path, certain && present == 1);
         }
         // The user's own, from where the files read so far put ZDOTDIR.
-        for dir in reader.zdotdirs.clone() {
-            reader.file(&dir.join(format!(".{stage}")), certain);
+        let dirs = reader.zdotdirs.clone();
+        for dir in &dirs {
+            reader.file(&dir.join(format!(".{stage}")), certain && dirs.len() == 1);
         }
     }
     let mut scan = reader.scan;

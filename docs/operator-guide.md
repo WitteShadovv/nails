@@ -1398,23 +1398,28 @@ afterwards:
   ending in a backslash going on in the next. zsh's it reads as zsh does and
   fails closed where it cannot follow them:
 
-  - in zsh's order, `zprofile` and `zlogin` only for a login shell, a line
-    ending in a backslash going on in the next, the body of a here-document
-    as text, not code, and a file they source read where it is sourced when
-    its path resolves, so it follows Home Manager's `dotDir`, whose
-    `.zshenv` the home's sources and which sets `ZDOTDIR`;
+  - in zsh's order, once for each home the shell can run with, `zprofile`
+    and `zlogin` only for a login shell, a line ending in a backslash going
+    on in the next, the body of a here-document as text, not code, and a
+    file they source read where it is sourced when its path resolves, so it
+    follows Home Manager's `dotDir`, whose `.zshenv` the home's sources and
+    which sets `ZDOTDIR`;
   - an option counts as on where a `setopt` turns it on, wherever that is,
     and where any other word names it without a `no` prefix, as Home
     Manager's `set_opts=(... SHARE_HISTORY ...)` array, an alias or a test
     does; a loop over a list it can read, as Home Manager's over `set_opts`,
     is read item by item;
   - an option counts as off again only where an `unsetopt` turns it off
-    unconditionally at the top of a file zsh certainly reads: one in a
-    condition, a function (an anonymous `() { ... }` one too), an alias, a
-    subshell, a pipeline or the background (a `{ ... }` group or a loop
-    followed by `&` or `|` too), after a `return`, or in a `zlogin` of a
-    shell that may not be a login shell, counts as naming the option, which
-    turns it on.
+    unconditionally at the top of a file zsh certainly reads, the one file
+    zsh can read for its stage: not one of both `/etc/zshrc` and
+    `/etc/zsh/zshrc` (a zsh reads the one it was built for), nor one of two
+    `ZDOTDIR`s a condition leaves. One in a condition, a function (an
+    anonymous `() { ... }` one too), an alias, a subshell, a pipeline or the
+    background (a `{ ... }` group or a loop followed by `&` or `|` too),
+    after a `return`, or in a `zlogin` of a shell that may not be a login
+    shell, counts as naming the option, which turns it on. A root shell that
+    can run with your home or root's has the option off only when the files
+    of both turn it off.
 
   It knows that Oh My Zsh turns `SHARE_HISTORY` on, and it reads the
   `/etc/zshrc` where NixOS's `programs.zsh` sets that option by default. It
