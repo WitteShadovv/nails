@@ -125,6 +125,7 @@ fn a_window_s_helper_spares_itself_alone() {
     let invocation = tree.invocation(210);
     assert_eq!(invocation.chain, [210]);
     assert_eq!(invocation.ancestry, [210, 200, 100, 50, 1]);
+    assert_eq!(invocation.shell, None);
     assert_eq!(tree.spared(210), [210]);
 }
 
@@ -154,7 +155,10 @@ fn a_desktop_started_from_a_terminal_still_spares_its_window_s_helper_alone() {
         .add(120, 100, 100, 60, PTS0, LOGIN)
         .add(200, 100, 100, 60, PTS0, LOGIN)
         .add(210, 200, 100, 60, PTS0, LOGIN);
-    assert_eq!(tree.invocation(210).chain, [210]);
+    let invocation = tree.invocation(210);
+    assert_eq!(invocation.chain, [210]);
+    // The login shell is an ancestor, but the helper was not typed into it.
+    assert_eq!(invocation.shell, None);
     assert_eq!(tree.spared(210), [210]);
 }
 
@@ -193,6 +197,7 @@ fn a_command_typed_into_a_terminal_spares_sudo_its_monitor_and_their_job() {
     let tree = terminal();
     let invocation = tree.invocation(600);
     assert_eq!(invocation.chain, [600, 500, 400]);
+    assert_eq!(invocation.shell, Some(310));
     // Not the shell, its other job, the terminal, the desktop shell, Xwayland,
     // the browser or the user's service manager. The kill spares `less` with
     // `sudo`'s job, though the shell kill before it has ended a `less` in the
@@ -215,7 +220,9 @@ fn a_command_read_after_its_shell_died_keeps_no_monitor_without_sudo() {
         NO_TTY,
         TERMINAL_SCOPE,
     );
-    assert_eq!(tree.invocation(600).chain, [600]);
+    let invocation = tree.invocation(600);
+    assert_eq!(invocation.chain, [600]);
+    assert_eq!(invocation.shell, None);
     assert_eq!(tree.spared(600), [600]);
 }
 
@@ -229,7 +236,9 @@ fn the_job_of_a_command_typed_into_a_root_shell_is_spared() {
         .shell(310)
         .add(400, 310, 400, 310, PTS0, TERMINAL_SCOPE)
         .add(410, 310, 400, 310, PTS0, TERMINAL_SCOPE);
-    assert_eq!(tree.invocation(400).chain, [400]);
+    let invocation = tree.invocation(400);
+    assert_eq!(invocation.chain, [400]);
+    assert_eq!(invocation.shell, Some(310));
     assert_eq!(tree.spared(400), [400, 410]);
 }
 
@@ -241,7 +250,9 @@ fn sudo_s_monitor_is_never_spared_without_sudo() {
     tree.add(390, 310, 390, 310, PTS0, TERMINAL_SCOPE)
         .add(400, 390, 390, 310, PTS0, TERMINAL_SCOPE)
         .add(410, 390, 390, 310, PTS0, TERMINAL_SCOPE);
-    assert_eq!(tree.invocation(600).chain, [600]);
+    let invocation = tree.invocation(600);
+    assert_eq!(invocation.chain, [600]);
+    assert_eq!(invocation.shell, None);
     assert_eq!(tree.spared(600), [600]);
 }
 
