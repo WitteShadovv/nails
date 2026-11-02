@@ -43,14 +43,20 @@ fn recover_fix() -> String {
 ///
 /// The decoy root is mounted already there, read-write, beneath the session:
 /// a second mount of its device shares that filesystem, so nothing is
-/// replayed onto the disk, and a read-only one is refused as busy. The mount
-/// is made read-only right after it is made.
+/// replayed onto the disk. A read-only one would make that filesystem
+/// read-only, which ext4, XFS and f2fs refuse as busy (btrfs serves a
+/// subvolume read-only beside it), so the mount is made read-only right
+/// after it is made. A filesystem of the decoy the session did not mount
+/// (a `noauto` entry, one the session masked) would get its first read-write
+/// mount that way: the offline scan names each one that is missing under the
+/// root, with the mount that writes nothing to it.
 pub(super) fn check_decoy_offline() -> String {
     use nails_base::next_step::{NextStep, sudo_line};
     format!(
         "mount the decoy root's device again on a folder and make that mount read-only \
-         (`sudo mount <device> <mount> && sudo mount -o remount,bind,ro <mount>`), with what its \
-         /etc/fstab mounts on the folders below it the same way, then run `{}`",
+         (`sudo mount <device> <mount> && sudo mount -o remount,bind,ro <mount>`), then run \
+         `{}`, which lists each filesystem of the decoy's /etc/fstab that is missing there with \
+         the mount that writes nothing to it",
         sudo_line(NextStep::VerifyOffline)
     )
 }

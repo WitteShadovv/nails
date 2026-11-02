@@ -699,22 +699,34 @@ of this changelog for that version becomes the release notes word for word, and
   missing or empty under the root, and each home of a login account of its `/etc/passwd` that is,
   and so does the examiner's view. A btrfs decoy scanned by its system subvolume alone read as
   complete: its `@home`, and on archinstall its `@log`, lie beside that subvolume, so a history
-  that names the tool or a sudo log there was not read, and nothing said so. Only mounts from a
-  disk count, not `/` itself, swap, filesystems in RAM, host shares or network filesystems. The
-  two files and each place are read as the root is, and a link is not followed, so NixOS's
-  `/etc/fstab`, a link into the store, is not read.
+  that names the tool or a sudo log there was not read, and nothing said so. The line of a mount
+  point says how to mount it without writing to the decoy's disk, with the command: again and
+  read-only when its device is mounted on the machine already, read-only and without a journal
+  replay when it is not. Only mounts from a disk count, not `/` itself, swap, filesystems in RAM,
+  host shares, network filesystems or binds, whose source lies in the image and was scanned. Both
+  files are read inside the root with `openat2` and `RESOLVE_IN_ROOT`, so NixOS's `/etc/fstab`,
+  a link into the store, is read from the image's store, and one that cannot be read there is
+  listed as not read. The examiner's view says when the decoy's `/nix/store` is missing or empty
+  under the root, where its tool check had nothing to read.
+- A deep offline scan looks up the histories, desktop recent-file lists and temp and log folders
+  of the decoy inside the root, as the decoy sees them. It followed a link in the image on the
+  machine running verify: a `/home` that is an absolute link out of the image made `--deep` read
+  that machine's own `/home/alice/.bash_history` and report it as a trace on the decoy, and in a
+  hidden session a decoy link such as `/home` to `/data/home` led to the session's own folders.
 - The operator guide, the `--root` help and the message of a refused root mount the decoy so that
   nothing writes to its disk. They said `mount -o ro`, but on a filesystem that was not cleanly
   unmounted ext4 replays its journal and cleans up orphaned files on a read-only mount, btrfs
-  replays its tree log, and XFS and f2fs recover their logs, all onto the disk. A disk that is not
-  mounted yet is now made read-only with `blockdev --setro` before it is mounted with `ro,noload`
-  (ext4), `ro,rescue=nologreplay` (btrfs) or `ro,norecovery` (XFS, f2fs), and an image goes through
-  a read-only loop device. A filesystem that was not cleanly unmounted then shows what it held
-  before its journal, so what the decoy wrote last may be missing from the scan. In a hidden
-  session the decoy root is mounted already beneath the session, where a read-only mount of its
-  device is refused as busy: it is mounted again and that mount made read-only. On btrfs the
-  guide mounts the subvolume of the system with `subvol=`, then each subvolume the decoy's fstab
-  mounts on its folder below it, such as `@home` on `home`.
+  replays its tree log, and XFS and f2fs recover their logs, all onto the disk. A device that
+  `findmnt` shows mounted already, as the decoy root is in a hidden session, has that behind it:
+  it is mounted again and that mount made read-only, since a read-only mount of it would make its
+  filesystem read-only, which ext4, XFS and f2fs refuse as busy. Any other device, in a session
+  or not, a `noauto` entry the session left alone among them, is first made read-only with
+  `blockdev --setro` and then mounted with `ro,noload` (ext4), `ro,rescue=nologreplay` (btrfs) or
+  `ro,norecovery` (XFS, f2fs), and an image goes through a read-only loop device. A filesystem
+  that was not cleanly unmounted then shows what it held before its journal, so what the decoy
+  wrote last may be missing from the scan. On btrfs the guide mounts the subvolume of the system
+  with `subvol=`, then each subvolume the decoy's fstab mounts on its folder below it, such as
+  `@home` on `home`.
 - Activation and `emergency` kill the interactive shells the newest first. A login shell that
   leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
   console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at

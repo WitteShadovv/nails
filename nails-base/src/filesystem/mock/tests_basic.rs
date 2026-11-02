@@ -355,3 +355,24 @@ fn inode_reports_a_set_inode_an_error_or_a_distinct_default() {
         Some(std::io::ErrorKind::PermissionDenied)
     );
 }
+
+#[test]
+fn a_file_of_a_root_is_read_and_placed_below_it_without_links() {
+    // The mock records no links inside a root: a path of the root is the
+    // same path below it.
+    let fs = MockFilesystem::new();
+    let root = Path::new("/mnt/decoy");
+    fs.mock_add_file("/mnt/decoy/etc/fstab", "UUID=1 / ext4 defaults 0 1\n");
+    assert_eq!(
+        fs.read_file_in_root(root, Path::new("/etc/fstab")).unwrap(),
+        "UUID=1 / ext4 defaults 0 1\n"
+    );
+    assert!(
+        fs.read_file_in_root(root, Path::new("/etc/passwd"))
+            .is_err()
+    );
+    assert_eq!(
+        fs.canonical_in_root(root, Path::new("/home/alice")),
+        Path::new("/home/alice")
+    );
+}

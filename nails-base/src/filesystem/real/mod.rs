@@ -33,8 +33,8 @@ pub use noatime::{EntryType, NoatimeEntry, OpenKind, open_noatime, read_dir_noat
 pub(crate) use file_ops::unique_temp_name;
 
 use super::{Filesystem, MountEntry, MountRoot, MountSource};
-use crate::Result;
 use crate::target_user::TargetUser;
+use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
 
 // ============================================================================
@@ -122,6 +122,22 @@ impl Filesystem for RealFilesystem {
 
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         file_ops::canonicalize(path)
+    }
+
+    fn canonical_in_root(&self, root: &Path, path: &Path) -> PathBuf {
+        nails_teardown::whole_root::nextroot::canonical_in_root(root, path)
+    }
+
+    fn read_file_in_root(&self, root: &Path, path: &Path) -> Result<String> {
+        let shown = root.join(path.strip_prefix("/").unwrap_or(path));
+        let bytes = nails_teardown::whole_root::nextroot::read_in_root(root, path)
+            .map_err(|error| NailsError::io(&shown, error))?;
+        String::from_utf8(bytes).map_err(|error| {
+            NailsError::io(
+                &shown,
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+            )
+        })
     }
 
     fn supports_symlinks(&self, dir: &Path) -> Result<bool> {

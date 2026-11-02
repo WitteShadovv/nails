@@ -199,6 +199,32 @@ impl<F: Filesystem> Verifier<F> {
         }
     }
 
+    /// Where the decoy's `path` lies under the offline root, its links followed
+    /// inside the root as the decoy itself follows them: an absolute link in
+    /// the image resolves in the image, never on the machine that runs
+    /// verify ([`Filesystem::canonical_in_root`]). On the live host, `path`
+    /// itself. Following a link updates the link's own access time on a
+    /// read-write mount, which the advised read-only mounts are not.
+    fn place(&self, path: &Path) -> PathBuf {
+        match &self.context {
+            VerifyContext::Host => path.to_path_buf(),
+            VerifyContext::Offline { root } => {
+                let inside = self.filesystem.canonical_in_root(root, path);
+                root.join(inside.strip_prefix("/").unwrap_or(&inside))
+            }
+        }
+    }
+
+    /// The text of the decoy's file `path`: under the offline root its links
+    /// followed inside the root, as [`place`](Self::place) follows them, and
+    /// read without updating its access time; on the live host `path` itself.
+    fn read_in_image(&self, path: &Path) -> Result<String> {
+        match &self.context {
+            VerifyContext::Host => self.filesystem.read_file_content(path),
+            VerifyContext::Offline { root } => self.filesystem.read_file_in_root(root, path),
+        }
+    }
+
     /// The hidden volume root from config, when configured and non-empty.
     fn hidden_root(&self) -> Option<&Path> {
         self.config

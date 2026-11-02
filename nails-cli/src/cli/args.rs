@@ -479,16 +479,17 @@ pub struct VerifyArgs {
     /// below it
     ///
     /// Mount them so that nothing can write to the disk: a plain `ro` mount
-    /// can replay a journal onto it. In a hidden session, where the decoy root
-    /// is mounted already, mount each device again and make that mount
-    /// read-only (`mount -o remount,bind,ro <mount>`). Elsewhere make the
-    /// device read-only first (`blockdev --setro`), then mount it with
+    /// can replay a journal onto it. A device that findmnt shows mounted
+    /// already, as the decoy root is in a hidden session, is mounted again and
+    /// that mount made read-only (`mount -o remount,bind,ro <mount>`), or
+    /// mounted with `ro` where its filesystem is read-only already. Any other
+    /// device is made read-only first (`blockdev --setro`), then mounted with
     /// `ro,noload` for ext4, `ro,rescue=nologreplay` and the `subvol=` of the
     /// system for btrfs, or `ro,norecovery` for XFS and f2fs. A path that does
     /// not exist, is not a folder or holds no etc folder is refused, since
     /// nothing would be scanned, and a place the decoy's fstab mounts or a
     /// login account's home that holds nothing under the root is listed as
-    /// not checked.
+    /// not checked, with how to mount it.
     #[arg(long, value_name = "MOUNT", value_hint = ValueHint::DirPath, requires = "offline")]
     pub root: Option<std::path::PathBuf>,
 

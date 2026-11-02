@@ -63,22 +63,27 @@ impl OfflineRootProblem {
     /// root filesystem so that nothing can write to it, with what its fstab
     /// mounts below, and scan that. A plain read-only mount is not enough:
     /// ext4 replays its journal and cleans up orphans on one, btrfs replays
-    /// its tree log, XFS and f2fs recover their logs. In a hidden session the
-    /// filesystem is mounted already, so a second mount replays nothing, but
-    /// a read-only one is refused there as busy. On btrfs the system is a
-    /// subvolume, named at the mount.
+    /// its tree log, XFS and f2fs recover their logs. A device that is
+    /// mounted already, as the decoy root is in a hidden session, has that
+    /// behind it: a second mount shares its filesystem. A read-only one would
+    /// make that filesystem read-only, which ext4, XFS and f2fs refuse as busy
+    /// (btrfs serves a subvolume read-only beside it), so the second mount is
+    /// made read-only once it is made. Any other device, in a session or not,
+    /// is made read-only first. On btrfs the system is a subvolume, named at
+    /// the mount.
     pub fn hint(&self) -> String {
         let scan = sudo_line(NextStep::VerifyOffline);
         let mut hint = format!(
             "Mount the decoy's root filesystem on a folder so that nothing can write to it, and \
              what its /etc/fstab mounts on the folders below it, then run `{scan}`.\n\
-             In a hidden session, where the decoy root is mounted already, mount its device again \
-             and make that mount read-only: `sudo mount <device> <mount> && sudo mount -o \
-             remount,bind,ro <mount>`.\n\
-             Elsewhere make the device read-only first (`sudo blockdev --setro <device>`, and \
-             `--setrw` after the scan), then mount it with `-o ro,noload` for ext4, \
-             `-o ro,rescue=nologreplay` for btrfs or `-o ro,norecovery` for XFS and f2fs: a plain \
-             `-o ro` can replay a journal onto the disk."
+             A device that findmnt shows mounted already, as the decoy root is in a hidden \
+             session: mount it again and make that mount read-only, `sudo mount <device> <mount> \
+             && sudo mount -o remount,bind,ro <mount>` (where its filesystem is read-only already, \
+             `sudo mount -o ro <device> <mount>`).\n\
+             Any other device, in a hidden session or not: make it read-only first (`sudo \
+             blockdev --setro <device>`, and `--setrw` after the scan), then mount it with \
+             `-o ro,noload` for ext4, `-o ro,rescue=nologreplay` for btrfs or `-o ro,norecovery` \
+             for XFS and f2fs: a plain `-o ro` can replay a journal onto the disk."
         );
         if let OfflineRootProblem::NoEtcFolder { .. } = self {
             hint.push_str(

@@ -238,6 +238,27 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// deepest existing ancestor.
     fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
 
+    /// `path`, an absolute path of the system whose root is the folder
+    /// `root`, as it resolves inside `root`: each symlink on the way is
+    /// followed inside it, an absolute one and `..` included, so no link
+    /// leads out of `root` (`openat2` with `RESOLVE_IN_ROOT`), and a trailing
+    /// part that does not exist is appended to as much as does. The result is
+    /// absolute, as seen from `root`. The default, for a filesystem that
+    /// records no links, is `path` itself.
+    fn canonical_in_root(&self, root: &Path, path: &Path) -> PathBuf {
+        let _ = root;
+        path.to_path_buf()
+    }
+
+    /// The text of the file `path` of the system whose root is `root`, its
+    /// links followed inside `root` as
+    /// [`canonical_in_root`](Self::canonical_in_root) follows them, read
+    /// without updating its access time. The default reads `path` below
+    /// `root` with [`read_file_content`](Self::read_file_content).
+    fn read_file_in_root(&self, root: &Path, path: &Path) -> Result<String> {
+        self.read_file_content(&root.join(path.strip_prefix("/").unwrap_or(path)))
+    }
+
     /// Create a symbolic link at `link` pointing to `target` (idempotent).
     fn create_symlink(&self, target: &Path, link: &Path) -> Result<()>;
 

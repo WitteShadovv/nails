@@ -1097,21 +1097,25 @@ not enough: on a filesystem that was not cleanly unmounted, ext4 replays its
 journal and cleans up orphaned files, btrfs replays its tree log, and XFS and
 f2fs recover their logs, all onto the disk, read-only mount or not.
 
-- **In a hidden session** the decoy root is mounted already, read-write,
-  beneath the session, and so is each filesystem the session carries. A second
-  mount of the device shares that filesystem, so nothing is replayed, but a
-  read-only one is refused there as busy, and a mount you make by hand is
-  outside the fstab policy: what is written to it lands on the decoy disk.
-  Mount the device again and make that mount read-only right away, and do the
-  same on the folders below for what the decoy's fstab mounts (a filesystem the
-  decoy mounts read-only takes `-o ro` instead):
+- **A device that `findmnt` shows mounted already.** In a hidden session that
+  is the decoy root, mounted read-write beneath the session, and each
+  filesystem the session carries. A second mount of such a device shares its
+  filesystem, so nothing is replayed onto the disk. A read-only mount would
+  make that filesystem read-only, which ext4, XFS and f2fs refuse as busy
+  (btrfs serves a subvolume read-only beside it), and a mount you make by hand
+  is outside the fstab policy: what is written to it lands on the decoy disk.
+  Mount the device again and make that mount read-only right away, or, where
+  `findmnt` shows its filesystem mounted read-only already, mount it with
+  `-o ro`:
 
   ```bash
   sudo mount /dev/sda2 /mnt/decoy && sudo mount -o remount,bind,ro /mnt/decoy
   ```
 
-- **Anywhere else** (the disk attached to another machine, or an image) the
-  filesystem is not mounted yet. Make its device read-only first, so that every
+- **Any other device**, in a hidden session or not: the disk attached to
+  another machine, an image, and in a session each filesystem of the decoy it
+  did not mount, such as a `noauto` entry or a partition it masked. Its first
+  mount would be read-write, so make its device read-only first, so that every
   write to it fails, then mount it with the option that skips the replay:
   `ro,noload` for ext4, `ro,rescue=nologreplay` for btrfs and `ro,norecovery`
   for XFS and f2fs. A filesystem that was not cleanly unmounted then shows what
@@ -1139,8 +1143,8 @@ sudo mount -o ro,rescue=nologreplay,subvol=@home /dev/sdb2 /mnt/decoy/home
 sudo mount -o ro,rescue=nologreplay,subvol=@log /dev/sdb2 /mnt/decoy/var/log
 ```
 
-In a hidden session give each of these mounts its `subvol=` alone and make it
-read-only right after, as above.
+Where the device is mounted already, give each of these mounts its `subvol=`
+alone and make it read-only right after, as above.
 
 A `--root` that does not exist, is not a folder or holds no `etc` folder is
 refused before anything is scanned (the error `nothing_to_scan`, exit 1),
@@ -1150,14 +1154,24 @@ filesystem holds no `etc` either: the refusal names the subvolumes it finds
 there. Each mount point of the decoy's `/etc/fstab` that is missing or empty
 under `--root`, and each home of a login account of its `/etc/passwd` that is,
 is listed as not checked, in the examiner's view as well, so a scan of the
-system subvolume alone does not read as complete. These checks write nothing
-and, run as root, change no access time of the folder `--root` names or of what
-it holds. A link on the way to that folder is followed, as by any lookup, which
-changes the link's own access time. A link below it is not followed, so
-NixOS's `/etc/fstab`, a link into the store, is not read. `verify` does not
-check that a filesystem is mounted at `--root`, so a folder that holds an `etc`
-folder is scanned as it is, whether it is a copy of the decoy's files or the
-wrong folder: mount the image before you scan it.
+system subvolume alone does not read as complete. The line of a mount point
+says which of the two mounts above it needs, by whether `findmnt` shows its
+device mounted, with the command. A bind entry is left out, since its source
+lies in the image and was scanned. Below `--root`, the decoy's fstab and
+passwd, the places they name and the files and folders of a deep scan are
+looked up inside the root, as the decoy sees them: a link is followed there,
+an absolute one included, so NixOS's `/etc/fstab` is read from the image's
+store and no link leads to the folders of the machine running verify. An fstab
+that cannot be read inside the root, a link into a store that is not mounted
+there, is listed as not read, and the examiner's view says when the decoy's
+`/nix/store` is missing or empty, so that its tool check had nothing to read.
+These checks write nothing and, run as root, change no access time of the
+folder `--root` names or of what it holds, except that following a link
+updates the link's own access time on a read-write mount, which the mounts
+above are not. `verify` does not check that a filesystem is mounted at
+`--root`, so a folder that holds an `etc` folder is scanned as it is, whether
+it is a copy of the decoy's files or the wrong folder: mount the image before
+you scan it.
 
 To see the decoy the way an examiner would, add `--examiner`, and `--disk` with
 the raw disk or image behind the mounted root:

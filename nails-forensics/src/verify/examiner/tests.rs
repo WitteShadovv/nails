@@ -329,6 +329,28 @@ fn a_clean_disk_reports_nothing() {
 }
 
 #[test]
+fn a_store_with_nothing_to_read_is_said_so() {
+    // A NixOS decoy whose /nix is a filesystem of its own that is not
+    // mounted under the root: its store is missing or empty there, and the
+    // tool check found nothing because it read nothing.
+    let note = |root: &Path| {
+        examine(root, &ExaminerOptions::default())
+            .not_checked
+            .into_iter()
+            .filter(|area| area.starts_with("encryption tooling in the decoy's Nix store"))
+            .count()
+    };
+    let root = clean_root();
+    assert_eq!(note(root.path()), 0, "no /nix: no store is kept");
+    std::fs::create_dir(root.path().join("nix")).unwrap();
+    assert_eq!(note(root.path()), 1, "/nix without its store");
+    std::fs::create_dir(root.path().join("nix/store")).unwrap();
+    assert_eq!(note(root.path()), 1, "an empty store");
+    write(root.path(), "/nix/store/abc-hello-1.0/bin/hello", b"");
+    assert_eq!(note(root.path()), 0, "a store with paths in it was read");
+}
+
+#[test]
 fn an_unreadable_disk_is_reported_as_not_checked() {
     let root = clean_root();
     let options = ExaminerOptions {

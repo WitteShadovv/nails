@@ -5,11 +5,15 @@
 //! decoy mounts inside it, read as complete: a history in `@home` or a sudo
 //! log in `@log` beside it was not read, and nothing said so. Every place the
 //! decoy mounts something that holds nothing under the root is now listed as
-//! not checked, by the scan and by the examiner's view.
+//! not checked, by the scan and by the examiner's view, each mount point with
+//! the mount that writes nothing to the decoy's disk. The decoy's files and
+//! places are looked up inside the root: no link in the image leads to the
+//! folders of the machine running verify.
 
 use super::Verifier;
+use crate::filesystem::PathKind;
 use crate::verify::{ExaminerOptions, VerifyResult, VerifyStatus};
-use crate::{RealFilesystem, Result};
+use crate::{Filesystem, MockFilesystem, RealFilesystem, Result};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -21,12 +25,13 @@ const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
                       nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n";
 
 /// An archinstall layout: the system in `@`, the rest in subvolumes of
-/// their own, mounted inside it.
+/// their own, mounted inside it, and a bind of a folder of the image.
 const FSTAB: &str = "UUID=1 / btrfs rw,subvol=/@ 0 0\n\
                      UUID=1 /home btrfs rw,subvol=/@home 0 0\n\
                      UUID=1 /var/log btrfs rw,subvol=/@log 0 0\n\
                      UUID=1 /.snapshots btrfs rw,subvol=/@.snapshots 0 0\n\
                      UUID=2 /boot vfat rw,umask=0077 0 2\n\
+                     /srv/share /data none bind 0 0\n\
                      tmpfs /tmp tmpfs defaults 0 0\n\
                      server:/srv /mnt/share nfs defaults 0 0\n\
                      /swapfile none swap defaults 0 0\n";
@@ -54,27 +59,28 @@ fn scan(root: &Path, deep: bool, examiner: bool) -> Result<VerifyResult> {
     verifier.run(deep)
 }
 
-/// The areas the scan lists for the places the decoy mounts something at.
-fn unmounted(result: &VerifyResult) -> Vec<&str> {
-    result
-        .areas_not_checked
+/// The lines the scan lists for the decoy's places and files it could not
+/// read: each starts with the decoy path it names, as no other line does.
+fn unmounted(areas: &[String]) -> Vec<&str> {
+    areas
         .iter()
         .map(String::as_str)
-        .filter(|area| area.contains("missing or empty under the root"))
+        .filter(|area| area.starts_with('/'))
+        .collect()
+}
+
+/// The decoy places those lines name, in their order.
+fn places(areas: &[String]) -> Vec<&str> {
+    unmounted(areas)
+        .into_iter()
+        .map(|area| area.split(", ").next().unwrap())
         .collect()
 }
 
 fn home_of(user: &str, home: &str) -> String {
     format!(
         "{home}, the home of {user} in the decoy's /etc/passwd (missing or empty under the root: \
-         mount what holds it there before the scan)"
-    )
-}
-
-fn mount_point(point: &str) -> String {
-    format!(
-        "{point}, which the decoy's /etc/fstab mounts (missing or empty under the root: mount it \
-         there before the scan)"
+         mount what holds it there without writing to it before the scan)"
     )
 }
 
@@ -88,68 +94,69 @@ fn a_home_that_is_not_mounted_is_not_checked() {
         let result = scan(root.path(), true, examiner).unwrap();
         assert_eq!(result.status, VerifyStatus::Secure, "{:?}", result.findings);
         assert_eq!(
-            unmounted(&result),
+            unmounted(&result.areas_not_checked),
             [home_of("alice", "/home/alice")],
             "{:#?}",
             result.areas_not_checked
         );
         // The examiner's view reads the homes too, and says so as well.
         if let Some(report) = &result.examiner {
-            assert!(
-                report
-                    .not_checked
-                    .contains(&home_of("alice", "/home/alice")),
-                "{:#?}",
-                report.not_checked
+            assert_eq!(
+                unmounted(&report.not_checked),
+                [home_of("alice", "/home/alice")]
             );
         }
     }
     // An empty home is not checked either, and one that holds a file is.
     std::fs::create_dir(root.path().join("home/alice")).unwrap();
     let result = scan(root.path(), false, false).unwrap();
-    assert_eq!(unmounted(&result), [home_of("alice", "/home/alice")]);
+    assert_eq!(places(&result.areas_not_checked), ["/home/alice"]);
     std::fs::write(root.path().join("home/alice/.profile"), "").unwrap();
     let result = scan(root.path(), false, false).unwrap();
-    assert!(
-        unmounted(&result).is_empty(),
-        "{:#?}",
-        result.areas_not_checked
-    );
+    assert!(places(&result.areas_not_checked).is_empty());
 }
 
 #[test]
 fn a_mount_point_of_the_decoys_fstab_that_holds_nothing_is_not_checked() {
     // @home, @log and @.snapshots are not mounted under the root, /boot is,
-    // and /tmp, the share, the swap file and / itself hold nothing on the
-    // disk scanned. alice's home lies under /home, which is listed already.
+    // the bind's source lies in the image, and /tmp, the share, the swap file
+    // and / itself hold nothing on the disk scanned. alice's home lies under
+    // /home, which is listed already.
     let root = decoy(
-        &["home", "var/log", "boot", "tmp", "srv/bob"],
+        &[
+            "home",
+            "var/log",
+            "boot",
+            "tmp",
+            "srv/bob",
+            "data",
+            "srv/share",
+        ],
         &[
             ("etc/fstab", FSTAB),
             ("boot/grub.cfg", ""),
             ("srv/bob/.profile", ""),
+            ("srv/share/notes", ""),
         ],
     );
     let result = scan(root.path(), false, true).unwrap();
-    let listed = [
-        mount_point("/.snapshots"),
-        mount_point("/home"),
-        mount_point("/var/log"),
-    ];
-    assert_eq!(
-        unmounted(&result),
-        listed,
-        "{:#?}",
-        result.areas_not_checked
-    );
+    let listed = ["/.snapshots", "/home", "/var/log"];
+    assert_eq!(places(&result.areas_not_checked), listed);
     let report = result.examiner.as_ref().expect("the examiner's view ran");
-    for area in &listed {
-        assert!(
-            report.not_checked.contains(area),
-            "{:#?}",
-            report.not_checked
-        );
-    }
+    assert_eq!(places(&report.not_checked), listed);
+    // The device is not on this machine, so it is not mounted here: made
+    // read-only and mounted without a replay of the btrfs tree log.
+    let home = unmounted(&result.areas_not_checked)[1];
+    let at = nails_base::next_step::shell_word(root.path().join("home").as_os_str());
+    assert_eq!(
+        home,
+        format!(
+            "/home, which the decoy's /etc/fstab mounts (missing or empty under the root. Its \
+             device is not mounted here: make it read-only and mount it there without a journal \
+             replay before the scan, with `sudo blockdev --setro /dev/disk/by-uuid/1 && sudo mount \
+             -o ro,rescue=nologreplay,subvol=/@home /dev/disk/by-uuid/1 {at}`)"
+        )
+    );
 
     // With each mounted in place, nothing is listed.
     for place in ["home/alice/.profile", "var/log/wtmp", ".snapshots/1"] {
@@ -158,28 +165,143 @@ fn a_mount_point_of_the_decoys_fstab_that_holds_nothing_is_not_checked() {
         std::fs::write(file, "").unwrap();
     }
     let result = scan(root.path(), false, true).unwrap();
-    assert!(
-        unmounted(&result).is_empty(),
+    assert!(places(&result.areas_not_checked).is_empty());
+}
+
+#[test]
+fn each_mount_point_says_how_to_mount_it_by_how_its_device_is_mounted_now() {
+    // A device mounted here read-write (the decoy root's, beneath a hidden
+    // session) is mounted again and that mount made read-only; one whose
+    // filesystem is mounted read-only already takes `ro`; any other is made
+    // read-only first and mounted without a journal replay.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
+    fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
+    fs.mock_add_file(
+        "/mnt/decoy/etc/fstab",
+        "UUID=r /home ext4 defaults 0 2\n\
+         UUID=o /media/ro xfs defaults 0 2\n\
+         UUID=n /media/backup ext4 noauto 0 2\n",
+    );
+    for empty in ["/mnt/decoy/home", "/mnt/decoy/media/ro"] {
+        fs.mock_set_path_type(empty, PathKind::Dir);
+        fs.mock_set_directory_contents(Path::new(empty), Vec::new());
+    }
+    fs.create_symlink(Path::new("/dev/sda2"), Path::new("/dev/disk/by-uuid/r"))
+        .unwrap();
+    fs.create_symlink(Path::new("/dev/sdb1"), Path::new("/dev/disk/by-uuid/o"))
+        .unwrap();
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 8:2 / /run/overlay-runtime/lower ro - ext4 /dev/sda2 rw,relatime\n\
+         31 1 8:17 / /mnt/other ro - xfs /dev/sdb1 ro,relatime\n",
+    );
+
+    let result = Verifier::new(fs)
+        .offline_under("/mnt/decoy".into())
+        .run(false)
+        .unwrap();
+    let why = |place: &str, how: &str| {
+        format!(
+            "{place}, which the decoy's /etc/fstab mounts (missing or empty under the root. {how})"
+        )
+    };
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            why(
+                "/home",
+                "Its device is mounted here already, read-write: mount it there again and make \
+                 that mount read-only before the scan, with `sudo mount /dev/disk/by-uuid/r \
+                 /mnt/decoy/home && sudo mount -o remount,bind,ro /mnt/decoy/home`"
+            ),
+            why(
+                "/media/backup",
+                "Its device is not mounted here: make it read-only and mount it there without a \
+                 journal replay before the scan, with `sudo blockdev --setro /dev/disk/by-uuid/n \
+                 && sudo mount -o ro,noload /dev/disk/by-uuid/n /mnt/decoy/media/backup`"
+            ),
+            why(
+                "/media/ro",
+                "Its device is mounted here already, read-only: mount it there before the scan, \
+                 with `sudo mount -o ro /dev/disk/by-uuid/o /mnt/decoy/media/ro`"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn the_decoys_links_are_followed_inside_the_root() {
+    // NixOS links /etc/fstab into /etc/static, itself a link into the store:
+    // both resolve inside the image, never on the machine running verify. A
+    // mount point that is an absolute link leads inside the image too.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("notes"), "").unwrap();
+    let root = decoy(
+        &["nix/store/abc-etc/etc", "data/home", "srv"],
+        &[
+            (
+                "nix/store/abc-etc/etc/fstab",
+                "UUID=1 /home ext4 defaults 0 2\nUUID=1 /var/log ext4 defaults 0 2\n",
+            ),
+            ("data/home/.keep", ""),
+        ],
+    );
+    let link = |target: &Path, at: &str| {
+        std::os::unix::fs::symlink(target, root.path().join(at)).unwrap();
+    };
+    link(Path::new("/etc/static/fstab"), "etc/fstab");
+    link(Path::new("/nix/store/abc-etc/etc"), "etc/static");
+    // /home holds the home folder, /var/log leads to nothing in the image,
+    // and bob's home leads out of it, where a folder that holds a file is.
+    link(Path::new("/data/home"), "home");
+    std::fs::create_dir(root.path().join("var")).unwrap();
+    link(Path::new("/persist/log"), "var/log");
+    link(outside.path(), "srv/bob");
+
+    let result = scan(root.path(), false, false).unwrap();
+    assert_eq!(
+        places(&result.areas_not_checked),
+        ["/var/log", "/home/alice", "/srv/bob"],
         "{:#?}",
         result.areas_not_checked
     );
 }
 
 #[test]
-fn a_link_is_not_followed() {
-    // NixOS links /etc/fstab into /etc/static, which leads out of the image:
-    // it is not read. A mount point or a home that is a link is not followed
-    // either.
-    let root = decoy(&["data", "home", "srv"], &[("etc/fstab.real", FSTAB)]);
-    std::os::unix::fs::symlink("fstab.real", root.path().join("etc/fstab")).unwrap();
-    std::os::unix::fs::symlink("/nonexistent", root.path().join("home/alice")).unwrap();
-    std::os::unix::fs::symlink("../data", root.path().join("srv/bob")).unwrap();
+fn an_fstab_that_cannot_be_read_inside_the_root_is_not_read() {
+    // NixOS's link into a store that is not mounted under the root.
+    let root = decoy(&["home/alice", "srv/bob"], &[("home/alice/.profile", "")]);
+    std::fs::write(root.path().join("srv/bob/.profile"), "").unwrap();
+    std::os::unix::fs::symlink("/etc/static/fstab", root.path().join("etc/fstab")).unwrap();
     let result = scan(root.path(), false, false).unwrap();
-    assert!(
-        unmounted(&result).is_empty(),
-        "{:#?}",
-        result.areas_not_checked
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            "/etc/fstab, the decoy's table of what it mounts (it could not be read inside the root, \
+          as a link into a store that is not mounted there cannot be: what it mounts is not known)"
+        ]
     );
+}
+
+#[test]
+fn a_deep_scan_does_not_follow_a_link_out_of_the_image() {
+    // The image's /home is an absolute link: on the machine running verify it
+    // leads to a folder with a history that names the tool, which was read
+    // and reported as a trace on the decoy. Inside the image it leads to
+    // nothing, so alice's home is not checked instead.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir(outside.path().join("alice")).unwrap();
+    std::fs::write(
+        outside.path().join("alice/.bash_history"),
+        "sudo /mnt/data/nails activate\n",
+    )
+    .unwrap();
+    let root = decoy(&["srv/bob"], &[("srv/bob/.profile", "")]);
+    std::os::unix::fs::symlink(outside.path(), root.path().join("home")).unwrap();
+    let result = scan(root.path(), true, false).unwrap();
+    assert_eq!(result.status, VerifyStatus::Secure, "{:?}", result.findings);
+    assert_eq!(places(&result.areas_not_checked), ["/home/alice"]);
 }
 
 /// The access time of `path`, to the nanosecond.

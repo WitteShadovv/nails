@@ -14,7 +14,9 @@ impl<F: Filesystem> Verifier<F> {
         //    files, tolerating directories we cannot enter.
         let deep_scan_paths = ["/tmp", "/var/tmp", "/var/log"];
         for base_path in deep_scan_paths {
-            let path_buf = self.rebase(Path::new(base_path));
+            // Inside the root, so a link in the image never leads to the
+            // folders of the machine running verify.
+            let path_buf = self.place(Path::new(base_path));
             if self.filesystem.path_exists(&path_buf)? && self.filesystem.is_directory(&path_buf)? {
                 let scan = self
                     .filesystem
@@ -57,7 +59,7 @@ impl<F: Filesystem> Verifier<F> {
 
         for history in HISTORY_FILES {
             let path = home.join(history);
-            let probe = self.rebase(&path);
+            let probe = self.place(&path);
             if !self.filesystem.path_exists(&probe)? {
                 continue;
             }
@@ -98,7 +100,7 @@ impl<F: Filesystem> Verifier<F> {
             let needle = hidden_root.to_string_lossy().to_string();
             for recent in DESKTOP_RECENT_FILES {
                 let path = home.join(recent);
-                let probe = self.rebase(&path);
+                let probe = self.place(&path);
                 if !self.filesystem.path_exists(&probe)? {
                     continue;
                 }
@@ -139,8 +141,7 @@ impl<F: Filesystem> Verifier<F> {
         // Root's home is always present and always worth scanning.
         homes.insert(PathBuf::from("/root"));
 
-        let passwd_path = self.rebase(Path::new(PASSWD_FILE));
-        if let Ok(content) = self.filesystem.read_file_content(&passwd_path) {
+        if let Ok(content) = self.read_in_image(Path::new(PASSWD_FILE)) {
             for line in content.lines() {
                 let fields: Vec<&str> = line.split(':').collect();
                 if fields.len() < 7 {
