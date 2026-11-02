@@ -282,6 +282,30 @@ impl Invocation {
     }
 }
 
+/// The interactive shell the command `own` was typed into: the one its
+/// invocation walk ends at ([`Invocation::shell`]), else the nearest ancestor
+/// that is an interactive shell on `own`'s own controlling terminal, as when
+/// `sudo` runs the command without a terminal of its own, or `su -c` or a
+/// script typed at the prompt runs it. `None` for a command without a
+/// controlling terminal, such as one a window or a service starts. `read`
+/// describes the process tree, as for [`Invocation::walk`].
+pub fn typing_shell(own: u32, read: impl Fn(u32) -> Option<Node>) -> Option<u32> {
+    let invocation = Invocation::walk(own, &read);
+    if invocation.shell.is_some() {
+        return invocation.shell;
+    }
+    let tty = read(own)?.stat.tty;
+    if tty == 0 {
+        return None;
+    }
+    invocation
+        .ancestry
+        .iter()
+        .skip(1)
+        .copied()
+        .find(|&pid| read(pid).is_some_and(|node| node.interactive_shell && node.stat.tty == tty))
+}
+
 /// Whether the ancestor `pid` joins the chain (see [`Invocation`]).
 fn joins(pid: u32, node: &Node, own_cgroup: Option<&str>) -> bool {
     pid != 1

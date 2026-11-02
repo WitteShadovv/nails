@@ -72,6 +72,11 @@ impl Tree {
         Invocation::walk(own, |pid| self.0.get(&pid).cloned())
     }
 
+    /// The shell the command `own` was typed into ([`super::typing_shell`]).
+    fn typing_shell(&self, own: u32) -> Option<u32> {
+        super::typing_shell(own, |pid| self.0.get(&pid).cloned())
+    }
+
     /// The processes the invocation of `own` spares, in order.
     fn spared(&self, own: u32) -> Vec<u32> {
         let invocation = self.invocation(own);
@@ -406,4 +411,63 @@ fn a_parent_that_is_gone_or_its_own_ancestor_ends_the_walk() {
 
     // A process that is gone itself is its own chain.
     assert_eq!(Tree::new().invocation(999).chain, [999]);
+}
+
+#[test]
+fn the_shell_a_command_was_typed_into_is_found_with_or_without_sudo_s_terminal() {
+    // Through `sudo` and its monitor, as the walk finds it.
+    let tree = terminal();
+    assert_eq!(tree.typing_shell(600), Some(310));
+    // Typed into a root shell, as a job of its own.
+    let mut tree = desktop();
+    tree.add(300, 100, 100, 100, NO_TTY, TERMINAL_SCOPE)
+        .add(310, 300, 310, 310, PTS0, TERMINAL_SCOPE)
+        .shell(310)
+        .add(400, 310, 400, 310, PTS0, TERMINAL_SCOPE);
+    assert_eq!(tree.typing_shell(400), Some(310));
+}
+
+#[test]
+fn the_shell_a_command_was_typed_into_is_found_on_its_own_terminal() {
+    // `sudo` without a terminal of its own (no `use_pty`): nails runs in
+    // `sudo`'s process group on the shell's terminal, so the walk does not
+    // take it for typed.
+    let mut tree = desktop();
+    tree.add(300, 100, 100, 100, NO_TTY, TERMINAL_SCOPE)
+        .add(310, 300, 310, 310, PTS0, TERMINAL_SCOPE)
+        .shell(310)
+        .add(400, 310, 400, 310, PTS0, TERMINAL_SCOPE)
+        .add(410, 400, 400, 310, PTS0, TERMINAL_SCOPE);
+    assert_eq!(tree.invocation(410).shell, None);
+    assert_eq!(tree.typing_shell(410), Some(310));
+
+    // `su -c` through a shell that runs a command string: the nearest
+    // interactive shell on the same terminal, not a login shell further up
+    // on another one.
+    let mut tree = Tree::new();
+    tree.add(60, 1, 60, 60, TTY1, LOGIN)
+        .shell(60)
+        .add(300, 60, 300, 60, TTY1, LOGIN)
+        .add(310, 300, 310, 310, PTS0, TERMINAL_SCOPE)
+        .shell(310)
+        .add(400, 310, 400, 310, PTS0, TERMINAL_SCOPE)
+        .add(410, 400, 400, 310, PTS0, TERMINAL_SCOPE)
+        .add(420, 410, 400, 310, PTS0, TERMINAL_SCOPE);
+    assert_eq!(tree.typing_shell(420), Some(310));
+}
+
+#[test]
+fn a_command_without_a_terminal_was_typed_into_no_shell() {
+    // A window's helper on a desktop started from a console login: the
+    // login shell is an ancestor, but on the console, and the helper has no
+    // terminal.
+    let mut tree = Tree::new();
+    tree.add(60, 1, 60, 60, TTY1, LOGIN)
+        .shell(60)
+        .add(100, 60, 100, 60, TTY1, LOGIN)
+        .add(200, 100, 200, 200, NO_TTY, WINDOW_SCOPE)
+        .add(210, 200, 200, 200, NO_TTY, WINDOW_SCOPE);
+    assert_eq!(tree.typing_shell(210), None);
+    // A process the tree does not hold.
+    assert_eq!(tree.typing_shell(999), None);
 }
