@@ -9,21 +9,23 @@
 //! model counts on an adversary who obtains the decoy's credentials
 //! (`docs/threat-model.md`, "Compelled disclosure of the decoy").
 //!
-//! The check walks the block devices under the hidden root
-//! ([`blockdev::walk()`]): through `slaves/`, into the device behind a loop
-//! device over a block node, and below a loop device over a file into the
-//! device of the filesystem that holds the file. Every way down from the top
-//! to a device at the bottom must pass an encrypting layer that is not one of
-//! the decoy's: not a device the decoy claims as its own storage
-//! ([`separation::claimed_devices`]). A logical volume spread over two disks,
-//! or an md mirror of two, passes only when the way down to each disk does.
+//! The check walks the block devices under every device of the hidden root's
+//! filesystem, each device of a btrfs or bcachefs filesystem included: through
+//! `slaves/`, into the device behind a loop device over a block node, from a
+//! partition into its disk where the disk keeps its data elsewhere, and from a
+//! loop device over a file into the devices of the filesystem the loop driver
+//! records for the file (see [`graph`]). Every way down to a device at the
+//! bottom must pass an encrypting layer that is not one of the decoy's: not a
+//! device the decoy claims as its own storage ([`separation::claimed_devices`]).
+//! A logical volume spread over two disks, an md mirror of two or a btrfs
+//! filesystem of two passes only when the way down to each disk does.
 //!
 //! It only warns. Encryption is not deniability (a LUKS header shows that an
 //! encrypted volume exists), and a root kept in RAM to try NAILS out is no
 //! error.
 
 use super::CryptType;
-use crate::blockdev::{self, DmKind, Layer, LoopFollow, MAX_STACK_DEVICES};
+use crate::blockdev::{DmKind, Layer, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::top_mount_at;
 use crate::hidden_root::separation::{self, Claimed};
@@ -32,8 +34,11 @@ use crate::{Filesystem, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+mod graph;
 #[cfg(test)]
 mod tests;
+
+use graph::{Graph, MAX_DEVICES, filesystem_devices, leaf_kind};
 
 /// The cryptsetup types that encrypt, as the `<TYPE>` of a `CRYPT-<TYPE>-`
 /// device-mapper uuid. `INTEGRITY` and `VERITY` encrypt nothing.
@@ -57,18 +62,19 @@ const RAM_FIX: &str = "Use a root in RAM only to try NAILS out, and keep a hidde
 ///
 /// # Pass and warn
 ///
-/// It passes when every way down from the hidden root's device to the bottom
-/// of the stack passes an encrypting layer the decoy does not claim: a
-/// cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK or
-/// FVAULT2, a `SUBDEV` mapping (cryptsetup's name for the layers it puts
-/// below such a mapping), or a mapping the VeraCrypt application made. It
-/// warns, naming the device, when a way down passes no encrypting layer at
-/// all; when the only encryption on it is the decoy's own; when it cannot
-/// tell (a device-mapper device of a kind it does not know, as it never reads
-/// a mapping's table, a loop device whose file it cannot follow to a disk, a
-/// stack deeper than the walk reads, a filesystem that shows no block
-/// device); and when the hidden root is a RAM filesystem, whose contents a
-/// power-off ends. It never fails.
+/// It passes when every way down from the devices of the hidden root's
+/// filesystem to the bottom of the stack passes an encrypting layer that is
+/// not the decoy's: a cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN,
+/// LOOPAES, BITLK or FVAULT2, a `SUBDEV` mapping (cryptsetup's name for the
+/// layers it puts below such a mapping), or a mapping the VeraCrypt
+/// application made. It warns, naming the device, when a way down passes no
+/// encrypting layer at all; when the only encryption on it is the decoy's
+/// own; when it cannot tell (a device-mapper device of a kind it does not
+/// know, as it never reads a mapping's table, a loop device whose file it
+/// cannot follow to a disk or whose path and recorded filesystem disagree, a
+/// device that keeps its data where sysfs does not show, a stack deeper than
+/// it reads, a filesystem that shows no block device); and when the hidden
+/// root is a RAM filesystem, whose contents a power-off ends. It never fails.
 ///
 /// # What it reads
 ///
@@ -136,9 +142,15 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEncryptionCheck {
 
         let collected = separation::collect(fs, &table, Path::new("/"));
         let claimed = separation::claimed_devices(&collected.scene(&table), hidden);
-        let cover = blockdev::device_of_mount(fs, hidden)
-            .map(|top| blockdev::walk(fs, &top, LoopFollow::BackingFiles, MAX_STACK_DEVICES))
-            .and_then(|walk| Stack::new(&walk, &claimed).cover_of_top())
+        let cover = filesystem_devices(fs, hidden)
+            .and_then(|roots| {
+                let graph = Graph::read(fs, &table, &collected.devices, &roots);
+                let stack = Stack {
+                    graph: &graph,
+                    claimed: &claimed,
+                };
+                stack.cover_of(&roots)
+            })
             .unwrap_or_else(|| {
                 Cover::Unknown(format!(
                     "its {} filesystem shows no block device to follow",
@@ -304,53 +316,32 @@ impl Cover {
     }
 }
 
-/// The stack under the hidden root as the walk read it, by kernel name, and
-/// the devices the decoy claims.
+/// The devices under the hidden root and the devices the decoy claims.
 struct Stack<'a> {
-    /// The devices read, top first.
-    layers: Vec<(String, &'a Layer)>,
-    /// The loop devices whose file the walk could not follow to a disk.
-    unplaced: &'a [String],
+    /// The devices read, and where the check goes on from each.
+    graph: &'a Graph,
     /// The devices the decoy claims, and what each holds.
     claimed: &'a BTreeMap<String, Claimed>,
 }
 
 impl<'a> Stack<'a> {
-    fn new(walk: &'a blockdev::Walk, claimed: &'a BTreeMap<String, Claimed>) -> Self {
-        // A device by the name its sysfs directory has, as `slaves/`, the
-        // walk's `below` and the decoy's claims name it.
-        let layers = walk
-            .layers
+    /// What the ways down from each of `roots`, the devices of the hidden
+    /// root's filesystem, pass together; `None` for no root.
+    fn cover_of(&self, roots: &[PathBuf]) -> Option<Cover> {
+        roots
             .iter()
-            .map(|layer| {
-                let name = layer
-                    .sysfs
-                    .file_name()
-                    .map_or_else(|| layer.name.clone(), |n| n.to_string_lossy().into_owned());
-                (name, layer)
-            })
-            .collect();
-        Self {
-            layers,
-            unplaced: &walk.unplaced_loops,
-            claimed,
-        }
-    }
-
-    /// What the ways down from the top of the stack pass; `None` for a walk
-    /// that read no device.
-    fn cover_of_top(&self) -> Option<Cover> {
-        let (top, _) = self.layers.first()?;
-        Some(self.cover(top, &mut Vec::new()))
+            .filter_map(|root| root.file_name())
+            .map(|name| self.cover(&name.to_string_lossy(), &mut Vec::new()))
+            .reduce(Cover::and)
     }
 
     /// What the ways down from the device `name` pass. `above` holds the
     /// devices above it on this way, so a link back up ends the way.
     fn cover(&self, name: &str, above: &mut Vec<String>) -> Cover {
-        let Some(layer) = self.layer(name) else {
+        let Some(layer) = self.graph.layers.get(name) else {
             return Cover::Unknown(format!(
-                "the stack under it holds more devices than the {MAX_STACK_DEVICES} the check \
-                 reads"
+                "the stack under it holds more devices than the check reads ({MAX_STACK_DEVICES} \
+                 below any one device, {MAX_DEVICES} in all)"
             ));
         };
         if above.iter().any(|seen| seen == name) {
@@ -362,14 +353,21 @@ impl<'a> Stack<'a> {
             return Cover::Own(BTreeSet::from([format!("{label} mapping {}", layer.name)]));
         }
 
-        above.push(name.to_string());
-        let below = layer
-            .below
-            .iter()
-            .map(|next| self.cover(next, above))
-            .reduce(Cover::and)
-            .unwrap_or_else(|| self.bottom(layer));
-        above.pop();
+        let below = match self.graph.doubts.get(name) {
+            Some(why) => Cover::Unknown(why.clone()),
+            None => {
+                above.push(name.to_string());
+                let below = self
+                    .graph
+                    .children(name, layer)
+                    .iter()
+                    .map(|next| self.cover(next, above))
+                    .reduce(Cover::and)
+                    .unwrap_or_else(|| self.bottom(name, layer));
+                above.pop();
+                below
+            }
+        };
 
         // What this device adds to each way through it: the decoy's own
         // encryption, or a doubt, matter only where nothing better lies below.
@@ -389,10 +387,16 @@ impl<'a> Stack<'a> {
         }
     }
 
-    /// What a way that ends at `layer`, a device with nothing below it in the
-    /// walk, passes there.
-    fn bottom(&self, layer: &Layer) -> Cover {
-        if !self.unplaced.contains(&layer.name) {
+    /// What a way that ends at `layer`, a device the check goes on below
+    /// from nowhere, passes there.
+    fn bottom(&self, name: &str, layer: &Layer) -> Cover {
+        if let Some(kind) = leaf_kind(name) {
+            return Cover::Unknown(format!(
+                "{} is {kind}, which keeps its data where the check cannot follow",
+                layer.name
+            ));
+        }
+        if !self.graph.unplaced.contains(&layer.name) {
             return Cover::Plain(layer.name.clone());
         }
         let file = layer
@@ -404,12 +408,5 @@ impl<'a> Stack<'a> {
             "loop device {} reads {file}, which the check cannot follow to a disk",
             layer.name
         ))
-    }
-
-    fn layer(&self, name: &str) -> Option<&'a Layer> {
-        self.layers
-            .iter()
-            .find(|(known, _)| known == name)
-            .map(|(_, layer)| *layer)
     }
 }

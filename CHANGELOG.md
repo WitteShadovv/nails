@@ -350,15 +350,19 @@ of this changelog for that version becomes the release notes word for word, and
   (the option that turns discards on in the first place); the safe fix is still to re-open the
   volume with discards off. See docs/backends.md.
 - `check` and activation warn (`backend-encryption`) when the hidden root's storage has no
-  encryption of its own. The check walks the devices under the hidden root, below a loop device
-  too: into the device behind a loop over a block device, and into the device of the filesystem
-  that holds a loop device's file. Every way down to a disk has to pass a cryptsetup mapping of
-  type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK, FVAULT2 or SUBDEV, or a mapping the VeraCrypt
-  application made, that is not the decoy's own storage as the attach gate counts it. It warns,
-  naming the device, where nothing encrypts the hidden root; where only the decoy's own
+  encryption of its own. The check walks the devices under every device of the hidden root's
+  filesystem (each one of a btrfs or bcachefs filesystem of several): into the device behind a
+  loop over a block device, from a partition into its disk where that disk keeps its data
+  elsewhere (a loop, device-mapper or md device), and from a loop over a file into the devices of
+  the filesystem the loop driver recorded for the file, or, where only root could read that
+  record, the one the file's path leads to. Every way down to a disk has to pass a cryptsetup
+  mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK, FVAULT2 or SUBDEV, or a mapping the
+  VeraCrypt application made, that is not the decoy's own storage as the attach gate counts it.
+  It warns, naming the device, where nothing encrypts the hidden root; where only the decoy's own
   encryption does, as for a plain image file on the decoy's encrypted `/home`, which whoever
   unlocks the decoy can read; where it cannot tell (a device-mapper device of a kind it does not
-  know, a loop device whose file it cannot follow to a disk, a filesystem that shows no block
+  know, a loop device whose file it cannot follow to a disk or whose path disagrees with the loop
+  driver's record, a ZFS volume, an nbd, ublk or zram device, a filesystem that shows no block
   device, such as ZFS); and for a tmpfs or ramfs root, whose contents a power-off ends.
   dm-integrity and dm-verity encrypt nothing. It reads no mapping's table and never fails a run.
   See docs/backends.md.
