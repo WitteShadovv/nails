@@ -755,11 +755,17 @@ of this changelog for that version becomes the release notes word for word, and
   an expansion that holds what the check cannot read as zsh does (a `case` in a `$(...)`, a
   `${ command }`) make it warn that it cannot tell, and so do a startup file that is there but
   cannot be read, which it
-  passed over before, and a shell other than bash, zsh, fish and dash. zsh's files are counted
-  line by line too, without reading the code, for the three options, the `source` and `.`
-  commands and the `ZDOTDIR` settings they name, a line that is a comment left out: what a line
-  names beyond what was read as code counts as on, for an option, or makes the check warn that it
-  cannot tell, so an option a comment names at the end of a line counts as on. bash's files are
+  passed over before, and a shell other than bash, zsh, fish and dash. A command in an arm of a
+  `case` starts after the pattern's `)`, the number of a descriptor before a redirection (`2>`)
+  is no command, zsh's short forms (`repeat 3 cmd`, `for x (a) cmd`, `if [[ ... ]] cmd`) take
+  their body, an `eval` of words the check can read is read as code, and a command whose name an
+  expansion makes (`$cmd`) is a doubt. zsh's files are counted line by line too, without reading
+  the code and wherever the words stand, for the three options, `source`, a `.` with a word after
+  it, `eval`, an alias that stands for `.` and the `ZDOTDIR` settings, a line that is a comment
+  left out: what a line names beyond what was read as code the check follows counts as on, for
+  an option, or makes the check warn that it cannot tell, so an option a comment names at the end
+  of a line counts as on, and a `source` or `eval` in an `echo`, a string, an alias or a
+  here-document, or an `eval` of what a command prints, warns too. bash's files are
   read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going
   on in the next. It still only warns: such a shell has written the
   decoy commands before activation starts, so a refusal would take none of them back, and for a

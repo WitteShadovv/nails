@@ -31,8 +31,9 @@
 //! reads a history file. What it cannot read or follow makes it warn that it
 //! cannot tell. It knows the settings of bash, zsh and fish, and that dash
 //! keeps no history file; of any other shell it warns that it cannot tell. It
-//! does not see a setting typed into the shell, one a plugin manager or an
-//! `eval` makes, or one in the files of a shell started with others
+//! does not see a setting typed into the shell, one a plugin manager's
+//! function makes, one an `eval` in bash's files makes (zsh's it reads, or
+//! warns of), or one in the files of a shell started with others
 //! (`--rcfile`, a `ZDOTDIR` from its environment).
 
 mod startup;
