@@ -593,6 +593,71 @@ fn a_device_reached_twice_is_walked_once() {
     assert_eq!(devices.stack("dm-2"), vec!["dm-2", "dm-0", "sda1", "dm-1"]);
 }
 
+#[test]
+fn a_partition_of_an_image_file_on_the_decoys_disk_is_refused() {
+    // `losetup -P` over an image file on /home: the partition's data lies in
+    // the file, as the loop device's does.
+    let world = plain_decoy("5 1 259:8 / /mnt rw - ext4 /dev/loop0p1 rw\n")
+        .loop_file("loop0", "7:0", "/home/alice/disk.img")
+        .part("loop0p1", "259:8", "loop0");
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::ImageFileOnDecoy {
+            file: PathBuf::from("/home/alice/disk.img"),
+            at: PathBuf::from("/home"),
+        }
+    );
+}
+
+#[test]
+fn luks_in_a_partition_of_a_container_file_on_the_decoys_disk_only_warns() {
+    let world = plain_decoy("5 1 254:9 / /mnt rw - ext4 /dev/mapper/box rw\n")
+        .loop_file("loop0", "7:0", "/home/alice/box.img")
+        .part("loop0p1", "259:8", "loop0")
+        .crypt("dm-9", "254:9", "box", &["loop0p1"]);
+    let verdict = world.verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::ContainerOnDecoy {
+            file: PathBuf::from("/home/alice/box.img"),
+            at: PathBuf::from("/home"),
+        }
+    );
+    assert_eq!(verdict.severity(), Severity::Warn);
+}
+
+#[test]
+fn a_partition_of_a_loop_over_a_device_of_the_decoys_shares_that_device() {
+    // A loop device over the decoy's /home partition, partitioned: the
+    // partition's data lies on sda2.
+    let world = plain_decoy("5 1 259:8 / /mnt rw - ext4 /dev/loop1p1 rw\n")
+        .node("loop1", "7:1", NodeKind::Loop { file: None }, &["sda2"])
+        .part("loop1p1", "259:8", "loop1");
+    assert!(
+        matches!(
+            world.verdict("/mnt"),
+            Verdict::InsideDecoyStorage { ref device, .. } if device == "sda2"
+        ),
+        "{:?}",
+        world.verdict("/mnt")
+    );
+}
+
+#[test]
+fn a_partition_whose_disk_is_not_found_cannot_be_traced() {
+    // Nothing shows whether the disk keeps the partition's data in a file.
+    let world =
+        plain_decoy("5 1 259:8 / /mnt rw - ext4 /dev/sdz1 rw\n").part("sdz1", "259:8", "sdz");
+    let verdict = world.verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::UntracedStorage {
+            fstype: "ext4".to_string()
+        }
+    );
+    assert_eq!(verdict.severity(), Severity::Refuse);
+}
+
 // ---------------------------------------------------------------------------
 // Separate
 // ---------------------------------------------------------------------------

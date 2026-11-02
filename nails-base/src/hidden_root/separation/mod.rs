@@ -31,13 +31,14 @@
 //! The [`Verdict`], first match wins: the inputs could not all be read; the
 //! root is on a claimed filesystem (a bind, a subvolume, the filesystem
 //! itself); no block device of the root can be found, so its storage cannot
-//! be followed (an overlay, FUSE, a network filesystem); it shares a device
-//! with a claim; it is an image file, or an encrypted container file, on a
-//! claimed filesystem, or on one whose device cannot be found, or on none
-//! mounted here; else it is separate. A tmpfs or ramfs root is always
-//! separate. The filesystem that holds an image file is the one on the device
-//! the loop driver recorded for the file ([`FileHolder`]), not the one its
-//! path leads to today.
+//! be followed (an overlay, FUSE, a network filesystem, a partition of a disk
+//! that is not found); it shares a device with a claim; it is an image file,
+//! or an encrypted container file, on a claimed filesystem, or on one whose
+//! device cannot be found, or on none mounted here; else it is separate. A
+//! tmpfs or ramfs root is always separate. A partition of a loop device lies
+//! in the loop device's file and is judged with it. The filesystem that holds
+//! an image file is the one on the device the loop driver recorded for the
+//! file ([`FileHolder`]), not the one its path leads to today.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
@@ -152,7 +153,9 @@ pub struct Node {
     pub kind: NodeKind,
     /// Kernel names of the devices directly below (`slaves/`, or a loop's
     /// backing block device). A partition does not list its disk: two
-    /// partitions of one disk share no storage.
+    /// partitions of one disk share no storage. The walk of a stack still
+    /// goes on from a partition into its disk where that disk is a loop or
+    /// device-mapper device, which keeps the partition's data elsewhere.
     pub below: Vec<String>,
 }
 
@@ -198,7 +201,9 @@ impl DeviceMap {
         self.by_spec.get(spec).map(String::as_str)
     }
 
-    /// `name` and every device below it.
+    /// `name` and every device below it. Below a partition of a loop or
+    /// device-mapper device lies that device: the partition's data is where
+    /// the device keeps its own, in an image file or on the devices below it.
     fn stack(&self, name: &str) -> Vec<String> {
         let mut seen = Vec::new();
         let mut pending = vec![name.to_string()];
@@ -208,10 +213,33 @@ impl DeviceMap {
             }
             if let Some(node) = self.nodes.get(&next) {
                 pending.extend(node.below.iter().rev().cloned());
+                pending.extend(self.virtual_disk(node).map(str::to_string));
             }
             seen.push(next);
         }
         seen
+    }
+
+    /// The disk the partition `node` lies on, when that disk keeps its data
+    /// elsewhere: a loop or device-mapper device.
+    fn virtual_disk<'a>(&self, node: &'a Node) -> Option<&'a str> {
+        let NodeKind::Partition { disk } = &node.kind else {
+            return None;
+        };
+        let kind = &self.nodes.get(disk)?.kind;
+        matches!(
+            kind,
+            NodeKind::Loop { .. } | NodeKind::Crypt { .. } | NodeKind::Mapper { .. }
+        )
+        .then_some(disk.as_str())
+    }
+
+    /// Whether `name` is a partition of a disk the map does not hold, so
+    /// nothing shows whether that disk keeps its data elsewhere.
+    fn on_an_unknown_disk(&self, name: &str) -> bool {
+        self.nodes.get(name).is_some_and(|node| {
+            matches!(&node.kind, NodeKind::Partition { disk } if !self.nodes.contains_key(disk))
+        })
     }
 
     /// Whether `a` and `b` are members of one btrfs filesystem.

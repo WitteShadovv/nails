@@ -325,7 +325,8 @@ rehearsal state all ask it first. It refuses:
 - a root that this computer's own storage holds: a btrfs subvolume or a bind
   mount of a filesystem the decoy mounts, the filesystem the decoy's fstab
   mounts there, a logical volume or other device stacked on the decoy's
-  storage or swap, or an unencrypted image file on a decoy filesystem;
+  storage or swap, or an unencrypted image file on a decoy filesystem, a
+  partition of one attached with `losetup -P` included;
 - a root with a second filesystem mounted over it (`root_covered`), and in the
   hidden session a root whose filesystem is not the one the session started
   from: the writes would reach the disk on top;
@@ -333,9 +334,10 @@ rehearsal state all ask it first. It refuses:
   cannot be read (`storage_unjudged`; run the command with sudo), or the block
   devices in `/sys/class/block` cannot be listed (`storage_unjudged`; run it as
   root on the host, with `/sys` mounted), or because its filesystem shows no
-  disk it stores its data on: an overlay, a FUSE, network or ZFS filesystem, or
-  an image file on one that the decoy neither mounts at `/` or a system folder
-  such as `/home` nor lists in its fstab (`storage_unjudged`);
+  disk it stores its data on: an overlay, a FUSE, network or ZFS filesystem, a
+  partition of a disk that is not found, or an image file on one that the
+  decoy neither mounts at `/` or a system folder such as `/home` nor lists in
+  its fstab (`storage_unjudged`);
 - a root on an image file that no filesystem mounted here holds
   (`storage_unjudged`). The filesystem that holds an image file is the one on
   the device the loop driver recorded for the file, not the one its path leads

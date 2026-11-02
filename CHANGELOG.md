@@ -579,6 +579,14 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- The attach gate refuses a partition of a loop device whose image file lies on the decoy's disk,
+  as it refuses the loop device itself. A partition the kernel made on a loop device (`losetup -P`,
+  or a disk image opened in a file manager) shows no device below it, so the image file behind it
+  went unjudged and a root on it attached, and every write of a session landed in that file on the
+  decoy's disk. A partition of a loop or device-mapper device now lies where that device keeps its
+  data, so an image file, an encrypted container file or a device the decoy uses below it is
+  judged as for the whole device. A partition whose disk is not found is refused
+  (`storage_unjudged`), since nothing shows where it keeps its data.
 - Activation and `emergency` kill the interactive shells the newest first. A login shell that
   leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
   console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at
