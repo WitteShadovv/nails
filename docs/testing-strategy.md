@@ -251,6 +251,7 @@ and checks more than that nothing panics or hangs:
 | `utab` | libmount's `utab` and two mount tables | each line reads as libmount 2.42 reads it; across a switch and on the way back only whole input lines survive, changed at most in their ID |
 | `fstab_crypttab` | a decoy's fstab, crypttab and mount table | every swap and mount the session keeps off is masked or skipped under the unit name systemd generates, a skip waits for no device that is not there, and deciding the fstab twice keeps off what deciding it once does; a crypttab device is the node systemd opens |
 | `nixos_reference` | `configuration.nix` and udev's record of the hidden volume's partition | every reference lies in the file; ASCII case changes nothing; the scan reads forward only |
+| `udev_label` | udev's record of a block device, `/run/udev/data/b<major>:<minor>` | a label read is never empty and is what the record's first `ID_FS_LABEL_ENC` decodes to; a label written in front of the record as udev writes it reads back unchanged |
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `unit_file` | a decoy's systemd unit file | the assignments of the sections NAILS reads are the ones systemd applies, in order, and a unit file systemd refuses is refused |
 | `unit_name` | the name of a mount, swap or automount unit a decoy's unit directory links | a name decodes only to a plain absolute path systemd gives that name, and a path's name decodes back to the path |
