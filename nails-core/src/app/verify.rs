@@ -123,6 +123,12 @@ mod tests {
         }
     }
 
+    /// Give the image at `root` the `etc` folder of a decoy root, without which
+    /// an offline scan refuses it.
+    fn decoy_root(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+    }
+
     /// An offline scan under `root`, which skips every live-host check so the
     /// run stays inside the temp tree.
     fn offline_options(root: &std::path::Path) -> VerifyOptions {
@@ -143,8 +149,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = config_rooted_at(root.path());
         let expected_path = config.state_file_path.clone();
-        // An empty image root is refused, so the image holds one folder.
-        std::fs::create_dir(root.path().join("etc")).unwrap();
+        decoy_root(root.path());
 
         let result = verify(
             &RuntimeEnv::default(),
@@ -165,6 +170,7 @@ mod tests {
         // reports it Present with its recorded state label. Deleting the `!`
         // inverts the guard, sending an existing file down the Missing branch.
         let root = tempfile::tempdir().unwrap();
+        decoy_root(root.path());
         let config = config_rooted_at(root.path());
         let state_path = config.state_file_path.clone();
         StateFile::default()
@@ -214,15 +220,25 @@ mod tests {
     #[test]
     fn an_image_root_with_nothing_to_scan_is_refused() {
         // A root that does not exist read as a secure image, the examiner's
-        // view with no trace, and so did an empty folder: the mount point of
-        // an image that was never mounted.
+        // view with no trace, and so did an empty folder, the mount point of
+        // an image that was never mounted, and the top level of a btrfs
+        // filesystem mounted whole, whose system is in the subvolume @.
         use crate::error::OfflineRootProblem;
         let dir = tempfile::tempdir().unwrap();
         let mount_point = dir.path().join("decoy");
         std::fs::create_dir(&mount_point).unwrap();
+        let top = dir.path().join("top");
+        std::fs::create_dir_all(top.join("@/etc")).unwrap();
+        std::fs::create_dir(top.join("@home")).unwrap();
         for (root, problem) in [
             (dir.path().join("absent"), OfflineRootProblem::Missing),
             (mount_point, OfflineRootProblem::Empty),
+            (
+                top,
+                OfflineRootProblem::NoEtcFolder {
+                    subvolumes: Vec::new(),
+                },
+            ),
         ] {
             let options = VerifyOptions {
                 examiner: true,
@@ -303,6 +319,7 @@ mod tests {
         // `disk` field from the `ExaminerOptions` literal falls back to the
         // default (`None`), so the disk audit never runs and the check is absent.
         let root = tempfile::tempdir().unwrap();
+        decoy_root(root.path());
         let disk_path = root.path().join("decoy.img");
         // A 1 MiB all-zero image: a readable raw source with no partition table
         // and no high-entropy regions, so the audit runs and finds nothing.

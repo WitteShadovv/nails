@@ -1092,12 +1092,23 @@ drift) are skipped. A decoy partition you mount by hand in the hidden session is
 outside the fstab policy and is written directly, so mount it read-only
 (`mount -o ro`).
 
-A `--root` that does not exist, is not a folder or is empty is refused before
-anything is scanned (the error `nothing_to_scan`, exit 1): an empty folder is
-what a mount point looks like when the image is not mounted on it, and a scan
-of it would find nothing. Run as root, the check changes no access time of the
-root. `verify` does not check that a filesystem is mounted at `--root`, so a
-folder that holds files is scanned as it is, whether it is a copy of the
+`--root` is the root of the decoy system. A plain `mount -o ro <device>` of a
+Fedora, Ubuntu or archinstall root on btrfs mounts the whole filesystem and
+shows its top level, and the system lies in a subvolume there. Give `--root`
+the folder of that subvolume, such as `/mnt/decoy/@` (Ubuntu, archinstall) or
+`/mnt/decoy/root` (Fedora), or mount the subvolume alone
+(`mount -o ro,subvol=@ <device> /mnt/decoy`).
+
+A `--root` that does not exist, is not a folder or holds no `etc` folder is
+refused before anything is scanned (the error `nothing_to_scan`, exit 1),
+since a scan of it would find nothing. An empty folder is what a mount point
+looks like when the image is not mounted on it, and the top level of a btrfs
+filesystem holds no `etc` either: the refusal names the subvolumes it finds
+there. The check writes nothing and, run as root, changes no access time of
+the folder `--root` names or of what that folder holds. A link on the way to
+it is followed, as by any lookup, which changes the link's own access time.
+`verify` does not check that a filesystem is mounted at `--root`, so a folder
+that holds an `etc` folder is scanned as it is, whether it is a copy of the
 decoy's files or the wrong folder: mount the image before you scan it.
 
 To see the decoy the way an examiner would, add `--examiner`, and `--disk` with

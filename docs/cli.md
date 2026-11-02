@@ -281,7 +281,7 @@ EXAMPLES:
 
 * `--deep` — Perform deep scan (slower, more thorough)
 * `--offline` — Scan a read-only mounted decoy image or partition instead of the live host. Requires `--root`; live checks (processes, mounts, block devices) are skipped and every path is read from under the image root
-* `--root <MOUNT>` — Root of the mounted decoy image to scan in `--offline` mode. A path that does not exist, is not a folder or is empty is refused, since nothing would be scanned
+* `--root <MOUNT>` — Root of the mounted decoy image to scan in `--offline` mode: the decoy's root filesystem, on btrfs the folder of its subvolume (such as `<mount>/@`). A path that does not exist, is not a folder or holds no etc folder is refused, since nothing would be scanned
 * `--examiner` — Also report setup traces an examiner looks for (encryption headers, containers, crypttab, LVM archives, tooling and history), grouped by what they suggest. Reports only; changes nothing. Needs `--offline`
 * `--disk <DEVICE>` — The raw disk or disk image behind `--root`, read-only, for the partition-level examiner checks (LUKS headers, random-looking space)
 

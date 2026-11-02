@@ -4,6 +4,9 @@
 use nix::errno::Errno;
 use thiserror::Error;
 
+mod offline_root;
+pub use offline_root::OfflineRootProblem;
+
 /// One failed pre-flight check: its name, the problem, and the concrete action
 /// that clears it (when the check named one).
 ///
@@ -215,11 +218,13 @@ pub enum NailsError {
 
     /// An offline scan was given a root that holds nothing to scan.
     ///
-    /// Every check of an offline scan reads below its root, so a root that
-    /// does not exist, is not a folder or is empty (what a mount point looks
-    /// like when the image was never mounted on it) finds nothing and would
-    /// read as a clean image. `verify` refuses it before any check runs.
-    #[error("{} {problem}, so there is nothing to scan", .root.display())]
+    /// Every check of an offline scan reads below its root, which must be the
+    /// root of the decoy system. A root that does not exist, is not a folder
+    /// or holds no `etc` folder (an empty mount point, the image never
+    /// mounted on it, or the top level of a btrfs filesystem, whose system
+    /// lies in a subvolume) finds none of the decoy's files and would read as
+    /// a clean image. `verify` refuses it before any check runs.
+    #[error("{} {problem}", .root.display())]
     RefusedOfflineRoot {
         /// The root, as the caller named it.
         root: std::path::PathBuf,
@@ -360,27 +365,6 @@ pub enum NailsError {
     },
 }
 
-/// Why an offline scan refused its root ([`NailsError::RefusedOfflineRoot`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OfflineRootProblem {
-    /// Nothing is at the path, or a folder on the way to it is a file.
-    Missing,
-    /// The path is a file or some other thing that is not a folder.
-    NotAFolder,
-    /// The folder holds nothing.
-    Empty,
-}
-
-impl std::fmt::Display for OfflineRootProblem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            OfflineRootProblem::Missing => "does not exist",
-            OfflineRootProblem::NotAFolder => "is not a folder",
-            OfflineRootProblem::Empty => "is empty",
-        })
-    }
-}
-
 /// The message of an [`NailsError::IoError`]: the error's own text when it
 /// already names the path, otherwise `<path>: <error>`, so the path always
 /// appears exactly once.
@@ -461,13 +445,7 @@ impl NailsError {
             NailsError::RefusedUnmanagedUnmount { .. } => {
                 "Unmount the path yourself if it is safe to do so; nails will not touch a mount it did not create."
             }
-            NailsError::RefusedOfflineRoot { .. } => {
-                return Some(format!(
-                    "Mount the decoy image or partition read-only on a folder \
-                     (`sudo mount -o ro <device> <mount>`), then run `{}`.",
-                    crate::next_step::sudo_line(crate::next_step::NextStep::VerifyOffline)
-                ));
-            }
+            NailsError::RefusedOfflineRoot { root, problem } => return Some(problem.hint(root)),
             // Pre-flight failures carry their own per-check remediation list, and
             // the remaining variants are already specific about the fault.
             _ => return None,
@@ -606,21 +584,6 @@ mod tests {
         };
         assert_eq!(err.to_string(), "Refused to unmount unmanaged mount: /home");
 
-        for (problem, says) in [
-            (OfflineRootProblem::Missing, "does not exist"),
-            (OfflineRootProblem::NotAFolder, "is not a folder"),
-            (OfflineRootProblem::Empty, "is empty"),
-        ] {
-            let err = NailsError::RefusedOfflineRoot {
-                root: std::path::PathBuf::from("/mnt/decoy"),
-                problem,
-            };
-            assert_eq!(
-                err.to_string(),
-                format!("/mnt/decoy {says}, so there is nothing to scan")
-            );
-        }
-
         let err = NailsError::OperationInProgress { pid: 4242 };
         assert_eq!(
             err.to_string(),
@@ -634,22 +597,6 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("command timed out after 10s"), "{msg}");
         assert!(msg.contains("systemctl is-active gdm.service"), "{msg}");
-    }
-
-    #[test]
-    fn a_refused_offline_root_says_to_mount_the_image_first() {
-        let err = NailsError::RefusedOfflineRoot {
-            root: std::path::PathBuf::from("/mnt/decoy"),
-            problem: OfflineRootProblem::Empty,
-        };
-        let hint = err.hint().expect("the refusal names its next step");
-        let mount = "Mount the decoy image or partition read-only on a folder \
-                     (`sudo mount -o ro <device> <mount>`), then run `sudo ";
-        assert!(hint.starts_with(mount), "{hint}");
-        assert!(
-            hint.ends_with(" verify --offline --root <mount>`."),
-            "{hint}"
-        );
     }
 
     #[test]

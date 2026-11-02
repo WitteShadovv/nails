@@ -153,8 +153,9 @@ impl<F: Filesystem> Verifier<F> {
     /// the live-only checks (running processes, the kernel mount table, open
     /// block devices and the host platform scanners) are skipped, because they
     /// describe the machine running `verify`, not the image under inspection.
-    /// A root that does not exist, is not a folder or is empty holds nothing
-    /// to scan: [`run`](Self::run) refuses it with
+    /// `root` is the root of the decoy system: one that does not exist, is not
+    /// a folder or holds no `etc` folder holds nothing to scan, and
+    /// [`run`](Self::run) refuses it with
     /// [`NailsError::RefusedOfflineRoot`](crate::NailsError::RefusedOfflineRoot).
     pub fn offline_under(mut self, root: PathBuf) -> Self {
         self.context = VerifyContext::Offline { root };
