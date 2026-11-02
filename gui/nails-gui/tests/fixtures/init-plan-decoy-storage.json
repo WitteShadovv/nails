@@ -1,0 +1,14 @@
+{
+  "command": "init",
+  "data": {
+    "hardware_config": null,
+    "path": "/mnt/data",
+    "skipped": "--no-hardware-config: skipping the hidden NixOS layout",
+    "token": "cccccccccccccccccccccccccccccccc",
+    "warnings": [
+      "--allow-decoy-storage: using /mnt/data although it is a bind mount of a folder of /; everything written there lands on that storage"
+    ]
+  },
+  "ok": true,
+  "schema_version": 2
+}

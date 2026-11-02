@@ -10,7 +10,8 @@
 
 use std::path::Path;
 
-use nails_core::hidden_root::Refusal;
+use nails_api::Allowable;
+use nails_core::hidden_root::{Allow, Refusal};
 
 use super::ExitStatus;
 use super::envelope::{ErrorBody, report_error};
@@ -22,6 +23,21 @@ pub fn refusal_error(refusal: &Refusal, exe: Option<&Path>) -> ErrorBody {
     nails_core::app::refusal::refusal_body(refusal, exe)
 }
 
+/// The commands that take `--allow-decoy-storage`.
+const TAKE_DECOY_STORAGE: &[&str] = &["activate", "check", "init", "discard"];
+
+/// The error body of a root `command` refused: a refusal that command's
+/// `--allow-decoy-storage` turns into a warning names that override, so a
+/// front end can offer it; no other does.
+pub fn refusal_error_of(command: &str, refusal: &Refusal, exe: Option<&Path>) -> ErrorBody {
+    let body = refusal_error(refusal, exe);
+    if TAKE_DECOY_STORAGE.contains(&command) && Allow::DecoyStorage.covers(&refusal.kind) {
+        body.accepted_by(Allowable::DecoyStorage)
+    } else {
+        body
+    }
+}
+
 /// Report a refused root on the terminal (or as one envelope under `--json`)
 /// and return [`ExitStatus::PreflightRefused`].
 pub fn report_refusal(json: bool, command: &'static str, refusal: &Refusal) -> ExitStatus {
@@ -30,7 +46,7 @@ pub fn report_refusal(json: bool, command: &'static str, refusal: &Refusal) -> E
         json,
         command,
         ExitStatus::PreflightRefused,
-        refusal_error(refusal, exe.as_deref()),
+        refusal_error_of(command, refusal, exe.as_deref()),
     )
 }
 
@@ -203,6 +219,27 @@ mod tests {
             // A refusal names no single command, so its typed next step is null.
             assert!(value["error"]["next"].is_null(), "{line}");
         }
+    }
+
+    #[test]
+    fn only_the_commands_that_take_the_override_name_it_and_only_for_decoy_storage() {
+        let storage = on(Verdict::OnDecoyFilesystem {
+            how: Sharing::Bind,
+            at: PathBuf::from("/"),
+        });
+        for command in ["activate", "check", "init", "discard"] {
+            let body = refusal_error_of(command, &storage, None);
+            assert_eq!(body.allowable, Some(Allowable::DecoyStorage), "{command}");
+        }
+        // A command without the flag refuses the same root naming none.
+        for command in ["rehearse", "config"] {
+            assert_eq!(refusal_error_of(command, &storage, None).allowable, None);
+        }
+        // No flag covers a folder.
+        let folder = refusal(RefusalKind::NotAMountPoint {
+            mount_point: PathBuf::from("/"),
+        });
+        assert_eq!(refusal_error_of("init", &folder, None).allowable, None);
     }
 
     #[test]

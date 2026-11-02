@@ -290,6 +290,10 @@ enum Asking {
     /// Whether to scan in the session that planted the test words
     /// (`--allow-same-boot`); `typed` so far.
     SameBoot { typed: String },
+    /// Whether to plan the set up or the discard again with the hidden
+    /// volume on this computer's storage allowed (`--allow-decoy-storage`);
+    /// `typed` so far.
+    AllowStorage { typed: String },
 }
 
 /// What the window knows of the session.
@@ -513,6 +517,12 @@ impl Model {
                 }
                 self.scan_same_boot()
             }
+            Some(Asking::AllowStorage { typed }) => {
+                if !(confirmed && activation::is_the_word(&typed)) {
+                    return None;
+                }
+                self.plan_storage_allowed()
+            }
             Some(Asking::Plan { word, typed }) => {
                 let typed_it = word.is_none_or(|word| tools::is_the_folder(&word, &typed));
                 self.answer_plan(confirmed && typed_it)
@@ -635,7 +645,11 @@ impl Model {
     /// What the person typed so far into the open question's field.
     pub fn typed(&mut self, typed: &str) {
         let locked = match &mut self.asking {
-            Some(Asking::Allow { typed: so_far, .. } | Asking::SameBoot { typed: so_far }) => {
+            Some(
+                Asking::Allow { typed: so_far, .. }
+                | Asking::SameBoot { typed: so_far }
+                | Asking::AllowStorage { typed: so_far },
+            ) => {
                 typed.clone_into(so_far);
                 !activation::is_the_word(typed)
             }
@@ -795,6 +809,7 @@ impl Model {
                                 code: "check".to_string(),
                                 message: "the check gave no result".to_string(),
                                 next: None,
+                                allowable: None,
                             })),
                         };
                     }

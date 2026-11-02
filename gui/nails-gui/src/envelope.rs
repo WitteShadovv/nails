@@ -50,6 +50,10 @@ pub struct ErrorBody {
     /// `null` when there is none.
     #[serde(deserialize_with = "Option::deserialize")]
     pub next: Option<NextStep>,
+    /// The override that accepts the refusal for one run, when the command
+    /// takes the flag that covers it.
+    #[serde(default)]
+    pub allowable: Option<Allowable>,
 }
 
 /// The command to run next: the words after the binary.

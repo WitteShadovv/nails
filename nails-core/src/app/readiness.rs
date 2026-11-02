@@ -385,7 +385,14 @@ fn attach_refusal<F: Filesystem>(
     match crate::HiddenRoot::assess_allowing(fs, root, allow) {
         Ok(Assessment::Refused(refusal)) => {
             let exe = std::env::current_exe().ok();
-            Some(super::refusal::refusal_body(&refusal, exe.as_deref()))
+            let body = super::refusal::refusal_body(&refusal, exe.as_deref());
+            // `check` takes `--allow-decoy-storage`: the refusal it covers
+            // names it, as the hidden-volume row does.
+            Some(if Allow::DecoyStorage.covers(&refusal.kind) {
+                body.accepted_by(Allowable::DecoyStorage)
+            } else {
+                body
+            })
         }
         _ => None,
     }
@@ -748,6 +755,24 @@ mod tests {
             "message should name the missing-root reason: {}",
             body.message
         );
+        // No flag makes a missing root, so the body names none.
+        assert_eq!(body.allowable, None);
+    }
+
+    /// A root on the decoy's storage is the refusal `check
+    /// --allow-decoy-storage` turns into a warning: the body names that
+    /// override, as the hidden-volume row does.
+    #[test]
+    fn attach_refusal_names_the_override_for_decoy_storage() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/mnt/data", true);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             30 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n",
+        );
+        let body = attach_refusal(&fs, Path::new("/mnt/data"), &PreflightOptions::default())
+            .expect("a bind of a folder of / is refused");
+        assert_eq!(body.allowable, Some(Allowable::DecoyStorage));
     }
 
     /// `prepare` asks the attach gate before anything runs, so a front end has

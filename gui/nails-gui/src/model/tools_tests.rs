@@ -36,6 +36,18 @@ fn fixture(name: &str) -> Value {
             include_str!("../../tests/fixtures/rehearse-scan-incomplete.json")
         }
         "discard-refused" => include_str!("../../tests/fixtures/discard-refused.json"),
+        "init-refused-decoy-storage" => {
+            include_str!("../../tests/fixtures/init-refused-decoy-storage.json")
+        }
+        "init-plan-decoy-storage" => {
+            include_str!("../../tests/fixtures/init-plan-decoy-storage.json")
+        }
+        "discard-refused-decoy-storage" => {
+            include_str!("../../tests/fixtures/discard-refused-decoy-storage.json")
+        }
+        "discard-plan-decoy-storage" => {
+            include_str!("../../tests/fixtures/discard-plan-decoy-storage.json")
+        }
         "init-refused" => include_str!("../../tests/fixtures/init-refused.json"),
         "rehearse-plant-no-such-user" => {
             include_str!("../../tests/fixtures/rehearse-plant-no-such-user.json")
@@ -1351,6 +1363,127 @@ fn activation_options_reach_the_check_and_the_activation() {
     // Nothing changed for the check, which needs not run again.
     model.back();
     assert!(model.apply(status("decoy", Value::Null)).is_empty());
+}
+
+/// Set Up refused for a hidden volume on this computer's storage, which the
+/// engine names `--allow-decoy-storage` for, offers to allow it: the
+/// question repeats the refusal, its button acts only once the word is
+/// typed, and the next plan carries the flag; as the real helper answered.
+#[test]
+fn a_set_up_on_this_computers_storage_is_allowed_only_behind_the_word() {
+    let mut model = decoy();
+    open(&mut model, ToolKind::SetUp);
+    model.toggled(false);
+    let plan = |allow: bool| {
+        Some(Effect::Ask(Ask::Plan(Plan::Init(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: allow,
+            hardware_config: None,
+            no_hardware_config: true,
+        }))))
+    };
+    assert_eq!(model.action(), plan(false));
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(answered(
+        Kind::Plan,
+        4,
+        fixture("init-refused-decoy-storage"),
+    ));
+    let page = model.page();
+    assert_eq!(page.heading, text::SET_UP_FAILED);
+    assert_eq!(page.secondary, Some(text::ALLOW_FOR_SET_UP));
+    assert_eq!(model.secondary(), None, "the question comes first");
+    let question = model.page().question.expect("the question is open");
+    assert_eq!(question.heading, text::ALLOW_FOR_SET_UP_QUESTION);
+    assert_eq!(
+        question.body,
+        format!(
+            "/mnt/data is not a volume of its own: it is a bind mount of a folder of /. \
+             Nothing was written.\n{}",
+            text::STORAGE_ONCE
+        )
+    );
+    assert!(question.locked && question.destructive);
+    assert_eq!(model.answer(true), None, "not without the word");
+    model.secondary();
+    model.typed("allow");
+    assert_eq!(
+        model.answer(true).map(Effect::Ask),
+        plan(true),
+        "the plan again, with the flag"
+    );
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(recorded_init_plan("init-plan-decoy-storage"));
+    let question = model.page().question.expect("the plan's question");
+    assert!(
+        question
+            .body
+            .contains("--allow-decoy-storage: using /mnt/data although it is a bind mount"),
+        "{}",
+        question.body
+    );
+
+    // A refusal no flag covers offers nothing.
+    let mut model = decoy();
+    open(&mut model, ToolKind::SetUp);
+    model.action();
+    model.apply(answered(Kind::Plan, 4, fixture("init-refused")));
+    assert_eq!(model.page().secondary, None);
+    assert_eq!(model.tool_action(text::ALLOW_FOR_SET_UP), None);
+    assert_eq!(model.page().question, None);
+}
+
+/// Discard refused for the same reason offers the same, and its next plan
+/// carries `--allow-decoy-storage`.
+#[test]
+fn a_discard_on_this_computers_storage_is_allowed_only_behind_the_word() {
+    let mut model = decoy();
+    open(&mut model, ToolKind::Discard);
+    model.edited("/srv/data");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Discard(DiscardPlanArgs {
+            target: "/srv/data".to_string(),
+            allow_decoy_storage: false,
+        }))))
+    );
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(answered(
+        Kind::Plan,
+        4,
+        fixture("discard-refused-decoy-storage"),
+    ));
+    assert_eq!(model.page().secondary, Some(text::ALLOW_FOR_DISCARD));
+    model.secondary();
+    assert_eq!(
+        model.page().question.unwrap().heading,
+        text::ALLOW_FOR_DISCARD_QUESTION
+    );
+    model.typed("allow");
+    assert_eq!(
+        model.answer(true),
+        Some(Ask::Plan(Plan::Discard(DiscardPlanArgs {
+            target: "/srv/data".to_string(),
+            allow_decoy_storage: true,
+        })))
+    );
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(answered(
+        Kind::Plan,
+        0,
+        fixture("discard-plan-decoy-storage"),
+    ));
+    let page = model.page();
+    assert_eq!(page.note, text::nothing_to_discard("/srv/data"));
+    assert_eq!(page.secondary, None, "allowed once, for that plan");
+    // The next plan carries no flag.
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Discard(DiscardPlanArgs {
+            target: "/srv/data".to_string(),
+            allow_decoy_storage: false,
+        }))))
+    );
 }
 
 /// A plan of a set up the helper gave, recorded on a volume of its own:
