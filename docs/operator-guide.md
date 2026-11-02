@@ -1157,14 +1157,17 @@ is listed as not checked, in the examiner's view as well, so a scan of the
 system subvolume alone does not read as complete. The line of a mount point
 says which of the two mounts above it needs, by whether `findmnt` shows its
 device mounted, with the command. A bind entry is left out, since its source
-lies in the image and was scanned. Below `--root`, the decoy's fstab and
-passwd, the places they name and the files and folders of a deep scan are
-looked up inside the root, as the decoy sees them: a link is followed there,
-an absolute one included, so NixOS's `/etc/fstab` is read from the image's
-store and no link leads to the folders of the machine running verify. An fstab
-that cannot be read inside the root, a link into a store that is not mounted
-there, is listed as not read, and the examiner's view says when the decoy's
-`/nix/store` is missing or empty, so that its tool check had nothing to read.
+lies in the image and was scanned. Below `--root`, what the scan and the
+examiner's view read is looked up inside the root, as the decoy sees it: a
+link is followed there, an absolute one included, so NixOS's `/etc/fstab` and
+`/etc/crypttab` are read from the image's store, and no link leads to the
+folders of the machine running verify. The one exception is the probe for the
+known NAILS paths (mostly under `/run` and `/etc/nixos`), which follows a link
+on the way to such a path as the machine running verify does. A file that is
+there but does not resolve inside the root, such as a link into a store that
+is not mounted there, is listed as not read, and the examiner's view says when
+the decoy's `/nix/store` is missing or empty, so that its tool check had
+nothing to read.
 These checks write nothing and, run as root, change no access time of the
 folder `--root` names or of what it holds, except that following a link
 updates the link's own access time on a read-write mount, which the mounts
