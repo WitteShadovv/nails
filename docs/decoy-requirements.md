@@ -578,7 +578,9 @@ history yourself so an interactive shell has nowhere to write:
   `fish --private`. Turn a zsh option off where it is set, or with an
   `unsetopt` at the end of the `.zshrc` in each home the shell can run with
   (root's and yours for a root shell): the check counts no turn-off it
-  cannot be sure zsh runs. A history tool that records each command itself,
+  cannot be sure zsh runs. As the last line of `.zshrc`,
+  `unsetopt share_history inc_append_history inc_append_history_time` also
+  settles its doubts about what `.zshrc` ran before it. A history tool that records each command itself,
   such as atuin, writes as the command runs too. No kill takes back what such
   a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its

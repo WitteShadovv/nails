@@ -854,6 +854,88 @@ fn a_source_the_walk_cannot_follow_as_a_command_is_a_doubt() {
     }
 }
 
+/// The line that, at the end of a `.zshrc`, turns every option off.
+const TURN_OFF: &str = "unsetopt share_history inc_append_history inc_append_history_time\n";
+
+#[test]
+fn a_turn_off_at_the_end_of_the_zshrc_settles_the_doubts_before_it() {
+    let doubted = "eval \"$(starship init zsh)\"\nsource $ZSH_CUSTOM/x.zsh\nsetopt $opts\n";
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zshrc", &format!("{doubted}{TURN_OFF}"));
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
+    // A login shell too, which reads no .zlogin here.
+    assert_eq!(scan(&fs, LOGIN), Scan::default());
+
+    // Without it, or with less of it, the check cannot tell.
+    for text in [
+        doubted.to_string(),
+        format!("{doubted}unsetopt share_history\n"),
+        // Not the last commands of the file.
+        format!("{doubted}{TURN_OFF}print done\n"),
+        format!("{TURN_OFF}{doubted}"),
+        format!("{doubted}if true; then\n  {TURN_OFF}fi\n"),
+    ] {
+        seed(&fs, "/home/alice/.zshrc", &text);
+        let found = scan(&fs, NOT_LOGIN);
+        assert!(
+            !found.doubts.is_empty() && !found.lasting,
+            "{text:?}: {found:?}"
+        );
+    }
+
+    // A file sourced after it still counts.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("{doubted}{TURN_OFF}source ~/.zsh/history.zsh\n"),
+    );
+    seed(
+        &fs,
+        "/home/alice/.zsh/history.zsh",
+        "setopt share_history\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
+    );
+}
+
+#[test]
+fn a_turn_off_at_the_end_of_the_zshrc_settles_no_doubt_about_where_zsh_reads() {
+    for (file, text, start) in [
+        // A ZDOTDIR it cannot follow.
+        (
+            "/home/alice/.zshenv",
+            "[[ -n $X ]] && export ZDOTDIR=$(zdotdir)\n",
+            NOT_LOGIN,
+        ),
+        // Code before .zshrc, which may move ZDOTDIR and with it the .zshrc
+        // zsh reads.
+        (
+            "/home/alice/.zshenv",
+            "source $SOMEWHERE/env.zsh\n",
+            NOT_LOGIN,
+        ),
+        // What a login shell reads after .zshrc.
+        ("/home/alice/.zlogin", "eval \"$(tool init zsh)\"\n", LOGIN),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, file, text);
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("eval \"$(starship init zsh)\"\n{TURN_OFF}"),
+        );
+        let found = scan(&fs, start);
+        assert_eq!(found.doubts.len(), 1, "{text:?}: {found:?}");
+        assert!(
+            found.lasting && found.writes.is_empty(),
+            "{text:?}: {found:?}"
+        );
+    }
+}
+
 #[test]
 fn a_doubt_of_the_lexer_is_one_no_structure_can_take() {
     // A `for` header the walk cannot read takes the token after it for its

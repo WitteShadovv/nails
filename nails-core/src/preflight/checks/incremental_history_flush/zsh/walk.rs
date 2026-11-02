@@ -50,8 +50,13 @@ pub(super) enum Event {
     /// A line names an option where the walk read no code: in a comment, or
     /// in what a misread hid.
     Unread(usize),
-    /// Something the check cannot follow, as the warning names it.
+    /// Something the check cannot follow, as the warning names it: code
+    /// that may do anything.
     Doubt(String),
+    /// Options a `setopt` or `set -o` turns on that the check cannot list.
+    OptionDoubt(String),
+    /// A `ZDOTDIR` the check cannot follow.
+    ZdotdirDoubt(String),
     /// `source` or `.` of `path`.
     Source { path: Word, unconditional: bool },
     /// Oh My Zsh is loaded.
@@ -159,6 +164,9 @@ struct Walker<'a> {
     /// How often it read `ZDOTDIR` set ([`zdotdir_writes`]).
     zdotdirs: usize,
     pending: Pending,
+    /// Which of [`OPTIONS`] the commands since the last other one turned
+    /// off, each certainly, at the top level.
+    trailing: [bool; 3],
 }
 
 impl Walker<'_> {
@@ -178,6 +186,7 @@ impl Walker<'_> {
     /// Open `frame` where the command being read starts, in its condition
     /// (`head`) or not.
     fn open(&mut self, frame: Frame, head: bool) {
+        self.trailing = [false; 3];
         let pattern = frame == Frame::Case;
         self.frames.push(Open {
             frame,
@@ -528,6 +537,7 @@ impl Walker<'_> {
 
     /// The events of an array's assignment.
     fn array(&mut self, name: String, items: Vec<Word>) {
+        self.trailing = [false; 3];
         for item in &items {
             self.mention(&item.text);
         }
@@ -635,6 +645,7 @@ impl Walker<'_> {
                     // A command of its own, which sets no option; in a
                     // condition, its end (`if (( ... )) cmd`).
                     self.pending.function_next = false;
+                    self.trailing = [false; 3];
                     self.mention(&text);
                     if self.pending.words.is_empty() && self.in_head() && self.next_starts_body() {
                         self.short_body();
@@ -657,8 +668,9 @@ impl Walker<'_> {
 }
 
 /// What the walk over zsh code found: its events, whether it lost track of
-/// the structure, what it read that the lines may name ([`backstop`]), and
-/// whether a `return` or `exit` may end the file early.
+/// the structure, what it read that the lines may name ([`backstop`]),
+/// whether a `return` or `exit` may end the file early, and whether its last
+/// commands turn every one of [`OPTIONS`] off.
 struct Walked {
     events: Vec<Event>,
     confused: bool,
@@ -666,6 +678,7 @@ struct Walked {
     evals: usize,
     zdotdirs: usize,
     may_stop: bool,
+    ends_off: bool,
 }
 
 /// Walk zsh code `text` from the file at `place`; what the lexer could not
@@ -684,6 +697,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         evals: 0,
         zdotdirs: 0,
         pending: Pending::default(),
+        trailing: [false; 3],
     }
     .walk();
     let mut events = walker.events;
@@ -708,16 +722,18 @@ fn walk_text(text: &str, place: &str) -> Walked {
         evals: walker.evals,
         zdotdirs: walker.zdotdirs,
         may_stop: walker.may_stop,
+        ends_off: walker.trailing == [true; 3],
     }
 }
 
-/// The events of zsh code `text` from the file at `place`, and whether the
-/// check lost track of its structure, in which case none of its turn-offs
-/// count. What the lexer could not read is a doubt, and so is a `source`, a
+/// The events of zsh code `text` from the file at `place`, whether the check
+/// lost track of its structure, in which case none of its turn-offs count,
+/// and whether its last commands certainly turn every one of [`OPTIONS`]
+/// off. What the lexer could not read is a doubt, and so is a `source`, a
 /// `.`, an `eval` or a `ZDOTDIR` setting the file's lines hold beyond those
 /// the walk read; an option they name beyond those the tokens name counts as
 /// on ([`backstop`]).
-pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
+pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool, bool) {
     let (tokens, _) = lex(text);
     let mut read = [0; 3];
     for token in &tokens {
@@ -752,9 +768,9 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
         )));
     }
     if named.zdotdirs > walked.zdotdirs {
-        events.push(Event::Doubt(format!(
+        events.push(Event::ZdotdirDoubt(format!(
             "it cannot follow a ZDOTDIR that a line of {place} may set"
         )));
     }
-    (events, walked.confused)
+    (events, walked.confused, walked.ends_off)
 }
