@@ -48,8 +48,11 @@ struct ImageScan {
     examiner: bool,
     /// The disk behind it, as typed.
     disk: String,
-    /// How its last scan came out.
+    /// How its last scan came out, while the page still holds what it
+    /// scanned.
     outcome: Option<Outcome>,
+    /// The image that scan read.
+    scanned: String,
 }
 
 impl ImageScan {
@@ -83,6 +86,9 @@ impl Verify {
                 return None;
             }
             let args = image.args()?;
+            if let Some(image) = &mut self.image {
+                image.scanned = args.root.clone().unwrap_or_default();
+            }
             self.asked_image = true;
             self.deep = false;
             return Some(Ask::Verify(args));
@@ -114,24 +120,36 @@ impl Verify {
     }
 
     /// The field `index` after the switch changed to `typed`: the disk behind
-    /// the image.
+    /// the image. A result no longer matches what the page holds once that
+    /// changes, so it goes.
     pub(crate) fn edited_more(&mut self, index: usize, typed: &str) {
-        if let (Some(image), 0) = (&mut self.image, index) {
+        if let (Some(image), 0) = (&mut self.image, index)
+            && image.disk != typed
+        {
             typed.clone_into(&mut image.disk);
+            image.outcome = None;
         }
     }
 
-    /// The field changed to `typed`: where the image is mounted.
+    /// The field changed to `typed`: where the image is mounted. The last
+    /// result goes with a change.
     pub(crate) fn edited(&mut self, typed: &str) {
-        if let Some(image) = &mut self.image {
+        if let Some(image) = &mut self.image
+            && image.root != typed
+        {
             typed.clone_into(&mut image.root);
+            image.outcome = None;
         }
     }
 
-    /// The examiner's view turned `on` or off.
+    /// The examiner's view turned `on` or off. The last result goes with a
+    /// change.
     pub(crate) fn toggled(&mut self, on: bool) {
-        if let Some(image) = &mut self.image {
+        if let Some(image) = &mut self.image
+            && image.examiner != on
+        {
             image.examiner = on;
+            image.outcome = None;
         }
     }
 
@@ -248,6 +266,10 @@ fn image_page(image: &ImageScan, cx: &Context) -> Page {
             }
             .to_string(),
         }];
+    }
+    if image.outcome.is_some() {
+        page.facts
+            .push((text::FACT_SCANNED_IMAGE.to_string(), image.scanned.clone()));
     }
     page.action = Some(text::SCAN_IMAGE_ACTION);
     page.action_kind = ActionKind::Suggested;
