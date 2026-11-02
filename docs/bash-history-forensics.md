@@ -123,6 +123,16 @@ shell that reads a terminal without being interactive by its own rule, as
 `bash 2>/dev/null` does, is killed as well; it keeps no history, and the switch
 would end it anyway.
 
+NAILS knows a shell by the name of its process, which the kernel takes from
+the file the shell was started from: `sh`, `bash`, `rbash`, `dash`, `ash`,
+`ksh`, `ksh93`, `rksh`, `mksh`, `lksh`, `oksh`, `loksh`, `pdksh`, `yash`, `zsh`,
+`tcsh`, `csh`, `fish`, `nu`, `elvish` and `xonsh`, each with its own command
+line syntax, and a shell a NixOS wrapper starts (`.xonsh-wrapped`) under its
+own name. A shell of any other name is not killed: one started through a link
+of another name, one that an interpreter runs as a module (`python3 -m xonsh`)
+and any other shell. Such a shell writes its history when the switch ends it,
+as at any shutdown.
+
 The shells die the newest first, because one shell's death can hang up
 another. A login shell that leads a console's session hangs up the console as
 it dies, and a desktop started from it (`sway` or `startx` typed after logging

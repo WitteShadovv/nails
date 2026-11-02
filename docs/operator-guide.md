@@ -1346,6 +1346,13 @@ afterwards:
 - As its last step activation SIGKILLs the decoy's interactive shells, including
   the one you ran it from, so none runs an exit trap or flushes its in-memory
   history with the activation command in it. A SIGKILLed shell writes nothing.
+  A shell counts when its process has the name of one NAILS knows (bash, zsh,
+  fish, dash, the Korn and C shells, yash, nu, elvish and xonsh;
+  [bash-history-forensics.md](bash-history-forensics.md#the-flush-race) lists
+  every name) and it reads its commands from a terminal, whatever its other
+  descriptors are, so `zsh 2>/dev/null` counts. A shell of any other name is
+  not killed and writes its history at the switch as at any shutdown: type
+  the decoy commands in one NAILS knows.
 - NAILS makes no write to, and no read of, the decoy history after the fact,
   because such an access is itself an artifact. Your protection is that the
   history never reaches the decoy in the first place, backed by an amnesic decoy.
