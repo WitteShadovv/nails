@@ -523,9 +523,12 @@ PID 1 holds the switch's job, so a shell that saves history on exit (bash on
 SIGHUP) never writes the activation command, unless a terminal multiplexer
 hangs it up itself (see **Terminal multiplexers** below and
 [bash-history-forensics.md](bash-history-forensics.md)). NAILS does
-**not** configure the decoy's own shells, and a shell that flushes history after
-every command (zsh `INC_APPEND_HISTORY`, `history -a` in `PROMPT_COMMAND`) has
-already written it; the `incremental-history-flush` check warns about that. If you type on the decoy — and the
+**not** configure the decoy's own shells, and a shell that writes each command
+line to its history file as it runs has written it before any kill: zsh with
+`INC_APPEND_HISTORY`, `SHARE_HISTORY` or `INC_APPEND_HISTORY_TIME`, bash with
+`history -a` or `history -w` in `PROMPT_COMMAND`, and fish outside private
+mode. The `incremental-history-flush` check warns about the settings it can
+see (see [Shell history](operator-guide.md#shell-history)). If you type on the decoy — and the
 pre-activation unlock and mount commands must be typed there — harden the decoy's
 history yourself so an interactive shell has nowhere to write:
 
@@ -544,6 +547,14 @@ history yourself so an interactive shell has nowhere to write:
   nu, elvish and xonsh; [bash-history-forensics.md](bash-history-forensics.md#the-flush-race)
   lists every name). Type the decoy commands in one of them, started under its
   own name.
+- **No write after every command.** Turn off zsh's `INC_APPEND_HISTORY`,
+  `SHARE_HISTORY` and `INC_APPEND_HISTORY_TIME` (NixOS's `programs.zsh` sets
+  `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, and so does
+  Oh My Zsh), keep `history -a` and `history -w` out of bash's
+  `PROMPT_COMMAND`, and type the decoy commands in fish only as
+  `fish --private`. A history tool that records each command itself, such as
+  atuin, writes as the command runs too. No kill takes back what such a shell
+  has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation

@@ -94,6 +94,13 @@ pub struct RegistryInputs {
     /// binary-location check probes for decoy symlinks. `None` (the default
     /// used by unit tests that build inputs directly) probes nothing.
     pub caller_path: Option<std::ffi::OsString>,
+    /// The shell the running command was typed into
+    /// ([`InspectedShell::typed`](crate::preflight::InspectedShell::typed)),
+    /// whose history settings the incremental-history-flush check reads.
+    /// `None` (the command was not typed into a shell, and the default used by
+    /// unit tests that build inputs directly) makes that check read the
+    /// operator's login shell's instead.
+    pub typed_shell: Option<crate::preflight::InspectedShell>,
     /// The host detection found (see [`NailsManager::host_profile`]). The
     /// platform check reports it, and the systemd-version check tells a
     /// systemd too old how this host's distribution upgrades. `None` (no
@@ -141,7 +148,7 @@ pub fn build_registry<F: Filesystem>(
     use crate::preflight::{
         BackendDetectCheck, BackendEncryptionCheck, BackendEntriesCheck, BinaryLocationCheck,
         DecoyPersistenceCheck, DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck,
-        IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
+        IncrementalHistoryFlushCheck, InheritedAutostartCheck, InspectedShell, MemoryWipeCheck,
         MountNamespaceCheck, NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck,
         PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
         StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
@@ -404,13 +411,19 @@ pub fn build_registry<F: Filesystem>(
         None => InheritedAutostartCheck::disabled(),
     }));
 
-    // Warns (never fails) when the operator's shell flushes command history to
-    // disk after every command (zsh INC_APPEND_HISTORY/SHARE_HISTORY, bash
-    // `history -a` in PROMPT_COMMAND): such a shell has already written the
-    // activation commands to disk before the pre-teardown shell kill can prevent
-    // it. Degrades to a skipped Pass when no operator could be resolved.
-    registry.add_check(Box::new(match inputs.operator.as_ref() {
-        Some(operator) => IncrementalHistoryFlushCheck::new(operator.home().to_path_buf()),
+    // Warns (never fails) when the shell the command was typed into, else the
+    // operator's login shell, writes each command line to its history file as
+    // it runs (zsh INC_APPEND_HISTORY, SHARE_HISTORY or
+    // INC_APPEND_HISTORY_TIME, bash `history -a` or `history -w` in
+    // PROMPT_COMMAND, fish outside private mode): it has written the decoy
+    // commands before activation kills it. Degrades to a skipped Pass when no
+    // shell could be found.
+    let shell = inputs
+        .typed_shell
+        .clone()
+        .or_else(|| inputs.operator.as_ref().map(InspectedShell::login));
+    registry.add_check(Box::new(match shell {
+        Some(shell) => IncrementalHistoryFlushCheck::new(shell),
         None => IncrementalHistoryFlushCheck::disabled(),
     }));
 
@@ -450,6 +463,9 @@ impl<F: Filesystem> NailsManager<F> {
             .as_ref()
             .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
 
+        // Resolve the operator best-effort so the inherited-autostart check can
+        // inspect the decoy state; an unresolved operator simply skips it.
+        let operator = crate::TargetUser::resolve_with(self.runtime_env()).ok();
         let inputs = RegistryInputs {
             options: options.clone(),
             current_state: self.current_state()?,
@@ -458,9 +474,8 @@ impl<F: Filesystem> NailsManager<F> {
             // The same platform-driven discovery activation used to pick the
             // builder, so the build-target check reports that very target.
             discovered_target: self.discover_host_target(options.overlay_only)?,
-            // Resolve the operator best-effort so the inherited-autostart check
-            // can inspect the decoy state; an unresolved operator simply skips it.
-            operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
+            typed_shell: crate::preflight::InspectedShell::typed(operator.as_ref()),
+            operator,
             caller_path: self.runtime_env().path.clone(),
             host_profile: self.host_profile().cloned(),
             // An unreadable version fails the systemd-version check.

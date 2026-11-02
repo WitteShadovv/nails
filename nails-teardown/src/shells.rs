@@ -88,7 +88,7 @@ pub const SHELL_NAMES: &[(&str, Syntax)] = &[
 
 /// The name `name` stands for: a program that a NixOS wrapper starts is named
 /// `.<name>-wrapped`.
-fn unwrapped(name: &str) -> &str {
+pub fn unwrapped(name: &str) -> &str {
     name.strip_prefix('.')
         .and_then(|wrapped| wrapped.strip_suffix("-wrapped"))
         .filter(|name| !name.is_empty())
@@ -114,6 +114,9 @@ struct Startup {
     script: bool,
     /// It forces interactive mode (`-i`, `--interactive`).
     forced: bool,
+    /// It runs in private mode, in which it writes no history (fish's `-P`,
+    /// `--private`).
+    private: bool,
 }
 
 /// Whether a shell is interactive: whether it reads its commands from a
@@ -195,6 +198,8 @@ struct Getopt {
     long_values: &'static [&'static str],
     /// The long option that runs its value as a command.
     long_command: Option<&'static str>,
+    /// The one-letter and the long option that turn private mode on.
+    private: Option<(char, &'static str)>,
 }
 
 /// fish's options ([`Syntax::Fish`]).
@@ -212,6 +217,7 @@ const FISH: Getopt = Getopt {
     ],
     long_values: &[],
     long_command: Some("command"),
+    private: Some(('P', "private")),
 };
 
 /// xonsh's options ([`Syntax::Xonsh`]).
@@ -220,6 +226,7 @@ const XONSH: Getopt = Getopt {
     long_value: &["shell-type", "shell"],
     long_values: &["rc"],
     long_command: None,
+    private: None,
 };
 
 /// The shell's own words `args`, read by `grammar`: fish's past `argv[0]`,
@@ -243,6 +250,9 @@ fn getopt(args: &[String], grammar: &Getopt) -> Startup {
             if name == "interactive" {
                 startup.forced = true;
             }
+            if grammar.private.is_some_and(|(_, long)| long == name) {
+                startup.private = true;
+            }
             if !inline && grammar.long_value.contains(&name) {
                 args.next();
             }
@@ -257,6 +267,9 @@ fn getopt(args: &[String], grammar: &Getopt) -> Startup {
                     'c' => startup.command = true,
                     'i' => startup.forced = true,
                     _ => {}
+                }
+                if grammar.private.is_some_and(|(short, _)| short == flag) {
+                    startup.private = true;
                 }
                 if grammar.short_value.contains(flag) {
                     // The value is the rest of the word, or else the next one.
@@ -371,6 +384,12 @@ fn xonsh_args(argv: &[String]) -> &[String] {
     });
     argv.get(script.map_or(1, |at| at + 1)..)
         .unwrap_or_default()
+}
+
+/// Whether a fish started as `argv` runs in private mode (`-P` or
+/// `--private`), in which it writes no history.
+pub fn fish_is_private(argv: &[String]) -> bool {
+    getopt(argv.get(1..).unwrap_or_default(), &FISH).private
 }
 
 /// Whether `pid` is an interactive shell.

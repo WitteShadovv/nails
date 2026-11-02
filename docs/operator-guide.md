@@ -923,6 +923,12 @@ activate`, in a shell with history off:
 set +o history        # this session records nothing more to the history file
 ```
 
+In zsh, run `unset HISTFILE` instead: zsh saves no history without a history
+file. In fish, type the decoy commands in one you start with
+`fish --private`, which writes no history. Turn history off before the first
+decoy command: a shell that writes each command line as it runs (see
+[Shell history](#shell-history)) has written what you typed before.
+
 If you rely on `HISTCONTROL=ignorespace`, prefix each sensitive command with a
 single leading space instead. Do not type the tool name, the mapper, the mount
 point or the container path in any shell that still records history.
@@ -1258,11 +1264,37 @@ afterwards:
 - NAILS makes no write to, and no read of, the decoy history after the fact,
   because such an access is itself an artifact. Your protection is that the
   history never reaches the decoy in the first place, backed by an amnesic decoy.
-- The `incremental-history-flush` **preflight** warns when the shell you run
-  NAILS from flushes history after every command (`INC_APPEND_HISTORY`/
-  `SHARE_HISTORY`, or `history -a` in bash `PROMPT_COMMAND`): such a shell has
-  already written the unlock and mount commands to disk before activation can
-  help. Clear that warning before activating.
+- The `incremental-history-flush` **preflight** warns when the shell you typed
+  the command into, or your login shell when it was not typed into one, writes
+  each command line to its history file as it runs: zsh with
+  `INC_APPEND_HISTORY` or `SHARE_HISTORY` as you enter a line, and with
+  `INC_APPEND_HISTORY_TIME` once its command ends, bash with `history -a` or
+  `history -w` in `PROMPT_COMMAND` at the next prompt, and fish, unless it runs
+  in private mode, as it starts a command. Such a shell has written the unlock
+  and mount commands before activation starts, and the activation command too
+  when it writes a line as it is entered or started, and killing it cannot take
+  them back. A refusal would not take them back either, and a refused
+  activation ends, so a shell that writes once a command ends would write the
+  activation command as well: the check only warns, and names the shell and
+  the setting. Clear that warning before activating.
+
+  It reads the startup files of that shell in `/etc` and in the home of the
+  account it runs as (root's for a shell `sudo -i` opened), the files that
+  shell reads when it starts, and never a history file. Run as root, it
+  reads them without changing their access times; a link on the way, such as
+  NixOS's `/etc/zshrc`, is followed, which can change the link's (see
+  [What `check` touches](#what-check-touches)). zsh's files it reads in the
+  order zsh does, so an `unsetopt` in a later file counts, and from the
+  `ZDOTDIR` a `zshenv` sets. It knows that Oh My Zsh turns `SHARE_HISTORY` on,
+  and it reads the `/etc/zshrc` where NixOS's `programs.zsh` sets that option
+  by default. It warns that it cannot tell when one of those files is there but
+  cannot be read, when a `zshenv` sets a `ZDOTDIR` it cannot follow, or when
+  the shell is not bash, zsh, fish or dash (dash keeps no history file). It
+  does not see a setting made in a file those source
+  (Oh My Zsh's aside) or by a plugin manager, one you typed into the shell,
+  or a shell started with other startup files (`bash --rcfile`, a `ZDOTDIR`
+  from the environment), nor a history tool that keeps its own record of each
+  command, such as atuin.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

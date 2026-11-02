@@ -40,7 +40,7 @@ pub use decoy_posture::DecoyPersistenceCheck;
 pub use dma_protection::DmaProtectionCheck;
 pub use hidden_volume::HiddenVolumeCheck;
 pub use host_tools::{HostToolsCheck, NetworkToolsCheck};
-pub use incremental_history_flush::IncrementalHistoryFlushCheck;
+pub use incremental_history_flush::{IncrementalHistoryFlushCheck, InspectedShell, ShellOrigin};
 pub use inherited_autostart::InheritedAutostartCheck;
 pub use journald_storage::{JournaldStorage, parse_journald_storage};
 pub use kernel_cmdline::BoolSpellings;

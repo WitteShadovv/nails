@@ -32,6 +32,7 @@ fn build_registry_includes_the_shared_checks() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        typed_shell: None,
         host_profile: None,
         systemd_version: None,
     };
@@ -77,6 +78,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        typed_shell: None,
         host_profile: None,
         systemd_version: None,
     };
@@ -104,6 +106,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        typed_shell: None,
         host_profile: None,
         systemd_version: None,
     };
@@ -232,6 +235,7 @@ fn read_only_registry_creates_nothing() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        typed_shell: None,
         host_profile: None,
         systemd_version: None,
     };
@@ -681,6 +685,7 @@ fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        typed_shell: None,
         host_profile: None,
         systemd_version: None,
     };
@@ -1024,6 +1029,7 @@ fn systemd_version_row(os_release: Option<&str>, version: Option<u32>) -> CheckR
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        typed_shell: None,
         host_profile: os_release
             .and_then(|os_release| manager_on_host(os_release).host_profile().cloned()),
         systemd_version: version,
@@ -1082,4 +1088,77 @@ fn the_systemd_version_row_judges_the_version_it_is_given() {
     assert!(current.is_pass(), "{current:?}");
     let unread = systemd_version_row(debian, None);
     assert!(unread.is_fail(), "{unread:?}");
+}
+
+/// The incremental-history-flush row of the registry built from inputs with
+/// `operator` and `typed_shell`.
+fn history_row(
+    operator: Option<crate::TargetUser>,
+    typed_shell: Option<crate::preflight::InspectedShell>,
+) -> CheckResult {
+    let fs = MockFilesystem::new();
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator,
+        caller_path: None,
+        typed_shell,
+        host_profile: None,
+        systemd_version: None,
+    };
+    build_registry(&fs, &explicit_config(), &inputs, None)
+        .expect("registry builds")
+        .run_all_detailed(&fs)
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "incremental-history-flush")
+        .map(|(_, result)| result)
+        .expect("an incremental-history-flush row")
+}
+
+/// The history check reads the shell the command was typed into, and the
+/// operator's login shell only when there is none.
+#[test]
+fn the_history_check_reads_the_typed_shell_before_the_login_shell() {
+    use crate::preflight::{InspectedShell, ShellOrigin};
+    let operator = || {
+        Some(crate::TargetUser::for_test(
+            1000,
+            100,
+            "alice",
+            "/home/alice",
+            "/bin/bash",
+        ))
+    };
+    let fish = InspectedShell {
+        program: "fish".to_string(),
+        home: "/home/alice".into(),
+        argv: vec!["fish".to_string()],
+        origin: ShellOrigin::Typed,
+    };
+
+    let typed = history_row(operator(), Some(fish));
+    assert!(
+        typed.is_warn()
+            && typed
+                .message()
+                .starts_with("fish, the shell this command was typed into, writes"),
+        "{typed:?}"
+    );
+    let login = history_row(operator(), None);
+    assert!(
+        login.is_pass()
+            && login
+                .message()
+                .starts_with("bash (the operator's login shell): no startup file"),
+        "{login:?}"
+    );
+    let neither = history_row(None, None);
+    assert!(
+        neither.is_pass() && neither.message().contains("not inspected"),
+        "{neither:?}"
+    );
 }
