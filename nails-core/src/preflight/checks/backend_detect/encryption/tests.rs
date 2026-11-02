@@ -813,6 +813,39 @@ fn a_volume_the_decoys_crypttab_opens_is_the_decoys_under_any_name() {
     );
 }
 
+/// A plain image on a LUKS volume (`media`, over loop0) of the image file
+/// `/var/backup.img`, with `crypttab` the decoy's crypttab.
+fn image_on_a_crypttab_file_volume(crypttab: &str) -> CheckResult {
+    Host::with_mounts(
+        "30 1 254:5 / /srv/backup rw - ext4 /dev/mapper/media rw\n\
+         40 1 7:1 / /mnt/data rw - ext4 /dev/loop1 rw\n",
+    )
+    .loop_device("loop0", "7:0", "/var/backup.img")
+    .file_on("/var/backup.img", 254, 0)
+    .recorded("loop0", 254, 0)
+    .luks("dm-5", "254:5", "media", &["loop0"])
+    .loop_device("loop1", "7:1", "/srv/backup/disk.raw")
+    .file_on("/srv/backup/disk.raw", 254, 5)
+    .recorded("loop1", 254, 5)
+    .file("/etc/crypttab", crypttab)
+    .run()
+}
+
+#[test]
+fn an_image_file_the_decoys_crypttab_opens_is_the_decoys_under_any_name() {
+    let result = image_on_a_crypttab_file_volume("backup /var/backup.img none luks,noauto\n");
+    assert!(
+        warning(&result).contains(
+            "is the decoy's own: LUKS mapping dm-5, which also holds the volume the decoy's \
+             /etc/crypttab opens as backup."
+        ),
+        "{result:?}"
+    );
+    // Another file of the decoy's crypttab is no claim on this one.
+    let result = image_on_a_crypttab_file_volume("backup /var/other.img none luks,noauto\n");
+    assert_pass(&result, "LUKS mapping dm-5");
+}
+
 #[test]
 fn encryption_of_its_own_over_the_decoys_crypttab_volume_passes() {
     // The decoy's crypttab opens sdc as `backup` (dm-5), and a LUKS volume
