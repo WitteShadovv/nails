@@ -770,6 +770,68 @@ fn an_image_file_on_a_btrfs_filesystem_of_several_devices_needs_each_encrypted()
 }
 
 // ------------------------------------------------------------------------
+// A volume of the decoy's crypttab under another name
+// ------------------------------------------------------------------------
+
+/// The decoy's crypttab opens sdc as `backup`; it was opened as `media`
+/// (dm-5, a tcrypt mapping over `below`), and the hidden root is a plain
+/// image on it.
+fn crypttab_volume_under_another_name(below: &[&str], host: Host) -> CheckResult {
+    host.mapping("dm-5", "254:5", "media", "CRYPT-TCRYPT-media", below)
+        .loop_device("loop0", "7:0", "/srv/backup/disk.raw")
+        .file_on("/srv/backup/disk.raw", 254, 5)
+        .file("/etc/crypttab", "backup /dev/sdc none tcrypt,noauto\n")
+        .run()
+}
+
+#[test]
+fn a_volume_the_decoys_crypttab_opens_is_the_decoys_under_any_name() {
+    let mounts = "30 1 254:5 / /srv/backup rw - ext4 /dev/mapper/media rw\n\
+                  40 1 7:0 / /mnt/data rw - ext4 /dev/loop0 rw\n";
+    let result =
+        crypttab_volume_under_another_name(&["sdc"], Host::with_mounts(mounts).disk("sdc", "8:32"));
+    assert!(
+        warning(&result).contains(
+            "is the decoy's own: VeraCrypt/TrueCrypt (tcrypt) mapping dm-5, which also holds the \
+             volume the decoy's /etc/crypttab opens as backup."
+        ),
+        "{result:?}"
+    );
+
+    // The same past the inner cipher of a cascade.
+    let cascade = Host::with_mounts(mounts).disk("sdc", "8:32").mapping(
+        "dm-4",
+        "254:4",
+        "media_1",
+        "CRYPT-SUBDEV-media_1",
+        &["sdc"],
+    );
+    let result = crypttab_volume_under_another_name(&["dm-4"], cascade);
+    assert!(
+        warning(&result).contains("is the decoy's own: VeraCrypt/TrueCrypt (tcrypt) mapping dm-5"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn encryption_of_its_own_over_the_decoys_crypttab_volume_passes() {
+    // The decoy's crypttab opens sdc as `backup` (dm-5), and a LUKS volume
+    // with a key of its own (dm-9) lies on that mapping.
+    let result = Host::with_mounts(
+        "30 1 254:9 / /srv/inner rw - ext4 /dev/mapper/inner rw\n\
+         40 1 7:0 / /mnt/data rw - ext4 /dev/loop0 rw\n",
+    )
+    .disk("sdc", "8:32")
+    .luks("dm-5", "254:5", "backup", &["sdc"])
+    .luks("dm-9", "254:9", "inner", &["dm-5"])
+    .loop_device("loop0", "7:0", "/srv/inner/disk.raw")
+    .file_on("/srv/inner/disk.raw", 254, 9)
+    .file("/etc/crypttab", "backup /dev/sdc none luks,noauto\n")
+    .run();
+    assert_pass(&result, "LUKS mapping dm-9");
+}
+
+// ------------------------------------------------------------------------
 // Where the loop driver records a loop device's file
 // ------------------------------------------------------------------------
 
