@@ -403,6 +403,7 @@ const PAGES: &[Page] = &[
     ),
     ("23-scan-an-image", scan_an_image),
     ("24-set-up-narrow", set_up_narrow),
+    ("25-activation-options", activation_options),
 ];
 
 fn narrow(win: Win) -> Win {
@@ -557,6 +558,14 @@ fn scan_an_image() -> Win {
 fn set_up_narrow() -> Win {
     let win = narrow(decoy(ready_check(), 0));
     win.app.invoke_link_activated(3);
+    win
+}
+
+/// Activation Options on a ready decoy, a flake typed.
+fn activation_options() -> Win {
+    let win = decoy(ready_check(), 0);
+    win.app.invoke_link_activated(4);
+    win.app.invoke_field_edited("/srv/flake#decoy".into());
     win
 }
 

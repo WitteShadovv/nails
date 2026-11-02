@@ -136,6 +136,11 @@ impl Model {
                         .iter()
                         .map(|risk| (text::FACT_ALLOWED.to_string(), risk.what().to_string())),
                 );
+                page.facts.extend(
+                    self.options
+                        .summary()
+                        .map(|options| (text::FACT_OPTIONS.to_string(), options)),
+                );
                 page.checks = report_rows(report, &self.allowed);
                 page.fix = fix;
                 page.action = Some(if report.ready {
