@@ -1156,8 +1156,14 @@ under `--root`, and each home of a login account of its `/etc/passwd` that is,
 is listed as not checked, in the examiner's view as well, so a scan of the
 system subvolume alone does not read as complete. The line of a mount point
 says which of the two mounts above it needs, by whether `findmnt` shows its
-device mounted, with the command. A bind entry is left out, since its source
-lies in the image and was scanned. Below `--root`, what the scan and the
+device mounted, with the command. A file the decoy mounts, such as a disk
+image in a home, is attached to a loop device first with
+`losetup --read-only`, and a `/dev/mapper` device that is not open is opened
+first with `cryptsetup open --readonly`, from the source the decoy's
+`/etc/crypttab` gives where it names one: the kernel keeps such a device
+read-only, so it needs no `blockdev --setro`, only the option that skips the
+replay. A bind entry is left out, since its source lies in the image and was
+scanned. Below `--root`, what the scan and the
 examiner's view read is looked up inside the root, as the decoy sees it: a
 link is followed there, an absolute one included, so NixOS's `/etc/fstab` and
 `/etc/crypttab` are read from the image's store, and no link leads to the
@@ -1165,9 +1171,10 @@ folders of the machine running verify. The one exception is the probe for the
 known NAILS paths (mostly under `/run` and `/etc/nixos`), which follows a link
 on the way to such a path as the machine running verify does. A file that is
 there but does not resolve inside the root, such as a link into a store that
-is not mounted there, is listed as not read, and the examiner's view says when
-the decoy's `/nix/store` is missing or empty, so that its tool check had
-nothing to read.
+is not mounted there, is listed as not read, with where it leads, and the
+examiner's view says when the decoy's `/nix/store` is missing or empty, so
+that its tool check had nothing to read. A link to `/dev/null`, as a history
+kept from being written is, holds nothing and is passed over.
 These checks write nothing and, run as root, change no access time of the
 folder `--root` names or of what it holds, except that following a link
 updates the link's own access time on a read-write mount, which the mounts

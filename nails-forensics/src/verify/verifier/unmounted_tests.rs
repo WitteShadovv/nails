@@ -231,6 +231,170 @@ fn each_mount_point_says_how_to_mount_it_by_how_its_device_is_mounted_now() {
 }
 
 #[test]
+fn a_file_or_a_mapping_that_is_not_open_is_opened_read_only_before_its_mount() {
+    // A disk image the decoy mounts is attached to a loop device read-only,
+    // as its fstab line sets the loop device up. A mapping that is not open
+    // here is opened read-only first, from the source and as the kind of
+    // volume the decoy's crypttab names. The kernel keeps either device
+    // read-only, so neither needs blockdev --setro. A mapping that is open
+    // here is mounted as any other device is.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
+    fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
+    fs.mock_add_file(
+        "/mnt/decoy/etc/fstab",
+        "/home/alice/disk.img /mnt/x ext4 loop 0 0\n\
+         /srv/disk.img /mnt/part btrfs loop,offset=1048576,sizelimit=8388608,subvol=@ 0 0\n\
+         /dev/mapper/vault /data ext4 defaults 0 2\n\
+         /dev/mapper/secret /secret ext4 defaults 0 2\n\
+         /dev/mapper/sys /media/sys ext4 defaults 0 2\n\
+         /dev/mapper/stick /media/stick vfat defaults 0 2\n\
+         /dev/mapper/gone /media/gone xfs defaults 0 2\n\
+         /dev/mapper/open /media/open ext4 defaults 0 2\n",
+    );
+    fs.mock_add_file(
+        "/mnt/decoy/etc/crypttab",
+        "vault UUID=ab none luks\n\
+         secret /home/alice/vault.hc none tcrypt-veracrypt,tcrypt-hidden\n\
+         sys /dev/sdc none tcrypt-system\n\
+         stick PARTUUID=cd none bitlk\n\
+         open /dev/sdd none luks\n",
+    );
+    fs.mock_set_path_type("/dev/mapper/open", PathKind::File);
+
+    let result = Verifier::new(fs)
+        .offline_under("/mnt/decoy".into())
+        .run(false)
+        .unwrap();
+    let why = |place: &str, how: &str| {
+        format!(
+            "{place}, which the decoy's /etc/fstab mounts (missing or empty under the root. {how})"
+        )
+    };
+    let named = |open: &str, mount: &str| {
+        format!(
+            "Its device is a mapping of the decoy's /etc/crypttab that is not open here: open it \
+             read-only and mount it there without a journal replay before the scan, with `sudo \
+             cryptsetup open --readonly {open} && sudo mount {mount}`"
+        )
+    };
+    let attached = |losetup: &str, mount: &str| {
+        format!(
+            "Its device is a file in the image: attach it read-only, with `sudo losetup \
+             --read-only --find --show {losetup}`, then mount the loop device that prints there \
+             without a journal replay before the scan, with `sudo mount {mount}`"
+        )
+    };
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            why(
+                "/data",
+                &named(
+                    "/dev/disk/by-uuid/ab vault",
+                    "-o ro,noload /dev/mapper/vault /mnt/decoy/data"
+                )
+            ),
+            why(
+                "/media/gone",
+                "Its device is a mapping that is not open here: open it read-only and mount it \
+                 there without a journal replay before the scan, with `sudo cryptsetup open \
+                 --readonly <source> gone && sudo mount -o ro,norecovery /dev/mapper/gone \
+                 /mnt/decoy/media/gone`, where <source> is the encrypted device or file that \
+                 holds it"
+            ),
+            why(
+                "/media/open",
+                "Its device is not mounted here: make it read-only and mount it there without a \
+                 journal replay before the scan, with `sudo blockdev --setro /dev/mapper/open && \
+                 sudo mount -o ro,noload /dev/mapper/open /mnt/decoy/media/open`"
+            ),
+            why(
+                "/media/stick",
+                &named(
+                    "--type bitlk /dev/disk/by-partuuid/cd stick",
+                    "-o ro /dev/mapper/stick /mnt/decoy/media/stick"
+                )
+            ),
+            why(
+                "/media/sys",
+                &named(
+                    "--type tcrypt --tcrypt-system /dev/sdc sys",
+                    "-o ro,noload /dev/mapper/sys /mnt/decoy/media/sys"
+                )
+            ),
+            why(
+                "/mnt/part",
+                &attached(
+                    "--offset 1048576 --sizelimit 8388608 /mnt/decoy/srv/disk.img",
+                    "-o ro,rescue=nologreplay,subvol=@ <loop device> /mnt/decoy/mnt/part"
+                )
+            ),
+            why(
+                "/mnt/x",
+                &attached(
+                    "/mnt/decoy/home/alice/disk.img",
+                    "-o ro,noload <loop device> /mnt/decoy/mnt/x"
+                )
+            ),
+            why(
+                "/secret",
+                &named(
+                    "--type tcrypt --tcrypt-hidden /mnt/decoy/home/alice/vault.hc secret",
+                    "-o ro,noload /dev/mapper/secret /mnt/decoy/secret"
+                )
+            ),
+        ]
+    );
+}
+
+#[test]
+fn the_file_a_decoy_mounts_and_the_source_of_its_mapping_lie_inside_the_root() {
+    // The image's /home is an absolute link to /data/home: the disk image and
+    // the container in it are found there, never in the /home of the machine
+    // running verify.
+    let root = decoy(
+        &["data/home/alice", "srv/bob"],
+        &[
+            (
+                "etc/fstab",
+                "/home/alice/disk.img /mnt/x ext4 loop 0 0\n\
+                 /dev/mapper/nails-test-closed /data/vault ext4 defaults 0 2\n",
+            ),
+            (
+                "etc/crypttab",
+                "nails-test-closed /home/alice/vault.hc none luks\n",
+            ),
+            ("data/home/alice/.profile", ""),
+            ("srv/bob/.profile", ""),
+        ],
+    );
+    std::os::unix::fs::symlink("/data/home", root.path().join("home")).unwrap();
+    let in_home = |file: &str| {
+        nails_base::next_step::shell_word(
+            root.path().join("data/home/alice").join(file).as_os_str(),
+        )
+    };
+    let result = scan(root.path(), false, false).unwrap();
+    let lines = unmounted(&result.areas_not_checked);
+    assert_eq!(places(&result.areas_not_checked), ["/data/vault", "/mnt/x"]);
+    assert!(
+        lines[0].contains(&format!(
+            "`sudo cryptsetup open --readonly {} nails-test-closed && ",
+            in_home("vault.hc")
+        )),
+        "{lines:#?}"
+    );
+    assert!(
+        lines[1].contains(&format!(
+            "`sudo losetup --read-only --find --show {}`",
+            in_home("disk.img")
+        )),
+        "{lines:#?}"
+    );
+}
+
+#[test]
 fn the_decoys_links_are_followed_inside_the_root() {
     // NixOS links /etc/fstab into /etc/static, itself a link into the store:
     // both resolve inside the image, never on the machine running verify. A
@@ -270,18 +434,36 @@ fn the_decoys_links_are_followed_inside_the_root() {
 
 #[test]
 fn an_fstab_that_cannot_be_read_inside_the_root_is_not_read() {
-    // NixOS's link into a store that is not mounted under the root.
+    // NixOS's link into a store that is not mounted under the root, which
+    // says where it leads there; a file that is no text; and a link to
+    // /dev/null, which mounts nothing.
     let root = decoy(&["home/alice", "srv/bob"], &[("home/alice/.profile", "")]);
     std::fs::write(root.path().join("srv/bob/.profile"), "").unwrap();
-    std::os::unix::fs::symlink("/etc/static/fstab", root.path().join("etc/fstab")).unwrap();
+    let fstab = root.path().join("etc/fstab");
+    let not_read = |why: &str| {
+        format!(
+            "/etc/fstab, the decoy's table of what it mounts ({why}: what it mounts is not known)"
+        )
+    };
+    std::os::unix::fs::symlink("/etc/static/fstab", &fstab).unwrap();
     let result = scan(root.path(), false, false).unwrap();
     assert_eq!(
         unmounted(&result.areas_not_checked),
-        [
-            "/etc/fstab, the decoy's table of what it mounts (it could not be read inside the root, \
-          as a link into a store that is not mounted there cannot be: what it mounts is not known)"
-        ]
+        [not_read(
+            "a link that leads to /etc/static/fstab inside the root, where no file can be read"
+        )]
     );
+    std::fs::remove_file(&fstab).unwrap();
+    std::fs::write(&fstab, b"UUID=1 /home ext4 defaults 0 2 \xff\n").unwrap();
+    let result = scan(root.path(), false, false).unwrap();
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [not_read("it could not be read")]
+    );
+    std::fs::remove_file(&fstab).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &fstab).unwrap();
+    let result = scan(root.path(), false, false).unwrap();
+    assert!(unmounted(&result.areas_not_checked).is_empty());
 }
 
 #[test]

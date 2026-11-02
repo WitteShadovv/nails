@@ -427,17 +427,23 @@ fn a_file_that_does_not_resolve_inside_the_root_is_not_checked() {
     )
     .unwrap();
     let report = examine(root.path(), &ExaminerOptions::default());
-    let unread = |rel: &str, purpose: &str| {
+    let unread = |rel: &str, purpose: &str, target: &Path| {
         format!(
-            "{rel}, read for {purpose} (a link that leads to no readable file inside the root, \
-             as one into a store that is not mounted there does not)"
+            "{rel}, read for {purpose} (a link that leads to {} inside the root, where no file \
+             can be read)",
+            target.display()
         )
     };
     for area in [
-        unread("/etc/fstab", "the crypttab and fstab entries"),
+        unread(
+            "/etc/fstab",
+            "the crypttab and fstab entries",
+            Path::new("/etc/static/fstab"),
+        ),
         unread(
             "/home/alice/.bash_history",
             "history naming a container or unlock",
+            &outside.path().join("history"),
         ),
     ] {
         assert!(
@@ -445,6 +451,37 @@ fn a_file_that_does_not_resolve_inside_the_root_is_not_checked() {
             "{area}: {:#?}",
             report.not_checked
         );
+    }
+}
+
+#[test]
+fn a_history_linked_to_dev_null_holds_nothing_and_is_passed_over() {
+    // A history kept from being written, by an absolute or a relative link,
+    // has nothing to read, whether the image holds a /dev of its own or not:
+    // it is no file that was not checked.
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "/etc/passwd",
+        b"alice:x:1000:100::/home/alice:/bin/bash\nbob:x:1001:100::/home/bob:/bin/zsh\n",
+    );
+    std::fs::create_dir_all(root.path().join("home/alice")).unwrap();
+    std::fs::create_dir_all(root.path().join("home/bob")).unwrap();
+    std::os::unix::fs::symlink("/dev/null", root.path().join("home/alice/.bash_history")).unwrap();
+    std::os::unix::fs::symlink("../../dev/null", root.path().join("home/bob/.zsh_history"))
+        .unwrap();
+    for image_dev in [false, true] {
+        if image_dev {
+            std::fs::create_dir(root.path().join("dev")).unwrap();
+        }
+        let report = examine(root.path(), &ExaminerOptions::default());
+        let homes: Vec<_> = report
+            .not_checked
+            .iter()
+            .filter(|area| area.starts_with("/home/"))
+            .collect();
+        assert!(homes.is_empty(), "{homes:#?}");
+        assert!(!ids(&report).contains("container-history"));
     }
 }
 
