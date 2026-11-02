@@ -122,6 +122,14 @@ fn a_skip_that_pulls_in_a_decoy_mount_nothing_keeps_off_is_masked() {
             "srv-b.mount (x-systemd.requires= on its fstab line)",
         ),
         (
+            "/dev/vdc1 /srv/data ext4 x-systemd.wants=/srv/b 0 2\n",
+            "srv-b.mount (x-systemd.wants= on its fstab line)",
+        ),
+        (
+            "/dev/vdc1 /srv/data ext4 defaults,x-systemd.wants=srv-b.mount 0 2\n",
+            "srv-b.mount (x-systemd.wants= on its fstab line)",
+        ),
+        (
             "/dev/vdc1 /srv/data ext4 defaults,x-systemd.requires-mounts-for=/srv/b/c 0 2\n",
             "srv-b.mount (x-systemd.requires-mounts-for= on its fstab line)",
         ),
@@ -607,6 +615,50 @@ fn a_skip_is_masked_where_its_links_cannot_be_read() {
 }
 
 #[test]
+fn an_fstab_line_s_wants_are_followed_as_its_requirements_are() {
+    // A want of the line is checked as a requirement is, unit names and
+    // specifiers alike.
+    let decoy = Decoy::new();
+    let wanting = |value: &str| {
+        format!("{NOAUTO_B}/dev/vdc1 /srv/data ext4 defaults,x-systemd.wants={value} 0 2\n")
+    };
+    for (value, part) in [
+        ("prep-%H.service", "with a specifier"),
+        ("noname", "which is no unit name"),
+        ("gone.service", "gone.service does not load"),
+    ] {
+        let warning = masked(&decoy, &wanting(value), MaskCause::Undetermined);
+        assert_has(&warning, &[part]);
+    }
+    decoy.write(
+        "/etc/systemd/system/dev-vdz.device.d/b.conf",
+        "[Unit]\nWants=srv-b.mount\n",
+    );
+    let warning = masked(&decoy, &wanting("/dev/vdz"), MaskCause::PullsInMount);
+    assert_has(
+        &warning,
+        &["dev-vdz.device (x-systemd.wants= on its fstab line), which pulls in srv-b.mount"],
+    );
+    // A masked mount it only wants does not keep it from starting.
+    let decoy = Decoy::new();
+    let (kept, warnings) = kept(
+        &decoy,
+        "/dev/vdc1 /srv/data ext4 defaults,x-systemd.wants=/srv/x 0 2\n\
+         /dev/vdd1 /srv/x ext4 nofail 0 2\n",
+        ROOT_ONLY,
+    );
+    assert_eq!(kept.masks, ["srv-x.mount"]);
+    assert!(
+        kept.skips
+            .iter()
+            .any(|skip| skip.units == ["srv-data.mount"]),
+        "{:?}",
+        kept.skips
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
 fn a_skip_whose_pulls_mount_nothing_of_a_disk_stays_a_skip() {
     let child = "/dev/vdc1 /srv/data ext4 defaults 0 2\n";
     for (fstab, mounts) in [
@@ -765,7 +817,7 @@ fn the_units_a_unit_pulls_in_are_read_from_every_source_each_once() {
         "../srv-t.mount",
     );
     let fstab = crate::session::fstab::parse_fstab(
-        "/srv/src /srv/data/sub none bind,x-systemd.requires=/dev/vdq1,x-systemd.requires=srv-r.swap 0 0\n",
+        "/srv/src /srv/data/sub none bind,x-systemd.requires=/dev/vdq1,x-systemd.requires=srv-r.swap,x-systemd.wants=srv-v.service 0 0\n",
     );
     let graph = deps::Graph::new(decoy.dirs(), &fstab, &[]);
     let pulled = deps::edges(&graph, "srv-data-sub.mount").unwrap();
@@ -788,6 +840,7 @@ fn the_units_a_unit_pulls_in_are_read_from_every_source_each_once() {
         ("srv-t.mount", false, true),
         ("dev-vdq1.device", true, true),
         ("srv-r.swap", true, true),
+        ("srv-v.service", false, true),
     ];
     for edge in expected {
         assert!(shown.contains(&edge), "{edge:?}: {shown:?}");
