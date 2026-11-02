@@ -92,7 +92,9 @@ the volume through such a line, the gate refuses it as the decoy's own
 filesystem and says to remove the line. A line the decoy's own boot needs, one
 that mounts its root or another of its filesystems or its swap or that opens a
 device below one of them, cannot go: the hidden root then lies on the decoy's
-own storage, and the check says to put it on storage of its own instead.
+own storage, and the check says to put it on storage of its own instead. The
+lines only the hidden volume needs still go, and where both kinds are flagged
+the check says both.
 
 An encrypted container file on a decoy filesystem only warns: the filesystem's
 journal and copy-on-write snapshots (btrfs, snapper) can keep old copies of the

@@ -799,10 +799,11 @@ on another partition) warns. Remove such a line long before the next use, since
 the decoy's configuration history can keep it. A line the decoy's own boot needs
 (one that mounts its root or another of its filesystems or its swap, or opens a
 device below one of them) cannot go: the hidden root then lies on the decoy's own
-storage, and the check says to put it on storage of its own instead. If the
-check cannot read `/etc/crypttab` (some distributions make it readable by root
-only), it fails and asks you to run the command with sudo.
-`--allow-decoy-storage` does not cover it.
+storage, and the check says to put it on storage of its own instead. The lines
+only the hidden volume needs still go, and where both kinds are flagged the
+check says both. If the check cannot read `/etc/crypttab` (some distributions
+make it readable by root only), it fails and asks you to run the command with
+sudo. `--allow-decoy-storage` does not cover it.
 
 ### Encryption headers, high-entropy space and containers
 

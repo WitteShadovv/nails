@@ -21,7 +21,8 @@
 //! An entry the decoy's own boot needs (one that mounts its root or another
 //! of its filesystems or its swap, or opens a device below one of them) cannot
 //! go: the hidden root lies on the decoy's own storage then, and the check says
-//! to put it on storage of its own instead.
+//! to put it on storage of its own instead. The entries only the hidden volume
+//! needs still have to go, so where both kinds are flagged it says both.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::filesystem::mountinfo::top_mount_at;
@@ -37,6 +38,13 @@ pub const REMEDIATION: &str =
 /// removing it would break the decoy, so the hidden root has to move.
 pub const STORAGE_OF_ITS_OWN: &str = "Do not remove a line the decoy's own boot needs: put the \
      hidden root on storage of its own instead.";
+
+/// What the operator does about blocking entries of both kinds. A line only
+/// the hidden volume needs is flagged no more once the hidden root moves, and
+/// would stay behind naming it, so it goes as [`REMEDIATION`] says.
+pub const REMOVE_AND_MOVE: &str = "Remove the lines only the hidden volume needs long before the \
+     next use, and open the volume by hand each time. Do not remove a line the decoy's own boot \
+     needs: put the hidden root on storage of its own instead.";
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.
@@ -128,10 +136,13 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
 
         let blocking = of_kind(EntryKind::Blocking);
         if !blocking.is_empty() {
-            let remediation = if blocking.iter().any(|f| f.boot_needs) {
+            let needed = blocking.iter().filter(|f| f.boot_needs).count();
+            let remediation = if needed == 0 {
+                REMEDIATION
+            } else if needed == blocking.len() {
                 STORAGE_OF_ITS_OWN
             } else {
-                REMEDIATION
+                REMOVE_AND_MOVE
             };
             return Ok(CheckResult::fail_with(
                 format!(
