@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The tokens of zsh code: words with their quotes and escapes taken off and
-//! their expansions kept as written, array assignments, and the places where
-//! a command ends.
+//! their expansions kept as written, array assignments, the places where a
+//! command ends, and the bodies of here-documents, which are text, not code.
 
 /// A word of zsh code.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,6 +40,8 @@ pub(super) enum Token {
     Close,
     /// A redirection, whose target is the next word.
     Redirect,
+    /// The body of a here-document: text a command reads, not code.
+    Text(String),
 }
 
 /// Whether `text` is a shell variable's name.
@@ -56,6 +58,10 @@ struct Lexer<'a> {
     tokens: Vec<Token>,
     /// The word being read.
     word: Option<Word>,
+    /// The here-documents the line read so far opens, whose bodies start
+    /// on the next line: each one's delimiter, and whether `<<-` lets its
+    /// lines start with tabs.
+    heredocs: Vec<(String, bool)>,
 }
 
 impl Lexer<'_> {
@@ -195,6 +201,54 @@ impl Lexer<'_> {
         items
     }
 
+    /// Read the delimiter of a here-document, after `<<` or `<<-`: a word,
+    /// its quotes and escapes taken off.
+    fn delimiter(&mut self) -> String {
+        while self.chars.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
+        let mut delimiter = String::new();
+        while let Some(c) = self.chars.next_if(|c| {
+            !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>')
+        }) {
+            if !matches!(c, '\'' | '"' | '\\') {
+                delimiter.push(c);
+            }
+        }
+        delimiter
+    }
+
+    /// Read the bodies of the here-documents the line just ended opened,
+    /// each up to the line that holds only its delimiter.
+    fn heredoc_bodies(&mut self) {
+        for (delimiter, tabs) in std::mem::take(&mut self.heredocs) {
+            let mut body = String::new();
+            loop {
+                let mut line = String::new();
+                let mut ended = false;
+                for c in self.chars.by_ref() {
+                    if c == '\n' {
+                        ended = true;
+                        break;
+                    }
+                    line.push(c);
+                }
+                let shown = if tabs {
+                    line.trim_start_matches('\t')
+                } else {
+                    &line
+                };
+                if shown == delimiter || !ended {
+                    if shown != delimiter {
+                        body.push_str(&line);
+                    }
+                    break;
+                }
+                body.push_str(&line);
+                body.push('\n');
+            }
+            self.tokens.push(Token::Text(body));
+        }
+    }
+
     /// Skip a comment, up to the newline that ends it.
     fn comment(&mut self) {
         while self.chars.next_if(|c| *c != '\n').is_some() {}
@@ -207,12 +261,18 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
         chars: text.chars().peekable(),
         tokens: Vec::new(),
         word: None,
+        heredocs: Vec::new(),
     };
     while let Some(c) = lexer.chars.next() {
         match c {
             '#' if lexer.word.is_none() => lexer.comment(),
             '\\' if lexer.chars.next_if_eq(&'\n').is_some() => {}
-            '\n' | ';' => {
+            '\n' => {
+                lexer.end_word();
+                lexer.tokens.push(Token::End(End::Line));
+                lexer.heredoc_bodies();
+            }
+            ';' => {
                 lexer.end_word();
                 lexer.tokens.push(Token::End(End::Line));
             }
@@ -267,6 +327,27 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
                     text: c.to_string(),
                     expands: false,
                 }));
+            }
+            '<' | '>' if lexer.chars.peek() == Some(&'(') => {
+                // A process substitution, `<(...)` or `>(...)`: an expansion.
+                lexer.chars.next();
+                let word = lexer.word();
+                word.expands = true;
+                word.text.push(c);
+                word.text.push('(');
+                lexer.balanced('(', ')');
+            }
+            '<' if lexer.chars.peek() == Some(&'<') => {
+                lexer.end_word();
+                lexer.chars.next();
+                if lexer.chars.next_if_eq(&'<').is_some() {
+                    // A here-string: its word is the text.
+                    lexer.tokens.push(Token::Redirect);
+                } else {
+                    let tabs = lexer.chars.next_if_eq(&'-').is_some();
+                    let delimiter = lexer.delimiter();
+                    lexer.heredocs.push((delimiter, tabs));
+                }
             }
             '<' | '>' => {
                 lexer.end_word();

@@ -159,6 +159,18 @@ fn a_turn_off_that_may_not_run_leaves_the_option_on() {
         "unsetopt share_history &",
         "[[ -n $QUIET ]] && return\nunsetopt share_history",
         "if true; then\nunsetopt share_history\n",
+        // Text a command reads, not code.
+        "cat <<EOF >> ~/.zsh_local\nunsetopt share_history\nEOF",
+        "cat <<-'EOF' | zsh\n\tunsetopt share_history\n\tEOF",
+        // An anonymous function, which can keep its options local.
+        "() { setopt localoptions; unsetopt share_history }",
+        "() {\n  emulate -L zsh\n  unsetopt share_history\n}",
+        // A group or a loop in the background or a pipeline.
+        "{ unsetopt share_history; } &",
+        "{ unsetopt share_history } &!",
+        "{\n  unsetopt share_history\n} 2>&1 &",
+        "for name in share_history; do unsetopt $name; done | cat",
+        "[[ -n $QUIET ]] && {\n  true\n  unsetopt share_history\n}",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
@@ -179,11 +191,59 @@ fn a_turn_off_that_certainly_runs_counts() {
         "{ unsetopt share_history }",
         "for name in share_history; do unsetopt $name; done",
         "noglob unsetopt share_history 2>/dev/null",
+        "{ unsetopt share_history } 2>/dev/null",
+        "{ { unsetopt share_history } }",
+        "for name in share_history; do { unsetopt $name } done",
+        "cat <<EOF\nsetopt nothing\nEOF\nunsetopt share_history",
+        "() { true }\nunsetopt share_history",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
         seed(&fs, "/home/alice/.zshrc", &format!("{off}\n"));
         assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{off}");
+    }
+}
+
+#[test]
+fn a_frame_that_may_run_elsewhere_forgets_the_arrays_it_assigned() {
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "{ set_opts=(NO_SHARE_HISTORY) } &\nfor opt in \"${set_opts[@]}\"; do setopt \"$opt\"; done\n",
+    );
+    assert_eq!(on(&fs, NOT_LOGIN), ["/etc/zshrc sets SHARE_HISTORY"]);
+}
+
+#[test]
+fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
+    for (line, doubt) in [
+        (
+            ": ${ZDOTDIR:=$HOME/.config/zsh}",
+            "it cannot follow where `${ZDOTDIR:=$HOME/.config/zsh}` in /home/alice/.zshrc sets \
+             ZDOTDIR",
+        ),
+        (
+            "ZDOTDIR+=/zsh",
+            "it cannot follow where `ZDOTDIR+=/zsh` in /home/alice/.zshrc sets ZDOTDIR",
+        ),
+        (
+            "source <(mytool init zsh)",
+            "it cannot follow the file /home/alice/.zshrc sources as `<(mytool init zsh)`",
+        ),
+        (
+            ". =(mytool init zsh)",
+            "it cannot follow the file /home/alice/.zshrc sources as `=(mytool init zsh)`",
+        ),
+        (
+            "source",
+            "it cannot tell what `source` in /home/alice/.zshrc reads",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        assert_eq!(scan(&fs, NOT_LOGIN).doubts, [doubt], "{line}");
     }
 }
 
@@ -497,6 +557,19 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
             ),
             Token::End(End::Line),
         ]
+    );
+    assert_eq!(
+        words("cat <(a b) <<'EOF' >x\nsetopt c\nEOF\nd"),
+        [
+            ("cat".to_string(), false),
+            ("<(a b)".to_string(), true),
+            ("x".to_string(), false),
+            ("d".to_string(), false),
+        ]
+    );
+    assert!(
+        tokens("cat <<-EOF; e\n\tsetopt c\n\tEOF\n")
+            .contains(&Token::Text("\tsetopt c\n".to_string()))
     );
     assert_eq!(
         tokens("f() { x } && y || z | w &"),

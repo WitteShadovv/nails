@@ -1399,9 +1399,10 @@ afterwards:
   fails closed where it cannot follow them:
 
   - in zsh's order, `zprofile` and `zlogin` only for a login shell, a line
-    ending in a backslash going on in the next, and a file they source read
-    where it is sourced when its path resolves, so it follows Home Manager's
-    `dotDir`, whose `.zshenv` the home's sources and which sets `ZDOTDIR`;
+    ending in a backslash going on in the next, the body of a here-document
+    as text, not code, and a file they source read where it is sourced when
+    its path resolves, so it follows Home Manager's `dotDir`, whose
+    `.zshenv` the home's sources and which sets `ZDOTDIR`;
   - an option counts as on where a `setopt` turns it on, wherever that is,
     and where any other word names it without a `no` prefix, as Home
     Manager's `set_opts=(... SHARE_HISTORY ...)` array, an alias or a test
@@ -1409,20 +1410,25 @@ afterwards:
     is read item by item;
   - an option counts as off again only where an `unsetopt` turns it off
     unconditionally at the top of a file zsh certainly reads: one in a
-    condition, a function, an alias, a subshell or a pipeline, after a
-    `return`, or in a `zlogin` of a shell that may not be a login shell,
-    counts as naming the option, which turns it on.
+    condition, a function (an anonymous `() { ... }` one too), an alias, a
+    subshell, a pipeline or the background (a `{ ... }` group or a loop
+    followed by `&` or `|` too), after a `return`, or in a `zlogin` of a
+    shell that may not be a login shell, counts as naming the option, which
+    turns it on.
 
   It knows that Oh My Zsh turns `SHARE_HISTORY` on, and it reads the
   `/etc/zshrc` where NixOS's `programs.zsh` sets that option by default. It
   warns that it cannot tell when one of those files is there but cannot be
   read, when a `setopt` takes an expansion it cannot list, when a sourced
-  file's path or a `ZDOTDIR` does not resolve, or when the shell is not bash,
-  zsh, fish or dash (dash keeps no history file). It does not see a setting
-  made by a plugin manager or an `eval`, one you typed into the shell, a file
-  a bash startup file sources, or a shell started with other startup files
-  (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
-  keeps its own record of each command, such as atuin.
+  file's path or a `ZDOTDIR` does not resolve (as for
+  `source <(tool init zsh)`), when a `source` names no file, when `ZDOTDIR`
+  is set otherwise than by an assignment (`: ${ZDOTDIR:=...}`), or when the
+  shell is not bash, zsh, fish or dash (dash keeps no history file). It does
+  not see a setting made by a plugin manager or an `eval`, one you typed into
+  the shell, a file a bash startup file sources, or a shell started with
+  other startup files (`bash --rcfile`, a `ZDOTDIR` from the environment),
+  nor a history tool that keeps its own record of each command, such as
+  atuin.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
