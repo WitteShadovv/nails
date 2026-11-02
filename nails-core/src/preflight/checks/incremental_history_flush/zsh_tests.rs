@@ -545,6 +545,71 @@ fn an_ansi_c_string_ends_at_its_first_quote_without_a_backslash() {
 }
 
 #[test]
+fn a_here_document_or_a_comment_in_a_command_substitution_is_text() {
+    for text in [
+        // A `case` after it, whose pattern ends in a `)`.
+        "x=$(cat <<EOF\nit's\nEOF\n)\ncase $TERM in\n  dumb) ;;\nesac\nsource ~/.zsh/history.zsh\n",
+        // And with a quote further down, which closed the quote the body
+        // seemed to open.
+        "x=$(cat <<EOF\nit's\nEOF\n)\nsource ~/.zsh/history.zsh\n# don't\ncase $TERM in\n  dumb) ;;\nesac\n",
+        "x=$(cat <<-'EOF'\n\tdon't\n\tEOF\n)\nsource ~/.zsh/history.zsh\ny=it\\'s\ncase $x in a) ;; esac\n",
+        "x=$(  # don't\n  print hi\n)\nsource ~/.zsh/history.zsh\ny=it\\'s\ncase $x in a) ;; esac\n",
+        // What is no here-document, comment or subshell there.
+        "x=$(( 1 << 2 ))\nsource ~/.zsh/history.zsh\n",
+        "x=$(print $(( 1 << 2 )))\nsource ~/.zsh/history.zsh\n",
+        "x=$( (( n = 1 << 3 )) && print y )\nsource ~/.zsh/history.zsh\n",
+        "x=$(cat <<< \"it's\")\nsource ~/.zsh/history.zsh\n",
+        "x=$(cat <<EOF\na)\nEOF\n)\nsource ~/.zsh/history.zsh\n",
+        "x=$(print \"#\" '#' a#b)\nsource ~/.zsh/history.zsh\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", text);
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            Vec::<String>::new(),
+            "{text:?}"
+        );
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn what_an_expansion_holds_that_the_check_cannot_read_is_a_doubt() {
+    for (line, opener, what) in [
+        (
+            "x=$(case $TERM in dumb) print d;; esac)",
+            "`$(`",
+            "a `case`",
+        ),
+        ("x=${ print hi }", "`${`", "a command"),
+        ("x=${| REPLY=hi }", "`${`", "a command"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{line}\nsource ~/.zsh/history.zsh\n"),
+        );
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            [format!(
+                "it cannot follow the {opener} that /home/alice/.zshrc opens, which holds {what}"
+            )],
+            "{line}"
+        );
+    }
+}
+
+#[test]
 fn a_construct_that_runs_to_the_end_of_the_file_is_a_doubt() {
     for (line, opener) in [
         (r"x=$'it\'s", "`$'`"),
@@ -899,6 +964,13 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
     assert!(
         tokens("cat <<-EOF; e\n\tsetopt c\n\tEOF\n")
             .contains(&Token::Text("\tsetopt c\n".to_string()))
+    );
+    assert_eq!(
+        words("x=$(cat <<EOF\nit's\nEOF\n) y"),
+        [
+            ("x=$(cat <<EOF\nit's\nEOF\n)".to_string(), true),
+            ("y".to_string(), false),
+        ]
     );
     assert_eq!(
         words(r"x=$'it\'s' y"),

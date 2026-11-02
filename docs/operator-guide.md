@@ -1305,10 +1305,10 @@ afterwards:
 
   - in zsh's order, once for each home the shell can run with, `zprofile`
     and `zlogin` only for a login shell, a line ending in a backslash going
-    on in the next, the body of a here-document as text, not code, and a
-    file they source read where it is sourced when its path resolves, so it
-    follows Home Manager's `dotDir`, whose `.zshenv` the home's sources and
-    which sets `ZDOTDIR`;
+    on in the next, the body of a here-document as text, not code, in a
+    `$(...)` too, and a file they source read where it is sourced when its
+    path resolves, so it follows Home Manager's `dotDir`, whose `.zshenv`
+    the home's sources and which sets `ZDOTDIR`;
   - an option counts as on where a `setopt` turns it on, wherever that is,
     and where any other word names it without a `no` prefix, as Home
     Manager's `set_opts=(... SHARE_HISTORY ...)` array, an alias or a test
@@ -1334,12 +1334,13 @@ afterwards:
   `source <(tool init zsh)`), when a `source` names no file, when `ZDOTDIR`
   is set otherwise than by an assignment (`: ${ZDOTDIR:=...}`), when a
   quote, an expansion or a here-document runs to the end of the file
-  without closing, or when the shell is not bash, zsh, fish or dash (dash
-  keeps no history file). It does not see a setting made by a plugin manager
-  or an `eval`, one you typed into the shell, a file a bash startup file
-  sources, or a shell started with other startup files (`bash --rcfile`, a
-  `ZDOTDIR` from the environment), nor a history tool that keeps its own
-  record of each command, such as atuin.
+  without closing, when an expansion holds what it cannot read as zsh does
+  (a `case` in a `$(...)`, a `${ command }`), or when the shell is not bash,
+  zsh, fish or dash (dash keeps no history file). It does not see a setting
+  made by a plugin manager or an `eval`, one you typed into the shell, a file
+  a bash startup file sources, or a shell started with other startup files
+  (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
+  keeps its own record of each command, such as atuin.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

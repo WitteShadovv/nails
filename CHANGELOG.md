@@ -737,9 +737,10 @@ of this changelog for that version becomes the release notes word for word, and
   NixOS's `/etc/zshrc`, can still have its own access time changed. zsh's files are read as zsh
   reads them and fail closed: in zsh's order, once for each home the shell can run with,
   `zprofile` and `zlogin` only for a login shell, a line ending in a backslash going on in the
-  next, a here-document's body as text, not code, a sourced file read where it is sourced when
-  its path resolves (so Home Manager's `dotDir`, whose sourced `.zshenv` sets `ZDOTDIR`, is
-  followed), and `INC_APPEND_HISTORY_TIME` named as writing a line once its command ends. An
+  next, a here-document's body as text, not code, in a `$(...)` too, a sourced file read where it
+  is sourced when its path resolves (so Home Manager's `dotDir`, whose sourced `.zshenv` sets
+  `ZDOTDIR`, is followed), and `INC_APPEND_HISTORY_TIME` named as writing a line once its command
+  ends. An
   option counts as on where a `setopt` turns it on and where any other word names it without a
   `no` prefix, as Home Manager's `set_opts=(...)` array does, whose loop is read item by item, and
   as off again only where an `unsetopt` certainly runs at the top of the one file zsh can read for
@@ -749,8 +750,10 @@ of this changelog for that version becomes the release notes word for word, and
   an expansion the check cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a process
   substitution, `: ${ZDOTDIR:=...}`), a `source` without a file, and a quote, an expansion or a
   here-document that runs to the end of the file without closing (a `<<` in `(( ... ))` is a
-  shift, a `)` or `}` in quotes closes nothing, and a `\'` does not end a `$'...'`) make it warn
-  that it cannot tell, and so do a startup file that is there but cannot be read, which it
+  shift, a `)` or `}` in quotes closes nothing, and a `\'` does not end a `$'...'`), and an
+  expansion that holds what the check cannot read as zsh does (a `case` in a `$(...)`, a
+  `${ command }`) make it warn that it cannot tell, and so do a startup file that is there but
+  cannot be read, which it
   passed over before, and a shell other than bash, zsh, fish and dash. bash's files are read for
   `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going on in
   the next. It still only warns: such a shell has written the

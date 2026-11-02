@@ -50,6 +50,10 @@ pub(super) enum Token {
     /// the end of the text without closing, as a message names it: all that
     /// follows it is in its word.
     Unclosed(String),
+    /// What opens an expansion or a command substitution that holds what
+    /// the lexer cannot read as zsh does, and what that is, as a message
+    /// names them.
+    Unfollowed(String, String),
     /// An arithmetic command, `(( ... ))`, as written: no `<<` in it opens
     /// a here-document.
     Arithmetic(String),
@@ -76,13 +80,20 @@ struct Lexer<'a> {
     /// What opens the construct that runs to the end of the text, once one
     /// does.
     unclosed: Option<String>,
+    /// What opens the first expansion that holds what the lexer cannot read
+    /// as zsh does, and what that is.
+    unfollowed: Option<(String, String)>,
 }
 
 /// What a quoted or nested part of a word that [`Lexer::balanced`] reads is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Nest {
-    /// `$(...)` or `(...)`, which ends at its `)`.
-    Paren,
+    /// The commands of `$(...)`, of a process substitution or of a subshell
+    /// in one, which end at its `)`.
+    Command,
+    /// Parentheses that hold no commands, which end at their `)`: a glob
+    /// qualifier's, or an arithmetic expression's, `((...))` or `$((...))`.
+    Group,
     /// `${...}`, which ends at its `}`; `quoted` inside double quotes, where
     /// a `'` quotes nothing.
     Brace {
@@ -161,12 +172,19 @@ impl Lexer<'_> {
             '(' => {
                 // A glob qualifier or the like, inside a word.
                 self.word().text.push('(');
-                if !self.balanced(Nest::Paren) {
+                if !self.balanced(&[Nest::Group], "`(`") {
                     self.unclosed("`(`");
                 }
             }
             c => self.word().text.push(c),
         }
+    }
+
+    /// Note that what `opener` opens holds `what`, which the lexer cannot
+    /// read as zsh does.
+    fn unfollowed(&mut self, opener: &str, what: &str) {
+        self.unfollowed
+            .get_or_insert_with(|| (opener.to_string(), what.to_string()));
     }
 
     /// Note that what `opener` opens runs to the end of the text, unless
@@ -182,14 +200,14 @@ impl Lexer<'_> {
         word.expands = true;
         word.text.push(c);
         if c == '`' {
-            if !self.balanced(Nest::Back) {
+            if !self.balanced(&[Nest::Back], "backquote") {
                 self.unclosed("backquote");
             }
             return;
         }
         if !quoted && self.chars.next_if_eq(&'\'').is_some() {
             self.word().text.push('\'');
-            if !self.balanced(Nest::Ansi) {
+            if !self.balanced(&[Nest::Ansi], "`$'`") {
                 self.unclosed("`$'`");
             }
             return;
@@ -198,12 +216,22 @@ impl Lexer<'_> {
             Some(open @ ('(' | '{')) => {
                 self.chars.next();
                 self.word().text.push(open);
-                let (nest, opener) = if open == '(' {
-                    (Nest::Paren, "`$(`")
+                let (nests, opener): (&[Nest], _) = if open == '{' {
+                    if self
+                        .chars
+                        .peek()
+                        .is_some_and(|c| c.is_whitespace() || *c == '|')
+                    {
+                        self.unfollowed("`${`", "a command");
+                    }
+                    (&[Nest::Brace { quoted }], "`${`")
+                } else if self.chars.next_if_eq(&'(').is_some() {
+                    self.word().text.push('(');
+                    (&[Nest::Group, Nest::Group], "`$((`")
                 } else {
-                    (Nest::Brace { quoted }, "`${`")
+                    (&[Nest::Command], "`$(`")
                 };
-                if !self.balanced(nest) {
+                if !self.balanced(nests, opener) {
                     self.unclosed(opener);
                 }
             }
@@ -218,17 +246,91 @@ impl Lexer<'_> {
         }
     }
 
-    /// Read the rest of `nest`, whose opening was read, into the current word
-    /// as written, up to what closes it: past what the quotes and the
-    /// expansions nested in it hold, so a `)` or `}` in quotes closes
-    /// nothing. Whether it closes before the end of the text.
-    fn balanced(&mut self, nest: Nest) -> bool {
-        let mut stack = vec![nest];
+    /// Read the rest of `nests`, whose openings were read, the innermost
+    /// last, into the current word as written, up to what closes them: past
+    /// what the quotes and the expansions nested in them hold, so a `)` or
+    /// `}` in quotes closes nothing, and in a command substitution past its
+    /// comments and here-documents too. What zsh reads otherwise than the
+    /// lexer does, a `case` in a command substitution among it, is noted as
+    /// unfollowed in what `opener` opens. Whether they close before the end
+    /// of the text.
+    fn balanced(&mut self, nests: &[Nest], opener: &str) -> bool {
+        let mut stack = nests.to_vec();
+        // In the commands of a command substitution: whether the next
+        // character starts a word, the word being read while nothing but
+        // letters, digits and `_` are in it, and the here-documents the line
+        // read so far opens.
+        let mut start = true;
+        let mut bare = Some(String::new());
+        let mut heredocs: Vec<(String, bool)> = Vec::new();
         while let Some(&inner) = stack.last() {
             let Some(c) = self.chars.next() else {
                 return false;
             };
             self.word().text.push(c);
+            if inner == Nest::Command {
+                let boundary =
+                    c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>');
+                if boundary {
+                    if bare.as_deref() == Some("case") {
+                        // Its patterns end in a `)` that closes nothing.
+                        self.unfollowed(opener, "a `case`");
+                    }
+                    bare = Some(String::new());
+                } else if c.is_ascii_alphanumeric() || c == '_' {
+                    if let Some(word) = bare.as_mut() {
+                        word.push(c);
+                    }
+                } else {
+                    bare = None;
+                }
+                let at_start = std::mem::replace(&mut start, boundary);
+                match c {
+                    '#' if at_start => {
+                        // A comment, to the end of its line.
+                        while let Some(c) = self.chars.next_if(|c| *c != '\n') {
+                            self.word().text.push(c);
+                        }
+                        continue;
+                    }
+                    '\n' => {
+                        if !self.heredoc_lines(std::mem::take(&mut heredocs)) {
+                            return false;
+                        }
+                        continue;
+                    }
+                    '<' if self.chars.peek() == Some(&'<') => {
+                        self.chars.next();
+                        self.word().text.push('<');
+                        if self.chars.next_if_eq(&'<').is_some() {
+                            // A here-string: its word is the text.
+                            self.word().text.push('<');
+                        } else {
+                            let tabs = self.chars.next_if_eq(&'-').is_some();
+                            let delimiter = self.delimiter();
+                            self.word().text.push_str(&delimiter);
+                            if delimiter.is_empty() {
+                                self.unfollowed(opener, "a here-document with no word to end it");
+                            } else {
+                                heredocs.push((delimiter, tabs));
+                            }
+                        }
+                        continue;
+                    }
+                    '(' if at_start => {
+                        // A subshell, or an arithmetic command, `((...))`.
+                        if self.chars.next_if_eq(&'(').is_some() {
+                            self.word().text.push('(');
+                            stack.extend([Nest::Group, Nest::Group]);
+                        } else {
+                            stack.push(Nest::Command);
+                            start = true;
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             let quoted = matches!(inner, Nest::Brace { quoted: true });
             match (inner, c) {
                 (Nest::Single | Nest::Ansi, '\'') | (Nest::Back, '`') | (Nest::Double, '"') => {
@@ -242,14 +344,27 @@ impl Lexer<'_> {
                 (Nest::Back | Nest::Ansi, _) => {}
                 (_, '`') => stack.push(Nest::Back),
                 (_, '$') => {
-                    if let Some(open) = self.chars.next_if(|c| matches!(c, '(' | '{')) {
-                        self.word().text.push(open);
-                        stack.push(if open == '(' {
-                            Nest::Paren
+                    if self.chars.next_if_eq(&'(').is_some() {
+                        self.word().text.push('(');
+                        if self.chars.next_if_eq(&'(').is_some() {
+                            self.word().text.push('(');
+                            stack.extend([Nest::Group, Nest::Group]);
                         } else {
-                            Nest::Brace {
-                                quoted: quoted || inner == Nest::Double,
-                            }
+                            stack.push(Nest::Command);
+                            start = true;
+                            bare = Some(String::new());
+                        }
+                    } else if self.chars.next_if_eq(&'{').is_some() {
+                        self.word().text.push('{');
+                        if self
+                            .chars
+                            .peek()
+                            .is_some_and(|c| c.is_whitespace() || *c == '|')
+                        {
+                            self.unfollowed(opener, "a command");
+                        }
+                        stack.push(Nest::Brace {
+                            quoted: quoted || inner == Nest::Double,
                         });
                     } else if !quoted
                         && inner != Nest::Double
@@ -263,12 +378,49 @@ impl Lexer<'_> {
                 (Nest::Double, _) => {}
                 (_, '"') => stack.push(Nest::Double),
                 (_, '\'') if !quoted => stack.push(Nest::Single),
-                (Nest::Paren, '(') => stack.push(Nest::Paren),
-                (Nest::Paren, ')') | (Nest::Brace { .. }, '}') => {
+                (Nest::Command | Nest::Group, '(') => stack.push(Nest::Group),
+                (Nest::Command | Nest::Group, ')') | (Nest::Brace { .. }, '}') => {
                     stack.pop();
                 }
                 (Nest::Brace { .. }, '{') => stack.push(Nest::Brace { quoted }),
                 _ => {}
+            }
+        }
+        true
+    }
+
+    /// Read the bodies of `heredocs`, opened in a command substitution on the
+    /// line just read, into the current word as written, each up to the line
+    /// that holds only its delimiter. Whether they end before the end of the
+    /// text.
+    fn heredoc_lines(&mut self, heredocs: Vec<(String, bool)>) -> bool {
+        for (delimiter, tabs) in heredocs {
+            loop {
+                let mut line = String::new();
+                let mut ended = false;
+                for c in self.chars.by_ref() {
+                    if c == '\n' {
+                        ended = true;
+                        break;
+                    }
+                    line.push(c);
+                }
+                let word = self.word();
+                word.text.push_str(&line);
+                if ended {
+                    word.text.push('\n');
+                }
+                let shown = if tabs {
+                    line.trim_start_matches('\t')
+                } else {
+                    &line
+                };
+                if shown == delimiter {
+                    break;
+                }
+                if !ended {
+                    return false;
+                }
             }
         }
         true
@@ -359,12 +511,13 @@ impl Lexer<'_> {
     fn arithmetic(&mut self) -> Option<String> {
         let chars = self.chars.clone();
         let unclosed = self.unclosed.clone();
+        let unfollowed = self.unfollowed.clone();
         self.chars.next();
         self.word = Some(Word {
             text: "((".to_string(),
             expands: true,
         });
-        if self.balanced(Nest::Paren) && self.chars.next_if_eq(&')').is_some() {
+        if self.balanced(&[Nest::Group], "`((`") && self.chars.next_if_eq(&')').is_some() {
             let mut text = self.word.take().expect("the arithmetic command").text;
             text.push(')');
             return Some(text);
@@ -372,6 +525,7 @@ impl Lexer<'_> {
         self.word = None;
         self.chars = chars;
         self.unclosed = unclosed;
+        self.unfollowed = unfollowed;
         None
     }
 
@@ -389,6 +543,7 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
         word: None,
         heredocs: Vec::new(),
         unclosed: None,
+        unfollowed: None,
     };
     while let Some(c) = lexer.chars.next() {
         match c {
@@ -468,8 +623,9 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
                 word.expands = true;
                 word.text.push(c);
                 word.text.push('(');
-                if !lexer.balanced(Nest::Paren) {
-                    lexer.unclosed(&format!("`{c}(`"));
+                let opener = format!("`{c}(`");
+                if !lexer.balanced(&[Nest::Command], &opener) {
+                    lexer.unclosed(&opener);
                 }
             }
             '<' if lexer.chars.peek() == Some(&'<') => {
@@ -510,5 +666,11 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
     lexer
         .tokens
         .extend(lexer.unclosed.take().map(Token::Unclosed));
+    lexer.tokens.extend(
+        lexer
+            .unfollowed
+            .take()
+            .map(|(opener, what)| Token::Unfollowed(opener, what)),
+    );
     lexer.tokens
 }

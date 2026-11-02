@@ -34,11 +34,14 @@
 //! `set_opts=(...)`, is read item by item. A `setopt` with an expansion it
 //! cannot list, a `source` without a path or with one it cannot resolve (a
 //! process substitution among them), a `ZDOTDIR` it cannot follow, one set
-//! otherwise than by an assignment (`${ZDOTDIR:=...}`), and a quote, an
+//! otherwise than by an assignment (`${ZDOTDIR:=...}`), a quote, an
 //! expansion or a here-document that runs to the end of the file without
-//! closing are doubts. A `<<` in an arithmetic command, `(( ... ))`, is a
-//! shift, not a here-document, a `)` or `}` in quotes closes no expansion,
-//! and a `\'` does not end a `$'...'`.
+//! closing, and an expansion that holds what the check cannot read as zsh
+//! does (a `case` in a `$(...)`, a `${ command }`) are doubts. A `<<` in an
+//! arithmetic command, `(( ... ))`, is a shift, not a here-document, a `)` or
+//! `}` in quotes closes no expansion, a `\'` does not end a `$'...'`, and the
+//! here-documents and comments of a `$(...)` are read as text, as at the top
+//! level.
 
 mod lexer;
 mod walk;
