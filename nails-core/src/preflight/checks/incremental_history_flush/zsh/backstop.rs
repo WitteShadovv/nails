@@ -4,10 +4,11 @@
 //! What a startup file's lines name, counted without the lexer and
 //! wherever it stands: the options that write each command line to the
 //! history file, `source`, a `.` with a word after it, `eval`, an alias that
-//! stands for `.`, and the `ZDOTDIR` settings. The walk counts the same as it
-//! reads them as code it follows, and what the lines name beyond that is what
-//! it did not follow: an option named there counts as on, and the rest is a
-//! doubt.
+//! stands for `.`, `autoload`, and the `ZDOTDIR` and `fpath` settings. The
+//! walk counts the same as it reads them as code it follows, and what the
+//! lines name beyond that is what it did not follow: an option named there
+//! counts as on, an `fpath` setting adds a directory the check cannot follow,
+//! and the rest is a doubt.
 //!
 //! Only a line whose first character that is not a blank is `#` is left out,
 //! so an option a comment at the end of a line names counts as on too, and a
@@ -27,6 +28,10 @@ pub(super) struct Named {
     pub(super) evals: usize,
     /// `ZDOTDIR` where it is not read ([`zdotdir_writes`]).
     pub(super) zdotdirs: usize,
+    /// `autoload`.
+    pub(super) autoloads: usize,
+    /// `fpath` and `FPATH` where they are not read ([`fpath_writes`]).
+    pub(super) fpaths: usize,
 }
 
 /// What the lines of zsh code `text` name.
@@ -42,6 +47,8 @@ pub(super) fn named(text: &str) -> Named {
         named.sources += whole_words(line, "source") + dot_words(line) + alias_dots(line);
         named.evals += whole_words(line, "eval");
         named.zdotdirs += zdotdir_writes(line);
+        named.autoloads += whole_words(line, "autoload");
+        named.fpaths += fpath_writes(line);
     }
     named
 }
@@ -108,21 +115,40 @@ pub(super) fn options(text: &str) -> impl Iterator<Item = (usize, bool)> + '_ {
         .filter_map(option)
 }
 
-/// How often `text` names `ZDOTDIR` otherwise than to read it: anywhere but
-/// after `$` or `${` (with a `#`, `+`, `=`, `~` or `^` between), and in
-/// `${ZDOTDIR=...}`, `${ZDOTDIR:=...}` or `${ZDOTDIR::=...}`.
+/// How often `text` names `ZDOTDIR` otherwise than to read it ([`writes`]).
 pub(super) fn zdotdir_writes(text: &str) -> usize {
-    let name = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    text.match_indices("ZDOTDIR")
+    writes(text, "ZDOTDIR")
+}
+
+/// How often `text` names `fpath` or `FPATH` otherwise than to read it
+/// ([`writes`]).
+pub(super) fn fpath_writes(text: &str) -> usize {
+    writes(text, "fpath") + writes(text, "FPATH")
+}
+
+/// How often `text` names the variable `name` otherwise than to read it:
+/// anywhere but after `$` or `${` (with flags, as in `${(@)name}`, or a `#`,
+/// `+`, `=`, `~` or `^` between), and in `${name=...}`, `${name:=...}` or
+/// `${name::=...}`.
+fn writes(text: &str, name: &str) -> usize {
+    let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let modifiers = ['#', '+', '=', '~', '^'];
+    text.match_indices(name)
         .filter(|&(at, found)| {
             let before = &text[..at];
             let after = &text[at + found.len()..];
-            if before.chars().next_back().is_some_and(name)
-                || after.chars().next().is_some_and(name)
+            if before.chars().next_back().is_some_and(part)
+                || after.chars().next().is_some_and(part)
             {
                 return false;
             }
-            let before = before.trim_end_matches(['#', '+', '=', '~', '^']);
+            let mut before = before.trim_end_matches(modifiers);
+            if let Some(flagged) = before.strip_suffix(')')
+                && let Some(open) = flagged.rfind("${(")
+                && !flagged[open + 3..].contains(['}', '$', '\n'])
+            {
+                before = flagged[..open + 2].trim_end_matches(modifiers);
+            }
             let braced = before.ends_with("${");
             let read = braced || before.ends_with('$');
             !read

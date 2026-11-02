@@ -4,8 +4,9 @@
 //! The walk over a file's tokens that finds what its code does, in order:
 //! the options a `setopt`, `unsetopt` or `set -o` turns on or off, and
 //! whether that certainly runs at the top level; every other word that names
-//! an option; what the check cannot follow; the files it sources; and the
-//! `ZDOTDIR` and `XDG_CONFIG_HOME` it sets.
+//! an option; what the check cannot follow; the files it sources; the
+//! `ZDOTDIR` and `XDG_CONFIG_HOME` it sets; and the directories it adds to
+//! `fpath` and the functions it autoloads.
 
 use super::OPTIONS;
 use super::backstop;
@@ -62,6 +63,13 @@ pub(super) enum Event {
         value: Word,
         unconditional: bool,
     },
+    /// A directory is added to `fpath`, where zsh looks for the functions it
+    /// autoloads: the element as written, or `None` for what a line may add
+    /// that the walk did not read.
+    Fpath(Option<Word>),
+    /// A function is marked to be autoloaded: its name, or the path of its
+    /// file.
+    Autoload(Word),
 }
 
 /// How a loop's body ends.
@@ -158,6 +166,10 @@ struct Walker<'a> {
     evals: usize,
     /// How often it read `ZDOTDIR` set ([`zdotdir_writes`]).
     zdotdirs: usize,
+    /// How many `autoload` commands it read.
+    autoloads: usize,
+    /// How often it read `fpath` or `FPATH` set ([`backstop::fpath_writes`]).
+    fpaths: usize,
     pending: Pending,
 }
 
@@ -526,10 +538,21 @@ impl Walker<'_> {
         }
     }
 
-    /// The events of an array's assignment.
+    /// The events of an array's assignment, `name=(items)`, or of what
+    /// appends to it, when `name` ends with `+`.
     fn array(&mut self, name: String, items: Vec<Word>) {
         for item in &items {
             self.mention(&item.text);
+        }
+        let (name, append) = match name.strip_suffix('+') {
+            Some(name) => (name.to_string(), true),
+            None => (name, false),
+        };
+        if matches!(name.as_str(), "fpath" | "FPATH") {
+            self.fpaths += 1;
+            for item in &items {
+                self.fpath_dir(item);
+            }
         }
         let literal: Option<Vec<String>> = items
             .iter()
@@ -540,7 +563,11 @@ impl Walker<'_> {
                 if self.pending.words.is_empty()
                     && self.certain(self.pending.after_condition, self.pending.piped) =>
             {
-                self.arrays.insert(name, literal);
+                if !append {
+                    self.arrays.insert(name, literal);
+                } else if let Some(known) = self.arrays.get_mut(&name) {
+                    known.extend(literal);
+                }
             }
             _ => {
                 self.arrays.remove(&name);
@@ -665,6 +692,8 @@ struct Walked {
     sources: usize,
     evals: usize,
     zdotdirs: usize,
+    autoloads: usize,
+    fpaths: usize,
     may_stop: bool,
 }
 
@@ -690,6 +719,8 @@ fn walk_text(text: &str, place: &str) -> Walked {
         sources: 0,
         evals: 0,
         zdotdirs: 0,
+        autoloads: 0,
+        fpaths: 0,
         pending: Pending::default(),
     }
     .walk();
@@ -714,14 +745,18 @@ fn walk_text(text: &str, place: &str) -> Walked {
         sources: walker.sources,
         evals: walker.evals,
         zdotdirs: walker.zdotdirs,
+        autoloads: walker.autoloads,
+        fpaths: walker.fpaths,
         may_stop: walker.may_stop,
     }
 }
 
 /// What zsh code `text` from the file at `place` does ([`Read`]). What the
-/// lexer could not read is a doubt, and so is a `source`, a `.`, an `eval` or
-/// a `ZDOTDIR` setting the file's lines hold beyond those the walk read; an
-/// option they name beyond those the tokens name counts as on ([`backstop`]).
+/// lexer could not read is a doubt, and so is a `source`, a `.`, an `eval`,
+/// an `autoload` or a `ZDOTDIR` setting the file's lines hold beyond those
+/// the walk read; an option they name beyond those the tokens name counts as
+/// on, and an `fpath` setting beyond those the walk read adds a directory the
+/// check cannot follow ([`backstop`]).
 pub(super) fn events(text: &str, place: &str) -> Read {
     let (tokens, _) = lex(text);
     let mut read = [0; 3];
@@ -760,6 +795,14 @@ pub(super) fn events(text: &str, place: &str) -> Read {
         events.push(Event::Doubt(format!(
             "it cannot follow a ZDOTDIR that a line of {place} may set"
         )));
+    }
+    if named.autoloads > walked.autoloads {
+        events.push(Event::Doubt(format!(
+            "it cannot follow an `autoload` that a line of {place} may run"
+        )));
+    }
+    if named.fpaths > walked.fpaths {
+        events.push(Event::Fpath(None));
     }
     Read {
         events,

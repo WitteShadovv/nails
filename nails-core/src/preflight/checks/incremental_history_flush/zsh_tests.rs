@@ -4,6 +4,11 @@
 use super::*;
 use crate::filesystem::MockFilesystem;
 
+// The functions the startup files autoload, the directories they add to
+// fpath, and the compiled code and expanded paths zsh may run.
+#[path = "zsh_autoload_tests.rs"]
+mod autoload;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.

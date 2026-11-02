@@ -35,7 +35,8 @@
 //! knows the settings of bash, zsh and fish, and that dash
 //! keeps no history file; of any other shell it warns that it cannot tell. It
 //! does not see a setting typed into the shell, one a plugin manager's
-//! function makes, one an `eval` in bash's files makes (zsh's it reads, or
+//! function makes, one a function zsh autoloads from the directories it was
+//! built with makes, one an `eval` in bash's files makes (zsh's it reads, or
 //! warns of), or one in the files of a shell started with others
 //! (`--rcfile`, a `ZDOTDIR` from its environment).
 

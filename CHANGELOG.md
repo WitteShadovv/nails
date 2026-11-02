@@ -739,18 +739,23 @@ of this changelog for that version becomes the release notes word for word, and
   started with `-f`, `--no-rcs` or `-o norcs`, and no other file in `/etc` for one started with
   `-d`, a sourced file read where it is sourced when its path resolves (so Home Manager's `dotDir`,
   whose sourced `.zshenv` sets `ZDOTDIR`, is followed), an `eval` of words the check can read as
-  code, a here-document's body as text, and `INC_APPEND_HISTORY_TIME` named as writing a line once
-  its command ends. An option counts as on wherever a file zsh reads names it, outside a line that
-  is a comment, an `unsetopt` as much as a `setopt`: zsh can still end with the option on after a
-  turn-off, through a redefined `unsetopt`, a trap or a hook that sets it again, a plugin loaded
-  after the first prompt or an error that stops the file before the line, and no reading of the
-  files can show that a turn-off holds. So zsh passes only when no file it reads names the three
-  options and nothing is left the check cannot tell, which is zsh's default. An operator who turns
-  the options off in `.zshrc` now gets a warning, whose fix the check can see: typing the decoy
-  commands in a zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv`, or on NixOS
-  taking the option out of `programs.zsh.setOptions`. The check warns that it cannot tell at a
-  `setopt` with an expansion it cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a
-  process substitution, `: ${ZDOTDIR:=...}`), a `source` without a file, a quote, an expansion or a
+  code, the file of each function they autoload, by its path or by its name in each directory they
+  add to `fpath` (not in the directories zsh was built with), a here-document's body as text, and
+  `INC_APPEND_HISTORY_TIME` named as writing a line once its command ends. An option counts as on
+  wherever a file zsh reads names it, outside a line that is a comment, an `unsetopt` as much as a
+  `setopt`: zsh can still end with the option on after a turn-off, through a redefined `unsetopt`, a
+  trap or a hook that sets it again, a plugin loaded after the first prompt or an error that stops
+  the file before the line, and no reading of the files can show that a turn-off holds. So zsh
+  passes only when no file it reads names the three options and nothing is left the check cannot
+  tell, which is zsh's default. An operator who turns the options off in `.zshrc` now gets a
+  warning, whose fix the check can see: typing the decoy commands in a zsh started as `zsh -f`,
+  which reads no startup file but `/etc/zshenv`, or on NixOS taking the option out of
+  `programs.zsh.setOptions`. The check warns that it cannot tell at a `setopt` with an expansion it
+  cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a process substitution,
+  `: ${ZDOTDIR:=...}`), a path zsh expands into others (a glob, `{a,b}`), a function the files
+  autoload that may be in an `fpath` directory it cannot follow (NixOS's profiles,
+  `$p/share/zsh/site-functions`), compiled code that zsh may run in place of a file (a `.zwc` beside
+  it or for an `fpath` directory), a `source` without a file, a quote, an expansion or a
   here-document that runs to the end of the file, an expansion that holds what it cannot read as zsh
   does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion makes (`$cmd`),
   a startup file that is there but cannot be read, which it passed over before, and a shell other
@@ -761,14 +766,15 @@ of this changelog for that version becomes the release notes word for word, and
   a descriptor before a redirection is no command, and zsh's short forms (`repeat 3 cmd`,
   `for x (a) cmd`, `if [[ ... ]] cmd`) take their body. zsh's files are counted line by line too,
   without reading the code and wherever the words stand, for the three options, `source`, a `.` with
-  a word after it, `eval`, an alias that stands for `.` and the `ZDOTDIR` settings, a line that is a
-  comment left out: what a line names beyond what was read as code the check follows counts as on,
-  for an option, or makes the check warn that it cannot tell, so a `source` or `eval` in an `echo`,
-  a string, an alias or a here-document, or an `eval` of what a command prints, warns too. bash's
-  files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a
-  backslash going on in the next. It still only warns: such a shell has written the decoy commands
-  before activation starts, so a refusal would take none of them back, and for a shell that writes a
-  line once its command ends, a refused activation would add its own.
+  a word after it, `eval`, an alias that stands for `.`, `autoload` and the `ZDOTDIR` and `fpath`
+  settings, a line that is a comment left out: what a line names beyond what was read as code the
+  check follows counts as on, for an option, adds a directory the check cannot follow, for `fpath`,
+  or makes the check warn that it cannot tell, so a `source` or `eval` in an `echo`, a string, an
+  alias or a here-document, or an `eval` of what a command prints, warns too. bash's files are read
+  for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going on in
+  the next. It still only warns: such a shell has written the decoy commands before activation
+  starts, so a refusal would take none of them back, and for a shell that writes a line once its
+  command ends, a refused activation would add its own.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

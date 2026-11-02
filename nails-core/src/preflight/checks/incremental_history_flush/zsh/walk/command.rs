@@ -4,7 +4,8 @@
 //! What one simple command of a startup file does, as the walk reads it: the
 //! options a `setopt`, `unsetopt` or `set -o` turns on or off, the files a
 //! `source` or `.` reads, what an `eval` of words the walk can read runs, the
-//! `ZDOTDIR` and `XDG_CONFIG_HOME` an assignment sets, and the options any
+//! `ZDOTDIR` and `XDG_CONFIG_HOME` an assignment sets, the directories one
+//! adds to `fpath`, the functions an `autoload` marks, and the options any
 //! other word names.
 
 use super::super::OH_MY_ZSH;
@@ -27,10 +28,62 @@ const PRECOMMANDS: &[&str] = &[
 /// Whether `text` assigns a variable (`name=...`, `name+=...`,
 /// `name[key]=...`), not a word with an `=` in it (`${=c}`, `$=c`).
 fn is_assignment(text: &str) -> bool {
-    text.split_once('=').is_some_and(|(name, _)| {
-        let name = name.strip_suffix('+').unwrap_or(name);
-        is_name(name.split_once('[').map_or(name, |(name, _)| name))
-    })
+    text.split_once('=')
+        .is_some_and(|(target, _)| is_name(assigned(target)))
+}
+
+/// The name of the variable that the target of an assignment, `target`,
+/// sets (`name`, `name+`, `name[key]`).
+fn assigned(target: &str) -> &str {
+    let name = target.strip_suffix('+').unwrap_or(target);
+    name.split_once('[').map_or(name, |(name, _)| name)
+}
+
+/// Whether `text` stands for what `fpath` or `FPATH` holds, or some of it:
+/// `$fpath`, `${fpath[@]}`, `${(@)fpath}`, `${fpath[1]}`, `${fpath:#pat}`;
+/// not a directory made from it (`${fpath[1]}/sub`, `${fpath/a/b}`).
+fn holds_fpath(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('$') else {
+        return false;
+    };
+    let (inner, braced) = match rest.strip_prefix('{') {
+        Some(braced) => match braced.strip_suffix('}') {
+            Some(inner) if !inner.contains(['{', '}', '$']) => (inner, true),
+            _ => return false,
+        },
+        None => (rest, false),
+    };
+    let inner = match inner.strip_prefix('(') {
+        Some(flagged) if braced => match flagged.split_once(')') {
+            Some((_, name)) => name,
+            None => return false,
+        },
+        _ => inner,
+    };
+    let end = inner
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(inner.len());
+    let (name, after) = inner.split_at(end);
+    let subscript =
+        after.starts_with('[') && after.ends_with(']') && !after[1..after.len() - 1].contains(']');
+    matches!(name, "fpath" | "FPATH")
+        && (after.is_empty() || subscript || (braced && after.starts_with(":#")))
+}
+
+/// Whether `args`, the words after `functions`, `typeset` or the like
+/// (`command`), mark the functions they name to be autoloaded: `functions`
+/// with `-u` or `-U`, `typeset` with `-f` and one of those.
+fn marks_autoload(command: &str, args: &[Word]) -> bool {
+    let flags: String = args
+        .iter()
+        .take_while(|arg| arg.text.starts_with('-') && arg.text != "--")
+        .map(|arg| arg.text.as_str())
+        .collect();
+    let autoload = flags.contains(['u', 'U']);
+    match command {
+        "functions" => autoload,
+        _ => autoload && flags.contains('f'),
+    }
 }
 
 impl Walker<'_> {
@@ -80,6 +133,64 @@ impl Walker<'_> {
             .and_then(|text| text.strip_suffix('}'))
             .unwrap_or(text);
         is_name(name).then_some(name)
+    }
+
+    /// The event of `word`, an element added to `fpath`, unless it stands
+    /// for what `fpath` holds already ([`holds_fpath`]); a loop's variable
+    /// stands for each item the check can list.
+    pub(super) fn fpath_dir(&mut self, word: &Word) {
+        if holds_fpath(&word.text) {
+            return;
+        }
+        if let Some(items) = Self::variable(word).and_then(|var| self.loop_items(var)) {
+            let dirs: Vec<Event> = items
+                .iter()
+                .map(|text| {
+                    Event::Fpath(Some(Word {
+                        text: text.clone(),
+                        expands: false,
+                    }))
+                })
+                .collect();
+            self.events.extend(dirs);
+            return;
+        }
+        self.events.push(Event::Fpath(Some(word.clone())));
+    }
+
+    /// The events of an `autoload`, or of the like (`command`), of `args`:
+    /// each function it marks, by name or by the path of its file. Which
+    /// functions it marks is a doubt with `-m` (patterns), `-w` (compiled
+    /// files), or `-X` without a name (the function it runs in).
+    pub(super) fn autoload(&mut self, command: &str, args: &[Word]) {
+        let mut flags = String::new();
+        let mut names = Vec::new();
+        let mut options = true;
+        for arg in args {
+            self.mention(&arg.text);
+            if options && !arg.expands && arg.text.len() > 1 && arg.text.starts_with(['-', '+']) {
+                if arg.text == "--" {
+                    options = false;
+                } else {
+                    flags.push_str(&arg.text);
+                }
+                continue;
+            }
+            options = false;
+            names.push(arg.clone());
+        }
+        if flags.contains(['m', 'w']) || (names.is_empty() && flags.contains('X')) {
+            let words: Vec<&str> = std::iter::once(command)
+                .chain(args.iter().map(|arg| arg.text.as_str()))
+                .collect();
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which functions `{}` in {} loads",
+                words.join(" "),
+                self.place
+            )));
+            return;
+        }
+        self.events.extend(names.into_iter().map(Event::Autoload));
     }
 
     /// The event of a `setopt`-like command turning the option `word` names
@@ -217,6 +328,8 @@ impl Walker<'_> {
                 self.sources += nested.sources;
                 self.evals += 1 + nested.evals;
                 self.zdotdirs += nested.zdotdirs;
+                self.autoloads += nested.autoloads;
+                self.fpaths += nested.fpaths;
                 self.may_stop |= nested.may_stop;
                 let uncertain = !unconditional || nested.confused;
                 for mut event in nested.events {
@@ -231,6 +344,15 @@ impl Walker<'_> {
                 }
             }
             "return" | "exit" => self.may_stop = true,
+            "autoload" => {
+                self.autoloads += 1;
+                self.autoload(&command.text, &args);
+            }
+            "functions" | "typeset" | "declare" | "local"
+                if marks_autoload(&command.text, &args) =>
+            {
+                self.autoload(&command.text, &args);
+            }
             "export" | "typeset" | "declare" | "local" | "readonly" | "integer" => {
                 for arg in &args {
                     self.assignment(arg, unconditional);
@@ -245,9 +367,12 @@ impl Walker<'_> {
         }
     }
 
-    /// The events of `word` when it assigns `ZDOTDIR` or `XDG_CONFIG_HOME`,
-    /// and its mentions.
+    /// The events of `word` when it assigns `ZDOTDIR`, `XDG_CONFIG_HOME`,
+    /// `fpath` or `FPATH`, and its mentions.
     pub(super) fn assignment(&mut self, word: &Word, unconditional: bool) {
+        if self.fpath_assignment(word) {
+            return;
+        }
         let name = match word.text.split_once('=') {
             Some(("ZDOTDIR", _)) => "ZDOTDIR",
             Some(("XDG_CONFIG_HOME", _)) => "XDG_CONFIG_HOME",
@@ -271,5 +396,33 @@ impl Walker<'_> {
             },
             unconditional,
         });
+    }
+
+    /// The events of `word` when it sets `fpath` (`fpath+=dir`,
+    /// `fpath[1,0]=dir`) or `FPATH`, whose directories a `:` parts, or
+    /// declares one as it is (`typeset -U fpath`); whether it does.
+    fn fpath_assignment(&mut self, word: &Word) -> bool {
+        let (target, value) = match word.text.split_once('=') {
+            Some((target, value)) => (target, Some(value)),
+            None => (word.text.as_str(), None),
+        };
+        let name = assigned(target);
+        if !matches!(name, "fpath" | "FPATH") {
+            return false;
+        }
+        self.fpaths += 1;
+        self.mention(&word.text);
+        let parts: Vec<&str> = match value {
+            Some(value) if name == "FPATH" => value.split(':').collect(),
+            Some(value) => vec![value],
+            None => Vec::new(),
+        };
+        for part in parts.into_iter().filter(|part| !part.is_empty()) {
+            self.fpath_dir(&Word {
+                text: part.to_string(),
+                expands: part.contains(['$', '`']),
+            });
+        }
+        true
     }
 }
