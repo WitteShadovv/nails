@@ -598,7 +598,9 @@ of this changelog for that version becomes the release notes word for word, and
   fstab line mounts the decoy's root, another of its filesystems or its swap, or a flagged crypttab
   line opens a device below one of them (the LUKS devices of the md array the decoy's root is on,
   say), the hidden root lies on the decoy's own storage and removing the line would break the
-  decoy, so the check now says to put the hidden root on storage of its own instead.
+  decoy, so the check now says to put the hidden root on storage of its own instead. Where it also
+  flags lines only the hidden volume needs, it still says to remove those, since once the hidden
+  root moves they are flagged no more and would stay behind naming it.
 - Activation and `emergency` kill the interactive shells the newest first. A login shell that
   leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
   console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at

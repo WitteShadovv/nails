@@ -131,13 +131,12 @@ fn a_crypttab_line_that_opens_the_volume_fails() {
     assert_eq!(result.remediation(), Some(REMEDIATION));
 }
 
-#[test]
-fn a_line_the_decoys_own_boot_needs_says_to_move_the_hidden_root_instead() {
-    // The decoy's root on md0p2 of an md mirror of two LUKS volumes its
-    // crypttab opens at boot, and the hidden volume on md0p1 of the same
-    // array: removing those lines would break the decoy.
+/// The decoy's root on md0p2 of an md mirror of two LUKS volumes its
+/// crypttab opens at boot, and the hidden volume on md0p1 of the same array,
+/// with `fstab` the decoy's fstab.
+fn on_the_decoys_array(fstab: &str) -> Decoy {
     let md0 = "/sys/devices/virtual/block/md0";
-    let result = Decoy::new(
+    Decoy::new(
         "1 0 259:12 / / rw - ext4 /dev/md0p2 rw\n\
          5 1 259:11 / /mnt rw - ext4 /dev/md0p1 rw\n",
     )
@@ -158,18 +157,29 @@ fn a_line_the_decoys_own_boot_needs_says_to_move_the_hidden_root_instead() {
     )
     .partition(&format!("{md0}/md0p1"), "md0p1", "259:11")
     .partition(&format!("{md0}/md0p2"), "md0p2", "259:12")
-    .file("/etc/fstab", "/dev/md0p2 / ext4 defaults 0 1\n")
+    .file("/etc/fstab", fstab)
     .file(
         "/etc/crypttab",
         "leg0 /dev/sdb1 none luks\nleg1 /dev/sdc1 none luks\n",
     )
-    .run();
+}
+
+/// The finding for the decoy's crypttab line `line` on the array, which its
+/// own boot needs.
+fn leg(line: &str) -> String {
+    format!(
+        "/etc/crypttab: '{line}' (it opens the volume at /mnt or a device it is stored on, and \
+         the decoy's own boot needs it)"
+    )
+}
+
+#[test]
+fn a_line_the_decoys_own_boot_needs_says_to_move_the_hidden_root_instead() {
+    // Removing the crypttab lines would break the decoy.
+    let result = on_the_decoys_array("/dev/md0p2 / ext4 defaults 0 1\n").run();
     assert!(result.is_fail(), "{result:?}");
     assert!(
-        result.message().contains(
-            "/etc/crypttab: 'leg0 /dev/sdb1' (it opens the volume at /mnt or a device it is \
-             stored on, and the decoy's own boot needs it)"
-        ),
+        result.message().contains(&leg("leg0 /dev/sdb1")),
         "{}",
         result.message()
     );
@@ -178,6 +188,35 @@ fn a_line_the_decoys_own_boot_needs_says_to_move_the_hidden_root_instead() {
         STORAGE_OF_ITS_OWN,
         "Do not remove a line the decoy's own boot needs: put the hidden root on storage of its \
          own instead."
+    );
+}
+
+#[test]
+fn lines_of_both_kinds_get_both_instructions() {
+    // A noauto fstab line mounts md0p1 at /mnt for the hidden volume alone.
+    // Once the hidden root moves, it is flagged no more and would stay
+    // behind naming /mnt, so it still has to go.
+    let result =
+        on_the_decoys_array("/dev/md0p2 / ext4 defaults 0 1\n/dev/md0p1 /mnt ext4 noauto 0 0\n")
+            .run();
+    assert!(result.is_fail(), "{result:?}");
+    for finding in [
+        "/etc/fstab: '/dev/md0p1 /mnt ext4' (it mounts the volume at /mnt)".to_string(),
+        leg("leg0 /dev/sdb1"),
+        leg("leg1 /dev/sdc1"),
+    ] {
+        assert!(
+            result.message().contains(&finding),
+            "{finding}: {}",
+            result.message()
+        );
+    }
+    assert_eq!(result.remediation(), Some(REMOVE_AND_MOVE));
+    assert_eq!(
+        REMOVE_AND_MOVE,
+        "Remove the lines only the hidden volume needs long before the next use, and open the \
+         volume by hand each time. Do not remove a line the decoy's own boot needs: put the \
+         hidden root on storage of its own instead."
     );
 }
 
