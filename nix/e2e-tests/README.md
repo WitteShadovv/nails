@@ -492,8 +492,9 @@ soft-reboots with `py/nails_e2e/session.py`:
   and a terminal give it a desktop: the activation is typed into a terminal
   window that the compositor started in a session of its own (as sway does)
   and into one that is its own child (as cage starts one), into a zsh that
-  such a window's shell started with its errors sent to `/dev/null`, and into
-  a root shell that `sudo -i` opened at the prompt, and
+  such a window's shell started with its errors sent to `/dev/null`, whose
+  history settings `nails check` typed into it reads as the shell it was typed
+  into, and into a root shell that `sudo -i` opened at the prompt, and
   `nails emergency --poweroff` into such a window on the plain decoy, each
   with 400 idle processes around it as on a desktop;
 - `session-interrupted-entry`: a killed activation that `status` reports as an

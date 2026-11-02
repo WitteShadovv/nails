@@ -28,6 +28,8 @@
 #      typed into that zsh. It is interactive by zsh's rule, which wants only
 #      standard input on a terminal, and writes its history on SIGHUP: the
 #      kill must count it, or the window's shell, dying first, hangs it up.
+#      `nails check` typed into it first must read that zsh's history
+#      settings, as the shell the command was typed into.
 #   4. No compositor: `sudo -i` at the prompt opens a root shell, and the
 #      activation is typed into that.
 #   5. On the plain decoy, `sudo nails emergency --poweroff` is typed into a
@@ -218,6 +220,21 @@ in
         assert machine.succeed(f"readlink /proc/{zsh}/fd/2").strip() == "/dev/null"
 
 
+    def check_typed_into_the_zsh():
+        """Type `nails check` into the zsh in the foreground: its history row
+        names that zsh as the shell the command was typed into."""
+        done = "/run/check-" + secrets.token_hex(4)
+        machine.send_chars(
+            f"sudo nails --config {CONFIG} check > /tmp/zsh-check.txt 2>&1; "
+            f"sudo touch {done}\n"
+        )
+        machine.wait_until_succeeds(f"test -e {done}", timeout=180)
+        row = machine.succeed(
+            "grep -F 'incremental-history-flush:' /tmp/zsh-check.txt"
+        ).strip()
+        assert "zsh (the shell this command was typed into)" in row, row
+
+
     def start_root_shell():
         login = int(machine.succeed("pgrep -u testuser -x bash -t tty1").strip())
         assert ids(login)[1] == login, ids(login)
@@ -295,6 +312,7 @@ in
         start_idle_processes()
         start_window("detached")
         start_zsh_without_errors()
+        check_typed_into_the_zsh()
         activate_typed("activate-from-a-zsh-without-errors")
 
     with subtest("activation typed into a root shell that sudo -i opened on the console"):
