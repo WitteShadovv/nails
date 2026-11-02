@@ -360,15 +360,17 @@ of this changelog for that version becomes the release notes word for word, and
   named as the VeraCrypt application names its own, that is not the decoy's: not its storage as
   the attach gate counts it, with every device below a partition of it on a disk that keeps its
   data elsewhere (the devices of the md array the decoy's root is on, which its boot opens), nor a
-  volume its crypttab opens from a device or an image file, under whatever name it was opened.
-  It knows a mapping by its device-mapper uuid and name and reads no mapping's table. It warns,
-  naming the device, where nothing encrypts the hidden root; where only the decoy's own
-  encryption does, as for a plain image file on the decoy's encrypted `/home`, which whoever
-  unlocks the decoy can read; where it cannot tell (a device-mapper device of a kind it does not
-  know, a loop device whose file it cannot follow to a disk or whose path disagrees with the loop
-  driver's record, a ZFS volume, an nbd, ublk or zram device, a filesystem that shows no block
-  device, such as ZFS); and for a tmpfs or ramfs root, whose contents a power-off ends.
-  dm-integrity and dm-verity encrypt nothing. It never fails a run. See docs/backends.md.
+  volume its crypttab opens from a device or an image file, under whatever name it was opened. A
+  crypttab line for the hidden drive itself, one that opens it or a device it is stored on, is no
+  claim: `backend-entries` refuses that line. It knows a mapping by its device-mapper uuid and name
+  and reads no mapping's table. It warns, naming the device, where nothing encrypts the hidden
+  root; where only the decoy's own encryption does, as for a plain image file on the decoy's
+  encrypted `/home`, which whoever unlocks the decoy can read; where it cannot tell (a
+  device-mapper device of a kind it does not know, a loop device whose file it cannot follow to a
+  disk or whose path disagrees with the loop driver's record, a ZFS volume, an nbd, ublk or zram
+  device, a filesystem that shows no block device, such as ZFS); and for a tmpfs or ramfs root,
+  whose contents a power-off ends. dm-integrity and dm-verity encrypt nothing. It never fails a
+  run. See docs/backends.md.
 - docs/backends.md weighs VeraCrypt's rule that on Linux a hidden volume be mounted only from a
   live system writing to a RAM disk: a NAILS setup does not meet it, since you unlock and mount the
   hidden volume with cryptsetup on the running decoy before every session. It also passes on
