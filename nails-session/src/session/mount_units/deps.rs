@@ -16,11 +16,11 @@
 //!   `RequiresMountsFor=` and `WantsMountsFor=`; for a mount or automount its
 //!   parent directories; for a mount the source its `What=` names, unless it
 //!   is a network filesystem that is no bind or loop mount; for a swap its
-//!   file; for a service, socket, mount or swap its working directory, root
-//!   directory or image, the directories it keeps (`StateDirectory=` and the
-//!   like) and its private `/tmp`; for a socket the paths it listens on, for
-//!   a path unit the paths it watches, for a persistent timer its stamp
-//!   directory;
+//!   file; for a service, socket, mount or swap its working directory (one
+//!   that may be missing too, the user's home `~` aside), root directory or
+//!   image, the directories it keeps (`StateDirectory=` and the like) and its
+//!   private `/tmp`; for a socket the paths it listens on, for a path unit
+//!   the paths it watches, for a persistent timer its stamp directory;
 //! - the device a mount or swap waits for, the `network-online.target` a
 //!   network filesystem's mount wants, a service's, socket's, mount's or
 //!   swap's slice (`system.slice`, or its template's, unless it names one)
@@ -305,9 +305,11 @@ fn exec_edges(
 ) -> Result<(), String> {
     for key in ["WorkingDirectory", "RootDirectory", "RootImage"] {
         for value in unit.values(section, key) {
-            // `-` lets the directory be missing and `~` is a home: systemd
-            // adds no mount for either.
-            if !value.starts_with(['-', '~']) {
+            // `-` lets the directory be missing, and from systemd 256 the
+            // unit still wants the mounts for it. `~` is the user's home,
+            // for which systemd adds none.
+            let value = value.strip_prefix('-').unwrap_or(value);
+            if !value.starts_with('~') {
                 path_edges(
                     edges,
                     &resolved(value, name)?,

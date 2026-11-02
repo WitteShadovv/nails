@@ -193,6 +193,12 @@ fn a_skip_is_masked_for_what_the_units_it_pulls_in_pull_in() {
             "[Service]\nWorkingDirectory=/srv/b",
             "srv-b.mount (a directory it runs in)",
         ),
+        // One it may run without: from systemd 256 the service still wants
+        // the mounts for it.
+        (
+            "[Service]\nWorkingDirectory=-/srv/b/w",
+            "srv-b.mount (a directory it runs in)",
+        ),
         (
             "[Service]\nRootDirectory=/srv/b/root",
             "srv-b.mount (a directory it runs in)",
@@ -702,6 +708,12 @@ fn a_skip_whose_pulls_mount_nothing_of_a_disk_stays_a_skip() {
         "../srv-b.mount",
     );
     assert_skipped(&decoy, &data_requiring("prep@vdc1.service"));
+    // A service that runs in its user's home names no mount for it.
+    decoy.write(
+        "/etc/systemd/system/home.service",
+        &service("[Service]\nWorkingDirectory=~\nWorkingDirectory=-~"),
+    );
+    assert_skipped(&decoy, &data_requiring("home.service"));
     // A masked unit pulls in nothing.
     decoy.link("/etc/systemd/system/masked.service", "/dev/null");
     decoy.write(
@@ -1075,8 +1087,9 @@ fn what_systemd_starts_with_a_unit_is_read_from_its_settings() {
         expect(&[
             edge("a.service", r),
             edge("f.service", later),
-            edge("srv-root.mount", w),
+            edge("srv-gone.mount", w),
             edge("srv.mount", w),
+            edge("srv-root.mount", w),
             edge("var-lib-st.mount", r),
             edge("var-lib.mount", r),
             edge("var.mount", r),
