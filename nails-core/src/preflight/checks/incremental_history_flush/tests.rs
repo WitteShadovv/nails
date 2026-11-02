@@ -918,6 +918,38 @@ fn a_here_document_in_a_command_substitution_hides_no_sourced_file() {
 }
 
 #[test]
+fn a_warning_that_it_cannot_tell_gives_the_line_that_settles_it() {
+    let fix = "To settle it, end its .zshrc with \
+               `unsetopt share_history inc_append_history inc_append_history_time`.";
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "eval \"$(zoxide init zsh)\"\n");
+    let message = warning(zsh(&fs));
+    assert!(
+        message.starts_with("The check cannot tell whether zsh") && message.ends_with(fix),
+        "{message}"
+    );
+    // That line, copied to the end of the file, settles it.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "eval \"$(zoxide init zsh)\"\n\
+         unsetopt share_history inc_append_history inc_append_history_time\n",
+    );
+    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
+
+    // It says what the line does not settle.
+    seed(&fs, "/home/alice/.zshenv", "source $SOMEWHERE/env.zsh\n");
+    let message = warning(zsh(&fs));
+    assert!(
+        message.ends_with(&format!(
+            "{fix} That settles no doubt about ZDOTDIR, nor one about what zsh reads before \
+             or after .zshrc."
+        )),
+        "{message}"
+    );
+}
+
+#[test]
 fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
     let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
     let fs = MockFilesystem::new();

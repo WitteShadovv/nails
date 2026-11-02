@@ -860,7 +860,11 @@ of this changelog for that version becomes the release notes word for word, and
   left out: what a line names beyond what was read as code the check follows counts as on, for
   an option, or makes the check warn that it cannot tell, so an option a comment names at the end
   of a line counts as on, and a `source` or `eval` in an `echo`, a string, an alias or a
-  here-document, or an `eval` of what a command prints, warns too. bash's files are
+  here-document, or an `eval` of what a command prints, warns too. Such a warning gives the line
+  that settles it, `unsetopt share_history inc_append_history inc_append_history_time` at the end
+  of `.zshrc`: zsh runs the file top to bottom, so every doubt before that line is settled, but
+  none about `ZDOTDIR`, about code before `.zshrc` or about `.zlogin`, and the operator guide
+  names the hooks an init script may install, which it cannot see. bash's files are
   read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going
   on in the next. It still only warns: such a shell has written the
   decoy commands before activation starts, so a refusal would take none of them back, and for a

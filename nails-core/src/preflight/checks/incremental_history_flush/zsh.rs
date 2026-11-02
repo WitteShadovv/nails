@@ -45,6 +45,12 @@
 //! name ([`backstop`]): an option named beyond what the code names counts as
 //! on, and a `source`, `.` or `ZDOTDIR` setting beyond what the walk read is
 //! a doubt.
+//!
+//! A file whose last commands certainly turn all three options off settles
+//! every doubt before it, as zsh runs it top to bottom, except one about
+//! `ZDOTDIR`, one about code read before `.zshrc`, which may move `ZDOTDIR`
+//! and so the `.zshrc` zsh reads, and one about what zsh reads after
+//! `.zshrc`.
 
 mod backstop;
 mod lexer;
@@ -113,6 +119,26 @@ impl Start {
     }
 }
 
+/// When zsh reads a startup file, by `.zshrc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// `zshenv` or `zprofile`, where `ZDOTDIR` can still move.
+    Before,
+    Rc,
+    /// `zlogin`.
+    After,
+}
+
+/// What a doubt is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// Code that may do anything.
+    Code,
+    /// Which options a `setopt` turns on.
+    Options,
+    Zdotdir,
+}
+
 /// What the zsh startup files read so far set.
 struct Reader<'a, F: Filesystem> {
     fs: &'a F,
@@ -128,10 +154,28 @@ struct Reader<'a, F: Filesystem> {
     xdg_config_homes: Vec<Option<String>>,
     /// The files being followed, outermost first.
     stack: Vec<PathBuf>,
-    scan: Scan,
+    /// The stage whose files are being read.
+    stage: Stage,
+    /// The doubts so far, each with whether turning the options off at the
+    /// end of `.zshrc` does not settle it.
+    doubts: Vec<(String, bool)>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
+    /// Note a doubt about `kind`. Turning the options off at the end of
+    /// `.zshrc` settles one about the options, and one about code in
+    /// `.zshrc`, but none about `ZDOTDIR`, about code before `.zshrc`, which
+    /// may move `ZDOTDIR` and so the `.zshrc` zsh reads, or about what zsh
+    /// reads after it.
+    fn doubt(&mut self, text: String, kind: Kind) {
+        let lasting = match kind {
+            Kind::Zdotdir => true,
+            Kind::Code => self.stage != Stage::Rc,
+            Kind::Options => self.stage == Stage::After,
+        };
+        self.doubts.push((text, lasting));
+    }
+
     /// The paths `value` may name: one for each value `XDG_CONFIG_HOME` may
     /// have, each different one once; `None` when one of them is no path the
     /// check can know.
@@ -206,24 +250,33 @@ impl<F: Filesystem> Reader<'_, F> {
             Ok(Some(text)) => text,
             Ok(None) => return,
             Err(why) => {
-                self.scan.doubts.push(format!("it could not read {why}"));
+                self.doubt(format!("it could not read {why}"), Kind::Code);
                 return;
             }
         };
         if self.stack.len() >= SOURCE_DEPTH {
-            self.scan.doubts.push(format!(
-                "it follows sourced files {SOURCE_DEPTH} deep, not on to {}",
-                path.display()
-            ));
+            self.doubt(
+                format!(
+                    "it follows sourced files {SOURCE_DEPTH} deep, not on to {}",
+                    path.display()
+                ),
+                Kind::Code,
+            );
             return;
         }
         let place = path.to_string_lossy().into_owned();
-        let (events, confused) = events(&text, &place);
+        let (events, confused, ends_off) = events(&text, &place);
         self.stack.push(path.to_path_buf());
         for event in events {
             self.apply(event, &place, certain && !confused);
         }
         self.stack.pop();
+        if certain && !confused && ends_off {
+            // zsh runs a file top to bottom: whatever came before, the
+            // options are off once its last commands ran.
+            self.options = Default::default();
+            self.doubts.retain(|(_, lasting)| *lasting);
+        }
     }
 
     /// Apply one event of the file at `place`; `certain` when zsh certainly
@@ -246,7 +299,9 @@ impl<F: Filesystem> Reader<'_, F> {
             Event::OhMyZsh => {
                 self.options[1] = Some(format!("Oh My Zsh, which {place} loads,"));
             }
-            Event::Doubt(doubt) => self.scan.doubts.push(doubt),
+            Event::Doubt(doubt) => self.doubt(doubt, Kind::Code),
+            Event::OptionDoubt(doubt) => self.doubt(doubt, Kind::Options),
+            Event::ZdotdirDoubt(doubt) => self.doubt(doubt, Kind::Zdotdir),
             Event::Source {
                 path,
                 unconditional,
@@ -257,10 +312,13 @@ impl<F: Filesystem> Reader<'_, F> {
                         self.file(&file, certain && unconditional && one);
                     }
                 }
-                None => self.scan.doubts.push(format!(
-                    "it cannot follow the file {place} sources as `{}`",
-                    path.text
-                )),
+                None => self.doubt(
+                    format!(
+                        "it cannot follow the file {place} sources as `{}`",
+                        path.text
+                    ),
+                    Kind::Code,
+                ),
             },
             Event::Assign {
                 name,
@@ -290,10 +348,13 @@ impl<F: Filesystem> Reader<'_, F> {
                             // zsh reads the user's files somewhere else now.
                             self.zdotdirs.clear();
                         }
-                        self.scan.doubts.push(format!(
-                            "it cannot follow the ZDOTDIR that {place} sets (`{}`)",
-                            value.text
-                        ));
+                        self.doubt(
+                            format!(
+                                "it cannot follow the ZDOTDIR that {place} sets (`{}`)",
+                                value.text
+                            ),
+                            Kind::Zdotdir,
+                        );
                     }
                 }
             }
@@ -325,6 +386,7 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
                 scan.doubts.push(doubt);
             }
         }
+        scan.lasting |= one.lasting;
     }
     scan
 }
@@ -339,13 +401,19 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         zdotdirs: home.map(Path::to_path_buf).into_iter().collect(),
         xdg_config_homes: vec![None],
         stack: Vec::new(),
-        scan: Scan::default(),
+        stage: Stage::Before,
+        doubts: Vec::new(),
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
         if login_stage && start.login == Some(false) {
             continue;
         }
+        reader.stage = match stage {
+            "zshrc" => Stage::Rc,
+            "zlogin" => Stage::After,
+            _ => Stage::Before,
+        };
         // Read whole only by a zsh that certainly reads it, and a file only
         // when it is the one zsh can read for this stage: a zsh reads its
         // stage's file in /etc or in /etc/zsh, as it was built, and the
@@ -365,7 +433,11 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
             reader.file(&dir.join(format!(".{stage}")), certain && dirs.len() == 1);
         }
     }
-    let mut scan = reader.scan;
+    let mut scan = Scan {
+        lasting: reader.doubts.iter().any(|(_, lasting)| *lasting),
+        doubts: reader.doubts.into_iter().map(|(doubt, _)| doubt).collect(),
+        ..Scan::default()
+    };
     for ((_, shown, entered), place) in OPTIONS.iter().zip(reader.options) {
         if let Some(place) = place {
             scan.writes.push(Write {

@@ -1454,6 +1454,18 @@ afterwards:
   alias or a here-document, makes it warn too, and so does an `eval` of what
   a command prints (`eval "$(tool init zsh)"`).
 
+  When it cannot tell, the warning gives the line that settles it: end the
+  `.zshrc` zsh reads with
+  `unsetopt share_history inc_append_history inc_append_history_time`. zsh
+  runs the file top to bottom, so whatever an `eval` or a sourced file before
+  that line did, the options are off once it has run, and the check counts
+  every doubt before it as settled. It settles none about `ZDOTDIR`, about
+  code zsh reads before `.zshrc` (`.zshenv`, `.zprofile`), which may move
+  `ZDOTDIR` and with it the `.zshrc` zsh reads, or about what a login shell
+  reads after it (`.zlogin`), and the warning says so. Nor does it undo a
+  hook: a `precmd` function or a `zle` widget that an init script installs
+  can set the options again at every prompt, and no startup file shows that.
+
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
 hardening you configure yourself.

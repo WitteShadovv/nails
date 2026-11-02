@@ -174,6 +174,10 @@ fn kind(program: &str) -> Kind {
     }
 }
 
+/// The line that, at the end of zsh's `.zshrc`, turns off what writes each
+/// command line as it runs, whatever the startup files did before it.
+const ZSH_TURN_OFF: &str = "unsetopt share_history inc_append_history inc_append_history_time";
+
 /// What a write after every command means for the decoy commands.
 const ON_DISK: &str = "the commands typed in it are on the decoy disk once it writes them, and \
                        killing the shells at activation cannot take them back";
@@ -267,10 +271,30 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
             None => CheckResult::Pass(format!(
                 "{program} ({part}): no startup file the check reads {settings}"
             )),
-            Some(doubts) => CheckResult::Warn(format!(
-                "The check cannot tell whether {program}, {part}, writes each command line to \
-                 its history file as it runs: {doubts}. If it does, {ON_DISK}."
-            )),
+            Some(doubts) => {
+                // zsh runs its files top to bottom, so a turn-off at the end
+                // of .zshrc settles what came before it.
+                let fix = if kind(program) == Kind::Zsh {
+                    let rc = if shell.homes.len() > 1 {
+                        "the .zshrc in each home it can run with"
+                    } else {
+                        "its .zshrc"
+                    };
+                    let stays = if scan.lasting {
+                        " That settles no doubt about ZDOTDIR, nor one about what zsh reads \
+                         before or after .zshrc."
+                    } else {
+                        ""
+                    };
+                    format!(" To settle it, end {rc} with `{ZSH_TURN_OFF}`.{stays}")
+                } else {
+                    String::new()
+                };
+                CheckResult::Warn(format!(
+                    "The check cannot tell whether {program}, {part}, writes each command line \
+                     to its history file as it runs: {doubts}. If it does, {ON_DISK}.{fix}"
+                ))
+            }
         };
     }
     let when = if scan.writes.iter().any(|write| write.entered) {
