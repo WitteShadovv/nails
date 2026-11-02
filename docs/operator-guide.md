@@ -1421,8 +1421,8 @@ afterwards:
     background (a `{ ... }` group or a loop followed by `&` or `|` too),
     after a `return`, or in a `zlogin` of a shell that may not be a login
     shell, counts as naming the option, which turns it on. A root shell that
-    can run with your home or root's has the option off only when the files
-    of both turn it off.
+    can run with your home or root's is read with each, and an option counts
+    as on when it is on with either.
 
   It knows that Oh My Zsh turns `SHARE_HISTORY` on, and it reads the
   `/etc/zshrc` where NixOS's `programs.zsh` sets that option by default. It
