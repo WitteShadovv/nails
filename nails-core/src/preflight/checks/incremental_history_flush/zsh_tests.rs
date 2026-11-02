@@ -609,6 +609,98 @@ fn what_an_expansion_holds_that_the_check_cannot_read_is_a_doubt() {
     }
 }
 
+/// The doubt of a quote that runs to the end of `/home/alice/.zshrc`.
+const OPEN_QUOTE: &str = "it cannot tell where the `'` that /home/alice/.zshrc opens ends";
+
+#[test]
+fn what_zsh_reads_as_code_after_a_glob_flag_an_arithmetic_quote_or_a_pid_is_read() {
+    for (text, doubts) in [
+        // Glob flags and a pattern's parentheses start a word: no comment.
+        (
+            "[[ $HOST == (#i)nohost* ]] || source ~/.zsh/history.zsh\n",
+            &[][..],
+        ),
+        ("[[ abc == (#i)A* ]] && source ~/.zsh/history.zsh\n", &[]),
+        (
+            "if [[ abc == (#i)A* ]]; then source ~/.zsh/history.zsh; fi\n",
+            &[],
+        ),
+        (
+            "print -l (#i)*.zsh(N) >/dev/null; source ~/.zsh/history.zsh\n",
+            &[],
+        ),
+        ("[[ a == (#b)(*) ]]; source ~/.zsh/history.zsh\n", &[]),
+        ("[[ $x == (a|b) ]] && source ~/.zsh/history.zsh\n", &[]),
+        // In arithmetic a quote is a character.
+        (
+            "(( x ==$' 1 ))\nsource ~/.zsh/history.zsh\n'\n",
+            &[OPEN_QUOTE],
+        ),
+        ("(( y == ' 1 ))\nsource ~/.zsh/history.zsh\n# it's\n", &[]),
+        (
+            "x=$(( y == ' 1 ))\nsource ~/.zsh/history.zsh\n# it's\n",
+            &[],
+        ),
+        (
+            "for (( i = 0\"; i < 1; i++ )); do :; done\nsource ~/.zsh/history.zsh\n'\n",
+            &[OPEN_QUOTE],
+        ),
+        // `$$` is a parameter, the shell's process ID.
+        ("x=\"$${\"\nsource ~/.zsh/history.zsh\ny=\"}\"\n", &[]),
+        ("x=\"$${'a'\"\nsource ~/.zsh/history.zsh\n", &[]),
+        // A `;` ends a word in a command substitution, open parentheses
+        // and all.
+        (
+            "x=$(if true; then ech((o ')'; fi)\nsource ~/.zsh/history.zsh\n))\n",
+            &[],
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", text);
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(scan(&fs, NOT_LOGIN).doubts, doubts, "{text:?}");
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            "{text:?}"
+        );
+    }
+
+    // The ZDOTDIR such a line sets is followed.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "[[ a == (#b)(*) ]]; export ZDOTDIR=~/.config/zsh\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshrc",
+        "setopt share_history\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"]
+    );
+}
+
+#[test]
+fn a_doubt_of_the_lexer_is_one_no_structure_can_take() {
+    // A `for` header the walk cannot read takes the token after it for its
+    // body, and the quote that runs to the end of the file is no token.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "for x\n'it\nsource ~/.zsh/history.zsh\n",
+    );
+    assert_eq!(scan(&fs, NOT_LOGIN).doubts, [OPEN_QUOTE]);
+}
+
 #[test]
 fn a_construct_that_runs_to_the_end_of_the_file_is_a_doubt() {
     for (line, opener) in [

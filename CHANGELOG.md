@@ -845,8 +845,9 @@ of this changelog for that version becomes the release notes word for word, and
   an expansion the check cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a process
   substitution, `: ${ZDOTDIR:=...}`), a `source` without a file, and a quote, an expansion or a
   here-document that runs to the end of the file without closing (a `<<` in `(( ... ))` is a
-  shift, a `)` or `}` in quotes closes nothing, and a `\'` does not end a `$'...'`), and an
-  expansion that holds what the check cannot read as zsh does (a `case` in a `$(...)`, a
+  shift and a quote there a character, a `)` or `}` in quotes closes nothing, a `\'` does not end
+  a `$'...'`, `$$` is a parameter, and glob flags such as `(#i)` start a word, no comment), and
+  an expansion that holds what the check cannot read as zsh does (a `case` in a `$(...)`, a
   `${ command }`) make it warn that it cannot tell, and so do a startup file that is there but
   cannot be read, which it
   passed over before, and a shell other than bash, zsh, fish and dash. bash's files are read for

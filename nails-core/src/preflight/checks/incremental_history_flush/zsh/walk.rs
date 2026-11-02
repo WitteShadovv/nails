@@ -7,7 +7,7 @@
 //! an option; what the check cannot follow; the files it sources; and the
 //! `ZDOTDIR` and `XDG_CONFIG_HOME` it sets.
 
-use super::lexer::{End, Token, Word, is_name, tokens};
+use super::lexer::{End, Flaw, Token, Word, is_name, lex};
 use super::{OH_MY_ZSH, OPTIONS};
 use std::collections::BTreeMap;
 
@@ -561,19 +561,6 @@ impl Walker<'_> {
                     }
                 }
                 Token::Text(text) => self.mention_options(&text),
-                Token::Unended(delimiter) => self.events.push(Event::Doubt(format!(
-                    "it cannot tell where the here-document that {} opens with `<<{delimiter}` \
-                     ends",
-                    self.place
-                ))),
-                Token::Unclosed(opener) => self.events.push(Event::Doubt(format!(
-                    "it cannot tell where the {opener} that {} opens ends",
-                    self.place
-                ))),
-                Token::Unfollowed(opener, what) => self.events.push(Event::Doubt(format!(
-                    "it cannot follow the {opener} that {} opens, which holds {what}",
-                    self.place
-                ))),
                 Token::Arithmetic(text) => {
                     // A command of its own, which sets no option.
                     function_next = false;
@@ -629,10 +616,11 @@ impl Walker<'_> {
 
 /// The events of zsh code `text` from the file at `place`, and whether the
 /// check lost track of its structure, in which case none of its turn-offs
-/// count.
+/// count. What the lexer could not read is a doubt.
 pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
-    Walker {
-        tokens: tokens(text).into_iter().peekable(),
+    let (tokens, flaws) = lex(text);
+    let (mut events, confused) = Walker {
+        tokens: tokens.into_iter().peekable(),
         place,
         frames: Vec::new(),
         arrays: BTreeMap::new(),
@@ -640,5 +628,20 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
         may_stop: false,
         confused: false,
     }
-    .walk()
+    .walk();
+    events.extend(flaws.into_iter().map(|flaw| {
+        Event::Doubt(match flaw {
+            Flaw::Unended(delimiter) => format!(
+                "it cannot tell where the here-document that {place} opens with \
+                 `<<{delimiter}` ends"
+            ),
+            Flaw::Unclosed(opener) => {
+                format!("it cannot tell where the {opener} that {place} opens ends")
+            }
+            Flaw::Unfollowed(opener, what) => {
+                format!("it cannot follow the {opener} that {place} opens, which holds {what}")
+            }
+        })
+    }));
+    (events, confused)
 }
