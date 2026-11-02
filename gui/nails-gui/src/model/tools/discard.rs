@@ -47,8 +47,6 @@ pub(crate) struct Discard {
     /// The engine refused the last plan for a hidden volume on this
     /// computer's storage, which `--allow-decoy-storage` accepts.
     storage_refused: bool,
-    /// The person allowed that, behind the word, for the next plan.
-    allow_storage: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -118,24 +116,27 @@ impl Discard {
         if label != text::DISCARD_ACTION {
             return None;
         }
-        self.plan()
+        self.plan(false)
     }
 
     /// The plan of the folder typed, with the hidden volume on this
-    /// computer's storage allowed when the person allowed it.
-    fn plan(&mut self) -> Option<Ask> {
+    /// computer's storage allowed for that one plan when `allow`. A new plan
+    /// ends whatever the last refusal offered.
+    fn plan(&mut self, allow: bool) -> Option<Ask> {
         let target = canonical_folder(&self.folder)?;
         self.outcome = None;
+        self.storage_refused = false;
         Some(Ask::Plan(Plan::Discard(DiscardPlanArgs {
             target,
-            allow_decoy_storage: self.allow_storage,
+            allow_decoy_storage: allow,
         })))
     }
 
     /// Whether the page offers to allow the hidden volume on this
-    /// computer's storage, which the engine named for its refusal.
+    /// computer's storage: the engine named that for its last refusal, and
+    /// a plan of the folder typed can go.
     pub(crate) fn offers_storage(&self) -> bool {
-        self.storage_refused && !self.allow_storage
+        self.storage_refused && valid_folder(&self.folder)
     }
 
     /// The refusal the question before allowing it repeats.
@@ -147,13 +148,12 @@ impl Discard {
     }
 
     /// The plan again, the hidden volume on this computer's storage allowed
-    /// once its question was answered with the word.
+    /// for it alone, once its question was answered with the word.
     pub(crate) fn allow_storage(&mut self) -> Option<Ask> {
         if !self.offers_storage() {
             return None;
         }
-        self.allow_storage = true;
-        self.plan()
+        self.plan(true)
     }
 
     /// Take in the answer of a plan that settled, or of the apply.
@@ -173,9 +173,6 @@ impl Discard {
             .error
             .as_ref()
             .is_some_and(|error| error.allowable == Some(Allowable::DecoyStorage));
-        // What was allowed held for the plan that answered only: its apply
-        // carries the token, not the flag.
-        self.allow_storage = false;
         self.outcome = Some(match (read.data, error_of(&answer.envelope)) {
             (Some(data), _) if data.removed.is_empty() => Outcome::Nothing(data.target),
             (Some(data), _) => {
