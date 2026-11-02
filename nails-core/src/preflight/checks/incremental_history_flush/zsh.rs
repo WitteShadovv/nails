@@ -15,6 +15,15 @@
 //! home, which `~` and `$HOME` name, so for a shell that may run with several
 //! (a root shell with the operator's), the files are read for each.
 //!
+//! A function the files autoload is read from its file: the one they name by
+//! its path, or the one of its name in each directory they add to `fpath`,
+//! where zsh looks for it as it first runs it. Once one is autoloaded, a
+//! directory added that the check cannot follow is a doubt; the directories
+//! zsh was built with it does not read. zsh runs compiled code in place of a
+//! file, or of a directory's functions, when a `.zwc` is beside it, and the
+//! check cannot read that code, so such a `.zwc` is a doubt, and so is a path
+//! zsh expands into others (a glob, `{a,b}`).
+//!
 //! An option counts as on wherever a file zsh reads names it, outside a line
 //! that is a comment, in either form: a `setopt` or an `unsetopt`, an array, a
 //! string, an alias, a test, a here-document's body or a comment at the end
@@ -64,6 +73,10 @@ const OH_MY_ZSH: &str = "oh-my-zsh.sh";
 
 /// How many files deep sourced files are followed.
 const SOURCE_DEPTH: usize = 8;
+
+/// What makes zsh expand a path into others: a glob, a qualifier or brace
+/// expansion.
+const GLOB: [char; 9] = ['*', '?', '[', '<', '(', '|', '{', '^', '#'];
 
 /// What the check knows of how a zsh was started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +163,11 @@ struct Reader<'a, F: Filesystem> {
     xdg_config_homes: Vec<Option<String>>,
     /// The files being followed, outermost first.
     stack: Vec<PathBuf>,
+    /// The directories the files read add to `fpath`, or the doubt that one
+    /// the check cannot follow is, should they autoload a function.
+    fpath: Vec<Result<PathBuf, String>>,
+    /// The functions the files read autoload by name.
+    autoloads: Vec<String>,
     /// What the check could not follow.
     doubts: Vec<String>,
     /// Whether NixOS's generated `/etc/zshrc` names one of [`OPTIONS`].
@@ -160,6 +178,27 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Note a doubt.
     fn doubt(&mut self, text: String) {
         self.doubts.push(text);
+    }
+
+    /// Note a doubt when zsh may run compiled code at `path`, which the
+    /// check cannot read: zsh runs a file's `.zwc` in its place when it is
+    /// newer or the file is missing, and an `fpath` directory's when it holds
+    /// the function.
+    fn compiled(&mut self, path: &Path) {
+        match self.fs.inode(path) {
+            Ok(None) => {}
+            Ok(Some(_)) => self.doubt(format!(
+                "it cannot read the compiled code in {} that zsh may run",
+                path.display()
+            )),
+            Err(error) => self.doubt(format!(
+                "it could not read {} ({})",
+                path.display(),
+                error
+                    .io_kind()
+                    .map_or_else(|| error.to_string(), |kind| kind.to_string())
+            )),
+        }
     }
 
     /// The paths `value` may name: one for each value `XDG_CONFIG_HOME` may
@@ -221,8 +260,8 @@ impl<F: Filesystem> Reader<'_, F> {
         if text == "~" || text.starts_with("~/") {
             text = format!("{home}{}", &text[1..]);
         }
+        let plain = !text.contains(['$', '`', '~']) && !text.contains(GLOB);
         let path = PathBuf::from(text);
-        let plain = !path.to_string_lossy().contains(['$', '`', '~']);
         (plain && path.is_absolute()).then_some(path)
     }
 
@@ -232,6 +271,7 @@ impl<F: Filesystem> Reader<'_, F> {
         if self.stack.iter().any(|open| open == path) {
             return;
         }
+        self.compiled(&zwc(path));
         let text = match read(self.fs, path) {
             Ok(Some(text)) => text,
             Ok(None) => return,
@@ -328,8 +368,99 @@ impl<F: Filesystem> Reader<'_, F> {
                     }
                 }
             }
+            Event::Fpath(Some(dir)) => match self.resolve(&dir) {
+                Some(dirs) => {
+                    for dir in dirs {
+                        if !self.fpath.contains(&Ok(dir.clone())) {
+                            self.fpath.push(Ok(dir));
+                        }
+                    }
+                }
+                None => self.fpath.push(Err(format!(
+                    "it cannot follow the directory that {place} adds to fpath as `{}`, where \
+                     zsh looks for the functions the files autoload",
+                    dir.text
+                ))),
+            },
+            Event::Fpath(None) => self.fpath.push(Err(format!(
+                "it cannot follow what a line of {place} may add to fpath, where zsh looks \
+                 for the functions the files autoload"
+            ))),
+            Event::Autoload(function) => self.autoload(function, place),
         }
     }
+
+    /// Note the function `function` that the file at `place` autoloads: by
+    /// name, to be looked for where the files add to `fpath`, or by the path
+    /// of its file, which is read at once.
+    fn autoload(&mut self, function: Word, place: &str) {
+        if function.text.contains('/') {
+            match self.resolve(&function) {
+                Some(files) => {
+                    for file in files {
+                        self.file(&file, false);
+                    }
+                }
+                None => self.doubt(format!(
+                    "it cannot follow the function file that {place} autoloads as `{}`",
+                    function.text
+                )),
+            }
+        } else if function.expands || function.text.contains(GLOB) {
+            self.doubt(format!(
+                "it cannot tell which function `{}` in {place} autoloads",
+                function.text
+            ));
+        } else if !self.autoloads.contains(&function.text) {
+            self.autoloads.push(function.text);
+        }
+    }
+
+    /// Read the files of the functions the files read autoload by name in
+    /// each directory they add to `fpath`, where zsh looks for them as they
+    /// first run, until those files add no more. Once a function is
+    /// autoloaded, a directory the check cannot follow is a doubt. zsh's own
+    /// `fpath`, the directories it was built with, it does not read.
+    fn autoloaded(&mut self) {
+        let mut looked: Vec<PathBuf> = Vec::new();
+        let mut digests: Vec<PathBuf> = Vec::new();
+        loop {
+            let before = looked.len();
+            for dir in self.fpath.clone() {
+                let dir = match dir {
+                    Ok(dir) => dir,
+                    Err(doubt) => {
+                        if !self.autoloads.is_empty() && !self.doubts.contains(&doubt) {
+                            self.doubt(doubt);
+                        }
+                        continue;
+                    }
+                };
+                for name in self.autoloads.clone() {
+                    let path = dir.join(&name);
+                    if looked.contains(&path) {
+                        continue;
+                    }
+                    looked.push(path.clone());
+                    if !digests.contains(&dir) {
+                        digests.push(dir.clone());
+                        self.compiled(&zwc(&dir));
+                    }
+                    self.file(&path, false);
+                }
+            }
+            if looked.len() == before {
+                break;
+            }
+        }
+    }
+}
+
+/// The path of the compiled form zsh looks for beside `path`: `path.zwc`.
+fn zwc(path: &Path) -> PathBuf {
+    let mut zwc = path.as_os_str().to_os_string();
+    zwc.push(".zwc");
+    PathBuf::from(zwc)
 }
 
 /// What zsh's startup files below `/etc` and in `homes` turn on, read
@@ -371,6 +502,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         zdotdirs: home.map(Path::to_path_buf).into_iter().collect(),
         xdg_config_homes: vec![None],
         stack: Vec::new(),
+        fpath: Vec::new(),
+        autoloads: Vec::new(),
         doubts: Vec::new(),
         nixos: false,
     };
@@ -408,6 +541,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
             reader.file(&dir.join(format!(".{stage}")), certain && dirs.len() == 1);
         }
     }
+    reader.autoloaded();
     let mut scan = Scan {
         doubts: reader.doubts,
         nixos: reader.nixos,

@@ -1409,6 +1409,10 @@ afterwards:
     code, in a `$(...)` too, and a file they source read where it is sourced
     when its path resolves, so it follows Home Manager's `dotDir`, whose
     `.zshenv` the home's sources and which sets `ZDOTDIR`;
+  - the file of each function they autoload (`autoload`, `functions -u`,
+    `typeset -fu`), by its path or by its name in each directory they add
+    to `fpath`, where zsh looks for it as it first runs it, but not in the
+    directories zsh was built with;
   - an option counts as on wherever a file zsh reads names it, outside a
     line that is a comment: a `setopt`, an `unsetopt`, Home Manager's
     `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a
@@ -1424,13 +1428,19 @@ afterwards:
   warns that it cannot tell when one of those files is there but cannot be
   read, when a `setopt` takes an expansion it cannot list, when a sourced
   file's path or a `ZDOTDIR` does not resolve (as for
-  `source <(tool init zsh)`), when a `source` names no file, when `ZDOTDIR`
+  `source <(tool init zsh)`) or zsh expands it into others (a glob,
+  `{a,b}`), when a function they autoload may be in a directory added to
+  `fpath` that does not resolve (as for NixOS's profiles,
+  `$p/share/zsh/site-functions`), when zsh may run compiled code in place
+  of a file (the `.zwc` that `zcompile` writes beside a file or for an
+  `fpath` directory), when a `source` names no file, when `ZDOTDIR`
   is set otherwise than by an assignment (`: ${ZDOTDIR:=...}`), when a
   quote, an expansion or a here-document runs to the end of the file
   without closing, when an expansion holds what it cannot read as zsh does
   (a `case` in a `$(...)`, a `${ command }`), or when the shell is not bash,
   zsh, fish or dash (dash keeps no history file). It does not see a setting
-  made by a plugin manager's function, one you typed into the shell, a file
+  made by a plugin manager's function, one in a function zsh autoloads from
+  the directories it was built with, one you typed into the shell, a file
   a bash startup file sources, or a shell started with other startup files
   (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
   keeps its own record of each command, such as atuin.
@@ -1440,10 +1450,12 @@ afterwards:
   `${:-source}`). Beside reading zsh's files as code, it counts in their
   lines, without reading the code and wherever they stand, the three
   options, `source`, a `.` with a word after it, `eval`, an alias that
-  stands for `.`, and the `ZDOTDIR` settings, leaving out only a line that is
-  a comment. What a line names beyond what it read as code it follows makes
-  it fail closed, in case it read the code otherwise than zsh does: such an
-  option counts as on, and the rest makes it warn that it cannot tell. So a
+  stands for `.`, `autoload`, and the `ZDOTDIR` and `fpath` settings,
+  leaving out only a line that is a comment. What a line names beyond what
+  it read as code it follows makes it fail closed, in case it read the code
+  otherwise than zsh does: such an option counts as on, an `fpath` setting
+  adds a directory it cannot follow, and the rest makes it warn that it
+  cannot tell. So a
   `source` or `eval` anywhere but in a command it follows, in an `echo`, a
   string, an alias or a here-document, makes it warn, and so does an `eval`
   of what a command prints (`eval "$(tool init zsh)"`).
