@@ -597,25 +597,27 @@ of this changelog for that version becomes the release notes word for word, and
   mount the session neither keeps off nor puts in place, which the hidden systemd would mount from
   the decoy's disk first. NAILS follows what the skipped unit pulls in, and what that pulls in in
   turn, as PID 1 starts it: dependencies and their links, the mounts for a parent directory (also a
-  `noauto` line's), for a bind or loop mount's source and for the paths a unit names or keeps its
-  state in, devices and the network a network mount waits for, slices, sockets, the unit a socket,
-  path unit or timer starts, the names a unit shares through alias links, and what an fstab line
-  names with `x-systemd.requires=`, `x-systemd.wants=`, `x-systemd.requires-mounts-for=` or
-  `x-systemd.wants-mounts-for=`, up to the targets the boot starts anyway. Where it cannot follow a
-  unit on the way (a file or link it cannot read, a unit that does not load, a specifier it does not
-  resolve, a chain more than 8 units deep or past 256 units), the skip is masked as well. A skipped
-  unit that requires a masked one, such as an unmounted `nofail` parent, does not start, which
-  `nails check` and `nails activate` warn of. A skipped mount still waits for its device, so an
-  entry whose device is not there at activation (its node, with its device unit active) is masked as
-  before, and `nails check` and `nails activate` warn that the hidden session will not reach its
-  target (attach the device, or give the entry `nofail`, or install a unit file of its own with
-  `WantedBy=` rather than `RequiredBy=`, or give the line a generator made a unit from `nofail`, or
-  reload systemd if that line is gone); a device gone by the switch has its units masked then.
-  Entries with `nofail` stay masked. `verify` reports a skip drop-in left on the decoy.
-  `nails status` lists each such unit, skipped or masked, with why (`required_units` in
-  `status --json`): its device was not there, NAILS could not tell what it is or pulls in, or the
-  fstab lines or unit files for it disagree, which `nails check` and `nails activate` now warn of
-  too.
+  `noauto` line's), for a bind or loop mount's source, for the paths a unit names in
+  `RequiresMountsFor=` or `WantsMountsFor=`, for the directories it runs in (also one that may be
+  missing, its user's home aside), its private `/tmp` and the directories it keeps its state in, and
+  for the paths it listens on or watches, devices and the network a network mount waits for, slices,
+  sockets, the unit a socket, path unit, timer or automount starts, the names a unit shares through
+  alias links, and what an fstab line names with `x-systemd.requires=`, `x-systemd.wants=`,
+  `x-systemd.requires-mounts-for=` or `x-systemd.wants-mounts-for=`, up to the targets the boot
+  starts anyway. Where it cannot follow a unit on the way (a file or link it cannot read, a unit
+  that does not load, a specifier it does not resolve, a chain more than 8 units deep or past 256
+  units), the skip is masked as well. A skipped unit that requires a masked one, such as an
+  unmounted `nofail` parent, does not start, which `nails check` and `nails activate` warn of. A
+  skipped mount still waits for its device, so an entry whose device is not there at activation (its
+  node, with its device unit active) is masked as before, and `nails check` and `nails activate`
+  warn that the hidden session will not reach its target (attach the device, or give the entry
+  `nofail`, or install a unit file of its own with `WantedBy=` rather than `RequiredBy=`, or give
+  the line a generator made a unit from `nofail`, or reload systemd if that line is gone); a device
+  gone by the switch has its units masked then. Entries with `nofail` stay masked. `verify` reports
+  a skip drop-in left on the decoy. `nails status` lists each such unit, skipped or masked, with why
+  (`required_units` in `status --json`): its device was not there, NAILS could not tell what it is
+  or pulls in, or the fstab lines or unit files for it disagree, which `nails check` and
+  `nails activate` now warn of too.
 - An `/etc/fstab` entry that gives both `noauto` and `auto` is read as systemd's fstab generator
   reads it, by the last of the two. An entry such as `noauto,auto` is mounted at boot; the session
   left it to the hidden systemd as never mounted, and the hidden systemd mounted it read-write, and
