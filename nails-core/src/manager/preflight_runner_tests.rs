@@ -1202,7 +1202,7 @@ fn the_history_check_reads_the_typed_shell_before_the_login_shell() {
     };
     let fish = InspectedShell {
         program: "fish".to_string(),
-        home: "/home/alice".into(),
+        homes: vec!["/home/alice".into()],
         argv: vec!["fish".to_string()],
         origin: ShellOrigin::Typed,
     };
@@ -1220,7 +1220,7 @@ fn the_history_check_reads_the_typed_shell_before_the_login_shell() {
         login.is_pass()
             && login
                 .message()
-                .starts_with("bash (the operator's login shell): no startup file"),
+                .contains(": bash (the operator's login shell): no startup file"),
         "{login:?}"
     );
     let neither = history_row(None, None);

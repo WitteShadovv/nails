@@ -1363,8 +1363,8 @@ afterwards:
   because such an access is itself an artifact. Your protection is that the
   history never reaches the decoy in the first place, backed by an amnesic decoy.
 - The `incremental-history-flush` **preflight** warns when the shell you typed
-  the command into, or your login shell when it was not typed into one, writes
-  each command line to its history file as it runs: zsh with
+  the command into writes each command line to its history file as it runs:
+  zsh with
   `INC_APPEND_HISTORY` or `SHARE_HISTORY` as you enter a line, and with
   `INC_APPEND_HISTORY_TIME` once its command ends, bash with `history -a` or
   `history -w` in `PROMPT_COMMAND` at the next prompt, and fish, unless it runs
@@ -1376,9 +1376,19 @@ afterwards:
   activation command as well: the check only warns, and names the shell and
   the setting. Clear that warning before activating.
 
-  It reads the startup files of that shell in `/etc` and in the home of the
-  account it runs as (root's for a shell `sudo -i` opened), the files that
-  shell reads when it starts, and never a history file. Run as root, it
+  It finds the shell you typed the command into by the process tree: the
+  shell `sudo` and its monitor run under, or, when `sudo` gets no terminal
+  of its own, `su -c` runs the command or a script you typed does, the
+  nearest interactive shell on the command's terminal. When it finds none,
+  as for a command a window or `run0` starts, it reads every shell it knows
+  instead: your login shell, bash and zsh, and fish when your home has its
+  configuration in `~/.config/fish`, and warns about each one that writes as
+  it runs.
+
+  It reads the startup files of a shell in `/etc` and in the home of the
+  account the shell runs as, and in yours when that is another (a root shell
+  `sudo -i` or `sudo -s` opened can run with either), the files that shell
+  reads when it starts, and never a history file. Run as root, it
   reads them without changing their access times; a link on the way, such as
   NixOS's `/etc/zshrc`, is followed, which can change the link's (see
   [What `check` touches](#what-check-touches)). bash's files it reads for

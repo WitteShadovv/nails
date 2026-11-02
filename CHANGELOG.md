@@ -814,7 +814,12 @@ of this changelog for that version becomes the release notes word for word, and
   other name is still not killed: the operator guide and `docs/bash-history-forensics.md` list the
   names.
 - The `incremental-history-flush` check reads the settings of the shell the command was typed
-  into, else the operator's login shell, and names the shell and the setting. It read six startup
+  into, and names the shell and the setting. It finds that shell by the process tree: the one
+  `sudo` and its monitor run under, or, when `sudo` gets no terminal of its own or `su -c` or a
+  typed script runs the command, the nearest interactive shell on the command's terminal. When it
+  finds none, as for a window or `run0`, it reads every shell it knows: the operator's login
+  shell, bash and zsh, and fish when the home has its configuration. A root shell is read in the
+  operator's home too, which `sudo -s` can leave it. It read six startup
   files in the operator's home, whatever shell was in use and none in `/etc`, so it missed the
   `SHARE_HISTORY` that NixOS's `programs.zsh` sets for every zsh in `/etc/zshrc` by default, and
   the one Oh My Zsh sets, and it knew neither fish, which writes each command line to its history
