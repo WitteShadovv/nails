@@ -53,6 +53,9 @@ fn fixture(name: &str) -> Value {
             include_str!("../../tests/fixtures/rehearse-plant-no-such-user.json")
         }
         "verify-image-examiner" => include_str!("../../tests/fixtures/verify-image-examiner.json"),
+        "verify-image-nothing-to-scan" => {
+            include_str!("../../tests/fixtures/verify-image-nothing-to-scan.json")
+        }
         "rehearse-scan-image-absent" => {
             include_str!("../../tests/fixtures/rehearse-scan-image-absent.json")
         }
@@ -279,10 +282,6 @@ fn a_clean_verify_is_no_proof_and_still_lists_what_it_did_not_check() {
     );
 }
 
-/// Scan an Image opens from Verify's page and asks for `verify --offline
-/// --root` with the mounted image's path; the examiner's view adds
-/// `--examiner`, and the disk behind the image `--disk`, which counts only
-/// with that view. Back returns to Verify's page.
 /// The scan of `/mnt/decoy` with the examiner's view and the disk behind
 /// it, answered as the real helper did.
 fn image_scanned() -> Model {
@@ -355,6 +354,52 @@ fn an_image_scans_result_goes_once_what_it_scanned_changes() {
     assert_eq!(model.page().heading, text::SCAN_IMAGE);
 }
 
+/// A folder the engine refuses as holding nothing to scan, here an empty
+/// mount point, as the real helper of the engine that refuses it answered:
+/// the page says why and names no scanned image, and its fix is the engine's
+/// advice on mounting the image so that nothing writes to it, but the line
+/// that runs the CLI's scan, which in the window is Scan Image again.
+#[test]
+fn a_folder_with_nothing_to_scan_says_why_and_how_to_mount_the_image() {
+    let mut model = hidden();
+    open(&mut model, ToolKind::Verify);
+    model.choose(0);
+    model.edited("/mnt/decoy");
+    assert!(model.action().is_some());
+    model.apply(Update::Running(Kind::Verify));
+    model.apply(answered(
+        Kind::Verify,
+        1,
+        fixture("verify-image-nothing-to-scan"),
+    ));
+    let page = model.page();
+    assert_eq!(page.heading, text::VERIFY_FAILED);
+    assert_eq!(
+        page.note,
+        "/mnt/decoy is empty, so there is nothing to scan."
+    );
+    assert!(page.facts.is_empty(), "{:?}", page.facts);
+    assert_eq!(
+        page.fix,
+        format!(
+            "{}\nIn a hidden session, where the decoy root is mounted already, mount its device \
+             again and make that mount read-only: sudo mount <device> <mount> && sudo mount -o \
+             remount,bind,ro <mount>.\nElsewhere make the device read-only first (sudo blockdev \
+             --setro <device>, and --setrw after the scan), then mount it with -o ro,noload for \
+             ext4, -o ro,rescue=nologreplay for btrfs or -o ro,norecovery for XFS and f2fs: a \
+             plain -o ro can replay a journal onto the disk.",
+            text::MOUNT_THEN_SCAN_AGAIN
+        )
+    );
+    assert_eq!(page.field.unwrap().text, "/mnt/decoy");
+    assert_eq!(page.action, Some(text::SCAN_IMAGE_ACTION));
+    assert!(!page.action_locked, "the next step is Scan Image again");
+}
+
+/// Scan an Image opens from Verify's page and asks for `verify --offline
+/// --root` with the mounted image's path; the examiner's view adds
+/// `--examiner`, and the disk behind the image `--disk`, which counts only
+/// with that view. Back returns to Verify's page.
 #[test]
 fn scan_an_image_asks_for_an_offline_verify_of_the_mounted_image() {
     let mut model = hidden();

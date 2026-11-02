@@ -14,7 +14,10 @@
 //! raw disk behind it when one is named (`--disk`). Its result is read as
 //! Verify's is, the examiner's view after it, grouped by what it suggests.
 //! An argument the helper would refuse unread, which would end the window's
-//! session, is never sent: the scan waits for a full path.
+//! session, is never sent: the scan waits for a full path. A folder the
+//! engine refuses as holding nothing to scan says why and how to mount the
+//! image so that nothing writes to it, and the line of that advice that runs
+//! the CLI's scan says to scan again instead.
 
 use nails_api::CheckOutcome;
 use nails_api::protocol::{Op, VerifyArgs};
@@ -75,8 +78,20 @@ impl ImageScan {
 #[derive(Debug, Clone)]
 enum Outcome {
     Done(VerifyData),
-    Failed(String),
+    /// The scan did not run: why, and what to do before the next one, when
+    /// the engine says.
+    Failed {
+        why: String,
+        fix: String,
+    },
 }
+
+/// The code of an image root the engine refuses, before it scans anything,
+/// as holding nothing to scan.
+const NOTHING_TO_SCAN: &str = "nothing_to_scan";
+
+/// What the engine's line that runs the CLI's scan of an image names.
+const CLI_IMAGE_SCAN: &str = "verify --offline";
 
 impl Verify {
     /// The ask for `label`, one of the page's actions.
@@ -159,13 +174,12 @@ impl Verify {
             match envelope::read::<VerifyData>(&answer.envelope, "verify") {
                 Ok(read) => match read.data {
                     Some(data) => Outcome::Done(data),
-                    None => Outcome::Failed(
-                        error_of(&answer.envelope)
-                            .map(|(_, message)| message)
-                            .unwrap_or_else(|| text::NOTHING_CHANGED.to_string()),
-                    ),
+                    None => refused(&answer.envelope),
                 },
-                Err(error) => Outcome::Failed(text::sentence(&error.0)),
+                Err(error) => Outcome::Failed {
+                    why: text::sentence(&error.0),
+                    fix: String::new(),
+                },
             },
         );
         match &mut self.image {
@@ -194,9 +208,10 @@ impl Verify {
                 ..tool_page(ToolKind::Verify, text::VERIFY_WHAT)
             },
             Some(Outcome::Done(data)) => result_page(data),
-            Some(Outcome::Failed(message)) => Page {
+            Some(Outcome::Failed { why, fix }) => Page {
                 heading: text::VERIFY_FAILED.to_string(),
-                note: message.clone(),
+                note: why.clone(),
+                fix: fix.clone(),
                 urgent: true,
                 ..tool_page(ToolKind::Verify, text::NOTHING_CHANGED)
             },
@@ -238,9 +253,10 @@ fn image_page_of(image: &ImageScan, cx: &Context) -> Page {
             ..tool_page(ToolKind::Verify, text::SCAN_IMAGE_WHAT)
         },
         Some(Outcome::Done(data)) => result_page(data),
-        Some(Outcome::Failed(message)) => Page {
+        Some(Outcome::Failed { why, fix }) => Page {
             heading: text::VERIFY_FAILED.to_string(),
-            note: message.clone(),
+            note: why.clone(),
+            fix: fix.clone(),
             urgent: true,
             ..tool_page(ToolKind::Verify, text::NOTHING_CHANGED)
         },
@@ -273,7 +289,8 @@ fn image_page_of(image: &ImageScan, cx: &Context) -> Page {
             .to_string(),
         }];
     }
-    if image.outcome.is_some() {
+    // Only a scan that ran is of an image: a refusal names its folder itself.
+    if matches!(image.outcome, Some(Outcome::Done(_))) {
         page.facts
             .push((text::FACT_SCANNED_IMAGE.to_string(), image.scanned.clone()));
     }
@@ -281,6 +298,40 @@ fn image_page_of(image: &ImageScan, cx: &Context) -> Page {
     page.action_kind = ActionKind::Suggested;
     page.action_locked = image.args().is_none();
     page
+}
+
+/// The outcome of a verify that answered `envelope`, an error: the engine's
+/// message. A root with nothing to scan answers why and then how to mount the
+/// image first: the page gives why as its note and the advice as its fix, in
+/// the engine's words but for the advice's line that runs the CLI's scan,
+/// which in the window is Scan Image again.
+fn refused(envelope: &serde_json::Value) -> Outcome {
+    let Some((code, message)) = error_of(envelope) else {
+        return Outcome::Failed {
+            why: text::NOTHING_CHANGED.to_string(),
+            fix: String::new(),
+        };
+    };
+    match message.split_once('\n') {
+        Some((why, advice)) if code == NOTHING_TO_SCAN => Outcome::Failed {
+            why: text::sentence(why),
+            fix: advice
+                .lines()
+                .map(|line| {
+                    if line.contains(CLI_IMAGE_SCAN) {
+                        text::MOUNT_THEN_SCAN_AGAIN.to_string()
+                    } else {
+                        text::engine_fix(line)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        },
+        _ => Outcome::Failed {
+            why: message,
+            fix: String::new(),
+        },
+    }
 }
 
 /// The page of a verify that answered with `data`.
