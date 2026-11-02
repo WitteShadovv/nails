@@ -36,26 +36,72 @@ pub enum Syntax {
     /// their long forms take a value too, the rest of the word or the next
     /// one.
     Fish,
+    /// nushell, read the way nu reads its command line before its own parser
+    /// runs: the first word that does not start with a dash is the script,
+    /// `-c` or `--commands` runs its value, `-e` or `--execute` runs its value
+    /// before nu reads the terminal, and the options nu lists as taking a
+    /// value (`--config`, `--log-level`, `-t`, ...) take the next word.
+    Nu,
+    /// elvish, whose options are Go's: one dash or two and a name, with a
+    /// value after `=` or, for `-rc`, `-log`, `-db`, `-sock`,
+    /// `-deprecation-level` and `-cpuprofile`, in the next word; the options
+    /// end at the first other word or after `--`. `-c` runs the first operand.
+    Elvish,
+    /// xonsh, a Python script that its interpreter runs: the kernel puts the
+    /// interpreter, its options and the script's path in front of xonsh's
+    /// options, which are read the way Python's `argparse` reads them. `-c`
+    /// runs its value, `-D` and `--shell-type` take one, and `--rc` takes the
+    /// words up to the next option.
+    Xonsh,
 }
 
 /// Process names treated as shells, with the syntax of each one's command
-/// line.
+/// line. The kernel names a process after the file it was started from, so a
+/// link to a shell counts under the link's name, as `rbash` and `sh` do.
 pub const SHELL_NAMES: &[(&str, Syntax)] = &[
-    ("bash", Syntax::Posix),
-    ("zsh", Syntax::Posix),
-    ("fish", Syntax::Fish),
+    // The Bourne shell's family.
     ("sh", Syntax::Posix),
+    ("bash", Syntax::Posix),
+    ("rbash", Syntax::Posix),
     ("dash", Syntax::Posix),
+    ("ash", Syntax::Posix),
+    // The Korn shells, and the shells that follow them.
     ("ksh", Syntax::Posix),
+    ("ksh93", Syntax::Posix),
+    ("rksh", Syntax::Posix),
+    ("mksh", Syntax::Posix),
+    ("lksh", Syntax::Posix),
+    ("oksh", Syntax::Posix),
+    ("loksh", Syntax::Posix),
+    ("pdksh", Syntax::Posix),
+    ("yash", Syntax::Posix),
+    ("zsh", Syntax::Posix),
+    // The C shells.
     ("tcsh", Syntax::Posix),
+    ("csh", Syntax::Posix),
+    // Shells of their own kind.
+    ("fish", Syntax::Fish),
+    ("nu", Syntax::Nu),
+    ("elvish", Syntax::Elvish),
+    ("xonsh", Syntax::Xonsh),
 ];
 
+/// The name `name` stands for: a program that a NixOS wrapper starts is named
+/// `.<name>-wrapped`.
+fn unwrapped(name: &str) -> &str {
+    name.strip_prefix('.')
+        .and_then(|wrapped| wrapped.strip_suffix("-wrapped"))
+        .filter(|name| !name.is_empty())
+        .unwrap_or(name)
+}
+
 /// The syntax of the shell whose process is named `comm`; `None` when it is no
-/// shell.
+/// shell. A shell that a NixOS wrapper starts counts under its own name.
 pub fn shell_syntax(comm: &str) -> Option<Syntax> {
+    let name = unwrapped(comm);
     SHELL_NAMES
         .iter()
-        .find(|(name, _)| *name == comm)
+        .find(|(shell, _)| *shell == name)
         .map(|&(_, syntax)| syntax)
 }
 
@@ -86,7 +132,10 @@ pub fn shell_is_interactive(syntax: Syntax, argv: &[String], stdin_tty: bool) ->
     let args = argv.get(1..).unwrap_or_default();
     let startup = match syntax {
         Syntax::Posix => posix(args),
-        Syntax::Fish => fish(args),
+        Syntax::Fish => getopt(args, &FISH),
+        Syntax::Nu => nu(args),
+        Syntax::Elvish => elvish(args),
+        Syntax::Xonsh => getopt(xonsh_args(argv), &XONSH),
     };
     !startup.command && (startup.forced || (!startup.script && stdin_tty))
 }
@@ -131,12 +180,27 @@ fn posix(args: &[String]) -> Startup {
     startup
 }
 
-/// The command line of fish ([`Syntax::Fish`]), past `argv[0]`.
-fn fish(args: &[String]) -> Startup {
+/// The options of a command line read the way `getopt_long` and Python's
+/// `argparse` read one: one-letter options in clusters, whose value is the
+/// rest of the word or else the next one, and long options, whose value
+/// follows `=` or is the next word. `-c` runs its value as a command, `-i` and
+/// `--interactive` force interactive mode, and the first other word is the
+/// script.
+struct Getopt {
     /// The one-letter options that take a value.
-    const SHORT_VALUE: &str = "cCdoDfp";
+    short_value: &'static str,
     /// The long options that take a value.
-    const LONG_VALUE: &[&str] = &[
+    long_value: &'static [&'static str],
+    /// The long options that take the words up to the next option.
+    long_values: &'static [&'static str],
+    /// The long option that runs its value as a command.
+    long_command: Option<&'static str>,
+}
+
+/// fish's options ([`Syntax::Fish`]).
+const FISH: Getopt = Getopt {
+    short_value: "cCdoDfp",
+    long_value: &[
         "command",
         "init-command",
         "debug",
@@ -145,9 +209,24 @@ fn fish(args: &[String]) -> Startup {
         "features",
         "profile",
         "profile-startup",
-    ];
+    ],
+    long_values: &[],
+    long_command: Some("command"),
+};
+
+/// xonsh's options ([`Syntax::Xonsh`]).
+const XONSH: Getopt = Getopt {
+    short_value: "cD",
+    long_value: &["shell-type", "shell"],
+    long_values: &["rc"],
+    long_command: None,
+};
+
+/// The shell's own words `args`, read by `grammar`: fish's past `argv[0]`,
+/// xonsh's past its interpreter's ([`xonsh_args`]).
+fn getopt(args: &[String], grammar: &Getopt) -> Startup {
     let mut startup = Startup::default();
-    let mut args = args.iter().map(String::as_str);
+    let mut args = args.iter().map(String::as_str).peekable();
     while let Some(arg) = args.next() {
         if arg == "--" {
             startup.script = args.next().is_some();
@@ -158,13 +237,17 @@ fn fish(args: &[String]) -> Startup {
                 Some((name, _)) => (name, true),
                 None => (long, false),
             };
-            match name {
-                "command" => startup.command = true,
-                "interactive" => startup.forced = true,
-                _ => {}
+            if Some(name) == grammar.long_command {
+                startup.command = true;
             }
-            if !inline && LONG_VALUE.contains(&name) {
+            if name == "interactive" {
+                startup.forced = true;
+            }
+            if !inline && grammar.long_value.contains(&name) {
                 args.next();
+            }
+            if !inline && grammar.long_values.contains(&name) {
+                while args.next_if(|word| !word.starts_with('-')).is_some() {}
             }
             continue;
         }
@@ -175,7 +258,7 @@ fn fish(args: &[String]) -> Startup {
                     'i' => startup.forced = true,
                     _ => {}
                 }
-                if SHORT_VALUE.contains(flag) {
+                if grammar.short_value.contains(flag) {
                     // The value is the rest of the word, or else the next one.
                     if at + flag.len_utf8() == flags.len() {
                         args.next();
@@ -189,6 +272,105 @@ fn fish(args: &[String]) -> Startup {
         break;
     }
     startup
+}
+
+/// The command line of nushell ([`Syntax::Nu`]), past `argv[0]`.
+fn nu(args: &[String]) -> Startup {
+    /// The options that take the next word as their value.
+    const VALUE: &[&str] = &[
+        "-c",
+        "--commands",
+        "-e",
+        "--execute",
+        "-m",
+        "--table-mode",
+        "--error-style",
+        "--config",
+        "--env-config",
+        "--plugin-config",
+        "--plugins",
+        "-I",
+        "--include-path",
+        "--log-level",
+        "--log-target",
+        "--log-include",
+        "--log-exclude",
+        "--testbin",
+        "-t",
+        "--threads",
+        "--ide-goto-def",
+        "--ide-hover",
+        "--ide-complete",
+        "--ide-check",
+        "--experimental-options",
+    ];
+    let mut startup = Startup::default();
+    let mut args = args.iter().map(String::as_str);
+    while let Some(arg) = args.next() {
+        if !arg.starts_with('-') {
+            startup.script = true;
+            break;
+        }
+        match arg {
+            "-c" | "--commands" => startup.command = true,
+            "-i" | "--interactive" => startup.forced = true,
+            _ => {}
+        }
+        if VALUE.contains(&arg) {
+            args.next();
+        }
+    }
+    startup
+}
+
+/// The command line of elvish ([`Syntax::Elvish`]), past `argv[0]`.
+fn elvish(args: &[String]) -> Startup {
+    /// The options that take a value.
+    const VALUE: &[&str] = &["rc", "log", "db", "sock", "deprecation-level", "cpuprofile"];
+    let mut startup = Startup::default();
+    let mut args = args.iter().map(String::as_str);
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            startup.script = args.next().is_some();
+            break;
+        }
+        let Some(option) = arg
+            .strip_prefix("--")
+            .or_else(|| arg.strip_prefix('-'))
+            .filter(|option| !option.is_empty())
+        else {
+            startup.script = true;
+            break;
+        };
+        let (name, value) = match option.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (option, None),
+        };
+        if name == "c" {
+            // A Go boolean: `-c`, or `-c=` with a value that is not false.
+            startup.command = value.is_none_or(|value| {
+                !matches!(value, "0" | "f" | "F" | "false" | "FALSE" | "False")
+            });
+        }
+        if value.is_none() && VALUE.contains(&name) {
+            args.next();
+        }
+    }
+    startup
+}
+
+/// xonsh's own arguments in the interpreter's command line `argv`: the words
+/// after the script's path, which the kernel puts after the interpreter and
+/// its options; past `argv[0]` when no word names the script.
+fn xonsh_args(argv: &[String]) -> &[String] {
+    let script = argv.iter().position(|word| {
+        std::path::Path::new(word)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| unwrapped(name) == "xonsh")
+    });
+    argv.get(script.map_or(1, |at| at + 1)..)
+        .unwrap_or_default()
 }
 
 /// Whether `pid` is an interactive shell.
