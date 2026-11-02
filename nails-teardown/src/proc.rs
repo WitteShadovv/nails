@@ -22,6 +22,8 @@ pub struct Stat {
     pub sid: u32,
     /// The controlling terminal's device number (0 for none).
     pub tty: i32,
+    /// The process group in the foreground of that terminal (-1 for none).
+    pub tpgid: i32,
     /// The kernel's per-task flags (`PF_*`).
     pub flags: u64,
     /// Start time in clock ticks since boot; with the pid it names one process.
@@ -51,6 +53,7 @@ pub fn parse_stat(content: &str) -> Option<Stat> {
         pgid: fields.get(2)?.parse().ok()?,
         sid: fields.get(3)?.parse().ok()?,
         tty: fields.get(4)?.parse().ok()?,
+        tpgid: fields.get(5)?.parse().ok()?,
         flags: fields.get(6)?.parse().ok()?,
         start_time: fields.get(19)?.parse().ok()?,
     })
@@ -282,20 +285,35 @@ impl Invocation {
     }
 }
 
+/// The interactive shell a command was typed into, and how sure the process
+/// tree makes that ([`typing_shell`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypingShell {
+    /// The shell the command's invocation walk ends at ([`Invocation::shell`]).
+    Certain(u32),
+    /// The nearest interactive shell on the command's own terminal, with the
+    /// command in the terminal's foreground: the shell it was likely typed
+    /// into, but a program that a desktop started from a console login
+    /// inherits that console and can share its foreground.
+    Likely(u32),
+}
+
 /// The interactive shell the command `own` was typed into: the one its
 /// invocation walk ends at ([`Invocation::shell`]), else the nearest ancestor
-/// that is an interactive shell on `own`'s own controlling terminal, as when
-/// `sudo` runs the command without a terminal of its own, or `su -c` or a
-/// script typed at the prompt runs it. `None` for a command without a
-/// controlling terminal, such as one a window or a service starts. `read`
-/// describes the process tree, as for [`Invocation::walk`].
-pub fn typing_shell(own: u32, read: impl Fn(u32) -> Option<Node>) -> Option<u32> {
+/// that is an interactive shell on `own`'s own controlling terminal, when
+/// `own` runs in that terminal's foreground process group, as when `sudo`
+/// runs the command without a terminal of its own, or `su -c` or a script
+/// typed at the prompt runs it. `None` for a command without a controlling
+/// terminal, such as one a window or a service starts, and for one in the
+/// background of its terminal. `read` describes the process tree, as for
+/// [`Invocation::walk`].
+pub fn typing_shell(own: u32, read: impl Fn(u32) -> Option<Node>) -> Option<TypingShell> {
     let invocation = Invocation::walk(own, &read);
-    if invocation.shell.is_some() {
-        return invocation.shell;
+    if let Some(shell) = invocation.shell {
+        return Some(TypingShell::Certain(shell));
     }
-    let tty = read(own)?.stat.tty;
-    if tty == 0 {
+    let stat = read(own)?.stat;
+    if stat.tty == 0 || i32::try_from(stat.pgid).ok() != Some(stat.tpgid) {
         return None;
     }
     invocation
@@ -303,7 +321,10 @@ pub fn typing_shell(own: u32, read: impl Fn(u32) -> Option<Node>) -> Option<u32>
         .iter()
         .skip(1)
         .copied()
-        .find(|&pid| read(pid).is_some_and(|node| node.interactive_shell && node.stat.tty == tty))
+        .find(|&pid| {
+            read(pid).is_some_and(|node| node.interactive_shell && node.stat.tty == stat.tty)
+        })
+        .map(TypingShell::Likely)
 }
 
 /// Whether the ancestor `pid` joins the chain (see [`Invocation`]).
@@ -419,9 +440,13 @@ mod tests {
         assert_eq!(stat.pgid, 1234);
         assert_eq!(stat.sid, 1234);
         assert_eq!(stat.tty, 34_817);
+        assert_eq!(stat.tpgid, 1234);
         assert_eq!(stat.flags, 4_194_560);
         assert_eq!(stat.start_time, 98_765);
         assert!(!stat.is_kernel_thread());
+        // Without a terminal, no foreground group.
+        let line = "1 (init) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 98765 1 2";
+        assert_eq!(parse_stat(line).unwrap().tpgid, -1);
     }
 
     /// A `setsid` child whose comm holds `) (` and spaces, captured by

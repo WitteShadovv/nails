@@ -1281,13 +1281,16 @@ afterwards:
   the setting. Clear that warning before activating.
 
   It finds the shell you typed the command into by the process tree: the
-  shell `sudo` and its monitor run under, or, when `sudo` gets no terminal
-  of its own, `su -c` runs the command or a script you typed does, the
-  nearest interactive shell on the command's terminal. When it finds none,
-  as for a command a window or `run0` starts, it reads every shell it knows
-  instead: your login shell, bash and zsh, and fish when your home has its
-  configuration in `~/.config/fish`, and warns about each one that writes as
-  it runs.
+  shell `sudo` and its monitor run under. When `sudo` gets no terminal of its
+  own, or `su -c` or a script you typed runs the command, it takes the
+  nearest interactive shell on the command's terminal, if the command runs in
+  that terminal's foreground. That shell is only likely the one you typed
+  into, since a program that a desktop started from a console login shares
+  the console, so it reads that shell as any shell you may use, and every
+  other shell it knows beside it. When it finds none, as for a command a
+  window or `run0` starts, it reads every shell it knows instead: your login
+  shell, bash and zsh, and fish when your home has its configuration in
+  `~/.config/fish`, and warns about each one that writes as it runs.
 
   It reads the startup files of a shell in `/etc` and in the home of the
   account the shell runs as, and in yours when that is another (a root shell

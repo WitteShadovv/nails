@@ -17,11 +17,13 @@
 //! then. So the check warns, and names the shell and the setting.
 //!
 //! It reads the settings of the shell the running command was typed into, as
-//! its process tree shows ([`InspectedShell::typed`]). When it finds none (the
-//! command ran from a window, through `run0`, or the like), it reads the
-//! settings of every shell it knows, bash, zsh and the operator's login shell,
-//! and fish's when the operator's home has its configuration
-//! ([`InspectedShell::login`]). Of a shell it reads the startup files in
+//! its process tree shows ([`InspectedShell::typed`]). When it can only tell
+//! the shell the command was likely typed into, it reads that one's and every
+//! other shell's it knows; when it finds none (the command ran from a window,
+//! through `run0`, or the like), it reads the settings of every shell it
+//! knows, bash, zsh and the operator's login shell, and fish's when the
+//! operator's home has its configuration ([`InspectedShell::login`]). Of a
+//! shell it reads the startup files in
 //! `/etc` and in the home of the account the shell runs as, and in the
 //! operator's home when that is another ([`startup`], [`zsh`]), through the
 //! [`Filesystem`] seam: as root a read changes no file's access time, but a
@@ -46,6 +48,11 @@ use crate::{Filesystem, Result, TargetUser};
 pub enum ShellOrigin {
     /// The command running the check was typed into it.
     Typed,
+    /// The command was likely typed into it: the nearest interactive shell
+    /// on the command's terminal, with the command in its foreground
+    /// ([`nails_teardown::proc::TypingShell::Likely`]). The check reads
+    /// every shell it knows besides.
+    Likely,
     /// No typed shell was found: it is the operator's login shell, and the
     /// check reads every shell it knows besides.
     Login,
@@ -63,6 +70,9 @@ pub struct InspectedShell {
     pub argv: Vec<String>,
     /// How the check found it.
     pub origin: ShellOrigin,
+    /// The program of the operator's login shell, read beside a shell the
+    /// command was only likely typed into.
+    pub login: Option<String>,
 }
 
 impl InspectedShell {
@@ -73,6 +83,7 @@ impl InspectedShell {
             homes: vec![operator.home().to_path_buf()],
             argv: Vec::new(),
             origin: ShellOrigin::Login,
+            login: None,
         }
     }
 
@@ -80,15 +91,19 @@ impl InspectedShell {
     /// shows it ([`nails_teardown::proc::typing_shell`]), with the home of
     /// the account it runs as and, for another account than `operator`'s
     /// (root's, for a shell `sudo -i` or `sudo -s` opened), `operator`'s home
-    /// too, which such a shell can run with. `None` when the command was not
-    /// typed into a shell, when the shell's account cannot be found, and in a
-    /// test, which never reads the host's processes.
+    /// too, which such a shell can run with. A shell the command was only
+    /// likely typed into is [`ShellOrigin::Likely`]. `None` when the command
+    /// was not typed into a shell, when the shell's account cannot be found,
+    /// and in a test, which never reads the host's processes.
     pub fn typed(operator: Option<&TargetUser>) -> Option<Self> {
-        use nails_teardown::proc;
+        use nails_teardown::proc::{self, TypingShell};
         if crate::runtime_safety::should_skip_host_interaction() {
             return None;
         }
-        let pid = proc::typing_shell(std::process::id(), proc::Node::read)?;
+        let (pid, origin) = match proc::typing_shell(std::process::id(), proc::Node::read)? {
+            TypingShell::Certain(pid) => (pid, ShellOrigin::Typed),
+            TypingShell::Likely(pid) => (pid, ShellOrigin::Likely),
+        };
         let uid = proc::uid(pid)?;
         let homes = match operator {
             Some(operator) if operator.uid == uid => vec![operator.home().to_path_buf()],
@@ -107,7 +122,10 @@ impl InspectedShell {
             program: program_name(exe.as_deref(), proc::comm(pid))?,
             homes,
             argv: proc::cmdline(pid),
-            origin: ShellOrigin::Typed,
+            origin,
+            login: operator
+                .filter(|_| origin == ShellOrigin::Likely)
+                .map(|operator| file_name(&operator.shell)),
         })
     }
 }
@@ -276,8 +294,8 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
 
 /// The result for `shell`, whose startup files `fs` holds.
 fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
-    if shell.origin == ShellOrigin::Typed {
-        return judge_one(
+    match shell.origin {
+        ShellOrigin::Typed => judge_one(
             fs,
             &Judged {
                 program: &shell.program,
@@ -286,45 +304,82 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 zsh: zsh::Start::of(&shell.argv),
                 part: "the shell this command was typed into",
             },
-        );
+        ),
+        ShellOrigin::Likely => {
+            let mut first = vec![unsure(
+                &shell.program,
+                &shell.homes,
+                "the shell this command was likely typed into",
+            )];
+            first.extend(
+                shell
+                    .login
+                    .as_deref()
+                    .filter(|login| !same_shell(login, &shell.program))
+                    .map(|login| unsure(login, &shell.homes, "the operator's login shell")),
+            );
+            let program = nails_teardown::shells::unwrapped(&shell.program);
+            every_shell(
+                fs,
+                first,
+                &format!(
+                    "This command was likely typed into {program}, but the check cannot be sure \
+                     of it, so it read the startup files of every shell it knows"
+                ),
+            )
+        }
+        ShellOrigin::Login => every_shell(
+            fs,
+            vec![unsure(
+                &shell.program,
+                &shell.homes,
+                "the operator's login shell",
+            )],
+            "This command was not typed into a shell the check can see, so it read the startup \
+             files of every shell it knows",
+        ),
     }
-    // No typed shell: the operator's login shell, then every shell the check
-    // knows, fish when the operator's home has its configuration.
-    let login = nails_teardown::shells::unwrapped(&shell.program);
-    let has_fish = shell
-        .homes
-        .first()
-        .is_some_and(|home| fs.path_exists(&home.join(".config/fish")).unwrap_or(false));
-    let mut programs = vec![(login, "the operator's login shell")];
+}
+
+/// `program`, which the decoy commands may have been typed into, read as any
+/// shell the operator may use: no command line tells how it started, so zsh
+/// is taken to read every startup file it may read.
+fn unsure<'a>(program: &'a str, homes: &'a [PathBuf], part: &'a str) -> Judged<'a> {
+    Judged {
+        program,
+        homes,
+        argv: &[],
+        zsh: zsh::Start {
+            login: None,
+            every_file: true,
+        },
+        part,
+    }
+}
+
+/// Whether the check reads `a` and `b` alike: the same program, or two it
+/// reads the settings of the same way.
+fn same_shell(a: &str, b: &str) -> bool {
+    let unwrapped = nails_teardown::shells::unwrapped;
+    unwrapped(a) == unwrapped(b) || (kind(a) == kind(b) && kind(a) != Kind::Unknown)
+}
+
+/// The result for the shells `first`, then bash, zsh and, when one of their
+/// homes has its configuration, fish, each that `first` does not hold already;
+/// `preface` says why the check reads them all.
+fn every_shell<F: Filesystem>(fs: &F, first: Vec<Judged>, preface: &str) -> CheckResult {
+    let homes = first.first().map_or(&[][..], |shell| shell.homes);
+    let has_fish = homes
+        .iter()
+        .any(|home| fs.path_exists(&home.join(".config/fish")).unwrap_or(false));
+    let mut shells = first;
     for other in ["bash", "zsh", "fish"] {
-        let known = programs
-            .iter()
-            .any(|(program, _)| kind(program) == kind(other));
+        let known = shells.iter().any(|shell| same_shell(shell.program, other));
         if !known && (other != "fish" || has_fish) {
-            programs.push((other, "a shell the operator may use"));
+            shells.push(unsure(other, homes, "a shell the operator may use"));
         }
     }
-    let unknown_start = zsh::Start {
-        login: None,
-        every_file: true,
-    };
-    let results: Vec<CheckResult> = programs
-        .iter()
-        .map(|(program, part)| {
-            judge_one(
-                fs,
-                &Judged {
-                    program,
-                    homes: &shell.homes,
-                    argv: &[],
-                    zsh: unknown_start,
-                    part,
-                },
-            )
-        })
-        .collect();
-    let preface = "This command was not typed into a shell the check can see, so it read the \
-                   startup files of every shell it knows";
+    let results: Vec<CheckResult> = shells.iter().map(|shell| judge_one(fs, shell)).collect();
     let warnings: Vec<&str> = results
         .iter()
         .filter(|result| matches!(result, CheckResult::Warn(_)))

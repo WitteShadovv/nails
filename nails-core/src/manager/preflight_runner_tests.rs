@@ -1138,6 +1138,7 @@ fn the_history_check_reads_the_typed_shell_before_the_login_shell() {
         homes: vec!["/home/alice".into()],
         argv: vec!["fish".to_string()],
         origin: ShellOrigin::Typed,
+        login: None,
     };
 
     let typed = history_row(operator(), Some(fish));
