@@ -458,7 +458,8 @@ fn a_here_document_without_the_line_that_ends_it_is_a_doubt() {
         found.doubts,
         [
             "it cannot tell where the here-document that /home/alice/.zshrc opens with `<<EOF` \
-          ends"
+             ends",
+            "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run",
         ]
     );
     assert_eq!(
@@ -698,7 +699,58 @@ fn a_doubt_of_the_lexer_is_one_no_structure_can_take() {
         "/home/alice/.zshrc",
         "for x\n'it\nsource ~/.zsh/history.zsh\n",
     );
-    assert_eq!(scan(&fs, NOT_LOGIN).doubts, [OPEN_QUOTE]);
+    assert_eq!(
+        scan(&fs, NOT_LOGIN).doubts,
+        [
+            OPEN_QUOTE,
+            "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run",
+        ]
+    );
+}
+
+#[test]
+fn what_the_lines_name_beyond_what_the_walk_read_is_on_or_a_doubt() {
+    // A source and a ZDOTDIR in a here-document's body, and an option in a
+    // comment at the end of a line: the lines name them, the walk reads no
+    // code there.
+    for (text, doubts, on_line) in [
+        (
+            "cat <<EOF >/dev/null\nsource ~/.zsh/history.zsh\nEOF\n",
+            &["it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run"][..],
+            false,
+        ),
+        (
+            "cat <<EOF >~/.zshenv.new\nexport ZDOTDIR=~/.config/zsh\nEOF\n",
+            &["it cannot follow a ZDOTDIR that a line of /home/alice/.zshrc may set"],
+            false,
+        ),
+        ("setopt hist_ignore_dups # inc_append_history\n", &[], true),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", text);
+        let found = scan(&fs, NOT_LOGIN);
+        assert_eq!(found.doubts, doubts, "{text:?}");
+        assert_eq!(!found.writes.is_empty(), on_line, "{text:?}");
+    }
+
+    // What the walk reads as code adds nothing.
+    for text in [
+        "[[ -f ~/.p10k.zsh ]] && source ~/.p10k.zsh\n",
+        "builtin . ~/.zsh/aliases.zsh; noglob source ~/.zsh/more.zsh\n",
+        "export ZDOTDIR=~/.config/zsh\nexport ZDOTDIR\n",
+        "print -r -- $ZDOTDIR ${ZDOTDIR:-$HOME} ${#ZDOTDIR}\n",
+        "find . -name '*.zsh'; cd .\n",
+        "unsetopt share_history\nsetopt no_inc_append_history\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", text);
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            Vec::<String>::new(),
+            "{text:?}"
+        );
+        assert!(scan(&fs, NOT_LOGIN).writes.is_empty(), "{text:?}");
+    }
 }
 
 #[test]
@@ -723,11 +775,14 @@ fn a_construct_that_runs_to_the_end_of_the_file_is_a_doubt() {
             "/home/alice/.zsh/history.zsh",
             "setopt share_history\n",
         );
+        // The source it hides is a doubt too, as a line of the file names it.
         assert_eq!(
             scan(&fs, NOT_LOGIN).doubts,
-            [format!(
-                "it cannot tell where the {opener} that /home/alice/.zshrc opens ends"
-            )],
+            [
+                format!("it cannot tell where the {opener} that /home/alice/.zshrc opens ends"),
+                "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run"
+                    .to_string(),
+            ],
             "{line}"
         );
     }
@@ -938,17 +993,29 @@ fn any_other_word_that_names_an_option_turns_it_on() {
         seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
         assert!(!on(&fs, NOT_LOGIN).is_empty(), "{line}");
     }
-    // Its `no` form, a comment and an unrelated name do not.
+    // Its `no` form, a line that is a comment and an unrelated name do not.
     for line in [
         "opts=(NO_SHARE_HISTORY)",
         "# setopt share_history",
-        "setopt hist_ignore_dups  # not share_history",
+        "  # setopt share_history",
         "HISTFILE=~/.zsh_history",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
         assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{line}");
     }
+    // A comment at the end of a line does, as the lines are read for what a
+    // misread may hide.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "setopt hist_ignore_dups  # not share_history\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["a line of /home/alice/.zshrc that the check cannot read as code sets SHARE_HISTORY"]
+    );
 }
 
 #[test]

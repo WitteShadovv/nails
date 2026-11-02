@@ -453,9 +453,23 @@ fn ignores_commented_out_settings() {
     seed(
         &fs,
         "/home/alice/.zshrc",
-        "# setopt INC_APPEND_HISTORY\nexport X=1 # setopt share_history\n",
+        "# setopt INC_APPEND_HISTORY\n  # setopt share_history\nexport X=1\n",
     );
     assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
+    // One at the end of a line counts, as the lines are read for what a
+    // misread may hide.
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "export X=1 # setopt share_history\n",
+    );
+    let message = warning(zsh(&fs));
+    assert!(
+        message.contains(
+            "a line of /home/alice/.zshrc that the check cannot read as code sets SHARE_HISTORY"
+        ),
+        "{message}"
+    );
 }
 
 #[test]
