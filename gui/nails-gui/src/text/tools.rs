@@ -77,6 +77,8 @@ pub const DISK_HINT: &str = "Optional: the raw disk or disk image behind it, rea
 pub const DISK_NOT_ABSOLUTE: &str = "Give the full path, starting with /, or leave it empty.";
 /// The action that scans the image.
 pub const SCAN_IMAGE_ACTION: &str = "Scan Image";
+/// The fact that names the image a result is of.
+pub const FACT_SCANNED_IMAGE: &str = "Scanned image";
 /// While it runs.
 pub const SCANNING_IMAGE: &str = "Scanning the Image";
 /// The group of the traces that suggest one conclusion, in the examiner's

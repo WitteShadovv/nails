@@ -283,6 +283,78 @@ fn a_clean_verify_is_no_proof_and_still_lists_what_it_did_not_check() {
 /// --root` with the mounted image's path; the examiner's view adds
 /// `--examiner`, and the disk behind the image `--disk`, which counts only
 /// with that view. Back returns to Verify's page.
+/// The scan of `/mnt/decoy` with the examiner's view and the disk behind
+/// it, answered as the real helper did.
+fn image_scanned() -> Model {
+    let mut model = hidden();
+    open(&mut model, ToolKind::Verify);
+    model.choose(0);
+    model.edited("/mnt/decoy");
+    model.toggled(true);
+    model.edited_more(0, "/mnt/decoy.img");
+    assert!(model.action().is_some());
+    model.apply(Update::Running(Kind::Verify));
+    model.apply(answered(Kind::Verify, 0, fixture("verify-image-examiner")));
+    assert_eq!(model.page().heading, text::NO_KNOWN_TRACES);
+    model
+}
+
+/// An image's result reads as Verify's, the examiner's view after it, each
+/// conclusion with its traces, where each lies first; it names the image it
+/// is of, and the form stays for a scan of another.
+#[test]
+fn an_image_scans_result_shows_the_examiners_view_and_names_the_image() {
+    let model = image_scanned();
+    let page = model.page();
+    let examiner: Vec<&str> = page
+        .groups
+        .iter()
+        .map(|group| group.title.as_str())
+        .filter(|title| title.starts_with("An examiner would conclude: "))
+        .collect();
+    assert_eq!(examiner.len(), 1, "{:?}", titles(&page.groups));
+    let traces = &page
+        .groups
+        .iter()
+        .find(|group| group.title == examiner[0])
+        .unwrap()
+        .rows;
+    assert!(
+        traces.iter().any(|row| row.message
+            == "/etc/lvm/archive/vg_00001.vg: Volume group vg: Created *before* executing \
+                    'vgcreate vg /dev/sdb'."),
+        "{traces:?}"
+    );
+    assert!(page.facts.contains(&(
+        text::FACT_SCANNED_IMAGE.to_string(),
+        "/mnt/decoy".to_string()
+    )));
+    assert_eq!(page.field.unwrap().text, "/mnt/decoy");
+    assert_eq!(page.action, Some(text::SCAN_IMAGE_ACTION));
+}
+
+/// A result holds only for what it scanned: typing the same again keeps
+/// it, and any change of the image, the disk behind it or the examiner's
+/// view drops it, so no result reads as another image's.
+#[test]
+fn an_image_scans_result_goes_once_what_it_scanned_changes() {
+    let mut model = image_scanned();
+    model.edited("/mnt/decoy");
+    assert_eq!(model.page().heading, text::NO_KNOWN_TRACES);
+    model.edited("/mnt/other");
+    let page = model.page();
+    assert_eq!(page.heading, text::SCAN_IMAGE);
+    assert!(page.groups.is_empty() && page.facts.is_empty());
+
+    let mut model = image_scanned();
+    model.edited_more(0, "/mnt/other.img");
+    assert_eq!(model.page().heading, text::SCAN_IMAGE);
+
+    let mut model = image_scanned();
+    model.toggled(false);
+    assert_eq!(model.page().heading, text::SCAN_IMAGE);
+}
+
 #[test]
 fn scan_an_image_asks_for_an_offline_verify_of_the_mounted_image() {
     let mut model = hidden();
@@ -355,31 +427,7 @@ fn scan_an_image_asks_for_an_offline_verify_of_the_mounted_image() {
     model.apply(Update::Running(Kind::Verify));
     assert_eq!(model.page().heading, text::SCANNING_IMAGE);
     model.apply(answered(Kind::Verify, 0, fixture("verify-image-examiner")));
-    let page = model.page();
-    assert_eq!(page.heading, text::NO_KNOWN_TRACES);
-    let examiner: Vec<&str> = page
-        .groups
-        .iter()
-        .map(|group| group.title.as_str())
-        .filter(|title| title.starts_with("An examiner would conclude: "))
-        .collect();
-    assert_eq!(examiner.len(), 1, "{:?}", titles(&page.groups));
-    let traces = &page
-        .groups
-        .iter()
-        .find(|group| group.title == examiner[0])
-        .unwrap()
-        .rows;
-    assert!(
-        traces.iter().any(|row| row.message
-            == "/etc/lvm/archive/vg_00001.vg: Volume group vg: Created *before* executing \
-                    'vgcreate vg /dev/sdb'."),
-        "{traces:?}"
-    );
-    // The form stays, for a scan of another image.
-    assert_eq!(page.field.unwrap().text, "/mnt/decoy");
-    assert_eq!(page.action, Some(text::SCAN_IMAGE_ACTION));
-
+    assert_eq!(model.page().heading, text::NO_KNOWN_TRACES);
     assert_eq!(model.back(), None, "Back returns to Verify's page");
     let page = model.page();
     assert_eq!(page.heading, ToolKind::Verify.title());
