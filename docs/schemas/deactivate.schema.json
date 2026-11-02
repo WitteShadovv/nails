@@ -73,11 +73,6 @@
           "additionalProperties": false,
           "required": ["command"],
           "properties": { "command": { "type": "string", "minLength": 1 } }
-        },
-        "allowable": {
-          "description": "The override, a flag of this command, that accepts this refusal for one run (decoy_storage for --allow-decoy-storage); absent when no flag does.",
-          "type": "string",
-          "enum": ["persistent_decoy", "decoy_storage", "discards"]
         }
       }
     }

@@ -378,7 +378,8 @@ mod kernel_tests {
     /// row names the override that accepts it, which turns the refusal into a
     /// warning that names none. Where the scratch directory lies on a RAM
     /// filesystem, the bind is a volume of its own and the gate refuses
-    /// nothing: the test then says so and checks nothing more.
+    /// nothing: the test then fails when the kernel tier is required, and
+    /// says so otherwise.
     #[test]
     fn a_root_on_this_computers_storage_names_the_override_that_accepts_it() {
         let _ = Rerun::new(test_path!(
@@ -405,6 +406,12 @@ mod kernel_tests {
             let refused = check_row(&output, "hidden-volume");
             let message = refused["message"].as_str().unwrap_or("");
             if !message.contains("is not a volume of its own: it is a bind mount of a folder of") {
+                // Only where the kernel tier is not required may this pass
+                // without checking anything.
+                assert!(
+                    std::env::var_os(nails_core::test_support::REQUIRE_USERNS_ENV).is_none(),
+                    "the scratch directory is no storage of this computer: {refused}"
+                );
                 eprintln!("the scratch directory is no storage of this computer: {refused}");
                 nix::mount::umount(&root).expect("unmount the bind");
                 return;

@@ -72,9 +72,9 @@
           }
         },
         "allowable": {
-          "description": "The override, a flag of this command, that accepts this refusal for one run (decoy_storage for --allow-decoy-storage); absent when no flag does.",
+          "description": "The override that accepts this refusal for one run: decoy_storage for this command's --allow-decoy-storage, named when it refuses a hidden root on this computer's own storage; absent for every other refusal.",
           "type": "string",
-          "enum": ["persistent_decoy", "decoy_storage", "discards"]
+          "enum": ["decoy_storage"]
         }
       }
     }
