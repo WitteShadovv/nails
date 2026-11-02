@@ -3,13 +3,14 @@
 
 //! What one simple command of a startup file does, as the walk reads it: the
 //! options a `setopt`, `unsetopt` or `set -o` turns on or off, the files a
-//! `source` or `.` reads, the `ZDOTDIR` and `XDG_CONFIG_HOME` an assignment
-//! sets, and the options any other word names.
+//! `source` or `.` reads, what an `eval` of words the walk can read runs, the
+//! `ZDOTDIR` and `XDG_CONFIG_HOME` an assignment sets, and the options any
+//! other word names.
 
 use super::super::OH_MY_ZSH;
 use super::super::backstop::zdotdir_writes;
 use super::super::lexer::{Word, is_name};
-use super::{Event, Frame, Walker, mentioned, option};
+use super::{Event, Frame, Walker, mentioned, option, walk_text};
 
 /// The precommand words that run the word after them as the command.
 const PRECOMMANDS: &[&str] = &[
@@ -125,6 +126,18 @@ impl Walker<'_> {
             return;
         };
         let args: Vec<Word> = words.collect();
+        if command.expands && command.text.starts_with(['$', '`']) {
+            // `$c`, `${:-source}`, `$(print source)`: any command, a
+            // `source` among them.
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what command `{}` in {} runs",
+                command.text, self.place
+            )));
+            for arg in &args {
+                self.mention(&arg.text);
+            }
+            return;
+        }
         match command.text.as_str() {
             "setopt" | "unsetopt" => {
                 let on = command.text == "setopt";
@@ -184,6 +197,26 @@ impl Walker<'_> {
                 }
                 for arg in args {
                     self.mention(&arg.text);
+                }
+            }
+            "eval" if args.iter().all(|arg| !arg.expands) => {
+                // Its words are code the walk reads as zsh would run them.
+                let text: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+                let nested = walk_text(&text.join(" "), self.place);
+                self.sources += nested.sources;
+                self.evals += 1 + nested.evals;
+                self.zdotdirs += nested.zdotdirs;
+                self.may_stop |= nested.may_stop;
+                let uncertain = !unconditional || nested.confused;
+                for mut event in nested.events {
+                    if uncertain
+                        && let Event::Set { unconditional, .. }
+                        | Event::Source { unconditional, .. }
+                        | Event::Assign { unconditional, .. } = &mut event
+                    {
+                        *unconditional = false;
+                    }
+                    self.events.push(event);
                 }
             }
             "return" | "exit" => self.may_stop = true,

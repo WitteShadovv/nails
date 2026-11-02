@@ -27,6 +27,8 @@ pub(super) enum End {
     Pipe,
     /// `&`: the command before it runs in the background.
     Background,
+    /// `;;`, `;&` or `;|`: the end of an arm of a `case`.
+    Arm,
 }
 
 /// A token of zsh code.
@@ -170,6 +172,25 @@ impl Lexer<'_> {
     fn end_word(&mut self) {
         if let Some(word) = self.word.take() {
             self.tokens.push(Token::Word(word));
+        }
+    }
+
+    /// End the word before a redirection, which is the redirection's own
+    /// when it is the number of a descriptor (`2>`) or names one (`{fd}>`).
+    fn end_word_before_redirection(&mut self) {
+        let descriptor = self.word.as_ref().is_some_and(|word| {
+            !word.expands
+                && ((!word.text.is_empty() && word.text.chars().all(|c| c.is_ascii_digit()))
+                    || word
+                        .text
+                        .strip_prefix('{')
+                        .and_then(|name| name.strip_suffix('}'))
+                        .is_some_and(is_name))
+        });
+        if descriptor {
+            self.word = None;
+        } else {
+            self.end_word();
         }
     }
 
@@ -367,16 +388,16 @@ impl Lexer<'_> {
                     None => {}
                 },
                 Nest::Arith => {
-                    // zsh finds the end of arithmetic by its parentheses
-                    // alone.
+                    // zsh finds the end of arithmetic by its parentheses, a
+                    // quote being a character there, but reads an expansion
+                    // in it as anywhere.
                     match c {
-                        '\\' => {
-                            let escaped = self.chars.next();
-                            self.word().text.extend(escaped);
-                        }
                         '(' => stack.push(Nest::Arith),
                         ')' => {
                             stack.pop();
+                        }
+                        '$' | '`' | '\\' => {
+                            self.nested_char(c, inner, &mut stack, &mut commands, opener);
                         }
                         _ => {}
                     }
@@ -517,12 +538,14 @@ impl Lexer<'_> {
                         self.unfollowed(opener, "a command");
                     }
                     stack.push(Nest::Brace {
-                        quoted: quoted || inner == Nest::Double,
+                        quoted: quoted || matches!(inner, Nest::Double | Nest::Arith),
                     });
                 } else if self.chars.next_if_eq(&'$').is_some() {
                     // `$$`, the shell's process ID.
                     self.word().text.push('$');
-                } else if !quoted && inner != Nest::Double && self.chars.next_if_eq(&'\'').is_some()
+                } else if !quoted
+                    && !matches!(inner, Nest::Double | Nest::Arith)
+                    && self.chars.next_if_eq(&'\'').is_some()
                 {
                     // `$'...'`; in double quotes a `$` and a `'`.
                     self.word().text.push('\'');
@@ -709,7 +732,16 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             }
             ';' => {
                 lexer.end_word();
-                lexer.tokens.push(Token::End(End::Line));
+                let end = if lexer
+                    .chars
+                    .next_if(|c| matches!(c, ';' | '&' | '|'))
+                    .is_some()
+                {
+                    End::Arm
+                } else {
+                    End::Line
+                };
+                lexer.tokens.push(Token::End(end));
             }
             '&' => {
                 lexer.end_word();
@@ -790,7 +822,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                 }
             }
             '<' if lexer.chars.peek() == Some(&'<') => {
-                lexer.end_word();
+                lexer.end_word_before_redirection();
                 lexer.chars.next();
                 if lexer.chars.next_if_eq(&'<').is_some() {
                     // A here-string: its word is the text.
@@ -807,7 +839,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                 }
             }
             '<' | '>' => {
-                lexer.end_word();
+                lexer.end_word_before_redirection();
                 while lexer
                     .chars
                     .next_if(|c| matches!(c, '<' | '>' | '&' | '|' | '!'))
