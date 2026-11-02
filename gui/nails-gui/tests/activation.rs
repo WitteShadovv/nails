@@ -120,6 +120,7 @@ fn a_ready_page_activates_through_a_question_that_starts_on_cancel() {
             text::REHEARSAL,
             text::DISCARD,
             text::SET_UP,
+            text::ACTIVATION_OPTIONS,
             text::ACTIVATE
         ]
     );

@@ -450,6 +450,35 @@ pub const SET_UP: &str = "Set Up Hidden Volume";
 pub const SET_UP_ROW: &str = "Write the folders and the settings file NAILS needs.";
 /// The action that asks for the plan; the question follows.
 pub const SET_UP_ACTION: &str = "Set Up\u{2026}";
+
+/// The tool of the options the checks and the activation take.
+pub const ACTIVATION_OPTIONS: &str = "Activation Options";
+/// The line under its row.
+pub const ACTIVATION_OPTIONS_ROW: &str = "Which system the hidden session runs";
+/// What its page says.
+pub const ACTIVATION_OPTIONS_WHAT: &str = "These hold for the checks and the activation this \
+     window runs, until it closes.";
+/// The switch to this computer's system (`--overlay-only`).
+pub const SWITCH_OVERLAY_ONLY: &str = "Use this computer's system";
+/// The line under it.
+pub const OVERLAY_ONLY_WHAT: &str = "Run the decoy's own system in the hidden session; no hidden \
+     NixOS system is built";
+/// The field of the flake (`--nixos-flake`).
+pub const FIELD_FLAKE: &str = "NixOS flake";
+/// The line under it.
+pub const FLAKE_HINT: &str = "Optional: the flake to build the hidden NixOS system from, \
+     instead of the one the settings name";
+/// The line under it once it holds what is no flake reference.
+pub const FLAKE_NOT_A_REFERENCE: &str = "A flake reference holds no control character.";
+/// The fact that names the options while any is set.
+pub const FACT_OPTIONS: &str = "Activation options";
+/// The option of this computer's system, as the fact names it.
+pub const OPTION_OVERLAY_ONLY: &str = "this computer's own system";
+/// The option of a flake, as the fact names it.
+#[must_use]
+pub fn option_flake(flake: &str) -> String {
+    format!("the NixOS flake {flake}")
+}
 /// The switch of the hidden NixOS layout (off: `--no-hardware-config`).
 pub const SWITCH_LAYOUT: &str = "Lay out hidden NixOS";
 /// The line under it.

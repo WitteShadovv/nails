@@ -617,7 +617,10 @@ fn a_hidden_volume_on_this_computers_disk_is_allowed_only_behind_the_word() {
         })))
     );
     assert_eq!(
-        activation::activate_args(&BTreeSet::from([Risk::DecoyStorage])),
+        activation::activate_args(
+            &BTreeSet::from([Risk::DecoyStorage]),
+            &tools::options::Options::default()
+        ),
         ActivateArgs {
             allow_decoy_storage: true,
             ..ActivateArgs::default()

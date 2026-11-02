@@ -311,6 +311,9 @@ pub struct Model {
     /// Why the return the open question offers powers off instead, as its
     /// plan said, for the page that follows Return to Decoy.
     return_instead: Option<PowerOffInstead>,
+    /// The options the checks and the activation take, from Activation
+    /// Options.
+    options: tools::options::Options,
     /// The tool whose page shows, over the session's.
     tool: Option<Tool>,
     /// The rehearsal's test words were planted in this hidden session, as
@@ -351,6 +354,7 @@ impl Model {
             activation: None,
             deactivation: None,
             return_instead: None,
+            options: tools::options::Options::default(),
             tool: None,
             planted_here: false,
             hung_up: false,
@@ -498,7 +502,10 @@ impl Model {
                     return None;
                 }
                 self.allowed.insert(risk);
-                Some(Ask::Check(activation::check_args(&self.allowed)))
+                Some(Ask::Check(activation::check_args(
+                    &self.allowed,
+                    &self.options,
+                )))
             }
             Some(Asking::SameBoot { typed }) => {
                 if !(confirmed && activation::is_the_word(&typed)) {
@@ -566,12 +573,13 @@ impl Model {
         match label {
             text::CHECK_AGAIN => Some(Effect::Ask(Ask::Check(activation::check_args(
                 &self.allowed,
+                &self.options,
             )))),
             text::ACTIVATE => {
                 self.plan_for = Some(PlanFor::Activation);
                 self.notice = None;
                 Some(Effect::Ask(Ask::Plan(Plan::Activate(
-                    activation::activate_args(&self.allowed),
+                    activation::activate_args(&self.allowed, &self.options),
                 ))))
             }
             text::DEACTIVATE => {
@@ -765,7 +773,10 @@ impl Model {
                     let check = self.check == Check::NotRun
                         && self.status.as_ref().is_some_and(checks_on_open);
                     if check {
-                        vec![Ask::Check(activation::check_args(&self.allowed))]
+                        vec![Ask::Check(activation::check_args(
+                            &self.allowed,
+                            &self.options,
+                        ))]
                     } else {
                         Vec::new()
                     }

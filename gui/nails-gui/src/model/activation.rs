@@ -46,6 +46,7 @@ use std::path::Path;
 use nails_api::protocol::{ActivateArgs, ActivatePlanData, CheckArgs};
 use nails_api::{Allowable, Event};
 
+use super::tools::options::Options;
 use super::{ActionKind, Page, Question, StepView};
 use crate::text;
 
@@ -85,25 +86,29 @@ impl Risk {
     }
 }
 
-/// The check's arguments with the risks `allowed`.
+/// The check's arguments with the risks `allowed` and the activation
+/// `options`.
 #[must_use]
-pub fn check_args(allowed: &BTreeSet<Risk>) -> CheckArgs {
+pub fn check_args(allowed: &BTreeSet<Risk>, options: &Options) -> CheckArgs {
     CheckArgs {
+        overlay_only: options.overlay_only,
+        nixos_flake: options.flake(),
         allow_persistent_decoy: allowed.contains(&Risk::PersistentDecoy),
         allow_decoy_storage: allowed.contains(&Risk::DecoyStorage),
         allow_discards: allowed.contains(&Risk::Discards),
-        ..CheckArgs::default()
     }
 }
 
-/// The activation's arguments with the risks `allowed`.
+/// The activation's arguments with the risks `allowed` and the activation
+/// `options`.
 #[must_use]
-pub fn activate_args(allowed: &BTreeSet<Risk>) -> ActivateArgs {
+pub fn activate_args(allowed: &BTreeSet<Risk>, options: &Options) -> ActivateArgs {
     ActivateArgs {
+        overlay_only: options.overlay_only,
+        nixos_flake: options.flake(),
         allow_persistent_decoy: allowed.contains(&Risk::PersistentDecoy),
         allow_decoy_storage: allowed.contains(&Risk::DecoyStorage),
         allow_discards: allowed.contains(&Risk::Discards),
-        ..ActivateArgs::default()
     }
 }
 

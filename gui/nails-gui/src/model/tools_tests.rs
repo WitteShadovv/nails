@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use nails_api::CheckOutcome;
 use nails_api::protocol::{
-    DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData, RehearsePlantArgs, RehearseScanArgs,
-    VerifyArgs,
+    ActivateArgs, CheckArgs, DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData,
+    RehearsePlantArgs, RehearseScanArgs, VerifyArgs,
 };
 use serde_json::{Value, json};
 
@@ -124,7 +124,8 @@ fn a_settled_session_page_offers_the_tools_of_its_side() {
             ToolKind::Verify,
             ToolKind::Rehearsal,
             ToolKind::Discard,
-            ToolKind::SetUp
+            ToolKind::SetUp,
+            ToolKind::Options
         ]
     );
     assert_eq!(model.page().links[2].title, text::DISCARD);
@@ -1278,6 +1279,78 @@ fn init_plan(warnings: &[&str]) -> Update {
         warnings: warnings.iter().map(|w| (*w).to_string()).collect(),
         token: "e".repeat(32),
     }))
+}
+
+/// Activation Options, on the decoy: this computer's system
+/// (`--overlay-only`), or else a flake (`--nixos-flake`). Back on the
+/// session's page the check runs again with them, the page names them, and
+/// the activation takes them too. A flake the helper would refuse unread is
+/// kept out.
+#[test]
+fn activation_options_reach_the_check_and_the_activation() {
+    let mut model = decoy();
+    assert_eq!(open(&mut model, ToolKind::Options), None);
+    let page = model.page();
+    assert_eq!(page.heading, text::ACTIVATION_OPTIONS);
+    assert_eq!(page.description, text::ACTIVATION_OPTIONS_WHAT);
+    assert!(page.switch_first);
+    assert!(!page.switch.unwrap().on);
+    assert_eq!(page.field.unwrap().label, text::FIELD_FLAKE);
+    assert_eq!(page.action, None);
+    model.edited(" /srv/flake#decoy ");
+    assert_eq!(model.back(), Some(Ask::Status));
+    assert_eq!(
+        model.apply(status("decoy", Value::Null)),
+        vec![Ask::Check(CheckArgs {
+            nixos_flake: Some("/srv/flake#decoy".to_string()),
+            ..CheckArgs::default()
+        })]
+    );
+    model.apply(ready());
+    let page = model.page();
+    assert!(page.facts.contains(&(
+        text::FACT_OPTIONS.to_string(),
+        text::option_flake("/srv/flake#decoy")
+    )));
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Activate(ActivateArgs {
+            nixos_flake: Some("/srv/flake#decoy".to_string()),
+            ..ActivateArgs::default()
+        }))))
+    );
+
+    // This computer's own system takes no flake.
+    let mut model = decoy();
+    open(&mut model, ToolKind::Options);
+    model.edited("/srv/flake#decoy");
+    model.toggled(true);
+    assert_eq!(model.page().field, None);
+    model.back();
+    assert_eq!(
+        model.apply(status("decoy", Value::Null)),
+        vec![Ask::Check(CheckArgs {
+            overlay_only: true,
+            ..CheckArgs::default()
+        })]
+    );
+    model.apply(ready());
+    assert!(model.page().facts.contains(&(
+        text::FACT_OPTIONS.to_string(),
+        text::OPTION_OVERLAY_ONLY.to_string()
+    )));
+
+    // A flake the helper would refuse is kept out, and the field says why.
+    let mut model = decoy();
+    open(&mut model, ToolKind::Options);
+    model.edited("/srv/fla\u{7}ke");
+    assert_eq!(
+        model.page().field.unwrap().hint,
+        text::FLAKE_NOT_A_REFERENCE
+    );
+    // Nothing changed for the check, which needs not run again.
+    model.back();
+    assert!(model.apply(status("decoy", Value::Null)).is_empty());
 }
 
 /// A plan of a set up the helper gave, recorded on a volume of its own:

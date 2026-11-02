@@ -12,8 +12,8 @@ mod support;
 
 use i_slint_backend_testing::{AccessibleLiveness, AccessibleRole};
 use nails_api::protocol::{
-    DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData, RehearsePlantArgs, RehearseScanArgs,
-    VerifyArgs,
+    CheckArgs, DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData, RehearsePlantArgs,
+    RehearseScanArgs, VerifyArgs,
 };
 use nails_gui::client::{Answer, Plan, PlanData, ours};
 use nails_gui::text;
@@ -414,6 +414,31 @@ fn a_scan_in_the_planting_session_waits_for_the_typed_word() {
             allow_same_boot: true,
             ..RehearseScanArgs::default()
         }))]
+    );
+}
+
+/// Activation Options: its switch to this computer's system, which a
+/// screen reader reads as one, hides the flake; back on the session's page
+/// the check runs again with `--overlay-only`.
+#[test]
+fn activation_options_take_this_computers_system_to_the_check() {
+    let screen = decoy();
+    press(&screen, text::ACTIVATION_OPTIONS);
+    assert!(screen.shows(text::ACTIVATION_OPTIONS_WHAT));
+    assert!(screen.shows(text::FIELD_FLAKE));
+    screen
+        .find_with(text::SWITCH_OVERLAY_ONLY, AccessibleRole::Switch)
+        .invoke_accessible_default_action();
+    assert!(!screen.shows(text::FIELD_FLAKE));
+    press(&screen, text::BACK);
+    assert_eq!(screen.asks(), vec![Ask::Status]);
+    screen.update(status("decoy"));
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Check(CheckArgs {
+            overlay_only: true,
+            ..CheckArgs::default()
+        })]
     );
 }
 

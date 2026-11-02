@@ -43,6 +43,7 @@ use crate::worker::{Ask, Kind};
 
 mod discard;
 mod init;
+pub mod options;
 mod rehearsal;
 mod settings;
 mod verify;
@@ -62,6 +63,8 @@ pub enum ToolKind {
     SetUp,
     /// See and change the settings.
     Settings,
+    /// Which system the checks and the activation take.
+    Options,
 }
 
 impl ToolKind {
@@ -74,6 +77,7 @@ impl ToolKind {
                 ToolKind::Rehearsal,
                 ToolKind::Discard,
                 ToolKind::SetUp,
+                ToolKind::Options,
             ],
             Place::Hidden => &[ToolKind::Verify, ToolKind::Rehearsal, ToolKind::Settings],
             Place::Activating | Place::Unknown => &[],
@@ -89,6 +93,7 @@ impl ToolKind {
             ToolKind::Discard => text::DISCARD,
             ToolKind::SetUp => text::SET_UP,
             ToolKind::Settings => text::SETTINGS,
+            ToolKind::Options => text::ACTIVATION_OPTIONS,
         }
     }
 
@@ -101,6 +106,7 @@ impl ToolKind {
             ToolKind::Discard => text::DISCARD_WHAT,
             ToolKind::SetUp => text::SET_UP_ROW,
             ToolKind::Settings => text::SETTINGS_ROW,
+            ToolKind::Options => text::ACTIVATION_OPTIONS_ROW,
         }
     }
 }
@@ -124,6 +130,7 @@ pub(super) enum Tool {
     Discard(discard::Discard),
     SetUp(init::SetUp),
     Settings(settings::Settings),
+    Options(options::Options),
 }
 
 impl Tool {
@@ -134,6 +141,7 @@ impl Tool {
             Tool::Discard(_) => ToolKind::Discard,
             Tool::SetUp(_) => ToolKind::SetUp,
             Tool::Settings(_) => ToolKind::Settings,
+            Tool::Options(_) => ToolKind::Options,
         }
     }
 }
@@ -246,6 +254,7 @@ impl Model {
                 let (settings, first) = settings::Settings::open();
                 (Tool::Settings(settings), Some(first))
             }
+            ToolKind::Options => (Tool::Options(self.options.clone()), None),
         };
         self.tool = Some(tool);
         first
@@ -285,6 +294,12 @@ impl Model {
                 false
             }
             Tool::Verify(_) | Tool::Settings(_) => false,
+            // Options that changed change what the check finds.
+            Tool::Options(options) => {
+                let changed = options.effective() != self.options.effective();
+                self.options = options.clone();
+                changed
+            }
         };
         if changed {
             // What the check found may have changed with it.
@@ -301,6 +316,7 @@ impl Model {
             Some(Tool::Rehearsal(rehearsal)) => rehearsal.edited(typed),
             Some(Tool::Verify(verify)) => verify.edited(typed),
             Some(Tool::SetUp(set_up)) => set_up.edited(typed),
+            Some(Tool::Options(options)) => options.edited(typed),
             _ => {}
         }
     }
@@ -321,6 +337,7 @@ impl Model {
             Some(Tool::Verify(verify)) => verify.toggled(on),
             Some(Tool::Rehearsal(rehearsal)) => rehearsal.toggled(on),
             Some(Tool::SetUp(set_up)) => set_up.toggled(on),
+            Some(Tool::Options(options)) => options.toggled(on),
             _ => {}
         }
     }
@@ -391,6 +408,7 @@ impl Model {
             Tool::Discard(discard) => discard.page(&cx),
             Tool::SetUp(set_up) => set_up.page(&cx),
             Tool::Settings(settings) => settings.page(&cx),
+            Tool::Options(options) => options.page(),
         })
     }
 
@@ -416,6 +434,7 @@ impl Model {
             Tool::SetUp(set_up) if !hidden => set_up.action(label, root.as_deref()),
             Tool::Discard(_) | Tool::SetUp(_) => None,
             Tool::Settings(settings) => settings.action(label, hidden),
+            Tool::Options(_) => None,
         }?;
         if matches!(ask, Ask::Plan(_)) {
             self.plan_for = Some(PlanFor::Tool);
@@ -457,7 +476,8 @@ impl Model {
             Some(Tool::Discard(discard)) => discard.answered(kind, answer),
             Some(Tool::SetUp(set_up)) => set_up.answered(kind, answer),
             Some(Tool::Settings(settings)) => return settings.answered(kind, answer),
-            None => {}
+            // The options ask the engine nothing.
+            Some(Tool::Options(_)) | None => {}
         }
         Vec::new()
     }
