@@ -278,6 +278,11 @@ pub const SCAN_INCOMPLETE: &str = "Scan Incomplete";
 /// read.
 pub const NOT_CLEAN_UNEXPLAINED: &str =
     "The test words were not found, but the scan did not end as a clean result.";
+/// A scan in the session that planted the test words that found none: it
+/// proves little, so it is no pass.
+pub const NOT_CLEAN_SAME_SESSION: &str = "The test words were not found, but this scan ran in \
+     the session that planted them, which may not have written them to the disk yet: end this \
+     session and scan from a later one for a result.";
 /// A scan that read every disk in full and found nothing.
 pub const PASSED: &str = "Passed";
 /// The group of what a scan did not check, first on every result but one

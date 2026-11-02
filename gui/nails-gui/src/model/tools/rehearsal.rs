@@ -19,8 +19,10 @@
 //! engine, which then cannot have read what the session wrote. The window
 //! knows that session only when it planted there itself, or once the engine
 //! refused a scan for that reason, and it keeps knowing it when the page
-//! closes and opens again ([`Rehearsal::planted_here`]): it then offers no
-//! scan for as long as the window lives, which is that session at most. A
+//! closes and opens again ([`Rehearsal::planted_here`]): for as long as the
+//! window lives, which is that session at most, it offers no plain scan,
+//! only Scan in This Session, which asks first (`--allow-same-boot`), and
+//! whose result never reads as a pass, since such a scan proves little. A
 //! window opened again in the session that planted learns it again from the
 //! engine's refusal.
 //!
@@ -410,7 +412,9 @@ impl Rehearsal {
                 urgent: true,
                 ..tool_page(ToolKind::Rehearsal, text::REHEARSAL_WHAT)
             },
-            Some(Shown::Scan(report, exit)) => scan_page(report, *exit, &self.channels),
+            Some(Shown::Scan(report, exit)) => {
+                scan_page(report, *exit, &self.channels, self.planted_here)
+            }
             Some(Shown::Planted) => Page {
                 heading: text::PLANTED.to_string(),
                 groups: planted_groups(&self.channels),
@@ -490,9 +494,11 @@ impl Rehearsal {
                 None,
                 Some(text::SCAN_SAME_BOOT),
             ),
+            // A scan in the session that planted ends nothing: the session
+            // still has to end, and its scan did not count.
             Phase::Scanned if self.planted_here => (
-                [DONE, DONE, DONE],
-                text::REHEARSAL_SCANNED,
+                [DONE, NOW, NEXT],
+                text::AFTER_PLANT,
                 None,
                 Some(text::SCAN_SAME_BOOT),
             ),
@@ -528,7 +534,7 @@ impl Rehearsal {
         if page.fix.is_empty() {
             line.clone_into(&mut page.fix);
         }
-        if hidden && phase == Phase::Scanned {
+        if hidden && phase == Phase::Scanned && !self.planted_here {
             // No window opens on the decoy in this release: the line that
             // removes the test words there, once they are done with.
             page.fix = join_notice(
@@ -655,7 +661,7 @@ fn place(channel: &Channel, what: &str) -> String {
 }
 
 /// The page of a scan that answered with `report` and `exit`.
-fn scan_page(report: &ScanReport, exit: u8, channels: &[Channel]) -> Page {
+fn scan_page(report: &ScanReport, exit: u8, channels: &[Channel], same_session: bool) -> Page {
     let found: Vec<&DeviceScan> = report
         .devices
         .iter()
@@ -693,6 +699,14 @@ fn scan_page(report: &ScanReport, exit: u8, channels: &[Channel]) -> Page {
         (
             text::NOT_A_CLEAN_RESULT,
             text::NOT_CLEAN_UNEXPLAINED.to_string(),
+            false,
+        )
+    } else if same_session {
+        // A scan in the session that planted may not see what the session
+        // wrote yet: never a pass.
+        (
+            text::NOT_A_CLEAN_RESULT,
+            text::NOT_CLEAN_SAME_SESSION.to_string(),
             false,
         )
     } else {

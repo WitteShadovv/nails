@@ -911,10 +911,23 @@ fn a_scan_in_the_planting_session_asks_first_and_needs_the_word() {
     model.apply(Update::Running(Kind::Rehearse));
     model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-scan-clean")));
     let page = model.page();
-    assert_eq!(page.heading, text::PASSED);
+    // Such a scan proves little: never a pass.
+    assert_eq!(page.heading, text::NOT_A_CLEAN_RESULT);
+    assert_eq!(page.description, text::NOT_CLEAN_SAME_SESSION);
     // Scanned, the session still planted: a scan again asks again.
     assert_eq!(page.secondary, Some(text::SCAN_SAME_BOOT));
     assert_eq!(page.action, None);
+    assert!(page.choices.is_empty(), "no other disks from here");
+    // Opened again, the session still has to end: nothing reads as done
+    // that is not, and nothing says the test words can go.
+    assert_eq!(model.back(), Some(Ask::Status));
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-scan-clean")));
+    let page = model.page();
+    let states: Vec<&str> = page.steps.iter().map(|step| step.state).collect();
+    assert_eq!(states, [text::STEP_DONE, text::STEP_NOW, text::STEP_NEXT]);
+    assert_eq!(page.fix, text::AFTER_PLANT);
+    assert_eq!(page.secondary, Some(text::SCAN_SAME_BOOT));
     // Cancelled, it asks for nothing.
     model.secondary();
     model.typed("allow");
@@ -922,7 +935,7 @@ fn a_scan_in_the_planting_session_asks_first_and_needs_the_word() {
 }
 
 #[test]
-fn a_scan_refused_in_the_planting_session_offers_no_scan_until_it_ended() {
+fn a_scan_refused_in_the_planting_session_offers_only_the_one_that_asks_first() {
     let mut model = hidden();
     open(&mut model, ToolKind::Rehearsal);
     model.apply(answered(
@@ -945,6 +958,7 @@ fn a_scan_refused_in_the_planting_session_offers_no_scan_until_it_ended() {
     assert_eq!(page.heading, text::SCAN_FAILED);
     assert_eq!(page.note, text::REHEARSAL_SAME_SESSION);
     assert_eq!(page.action, None);
+    assert_eq!(page.secondary, Some(text::SCAN_SAME_BOOT));
     assert_eq!(page.fix, text::AFTER_PLANT);
     // Closed and opened again, the page still knows.
     assert_eq!(model.back(), Some(Ask::Status));

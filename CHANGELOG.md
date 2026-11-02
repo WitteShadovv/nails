@@ -210,7 +210,8 @@ of this changelog for that version becomes the release notes word for word, and
   --user`) or else the window's own, and Scan for Test Words once they are planted. In the session
   that planted them, which the engine refuses to scan and the window remembers for as long as it is
   open, Scan in This Session… asks first, since such a scan proves little, and its button acts only
-  once the word "allow" is typed (`--allow-same-boot`). Scan Other Disks, beside the scan, scans the
+  once the word "allow" is typed (`--allow-same-boot`), and whose result never reads as a pass.
+  Scan Other Disks, beside the scan, scans the
   disks named instead of this computer's mounted
   ones (`rehearse scan --device`), or with its switch images of them (`--offline --image`, with
   `--token-file` when one is named), and stops each read after the megabytes given (`--max-bytes`);
