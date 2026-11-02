@@ -700,17 +700,45 @@ fn verify_offline_examiner_json_matches_schema_and_groups_traces() {
 fn verify_offline_refuses_a_root_with_nothing_to_scan() {
     // Each of these read as a secure image (exit 0), with no setup trace under
     // --examiner. The empty folder is the mount point of an image that was
-    // never mounted.
+    // never mounted, and a btrfs partition mounted whole shows its top level,
+    // whose system is in the subvolume @.
     let harness = Harness::new();
     let dir = tempfile::tempdir().unwrap();
     let image = dir.path().join("decoy.img");
     std::fs::write(&image, b"not a tree").unwrap();
     let mount_point = dir.path().join("decoy");
     std::fs::create_dir(&mount_point).unwrap();
-    for (root, says) in [
-        (dir.path().join("absent"), "does not exist"),
-        (image, "is not a folder"),
-        (mount_point.clone(), "is empty"),
+    let fresh = dir.path().join("fresh");
+    std::fs::create_dir_all(fresh.join("lost+found")).unwrap();
+    let kept = dir.path().join("kept");
+    std::fs::create_dir(&kept).unwrap();
+    std::fs::write(kept.join(".keep"), b"").unwrap();
+    let top = dir.path().join("top");
+    std::fs::create_dir_all(top.join("@/etc")).unwrap();
+    std::fs::create_dir(top.join("@home")).unwrap();
+    let mount = "read-only on a folder (`sudo mount -o ro <device> <mount>`), then run `sudo ";
+    let image_hint = format!("Mount the decoy image or partition {mount}");
+    let root_hint = format!("Mount the decoy's root filesystem {mount}");
+    let no_etc = "holds no etc folder, so it is not the root of a decoy system";
+    for (root, says, hint) in [
+        (
+            dir.path().join("absent"),
+            "does not exist, so there is nothing to scan",
+            &image_hint,
+        ),
+        (
+            image,
+            "is not a folder, so there is nothing to scan",
+            &image_hint,
+        ),
+        (
+            mount_point.clone(),
+            "is empty, so there is nothing to scan",
+            &image_hint,
+        ),
+        (fresh, no_etc, &root_hint),
+        (kept, no_etc, &root_hint),
+        (top.clone(), no_etc, &root_hint),
     ] {
         let root = root.to_str().unwrap();
         for examiner in [&[][..], &["--examiner"][..]] {
@@ -724,14 +752,33 @@ fn verify_offline_refuses_a_root_with_nothing_to_scan() {
             assert_eq!(value["error"]["next"], Value::Null, "{value:#}");
             let message = value["error"]["message"].as_str().unwrap();
             assert!(
-                message.starts_with(&format!(
-                    "{root} {says}, so there is nothing to scan\nMount the decoy image or \
-                     partition read-only on a folder (`sudo mount -o ro <device> <mount>`)"
-                )),
+                message.starts_with(&format!("{root} {says}\n{hint}")),
                 "{message}"
             );
         }
     }
+    // The next step for a btrfs top level names the subvolume to give, and
+    // that subvolume is scanned.
+    let (_, value) = run_json(
+        &harness.config,
+        &["verify", "--offline", "--root", top.to_str().unwrap()],
+    );
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.ends_with(&format!(
+            "On btrfs that root is a subvolume: give its folder, such as {} or {}.",
+            top.join("@").display(),
+            top.join("root").display()
+        )),
+        "{message}"
+    );
+    let subvolume = top.join("@");
+    let (code, value) = run_json(
+        &harness.config,
+        &["verify", "--offline", "--root", subvolume.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "{value:#}");
+    assert_eq!(value["data"]["status"], "secure", "{value:#}");
 
     // A person reads the same, the next step indented under the error.
     let shown = mount_point.to_str().unwrap();

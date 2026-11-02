@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! An offline scan refuses a root that holds nothing to scan: a path that does
-//! not exist, one that is not a folder, and an empty folder, which is what the
-//! mount point of an image looks like when the image was never mounted. Each
-//! of them used to read as a secure image, the examiner's view with no trace.
+//! not exist, one that is not a folder, and a folder with no `etc` in it, such
+//! as an empty mount point (the image never mounted on it), a fresh filesystem
+//! that holds only `lost+found`, or the top level of a btrfs filesystem mounted
+//! whole, whose system lies in a subvolume. Each of them used to read as a
+//! secure image, the examiner's view with no trace.
 
 use super::Verifier;
 use crate::filesystem::PathKind;
@@ -41,7 +43,27 @@ fn refused(root: &Path) -> OfflineRootProblem {
         }
     }
     assert_eq!(named[0], named[1]);
-    named[0]
+    named.swap_remove(0)
+}
+
+/// A folder with no `etc` in it, among whose entries no btrfs subvolume was
+/// found.
+fn no_etc_folder() -> OfflineRootProblem {
+    OfflineRootProblem::NoEtcFolder {
+        subvolumes: Vec::new(),
+    }
+}
+
+/// A temporary folder holding `dirs` and the empty files `files`.
+fn tree(dirs: &[&str], files: &[&str]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    for dir in dirs {
+        std::fs::create_dir_all(root.path().join(dir)).unwrap();
+    }
+    for file in files {
+        std::fs::write(root.path().join(file), b"").unwrap();
+    }
+    root
 }
 
 #[test]
@@ -74,14 +96,75 @@ fn an_empty_root_is_refused() {
 }
 
 #[test]
+fn a_root_that_holds_no_etc_folder_is_refused() {
+    let cases: [(&[&str], &[&str]); 5] = [
+        // A fresh filesystem: nothing but lost+found.
+        (&["lost+found"], &[]),
+        // A folder kept by a dot file.
+        (&[], &[".keep"]),
+        // A btrfs filesystem mounted whole, as a plain mount of a Fedora,
+        // Ubuntu or archinstall partition does: its top level holds the
+        // subvolumes, the system in one of them. (A copy of one here, whose
+        // folders are no subvolumes, so none is named.)
+        (&["@/etc", "@home/alice"], &[]),
+        // A separate /home.
+        (&["alice"], &["alice/.bash_history"]),
+        // etc as a file.
+        (&["usr"], &["etc"]),
+    ];
+    for (dirs, files) in cases {
+        let root = tree(dirs, files);
+        assert_eq!(refused(root.path()), no_etc_folder(), "{dirs:?} {files:?}");
+    }
+    // A link named etc is not followed, and does not count.
+    let root = tree(&["usr/etc"], &[]);
+    std::os::unix::fs::symlink("usr/etc", root.path().join("etc")).unwrap();
+    assert_eq!(refused(root.path()), no_etc_folder());
+    // The subvolume that holds the system is scanned.
+    let top = tree(&["@/etc", "@home"], &[]);
+    let result = scan(&top.path().join("@"), false).unwrap();
+    assert_eq!(result.status, VerifyStatus::Secure, "{:?}", result.findings);
+}
+
+#[test]
+fn a_btrfs_top_level_names_its_subvolumes() {
+    // The root folder of each subvolume has inode 256 and a device of its own.
+    let top = Path::new("/mnt/decoy");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
+    fs.mock_set_device_id(top, 40);
+    let names = ["@home", "@", "plain", "same-device", "link"];
+    fs.mock_set_directory_contents(top, names.iter().map(|name| top.join(name)).collect());
+    for name in names {
+        let entry = top.join(name);
+        fs.mock_set_path_type(entry.to_str().unwrap(), PathKind::Dir);
+        if name != "plain" {
+            fs.mock_set_inode(&entry, 256);
+        }
+    }
+    // A folder with inode 256 on the top level's own device is no subvolume,
+    // and a link to one is not followed.
+    fs.mock_set_device_id(&top.join("same-device"), 40);
+    fs.mock_set_is_symlink("/mnt/decoy/link", true);
+
+    let error = Verifier::new(fs)
+        .offline_under(top.to_path_buf())
+        .run(false)
+        .unwrap_err();
+    match error {
+        NailsError::RefusedOfflineRoot { problem, .. } => assert_eq!(
+            problem,
+            OfflineRootProblem::NoEtcFolder {
+                subvolumes: vec!["@".to_string(), "@home".to_string()]
+            }
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn a_root_that_holds_files_is_scanned() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join("etc")).unwrap();
-    std::fs::write(
-        root.path().join("etc/passwd"),
-        "root:x:0:0::/root:/bin/sh\n",
-    )
-    .unwrap();
+    let root = tree(&["etc"], &["etc/passwd"]);
     let result = scan(root.path(), true).unwrap();
     assert_eq!(result.status, VerifyStatus::Secure, "{:?}", result.findings);
     assert!(result.examiner.is_some(), "the examiner's view runs");
@@ -106,7 +189,8 @@ fn a_root_that_cannot_be_looked_up_or_listed_fails_closed() {
     let root = Path::new("/mnt/image");
     let unlooked = MockFilesystem::new();
     unlooked.mock_set_inode_error(root, std::io::ErrorKind::PermissionDenied);
-    // A folder the mock was given no listing of: listing it fails.
+    // A folder with no etc, which the mock was given no listing of: listing
+    // it fails.
     let unlisted = MockFilesystem::new();
     unlisted.mock_set_path_type("/mnt/image", PathKind::Dir);
     for fs in [unlooked, unlisted] {
@@ -135,23 +219,45 @@ fn backdate_atime(path: &Path) {
 }
 
 #[test]
-fn the_check_moves_no_access_time_of_the_root() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join("etc")).unwrap();
-    // Unless a plain listing moves the folder's access time here, keeping it
+fn the_check_moves_no_access_time_of_what_it_looks_at() {
+    let dir = tempfile::tempdir().unwrap();
+    // Unless a plain listing moves a folder's access time here, keeping it
     // proves nothing.
-    backdate_atime(root.path());
-    let before = atime(root.path());
-    let _ = std::fs::read_dir(root.path()).unwrap().count();
-    if atime(root.path()) == before {
+    let probe = dir.path().join("probe");
+    std::fs::create_dir(&probe).unwrap();
+    backdate_atime(&probe);
+    let before = atime(&probe);
+    let _ = std::fs::read_dir(&probe).unwrap().count();
+    if atime(&probe) == before {
         eprintln!("skipping: the temp filesystem does not record access times");
         return;
     }
 
-    backdate_atime(root.path());
-    let before = atime(root.path());
-    Verifier::new(RealFilesystem)
-        .refuse_a_root_with_nothing_to_scan(root.path())
-        .unwrap();
-    assert_eq!(atime(root.path()), before, "the root's access time moved");
+    // A root that is scanned, and a top level that is refused after its
+    // listing and a look at each of its entries.
+    let decoy = dir.path().join("decoy");
+    let top = dir.path().join("top");
+    let looked_at = [
+        decoy.join("etc"),
+        decoy.clone(),
+        top.join("@/etc"),
+        top.join("@"),
+        top.join("@home"),
+        top.clone(),
+    ];
+    for path in &looked_at[..3] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::create_dir(&looked_at[4]).unwrap();
+    for path in &looked_at {
+        backdate_atime(path);
+    }
+    let before: Vec<_> = looked_at.iter().map(|path| atime(path)).collect();
+    let verifier = Verifier::new(RealFilesystem);
+    verifier.refuse_a_root_with_nothing_to_scan(&decoy).unwrap();
+    verifier
+        .refuse_a_root_with_nothing_to_scan(&top)
+        .unwrap_err();
+    let after: Vec<_> = looked_at.iter().map(|path| atime(path)).collect();
+    assert_eq!(after, before, "an access time moved: {looked_at:?}");
 }

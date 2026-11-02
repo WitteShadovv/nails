@@ -32,12 +32,11 @@ fn overlay_verifier(mountinfo: &str) -> (MockFilesystem, Verifier<MockFilesystem
 }
 
 /// Make `root` in `fs` the mount point of a decoy image: a folder that holds
-/// the image's `/etc`. An offline scan refuses a root that is missing or empty.
+/// the image's `/etc`. An offline scan refuses a root without one.
 #[cfg(test)]
 fn decoy_image(fs: &MockFilesystem, root: &str) {
-    let path = std::path::Path::new(root);
     fs.mock_set_path_type(root, PathKind::Dir);
-    fs.mock_set_directory_contents(path, vec![path.join("etc")]);
+    fs.mock_set_path_type(&format!("{root}/etc"), PathKind::Dir);
 }
 
 /// The captured scene's hidden root (`/fixture/mnt/hidden root`, printed with

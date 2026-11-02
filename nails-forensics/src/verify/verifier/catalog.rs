@@ -190,7 +190,10 @@ pub(crate) fn format_time(time: SystemTime) -> String {
 mod tests {
     use crate::{RealFilesystem, Verifier};
 
+    /// An offline scan of the image at `root`, which gets the `etc` folder of
+    /// a decoy root: a scan refuses a root without one.
     fn offline_scan(root: &std::path::Path) -> crate::VerifyResult {
+        std::fs::create_dir_all(root.join("etc")).unwrap();
         Verifier::new(RealFilesystem)
             .offline_under(root.to_path_buf())
             .run(false)
@@ -260,8 +263,6 @@ mod tests {
     #[test]
     fn areas_not_checked_come_from_the_catalog() {
         let root = tempfile::tempdir().unwrap();
-        // An empty root is refused, so the image holds one folder.
-        std::fs::create_dir(root.path().join("etc")).unwrap();
         let result = offline_scan(root.path());
         let areas = result.areas_not_checked.join("\n");
 
