@@ -19,17 +19,18 @@
 //! device the decoy claims as its own storage ([`separation::claimed_devices`]),
 //! or one below a claimed partition on a disk that keeps its data elsewhere
 //! (the devices of the md array the decoy's root lies on), nor a volume opened
-//! under any name from a device the decoy's crypttab opens. A logical volume
-//! spread over two disks, an md mirror of two or a btrfs filesystem of two
-//! passes only when the way down to each disk does.
+//! under any name from a device or an image file the decoy's crypttab opens. A
+//! logical volume spread over two disks, an md mirror of two or a btrfs
+//! filesystem of two passes only when the way down to each disk does.
 //!
 //! It only warns. Encryption is not deniability (a LUKS header shows that an
 //! encrypted volume exists), and a root kept in RAM to try NAILS out is no
 //! error.
 
 use super::CryptType;
-use crate::blockdev::{DmKind, Layer, MAX_STACK_DEVICES};
+use crate::blockdev::{DmKind, Layer, LoopBacking, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
+use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::top_mount_at;
 use crate::hidden_root::separation::{self, Claimed};
 use crate::preflight::{CheckResult, PreFlightCheck};
@@ -151,12 +152,14 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEncryptionCheck {
             &collected.devices,
             separation::claimed_devices(&collected.scene(&table), hidden),
         );
+        let crypttab_files = crypttab_files(fs, &collected.crypttab);
         let cover = filesystem_devices(fs, hidden)
             .and_then(|roots| {
                 let graph = Graph::read(fs, &table, &collected.devices, &roots);
                 let stack = Stack {
                     graph: &graph,
                     claimed: &claimed,
+                    crypttab_files: &crypttab_files,
                 };
                 stack.cover_of(&roots)
             })
@@ -209,6 +212,21 @@ fn judge(root: &Path, cover: Cover, unreadable: &[PathBuf]) -> CheckResult {
             FIX,
         ),
     }
+}
+
+/// The image files the decoy's crypttab opens, as the loop driver would name
+/// them (their links resolved), each as the volume it opens. A source under
+/// `/dev`, or a `UUID=` and the like, names a device and is claimed as one.
+fn crypttab_files<F: Filesystem>(fs: &F, crypttab: &[CrypttabEntry]) -> BTreeMap<PathBuf, Claimed> {
+    crypttab
+        .iter()
+        .filter(|entry| entry.source.starts_with('/') && !entry.source.starts_with("/dev/"))
+        .map(|entry| {
+            let path = Path::new(&entry.source);
+            let file = fs.canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            (file, Claimed::Encrypted(entry.name.clone()))
+        })
+        .collect()
 }
 
 /// The warning that the check cannot tell, and `why`.
@@ -331,6 +349,9 @@ struct Stack<'a> {
     graph: &'a Graph,
     /// The devices the decoy claims, and what each holds.
     claimed: &'a BTreeMap<String, Claimed>,
+    /// The image files the decoy's crypttab opens, by path, each as the
+    /// volume it opens.
+    crypttab_files: &'a BTreeMap<PathBuf, Claimed>,
 }
 
 impl<'a> Stack<'a> {
@@ -421,6 +442,13 @@ impl<'a> Stack<'a> {
             if inner_cipher {
                 at = next;
                 continue;
+            }
+            // An image file the decoy's crypttab opens is behind a loop
+            // device, which systemd-cryptsetup or the operator attached.
+            if let Some(LoopBacking::File(file)) = below.loop_device.as_ref().map(|l| &l.backing)
+                && let Some(holds) = self.crypttab_files.get(file)
+            {
+                return Some(holds);
             }
             return match self.claimed.get(next.as_str()) {
                 Some(holds @ Claimed::Encrypted(_))
