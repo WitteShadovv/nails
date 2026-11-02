@@ -902,6 +902,60 @@ fn a_turn_off_at_the_end_of_the_zshrc_settles_the_doubts_before_it() {
 }
 
 #[test]
+fn a_dot_from_an_equals_expansion_an_alias_or_eval_is_followed_or_a_doubt() {
+    let command =
+        |text: &str| format!("it cannot tell what command `{text}` in /home/alice/.zshrc runs");
+    let source_doubt =
+        "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run".to_string();
+    for (text, doubts) in [
+        ("c=.\n${=c} ~/.zsh/history.zsh", vec![command("${=c}")]),
+        ("c=.\n$=c ~/.zsh/history.zsh", vec![command("$=c")]),
+        ("${=:-.} ~/.zsh/history.zsh", vec![command("${=:-.}")]),
+        (
+            "alias src='builtin .'\nsrc ~/.zsh/history.zsh",
+            vec![source_doubt.clone()],
+        ),
+        (
+            "alias src='noglob .'\nsrc ~/.zsh/history.zsh",
+            vec![source_doubt.clone()],
+        ),
+        (
+            "alias src=\\.\nsrc ~/.zsh/history.zsh",
+            vec![source_doubt.clone()],
+        ),
+        (
+            "aliases[src]=.\nsrc ~/.zsh/history.zsh",
+            vec![source_doubt.clone()],
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{text}\n"));
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(scan(&fs, NOT_LOGIN).doubts, doubts, "{text:?}");
+    }
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "eval -- '. ~/.zsh/history.zsh'\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zsh/history.zsh",
+        "setopt share_history\n",
+    );
+    assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new());
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
+    );
+}
+
+#[test]
 fn a_turn_off_at_the_end_of_the_zshrc_settles_no_doubt_about_where_zsh_reads() {
     for (file, text, start) in [
         // A ZDOTDIR it cannot follow.
