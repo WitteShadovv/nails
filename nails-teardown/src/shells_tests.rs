@@ -288,6 +288,9 @@ fn the_common_shells_are_shells_under_their_own_names() {
         assert_eq!(shell_syntax(name), Some(syntax), "{name}");
         let wrapped = format!(".{name}-wrapped");
         assert_eq!(shell_syntax(&wrapped), Some(syntax), "{wrapped}");
+        // Wrapped twice, and the process name cut at 15 bytes.
+        let twice: String = format!(".{name}-wrapped_").chars().take(15).collect();
+        assert_eq!(shell_syntax(&twice), Some(syntax), "{twice}");
     }
     for (name, syntax) in SHELL_NAMES {
         assert_eq!(shell_syntax(name), Some(*syntax), "{name}");

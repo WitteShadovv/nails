@@ -87,10 +87,12 @@ pub const SHELL_NAMES: &[(&str, Syntax)] = &[
 ];
 
 /// The name `name` stands for: a program that a NixOS wrapper starts is named
-/// `.<name>-wrapped`.
+/// `.<name>-wrapped`, and one wrapped twice `.<name>-wrapped_`, which the
+/// kernel's 15 bytes of a process name may cut short after `-wrapped`.
 pub fn unwrapped(name: &str) -> &str {
     name.strip_prefix('.')
-        .and_then(|wrapped| wrapped.strip_suffix("-wrapped"))
+        .and_then(|wrapped| wrapped.split_once("-wrapped"))
+        .map(|(name, _)| name)
         .filter(|name| !name.is_empty())
         .unwrap_or(name)
 }
