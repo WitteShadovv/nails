@@ -42,6 +42,10 @@ pub(super) struct Scan {
     /// end of `.zshrc` does not settle: about `ZDOTDIR`, or about what zsh
     /// reads before or after `.zshrc`.
     pub lasting: bool,
+    /// Why turning the options off at the end of `.zshrc` cannot settle the
+    /// doubts here, as a clause of the warning, when something keeps it from
+    /// doing so.
+    pub blocked: Option<String>,
 }
 
 /// The text of the startup file at `path`, read through `fs`: `Ok(None)` when

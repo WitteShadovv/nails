@@ -280,13 +280,21 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
                     } else {
                         "its .zshrc"
                     };
-                    let stays = if scan.lasting {
-                        " That settles no doubt about ZDOTDIR, nor one about what zsh reads \
-                         before or after .zshrc."
+                    if let Some(reason) = &scan.blocked {
+                        format!(
+                            " Ending {rc} with `{ZSH_TURN_OFF}` cannot settle it, as {reason}. \
+                             Type the decoy commands in a shell that keeps no history instead, \
+                             such as one started with `zsh -f`."
+                        )
                     } else {
-                        ""
-                    };
-                    format!(" To settle it, end {rc} with `{ZSH_TURN_OFF}`.{stays}")
+                        let stays = if scan.lasting {
+                            " That settles no doubt about ZDOTDIR, nor one about what zsh reads \
+                             before or after .zshrc."
+                        } else {
+                            ""
+                        };
+                        format!(" To settle it, end {rc} with `{ZSH_TURN_OFF}`.{stays}")
+                    }
                 } else {
                     String::new()
                 };

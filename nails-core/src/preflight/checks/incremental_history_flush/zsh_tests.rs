@@ -902,6 +902,99 @@ fn a_turn_off_at_the_end_of_the_zshrc_settles_the_doubts_before_it() {
 }
 
 #[test]
+fn what_may_undo_the_final_line_keeps_it_from_settling() {
+    let init = "eval \"$(starship init zsh)\"\n";
+    for shape in [
+        // `unsetopt`, `setopt` or `builtin` redefined, or a global alias.
+        "alias unsetopt=:",
+        "alias -g share_history=x",
+        "unsetopt() { : }",
+        "function unsetopt { : }",
+        "disable unsetopt",
+        "functions[unsetopt]=:",
+        "aliases[unsetopt]=:",
+        "galiases[x]=y",
+        "alias builtin=:",
+        "setopt() { : }",
+        // A trap, a hook or a plugin loaded later.
+        "TRAPDEBUG() { setopt share_history }",
+        "trap 'setopt share_history' DEBUG",
+        "trap 'setopt share_history' ZERR",
+        "functions -T f",
+        "chpwd() { setopt share_history }",
+        "autoload -Uz add-zsh-hook\nadd-zsh-hook chpwd f",
+        "chpwd_functions+=(f)",
+        "precmd() { : }",
+        "preexec() { : }",
+        "periodic() { : }",
+        "sched +1 setopt share_history",
+        "zshexit() { : }",
+        "zle -N w",
+        "zle -F 0 f",
+        "zle-line-init() { : }",
+        "zsh-defer source ~/.zsh/x.zsh",
+        "zinit ice wait lucid\nzinit snippet OMZL::history.zsh",
+        "zi ice wait",
+        "zplugin ice wait",
+        // What may stop the file before the line.
+        "setopt err_return\nfalse",
+        "setopt errreturn",
+        "set -o errexit",
+        "set -e",
+        "x=${y:?}",
+        "x=${y?}",
+        "readonly r=1",
+        "typeset -r q=1",
+        "x=$(( 1/0 ))",
+        "integer i",
+        "set -o nosuchoption",
+        "fi",
+        "x='open",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{init}{shape}\n{TURN_OFF}"),
+        );
+        let found = scan(&fs, NOT_LOGIN);
+        assert!(!found.doubts.is_empty(), "{shape:?}: {found:?}");
+        assert!(found.blocked.is_some(), "{shape:?}: {found:?}");
+    }
+
+    // The line not as written: in a group, a loop, the background or a
+    // pipeline, with a redirection, or no plain `unsetopt`.
+    let line = TURN_OFF.trim_end();
+    for last in [
+        format!("{{ {line} }}"),
+        format!("{{ {line} }} &"),
+        format!("for x in a; do {line}; done"),
+        format!("{line} &"),
+        format!("{line} | cat"),
+        format!("{line} 2>/dev/null"),
+        format!("command {line}"),
+        "setopt no_share_history no_inc_append_history no_inc_append_history_time".to_string(),
+        "set +o sharehistory +o incappendhistory +o incappendhistorytime".to_string(),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{init}{last}\n"));
+        assert!(!scan(&fs, NOT_LOGIN).doubts.is_empty(), "{last:?}");
+    }
+
+    // A plain eval-init configuration still settles, with `builtin unsetopt`
+    // too.
+    for last in [TURN_OFF.to_string(), format!("builtin {TURN_OFF}")] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{init}eval \"$(zoxide init zsh)\"\nalias ll='ls -l'\n{last}"),
+        );
+        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{last:?}");
+    }
+}
+
+#[test]
 fn a_dot_from_an_equals_expansion_an_alias_or_eval_is_followed_or_a_doubt() {
     let command =
         |text: &str| format!("it cannot tell what command `{text}` in /home/alice/.zshrc runs");

@@ -768,8 +768,12 @@ of this changelog for that version becomes the release notes word for word, and
   here-document, or an `eval` of what a command prints, warns too. Such a warning gives the line
   that settles it, `unsetopt share_history inc_append_history inc_append_history_time` at the end
   of `.zshrc`: zsh runs the file top to bottom, so every doubt before that line is settled, but
-  none about `ZDOTDIR`, about code before `.zshrc` or about `.zlogin`, and the operator guide
-  names the hooks an init script may install, which it cannot see. bash's files are
+  none about `ZDOTDIR`, about code before `.zshrc` or about `.zlogin`. It settles nothing unless
+  that line is a plain `unsetopt` that runs as written, and no file zsh reads redefines it,
+  defines a trap, a hook or a global alias, loads a plugin later, turns on `err_return` or
+  `err_exit`, or may stop before the line: then the warning says why, and to type the decoy
+  commands in a shell that keeps no history, such as `zsh -f`. The operator guide names the hooks
+  an init script may install, which the check cannot see. bash's files are
   read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going
   on in the next. It still only warns: such a shell has written the
   decoy commands before activation starts, so a refusal would take none of them back, and for a

@@ -1364,9 +1364,22 @@ afterwards:
   every doubt before it as settled. It settles none about `ZDOTDIR`, about
   code zsh reads before `.zshrc` (`.zshenv`, `.zprofile`), which may move
   `ZDOTDIR` and with it the `.zshrc` zsh reads, or about what a login shell
-  reads after it (`.zlogin`), and the warning says so. Nor does it undo a
-  hook: a `precmd` function or a `zle` widget that an init script installs
-  can set the options again at every prompt, and no startup file shows that.
+  reads after it (`.zlogin`), and the warning says so. It settles nothing,
+  either, unless the line runs as written, a plain `unsetopt` or
+  `builtin unsetopt` at the top level, alone, unconditional and with no
+  redirection, and no file zsh reads holds what may undo it: an alias or a
+  function that redefines `unsetopt`, `setopt` or `builtin`, a global alias,
+  a trap or a hook (`precmd`, `preexec`, `chpwd`, `periodic`, `sched`,
+  `zshexit`, `add-zsh-hook`, a `zle` widget), a plugin manager's deferred
+  loading (zinit's `wait`, `zsh-defer`), `err_return` or `err_exit`, or what
+  may stop the file before the line (`${name:?}`, a read-only variable,
+  arithmetic with a division, `set -o` with an unknown name, a structure the
+  check cannot follow). Then the warning says why, and to type the decoy
+  commands in a shell that keeps no history, such as one started with
+  `zsh -f`. What it cannot see, a hook that an `eval`'s init script installs
+  among it, can still set the options again after the line has run: a
+  `precmd` or `preexec` function, a `periodic` or `sched` job, a `zle`
+  widget, or a plugin a deferred loader brings in after the first prompt.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
