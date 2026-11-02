@@ -42,7 +42,7 @@ use nails_api::protocol::{Op, RehearsePlantArgs, RehearseScanArgs, validate};
 use super::{Context, ToolKind, error_of, group, row, tool_page};
 use crate::client::Answer;
 use crate::envelope::{self, Channel, DeviceScan, Phase, RehearseData, ScanReport};
-use crate::model::{Field, Group, Page, StepView};
+use crate::model::{Choice, Field, Group, Page, StepView, Switch};
 use crate::text;
 use crate::worker::{Ask, Kind, Rehearse};
 
@@ -76,6 +76,141 @@ pub(crate) struct Rehearsal {
     /// The account the test words are planted for, as typed: empty for the
     /// window's own.
     account: String,
+    /// The page that scans other disks or images, and what was typed there.
+    other: OtherDisks,
+}
+
+/// The page that scans the disks the person names, or images of them,
+/// instead of this computer's mounted disks (`rehearse scan --device`, or
+/// `--offline --image` with `--token-file`; `--max-bytes` for both).
+#[derive(Debug, Clone, Default)]
+struct OtherDisks {
+    /// Whether the page shows.
+    open: bool,
+    /// Whether it scans images (`--offline`).
+    images: bool,
+    /// The disks, as typed.
+    disks: String,
+    /// The images, as typed.
+    image_paths: String,
+    /// The token file, as typed.
+    token_file: String,
+    /// Where each disk's read stops, in megabytes, as typed.
+    stop_after: String,
+}
+
+/// The paths `typed` names, separated by spaces.
+fn paths(typed: &str) -> Vec<String> {
+    typed.split_whitespace().map(str::to_string).collect()
+}
+
+/// Whether every path `typed` names is a full path.
+fn full_paths(typed: &str) -> bool {
+    typed
+        .split_whitespace()
+        .all(|path| path.starts_with('/') && !path.chars().any(char::is_control))
+}
+
+/// The bytes `typed` megabytes make (a megabyte is a million bytes): none
+/// when it is empty, `Err` when it is no whole number.
+fn megabytes(typed: &str) -> Result<Option<u64>, ()> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Ok(None);
+    }
+    typed
+        .parse::<u64>()
+        .ok()
+        .and_then(|mb| mb.checked_mul(1_000_000))
+        .map(Some)
+        .ok_or(())
+}
+
+impl OtherDisks {
+    /// The scan's arguments: the disks, or with the switch the images and
+    /// the token file, and where each read stops. `None` until the helper
+    /// would take them.
+    fn args(&self) -> Option<RehearseScanArgs> {
+        let max_bytes = megabytes(&self.stop_after).ok()?;
+        let token = self.token_file.trim();
+        let args = if self.images {
+            RehearseScanArgs {
+                offline: true,
+                images: paths(&self.image_paths),
+                token_file: (!token.is_empty()).then(|| token.to_string()),
+                max_bytes,
+                ..RehearseScanArgs::default()
+            }
+        } else {
+            RehearseScanArgs {
+                devices: paths(&self.disks),
+                max_bytes,
+                ..RehearseScanArgs::default()
+            }
+        };
+        validate(&Op::RehearseScan(args.clone()))
+            .ok()
+            .map(|()| args)
+    }
+
+    /// Its page: the switch first, as it says what the fields take, then the
+    /// disks, or the images and the token file, then where each read stops.
+    fn page(&self) -> Page {
+        let mut page = Page {
+            heading: text::SCAN_OTHER.to_string(),
+            ..tool_page(ToolKind::Rehearsal, text::SCAN_OTHER_WHAT)
+        };
+        page.switch_first = true;
+        page.switch = Some(Switch {
+            title: text::SWITCH_IMAGES.to_string(),
+            subtitle: text::IMAGES_WHAT.to_string(),
+            on: self.images,
+        });
+        let field = |label: &str, typed: &str, hint: &str| Field {
+            label: label.to_string(),
+            text: typed.to_string(),
+            hint: hint.to_string(),
+        };
+        let stop_after = field(
+            text::FIELD_STOP_AFTER,
+            &self.stop_after,
+            if megabytes(&self.stop_after).is_ok() {
+                text::STOP_AFTER_HINT
+            } else {
+                text::STOP_AFTER_NOT_A_NUMBER
+            },
+        );
+        if self.images {
+            let hint = if !full_paths(&self.image_paths) {
+                text::PATHS_NOT_ABSOLUTE
+            } else if self.image_paths.trim().is_empty() {
+                text::IMAGES_NEEDED
+            } else {
+                text::IMAGES_HINT
+            };
+            page.field = Some(field(text::FIELD_IMAGES, &self.image_paths, hint));
+            let token_hint = if full_paths(&self.token_file) {
+                text::TOKEN_FILE_HINT
+            } else {
+                text::PATHS_NOT_ABSOLUTE
+            };
+            page.more_fields = vec![
+                field(text::FIELD_TOKEN_FILE, &self.token_file, token_hint),
+                stop_after,
+            ];
+        } else {
+            let hint = if full_paths(&self.disks) {
+                text::DISKS_HINT
+            } else {
+                text::PATHS_NOT_ABSOLUTE
+            };
+            page.field = Some(field(text::FIELD_DISKS, &self.disks, hint));
+            page.more_fields = vec![stop_after];
+        }
+        page.action = Some(text::SCAN);
+        page.action_locked = self.args().is_none();
+        page
+    }
 }
 
 /// What the page shows over the rehearsal's steps.
@@ -105,6 +240,7 @@ impl Rehearsal {
                 notice: None,
                 planted_here,
                 account: String::new(),
+                other: OtherDisks::default(),
             },
             Ask::Rehearse(Rehearse::Status),
         )
@@ -115,9 +251,54 @@ impl Rehearsal {
         self.planted_here
     }
 
-    /// The account field changed to `typed`.
+    /// The field changed to `typed`: the account of the plant, or on the
+    /// page that scans other disks the disks or the images.
     pub(crate) fn edited(&mut self, typed: &str) {
-        typed.clone_into(&mut self.account);
+        let other = &mut self.other;
+        let field = match (other.open, other.images) {
+            (false, _) => &mut self.account,
+            (true, false) => &mut other.disks,
+            (true, true) => &mut other.image_paths,
+        };
+        typed.clone_into(field);
+    }
+
+    /// The field `index` after the first changed to `typed`, on the page
+    /// that scans other disks: the token file, with the images, then where
+    /// each read stops.
+    pub(crate) fn edited_more(&mut self, index: usize, typed: &str) {
+        let other = &mut self.other;
+        let field = match (other.open, other.images, index) {
+            (true, true, 0) => &mut other.token_file,
+            (true, true, 1) | (true, false, 0) => &mut other.stop_after,
+            _ => return,
+        };
+        typed.clone_into(field);
+    }
+
+    /// The switch to images turned `on` or off.
+    pub(crate) fn toggled(&mut self, on: bool) {
+        if self.other.open {
+            self.other.images = on;
+        }
+    }
+
+    /// The person picked row `index` of the page: Scan Other Disks, the one
+    /// row it has, where a scan is offered.
+    pub(crate) fn choose(&mut self, index: usize) {
+        let scans = matches!(
+            (self.phase, self.planted_here),
+            (Some(Phase::Planted | Phase::Scanned), false)
+        );
+        if index == 0 && scans {
+            self.other.open = true;
+        }
+    }
+
+    /// Back, from the page that scans other disks to the rehearsal's:
+    /// whether there was such a page to leave.
+    pub(crate) fn back(&mut self) -> bool {
+        std::mem::take(&mut self.other.open)
     }
 
     /// The ask for `label`, one of the page's actions, in a hidden session
@@ -125,6 +306,13 @@ impl Rehearsal {
     pub(crate) fn action(&mut self, label: &str, hidden: bool) -> Option<Ask> {
         let (step, ask) = match label {
             text::PLANT if hidden => (Step::Plant, Rehearse::Plant(self.plant_args()?)),
+            // The page that scans other disks gives way to the scan, whose
+            // result is the rehearsal's; what was typed there stays.
+            text::SCAN if self.other.open => {
+                let args = self.other.args()?;
+                self.other.open = false;
+                (Step::Scan, Rehearse::Scan(args))
+            }
             text::SCAN | text::SCAN_AGAIN => {
                 (Step::Scan, Rehearse::Scan(RehearseScanArgs::default()))
             }
@@ -188,6 +376,9 @@ impl Rehearsal {
 
     /// The page.
     pub(crate) fn page(&self, cx: &Context) -> Page {
+        if self.other.open && cx.running != Some(Kind::Rehearse) {
+            return self.other.page();
+        }
         let mut page = match &self.shown {
             _ if cx.running == Some(Kind::Rehearse) => self.busy_page(),
             Some(Shown::Failed(step)) => Page {
@@ -314,6 +505,12 @@ impl Rehearsal {
                 Some(&page.fix),
                 &text::remove_on_decoy(cx.engine.as_deref()),
             );
+        }
+        if matches!(action, Some(text::SCAN | text::SCAN_AGAIN)) {
+            page.choices = vec![Choice {
+                title: text::SCAN_OTHER_ROW.to_string(),
+                subtitle: text::SCAN_OTHER_ROW_WHAT.to_string(),
+            }];
         }
         if action == Some(text::PLANT) {
             let named = self.plant_args().is_some();

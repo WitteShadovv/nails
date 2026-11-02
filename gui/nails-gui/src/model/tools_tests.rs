@@ -41,6 +41,9 @@ fn fixture(name: &str) -> Value {
             include_str!("../../tests/fixtures/rehearse-plant-no-such-user.json")
         }
         "verify-image-examiner" => include_str!("../../tests/fixtures/verify-image-examiner.json"),
+        "rehearse-scan-image-absent" => {
+            include_str!("../../tests/fixtures/rehearse-scan-image-absent.json")
+        }
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).unwrap()
@@ -533,6 +536,126 @@ fn the_plant_waits_for_a_name_the_helper_takes() {
     }
     model.edited(&"a".repeat(256));
     assert!(!model.page().action_locked);
+}
+
+/// Scan Other Disks, where a scan is offered, asks for `rehearse scan`
+/// with the disks named (`--device`), or with its switch the images
+/// (`--offline --image`) and the token file (`--token-file`), and where each
+/// read stops (`--max-bytes`, from megabytes). What the helper would refuse
+/// unread is never sent. The scan's result is the rehearsal's, and what was
+/// typed stays for the next.
+#[test]
+fn scan_other_disks_asks_for_the_disks_or_images_named() {
+    let mut model = decoy();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(
+        Kind::Rehearse,
+        0,
+        fixture("rehearse-status-planted"),
+    ));
+    let page = model.page();
+    assert_eq!(page.action, Some(text::SCAN));
+    assert_eq!(page.choices[0].title, text::SCAN_OTHER_ROW);
+    assert_eq!(model.choose(0), None);
+    let page = model.page();
+    assert_eq!(page.heading, text::SCAN_OTHER);
+    assert!(page.switch_first);
+    assert!(!page.switch.unwrap().on);
+    assert_eq!(page.field.unwrap().label, text::FIELD_DISKS);
+    let more: Vec<&str> = page.more_fields.iter().map(|f| f.label.as_str()).collect();
+    assert_eq!(more, [text::FIELD_STOP_AFTER]);
+
+    model.edited("/dev/sdb dev/sdc");
+    let page = model.page();
+    assert!(page.action_locked);
+    assert_eq!(page.field.unwrap().hint, text::PATHS_NOT_ABSOLUTE);
+    model.edited(" /dev/sdb  /dev/sdc ");
+    model.edited_more(0, "64x");
+    let page = model.page();
+    assert!(page.action_locked);
+    assert_eq!(page.more_fields[0].hint, text::STOP_AFTER_NOT_A_NUMBER);
+    model.edited_more(0, "64");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Rehearse(Rehearse::Scan(
+            RehearseScanArgs {
+                devices: vec!["/dev/sdb".to_string(), "/dev/sdc".to_string()],
+                max_bytes: Some(64_000_000),
+                ..RehearseScanArgs::default()
+            }
+        ))))
+    );
+    // The scan's page is the rehearsal's; the other disks' page reopens
+    // with what was typed.
+    model.apply(Update::Running(Kind::Rehearse));
+    assert_eq!(model.page().busy.as_deref(), Some(text::READING_DISKS));
+
+    let mut model = decoy();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(
+        Kind::Rehearse,
+        0,
+        fixture("rehearse-status-planted"),
+    ));
+    model.choose(0);
+    model.toggled(true);
+    let page = model.page();
+    assert!(page.switch.unwrap().on);
+    assert_eq!(page.field.as_ref().unwrap().label, text::FIELD_IMAGES);
+    assert_eq!(page.field.unwrap().hint, text::IMAGES_NEEDED);
+    let more: Vec<&str> = page.more_fields.iter().map(|f| f.label.as_str()).collect();
+    assert_eq!(more, [text::FIELD_TOKEN_FILE, text::FIELD_STOP_AFTER]);
+    assert!(page.action_locked, "the switch needs an image");
+    model.edited("/srv/decoy.raw");
+    model.edited_more(0, "token");
+    assert!(model.page().action_locked, "a token file is a full path");
+    model.edited_more(0, "/srv/token");
+    model.edited_more(1, "64");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Rehearse(Rehearse::Scan(
+            RehearseScanArgs {
+                offline: true,
+                images: vec!["/srv/decoy.raw".to_string()],
+                token_file: Some("/srv/token".to_string()),
+                max_bytes: Some(64_000_000),
+                ..RehearseScanArgs::default()
+            }
+        ))))
+    );
+    model.apply(Update::Running(Kind::Rehearse));
+    // The image is not there: the helper's scan of it, recorded with a token
+    // file, could not read it, so the scan is incomplete.
+    model.apply(answered(
+        Kind::Rehearse,
+        9,
+        fixture("rehearse-scan-image-absent"),
+    ));
+    let page = model.page();
+    assert_eq!(page.heading, text::SCAN_INCOMPLETE);
+    let rows: Vec<&str> = page
+        .groups
+        .iter()
+        .flat_map(|group| group.rows.iter().map(|row| row.message.as_str()))
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.contains("/srv/decoy.raw")),
+        "{rows:?}"
+    );
+    // Back from the page leaves the rehearsal's, typed values kept.
+    let mut model = decoy();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(
+        Kind::Rehearse,
+        0,
+        fixture("rehearse-status-planted"),
+    ));
+    model.choose(0);
+    model.edited("/dev/sdb");
+    assert_eq!(model.back(), None, "Back returns to the rehearsal's page");
+    assert_eq!(model.page().action, Some(text::SCAN));
+    model.choose(0);
+    assert_eq!(model.page().field.unwrap().text, "/dev/sdb");
 }
 
 /// Only the plant takes an account: once the test words are planted, the
