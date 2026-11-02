@@ -429,6 +429,16 @@ of this changelog for that version becomes the release notes word for word, and
   live mounts show, so the record is replaced with an inactive one; `--json` reports the outcome
   `record_reset`. In the hidden session, and while an activation enters, `recover` still refuses,
   and a record this process may not read at all is left alone.
+- `check` and activation warn (`hidden-volume`) about any label on the hidden volume's filesystem,
+  not only one with a telling word in it. Even a neutral label such as `data`, the one the examples
+  and test volumes used to carry, shows in `/dev/disk/by-label`, in systemd's device units, in file
+  managers and in `lsblk`, and everyone who copied it shares it. The warning says to remove the
+  label where setup happens, not on the decoy (on ext4, `e2label <device> ''`). A root on a
+  filesystem the decoy uses, accepted with `--allow-decoy-storage`, carries the decoy's own label
+  and does not warn. The label is read from udev's record of the device in `/run/udev/data`,
+  which names the label of exactly that device, and only without a record from
+  `/dev/disk/by-label`, which links one of several filesystems with the same label. A new fuzz
+  target, `udev_label`, checks that a label written as udev writes it reads back unchanged.
 - The operator is now resolved from `PKEXEC_UID` before `SUDO_UID`. pkexec of polkit 127 and later
   sets both, and `PKEXEC_UID` names the account that asked it.
 - `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an

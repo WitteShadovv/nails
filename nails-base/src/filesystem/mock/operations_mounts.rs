@@ -152,7 +152,15 @@ impl MockFilesystem {
     }
 
     pub(super) fn mount_source_impl(&self, mount_point: &Path) -> Result<Option<MountSource>> {
+        let set = self
+            .mount_sources
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(mount_point)
+            .cloned();
         if let Some(visible) = self.explicit_visible_mount(mount_point) {
+            // A table names no label: the label is the one a test set for the
+            // path, if any.
             return Ok(visible.map(|entry| MountSource {
                 dm_name: entry
                     .source
@@ -160,15 +168,10 @@ impl MockFilesystem {
                     .ok()
                     .map(|name| name.to_string_lossy().into_owned()),
                 device: Some(entry.source.to_string_lossy().into_owned()),
-                label: None,
+                label: set.and_then(|source| source.label),
             }));
         }
-        Ok(self
-            .mount_sources
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .get(mount_point)
-            .cloned())
+        Ok(set)
     }
 
     pub(super) fn is_mount_read_only_impl(&self, target: &Path) -> bool {

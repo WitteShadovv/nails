@@ -214,8 +214,13 @@ fn warns_when_filesystem_label_hints_at_hidden_storage() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_warn(), "got {result:?}");
     let msg = result.message();
-    assert!(msg.contains("filesystem label"), "{msg}");
-    assert!(msg.contains("decoy-vault"), "{msg}");
+    assert!(
+        msg.contains("the filesystem label \"decoy-vault\" contains \"decoy\""),
+        "{msg}"
+    );
+    assert!(msg.contains("and no filesystem label"), "{msg}");
+    // The telling word is the warning; the one for any label is not added.
+    assert!(!msg.contains("Even a neutral label"), "{msg}");
 }
 
 #[test]
@@ -372,21 +377,91 @@ fn unjudged_storage_fails_even_with_the_override() {
     );
 }
 
-#[test]
-fn passes_when_every_name_is_neutral() {
-    let fs = MockFilesystem::new();
-    let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
-    mount_ok(&fs, NEUTRAL_ROOT);
+/// [`mount_ok`], with the mount source `data` and `label`.
+fn mount_with_label(fs: &MockFilesystem, label: Option<&str>) {
+    mount_ok(fs, NEUTRAL_ROOT);
     fs.mock_set_mount_source(
         Path::new(NEUTRAL_ROOT),
         MountSource {
             device: Some("/dev/mapper/data".to_string()),
             dm_name: Some("data".to_string()),
-            label: Some("data".to_string()),
+            label: label.map(str::to_string),
         },
     );
+}
+
+#[test]
+fn passes_when_every_name_is_neutral_and_there_is_no_label() {
+    let fs = MockFilesystem::new();
+    let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+    mount_with_label(&fs, None);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass(), "got {result:?}");
     assert_eq!(result.message(), "Hidden volume mounted at /mnt/data");
+}
+
+#[test]
+fn a_neutral_label_warns_too_and_says_how_to_remove_it() {
+    let fs = MockFilesystem::new();
+    let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+    mount_with_label(&fs, Some("data"));
+
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_warn(), "got {result:?}");
+    assert_eq!(
+        result.message(),
+        "The filesystem at /mnt/data carries the label \"data\". Even a neutral label is a \
+         hint: it shows in /dev/disk/by-label, in systemd's device units, in file managers \
+         and in lsblk, and a common one such as \"data\" is shared by everyone who followed \
+         the same example. Remove the label where setup happens, not on this computer (on \
+         ext4: e2label <device> '')."
+    );
+}
+
+#[test]
+fn the_decoys_own_label_is_let_be_on_a_decoy_filesystem_the_operator_accepted() {
+    let labelled = |fs: &MockFilesystem| {
+        fs.mock_set_mount_source(
+            Path::new(NEUTRAL_ROOT),
+            MountSource {
+                label: Some("fedora".to_string()),
+                ..MountSource::default()
+            },
+        );
+    };
+    let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT)).allowing(Allow::DecoyStorage);
+
+    // On a disk of its own, the label warns.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n",
+    );
+    labelled(&fs);
+    let result = check.run(&fs).unwrap();
+    assert!(
+        result.message().contains("carries the label \"fedora\""),
+        "{result:?}"
+    );
+
+    // On the decoy's own filesystem, the label is the decoy's.
+    let fs = bind_of_a_decoy_folder();
+    labelled(&fs);
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_warn(), "got {result:?}");
+    assert!(
+        result
+            .message()
+            .starts_with("--allow-decoy-storage: using /mnt/data"),
+        "{}",
+        result.message()
+    );
+    assert!(
+        !result.message().contains("carries the label"),
+        "{}",
+        result.message()
+    );
 }

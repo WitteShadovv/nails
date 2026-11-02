@@ -1,11 +1,13 @@
 # Hidden Volume Simulation for E2E Tests
 # Provides LUKS-based hidden volume simulation using secondary disk.
 #
-# Every on-disk name here is neutral ("data"): the device-mapper name, the ext4
-# label and the mount point must never hint at hidden storage, because they
-# survive in /dev/mapper, /dev/disk/by-label, generated mount unit names and the
-# kernel/journal. The Nix identifiers below are internal to the test harness and
-# never reach the guest's disk.
+# Every on-disk name here is neutral ("data"): the device-mapper name and the
+# mount point must never hint at hidden storage, because they survive in
+# /dev/mapper, generated mount unit names and the kernel/journal. The ext4
+# filesystem gets no label at all: even a neutral one shows in
+# /dev/disk/by-label, and the hidden-volume check warns about any. The Nix
+# identifiers below are internal to the test harness and never reach the
+# guest's disk.
 
 let
   # Shared diagnostics for a backend that will not close. A LUKS backend that
@@ -95,8 +97,8 @@ in
     # Open LUKS volume as the neutral "data" device
     echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
 
-    # Create ext4 filesystem with the neutral label "data"
-    mkfs.ext4 -L data /dev/mapper/data
+    # Create the ext4 filesystem, with no label
+    mkfs.ext4 /dev/mapper/data
 
     # Mount the volume
     mkdir -p /mnt/data

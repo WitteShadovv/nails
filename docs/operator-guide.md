@@ -43,9 +43,11 @@ what you did.
 >   soft-reboot, so none of them writes the activation command to its history
 >   file. Your terminal closes at that point; what activation printed up to then
 >   is already on it.
-> - Choose neutral names. A mapper called `data`, a mount at `/mnt/data` and a
->   plain filesystem label reveal nothing; `hidden`, `veracrypt`, `tcrypt`,
->   `decoy` or `nails` do. **Renaming alone is not enough** — the names still
+> - Choose neutral names. A mapper called `data` and a mount at `/mnt/data`
+>   reveal nothing; `hidden`, `veracrypt`, `tcrypt`, `decoy` or `nails` do.
+>   Give the filesystem no label: even a plain one shows in
+>   `/dev/disk/by-label` and in the tools that list disks, and `check` warns
+>   about any. **Renaming alone is not enough** — the names still
 >   surface in sudo logs, the kernel ring buffer, generated mount units and
 >   `/dev/disk/by-label` (see [Pre-activation residue](#pre-activation-residue)).
 
