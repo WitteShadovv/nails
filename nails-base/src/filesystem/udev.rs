@@ -77,14 +77,14 @@ fn hex_byte(digits: &[u8]) -> Option<u8> {
 
 /// The label of the filesystem mounted from `source` whose mount shows the
 /// device number `dev` (`major:minor`): from udev's record in `records` of
-/// the block device `source` names, or of the device `dev`, else from the
-/// link to `source` in `links`. Reading it opens no device: the device node
-/// is only looked up.
+/// the device `dev`, which is the one the kernel mounted, or else of the
+/// block device `source` names, as a btrfs mount shows a number of its own
+/// and a node renamed since may lead to another device; without a record,
+/// from the link to `source` in `links`. Reading it opens no device: the
+/// device node is only looked up.
 pub(crate) fn label_of(source: &Path, dev: &str, records: &Path, links: &Path) -> Option<String> {
-    let mut numbers: Vec<String> = node_number(source).into_iter().collect();
-    if !numbers.iter().any(|number| number == dev) {
-        numbers.push(dev.to_string());
-    }
+    let mut numbers = vec![dev.to_string()];
+    numbers.extend(node_number(source).filter(|number| number != dev));
     for number in numbers {
         if let Ok(record) = std::fs::read(records.join(format!("b{number}"))) {
             return filesystem_label(&String::from_utf8_lossy(&record));
