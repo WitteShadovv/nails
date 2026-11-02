@@ -15,8 +15,8 @@
 //! device of the filesystem that holds the file. Every way down from the top
 //! to a device at the bottom must pass an encrypting layer that is not one of
 //! the decoy's: not a device the decoy claims as its own storage
-//! ([`separation::claimed_devices`]). Two filesystems on one encrypted volume
-//! group, or an md array of two encrypted disks, pass only when each way does.
+//! ([`separation::claimed_devices`]). A logical volume spread over two disks,
+//! or an md mirror of two, passes only when the way down to each disk does.
 //!
 //! It only warns. Encryption is not deniability (a LUKS header shows that an
 //! encrypted volume exists), and a root kept in RAM to try NAILS out is no
@@ -59,15 +59,16 @@ const RAM_FIX: &str = "Use a root in RAM only to try NAILS out, and keep a hidde
 ///
 /// It passes when every way down from the hidden root's device to the bottom
 /// of the stack passes an encrypting layer the decoy does not claim: a
-/// cryptsetup mapping of a type in [`ENCRYPTING_TYPES`], a `SUBDEV` mapping
-/// (cryptsetup's name for the layers it puts below such a mapping), or a
-/// mapping the VeraCrypt application made. It warns, naming the device, when
-/// a way down passes no encrypting layer at all; when the only encryption on
-/// it is the decoy's own; when it cannot tell (a device-mapper device of a
-/// kind it does not know, as it never reads a mapping's table, a loop device
-/// whose file it cannot follow to a disk, a stack deeper than the walk reads,
-/// a filesystem that shows no block device); and when the hidden root is a
-/// RAM filesystem, whose contents a power-off ends. It never fails.
+/// cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK or
+/// FVAULT2, a `SUBDEV` mapping (cryptsetup's name for the layers it puts
+/// below such a mapping), or a mapping the VeraCrypt application made. It
+/// warns, naming the device, when a way down passes no encrypting layer at
+/// all; when the only encryption on it is the decoy's own; when it cannot
+/// tell (a device-mapper device of a kind it does not know, as it never reads
+/// a mapping's table, a loop device whose file it cannot follow to a disk, a
+/// stack deeper than the walk reads, a filesystem that shows no block
+/// device); and when the hidden root is a RAM filesystem, whose contents a
+/// power-off ends. It never fails.
 ///
 /// # What it reads
 ///
