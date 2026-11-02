@@ -245,6 +245,7 @@ fn a_loop_over_a_block_node_walks_into_that_device() {
         layers[0].slaves.is_empty(),
         "the loop driver links no slaves"
     );
+    assert_eq!(layers[0].below, vec!["sdb2"], "the walk names it");
     assert_eq!(
         layers[1]
             .partition
@@ -253,9 +254,10 @@ fn a_loop_over_a_block_node_walks_into_that_device() {
         Some("sdb")
     );
 
-    // Told to stop at loop devices, the walk does.
+    // Told to stop at loop devices, the walk does, and went into nothing.
     let layers = sysfs.stack(LOOP0, LoopFollow::Never);
     assert_eq!(layer_names(&layers), vec!["loop0"]);
+    assert!(layers[0].below.is_empty(), "{:?}", layers[0].below);
 }
 
 #[test]
@@ -290,6 +292,8 @@ fn a_loop_over_a_mapper_node_walks_into_the_crypt_layer_and_below() {
         })
     );
     assert_eq!(layers[1].slaves, vec!["sdb2"]);
+    assert_eq!(layers[0].below, vec!["dm-4"]);
+    assert_eq!(layers[1].below, layers[1].slaves);
 }
 
 #[test]
@@ -332,6 +336,12 @@ fn a_loop_over_a_regular_file_stops_unless_told_to_follow_it() {
             .and_then(|part| part.disk.as_deref()),
         Some("nvme0n1")
     );
+    // Only the walk can say what lies below a loop device: the device of the
+    // filesystem that holds its file. Below that, the slaves.
+    assert_eq!(follows[0].below, vec!["dm-1"]);
+    assert_eq!(follows[1].below, vec!["nvme0n1p3"]);
+    assert!(follows[2].below.is_empty());
+    assert!(stops[0].below.is_empty(), "{:?}", stops[0].below);
 
     // Either way the walk reached the bottom it was to reach.
     for follow in [LoopFollow::default(), LoopFollow::BackingFiles] {
@@ -378,6 +388,7 @@ fn a_backing_file_in_ram_has_nothing_below() {
     );
     let layers = sysfs.stack(LOOP0, LoopFollow::BackingFiles);
     assert_eq!(layer_names(&layers), vec!["loop0"]);
+    assert!(layers[0].below.is_empty(), "{:?}", layers[0].below);
 
     // The walk says it was to go on below the loop device and could not; a
     // walk told to stop at it has nothing to say.
