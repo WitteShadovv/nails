@@ -38,14 +38,9 @@ pub(super) struct Scan {
     /// What the check could not follow, each as a clause of the warning
     /// (`it could not read ...`).
     pub doubts: Vec<String>,
-    /// Whether one of `doubts` is one that turning the options off at the
-    /// end of `.zshrc` does not settle: about `ZDOTDIR`, or about what zsh
-    /// reads before or after `.zshrc`.
-    pub lasting: bool,
-    /// Why turning the options off at the end of `.zshrc` cannot settle the
-    /// doubts here, as a clause of the warning, when something keeps it from
-    /// doing so.
-    pub blocked: Option<String>,
+    /// Whether NixOS's `programs.zsh` names a setting found, in the
+    /// `/etc/zshrc` it writes.
+    pub nixos: bool,
 }
 
 /// The text of the startup file at `path`, read through `fs`: `Ok(None)` when

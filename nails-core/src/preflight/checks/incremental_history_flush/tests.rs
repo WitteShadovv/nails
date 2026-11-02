@@ -57,12 +57,18 @@ fn warns_on_zsh_inc_append_history_in_the_home() {
     let message = warning(zsh(&fs));
     assert!(
         message.starts_with(
-            "zsh, the shell this command was typed into, writes each command line to its \
-             history file as you enter it: /home/alice/.zshrc sets INC_APPEND_HISTORY."
+            "zsh, the shell this command was typed into, may write each command line to its \
+             history file as you enter it: /home/alice/.zshrc names INC_APPEND_HISTORY."
         ),
         "{message}"
     );
-    assert!(message.contains("unset HISTFILE"), "{message}");
+    assert!(
+        message.ends_with(
+            "Type the decoy commands in a zsh started as `zsh -f`, which reads no startup file \
+             but /etc/zshenv."
+        ),
+        "{message}"
+    );
 }
 
 #[test]
@@ -80,7 +86,7 @@ fn warns_on_zsh_share_history_in_any_spelling() {
         seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
         let message = warning(zsh(&fs));
         assert!(
-            message.contains("/home/alice/.zshrc sets SHARE_HISTORY"),
+            message.contains("/home/alice/.zshrc names SHARE_HISTORY"),
             "{line}: {message}"
         );
     }
@@ -100,30 +106,37 @@ fn warns_on_the_share_history_a_system_zshrc_sets_for_every_user() {
         );
         let message = warning(zsh(&fs));
         assert!(
-            message.contains(&format!("{path} sets SHARE_HISTORY")),
+            message.contains(&format!("{path} names SHARE_HISTORY")),
             "{message}"
         );
     }
 }
 
 #[test]
-fn a_later_startup_file_turns_an_option_off_again() {
+fn a_turn_off_in_a_later_startup_file_does_not_pass() {
+    // No reading of the files can show that a turn-off holds: zsh may stop
+    // before it, or set the option again after it.
     for off in [
         "unsetopt SHARE_HISTORY",
         "setopt no_share_history",
         "setopt NOSHAREHISTORY",
         "set +o share_history",
+        "unsetopt share_history inc_append_history inc_append_history_time",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
         seed(&fs, "/home/alice/.zshrc", &format!("{off}\n"));
-        assert!(matches!(zsh(&fs), CheckResult::Pass(_)), "{off}");
+        let message = warning(zsh(&fs));
+        assert!(
+            message.contains("/home/alice/.zshrc names SHARE_HISTORY"),
+            "{off}: {message}"
+        );
     }
     // In the order zsh reads them: a zlogin is read after the zshrc.
     let fs = MockFilesystem::new();
     seed(&fs, "/home/alice/.zshrc", "unsetopt INC_APPEND_HISTORY\n");
     seed(&fs, "/etc/zlogin", "setopt INC_APPEND_HISTORY\n");
-    assert!(warning(zsh(&fs)).contains("/etc/zlogin sets INC_APPEND_HISTORY"));
+    assert!(warning(zsh(&fs)).contains("/etc/zlogin names INC_APPEND_HISTORY"));
 }
 
 #[test]
@@ -137,7 +150,7 @@ fn inc_append_history_time_writes_once_the_command_ends() {
     let message = warning(zsh(&fs));
     assert!(
         message.contains(
-            "history file once the command ends: /home/alice/.zprofile sets \
+            "history file once the command ends: /home/alice/.zprofile names \
              INC_APPEND_HISTORY_TIME."
         ),
         "{message}"
@@ -148,8 +161,8 @@ fn inc_append_history_time_writes_once_the_command_ends() {
     let message = warning(zsh(&fs));
     assert!(
         message.contains(
-            "history file as you enter it: /etc/zshenv sets SHARE_HISTORY; \
-             /home/alice/.zprofile sets INC_APPEND_HISTORY_TIME."
+            "history file as you enter it: /etc/zshenv names SHARE_HISTORY; \
+             /home/alice/.zprofile names INC_APPEND_HISTORY_TIME."
         ),
         "{message}"
     );
@@ -169,13 +182,17 @@ fn oh_my_zsh_turns_share_history_on_where_it_is_loaded() {
         "{message}"
     );
 
-    // Turned off after it is loaded, it stays off.
+    // Turned off after it is loaded, it still counts as on.
     seed(
         &fs,
         "/home/alice/.zshrc",
         "source \"${ZSH}/oh-my-zsh.sh\"\nunsetopt share_history\n",
     );
-    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
+    let message = warning(zsh(&fs));
+    assert!(
+        message.contains("/home/alice/.zshrc names SHARE_HISTORY"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -200,7 +217,7 @@ fn the_user_files_are_read_from_the_zdotdir_a_zshenv_sets() {
         seed(&fs, "/home/alice/.zshrc", "setopt inc_append_history\n");
         let message = warning(zsh(&fs));
         assert!(
-            message.contains("/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"),
+            message.contains("/home/alice/.config/zsh/.zshrc names SHARE_HISTORY"),
             "{value}: {message}"
         );
         assert!(
@@ -217,11 +234,11 @@ fn the_user_files_are_read_from_the_zdotdir_a_zshenv_sets() {
         "echo $ZDOTDIR=/nowhere\nexport \"ZDOTDIR=$HOME/.zsh\"\n",
     );
     seed(&fs, "/home/alice/.zsh/.zshrc", "setopt share_history\n");
-    assert!(warning(zsh(&fs)).contains("/home/alice/.zsh/.zshrc sets SHARE_HISTORY"));
+    assert!(warning(zsh(&fs)).contains("/home/alice/.zsh/.zshrc names SHARE_HISTORY"));
     let fs = MockFilesystem::new();
     seed(&fs, "/home/alice/.zshenv", "echo $ZDOTDIR=/nowhere\n");
     seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
-    assert!(warning(zsh(&fs)).contains("/home/alice/.zshrc sets SHARE_HISTORY"));
+    assert!(warning(zsh(&fs)).contains("/home/alice/.zshrc names SHARE_HISTORY"));
 
     // XDG_CONFIG_HOME as a startup file sets it.
     let fs = MockFilesystem::new();
@@ -231,7 +248,7 @@ fn the_user_files_are_read_from_the_zdotdir_a_zshenv_sets() {
         "export XDG_CONFIG_HOME=/home/alice/cfg\nexport ZDOTDIR=$XDG_CONFIG_HOME/zsh\n",
     );
     seed(&fs, "/home/alice/cfg/zsh/.zshenv", "setopt share_history\n");
-    assert!(warning(zsh(&fs)).contains("/home/alice/cfg/zsh/.zshenv sets SHARE_HISTORY"));
+    assert!(warning(zsh(&fs)).contains("/home/alice/cfg/zsh/.zshenv names SHARE_HISTORY"));
 }
 
 #[test]
@@ -294,7 +311,7 @@ fn a_startup_file_the_check_cannot_read_is_a_doubt() {
     let fs = MockFilesystem::new();
     seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
     fs.mock_set_file_size("/home/alice/.zshrc", 4 << 20);
-    assert!(warning(zsh(&fs)).contains("/home/alice/.zshrc sets SHARE_HISTORY"));
+    assert!(warning(zsh(&fs)).contains("/home/alice/.zshrc names SHARE_HISTORY"));
     let fs = MockFilesystem::new();
     fs.mock_set_file_size("/etc/zsh/zshenv", 5 << 20);
     let message = warning(zsh(&fs));
@@ -309,7 +326,7 @@ fn a_startup_file_the_check_cannot_read_is_a_doubt() {
     seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
     let message = warning(zsh(&fs));
     assert!(
-        message.contains("/home/alice/.zshrc sets SHARE_HISTORY"),
+        message.contains("/home/alice/.zshrc names SHARE_HISTORY"),
         "{message}"
     );
     assert!(
@@ -327,7 +344,7 @@ fn a_line_with_letters_beyond_ascii_is_read() {
         "alias ç='ls'\nexport café=1 ZDOTDIR=\"$HOME/.zsh\"\n",
     );
     seed(&fs, "/home/alice/.zsh/.zshrc", "setopt share_history # é\n");
-    assert!(warning(zsh(&fs)).contains("/home/alice/.zsh/.zshrc sets SHARE_HISTORY"));
+    assert!(warning(zsh(&fs)).contains("/home/alice/.zsh/.zshrc names SHARE_HISTORY"));
 }
 
 proptest::proptest! {
@@ -352,7 +369,7 @@ proptest::proptest! {
 fn a_file_that_is_not_utf8_is_read_all_the_same() {
     let fs = MockFilesystem::new();
     fs.mock_set_file_bytes("/home/alice/.zshrc", b"# \xe9t\xe9\nsetopt share_history\n");
-    assert!(warning(zsh(&fs)).contains("/home/alice/.zshrc sets SHARE_HISTORY"));
+    assert!(warning(zsh(&fs)).contains("/home/alice/.zshrc names SHARE_HISTORY"));
 }
 
 #[test]
@@ -440,8 +457,8 @@ fn passes_on_clean_config() {
     match zsh(&fs) {
         CheckResult::Pass(message) => assert_eq!(
             message,
-            "zsh (the shell this command was typed into): no startup file the check reads turns \
-             on INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
+            "zsh (the shell this command was typed into): no startup file the check reads names \
+             INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
         ),
         other => panic!("{other:?}"),
     }
@@ -465,9 +482,7 @@ fn ignores_commented_out_settings() {
     );
     let message = warning(zsh(&fs));
     assert!(
-        message.contains(
-            "a line of /home/alice/.zshrc that the check cannot read as code sets SHARE_HISTORY"
-        ),
+        message.contains("/home/alice/.zshrc names SHARE_HISTORY"),
         "{message}"
     );
 }
@@ -525,7 +540,7 @@ fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
     seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
     assert!(
         warning(run(&fs, InspectedShell::login(&operator))).starts_with(&format!(
-            "{NOT_TYPED}. zsh, the operator's login shell, writes"
+            "{NOT_TYPED}. zsh, the operator's login shell, may write"
         ))
     );
 }
@@ -540,7 +555,7 @@ fn without_a_typed_shell_every_shell_the_check_knows_is_read() {
             format!(
                 "{NOT_TYPED}: bash (the operator's login shell): no startup file the check reads \
                  runs `history -a` or `history -w` from PROMPT_COMMAND; zsh (a shell the \
-                 operator may use): no startup file the check reads turns on \
+                 operator may use): no startup file the check reads names \
                  INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
             )
         ),
@@ -552,8 +567,8 @@ fn without_a_typed_shell_every_shell_the_check_knows_is_read() {
     let message = warning(run(&fs, InspectedShell::login(&operator)));
     assert!(
         message.starts_with(&format!(
-            "{NOT_TYPED}. zsh, a shell the operator may use, writes each command line to its \
-             history file as you enter it: /etc/zshrc sets SHARE_HISTORY."
+            "{NOT_TYPED}. zsh, a shell the operator may use, may write each command line to \
+             its history file as you enter it: /etc/zshrc names SHARE_HISTORY."
         )),
         "{message}"
     );
@@ -602,15 +617,13 @@ fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
     };
     let message = warning(run(&fs, shell.clone()));
     assert!(
-        message.contains("/etc/zshrc sets SHARE_HISTORY")
-            && message.contains("at the end of the .zshrc in each home it can run with"),
+        message.contains("/etc/zshrc names SHARE_HISTORY"),
         "{message}"
     );
-    // The operator's own zsh reads it, and so does the root shell with
-    // either home when both turn the option off.
-    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
+    // Turned off in both homes, it still counts as on.
     seed(&fs, "/root/.zshrc", "unsetopt share_history\n");
-    assert!(matches!(run(&fs, shell), CheckResult::Pass(_)));
+    let message = warning(run(&fs, shell));
+    assert!(message.contains("names SHARE_HISTORY"), "{message}");
 }
 
 /// The start of every result of the check for a zsh the command was likely
@@ -633,7 +646,7 @@ fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
             message,
             format!(
                 "{LIKELY}: zsh (the shell this command was likely typed into): no startup file \
-                 the check reads turns on INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or \
+                 the check reads names INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or \
                  SHARE_HISTORY; bash (a shell the operator may use): no startup file the check \
                  reads runs `history -a` or `history -w` from PROMPT_COMMAND"
             )
@@ -652,16 +665,24 @@ fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
     );
 
     // Its command line is not taken to tell how it started, as the decoy
-    // commands may have been typed into another zsh: a turn-off in a login
-    // shell's file does not count.
+    // commands may have been typed into another zsh: a login shell's file
+    // counts too.
     let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
-    seed(&fs, "/home/alice/.zlogin", "unsetopt share_history\n");
-    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
-    let message = warning(run(&fs, likely("zsh")));
+    seed(&fs, "/home/alice/.zlogin", "setopt share_history\n");
+    assert!(matches!(
+        run(&fs, typed("zsh", &["zsh"])),
+        CheckResult::Pass(_)
+    ));
+    let message = warning(run(
+        &fs,
+        InspectedShell {
+            argv: vec!["zsh".to_string()],
+            ..likely("zsh")
+        },
+    ));
     assert!(
         message.starts_with(&format!(
-            "{LIKELY}. zsh, the shell this command was likely typed into, writes"
+            "{LIKELY}. zsh, the shell this command was likely typed into, may write"
         )),
         "{message}"
     );
@@ -766,7 +787,7 @@ fn home_manager_s_zsh_options_and_dot_dir_are_seen() {
     seed(&fs, "/home/alice/.zshrc", HOME_MANAGER_ZSHRC);
     let message = warning(run(&fs, typed("zsh", &["zsh"])));
     assert!(
-        message.contains("as you enter it: /home/alice/.zshrc sets SHARE_HISTORY."),
+        message.contains("as you enter it: /home/alice/.zshrc names SHARE_HISTORY."),
         "{message}"
     );
 
@@ -786,7 +807,7 @@ fn home_manager_s_zsh_options_and_dot_dir_are_seen() {
     seed(&fs, "/home/alice/.config/zsh/.zshrc", HOME_MANAGER_ZSHRC);
     let message = warning(run(&fs, typed("zsh", &["zsh"])));
     assert!(
-        message.contains("/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"),
+        message.contains("/home/alice/.config/zsh/.zshrc names SHARE_HISTORY"),
         "{message}"
     );
 }
@@ -799,7 +820,7 @@ fn a_setting_continued_on_the_next_line_is_seen() {
         "/home/alice/.zshrc",
         "setopt \\\n  HIST_IGNORE_DUPS \\\n  SHARE_HISTORY\n",
     );
-    assert!(warning(run(&fs, typed("zsh", &["zsh"]))).contains(".zshrc sets SHARE_HISTORY"));
+    assert!(warning(run(&fs, typed("zsh", &["zsh"]))).contains(".zshrc names SHARE_HISTORY"));
 
     let fs = MockFilesystem::new();
     seed(
@@ -830,7 +851,7 @@ fn a_turn_off_that_may_not_run_does_not_hide_an_option() {
         seed(&fs, path, off);
         let result = run(&fs, typed("zsh", &["zsh"]));
         assert!(
-            matches!(&result, CheckResult::Warn(message) if message.contains("sets SHARE_HISTORY")),
+            matches!(&result, CheckResult::Warn(message) if message.contains("names SHARE_HISTORY")),
             "{off}: {result:?}"
         );
     }
@@ -851,7 +872,7 @@ fn a_shift_in_an_arithmetic_command_hides_no_sourced_file() {
     );
     let message = warning(zsh(&fs));
     assert!(
-        message.contains("/home/alice/.zsh/history.zsh sets SHARE_HISTORY"),
+        message.contains("/home/alice/.zsh/history.zsh names SHARE_HISTORY"),
         "{message}"
     );
 }
@@ -871,7 +892,7 @@ fn a_quote_in_a_command_substitution_hides_no_sourced_file() {
     );
     let message = warning(zsh(&fs));
     assert!(
-        message.contains("/home/alice/.zsh/history.zsh sets SHARE_HISTORY"),
+        message.contains("/home/alice/.zsh/history.zsh names SHARE_HISTORY"),
         "{message}"
     );
 }
@@ -891,7 +912,7 @@ fn an_ansi_c_string_hides_no_sourced_file() {
     );
     let message = warning(zsh(&fs));
     assert!(
-        message.contains("/home/alice/.zsh/history.zsh sets SHARE_HISTORY"),
+        message.contains("/home/alice/.zsh/history.zsh names SHARE_HISTORY"),
         "{message}"
     );
 }
@@ -912,80 +933,51 @@ fn a_here_document_in_a_command_substitution_hides_no_sourced_file() {
     );
     let message = warning(zsh(&fs));
     assert!(
-        message.contains("/home/alice/.zsh/history.zsh sets SHARE_HISTORY"),
+        message.contains("/home/alice/.zsh/history.zsh names SHARE_HISTORY"),
         "{message}"
     );
 }
 
 #[test]
-fn a_warning_that_it_cannot_tell_gives_the_line_that_settles_it() {
-    let fix = "To settle it, end its .zshrc with \
-               `unsetopt share_history inc_append_history inc_append_history_time`.";
+fn a_warning_gives_fixes_the_check_can_see() {
+    let fix = "Type the decoy commands in a zsh started as `zsh -f`, which reads no startup \
+               file but /etc/zshenv.";
+    let nixos = "On NixOS, take the option out of programs.zsh.setOptions, then rebuild.";
+    // A final unsetopt is no fix: it names the option all the same.
     let fs = MockFilesystem::new();
-    seed(&fs, "/home/alice/.zshrc", "eval \"$(zoxide init zsh)\"\n");
-    let message = warning(zsh(&fs));
-    assert!(
-        message.starts_with("The check cannot tell whether zsh") && message.ends_with(fix),
-        "{message}"
-    );
-    // That line, copied to the end of the file, settles it.
     seed(
         &fs,
         "/home/alice/.zshrc",
         "eval \"$(zoxide init zsh)\"\n\
          unsetopt share_history inc_append_history inc_append_history_time\n",
     );
-    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
-
-    // It says what the line does not settle.
-    seed(&fs, "/home/alice/.zshenv", "source $SOMEWHERE/env.zsh\n");
     let message = warning(zsh(&fs));
     assert!(
-        message.ends_with(&format!(
-            "{fix} That settles no doubt about ZDOTDIR, nor one about what zsh reads before \
-             or after .zshrc."
-        )),
+        message.contains(fix) && !message.contains(nixos),
         "{message}"
     );
-}
-
-#[test]
-fn a_warning_says_why_the_final_line_cannot_settle_it() {
+    // A doubt alone gives the same fix.
+    seed(&fs, "/home/alice/.zshrc", "eval \"$(zoxide init zsh)\"\n");
+    let message = warning(zsh(&fs));
+    assert!(
+        message.starts_with("The check cannot tell whether zsh") && message.ends_with(fix),
+        "{message}"
+    );
+    // NixOS's /etc/zshrc names an option: the NixOS fix too.
     let fs = MockFilesystem::new();
     seed(
         &fs,
-        "/home/alice/.zshrc",
-        "eval \"$(starship init zsh)\"\nprecmd() { : }\n\
-         unsetopt share_history inc_append_history inc_append_history_time\n",
+        "/etc/zshrc",
+        "# /etc/zshrc: DO NOT EDIT -- this file has been generated automatically.\n\
+         setopt HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK\n",
     );
     let message = warning(zsh(&fs));
-    assert!(
-        message.ends_with(
-            "Ending its .zshrc with \
-             `unsetopt share_history inc_append_history inc_append_history_time` cannot settle \
-             it, as a hook or plugin manager in /home/alice/.zshrc can set it again after the \
-             line runs. Type the decoy commands in a shell that keeps no history instead, such \
-             as one started with `zsh -f`."
-        ),
-        "{message}"
-    );
-}
-
-#[test]
-fn a_zsh_started_with_f_is_read_by_its_etc_zshenv_alone() {
-    let fs = MockFilesystem::new();
-    seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
-    seed(&fs, "/home/alice/.zshrc", "setopt inc_append_history\n");
+    assert!(message.ends_with(&format!("{fix} {nixos}")), "{message}");
+    // And a zsh started so, whose /etc/zshenv names none, passes.
     assert!(matches!(
         run(&fs, typed("zsh", &["zsh", "-f"])),
         CheckResult::Pass(_)
     ));
-    seed(&fs, "/etc/zshenv", "setopt share_history\n");
-    let message = warning(run(&fs, typed("zsh", &["zsh", "-f"])));
-    assert!(
-        message.contains("/etc/zshenv sets SHARE_HISTORY"),
-        "{message}"
-    );
 }
 
 #[test]
@@ -995,7 +987,7 @@ fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
     seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
     let message = warning(run(&fs, InspectedShell::login(&operator)));
     assert!(
-        message.contains("/etc/zshrc sets SHARE_HISTORY"),
+        message.contains("/etc/zshrc names SHARE_HISTORY"),
         "{message}"
     );
 }

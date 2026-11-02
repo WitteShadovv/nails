@@ -29,7 +29,10 @@
 //! [`Filesystem`] seam: as root a read changes no file's access time, but a
 //! link on the way to one is followed and its access time can change. It never
 //! reads a history file. What it cannot read or follow makes it warn that it
-//! cannot tell. It knows the settings of bash, zsh and fish, and that dash
+//! cannot tell. Of zsh, any mention of an option counts as on, a turn-off too,
+//! as no reading of the files shows that one holds, so the fix it gives is one
+//! it can see: a zsh started as `zsh -f`, which reads `/etc/zshenv` alone. It
+//! knows the settings of bash, zsh and fish, and that dash
 //! keeps no history file; of any other shell it warns that it cannot tell. It
 //! does not see a setting typed into the shell, one a plugin manager's
 //! function makes, one an `eval` in bash's files makes (zsh's it reads, or
@@ -174,9 +177,14 @@ fn kind(program: &str) -> Kind {
     }
 }
 
-/// The line that, at the end of zsh's `.zshrc`, turns off what writes each
-/// command line as it runs, whatever the startup files did before it.
-const ZSH_TURN_OFF: &str = "unsetopt share_history inc_append_history inc_append_history_time";
+/// The fix for a zsh that may write each command line as it runs, as the
+/// check can see it.
+const ZSH_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, which reads no \
+                       startup file but /etc/zshenv.";
+
+/// The fix for an option NixOS's `programs.zsh` names in `/etc/zshrc`.
+const NIXOS_FIX: &str = "On NixOS, take the option out of programs.zsh.setOptions, then \
+                         rebuild.";
 
 /// What a write after every command means for the decoy commands.
 const ON_DISK: &str = "the commands typed in it are on the decoy disk once it writes them, and \
@@ -219,90 +227,47 @@ struct Judged<'a> {
 fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
     let program = nails_teardown::shells::unwrapped(shell.program);
     let part = shell.part;
-    let (scan, settings, remedy) = match kind(program) {
-        Kind::Zsh => (
-            zsh::zsh(fs, shell.homes, shell.zsh),
-            "turns on INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY",
-            format!(
-                "Type the decoy commands in a zsh that saves no history (run `unset HISTFILE` \
-                 in it first), or turn the option off for that zsh (`unsetopt` it at the end \
-                 of {}).",
-                if shell.homes.len() > 1 {
-                    "the .zshrc in each home it can run with"
-                } else {
-                    "its .zshrc"
-                }
-            ),
+    match kind(program) {
+        Kind::Zsh => judge_zsh(&zsh::zsh(fs, shell.homes, shell.zsh), program, part),
+        Kind::Bash => judge_bash(&startup::bash(fs, shell.homes), program, part),
+        Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => CheckResult::Pass(
+            format!("{program} ({part}) runs in private mode and writes no history"),
         ),
-        Kind::Bash => (
-            startup::bash(fs, shell.homes),
-            "runs `history -a` or `history -w` from PROMPT_COMMAND",
-            "Type the decoy commands in a bash whose history is off (run `set +o history` in \
-             it first), or take `history -a` and `history -w` out of PROMPT_COMMAND."
-                .to_string(),
-        ),
-        Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => {
-            return CheckResult::Pass(format!(
-                "{program} ({part}) runs in private mode and writes no history"
-            ));
-        }
-        Kind::Fish => {
-            return CheckResult::Warn(format!(
-                "{program}, {part}, writes each command line to its history file as it starts \
-                 the command, unless it runs in private mode. So {ON_DISK}. Type the decoy \
-                 commands in a fish started as `fish --private`."
-            ));
-        }
-        Kind::NoHistory => {
-            return CheckResult::Pass(format!("{program} ({part}) keeps no history file"));
-        }
-        Kind::Unknown => {
-            return CheckResult::Warn(format!(
-                "NAILS reads the history settings of bash, zsh and fish only, so it cannot \
-                 tell whether {program}, {part}, writes each command line to a history file as \
-                 it runs, as the Korn shells, yash, nu and elvish can. If it does, {ON_DISK}. \
-                 Type the decoy commands in a shell whose history is off."
-            ));
-        }
-    };
+        Kind::Fish => CheckResult::Warn(format!(
+            "{program}, {part}, writes each command line to its history file as it starts the \
+             command, unless it runs in private mode. So {ON_DISK}. Type the decoy commands in \
+             a fish started as `fish --private`."
+        )),
+        Kind::NoHistory => CheckResult::Pass(format!("{program} ({part}) keeps no history file")),
+        Kind::Unknown => CheckResult::Warn(format!(
+            "NAILS reads the history settings of bash, zsh and fish only, so it cannot tell \
+             whether {program}, {part}, writes each command line to a history file as it runs, \
+             as the Korn shells, yash, nu and elvish can. If it does, {ON_DISK}. Type the decoy \
+             commands in a shell whose history is off."
+        )),
+    }
+}
+
+/// The result for a zsh whose startup files gave `scan`. No reading of them
+/// can show that a turn-off holds, so any mention of the options counts as
+/// on; the fix is one the check can see: a zsh started with `-f`, which reads
+/// `/etc/zshenv` alone, or on NixOS the option out of `programs.zsh`.
+fn judge_zsh(scan: &startup::Scan, program: &str, part: &str) -> CheckResult {
     let doubts = (!scan.doubts.is_empty()).then(|| scan.doubts.join("; "));
+    let mut fix = ZSH_FIX.to_string();
+    if scan.nixos {
+        fix.push_str(&format!(" {NIXOS_FIX}"));
+    }
     if scan.writes.is_empty() {
         return match doubts {
             None => CheckResult::Pass(format!(
-                "{program} ({part}): no startup file the check reads {settings}"
+                "{program} ({part}): no startup file the check reads names \
+                 INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
             )),
-            Some(doubts) => {
-                // zsh runs its files top to bottom, so a turn-off at the end
-                // of .zshrc settles what came before it.
-                let fix = if kind(program) == Kind::Zsh {
-                    let rc = if shell.homes.len() > 1 {
-                        "the .zshrc in each home it can run with"
-                    } else {
-                        "its .zshrc"
-                    };
-                    if let Some(reason) = &scan.blocked {
-                        format!(
-                            " Ending {rc} with `{ZSH_TURN_OFF}` cannot settle it, as {reason}. \
-                             Type the decoy commands in a shell that keeps no history instead, \
-                             such as one started with `zsh -f`."
-                        )
-                    } else {
-                        let stays = if scan.lasting {
-                            " That settles no doubt about ZDOTDIR, nor one about what zsh reads \
-                             before or after .zshrc."
-                        } else {
-                            ""
-                        };
-                        format!(" To settle it, end {rc} with `{ZSH_TURN_OFF}`.{stays}")
-                    }
-                } else {
-                    String::new()
-                };
-                CheckResult::Warn(format!(
-                    "The check cannot tell whether {program}, {part}, writes each command line \
-                     to its history file as it runs: {doubts}. If it does, {ON_DISK}.{fix}"
-                ))
-            }
+            Some(doubts) => CheckResult::Warn(format!(
+                "The check cannot tell whether {program}, {part}, writes each command line to \
+                 its history file as it runs: {doubts}. If it does, {ON_DISK}. {fix}"
+            )),
         };
     }
     let when = if scan.writes.iter().any(|write| write.entered) {
@@ -319,8 +284,41 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
         .map(|doubts| format!(" Beyond that, {doubts}."))
         .unwrap_or_default();
     CheckResult::Warn(format!(
-        "{program}, {part}, writes each command line to its history file {when}: {}. So \
-         {ON_DISK}. {remedy}{unread}",
+        "{program}, {part}, may write each command line to its history file {when}: {}. The \
+         check counts any mention of these options as on, as no reading of the startup files \
+         can show that a turn-off holds. So {ON_DISK}. {fix}{unread}",
+        what.join("; ")
+    ))
+}
+
+/// The result for a bash whose startup files gave `scan`.
+fn judge_bash(scan: &startup::Scan, program: &str, part: &str) -> CheckResult {
+    let doubts = (!scan.doubts.is_empty()).then(|| scan.doubts.join("; "));
+    if scan.writes.is_empty() {
+        return match doubts {
+            None => CheckResult::Pass(format!(
+                "{program} ({part}): no startup file the check reads runs `history -a` or \
+                 `history -w` from PROMPT_COMMAND"
+            )),
+            Some(doubts) => CheckResult::Warn(format!(
+                "The check cannot tell whether {program}, {part}, writes each command line to \
+                 its history file as it runs: {doubts}. If it does, {ON_DISK}."
+            )),
+        };
+    }
+    let what: Vec<&str> = scan
+        .writes
+        .iter()
+        .map(|write| write.what.as_str())
+        .collect();
+    let unread = doubts
+        .map(|doubts| format!(" Beyond that, {doubts}."))
+        .unwrap_or_default();
+    CheckResult::Warn(format!(
+        "{program}, {part}, writes each command line to its history file once the command \
+         ends: {}. So {ON_DISK}. Type the decoy commands in a bash whose history is off (run \
+         `set +o history` in it first), or take `history -a` and `history -w` out of \
+         PROMPT_COMMAND.{unread}",
         what.join("; ")
     ))
 }
