@@ -474,13 +474,14 @@ jobs:
 
   # The CI tooling tests and the cheap flake checks: nixfmt, statix, deadnix,
   # shellcheck, actionlint, zizmor, the ci/ Python lints and the E2E shard
-  # weights.
+  # weights. A warm run takes 2 to 5 minutes, but with a cold cache the GUI's
+  # flake checks alone can take more than 10.
   lint-misc:
     name: lint-misc
     needs: changes
     if: needs.changes.outputs.nix == 'true' || needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
