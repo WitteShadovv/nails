@@ -32,7 +32,8 @@
 //!   drop-ins of their own ([`UnitDirs::alias_of`]);
 //! - for a unit an fstab line makes, the line's source and device, its
 //!   checkers, and what it names with `x-systemd.requires=`,
-//!   `x-systemd.requires-mounts-for=` and `x-systemd.wants-mounts-for=`.
+//!   `x-systemd.wants=`, `x-systemd.requires-mounts-for=` and
+//!   `x-systemd.wants-mounts-for=`.
 //!
 //! A device or a slice loads from its drop-ins when it has no file of its
 //! own; a unit the decoy masks starts nothing. [`boot_targets`] tells the
@@ -564,7 +565,10 @@ fn line_edges(edges: &mut Vec<Edge>, entry: &FstabEntry, name: &str) -> Result<(
         };
         if !matches!(
             key,
-            "x-systemd.requires" | "x-systemd.requires-mounts-for" | "x-systemd.wants-mounts-for"
+            "x-systemd.requires"
+                | "x-systemd.wants"
+                | "x-systemd.requires-mounts-for"
+                | "x-systemd.wants-mounts-for"
         ) {
             continue;
         }
@@ -575,7 +579,7 @@ fn line_edges(edges: &mut Vec<Edge>, entry: &FstabEntry, name: &str) -> Result<(
             ));
         }
         match key {
-            "x-systemd.requires" => {
+            "x-systemd.requires" | "x-systemd.wants" => {
                 let unit = if is_device_path(value) {
                     device_unit(value)
                 } else if value.starts_with('/') {
@@ -587,13 +591,12 @@ fn line_edges(edges: &mut Vec<Edge>, entry: &FstabEntry, name: &str) -> Result<(
                         "the fstab line of {name} names {value}, which is no unit name"
                     ));
                 };
-                push(
-                    edges,
-                    unit,
-                    true,
-                    true,
-                    "x-systemd.requires= on its fstab line",
-                );
+                let (required, how) = if key == "x-systemd.requires" {
+                    (true, "x-systemd.requires= on its fstab line")
+                } else {
+                    (false, "x-systemd.wants= on its fstab line")
+                };
+                push(edges, unit, required, true, how);
             }
             "x-systemd.requires-mounts-for" => {
                 let how = "x-systemd.requires-mounts-for= on its fstab line";
