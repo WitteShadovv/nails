@@ -38,9 +38,6 @@ pub(super) struct Scan {
     /// What the check could not follow, each as a clause of the warning
     /// (`it could not read ...`).
     pub doubts: Vec<String>,
-    /// Whether NixOS's `programs.zsh` names a setting found, in the
-    /// `/etc/zshrc` it writes.
-    pub nixos: bool,
 }
 
 /// The text of the startup file at `path`, read through `fs`: `Ok(None)` when

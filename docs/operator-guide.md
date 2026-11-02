@@ -1330,50 +1330,55 @@ afterwards:
   warns that it cannot tell when one of those files is there but cannot be
   read, when a `setopt` takes an expansion it cannot list, when a sourced
   file's path or a `ZDOTDIR` does not resolve (as for
-  `source <(tool init zsh)`) or zsh expands it into others (a glob,
-  `{a,b}`), when a function they autoload may be in a directory added to
-  `fpath` that does not resolve (as for NixOS's profiles,
-  `$p/share/zsh/site-functions`), when zsh may run compiled code in place
-  of a file (the `.zwc` that `zcompile` writes beside a file or for an
-  `fpath` directory), when a `source` names no file, when `ZDOTDIR`
-  is set otherwise than by an assignment (`: ${ZDOTDIR:=...}`), when a
-  quote, an expansion or a here-document runs to the end of the file
-  without closing, when an expansion holds what it cannot read as zsh does
-  (a `case` in a `$(...)`, a `${ command }`), or when the shell is not bash,
-  zsh, fish or dash (dash keeps no history file). It does not see a setting
-  made by a plugin manager's function, one in a function zsh autoloads from
-  the directories it was built with, one you typed into the shell, a file
-  a bash startup file sources, or a shell started with other startup files
-  (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
-  keeps its own record of each command, such as atuin.
+  `source <(tool init zsh)`) or zsh expands it into others (a glob, `{a,b}`),
+  when a function they autoload may be in a directory added to `fpath` that
+  does not resolve (as for NixOS's profiles, `$p/share/zsh/site-functions`),
+  when zsh may run compiled code in place of a file (the `.zwc` that
+  `zcompile` writes beside a file or for an `fpath` directory), when a
+  `source` names no file, when `ZDOTDIR` is set otherwise than by an
+  assignment (`: ${ZDOTDIR:=...}`), when a quote, an expansion or a
+  here-document runs to the end of the file without closing, when an expansion
+  holds what it cannot read as zsh does (a `case` in a `$(...)`, a
+  `${ command }`), or when the shell is not bash, zsh, fish or dash (dash
+  keeps no history file). It does not see a setting made by a plugin manager's
+  function, one in a function zsh autoloads from the directories it was built
+  with, one you typed into the shell, a file a bash startup file sources, or a
+  shell started with other startup files (`bash --rcfile`, a `ZDOTDIR` from
+  the environment), nor a history tool that keeps its own record of each
+  command, such as atuin.
 
   It reads an `eval` of words it can read as code, and warns that it cannot
   tell what a command runs whose name an expansion makes (`$cmd`,
   `${:-source}`). Beside reading zsh's files as code, it counts in their
-  lines, without reading the code and wherever they stand, the three
-  options, `source`, a `.` with a word after it, `eval`, an alias that
-  stands for `.`, `autoload`, and the `ZDOTDIR` and `fpath` settings,
-  leaving out only a line that is a comment. What a line names beyond what
-  it read as code it follows makes it fail closed, in case it read the code
-  otherwise than zsh does: such an option counts as on, an `fpath` setting
-  adds a directory it cannot follow, and the rest makes it warn that it
-  cannot tell. So a
-  `source` or `eval` anywhere but in a command it follows, in an `echo`, a
-  string, an alias or a here-document, makes it warn, and so does an `eval`
-  of what a command prints (`eval "$(tool init zsh)"`).
+  lines, without reading the code and wherever they stand, the three options,
+  `source`, a `.` with a word after it, `eval`, an alias that stands for `.`,
+  `autoload`, and the `ZDOTDIR` and `fpath` settings, leaving out only a line
+  that is a comment. What a line names beyond what it read as code it follows
+  makes it fail closed, in case it read the code otherwise than zsh does: such
+  an option counts as on, an `fpath` setting adds a directory it cannot
+  follow, and the rest makes it warn that it cannot tell. So a `source` or
+  `eval` anywhere but in a command it follows, in an `echo`, a string, an
+  alias or a here-document, makes it warn, and so does an `eval` of what a
+  command prints (`eval "$(tool init zsh)"`).
 
-  So zsh passes only when no file it reads names the three options and
-  nothing is left the check cannot tell: zsh's default, under which a zsh
-  writes its history only as it exits, which the kill at activation keeps
-  it from doing. If you turn the options off in your `.zshrc`, the check
-  still warns, as it cannot see that the turn-off holds. The fix it gives is
-  one it can see: type the decoy commands in a zsh started as `zsh -f`,
-  which reads no startup file but `/etc/zshenv`, so the check reads only
-  that, and passes when it names none of the options. On NixOS, where
-  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default, you can
-  also take the option out of `programs.zsh.setOptions` and rebuild. Home
-  Manager's `programs.zsh` names the options in `.zshrc` whether it turns
-  them on or off (`history.share`), so with it, `zsh -f` is the way.
+  So zsh passes only when no file it reads names the three options and nothing
+  is left the check cannot tell: zsh's default, under which a zsh writes its
+  history only as it exits, which the kill at activation keeps it from doing.
+  If you turn the options off in your `.zshrc`, the check still warns, as it
+  cannot see that the turn-off holds. The fix it gives is one it can see: type
+  the decoy commands in a zsh started as `zsh -f`, which reads no startup file
+  but `/etc/zshenv`, so the check reads only that, and passes when that names
+  none of the options and holds nothing it cannot follow. When `/etc/zshenv`
+  names one, or holds what the check cannot follow, the warning for such a zsh
+  tells you to take that out of it and of what it sources. On NixOS,
+  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default. Take it out
+  of `programs.zsh.setOptions` and rebuild all the same, so that no zsh writes
+  as you type, but the check still cannot tell there: the generated
+  `/etc/zshrc` runs an `eval` of what `dircolors` prints and autoloads
+  `compinit` from the directories that `/etc/zshenv` adds to `fpath`, which it
+  cannot resolve. Home Manager's `programs.zsh` names the options in `.zshrc`
+  whether it turns them on or off (`history.share`). So with either, `zsh -f`
+  is the fix the check can see.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

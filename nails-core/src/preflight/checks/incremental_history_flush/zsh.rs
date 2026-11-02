@@ -38,9 +38,11 @@
 //! expansion that holds what the check cannot read as zsh does (a `case` in a
 //! `$(...)`, a `${ command }`) are doubts. Beside the code, the lines of each
 //! file are counted for what they name ([`backstop`]): an option named beyond
-//! what the code names counts as on, and a `source`, `.` or `ZDOTDIR` setting
-//! beyond what the walk read is a doubt. The structure of the code still
-//! decides which `ZDOTDIR` zsh reads its files in.
+//! what the code names counts as on, an `fpath` setting beyond what the walk
+//! read adds a directory the check cannot follow, and a `source`, `.`,
+//! `eval`, `autoload` or `ZDOTDIR` setting beyond that is a doubt. The
+//! structure of the code still decides which `ZDOTDIR` zsh reads its files
+//! in.
 
 mod backstop;
 mod lexer;
@@ -63,10 +65,6 @@ const OPTIONS: [(&str, &str, bool); 3] = [
     ("sharehistory", "SHARE_HISTORY", true),
     ("incappendhistorytime", "INC_APPEND_HISTORY_TIME", false),
 ];
-
-/// The first line of the `/etc/zshrc` NixOS's `programs.zsh` writes.
-const NIXOS_ZSHRC: &str =
-    "# /etc/zshrc: DO NOT EDIT -- this file has been generated automatically.";
 
 /// Oh My Zsh's loader, which turns `SHARE_HISTORY` on (its `lib/history.zsh`).
 const OH_MY_ZSH: &str = "oh-my-zsh.sh";
@@ -170,8 +168,6 @@ struct Reader<'a, F: Filesystem> {
     autoloads: Vec<String>,
     /// What the check could not follow.
     doubts: Vec<String>,
-    /// Whether NixOS's generated `/etc/zshrc` names one of [`OPTIONS`].
-    nixos: bool,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -294,15 +290,6 @@ impl<F: Filesystem> Reader<'_, F> {
             self.apply(event, &place, certain && !read.confused);
         }
         self.stack.pop();
-        if path == Path::new("/etc/zshrc")
-            && text.starts_with(NIXOS_ZSHRC)
-            && backstop::named(&text)
-                .options
-                .iter()
-                .any(|&named| named > 0)
-        {
-            self.nixos = true;
-        }
     }
 
     /// Apply one event of the file at `place`; `certain` when zsh certainly
@@ -487,7 +474,6 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
                 scan.doubts.push(doubt);
             }
         }
-        scan.nixos |= one.nixos;
     }
     scan
 }
@@ -505,7 +491,6 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         fpath: Vec::new(),
         autoloads: Vec::new(),
         doubts: Vec::new(),
-        nixos: false,
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
@@ -544,7 +529,6 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
     reader.autoloaded();
     let mut scan = Scan {
         doubts: reader.doubts,
-        nixos: reader.nixos,
         ..Scan::default()
     };
     for ((_, shown, entered), named) in OPTIONS.iter().zip(reader.options) {

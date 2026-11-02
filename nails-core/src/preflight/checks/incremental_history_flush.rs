@@ -31,7 +31,8 @@
 //! reads a history file. What it cannot read or follow makes it warn that it
 //! cannot tell. Of zsh, any mention of an option counts as on, a turn-off too,
 //! as no reading of the files shows that one holds, so the fix it gives is one
-//! it can see: a zsh started as `zsh -f`, which reads `/etc/zshenv` alone. It
+//! it can see: a zsh started as `zsh -f`, which reads `/etc/zshenv` alone, or
+//! for such a zsh, what the check names taken out of `/etc/zshenv`. It
 //! knows the settings of bash, zsh and fish, and that dash
 //! keeps no history file; of any other shell it warns that it cannot tell. It
 //! does not see a setting typed into the shell, one a plugin manager's
@@ -178,14 +179,19 @@ fn kind(program: &str) -> Kind {
     }
 }
 
-/// The fix for a zsh that may write each command line as it runs, as the
-/// check can see it.
+/// The fix for a zsh that may write each command line as it runs, one the
+/// check can see: such a zsh reads only `/etc/zshenv`. A fix in the startup
+/// files is none it could see on NixOS or with Home Manager, whose generated
+/// files name the options whether they turn them on or off, or hold what the
+/// check cannot follow (an `eval` of `dircolors`'s output, a `compinit` from
+/// directories added to `fpath` it cannot resolve).
 const ZSH_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, which reads no \
                        startup file but /etc/zshenv.";
 
-/// The fix for an option NixOS's `programs.zsh` names in `/etc/zshrc`.
-const NIXOS_FIX: &str = "On NixOS, take the option out of programs.zsh.setOptions, then \
-                         rebuild.";
+/// The fix for a zsh started with `-f` that may write each command line as
+/// it runs: what it reads is in `/etc/zshenv`.
+const BARE_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv and what it \
+                            sources, so take what the check names out of them.";
 
 /// What a write after every command means for the decoy commands.
 const ON_DISK: &str = "the commands typed in it are on the decoy disk once it writes them, and \
@@ -229,7 +235,10 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
     let program = nails_teardown::shells::unwrapped(shell.program);
     let part = shell.part;
     match kind(program) {
-        Kind::Zsh => judge_zsh(&zsh::zsh(fs, shell.homes, shell.zsh), program, part),
+        Kind::Zsh => {
+            let fix = if shell.zsh.rcs { ZSH_FIX } else { BARE_ZSH_FIX };
+            judge_zsh(&zsh::zsh(fs, shell.homes, shell.zsh), program, part, fix)
+        }
         Kind::Bash => judge_bash(&startup::bash(fs, shell.homes), program, part),
         Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => CheckResult::Pass(
             format!("{program} ({part}) runs in private mode and writes no history"),
@@ -251,14 +260,9 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
 
 /// The result for a zsh whose startup files gave `scan`. No reading of them
 /// can show that a turn-off holds, so any mention of the options counts as
-/// on; the fix is one the check can see: a zsh started with `-f`, which reads
-/// `/etc/zshenv` alone, or on NixOS the option out of `programs.zsh`.
-fn judge_zsh(scan: &startup::Scan, program: &str, part: &str) -> CheckResult {
+/// on; `fix` is one the check can see ([`ZSH_FIX`], [`BARE_ZSH_FIX`]).
+fn judge_zsh(scan: &startup::Scan, program: &str, part: &str, fix: &str) -> CheckResult {
     let doubts = (!scan.doubts.is_empty()).then(|| scan.doubts.join("; "));
-    let mut fix = ZSH_FIX.to_string();
-    if scan.nixos {
-        fix.push_str(&format!(" {NIXOS_FIX}"));
-    }
     if scan.writes.is_empty() {
         return match doubts {
             None => CheckResult::Pass(format!(
