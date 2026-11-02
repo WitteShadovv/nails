@@ -35,7 +35,8 @@ pub(super) enum End {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Token {
     Word(Word),
-    /// `NAME=(...)`: an array's name and its elements.
+    /// `NAME=(...)`: an array's name and its elements; the name ends with
+    /// `+` for `NAME+=(...)`, which appends them.
     Array(String, Vec<Word>),
     End(End),
     /// `(` and `)` outside a word.
@@ -766,7 +767,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             '(' => match lexer.word.take() {
                 Some(word) if !word.expands && word.text.ends_with('=') => {
                     let name = word.text.trim_end_matches('=').to_string();
-                    if is_name(&name) {
+                    if is_name(name.strip_suffix('+').unwrap_or(&name)) {
                         let items = lexer.array();
                         lexer.tokens.push(Token::Array(name, items));
                     } else {
