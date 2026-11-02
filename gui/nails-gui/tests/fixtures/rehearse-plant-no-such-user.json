@@ -1,0 +1,10 @@
+{
+  "command": "rehearse",
+  "error": {
+    "code": "no_such_user",
+    "message": "no account is named no-such-account-7f3a: name an account of this system, or leave out --user to plant for the account that ran this",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}

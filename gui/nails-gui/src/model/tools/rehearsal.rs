@@ -8,7 +8,9 @@
 //! test words in a hidden session, end that session as usual, then scan this
 //! computer's disks for them from a later hidden session (or the decoy).
 //! Its action is the step that comes next: Plant Test Words in a hidden
-//! session, Scan for Test Words once they are planted, and once a scan ran
+//! session, for the account named in its field when one is (`rehearse plant
+//! --user`), else for the window's own; Scan for Test Words once they are
+//! planted, and once a scan ran
 //! Scan Again, with Remove Test Words (`rehearse reset`) on the decoy, where
 //! the engine allows it. No window opens on the decoy in this release, so a
 //! hidden session's page names the line that removes them there instead.
@@ -35,12 +37,12 @@
 //! engine names for every scan of its kind, word for word.
 
 use nails_api::CheckOutcome;
-use nails_api::protocol::{RehearsePlantArgs, RehearseScanArgs};
+use nails_api::protocol::{Op, RehearsePlantArgs, RehearseScanArgs, validate};
 
 use super::{Context, ToolKind, error_of, group, row, tool_page};
 use crate::client::Answer;
 use crate::envelope::{self, Channel, DeviceScan, Phase, RehearseData, ScanReport};
-use crate::model::{Group, Page, StepView};
+use crate::model::{Field, Group, Page, StepView};
 use crate::text;
 use crate::worker::{Ask, Kind, Rehearse};
 
@@ -71,6 +73,9 @@ pub(crate) struct Rehearsal {
     notice: Option<String>,
     /// The test words were planted in this very session.
     planted_here: bool,
+    /// The account the test words are planted for, as typed: empty for the
+    /// window's own.
+    account: String,
 }
 
 /// What the page shows over the rehearsal's steps.
@@ -99,6 +104,7 @@ impl Rehearsal {
                 shown: None,
                 notice: None,
                 planted_here,
+                account: String::new(),
             },
             Ask::Rehearse(Rehearse::Status),
         )
@@ -109,11 +115,16 @@ impl Rehearsal {
         self.planted_here
     }
 
+    /// The account field changed to `typed`.
+    pub(crate) fn edited(&mut self, typed: &str) {
+        typed.clone_into(&mut self.account);
+    }
+
     /// The ask for `label`, one of the page's actions, in a hidden session
     /// when `hidden`.
     pub(crate) fn action(&mut self, label: &str, hidden: bool) -> Option<Ask> {
         let (step, ask) = match label {
-            text::PLANT if hidden => (Step::Plant, Rehearse::Plant(RehearsePlantArgs::default())),
+            text::PLANT if hidden => (Step::Plant, Rehearse::Plant(self.plant_args()?)),
             text::SCAN | text::SCAN_AGAIN => {
                 (Step::Scan, Rehearse::Scan(RehearseScanArgs::default()))
             }
@@ -304,8 +315,36 @@ impl Rehearsal {
                 &text::remove_on_decoy(cx.engine.as_deref()),
             );
         }
+        if action == Some(text::PLANT) {
+            let named = self.plant_args().is_some();
+            page.field = Some(Field {
+                label: text::FIELD_ACCOUNT.to_string(),
+                text: self.account.clone(),
+                hint: if named {
+                    text::ACCOUNT_HINT
+                } else {
+                    text::ACCOUNT_NOT_A_NAME
+                }
+                .to_string(),
+            });
+            page.action_locked = !named;
+        }
         page.action = action;
         page.secondary = secondary;
+    }
+
+    /// The plant's arguments for the account typed, spaces around it dropped
+    /// (none when it is empty: the plant is for the window's own). `None`
+    /// when the helper would refuse that name unread, as it refuses a request
+    /// that ends the window's session: such a plant is never asked for.
+    fn plant_args(&self) -> Option<RehearsePlantArgs> {
+        let name = self.account.trim();
+        let args = RehearsePlantArgs {
+            user: (!name.is_empty()).then(|| name.to_string()),
+        };
+        validate(&Op::RehearsePlant(args.clone()))
+            .ok()
+            .map(|()| args)
     }
 }
 

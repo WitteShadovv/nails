@@ -37,6 +37,9 @@ fn fixture(name: &str) -> Value {
         }
         "discard-refused" => include_str!("../../tests/fixtures/discard-refused.json"),
         "init-refused" => include_str!("../../tests/fixtures/init-refused.json"),
+        "rehearse-plant-no-such-user" => {
+            include_str!("../../tests/fixtures/rehearse-plant-no-such-user.json")
+        }
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).unwrap()
@@ -344,6 +347,93 @@ fn a_rehearsal_in_a_hidden_session_plants_and_says_what_comes_next() {
     assert_eq!(page.fix, text::AFTER_PLANT);
     // No scan in the session that planted: the engine would refuse it.
     assert_eq!(page.action, None);
+}
+
+/// The plant's field names the account it is for (`rehearse plant
+/// --user`), spaces around the name dropped; left empty, the plant is for
+/// the window's own. A name no account has is refused as the CLI refuses
+/// it, in the engine's words, as the real helper answered.
+#[test]
+fn the_plant_is_for_the_account_its_field_names() {
+    let mut model = hidden();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-status-none")));
+    let field = model.page().field.expect("the account field");
+    assert_eq!(field.label, text::FIELD_ACCOUNT);
+    assert_eq!(field.text, "");
+    assert_eq!(field.hint, text::ACCOUNT_HINT);
+    model.edited("   ");
+    assert_eq!(model.page().field.unwrap().text, "   ");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Rehearse(Rehearse::Plant(
+            RehearsePlantArgs { user: None }
+        ))))
+    );
+
+    let mut model = hidden();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-status-none")));
+    model.edited(" no-such-account-7f3a ");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Rehearse(Rehearse::Plant(
+            RehearsePlantArgs {
+                user: Some("no-such-account-7f3a".to_string())
+            }
+        ))))
+    );
+    model.apply(Update::Running(Kind::Rehearse));
+    model.apply(answered(
+        Kind::Rehearse,
+        2,
+        fixture("rehearse-plant-no-such-user"),
+    ));
+    let page = model.page();
+    assert_eq!(page.heading, text::PLANT_FAILED);
+    assert!(
+        page.note.starts_with(
+            "No account is named no-such-account-7f3a: name an account of this system"
+        ),
+        "{}",
+        page.note
+    );
+    // The field keeps the name, for a plant that names another.
+    assert_eq!(page.field.unwrap().text, " no-such-account-7f3a ");
+}
+
+/// A name the helper would refuse unread, which would end the window's
+/// session, is never sent: the plant waits for a name.
+#[test]
+fn the_plant_waits_for_a_name_the_helper_takes() {
+    let mut model = hidden();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-status-none")));
+    let long = "a".repeat(257);
+    for typed in ["ali/ce", "alice:x", "al\u{7}ice", long.as_str()] {
+        model.edited(typed);
+        let page = model.page();
+        assert!(page.action_locked, "{typed:?}");
+        assert_eq!(page.field.unwrap().hint, text::ACCOUNT_NOT_A_NAME);
+        assert_eq!(model.action(), None, "{typed:?}");
+        assert_eq!(model.tool_action(text::PLANT), None, "{typed:?}");
+    }
+    model.edited(&"a".repeat(256));
+    assert!(!model.page().action_locked);
+}
+
+/// Only the plant takes an account: once the test words are planted, the
+/// page has no field.
+#[test]
+fn only_the_plant_has_the_account_field() {
+    let mut model = hidden();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(
+        Kind::Rehearse,
+        0,
+        fixture("rehearse-status-planted"),
+    ));
+    assert_eq!(model.page().field, None);
 }
 
 #[test]

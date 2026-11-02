@@ -287,6 +287,7 @@ impl Model {
         match &mut self.tool {
             Some(Tool::Discard(discard)) => discard.edited(typed),
             Some(Tool::Settings(settings)) => settings.edited(typed),
+            Some(Tool::Rehearsal(rehearsal)) => rehearsal.edited(typed),
             _ => {}
         }
     }

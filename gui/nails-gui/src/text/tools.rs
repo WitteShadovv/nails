@@ -105,6 +105,15 @@ pub const STEP_SCAN: &str = "Scan this computer's disks for the test words";
 pub const READING_REHEARSAL: &str = "Reading the rehearsal";
 /// The action that plants the test words.
 pub const PLANT: &str = "Plant Test Words";
+/// The field that names the account the test words are planted for
+/// (`rehearse plant --user`).
+pub const FIELD_ACCOUNT: &str = "For account";
+/// The line under it.
+pub const ACCOUNT_HINT: &str = "Leave it empty to plant for your own account";
+/// The line under it when what it holds is no account's name, which the
+/// engine would refuse unread.
+pub const ACCOUNT_NOT_A_NAME: &str =
+    "An account's name has no slash, colon or control character, and at most 256 bytes.";
 /// While they are planted.
 pub const PLANTING: &str = "Planting the test words";
 /// The action that scans for them.

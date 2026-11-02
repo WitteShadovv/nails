@@ -12,7 +12,8 @@ mod support;
 
 use i_slint_backend_testing::{AccessibleLiveness, AccessibleRole};
 use nails_api::protocol::{
-    DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData, RehearseScanArgs, VerifyArgs,
+    DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData, RehearsePlantArgs, RehearseScanArgs,
+    VerifyArgs,
 };
 use nails_gui::client::{Answer, Plan, PlanData, ours};
 use nails_gui::text;
@@ -297,6 +298,23 @@ fn type_into(screen: &Screen, label: &str, typed: &str) {
         screen.press(Key::Tab);
     }
     screen.type_text(typed);
+}
+
+/// The plant's field, labelled for a screen reader, names the account the
+/// test words are planted for.
+#[test]
+fn the_plant_takes_the_account_typed_into_its_field() {
+    let screen = hidden();
+    rehearsal(&screen, "rehearse-status-none");
+    type_into(&screen, text::FIELD_ACCOUNT, "alice");
+    assert!(screen.shows(text::ACCOUNT_HINT));
+    press(&screen, text::PLANT);
+    assert_eq!(
+        screen.asks(),
+        [Ask::Rehearse(Rehearse::Plant(RehearsePlantArgs {
+            user: Some("alice".to_string())
+        }))]
+    );
 }
 
 #[test]

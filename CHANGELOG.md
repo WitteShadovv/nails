@@ -199,9 +199,10 @@ of this changelog for that version becomes the release notes word for word, and
   puts the verdict first and never more than the engine found (no known trace is no proof of none),
   then each finding with the engine's fix, then every area the run did not check, as the engine
   lists it. Rehearsal shows the rehearsal's three steps, where it stands and the action of the next
-  one: Plant Test Words in a hidden session, and Scan for Test Words once they are planted, but not
-  in the session that planted them, which the engine refuses and the window remembers for as long as
-  it is open. Removing the test words (Remove Test Words, `rehearse reset`) is the decoy's, where no
+  one: Plant Test Words in a hidden session, for the account its field names (`rehearse plant
+  --user`) or else the window's own, and Scan for Test Words once they are planted, but not in the
+  session that planted them, which the engine refuses and the window remembers for as long as it is
+  open. Removing the test words (Remove Test Words, `rehearse reset`) is the decoy's, where no
   window opens yet, so a hidden session's page gives that command instead. A scan's result lists
   first what the scan did not check, a disk whose storage can hide the test words among it, and
   reads Not a Clean Result, never Passed, for such a disk, and Scan Incomplete for one it could not
