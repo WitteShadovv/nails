@@ -594,6 +594,25 @@ fn a_device_reached_twice_is_walked_once() {
 }
 
 #[test]
+fn only_the_hidden_roots_stack_goes_on_from_a_partition_into_its_md_array() {
+    let devices = World::default()
+        .disk("sda", "8:0")
+        .part("sda1", "8:1", "sda")
+        .disk("sdb", "8:16")
+        .part("sdb1", "8:17", "sdb")
+        .node("md0", "9:0", NodeKind::Disk, &["sda1", "sdb1"])
+        .part("md0p1", "259:11", "md0")
+        .devices;
+    assert_eq!(
+        devices.hidden_stack("md0p1"),
+        vec!["md0p1", "md0", "sda1", "sdb1"]
+    );
+    assert_eq!(devices.stack("md0p1"), vec!["md0p1"]);
+    // A partition of a disk built on nothing leads into it for neither.
+    assert_eq!(devices.hidden_stack("sda1"), vec!["sda1"]);
+}
+
+#[test]
 fn a_partition_of_an_image_file_on_the_decoys_disk_is_refused() {
     // `losetup -P` over an image file on /home: the partition's data lies in
     // the file, as the loop device's does.
@@ -653,6 +672,79 @@ fn a_partition_whose_disk_is_not_found_cannot_be_traced() {
     assert_eq!(verdict.severity(), Severity::Refuse);
 }
 
+/// The plain decoy and an md array over two loop devices whose image files
+/// lie on its `/home`, partitioned, with the hidden root on `root`, numbered
+/// `dev`.
+fn array_of_images_on_home(root: &str, dev: &str) -> World {
+    plain_decoy(&format!("5 1 {dev} / /mnt rw - ext4 {root} rw\n"))
+        .loop_file("loop1", "7:1", "/home/alice/a.img")
+        .loop_file("loop2", "7:2", "/home/alice/b.img")
+        .node("md0", "9:0", NodeKind::Disk, &["loop1", "loop2"])
+        .part("md0p1", "259:10", "md0")
+}
+
+#[test]
+fn a_partition_of_an_md_array_of_images_on_the_decoys_disk_is_refused_as_the_array_is() {
+    // The partition shows no device below it. The array's devices hold its
+    // data, as they hold the array's.
+    for (root, dev) in [("/dev/md0", "9:0"), ("/dev/md0p1", "259:10")] {
+        assert_eq!(
+            array_of_images_on_home(root, dev).verdict("/mnt"),
+            Verdict::ImageFileOnDecoy {
+                file: PathBuf::from("/home/alice/a.img"),
+                at: PathBuf::from("/home"),
+            },
+            "{root}"
+        );
+    }
+}
+
+#[test]
+fn luks_in_a_partition_of_an_md_array_of_images_on_the_decoys_disk_only_warns() {
+    let world = array_of_images_on_home("/dev/mapper/box", "254:9").crypt(
+        "dm-9",
+        "254:9",
+        "box",
+        &["md0p1"],
+    );
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::ContainerOnDecoy {
+            file: PathBuf::from("/home/alice/a.img"),
+            at: PathBuf::from("/home"),
+        }
+    );
+}
+
+#[test]
+fn a_partition_of_an_md_array_on_a_spare_lv_of_the_decoys_group_is_refused_as_the_array_is() {
+    // Debian's LVM on LUKS, and an md array over a logical volume of the
+    // decoy's group that it does not mount.
+    for (root, dev) in [("/dev/md0", "9:0"), ("/dev/md0p1", "259:10")] {
+        let world = World::new(&format!(
+            "1 0 254:1 / / rw - ext4 /dev/mapper/vg-root rw\n\
+             5 1 {dev} / /mnt rw - ext4 {root} rw\n"
+        ))
+        .disk("nvme0n1", "259:0")
+        .part("nvme0n1p3", "259:3", "nvme0n1")
+        .crypt("dm-0", "254:0", "cryptroot", &["nvme0n1p3"])
+        .lv("dm-1", "254:1", "vg-root", &["dm-0"])
+        .lv("dm-3", "254:3", "vg-spare", &["dm-0"])
+        .node("md0", "9:0", NodeKind::Disk, &["dm-3"])
+        .part("md0p1", "259:10", "md0")
+        .fstab("/dev/mapper/vg-root / ext4 defaults 0 1\n");
+        assert_eq!(
+            world.verdict("/mnt"),
+            Verdict::InsideDecoyStorage {
+                device: "dm-0".to_string(),
+                holds: Claimed::Mount(PathBuf::from("/")),
+                noauto_only: false,
+            },
+            "{root}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Separate
 // ---------------------------------------------------------------------------
@@ -680,6 +772,27 @@ fn a_spare_partition_beside_the_decoys_is_separate() {
     .fstab("/dev/mapper/vg-root / ext4 defaults 0 1\n")
     .crypttab("cryptroot /dev/nvme0n1p3 none luks\n");
     assert_eq!(world.verdict("/mnt"), Verdict::Separate);
+}
+
+#[test]
+fn two_partitions_of_one_md_array_share_nothing() {
+    // The decoy's root on md0p2 of an md mirror of sda1 and sdb1, and the
+    // hidden root on md0p1, as two partitions of one disk.
+    let world = World::new(
+        "1 0 259:12 / / rw - ext4 /dev/md0p2 rw\n\
+         5 1 259:11 / /mnt rw - ext4 /dev/md0p1 rw\n",
+    )
+    .disk("sda", "8:0")
+    .part("sda1", "8:1", "sda")
+    .disk("sdb", "8:16")
+    .part("sdb1", "8:17", "sdb")
+    .node("md0", "9:0", NodeKind::Disk, &["sda1", "sdb1"])
+    .part("md0p1", "259:11", "md0")
+    .part("md0p2", "259:12", "md0")
+    .fstab("/dev/md0p2 / ext4 defaults 0 1\n");
+    let judgement = world.judge("/mnt");
+    assert_eq!(judgement.verdict, Verdict::Separate);
+    assert!(judgement.entries.is_empty(), "{:?}", judgement.entries);
 }
 
 #[test]
@@ -900,6 +1013,39 @@ fn a_bind_of_a_data_mount_whose_fstab_spec_does_not_resolve_is_refused() {
             at: PathBuf::from("/data"),
         }
     );
+}
+
+#[test]
+fn the_crypttab_lines_of_an_md_arrays_devices_name_the_hidden_drive_from_a_partition_too() {
+    // An md mirror of two LUKS volumes the decoy's crypttab opens, which hold
+    // the hidden root whether it is on the array or on a partition of it.
+    for (root, dev) in [("/dev/md0", "9:0"), ("/dev/md0p1", "259:10")] {
+        let judgement = plain_decoy(&format!("5 1 {dev} / /mnt rw - ext4 {root} rw\n"))
+            .disk("sdb", "8:16")
+            .part("sdb1", "8:17", "sdb")
+            .disk("sdc", "8:32")
+            .part("sdc1", "8:33", "sdc")
+            .crypt("dm-20", "254:20", "leg0", &["sdb1"])
+            .crypt("dm-21", "254:21", "leg1", &["sdc1"])
+            .node("md0", "9:0", NodeKind::Disk, &["dm-20", "dm-21"])
+            .part("md0p1", "259:10", "md0")
+            .crypttab("leg0 /dev/sdb1 none luks\nleg1 /dev/sdc1 none luks\n")
+            .judge("/mnt");
+        assert_eq!(judgement.verdict, Verdict::Separate, "{root}");
+        let lines: Vec<(EntryKind, &str)> = judgement
+            .entries
+            .iter()
+            .map(|entry| (entry.kind, entry.line.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (EntryKind::Blocking, "leg0 /dev/sdb1"),
+                (EntryKind::Blocking, "leg1 /dev/sdc1"),
+            ],
+            "{root}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

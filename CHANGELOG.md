@@ -587,6 +587,13 @@ of this changelog for that version becomes the release notes word for word, and
   data, so an image file, an encrypted container file or a device the decoy uses below it is
   judged as for the whole device. A partition whose disk is not found is refused
   (`storage_unjudged`), since nothing shows where it keeps its data.
+- The attach gate refuses a partition of an md array whose devices lie on the decoy's storage, as
+  it refuses the array itself. A partition of an array shows no device below it, so a root on
+  `md0p1` attached where one on `md0` was refused, as for an array of image files on the decoy's
+  `/home` or of a spare logical volume in its encrypted group. A root on a partition of an md array
+  is now judged as one on the array, and `backend-entries` names the decoy's fstab and crypttab
+  lines for the array's devices as it does for the array. Two partitions of one array still share
+  nothing, as two partitions of one disk share nothing.
 - Activation and `emergency` kill the interactive shells the newest first. A login shell that
   leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
   console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at

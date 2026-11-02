@@ -36,9 +36,11 @@
 //! or an encrypted container file, on a claimed filesystem, or on one whose
 //! device cannot be found, or on none mounted here; else it is separate. A
 //! tmpfs or ramfs root is always separate. A partition of a loop device lies
-//! in the loop device's file and is judged with it. The filesystem that holds
-//! an image file is the one on the device the loop driver recorded for the
-//! file ([`FileHolder`]), not the one its path leads to today.
+//! in the loop device's file and is judged with it, and a root on a partition
+//! of an md array is judged with the array's devices, though a partition of
+//! the array that the decoy uses shares nothing with it. The filesystem that
+//! holds an image file is the one on the device the loop driver recorded for
+//! the file ([`FileHolder`]), not the one its path leads to today.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
@@ -155,7 +157,8 @@ pub struct Node {
     /// backing block device). A partition does not list its disk: two
     /// partitions of one disk share no storage. The walk of a stack still
     /// goes on from a partition into its disk where that disk is a loop or
-    /// device-mapper device, which keeps the partition's data elsewhere.
+    /// device-mapper device, which keeps the partition's data elsewhere, and
+    /// for the hidden root where it is an md array.
     pub below: Vec<String>,
 }
 
@@ -205,6 +208,22 @@ impl DeviceMap {
     /// device-mapper device lies that device: the partition's data is where
     /// the device keeps its own, in an image file or on the devices below it.
     fn stack(&self, name: &str) -> Vec<String> {
+        self.walk(name, false)
+    }
+
+    /// The stack of the hidden root's device `name`: as [`Self::stack`], and
+    /// below a partition of a disk built on other devices (an md array) lie
+    /// that disk and its devices too, which hold the partition's data. A
+    /// claim's stack stops at such a partition, so a partition of the array
+    /// that the decoy uses shares nothing with another one, as two partitions
+    /// of one disk share nothing.
+    fn hidden_stack(&self, name: &str) -> Vec<String> {
+        self.walk(name, true)
+    }
+
+    /// `name` and every device below it, into the arrays of partitions when
+    /// `into_arrays`.
+    fn walk(&self, name: &str, into_arrays: bool) -> Vec<String> {
         let mut seen = Vec::new();
         let mut pending = vec![name.to_string()];
         while let Some(next) = pending.pop() {
@@ -213,7 +232,7 @@ impl DeviceMap {
             }
             if let Some(node) = self.nodes.get(&next) {
                 pending.extend(node.below.iter().rev().cloned());
-                pending.extend(self.virtual_disk(node).map(str::to_string));
+                pending.extend(self.disk_below(node, into_arrays).map(str::to_string));
             }
             seen.push(next);
         }
@@ -221,17 +240,19 @@ impl DeviceMap {
     }
 
     /// The disk the partition `node` lies on, when that disk keeps its data
-    /// elsewhere: a loop or device-mapper device.
-    fn virtual_disk<'a>(&self, node: &'a Node) -> Option<&'a str> {
+    /// elsewhere: a loop or device-mapper device, and with `arrays` a disk
+    /// built on other devices, as an md array is.
+    fn disk_below<'a>(&self, node: &'a Node, arrays: bool) -> Option<&'a str> {
         let NodeKind::Partition { disk } = &node.kind else {
             return None;
         };
-        let kind = &self.nodes.get(disk)?.kind;
-        matches!(
-            kind,
-            NodeKind::Loop { .. } | NodeKind::Crypt { .. } | NodeKind::Mapper { .. }
-        )
-        .then_some(disk.as_str())
+        let on = self.nodes.get(disk)?;
+        let elsewhere = match on.kind {
+            NodeKind::Loop { .. } | NodeKind::Crypt { .. } | NodeKind::Mapper { .. } => true,
+            NodeKind::Disk => arrays && !on.below.is_empty(),
+            NodeKind::Partition { .. } => false,
+        };
+        elsewhere.then_some(disk.as_str())
     }
 
     /// Whether `name` is a partition of a disk the map does not hold, so

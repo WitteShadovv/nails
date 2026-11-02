@@ -40,7 +40,10 @@ pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
         .then(|| devices.node_of_mount(hidden))
         .flatten()
         .map(str::to_string);
-    let stack: Vec<String> = top.as_deref().map(|t| devices.stack(t)).unwrap_or_default();
+    let stack: Vec<String> = top
+        .as_deref()
+        .map(|t| devices.hidden_stack(t))
+        .unwrap_or_default();
     let (claims, entries) = claims(scene, hidden, &stack);
     let verdict = if scene.unreadable.is_empty() {
         verdict(scene, hidden, top.as_deref(), &stack, &claims)
@@ -153,7 +156,7 @@ fn verdict(
             matches!(
                 devices.nodes.get(above).map(|n| &n.kind),
                 Some(NodeKind::Crypt { .. })
-            ) && devices.stack(above).contains(node)
+            ) && devices.hidden_stack(above).contains(node)
         });
         return if encrypted {
             Verdict::ContainerOnDecoy {
