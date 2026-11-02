@@ -358,7 +358,9 @@ of this changelog for that version becomes the release notes word for word, and
   record, the one the file's path leads to. Every way down to a disk has to pass a cryptsetup
   mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK, FVAULT2 or SUBDEV, or a mapping
   named as the VeraCrypt application names its own, that is not the decoy's: not its storage as
-  the attach gate counts it, nor a volume its crypttab opens, under whatever name it was opened.
+  the attach gate counts it, with every device below a partition of it on a disk that keeps its
+  data elsewhere (the devices of the md array the decoy's root is on, which its boot opens), nor a
+  volume its crypttab opens, under whatever name it was opened.
   It knows a mapping by its device-mapper uuid and name and reads no mapping's table. It warns,
   naming the device, where nothing encrypts the hidden root; where only the decoy's own
   encryption does, as for a plain image file on the decoy's encrypted `/home`, which whoever
