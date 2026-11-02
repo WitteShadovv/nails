@@ -794,6 +794,16 @@ of this changelog for that version becomes the release notes word for word, and
   off on the decoy. The emergency kills the shells of the hidden session the same way, though a
   history written there lands on the hidden volume, and still spares only its own command chain.
   An emergency that leaves the decoy running kills no shell, as before.
+- Activation and `emergency` count a shell as interactive when it reads its commands from a
+  terminal: its standard input is a terminal and its command line runs no command string and names
+  no script, or it forces interactive mode with `-i`. They followed bash's rule, which wants
+  standard error on a terminal too, so a zsh or fish started with its errors sent elsewhere (`zsh
+  2>/dev/null`), interactive by its own rule, lived on: when the shell it was started from died,
+  its terminal hung up, and zsh wrote its history on the SIGHUP. fish's command line is now read as
+  fish reads it, so a fish started with an init command (`fish -C ...` or `--init-command`) counts
+  too, where its value was taken for a script. A shell that reads a terminal without being
+  interactive by its own rule, as `bash 2>/dev/null` does, is killed as well: it keeps no history,
+  and the switch would end it anyway.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

@@ -10,41 +10,132 @@ fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| w.to_string()).collect()
 }
 
+/// Whether a shell of `syntax` started as `words` counts as interactive, with
+/// its standard input on a terminal or not.
+fn interactive(syntax: Syntax, words: &[&str], stdin_tty: bool) -> bool {
+    shell_is_interactive(syntax, &argv(words), stdin_tty)
+}
+
 #[test]
 fn a_command_string_or_script_is_never_interactive() {
-    assert!(!shell_is_interactive(
-        &argv(&["bash", "-c", "x"]),
-        true,
-        true
-    ));
-    assert!(!shell_is_interactive(
-        &argv(&["sh", "-lc", "x"]),
-        true,
-        true
-    ));
-    assert!(!shell_is_interactive(
-        &argv(&["bash", "script.sh"]),
-        true,
-        true
-    ));
-    assert!(!shell_is_interactive(
-        &argv(&["bash", "-o", "posix", "script.sh"]),
-        true,
-        true
+    for words in [
+        &["bash", "-c", "x"][..],
+        &["sh", "-lc", "x"],
+        &["bash", "-i", "-c", "x"],
+        &["bash", "script.sh"],
+        &["bash", "-o", "posix", "script.sh"],
+        &["bash", "--rcfile", "x", "script.sh"],
+        &["bash", "--init-file", "x", "script.sh"],
+        &["bash", "--rcfile=x", "script.sh"],
+        &["bash", "-O", "extglob", "script.sh"],
+        &["bash", "--", "script.sh"],
+        &["sh", "-", "script.sh"],
+        &["zsh", "+", "script.sh"],
+        &["zsh", "--emulate", "sh", "script.sh"],
+        &["yash", "--profile", "p", "script.sh"],
+    ] {
+        assert!(!interactive(Syntax::Posix, words, true), "{words:?}");
+    }
+}
+
+#[test]
+fn a_shell_reading_a_terminal_or_a_forced_one_is_interactive() {
+    for words in [
+        &["-bash"][..],
+        &["bash", "-l"],
+        &["bash", "--rcfile", "x", "-s"],
+        &["bash", "-s", "arg"],
+        &["bash", "-s", "--", "arg"],
+        &["bash", "--init-file", "x"],
+        &["bash", "+O", "extglob"],
+        &["bash", "--"],
+        &["zsh", "-"],
+        &["zsh", "+"],
+        &["zsh", "--emulate", "sh"],
+        &["yash", "--profile", "p"],
+    ] {
+        assert!(interactive(Syntax::Posix, words, true), "{words:?}");
+    }
+    assert!(!interactive(Syntax::Posix, &["bash"], false));
+    assert!(interactive(Syntax::Posix, &["bash", "-i"], false));
+    assert!(interactive(Syntax::Posix, &["zsh", "--interactive"], false));
+    assert!(
+        interactive(Syntax::Posix, &["sh", "-i", "-m", "job.sh"], false),
+        "a forced shell reads its script interactively"
+    );
+}
+
+#[test]
+fn fish_reads_the_terminal_after_an_init_command_but_not_with_a_command() {
+    for words in [
+        &["fish"][..],
+        &["-fish"],
+        &["fish", "-l"],
+        &["fish", "-C", "set -g x 1"],
+        &["fish", "-Cset -g x 1"],
+        &["fish", "--init-command", "set -g x 1"],
+        &["fish", "--init-command=set -g x 1"],
+        &["fish", "-d", "history", "-o", "/tmp/log"],
+        &["fish", "--debug", "history"],
+        &["fish", "-P", "--features", "qmark-noglob"],
+        &[
+            "fish",
+            "-D",
+            "3",
+            "-p",
+            "/tmp/profile",
+            "-f",
+            "qmark-noglob",
+        ],
+        &[
+            "fish",
+            "--debug-output",
+            "/tmp/log",
+            "--debug-stack-frames",
+            "3",
+            "--profile",
+            "/tmp/profile",
+            "--profile-startup",
+            "/tmp/startup",
+        ],
+        &["fish", "-iPl"],
+    ] {
+        assert!(interactive(Syntax::Fish, words, true), "{words:?}");
+    }
+    for words in [
+        &["fish", "-c", "echo"][..],
+        &["fish", "-cecho"],
+        &["fish", "-lc", "echo"],
+        &["fish", "--command", "echo"],
+        &["fish", "--command=echo"],
+        &["fish", "-i", "-c", "echo"],
+        &["fish", "script.fish"],
+        &["fish", "-d", "history", "script.fish"],
+        &["fish", "--init-command=set -g x 1", "script.fish"],
+        &["fish", "--private", "script.fish"],
+        &["fish", "--", "script.fish"],
+        &["fish", "-"],
+    ] {
+        assert!(!interactive(Syntax::Fish, words, true), "{words:?}");
+    }
+    assert!(!interactive(Syntax::Fish, &["fish"], false));
+    assert!(interactive(Syntax::Fish, &["fish", "-i"], false));
+    assert!(interactive(
+        Syntax::Fish,
+        &["fish", "--interactive", "script.fish"],
+        false
     ));
 }
 
 #[test]
-fn a_terminal_shell_or_a_forced_one_is_interactive() {
-    assert!(shell_is_interactive(&argv(&["-bash"]), true, true));
-    assert!(shell_is_interactive(&argv(&["bash", "-l"]), true, true));
-    assert!(!shell_is_interactive(&argv(&["bash"]), false, true));
-    assert!(shell_is_interactive(&argv(&["bash", "-i"]), false, false));
-    assert!(shell_is_interactive(
-        &argv(&["bash", "--rcfile", "x", "-s"]),
-        true,
-        true
-    ));
+fn each_shell_name_has_its_syntax_and_no_other_name_is_a_shell() {
+    for (name, syntax) in SHELL_NAMES {
+        assert_eq!(shell_syntax(name), Some(*syntax), "{name}");
+    }
+    assert_eq!(shell_syntax("fish"), Some(Syntax::Fish));
+    for name in ["sudo", "nails", "script", "bashbug", "zsh-newuser", ""] {
+        assert_eq!(shell_syntax(name), None, "{name}");
+    }
 }
 
 /// Spawn `program args` and wait until its comm reads `comm` (a `setsid`
@@ -181,20 +272,97 @@ fn wait_for_a_later_tick(pid: u32) {
     }
 }
 
-/// Wait for the one bash whose stat passes `pick` to settle, waiting for
-/// input, and return its pid.
-fn settled_bash(pick: impl Fn(&proc::Stat) -> bool) -> u32 {
+/// Wait for the one process named `comm` whose stat passes `pick` to settle,
+/// waiting for input, and return its pid.
+fn settled(comm: &str, pick: impl Fn(&proc::Stat) -> bool) -> u32 {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let found = proc::pids().into_iter().find(|&pid| {
-            proc::comm(pid).as_deref() == Some("bash")
+            proc::comm(pid).as_deref() == Some(comm)
                 && proc::stat(pid).is_some_and(|stat| stat.state == 'S' && pick(&stat))
         });
         if let Some(pid) = found {
             return pid;
         }
-        assert!(Instant::now() < deadline, "no bash settled");
+        assert!(Instant::now() < deadline, "no {comm} settled");
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Whether `program` is on `PATH`.
+fn installed(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// Give the shells `command` starts `home` as their home and their only
+/// configuration: an empty `.zshrc` there, so zsh asks no new user's
+/// questions, and no other startup file, history file or directory of the
+/// caller's.
+fn in_home(command: &mut Command, home: &std::path::Path) {
+    std::fs::write(home.join(".zshrc"), "").expect("write .zshrc");
+    command
+        .env("HOME", home)
+        .env("ZDOTDIR", home)
+        .env("TERM", "dumb")
+        .env_remove("SHELL")
+        .env_remove("ENV")
+        .env_remove("BASH_ENV")
+        .env_remove("HISTFILE")
+        .env_remove("SAVEHIST");
+    for xdg in [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ] {
+        command.env_remove(xdg);
+    }
+}
+
+/// Start `command` with `sh -c` on a terminal of its own, a pseudo-terminal
+/// that `script` holds, its shells at home in `home` ([`in_home`]), and
+/// return `script` and the pid of its child named `comm` once that waits for
+/// input. `None`, saying so, when `comm` is not installed.
+fn on_a_terminal(comm: &str, command: &str, home: &std::path::Path) -> Option<(Child, u32)> {
+    if !installed(comm) {
+        eprintln!("skipped {command}: no {comm} on PATH");
+        return None;
+    }
+    let mut script = Command::new("script");
+    script
+        .args(["-qfec", command, "/dev/null"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    in_home(&mut script, home);
+    let console = script.spawn().expect("spawn script");
+    let id = console.id();
+    let shell = settled(comm, |stat| stat.ppid == id);
+    Some((console, shell))
+}
+
+#[test]
+fn a_shell_reading_a_terminal_counts_whatever_its_other_descriptors() {
+    let home = tempfile::tempdir().expect("tempdir");
+    for (comm, command) in [
+        // Interactive by zsh's rule and fish's, which ask for nothing else.
+        ("zsh", "exec zsh -d 2>/dev/null"),
+        ("fish", "exec fish -N -C 'set -g x 1' 2>/dev/null"),
+        // Not interactive by bash's, which asks for standard error too: it
+        // keeps no history, and counting it costs nothing.
+        ("bash", "exec bash --norc --noprofile 2>/dev/null"),
+    ] {
+        let Some((console, shell)) = on_a_terminal(comm, command, home.path()) else {
+            continue;
+        };
+        let seen = (
+            proc::fd_is_terminal(shell, 0),
+            proc::fd_is_terminal(shell, 2),
+            is_interactive_shell(shell),
+        );
+        still_running(console);
+        assert_eq!(seen, (true, false, true), "{command}");
     }
 }
 
@@ -206,26 +374,54 @@ fn type_into(console: &mut Child, line: &str) {
     keyboard.flush().expect("type");
 }
 
+/// A second shell typed at the console's prompt: the line that starts it and
+/// the name of its process.
+#[derive(Clone, Copy)]
+struct Inner {
+    line: &'static str,
+    comm: &'static str,
+}
+
+/// bash, as `bash`, `su` or `nix-shell` typed at a prompt start one.
+const BASH: Inner = Inner {
+    line: "bash --norc --noprofile -i\n",
+    comm: "bash",
+};
+
+/// zsh with its errors sent elsewhere: interactive all the same, as zsh asks
+/// only for a terminal on its standard input.
+const ZSH: Inner = Inner {
+    line: "zsh -d 2>/dev/null\n",
+    comm: "zsh",
+};
+
 /// A login shell on a console (a pseudo-terminal that `script` holds,
-/// typed into through its stdin) with a second interactive bash in its
-/// foreground, as `bash`, `su` or `nix-shell` typed at a prompt start one.
+/// typed into through its stdin) with the `inner` shell in its foreground.
 /// The inner shell has run a typed line, so it has history to write; both
-/// write theirs to `history`. Returns the console and the login and the
-/// inner shell's pids.
-fn console_with_a_shell_in_its_foreground(history: &std::path::Path) -> (Child, u32, u32) {
-    let mut console = Command::new("script")
+/// write theirs to `history`, and keep their home beside it. Returns the
+/// console and the login and the inner shell's pids, or `None`, saying so,
+/// when the inner shell is not installed.
+fn console_with_a_shell_in_its_foreground(
+    history: &std::path::Path,
+    inner: Inner,
+) -> Option<(Child, u32, u32)> {
+    if !installed(inner.comm) {
+        eprintln!("skipped {}: not on PATH", inner.comm);
+        return None;
+    }
+    let mut script = Command::new("script");
+    script
         .args(["-qfec", "exec bash --norc --noprofile -i", "/dev/null"])
-        .env_remove("SHELL")
-        .env("HISTFILE", history)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn script");
-    let script = console.id();
-    let login = settled_bash(|stat| stat.ppid == script);
-    type_into(&mut console, "bash --norc --noprofile -i\n");
-    let inner = settled_bash(|stat| stat.ppid == login);
+        .stderr(Stdio::null());
+    in_home(&mut script, history.parent().expect("a directory"));
+    script.env("HISTFILE", history).env("SAVEHIST", "100");
+    let mut console = script.spawn().expect("spawn script");
+    let id = console.id();
+    let login = settled("bash", |stat| stat.ppid == id);
+    type_into(&mut console, inner.line);
+    let inner = settled(inner.comm, |stat| stat.ppid == login);
     let typed = history.with_extension("typed");
     type_into(&mut console, &format!("touch {}\n", typed.display()));
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -233,7 +429,7 @@ fn console_with_a_shell_in_its_foreground(history: &std::path::Path) -> (Child, 
         assert!(Instant::now() < deadline, "the inner shell ran nothing");
         std::thread::sleep(Duration::from_millis(5));
     }
-    (console, login, inner)
+    Some((console, login, inner))
 }
 
 #[test]
@@ -241,21 +437,31 @@ fn a_dying_login_shell_makes_its_foreground_shell_write_history() {
     in_pid_namespace(
         "shells::tests::a_dying_login_shell_makes_its_foreground_shell_write_history",
         || {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let history = dir.path().join("history");
-            let (mut console, login, inner) = console_with_a_shell_in_its_foreground(&history);
-            let inner = ProcessHandle::open(inner).expect("inner shell");
+            for shell in [BASH, ZSH] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let history = dir.path().join("history");
+                let Some((mut console, login, inner)) =
+                    console_with_a_shell_in_its_foreground(&history, shell)
+                else {
+                    continue;
+                };
+                let inner = ProcessHandle::open(inner).expect("inner shell");
 
-            // The login shell leads the console's session: as it dies,
-            // the console's foreground job, the inner shell, gets SIGHUP.
-            assert!(ProcessHandle::open(login).is_some_and(|login| login.kill()));
-            let deadline = Instant::now() + Duration::from_secs(5);
-            assert!(proc::await_exit(&[inner], deadline).is_empty());
+                // The login shell leads the console's session: as it dies,
+                // the console's foreground job, the inner shell, gets SIGHUP.
+                assert!(ProcessHandle::open(login).is_some_and(|login| login.kill()));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                assert!(proc::await_exit(&[inner], deadline).is_empty());
 
-            let written = std::fs::read_to_string(&history).unwrap_or_default();
-            assert!(written.contains("touch"), "no history written: {written:?}");
-            let _ = console.kill();
-            let _ = console.wait();
+                let written = std::fs::read_to_string(&history).unwrap_or_default();
+                assert!(
+                    written.contains("touch"),
+                    "{} wrote no history: {written:?}",
+                    shell.comm
+                );
+                let _ = console.kill();
+                let _ = console.wait();
+            }
         },
     );
 }
@@ -265,22 +471,34 @@ fn shells_die_newest_first_so_no_dying_shell_hangs_up_a_live_one() {
     in_pid_namespace(
         "shells::tests::shells_die_newest_first_so_no_dying_shell_hangs_up_a_live_one",
         || {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let history = dir.path().join("history");
-            let (mut console, login, inner) = console_with_a_shell_in_its_foreground(&history);
-            let shells = [login, inner].map(|pid| ProcessHandle::open(pid).expect("shell"));
+            for shell in [BASH, ZSH] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let history = dir.path().join("history");
+                let Some((mut console, login, inner)) =
+                    console_with_a_shell_in_its_foreground(&history, shell)
+                else {
+                    continue;
+                };
+                let shells = [login, inner].map(|pid| ProcessHandle::open(pid).expect("shell"));
 
-            assert_eq!(kill_interactive_shells_newest_first(), vec![inner, login]);
+                assert_eq!(
+                    kill_interactive_shells_newest_first(),
+                    vec![inner, login],
+                    "{}",
+                    shell.comm
+                );
 
-            let deadline = Instant::now() + Duration::from_secs(5);
-            assert!(proc::await_exit(&shells, deadline).is_empty());
-            assert!(
-                !history.exists(),
-                "a killed shell wrote its history: {:?}",
-                std::fs::read_to_string(&history)
-            );
-            let _ = console.kill();
-            let _ = console.wait();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                assert!(proc::await_exit(&shells, deadline).is_empty());
+                assert!(
+                    !history.exists(),
+                    "a killed {} wrote its history: {:?}",
+                    shell.comm,
+                    std::fs::read_to_string(&history)
+                );
+                let _ = console.kill();
+                let _ = console.wait();
+            }
         },
     );
 }
