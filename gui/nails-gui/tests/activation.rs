@@ -466,14 +466,20 @@ fn a_hidden_volume_on_this_computers_disk_is_allowed_with_the_typed_word() {
 
 /// Discards over the hidden volume, which the check refuses and the CLI's
 /// `--allow-discards` accepts for one run, get the same button and the same
-/// typed word as a persistent record; the next check carries the flag.
+/// typed word as a persistent record; the next check carries the flag. The
+/// row is the engine's refusal word for word.
 #[test]
 fn discards_over_the_hidden_volume_are_allowed_with_the_typed_word() {
     let screen = decoy(
         json!([{"name": "backend-detect", "status": "fail",
             "message": "Discards are enabled over the hidden volume. Forwarding TRIM to the \
-                physical device leaves a readable map of used and free blocks there.",
-            "remediation": "Re-open the hidden volume with discards off. See docs/backends.md.",
+                physical device leaves a readable map of used and free blocks there, so a volume \
+                that should look like uniform random data no longer does, and writing an outer \
+                volume with discards on can destroy a hidden volume inside it.",
+            "remediation": "Re-open the hidden volume with discards off. A LUKS2 header that \
+                stores the flag keeps enabling them: run `cryptsetup refresh --persistent` \
+                without `--allow-discards`, then check that `cryptsetup luksDump` reports \
+                `(no flags)`. See docs/backends.md.",
             "allowable": "discards"}]),
         1,
     );
