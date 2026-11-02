@@ -813,6 +813,22 @@ of this changelog for that version becomes the release notes word for word, and
   shell that a NixOS wrapper starts (`.xonsh-wrapped`) counts under its own name. A shell of any
   other name is still not killed: the operator guide and `docs/bash-history-forensics.md` list the
   names.
+- The `incremental-history-flush` check reads the settings of the shell the command was typed
+  into, else the operator's login shell, and names the shell and the setting. It read six startup
+  files in the operator's home, whatever shell was in use and none in `/etc`, so it missed the
+  `SHARE_HISTORY` that NixOS's `programs.zsh` sets for every zsh in `/etc/zshrc` by default, and
+  the one Oh My Zsh sets, and it knew neither fish, which writes each command line to its history
+  file as it starts the command unless it runs in private mode, nor `history -w`. It now reads
+  that shell's startup files in `/etc` and in the home of the account the shell runs as (root's
+  for a shell that `sudo -i` opened): the files the shell reads when it starts, and no history
+  file, with the reads that leave access times alone when NAILS runs as root. zsh's are read in
+  the order zsh reads them, so an `unsetopt` in a later file counts, and from the `ZDOTDIR` a
+  `zshenv` sets, and `INC_APPEND_HISTORY_TIME` is named as writing a line once its command ends.
+  An `unsetopt` or a `no_` spelling of an option no longer counts as turning it on. A startup file
+  that is there but cannot be read, which it passed over before, and a shell other than bash, zsh,
+  fish and dash now make it warn that it cannot tell. It still only warns: such a shell has written the
+  decoy commands before activation starts, so a refusal would take none of them back, and for a
+  shell that writes a line once its command ends, a refused activation would add its own.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

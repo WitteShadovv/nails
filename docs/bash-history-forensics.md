@@ -59,11 +59,14 @@ NAILS does at runtime is:
 3. **Make no write to decoy history.** NAILS never edits or reads a history file
    on the decoy: an access would itself leave a fresh timestamp. Decoy-history
    hygiene is decoy configuration and the operator's pre-activation routine.
-4. **Warn on incremental flushing.** A preflight check warns when the shell you
-   run NAILS from flushes history after every command
-   (`INC_APPEND_HISTORY`/`SHARE_HISTORY`, or `history -a` in bash
-   `PROMPT_COMMAND`), because such a shell writes the unlock/mount commands to
-   disk before teardown can help.
+4. **Warn on incremental flushing.** A preflight check warns when the shell
+   you typed the command into, else your login shell, writes each command line
+   to its history file as it runs (zsh's `INC_APPEND_HISTORY`, `SHARE_HISTORY`
+   or `INC_APPEND_HISTORY_TIME`, `history -a` or `history -w` in bash's
+   `PROMPT_COMMAND`, fish outside private mode), because such a shell writes
+   the unlock and mount commands to disk before activation can help. It reads
+   that shell's startup files, never a history file, and says so when it
+   cannot tell (see [operator-guide.md](./operator-guide.md#shell-history)).
 
 Journal, audit and accounting surfaces are host-policy concerns: NAILS does not
 enable them, and an operator who turns them on must account for them separately.
@@ -105,11 +108,16 @@ nails activate typed in a decoy shell
 `nails activate` closes this window by killing the decoy's interactive shells
 with `SIGKILL` as its last step before the soft-reboot, so no exit trap or
 flush runs. Your terminal closes at that point; what activation printed up to
-then is already on it. A shell that flushes after every command
-(`INC_APPEND_HISTORY`, `SHARE_HISTORY` or `history -a` in `PROMPT_COMMAND`) has
-already written the command before any of this, which is why the pre-flight
-check warns about it and why the decoy commands belong in a shell with history
-off (`set +o history`).
+then is already on it. A shell that writes each command line as it runs has
+written it before any of this: zsh with `INC_APPEND_HISTORY` or
+`SHARE_HISTORY` as the line is entered, and fish outside private mode as the
+command starts. zsh with `INC_APPEND_HISTORY_TIME`, and bash with
+`history -a` or `history -w` in `PROMPT_COMMAND`, write each line once its
+command ends: every command typed before the activation, and the activation
+command itself when the activation is refused and ends. That is why the
+pre-flight check warns about them rather than refusing, and why the decoy
+commands belong in a shell with history off (`set +o history` in bash,
+`unset HISTFILE` in zsh, `fish --private`).
 
 A shell counts as interactive when it reads its commands from a terminal: its
 standard input is a terminal and its command line runs no command string (`-c`)
