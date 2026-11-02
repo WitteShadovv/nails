@@ -90,6 +90,9 @@ enum Nest {
     },
     Double,
     Single,
+    /// `$'...'`, in which a backslash escapes the next character, so only a
+    /// `'` without one ends it.
+    Ansi,
     Back,
 }
 
@@ -184,6 +187,13 @@ impl Lexer<'_> {
             }
             return;
         }
+        if !quoted && self.chars.next_if_eq(&'\'').is_some() {
+            self.word().text.push('\'');
+            if !self.balanced(Nest::Ansi) {
+                self.unclosed("`$'`");
+            }
+            return;
+        }
         match self.chars.peek().copied() {
             Some(open @ ('(' | '{')) => {
                 self.chars.next();
@@ -221,7 +231,7 @@ impl Lexer<'_> {
             self.word().text.push(c);
             let quoted = matches!(inner, Nest::Brace { quoted: true });
             match (inner, c) {
-                (Nest::Single, '\'') | (Nest::Back, '`') | (Nest::Double, '"') => {
+                (Nest::Single | Nest::Ansi, '\'') | (Nest::Back, '`') | (Nest::Double, '"') => {
                     stack.pop();
                 }
                 (Nest::Single, _) => {}
@@ -229,7 +239,7 @@ impl Lexer<'_> {
                     let escaped = self.chars.next();
                     self.word().text.extend(escaped);
                 }
-                (Nest::Back, _) => {}
+                (Nest::Back | Nest::Ansi, _) => {}
                 (_, '`') => stack.push(Nest::Back),
                 (_, '$') => {
                     if let Some(open) = self.chars.next_if(|c| matches!(c, '(' | '{')) {
@@ -241,6 +251,13 @@ impl Lexer<'_> {
                                 quoted: quoted || inner == Nest::Double,
                             }
                         });
+                    } else if !quoted
+                        && inner != Nest::Double
+                        && self.chars.next_if_eq(&'\'').is_some()
+                    {
+                        // `$'...'`; in double quotes a `$` and a `'`.
+                        self.word().text.push('\'');
+                        stack.push(Nest::Ansi);
                     }
                 }
                 (Nest::Double, _) => {}

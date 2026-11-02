@@ -37,8 +37,8 @@
 //! otherwise than by an assignment (`${ZDOTDIR:=...}`), and a quote, an
 //! expansion or a here-document that runs to the end of the file without
 //! closing are doubts. A `<<` in an arithmetic command, `(( ... ))`, is a
-//! shift, not a here-document, and a `)` or `}` in quotes closes no
-//! expansion.
+//! shift, not a here-document, a `)` or `}` in quotes closes no expansion,
+//! and a `\'` does not end a `$'...'`.
 
 mod lexer;
 mod walk;
