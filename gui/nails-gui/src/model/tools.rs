@@ -257,9 +257,15 @@ impl Model {
         if self.question.is_some() || self.running.is_some() {
             return None;
         }
-        // A setting's page goes back to the list of settings first.
+        // A setting's page goes back to the list of settings first, and the
+        // page that scans an image back to Verify's.
         if let Some(Tool::Settings(settings)) = &mut self.tool
             && settings.back()
+        {
+            return None;
+        }
+        if let Some(Tool::Verify(verify)) = &mut self.tool
+            && verify.back()
         {
             return None;
         }
@@ -288,7 +294,23 @@ impl Model {
             Some(Tool::Discard(discard)) => discard.edited(typed),
             Some(Tool::Settings(settings)) => settings.edited(typed),
             Some(Tool::Rehearsal(rehearsal)) => rehearsal.edited(typed),
+            Some(Tool::Verify(verify)) => verify.edited(typed),
             _ => {}
+        }
+    }
+
+    /// What the person typed so far into the open tool's field `index` of
+    /// those that follow its switch.
+    pub fn edited_more(&mut self, index: usize, typed: &str) {
+        if let Some(Tool::Verify(verify)) = &mut self.tool {
+            verify.edited_more(index, typed);
+        }
+    }
+
+    /// The person turned the open tool's switch `on` or off.
+    pub fn toggled(&mut self, on: bool) {
+        if let Some(Tool::Verify(verify)) = &mut self.tool {
+            verify.toggled(on);
         }
     }
 
@@ -299,6 +321,10 @@ impl Model {
             return None;
         }
         let hidden = self.context().hidden;
+        if let Some(Tool::Verify(verify)) = &mut self.tool {
+            verify.choose(index);
+            return None;
+        }
         let Some(Tool::Settings(settings)) = &mut self.tool else {
             return None;
         };

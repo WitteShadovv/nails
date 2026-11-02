@@ -45,6 +45,51 @@ pub const GROUP_FOUND: &str = "Found";
 pub const GROUP_NOTED: &str = "Noted";
 /// The group of what a verify did not look at.
 pub const GROUP_NOT_CHECKED_RUN: &str = "Not checked by this run";
+
+/// The row of Verify's page that opens the scan of an image (`verify
+/// --offline`).
+pub const SCAN_IMAGE_ROW: &str = "Scan an Image\u{2026}";
+/// The line under it.
+pub const SCAN_IMAGE_ROW_WHAT: &str = "A decoy's disk or image mounted read-only, instead of this \
+     computer";
+/// The page that scans an image.
+pub const SCAN_IMAGE: &str = "Scan an Image";
+/// What it does.
+pub const SCAN_IMAGE_WHAT: &str = "Look for known traces in a decoy's disk or image mounted \
+     read-only, instead of this computer. What only a running system shows is not checked.";
+/// The field of the mounted image (`--root`).
+pub const FIELD_IMAGE_ROOT: &str = "Mounted image";
+/// The line under it.
+pub const IMAGE_ROOT_HINT: &str = "Where it is mounted read-only, such as /mnt/decoy";
+/// The line under it once what it holds is no full path.
+pub const IMAGE_ROOT_NOT_ABSOLUTE: &str = "Give the full path, starting with /.";
+/// The switch of the examiner's view (`--examiner`).
+pub const SWITCH_EXAMINER: &str = "Examiner's view";
+/// The line under it.
+pub const EXAMINER_WHAT: &str = "Also report the setup traces an examiner looks for, grouped \
+     by what they suggest";
+/// The field of the disk behind the image (`--disk`).
+pub const FIELD_DISK: &str = "Disk behind it";
+/// The line under it.
+pub const DISK_HINT: &str = "Optional: the raw disk or disk image behind it, read only, such \
+     as /dev/sdb";
+/// The line under it once what it holds is no full path.
+pub const DISK_NOT_ABSOLUTE: &str = "Give the full path, starting with /, or leave it empty.";
+/// The action that scans the image.
+pub const SCAN_IMAGE_ACTION: &str = "Scan Image";
+/// While it runs.
+pub const SCANNING_IMAGE: &str = "Scanning the Image";
+/// The group of the traces that suggest one conclusion, in the examiner's
+/// view.
+#[must_use]
+pub fn examiner_group(conclusion: &str) -> String {
+    format!(
+        "An examiner would conclude: {}",
+        super::sentence(conclusion)
+    )
+}
+/// The group of what the examiner's view did not look at.
+pub const GROUP_EXAMINER_NOT_CHECKED: &str = "Not checked for the examiner's view";
 /// A finding that is a trace.
 pub const SEVERITY_CRITICAL: &str = "Critical";
 /// A finding that may be one.

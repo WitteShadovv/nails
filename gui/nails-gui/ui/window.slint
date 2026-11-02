@@ -25,7 +25,7 @@ import { Palette } from "std-widgets.slint";
 import { Adw } from "adw/theme.slint";
 import { HeaderBar } from "adw/headerbar.slint";
 import { Button, ButtonKind, ButtonShape } from "adw/button.slint";
-import { BoxedList, ActionRow, CheckRow, NavRow, Outcome } from "adw/lists.slint";
+import { BoxedList, ActionRow, CheckRow, NavRow, Outcome, SwitchRow } from "adw/lists.slint";
 import { FieldRow } from "adw/entry.slint";
 import { StatusHead, Busy } from "adw/status.slint";
 import { AlertDialog } from "adw/dialog.slint";
@@ -90,6 +90,17 @@ export component AppWindow inherits Window {
     in property <string> field-label;
     in-out property <string> field-text;
     in property <string> field-hint;
+    // The switch after the field, and two more fields after it: each empty
+    // label hides its control.
+    in property <string> switch-title;
+    in property <string> switch-subtitle;
+    in property <bool> switch-on;
+    in property <string> field2-label;
+    in-out property <string> field2-text;
+    in property <string> field2-hint;
+    in property <string> field3-label;
+    in-out property <string> field3-text;
+    in property <string> field3-hint;
     // The main action's label; empty for none.
     in property <string> action;
     // The main action is a plain button rather than the suggested one, or
@@ -127,6 +138,9 @@ export component AppWindow inherits Window {
     callback choice-activated(index: int);
     callback back-activated();
     callback field-edited(text: string);
+    callback field2-edited(text: string);
+    callback field3-edited(text: string);
+    callback switch-toggled(on: bool);
 
     // Gives the page the keyboard back, once a question that held it closed:
     // the focus was in the question, which is gone.
@@ -276,6 +290,40 @@ export component AppWindow inherits Window {
                             reachable: root.reachable;
                             edited(text) => {
                                 root.field-edited(text);
+                            }
+                        }
+
+                        if root.switch-title != "": BoxedList {
+                            SwitchRow {
+                                title: root.switch-title;
+                                subtitle: root.switch-subtitle;
+                                on: root.switch-on;
+                                first: true;
+                                last: true;
+                                reachable: root.reachable;
+                                toggled(on) => {
+                                    root.switch-toggled(on);
+                                }
+                            }
+                        }
+
+                        if root.field2-label != "": FieldRow {
+                            label: root.field2-label;
+                            hint: root.field2-hint;
+                            text <=> root.field2-text;
+                            reachable: root.reachable;
+                            edited(text) => {
+                                root.field2-edited(text);
+                            }
+                        }
+
+                        if root.field3-label != "": FieldRow {
+                            label: root.field3-label;
+                            hint: root.field3-hint;
+                            text <=> root.field3-text;
+                            reachable: root.reachable;
+                            edited(text) => {
+                                root.field3-edited(text);
                             }
                         }
 

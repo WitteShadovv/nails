@@ -40,6 +40,7 @@ fn fixture(name: &str) -> Value {
         "rehearse-plant-no-such-user" => {
             include_str!("../../tests/fixtures/rehearse-plant-no-such-user.json")
         }
+        "verify-image-examiner" => include_str!("../../tests/fixtures/verify-image-examiner.json"),
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).unwrap()
@@ -258,6 +259,118 @@ fn a_clean_verify_is_no_proof_and_still_lists_what_it_did_not_check() {
         page.groups[0].rows.last().unwrap().word,
         text::SEVERITY_NOTE
     );
+}
+
+/// Scan an Image opens from Verify's page and asks for `verify --offline
+/// --root` with the mounted image's path; the examiner's view adds
+/// `--examiner`, and the disk behind the image `--disk`, which counts only
+/// with that view. Back returns to Verify's page.
+#[test]
+fn scan_an_image_asks_for_an_offline_verify_of_the_mounted_image() {
+    let mut model = hidden();
+    open(&mut model, ToolKind::Verify);
+    let page = model.page();
+    assert_eq!(page.choices.len(), 1);
+    assert_eq!(page.choices[0].title, text::SCAN_IMAGE_ROW);
+    assert_eq!(model.choose(0), None, "opening the page asks nothing");
+    let page = model.page();
+    assert_eq!(page.heading, text::SCAN_IMAGE);
+    assert_eq!(page.description, text::SCAN_IMAGE_WHAT);
+    assert!(page.choices.is_empty());
+    assert_eq!(page.field.as_ref().unwrap().label, text::FIELD_IMAGE_ROOT);
+    let switch = page.switch.clone().unwrap();
+    assert_eq!(
+        (switch.title.as_str(), switch.on),
+        (text::SWITCH_EXAMINER, false)
+    );
+    assert!(
+        page.more_fields.is_empty(),
+        "the disk belongs to the examiner's view"
+    );
+    assert_eq!(page.action, Some(text::SCAN_IMAGE_ACTION));
+    assert!(page.action_locked, "the scan waits for the image's path");
+
+    model.edited("mnt/decoy");
+    let page = model.page();
+    assert!(page.action_locked);
+    assert_eq!(page.field.unwrap().hint, text::IMAGE_ROOT_NOT_ABSOLUTE);
+    assert_eq!(model.action(), None);
+
+    model.edited(" /mnt/decoy ");
+    // A disk typed without the examiner's view is not sent.
+    model.toggled(true);
+    model.edited_more(0, "/mnt/decoy.img");
+    model.toggled(false);
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Verify(VerifyArgs {
+            offline: true,
+            root: Some("/mnt/decoy".to_string()),
+            ..VerifyArgs::default()
+        })))
+    );
+
+    let mut model = hidden();
+    open(&mut model, ToolKind::Verify);
+    model.choose(0);
+    model.edited("/mnt/decoy");
+    model.toggled(true);
+    let page = model.page();
+    assert!(page.switch.unwrap().on);
+    assert_eq!(page.more_fields.len(), 1);
+    assert_eq!(page.more_fields[0].label, text::FIELD_DISK);
+    model.edited_more(0, "decoy.img");
+    let page = model.page();
+    assert!(page.action_locked, "a disk is a full path or nothing");
+    assert_eq!(page.more_fields[0].hint, text::DISK_NOT_ABSOLUTE);
+    model.edited_more(0, "/mnt/decoy.img");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Verify(VerifyArgs {
+            offline: true,
+            root: Some("/mnt/decoy".to_string()),
+            examiner: true,
+            disk: Some("/mnt/decoy.img".to_string()),
+            ..VerifyArgs::default()
+        })))
+    );
+    model.apply(Update::Running(Kind::Verify));
+    assert_eq!(model.page().heading, text::SCANNING_IMAGE);
+    model.apply(answered(Kind::Verify, 0, fixture("verify-image-examiner")));
+    let page = model.page();
+    assert_eq!(page.heading, text::NO_KNOWN_TRACES);
+    let examiner: Vec<&str> = page
+        .groups
+        .iter()
+        .map(|group| group.title.as_str())
+        .filter(|title| title.starts_with("An examiner would conclude: "))
+        .collect();
+    assert_eq!(examiner.len(), 1, "{:?}", titles(&page.groups));
+    let traces = &page
+        .groups
+        .iter()
+        .find(|group| group.title == examiner[0])
+        .unwrap()
+        .rows;
+    assert!(
+        traces.iter().any(|row| row.message
+            == "/etc/lvm/archive/vg_00001.vg: Volume group vg: Created *before* executing \
+                    'vgcreate vg /dev/sdb'."),
+        "{traces:?}"
+    );
+    // The form stays, for a scan of another image.
+    assert_eq!(page.field.unwrap().text, "/mnt/decoy");
+    assert_eq!(page.action, Some(text::SCAN_IMAGE_ACTION));
+
+    assert_eq!(model.back(), None, "Back returns to Verify's page");
+    let page = model.page();
+    assert_eq!(page.heading, ToolKind::Verify.title());
+    assert_eq!(
+        page.action,
+        Some(text::VERIFY),
+        "its own result is untouched"
+    );
+    assert_eq!(model.back(), Some(Ask::Status));
 }
 
 #[test]
