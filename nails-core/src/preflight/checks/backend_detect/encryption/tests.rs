@@ -151,6 +151,33 @@ impl Host {
         self
     }
 
+    /// One btrfs filesystem on `members`, as `/sys/fs/btrfs/<fsid>/devices`
+    /// lists them.
+    fn btrfs(self, members: &[&str]) -> Self {
+        let fsid = Path::new("/sys/fs/btrfs/0a1b2c3d-0000-4000-8000-000000000009");
+        self.fs
+            .mock_set_directory_contents(Path::new("/sys/fs/btrfs"), vec![fsid.to_path_buf()]);
+        let devices = fsid.join("devices");
+        let mut entries = Vec::new();
+        for member in members {
+            let entry = devices.join(member);
+            self.link(entry.to_str().unwrap(), &self.dirs[*member]);
+            entries.push(entry);
+        }
+        self.fs.mock_set_directory_contents(&devices, entries);
+        self
+    }
+
+    /// The loop driver records the file of the loop device `name` on the
+    /// filesystem of the device `major:minor`, as root can read it.
+    fn recorded(self, name: &str, major: u32, minor: u32) -> Self {
+        self.fs.mock_set_loop_backing_device(
+            &Path::new("/dev").join(name),
+            rustix::fs::makedev(major, minor),
+        );
+        self
+    }
+
     fn run(&self) -> CheckResult {
         BackendEncryptionCheck::new(PathBuf::from(ROOT))
             .run(&self.fs)
@@ -570,7 +597,7 @@ fn a_stack_deeper_than_the_walk_reads_cannot_be_confirmed() {
     let result = host.run();
     assert!(
         warning(&result)
-            .contains("the stack under it holds more devices than the 16 the check reads"),
+            .contains("the stack under it holds more devices than the check reads (16 below any one device, 64 in all)"),
         "{result:?}"
     );
 }
@@ -672,6 +699,194 @@ fn a_mapping_of_an_unknown_kind_over_the_decoys_encryption_cannot_be_confirmed()
         .run();
     assert!(
         warning(&result).contains("dm-9 is a device-mapper device of a kind"),
+        "{result:?}"
+    );
+}
+
+// ------------------------------------------------------------------------
+// Filesystems of several devices
+// ------------------------------------------------------------------------
+
+#[test]
+fn a_btrfs_filesystem_needs_encryption_of_its_own_on_each_device() {
+    // btrfs on dm-9 (LUKS on sdb) and sdc, through LUKS or not.
+    let spread = |second_encrypted: bool| {
+        let host = Host::new("0:52", "btrfs", "/dev/mapper/data")
+            .disk("sdb", "8:16")
+            .disk("sdc", "8:32")
+            .luks("dm-9", "254:9", "data", &["sdb"]);
+        let (host, second) = if second_encrypted {
+            (host.luks("dm-8", "254:8", "data2", &["sdc"]), "dm-8")
+        } else {
+            (host, "sdc")
+        };
+        host.btrfs(&["dm-9", second]).run()
+    };
+    assert_pass(&spread(true), "LUKS mapping dm-8, LUKS mapping dm-9");
+    let result = spread(false);
+    assert!(
+        warning(&result).starts_with(&format!(
+            "Nothing encrypts the hidden root at {ROOT} on sdc:"
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_bcachefs_filesystem_is_followed_into_each_device_its_source_names() {
+    // bcachefs shows the number of its first device and names them all in
+    // its source.
+    let result = Host::new("254:9", "bcachefs", "/dev/mapper/data:/dev/sdc")
+        .disk("sdb", "8:16")
+        .disk("sdc", "8:32")
+        .luks("dm-9", "254:9", "data", &["sdb"])
+        .run();
+    assert!(
+        warning(&result).starts_with(&format!(
+            "Nothing encrypts the hidden root at {ROOT} on sdc:"
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_image_file_on_a_btrfs_filesystem_of_several_devices_needs_each_encrypted() {
+    let result = Host::with_mounts(
+        "30 1 0:60 / /srv rw - btrfs /dev/mapper/pool rw\n\
+         40 1 7:0 / /mnt/data rw - ext4 /dev/loop0 rw\n",
+    )
+    .disk("sdb", "8:16")
+    .disk("sdc", "8:32")
+    .luks("dm-7", "254:7", "pool", &["sdb"])
+    .btrfs(&["dm-7", "sdc"])
+    .loop_device("loop0", "7:0", "/srv/vm/box.img")
+    .run();
+    assert!(
+        warning(&result).starts_with(&format!(
+            "Nothing encrypts the hidden root at {ROOT} on sdc:"
+        )),
+        "{result:?}"
+    );
+}
+
+// ------------------------------------------------------------------------
+// Where the loop driver records a loop device's file
+// ------------------------------------------------------------------------
+
+/// An image on the plain stick sdc1 (`8:33`) at `/media/stick`, with
+/// `extra` mount lines, through loop0 at the hidden root.
+fn image_on_a_stick(extra: &str) -> Host {
+    Host::with_mounts(&format!(
+        "30 1 8:33 / /media/stick rw - ext4 /dev/sdc1 rw\n{extra}\
+         40 1 7:0 / /mnt/data rw - ext4 /dev/loop0 rw\n"
+    ))
+    .disk("sdc", "8:32")
+    .partition("sdc1", "8:33", "sdc")
+    .disk("sdd", "8:48")
+    .luks("dm-6", "254:6", "other", &["sdd"])
+    .loop_device("loop0", "7:0", "/media/stick/vault.img")
+}
+
+#[test]
+fn a_loop_file_is_followed_where_the_loop_driver_records_it() {
+    let result = image_on_a_stick("").recorded("loop0", 8, 33).run();
+    assert!(
+        warning(&result).starts_with(&format!(
+            "Nothing encrypts the hidden root at {ROOT} on sdc1:"
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_loop_file_whose_path_leads_elsewhere_than_its_record_cannot_be_confirmed() {
+    // An encrypted volume mounted over /media/stick later leads the path
+    // into it, while the loop driver still records the stick.
+    let result = image_on_a_stick("31 30 254:6 / /media/stick rw - ext4 /dev/mapper/other rw\n")
+        .recorded("loop0", 8, 33)
+        .run();
+    assert!(
+        warning(&result).ends_with(
+            "loop device loop0 reads /media/stick/vault.img, which its path now places on another \
+             filesystem than the one the loop driver recorded for it."
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_loop_file_recorded_on_a_filesystem_mounted_nowhere_cannot_be_confirmed() {
+    let result = image_on_a_stick("").recorded("loop0", 8, 99).run();
+    assert!(
+        warning(&result).ends_with(
+            "loop device loop0 reads /media/stick/vault.img, whose filesystem, as the loop \
+             driver recorded it, is not mounted here."
+        ),
+        "{result:?}"
+    );
+}
+
+// ------------------------------------------------------------------------
+// Partitions and devices whose storage sysfs does not show
+// ------------------------------------------------------------------------
+
+#[test]
+fn a_partition_of_a_loop_device_over_luks_passes() {
+    // losetup -P: the partition's data lies where the loop device keeps its
+    // own.
+    let result = Host::new("259:8", "ext4", "/dev/loop0p1")
+        .disk("sdb", "8:16")
+        .luks("dm-5", "254:5", "vault", &["sdb"])
+        .loop_device("loop0", "7:0", "/dev/mapper/vault")
+        .partition("loop0p1", "259:8", "loop0")
+        .run();
+    assert_pass(&result, "LUKS mapping dm-5");
+}
+
+#[test]
+fn a_partition_of_a_mirror_of_two_encrypted_disks_passes() {
+    let result = Host::new("259:12", "ext4", "/dev/md0p1")
+        .disk("sdb", "8:16")
+        .disk("sdc", "8:32")
+        .luks("dm-7", "254:7", "leg0", &["sdb"])
+        .luks("dm-8", "254:8", "leg1", &["sdc"])
+        .device(
+            "/sys/devices/virtual/block/md0",
+            "md0",
+            "9:0",
+            &["dm-7", "dm-8"],
+        )
+        .partition("md0p1", "259:12", "md0")
+        .run();
+    assert_pass(&result, "LUKS mapping dm-7, LUKS mapping dm-8");
+}
+
+#[test]
+fn a_device_that_keeps_its_data_out_of_sight_cannot_be_confirmed() {
+    for (name, dev, kind) in [
+        ("zd0", "230:0", "a ZFS volume"),
+        ("nbd0", "43:0", "a network block device"),
+        ("ublkb0", "259:9", "a userspace block device"),
+        ("zram0", "252:0", "a compressed RAM disk"),
+    ] {
+        let result = Host::new(dev, "ext4", &format!("/dev/{name}"))
+            .disk(name, dev)
+            .run();
+        assert!(
+            warning(&result).ends_with(&format!(
+                "{name} is {kind}, which keeps its data where the check cannot follow."
+            )),
+            "{name}: {result:?}"
+        );
+    }
+    // A partition of a ZFS volume, as a virtual machine's disk has.
+    let result = Host::new("230:1", "ext4", "/dev/zd0p1")
+        .disk("zd0", "230:0")
+        .partition("zd0p1", "230:1", "zd0")
+        .run();
+    assert!(
+        warning(&result)
+            .ends_with("zd0 is a ZFS volume, which keeps its data where the check cannot follow."),
         "{result:?}"
     );
 }
