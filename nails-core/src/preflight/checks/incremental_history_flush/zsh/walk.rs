@@ -86,12 +86,26 @@ impl Frame {
     }
 }
 
+/// A frame the walk is inside of, as it was opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Open {
+    frame: Frame,
+    /// Whether the frame itself certainly runs where it stands: not after
+    /// `&&` or `||` and not in a pipeline. One followed by `&` or `|` turns
+    /// out not to when it closes.
+    certain: bool,
+    /// How many events the walk had found when it opened.
+    start: usize,
+    /// The arrays the walk knew when it opened.
+    arrays: BTreeMap<String, Vec<String>>,
+}
+
 /// The walk over one file's tokens, which finds its [`Event`]s.
 struct Walker<'a> {
     tokens: std::iter::Peekable<std::vec::IntoIter<Token>>,
     /// Where the file is, as the warning names it.
     place: &'a str,
-    frames: Vec<Frame>,
+    frames: Vec<Open>,
     /// The arrays the file assigns a literal list at its top level.
     arrays: BTreeMap<String, Vec<String>>,
     events: Vec<Event>,
@@ -118,20 +132,71 @@ impl Walker<'_> {
     /// and not after `&&`, `||`, a `return` or an `exit`, in a pipeline or in
     /// the background.
     fn certain(&self, after_condition: bool, piped: bool) -> bool {
-        !after_condition && !piped && !self.may_stop && self.frames.iter().all(Frame::runs)
+        !after_condition
+            && !piped
+            && !self.may_stop
+            && self
+                .frames
+                .iter()
+                .all(|open| open.certain && open.frame.runs())
+    }
+
+    /// Open `frame` where a command can start, after a condition or in a
+    /// pipeline or not.
+    fn open(&mut self, frame: Frame, after_condition: bool, piped: bool) {
+        self.frames.push(Open {
+            frame,
+            certain: !after_condition && !piped,
+            start: self.events.len(),
+            arrays: self.arrays.clone(),
+        });
+    }
+
+    /// Whether the frame that just closed may run elsewhere than in this
+    /// shell, as the tokens after it tell, past its redirections: in the
+    /// background or a pipeline (`} &`, `done | cat`), or before anything
+    /// else than the end of a command or of the frame around it.
+    fn runs_elsewhere(&self) -> bool {
+        let mut ahead = self.tokens.clone();
+        loop {
+            match ahead.next() {
+                Some(Token::Redirect) => {
+                    ahead.next_if(|token| matches!(token, Token::Word(_)));
+                }
+                // The number of the descriptor a redirection takes (`2>&1`).
+                Some(Token::Word(word))
+                    if word.text.chars().all(|c| c.is_ascii_digit())
+                        && ahead.peek() == Some(&Token::Redirect) => {}
+                Some(Token::Word(word))
+                    if matches!(
+                        word.text.as_str(),
+                        "}" | "done" | "fi" | "esac" | "then" | "else" | "elif" | "do"
+                    ) =>
+                {
+                    return false;
+                }
+                Some(Token::End(End::Line | End::Condition) | Token::Close) | None => {
+                    return false;
+                }
+                Some(_) => return true,
+            }
+        }
     }
 
     /// The items of the innermost loop over `var`, when the check can list
     /// them.
     fn loop_items(&self, var: &str) -> Option<&[String]> {
-        self.frames.iter().rev().find_map(|frame| match frame {
-            Frame::Loop {
-                var: Some(name),
-                items,
-                ..
-            } if name == var => Some(items.as_deref()),
-            _ => None,
-        })?
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|open| match &open.frame {
+                Frame::Loop {
+                    var: Some(name),
+                    items,
+                    ..
+                } if name == var => Some(items.as_deref()),
+                _ => None,
+            })?
     }
 
     /// The list `words` stands for in a `for` header, when the check can list
@@ -178,10 +243,26 @@ impl Walker<'_> {
         }
     }
 
-    /// Note every option `word` names as a mention.
-    fn mention(&mut self, word: &str) {
-        let found: Vec<usize> = mentioned(word).collect();
+    /// Note every option `text` names as a mention.
+    fn mention_options(&mut self, text: &str) {
+        let found: Vec<usize> = mentioned(text).collect();
         self.events.extend(found.into_iter().map(Event::Mention));
+    }
+
+    /// Note what a word of the file's code names: its options, and a
+    /// `ZDOTDIR` it may set otherwise than by an assignment the walk reads
+    /// (`${ZDOTDIR:=...}`, `ZDOTDIR+=...`), which is a doubt.
+    fn mention(&mut self, text: &str) {
+        self.mention_options(text);
+        if ["ZDOTDIR=", "ZDOTDIR:=", "ZDOTDIR::=", "ZDOTDIR+="]
+            .iter()
+            .any(|form| text.contains(form))
+        {
+            self.events.push(Event::Doubt(format!(
+                "it cannot follow where `{text}` in {} sets ZDOTDIR",
+                self.place
+            )));
+        }
     }
 
     /// The events of one simple command, `words`, which ran `after` a
@@ -242,16 +323,21 @@ impl Walker<'_> {
             }
             "source" | "." => {
                 let mut args = args.into_iter();
-                if let Some(path) = args.next() {
-                    if path.text.ends_with(OH_MY_ZSH) {
+                match args.next() {
+                    Some(path) if path.text.ends_with(OH_MY_ZSH) => {
                         self.events.push(Event::OhMyZsh);
-                    } else {
+                    }
+                    Some(path) => {
                         self.mention(&path.text);
                         self.events.push(Event::Source {
                             path,
                             unconditional,
                         });
                     }
+                    None => self.events.push(Event::Doubt(format!(
+                        "it cannot tell what `{}` in {} reads",
+                        command.text, self.place
+                    ))),
                 }
                 for arg in args {
                     self.mention(&arg.text);
@@ -275,30 +361,46 @@ impl Walker<'_> {
     /// The events of `word` when it assigns `ZDOTDIR` or `XDG_CONFIG_HOME`,
     /// and its mentions.
     fn assignment(&mut self, word: &Word, unconditional: bool) {
-        self.mention(&word.text);
-        if let Some((name, value)) = word.text.split_once('=') {
-            let name = match name {
-                "ZDOTDIR" => "ZDOTDIR",
-                "XDG_CONFIG_HOME" => "XDG_CONFIG_HOME",
-                _ => return,
-            };
-            self.events.push(Event::Assign {
-                name,
-                value: Word {
-                    text: value.to_string(),
-                    expands: word.expands,
-                },
-                unconditional,
-            });
-        }
+        let name = match word.text.split_once('=') {
+            Some(("ZDOTDIR", _)) => "ZDOTDIR",
+            Some(("XDG_CONFIG_HOME", _)) => "XDG_CONFIG_HOME",
+            _ => {
+                self.mention(&word.text);
+                return;
+            }
+        };
+        self.mention_options(&word.text);
+        let value = word.text[name.len() + 1..].to_string();
+        self.events.push(Event::Assign {
+            name,
+            value: Word {
+                text: value,
+                expands: word.expands,
+            },
+            unconditional,
+        });
     }
 
-    /// Pop the innermost frame if `close` closes it; note confusion if not.
+    /// Pop the innermost frame if `close` closes it, and, when it may run
+    /// elsewhere than in this shell, count none of what it held as certain
+    /// and forget the arrays it assigned; note confusion if `close` does not
+    /// close it.
     fn close(&mut self, close: fn(&Frame) -> bool) {
-        if self.frames.last().is_some_and(close) {
-            self.frames.pop();
-        } else {
+        if !self.frames.last().is_some_and(|open| close(&open.frame)) {
             self.confused = true;
+            return;
+        }
+        let open = self.frames.pop().expect("the frame closed");
+        if self.runs_elsewhere() {
+            self.arrays = open.arrays;
+            for event in &mut self.events[open.start..] {
+                match event {
+                    Event::Set { unconditional, .. }
+                    | Event::Source { unconditional, .. }
+                    | Event::Assign { unconditional, .. } => *unconditional = false,
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -364,16 +466,20 @@ impl Walker<'_> {
         while let Some(token) = self.tokens.next() {
             match token {
                 Token::Word(word) if words.is_empty() => match word.text.as_str() {
-                    "if" => self.frames.push(Frame::If),
-                    "case" => self.frames.push(Frame::Case),
-                    "while" | "until" | "select" | "repeat" => self.frames.push(Frame::Loop {
-                        var: None,
-                        items: None,
-                        brace: false,
-                    }),
+                    "if" => self.open(Frame::If, after_condition, piped),
+                    "case" => self.open(Frame::Case, after_condition, piped),
+                    "while" | "until" | "select" | "repeat" => self.open(
+                        Frame::Loop {
+                            var: None,
+                            items: None,
+                            brace: false,
+                        },
+                        after_condition,
+                        piped,
+                    ),
                     "for" | "foreach" => {
                         let frame = self.for_header();
-                        self.frames.push(frame);
+                        self.open(frame, after_condition, piped);
                     }
                     "then" | "else" | "elif" | "do" | "in" => {}
                     "fi" => self.close(|frame| *frame == Frame::If),
@@ -386,7 +492,7 @@ impl Walker<'_> {
                             Frame::Group
                         };
                         function_next = false;
-                        self.frames.push(frame);
+                        self.open(frame, after_condition, piped);
                     }
                     "}" => self.close(|frame| {
                         matches!(
@@ -441,11 +547,27 @@ impl Walker<'_> {
                     }
                 }
                 Token::Redirect => {
-                    // The redirection's target is no word of the command.
-                    self.tokens.next_if(|token| matches!(token, Token::Word(_)));
+                    // The redirection's target is no word of the command, but
+                    // what a here-string or a file name says still counts.
+                    if let Some(Token::Word(target)) =
+                        self.tokens.next_if(|token| matches!(token, Token::Word(_)))
+                    {
+                        self.mention_options(&target.text);
+                    }
                 }
-                Token::Open if self.frames.last() == Some(&Frame::Case) => {}
-                Token::Close if self.frames.last() == Some(&Frame::Case) => {}
+                Token::Text(text) => self.mention_options(&text),
+                Token::Open | Token::Close
+                    if self
+                        .frames
+                        .last()
+                        .is_some_and(|open| open.frame == Frame::Case) => {}
+                Token::Open if words.is_empty() && self.tokens.peek() == Some(&Token::Close) => {
+                    // `() { ... }`: an anonymous function, which runs at once
+                    // but can keep its options local (`localoptions`,
+                    // `emulate -L`).
+                    self.tokens.next();
+                    function_next = true;
+                }
                 Token::Open if words.len() == 1 && self.tokens.peek() == Some(&Token::Close) => {
                     // `name()`: what follows is its body.
                     self.tokens.next();
@@ -456,7 +578,7 @@ impl Walker<'_> {
                 Token::Open => {
                     self.command(std::mem::take(&mut words), after_condition || body, piped);
                     body = false;
-                    self.frames.push(Frame::Subshell);
+                    self.open(Frame::Subshell, after_condition, piped);
                 }
                 Token::Close => {
                     self.command(std::mem::take(&mut words), after_condition || body, piped);

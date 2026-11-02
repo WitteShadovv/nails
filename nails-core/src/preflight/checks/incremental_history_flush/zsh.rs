@@ -17,16 +17,20 @@
 //! outside a comment names it without a `no` prefix: in an array, a string,
 //! an alias or a test. It counts as off again only where an `unsetopt` turns
 //! it off (or a `setopt` of its `no` form, or `set +o`) unconditionally at the
-//! top level of a file zsh certainly reads: not in a condition, a function, a
-//! subshell, a pipeline or the background, not after `&&` or `||`, not in a
+//! top level of a file zsh certainly reads: not in a condition, a function
+//! (an anonymous one included), a subshell, a pipeline or the background (a
+//! group or loop followed by `&` or `|` too), not after `&&` or `||`, not in a
 //! loop over something the check cannot list, not after a `return` or `exit`
 //! in the file, and not in a `zprofile` or `zlogin` of a shell that may not be
 //! a login shell. A turn-off anywhere else counts as a mention, which turns
-//! the option on. A loop over a list the check can read, as Home Manager
+//! the option on, and so does a word in a here-document's body, which is
+//! text, not code. A loop over a list the check can read, as Home Manager
 //! writes `for opt in "${set_opts[@]}"; do setopt "$opt"; done` after a
 //! literal `set_opts=(...)`, is read item by item. A `setopt` with an
-//! expansion it cannot list, a sourced file whose path it cannot resolve and a
-//! `ZDOTDIR` it cannot follow are doubts.
+//! expansion it cannot list, a `source` without a path or with one it cannot
+//! resolve (a process substitution among them), a `ZDOTDIR` it cannot follow
+//! and one set otherwise than by an assignment (`${ZDOTDIR:=...}`) are
+//! doubts.
 
 mod lexer;
 mod walk;
