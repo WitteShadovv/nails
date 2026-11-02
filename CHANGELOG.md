@@ -702,12 +702,15 @@ of this changelog for that version becomes the release notes word for word, and
   that names the tool or a sudo log there was not read, and nothing said so. The line of a mount
   point says how to mount it without writing to the decoy's disk, with the command: again and
   read-only when its device is mounted on the machine already, read-only and without a journal
-  replay when it is not. Only mounts from a disk count, not `/` itself, swap, filesystems in RAM,
-  host shares, network filesystems or binds, whose source lies in the image and was scanned. Both
-  files are read inside the root with `openat2` and `RESOLVE_IN_ROOT`, so NixOS's `/etc/fstab`,
-  a link into the store, is read from the image's store, and one that cannot be read there is
-  listed as not read. The examiner's view says when the decoy's `/nix/store` is missing or empty
-  under the root, where its tool check had nothing to read.
+  replay when it is not. A file the decoy mounts, such as a disk image in a home, is attached to a
+  read-only loop device first, and a `/dev/mapper` device that is not open is opened read-only
+  first, from the source the decoy's `/etc/crypttab` gives where it names one and as the kind of
+  volume it names. Only mounts from a disk count, not `/` itself, swap, filesystems in RAM,
+  host shares, network filesystems or binds, whose source lies in the image and was scanned. The
+  decoy's files are read inside the root with `openat2` and `RESOLVE_IN_ROOT`, so NixOS's
+  `/etc/fstab`, a link into the store, is read from the image's store, and one that cannot be read
+  there is listed as not read. The examiner's view says when the decoy's `/nix/store` is missing
+  or empty under the root, where its tool check had nothing to read.
 - An offline scan and its examiner's view look up the decoy's files and folders inside the root,
   as the decoy sees them, with `openat2` and `RESOLVE_IN_ROOT`. They followed a link in the image
   on the machine running verify: a `/home` that is an absolute link out of the image made `--deep`
@@ -716,9 +719,10 @@ of this changelog for that version becomes the release notes word for word, and
   hidden session a decoy link such as `/home` to `/data/home` led to the session's own folders. On
   NixOS the examiner's view never read `/etc/fstab` or `/etc/crypttab`, links into the store it
   refused to follow, and said nothing: they are now read from the image's store, and a file that
-  is there but does not resolve inside the root is listed as not checked. The probe for the known
-  NAILS paths, mostly under `/run` and `/etc/nixos`, still follows a link on the way on the
-  machine running verify.
+  is there but does not resolve inside the root is listed as not checked, with where it leads,
+  except for a link to `/dev/null`, which holds nothing. The probe for the known NAILS paths,
+  mostly under `/run` and `/etc/nixos`, still follows a link on the way on the machine running
+  verify.
 - The operator guide, the `--root` help and the message of a refused root mount the decoy so that
   nothing writes to its disk. They said `mount -o ro`, but on a filesystem that was not cleanly
   unmounted ext4 replays its journal and cleans up orphaned files on a read-only mount, btrfs

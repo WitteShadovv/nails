@@ -45,22 +45,31 @@ fn read_text(path: &Path, limit: u64) -> Option<String> {
 /// The text of the decoy's file `rel`, read inside the root ([`in_root`])
 /// with [`read_text`]. A file that is there but cannot be read, a link that
 /// leads to no readable file inside the root among them, goes to
-/// `not_checked`, with what it is read `for`.
+/// `not_checked`, with what it is read `for` and, for a link, where it leads.
+/// A link to `/dev/null`, as a history kept from being written is, holds
+/// nothing by design and is passed over.
 fn read_decoy(
     root: &Path,
     rel: &str,
     purpose: &str,
     not_checked: &mut Vec<String>,
 ) -> Option<String> {
-    if let Some(text) = read_text(&in_root(root, rel), TEXT_LIMIT) {
+    let place = in_root(root, rel);
+    if let Some(text) = read_text(&place, TEXT_LIMIT) {
         return Some(text);
+    }
+    if place == root.join("dev/null") {
+        return None;
     }
     if let Ok(meta) = std::fs::symlink_metadata(in_root_entry(root, rel)) {
         let why = if meta.file_type().is_symlink() {
-            "a link that leads to no readable file inside the root, as one into a store that is \
-             not mounted there does not"
+            let target = place.strip_prefix(root).unwrap_or(&place);
+            format!(
+                "a link that leads to /{} inside the root, where no file can be read",
+                target.display()
+            )
         } else {
-            "it could not be read"
+            "it could not be read".to_string()
         };
         not_checked.push(format!("{rel}, read for {purpose} ({why})"));
     }

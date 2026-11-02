@@ -9,11 +9,16 @@
 use super::deep_scan::is_login_shell;
 use super::*;
 use crate::filesystem::MountEntry;
+use nails_base::crypttab::{CrypttabEntry, parse_crypttab};
 use nails_base::fstab::{FstabEntry, parse_fstab};
 use nails_base::next_step::shell_word;
+use std::ffi::OsStr;
 
 /// The decoy's table of the filesystems it mounts.
 const FSTAB_FILE: &str = "/etc/fstab";
+
+/// The decoy's table of the encrypted volumes it opens.
+const CRYPTTAB_FILE: &str = "/etc/crypttab";
 
 /// How the device an fstab entry names is mounted on the machine that runs
 /// verify, by the superblock its mounts share.
@@ -37,10 +42,12 @@ impl<F: Filesystem> Verifier<F> {
     /// its `@home` this way, and on archinstall its `@log`. The line of a
     /// mount point says how to mount it without writing to the decoy's disk:
     /// again and read-only when its device is mounted already, read-only and
-    /// without a journal replay when it is not.
+    /// without a journal replay when it is not, a file of the image through
+    /// a read-only loop device, and a mapping that is not open here once it
+    /// is opened read-only ([`Self::how_to_mount`]).
     ///
-    /// The two files are read inside the root ([`Self::read_in_image`]), so
-    /// NixOS's `/etc/fstab`, a link into the store, is followed into the
+    /// The decoy's files are read inside the root ([`Self::read_in_image`]),
+    /// so NixOS's `/etc/fstab`, a link into the store, is followed into the
     /// image's store, and each place is resolved inside the root
     /// ([`Self::place`]), so no link leads out of the image. A place is then
     /// looked at with `lstat` and `stat` and listed with `O_NOATIME`, and one
@@ -63,13 +70,11 @@ impl<F: Filesystem> Verifier<F> {
                 })
                 .collect(),
             Err(_) => {
-                if self.present_in_image(Path::new(FSTAB_FILE)) {
-                    areas.push(
-                        "/etc/fstab, the decoy's table of what it mounts (it could not be read \
-                         inside the root, as a link into a store that is not mounted there cannot \
-                         be: what it mounts is not known)"
-                            .to_string(),
-                    );
+                if let Some(why) = self.why_unread(Path::new(FSTAB_FILE)) {
+                    areas.push(format!(
+                        "/etc/fstab, the decoy's table of what it mounts ({why}: what it mounts \
+                         is not known)"
+                    ));
                 }
                 Vec::new()
             }
@@ -126,12 +131,29 @@ impl<F: Filesystem> Verifier<F> {
             .collect()
     }
 
-    /// Whether anything is at the decoy's `path` under the root, a link
-    /// included: what is there but could not be read is worth naming.
-    fn present_in_image(&self, path: &Path) -> bool {
+    /// Why the decoy's file `path` could not be read, when it is there under
+    /// the root: a link says where it leads inside the root. `None` when
+    /// nothing is there, or for a link to `/dev/null`, which holds nothing by
+    /// design.
+    fn why_unread(&self, path: &Path) -> Option<String> {
         let entry = self.rebase(path);
-        matches!(self.filesystem.is_symlink(&entry), Ok(true))
-            || matches!(self.filesystem.path_exists(&entry), Ok(true))
+        let link = matches!(self.filesystem.is_symlink(&entry), Ok(true));
+        if !link && !matches!(self.filesystem.path_exists(&entry), Ok(true)) {
+            return None;
+        }
+        if !link {
+            return Some("it could not be read".to_string());
+        }
+        let inside = match &self.context {
+            VerifyContext::Offline { root } => self.filesystem.canonical_in_root(root, path),
+            VerifyContext::Host => path.to_path_buf(),
+        };
+        (inside != Path::new("/dev/null")).then(|| {
+            format!(
+                "a link that leads to {} inside the root, where no file can be read",
+                inside.display()
+            )
+        })
     }
 
     /// Whether `place`, a decoy path resolved under the root, is missing or
@@ -155,14 +177,15 @@ impl<F: Filesystem> Verifier<F> {
     }
 
     /// How to mount what `entry` mounts on `place` without writing to the
-    /// decoy's disk. A device that is mounted already has its journal behind
-    /// it: a second mount shares that filesystem, read-only as it is or made
-    /// read-only once mounted. Any other device is made read-only first and
-    /// mounted with the option that skips its filesystem's journal replay.
+    /// decoy's disk. A file of the image is attached to a read-only loop
+    /// device first, and a mapping that is not open here is opened read-only
+    /// first, as the decoy's `/etc/crypttab` opens it: the kernel keeps
+    /// either device read-only, and it is mounted with the option that skips
+    /// its filesystem's journal replay. A device that is mounted already has
+    /// its journal behind it: a second mount shares that filesystem,
+    /// read-only as it is or made read-only once mounted. Any other device is
+    /// made read-only first and mounted without a journal replay.
     fn how_to_mount(&self, entry: &FstabEntry, place: &Path, table: &[MountEntry]) -> String {
-        let device = entry
-            .device()
-            .map_or_else(|| "<device>".to_string(), |dev| shell_word(dev.as_os_str()));
         let at = shell_word(place.as_os_str());
         // A btrfs subvolume is named at each mount of it.
         let subvol = entry
@@ -181,6 +204,23 @@ impl<F: Filesystem> Verifier<F> {
                 format!("-o {} ", options.join(","))
             }
         };
+        let replay_free = with(Some(replay_free(&entry.vfstype)));
+        if let Some(file) = self.loop_file(entry) {
+            return format!(
+                "Its device is a file in the image: attach it read-only, with `sudo losetup \
+                 --read-only --find --show {}{}`, then mount the loop device that prints there \
+                 without a journal replay before the scan, with `sudo mount {replay_free}<loop \
+                 device> {at}`",
+                loop_options(entry),
+                shell_word(file.as_os_str())
+            );
+        }
+        let device = entry
+            .device()
+            .map_or_else(|| "<device>".to_string(), |dev| shell_word(dev.as_os_str()));
+        if let Some(name) = self.closed_mapping(entry) {
+            return self.how_to_open(name, &format!("{replay_free}{device} {at}"));
+        }
         match self.mounted_now(entry, table) {
             Mounted::ReadWrite => format!(
                 "Its device is mounted here already, read-write: mount it there again and make \
@@ -196,10 +236,69 @@ impl<F: Filesystem> Verifier<F> {
             Mounted::No => format!(
                 "Its device is not mounted here: make it read-only and mount it there without a \
                  journal replay before the scan, with `sudo blockdev --setro {device} && sudo \
-                 mount {}{device} {at}`",
-                with(Some(replay_free(&entry.vfstype)))
+                 mount {replay_free}{device} {at}`"
             ),
         }
+    }
+
+    /// The file of the image that `entry` mounts, resolved inside the root:
+    /// a spec that is a path outside `/dev`, which mount(8) attaches to a
+    /// loop device of its own.
+    fn loop_file(&self, entry: &FstabEntry) -> Option<PathBuf> {
+        let spec = Path::new(&entry.spec);
+        (spec.is_absolute() && !spec.starts_with("/dev")).then(|| self.place(spec))
+    }
+
+    /// The name of the device-mapper mapping that `entry` mounts, when the
+    /// mapping is not open here: its `/dev/mapper` node is missing.
+    fn closed_mapping<'e>(&self, entry: &'e FstabEntry) -> Option<&'e str> {
+        let name = entry.spec.strip_prefix("/dev/mapper/")?;
+        matches!(
+            self.filesystem.path_exists(Path::new(&entry.spec)),
+            Ok(false)
+        )
+        .then_some(name)
+    }
+
+    /// How to open the mapping `name` read-only, from the source and as the
+    /// kind of volume the decoy's `/etc/crypttab` names, and then run
+    /// `mount` with `mounting` (its options, the device and the mount point).
+    fn how_to_open(&self, name: &str, mounting: &str) -> String {
+        let volume = self
+            .read_in_image(Path::new(CRYPTTAB_FILE))
+            .ok()
+            .and_then(|text| {
+                parse_crypttab(&text)
+                    .into_iter()
+                    .find(|volume| volume.name == name)
+            });
+        let (kind, source) = match &volume {
+            Some(volume) => (cryptsetup_type(volume), self.volume_source(volume)),
+            None => (String::new(), "<source>".to_string()),
+        };
+        let how = format!(
+            "open it read-only and mount it there without a journal replay before the scan, with \
+             `sudo cryptsetup open --readonly {kind}{source} {} && sudo mount {mounting}`",
+            shell_word(OsStr::new(name))
+        );
+        match volume {
+            Some(_) => format!(
+                "Its device is a mapping of the decoy's /etc/crypttab that is not open here: {how}"
+            ),
+            None => format!(
+                "Its device is a mapping that is not open here: {how}, where <source> is the \
+                 encrypted device or file that holds it"
+            ),
+        }
+    }
+
+    /// Where the encrypted volume `volume` lies: its device node (a `UUID=`
+    /// and its like by udev's link), or its file, resolved inside the root.
+    fn volume_source(&self, volume: &CrypttabEntry) -> String {
+        let source = volume
+            .device()
+            .unwrap_or_else(|| self.place(Path::new(&volume.source)));
+        shell_word(source.as_os_str())
     }
 
     /// How the device `entry` names is mounted here now: the device node of
@@ -228,6 +327,38 @@ impl<F: Filesystem> Verifier<F> {
             Some(_) => Mounted::ReadWrite,
         }
     }
+}
+
+/// The `losetup` options that set the loop device of `entry` up as its
+/// fstab line does: from `offset=` into the file, over `sizelimit=` bytes.
+fn loop_options(entry: &FstabEntry) -> String {
+    [("offset", "--offset"), ("sizelimit", "--sizelimit")]
+        .into_iter()
+        .filter_map(|(key, option)| {
+            let value = entry.option_value(key)?;
+            Some(format!("{option} {} ", shell_word(OsStr::new(value))))
+        })
+        .collect()
+}
+
+/// The `cryptsetup open` options for the kind of volume `volume` is, by its
+/// crypttab options: a TrueCrypt or VeraCrypt volume (its hidden volume or a
+/// system drive among them) or a BitLocker drive. LUKS, cryptsetup's
+/// default, needs none, and cryptsetup finds a VeraCrypt volume by itself.
+fn cryptsetup_type(volume: &CrypttabEntry) -> String {
+    let mut options = Vec::new();
+    if volume.is_tcrypt() {
+        options.push("--type tcrypt");
+        if volume.is_tcrypt_hidden() {
+            options.push("--tcrypt-hidden");
+        }
+        if volume.has_option("tcrypt-system") {
+            options.push("--tcrypt-system");
+        }
+    } else if volume.has_option("bitlk") {
+        options.push("--type bitlk");
+    }
+    options.iter().map(|option| format!("{option} ")).collect()
 }
 
 /// The options that mount a filesystem of type `fstype` read-only without
