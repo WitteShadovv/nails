@@ -120,10 +120,11 @@ system folders, every `/etc/fstab` entry and every `/etc/crypttab` volume, see
 it on a disk that keeps its data elsewhere, such as an md array, that disk and
 every device below it: the devices of the array the decoy's root lies on are
 the decoy's, as its boot opens them. It also rules out a volume opened, under
-any name, from a device or an image file the decoy's crypttab opens. So a
-logical volume spread over an encrypted and a plain disk, a mirror with one
-plain disk, or a btrfs filesystem with one plain device warns about the plain
-disk.
+any name, from a device or an image file the decoy's crypttab opens, except a
+line for the hidden drive itself (one that opens it or a device it is stored
+on): that line is no claim, and `backend-entries` refuses it. So a logical
+volume spread over an encrypted and a plain disk, a mirror with one plain disk,
+or a btrfs filesystem with one plain device warns about the plain disk.
 
 | Result | When |
 |---|---|
