@@ -1,0 +1,4 @@
+E:ID_FS_TYPE=btrfs
+E:ID_FS_LABEL=a_b_c
+E:ID_FS_LABEL_ENC=a\x5cb\x5C\x22c\x4\xzz\x+f\
+E:ID_FS_LABEL_ENC=second

@@ -251,6 +251,7 @@ and checks more than that nothing panics or hangs:
 | `utab` | libmount's `utab` and two mount tables | each line reads as libmount 2.42 reads it; across a switch and on the way back only whole input lines survive, changed at most in their ID |
 | `fstab_crypttab` | a decoy's fstab, crypttab and mount table | every swap and mount the session masks is masked under the unit name systemd generates; a crypttab device is the node systemd opens |
 | `nixos_reference` | `configuration.nix` and udev's record of the hidden volume's partition | every reference lies in the file; ASCII case changes nothing; the scan reads forward only |
+| `udev_label` | udev's record of a block device, `/run/udev/data/b<major>:<minor>` | a label read is never empty and is what the record's first `ID_FS_LABEL_ENC` decodes to; a label written in front of the record as udev writes it reads back unchanged |
 | `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
 | `autologin` | GDM's, SDDM's, Plasma Login Manager's and LightDM's configuration with drop-ins | the accounts listed are the ones each display manager may log in, read with its parser in each order its locale may sort the drop-ins in |
 | `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |

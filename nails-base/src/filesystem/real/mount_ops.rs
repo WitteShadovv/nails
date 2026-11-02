@@ -9,12 +9,15 @@
 //! covers the path, though the covered mount stays in the table.
 
 use crate::Result;
-use crate::filesystem::MountSource;
 use crate::filesystem::mountinfo::{MountEntry, mount_is_read_only, read_mountinfo, top_mount_at};
+use crate::filesystem::{MountSource, udev};
 use std::path::{Path, PathBuf};
 
 /// Where udev records a symlink per filesystem label, named by the label.
 const DEV_BY_LABEL: &str = "/dev/disk/by-label";
+/// Where udev keeps its record of each block device, named
+/// `b<major>:<minor>`.
+const UDEV_DATA: &str = "/run/udev/data";
 /// Whole block devices by kernel name; device-mapper devices live here.
 const SYS_BLOCK: &str = "/sys/block";
 
@@ -64,9 +67,10 @@ pub(super) fn is_mount_read_only(target: &Path) -> Result<bool> {
 ///
 /// Returns `None` when `mount_point` is not itself a mount point. The dm name
 /// comes from the source (`/dev/mapper/<name>` directly, `/dev/dm-N` via
-/// `/sys/block/dm-N/dm/name`) and the label from the `/dev/disk/by-label`
-/// symlink that resolves to the same device. Every attribute is best-effort:
-/// an absent dm layer or label is left `None`, never an error.
+/// `/sys/block/dm-N/dm/name`) and the label from udev's record of the device
+/// in `/run/udev/data`, or, without a record, from the `/dev/disk/by-label`
+/// symlink that resolves to the same device (see [`udev`]). Every attribute
+/// is best-effort: an absent dm layer or label is left `None`, never an error.
 pub(super) fn mount_source(mount_point: &Path) -> Result<Option<MountSource>> {
     let entries = read_mountinfo()?;
     let Some(entry) = visible_mount(&entries, mount_point) else {
@@ -75,7 +79,12 @@ pub(super) fn mount_source(mount_point: &Path) -> Result<Option<MountSource>> {
 
     let device = entry.source.to_string_lossy().into_owned();
     let dm_name = dm_name_for(&entry.source);
-    let label = label_for(&entry.source);
+    let label = udev::label_of(
+        &entry.source,
+        &entry.dev,
+        Path::new(UDEV_DATA),
+        Path::new(DEV_BY_LABEL),
+    );
 
     Ok(Some(MountSource {
         device: Some(device),
@@ -99,21 +108,6 @@ fn dm_name_for(source: &Path) -> Option<String> {
         let dm_name = dm_name.trim();
         if !dm_name.is_empty() {
             return Some(dm_name.to_string());
-        }
-    }
-    None
-}
-
-/// The filesystem label of a mount source, if `/dev/disk/by-label` holds a
-/// symlink that resolves to the same device.
-///
-/// The source is resolved to its canonical device node first, because a label
-/// symlink and a `/dev/mapper` source both point at the underlying `/dev/dm-N`.
-fn label_for(source: &Path) -> Option<String> {
-    let device = source.canonicalize().ok()?;
-    for entry in std::fs::read_dir(DEV_BY_LABEL).ok()?.flatten() {
-        if entry.path().canonicalize().ok().as_deref() == Some(device.as_path()) {
-            return entry.file_name().to_str().map(str::to_string);
         }
     }
     None

@@ -40,6 +40,7 @@ pub mod pinned_dir;
 pub mod real;
 pub mod safe_path;
 mod traits;
+pub mod udev;
 
 // Re-exports
 #[cfg(any(test, feature = "test-support"))]
