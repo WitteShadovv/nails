@@ -111,6 +111,18 @@ already written the command before any of this, which is why the pre-flight
 check warns about it and why the decoy commands belong in a shell with history
 off (`set +o history`).
 
+A shell counts as interactive when it reads its commands from a terminal: its
+standard input is a terminal and its command line runs no command string (`-c`)
+and names no script, or it forces interactive mode (`-i`). Each shell's own
+rule asks for more: bash and the Korn shells want standard error on a terminal
+too, dash wants standard output, and zsh and fish want nothing else. Standard
+input alone covers them all, so a shell started with its errors sent
+elsewhere, as `zsh 2>/dev/null`, is killed too, and so is a fish started with
+an init command (`fish -C ...`), whose command line NAILS reads as fish does. A
+shell that reads a terminal without being interactive by its own rule, as
+`bash 2>/dev/null` does, is killed as well; it keeps no history, and the switch
+would end it anyway.
+
 The shells die the newest first, because one shell's death can hang up
 another. A login shell that leads a console's session hangs up the console as
 it dies, and a desktop started from it (`sway` or `startx` typed after logging
