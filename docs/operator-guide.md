@@ -1430,13 +1430,13 @@ afterwards:
   read, when a `setopt` takes an expansion it cannot list, when a sourced
   file's path or a `ZDOTDIR` does not resolve (as for
   `source <(tool init zsh)`), when a `source` names no file, when `ZDOTDIR`
-  is set otherwise than by an assignment (`: ${ZDOTDIR:=...}`), or when the
-  shell is not bash, zsh, fish or dash (dash keeps no history file). It does
-  not see a setting made by a plugin manager or an `eval`, one you typed into
-  the shell, a file a bash startup file sources, or a shell started with
-  other startup files (`bash --rcfile`, a `ZDOTDIR` from the environment),
-  nor a history tool that keeps its own record of each command, such as
-  atuin.
+  is set otherwise than by an assignment (`: ${ZDOTDIR:=...}`), when a
+  here-document has no line that ends it, or when the shell is not bash,
+  zsh, fish or dash (dash keeps no history file). It does not see a setting
+  made by a plugin manager or an `eval`, one you typed into the shell, a file
+  a bash startup file sources, or a shell started with other startup files
+  (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
+  keeps its own record of each command, such as atuin.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

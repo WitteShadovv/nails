@@ -369,6 +369,119 @@ fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
 }
 
 #[test]
+fn a_shift_in_an_arithmetic_command_opens_no_here_document() {
+    for arithmetic in [
+        "(( bits = 1 << 2 ))",
+        "(( flags <<= 1 ))",
+        "for (( i = 0; i < 3; i++ )); do (( m <<= 1 )); done",
+        "if (( 1 << 2 )); then true; fi",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{arithmetic}\nsource ~/.zsh/history.zsh\n"),
+        );
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            Vec::<String>::new(),
+            "{arithmetic}"
+        );
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            "{arithmetic}"
+        );
+    }
+
+    // The ZDOTDIR a line after one sets is followed.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "(( n = 1 << 3 ))\nexport ZDOTDIR=~/.config/zsh\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshrc",
+        "setopt share_history\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"]
+    );
+
+    // A turn-off after one counts, and two subshells, `((...); ...)`, are
+    // no arithmetic command: a turn-off in them does not count.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "(( x = 1 << 2 ))\nunsetopt share_history\n",
+    );
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "((cd /tmp); unsetopt share_history)\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zshrc sets SHARE_HISTORY"]
+    );
+}
+
+#[test]
+fn a_here_document_without_the_line_that_ends_it_is_a_doubt() {
+    // Its body stays text: a source in it is not followed, and a turn-off
+    // in it names the option.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "cat <<EOF\nsource ~/.zsh/history.zsh\nunsetopt share_history\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zsh/history.zsh",
+        "setopt inc_append_history\n",
+    );
+    let found = scan(&fs, NOT_LOGIN);
+    assert_eq!(
+        found.doubts,
+        [
+            "it cannot tell where the here-document that /home/alice/.zshrc opens with `<<EOF` \
+          ends"
+        ]
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zshrc sets SHARE_HISTORY"]
+    );
+
+    // One opened on the last line, and one with no word to end it.
+    for (text, delimiter) in [("cat <<EOF", "EOF"), ("cat << ; true\n", "")] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", text);
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            [format!(
+                "it cannot tell where the here-document that /home/alice/.zshrc opens with \
+                 `<<{delimiter}` ends"
+            )],
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
 fn a_login_shell_s_files_count_for_a_login_shell_only() {
     let fs = MockFilesystem::new();
     seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
@@ -691,6 +804,17 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
     assert!(
         tokens("cat <<-EOF; e\n\tsetopt c\n\tEOF\n")
             .contains(&Token::Text("\tsetopt c\n".to_string()))
+    );
+    assert_eq!(
+        tokens("(( a << (b) ))\nc"),
+        [
+            Token::Arithmetic("(( a << (b) ))".to_string()),
+            Token::End(End::Line),
+            Token::Word(Word {
+                text: "c".to_string(),
+                expands: false
+            }),
+        ]
     );
     assert_eq!(
         tokens("f() { x } && y || z | w &"),
