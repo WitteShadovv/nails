@@ -58,13 +58,16 @@ fn whole_words(line: &str, word: &str) -> usize {
         .count()
 }
 
-/// How often a `.` stands in `line` as a word of its own with another word
-/// after it, as in `. file`; not before an option or a `]]` (`find . -name`,
-/// `[[ -d . ]]`).
+/// How often a `.` stands in `line` as a word of its own, quotes and a
+/// backslash around it taken off, with another word after it, as in
+/// `. file`; not before an option or a `]]` (`find . -name`, `[[ -d . ]]`).
 fn dot_words(line: &str) -> usize {
     line.split([';', '&', '|', '(', ')', '{', '}', '`'])
         .map(|piece| {
-            let words: Vec<&str> = piece.split_whitespace().collect();
+            let words: Vec<&str> = piece
+                .split_whitespace()
+                .map(|word| word.trim_matches(['\'', '"', '\\']))
+                .collect();
             words
                 .windows(2)
                 .filter(|pair| {
@@ -75,20 +78,25 @@ fn dot_words(line: &str) -> usize {
         .sum()
 }
 
-/// How often an `alias` in `line` stands for `.` (`alias s=.`,
-/// `alias s='. file'`).
+/// How often an alias in `line` stands for `.`, past the precommands before
+/// it, its quotes and backslashes taken off (`alias s=.`, `alias s='. f'`,
+/// `alias s='builtin .'`, `alias s=\.`, `aliases[s]=.`).
 fn alias_dots(line: &str) -> usize {
-    if whole_words(line, "alias") == 0 {
+    if whole_words(line, "alias") == 0 && !line.contains("aliases[") {
         return 0;
     }
     line.match_indices('=')
         .filter(|&(at, _)| {
-            let value = line[at + 1..].trim_start_matches(['\'', '"']);
-            value.strip_prefix('.').is_some_and(|rest| {
-                rest.chars()
-                    .next()
-                    .is_none_or(|c| c.is_whitespace() || matches!(c, '\'' | '"' | ';'))
-            })
+            let value = line[at + 1..].replace(['\'', '"', '\\'], " ");
+            value
+                .split_whitespace()
+                .find(|word| {
+                    !matches!(
+                        *word,
+                        "builtin" | "command" | "noglob" | "nocorrect" | "exec" | "-"
+                    )
+                })
+                .is_some_and(|word| word == "." || word.starts_with(".;"))
         })
         .count()
 }

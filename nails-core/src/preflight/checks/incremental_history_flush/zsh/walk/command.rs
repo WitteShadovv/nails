@@ -24,6 +24,15 @@ const PRECOMMANDS: &[&str] = &[
     "!",
 ];
 
+/// Whether `text` assigns a variable (`name=...`, `name+=...`,
+/// `name[key]=...`), not a word with an `=` in it (`${=c}`, `$=c`).
+fn is_assignment(text: &str) -> bool {
+    text.split_once('=').is_some_and(|(name, _)| {
+        let name = name.strip_suffix('+').unwrap_or(name);
+        is_name(name.split_once('[').map_or(name, |(name, _)| name))
+    })
+}
+
 impl Walker<'_> {
     /// The items of the innermost loop over `var`, when the check can list
     /// them.
@@ -147,7 +156,7 @@ impl Walker<'_> {
         let unconditional = self.certain(after_condition, piped);
         let mut words = words.into_iter().peekable();
         // Assignments before the command word.
-        while let Some(word) = words.next_if(|word| word.text.contains('=')) {
+        while let Some(word) = words.next_if(|word| is_assignment(&word.text)) {
             self.assignment(&word, unconditional);
         }
         while words
@@ -232,8 +241,10 @@ impl Walker<'_> {
                 }
             }
             "eval" if args.iter().all(|arg| !arg.expands) => {
-                // Its words are code the walk reads as zsh would run them.
-                let text: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+                // Its words are code the walk reads as zsh would run them,
+                // past the `--` that may end its options.
+                let skip = usize::from(args.first().is_some_and(|arg| arg.text == "--"));
+                let text: Vec<&str> = args[skip..].iter().map(|arg| arg.text.as_str()).collect();
                 let nested = walk_text(&text.join(" "), self.place);
                 self.sources += nested.sources;
                 self.evals += 1 + nested.evals;
