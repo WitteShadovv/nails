@@ -65,6 +65,10 @@ pub struct Layer {
     pub discard_max_bytes: u64,
     /// Kernel names of the devices below this one (`slaves/`), sorted.
     pub slaves: Vec<String>,
+    /// Kernel names of the devices the walk went on into right below this
+    /// one: its `slaves`, then, below a loop device, the device it reads from,
+    /// as far as [`LoopFollow`] lets the walk go.
+    pub below: Vec<String>,
     /// Kernel names of the devices built on this one (`holders/`), sorted.
     pub holders: Vec<String>,
     /// Partition data, for a partition.
