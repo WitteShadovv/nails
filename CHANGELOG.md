@@ -225,7 +225,8 @@ of this changelog for that version becomes the release notes word for word, and
   folder, typed as its full path and sent as the engine reads it (`//home` and `/./home` are
   `/home`), and set up the hidden volume (`nails init`), with or without the hidden NixOS layout
   (its switch first, off for `--no-hardware-config`) and seeded from the hardware configuration its
-  field names (`--hardware-config`), each as a plan, its token and its apply:
+  field names (`--hardware-config`), its question saying when the engine leaves the layout out,
+  each as a plan, its token and its apply:
   the question says what goes (every path the discard deletes from the hidden volume) or what is
   written, and a discard of a folder that holds a home, or of `/nix`, acts only once the folder is
   typed. Either one refused for a hidden volume on this computer's own storage offers Allow for This

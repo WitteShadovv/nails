@@ -177,7 +177,9 @@ impl SetUp {
                 page.field = Some(Field {
                     label: text::FIELD_HARDWARE_CONFIG.to_string(),
                     text: self.hardware_config.clone(),
-                    hint: if file.is_empty() || file.starts_with('/') {
+                    hint: if file.is_empty()
+                        || (file.starts_with('/') && !file.chars().any(char::is_control))
+                    {
                         text::HARDWARE_CONFIG_HINT
                     } else {
                         text::HARDWARE_CONFIG_NOT_ABSOLUTE
@@ -242,6 +244,11 @@ pub(crate) fn question(data: &InitPlanData) -> Question {
     let mut lines = vec![text::set_up_consequence(&data.path)];
     if let Some(hardware) = &data.hardware_config {
         lines.push(text::set_up_nixos(hardware));
+    }
+    // A layout the engine leaves out, as the switch asked or as this host
+    // has none: why, in its words.
+    if let Some(skipped) = &data.skipped {
+        lines.push(text::sentence(skipped));
     }
     lines.extend(data.warnings.iter().map(|warning| text::sentence(warning)));
     Question {

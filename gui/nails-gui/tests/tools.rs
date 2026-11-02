@@ -593,9 +593,17 @@ fn set_up_asks_first_and_lists_each_part_it_wrote() {
         token: "e".repeat(32),
     })));
     let dialog = screen.find_with(text::SET_UP_QUESTION, AccessibleRole::Groupbox);
+    // The layout this host has none for is said to be left out, in the
+    // engine's words.
     assert_eq!(
         dialog.accessible_description().as_deref(),
-        Some(text::set_up_consequence("/mnt/data").as_str())
+        Some(
+            format!(
+                "{}\nHost 'debian' has no NixOS config layer.",
+                text::set_up_consequence("/mnt/data")
+            )
+            .as_str()
+        )
     );
     assert_eq!(screen.focused(), "Cancel", "the focus starts on Cancel");
     press(&screen, text::SET_UP_CONFIRM);
