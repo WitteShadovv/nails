@@ -67,15 +67,16 @@ const RAM_FIX: &str = "Use a root in RAM only to try NAILS out, and keep a hidde
 /// filesystem to the bottom of the stack passes an encrypting layer that is
 /// not the decoy's: a cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN,
 /// LOOPAES, BITLK or FVAULT2, a `SUBDEV` mapping (cryptsetup's name for the
-/// layers it puts below such a mapping), or a mapping the VeraCrypt
-/// application made. It warns, naming the device, when a way down passes no
-/// encrypting layer at all; when the only encryption on it is the decoy's
-/// own; when it cannot tell (a device-mapper device of a kind it does not
-/// know, as it never reads a mapping's table, a loop device whose file it
-/// cannot follow to a disk or whose path and recorded filesystem disagree, a
-/// device that keeps its data where sysfs does not show, a stack deeper than
-/// it reads, a filesystem that shows no block device); and when the hidden
-/// root is a RAM filesystem, whose contents a power-off ends. It never fails.
+/// layers it puts below such a mapping), or a mapping named as the VeraCrypt
+/// application names its own. It knows a mapping by its device-mapper uuid
+/// and name alone, as it never reads a mapping's table. It warns, naming the
+/// device, when a way down passes no encrypting layer at all; when the only
+/// encryption on it is the decoy's own; when it cannot tell (a device-mapper
+/// device of a kind it does not know, a loop device whose file it cannot
+/// follow to a disk or whose path and recorded filesystem disagree, a device
+/// that keeps its data where sysfs does not show, a stack deeper than it
+/// reads, a filesystem that shows no block device); and when the hidden root
+/// is a RAM filesystem, whose contents a power-off ends. It never fails.
 ///
 /// # What it reads
 ///
