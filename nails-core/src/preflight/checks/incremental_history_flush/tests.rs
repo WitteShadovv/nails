@@ -14,6 +14,7 @@ fn typed(program: &str, argv: &[&str]) -> InspectedShell {
         homes: vec![PathBuf::from(HOME)],
         argv: argv.iter().map(|word| word.to_string()).collect(),
         origin: ShellOrigin::Typed,
+        login: None,
     }
 }
 
@@ -498,6 +499,7 @@ fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
             homes: vec![PathBuf::from(HOME)],
             argv: Vec::new(),
             origin: ShellOrigin::Login,
+            login: None,
         }
     );
     let fs = MockFilesystem::new();
@@ -565,6 +567,7 @@ fn a_shell_of_another_account_is_read_in_both_homes() {
         homes: vec![PathBuf::from("/root"), PathBuf::from(HOME)],
         argv: vec!["bash".to_string()],
         origin: ShellOrigin::Typed,
+        login: None,
     };
     assert!(warning(run(&fs, shell)).contains("/home/alice/.bashrc runs `history -a`"));
 }
@@ -581,6 +584,7 @@ fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
         homes: vec![PathBuf::from("/root"), PathBuf::from(HOME)],
         argv: vec!["-zsh".to_string()],
         origin: ShellOrigin::Typed,
+        login: None,
     };
     let message = warning(run(&fs, shell.clone()));
     assert!(
@@ -593,6 +597,60 @@ fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
     assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
     seed(&fs, "/root/.zshrc", "unsetopt share_history\n");
     assert!(matches!(run(&fs, shell), CheckResult::Pass(_)));
+}
+
+/// The start of every result of the check for a zsh the command was likely
+/// typed into.
+const LIKELY: &str = "This command was likely typed into zsh, but the check cannot be sure of \
+                      it, so it read the startup files of every shell it knows";
+
+#[test]
+fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
+    let likely = |login: &str| InspectedShell {
+        program: "zsh".to_string(),
+        homes: vec![PathBuf::from(HOME)],
+        argv: vec!["-zsh".to_string()],
+        origin: ShellOrigin::Likely,
+        login: Some(login.to_string()),
+    };
+    let fs = MockFilesystem::new();
+    match run(&fs, likely("zsh")) {
+        CheckResult::Pass(message) => assert_eq!(
+            message,
+            format!(
+                "{LIKELY}: zsh (the shell this command was likely typed into): no startup file \
+                 the check reads turns on INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or \
+                 SHARE_HISTORY; bash (a shell the operator may use): no startup file the check \
+                 reads runs `history -a` or `history -w` from PROMPT_COMMAND"
+            )
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    // The operator's login shell and every other shell the check knows.
+    seed(&fs, "/home/alice/.bashrc", "PROMPT_COMMAND='history -a'\n");
+    let message = warning(run(&fs, likely("fish")));
+    assert!(
+        message.starts_with(&format!(
+            "{LIKELY}. fish, the operator's login shell, writes"
+        )) && message.contains("bash, a shell the operator may use, writes"),
+        "{message}"
+    );
+
+    // Its command line is not taken to tell how it started, as the decoy
+    // commands may have been typed into another zsh: a turn-off in a login
+    // shell's file does not count.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
+    seed(&fs, "/home/alice/.zlogin", "unsetopt share_history\n");
+    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
+    let message = warning(run(&fs, likely("zsh")));
+    assert!(
+        message.starts_with(&format!(
+            "{LIKELY}. zsh, the shell this command was likely typed into, writes"
+        )),
+        "{message}"
+    );
 }
 
 #[test]
