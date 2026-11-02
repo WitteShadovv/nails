@@ -563,6 +563,49 @@ fn a_partition_of_a_loop_device_whose_record_cannot_be_read_is_refused() {
 }
 
 #[test]
+fn a_partition_whose_disk_is_not_found_is_refused_as_untraced() {
+    // The partition's parent directory carries no `dev`, as no disk's does
+    // in the sysfs of a host.
+    let decoy = Decoy::new(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
+         5 1 259:8 / /mnt rw - ext4 /dev/sdz1 rw\n",
+    )
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .partition("/sys/devices/odd/host9/sdz1", "sdz1", "259:8")
+    .file("/etc/fstab", "/dev/nvme0n1p3 / ext4 defaults 0 1\n");
+    for allow in [
+        crate::hidden_root::Allow::Nothing,
+        crate::hidden_root::Allow::DecoyStorage,
+    ] {
+        match HiddenRoot::assess_allowing(&decoy.fs, Path::new("/mnt"), allow).unwrap() {
+            Assessment::Refused(refusal) => {
+                assert_eq!(
+                    refusal.kind,
+                    RefusalKind::StorageUntraced {
+                        verdict: Verdict::DiskNotFound
+                    }
+                );
+                assert_eq!(refusal.code(), "storage_unjudged");
+                assert_eq!(
+                    refusal.reason,
+                    "/mnt is on a partition whose disk the kernel does not show, so where it \
+                     lives cannot be told"
+                );
+                assert_eq!(
+                    refusal.hint(None),
+                    [
+                        "Run the command again on the host rather than in a container, with /sys \
+                      mounted."
+                    ]
+                );
+            }
+            other => panic!("{allow:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn an_unreadable_crypttab_refuses_a_disk_root_but_not_a_tmpfs() {
     let decoy = external_veracrypt().unreadable("/etc/crypttab");
     match decoy.assess() {

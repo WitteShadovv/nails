@@ -649,12 +649,7 @@ fn a_partition_whose_disk_is_not_found_cannot_be_traced() {
     let world =
         plain_decoy("5 1 259:8 / /mnt rw - ext4 /dev/sdz1 rw\n").part("sdz1", "259:8", "sdz");
     let verdict = world.verdict("/mnt");
-    assert_eq!(
-        verdict,
-        Verdict::UntracedStorage {
-            fstype: "ext4".to_string()
-        }
-    );
+    assert_eq!(verdict, Verdict::DiskNotFound);
     assert_eq!(verdict.severity(), Severity::Refuse);
 }
 

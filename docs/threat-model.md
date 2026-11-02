@@ -324,9 +324,10 @@ rehearsal state all ask it first. It refuses:
   not change either;
 - a root that this computer's own storage holds: a btrfs subvolume or a bind
   mount of a filesystem the decoy mounts, the filesystem the decoy's fstab
-  mounts there, a logical volume or other device stacked on the decoy's
-  storage or swap, or an unencrypted image file on a decoy filesystem, a
-  partition of one attached with `losetup -P` included;
+  mounts there, a logical volume, a device-mapper mapping, an md array or a
+  loop device stacked on the decoy's storage or swap, or an unencrypted image
+  file on a decoy filesystem, a partition of one attached with `losetup -P`
+  included;
 - a root with a second filesystem mounted over it (`root_covered`), and in the
   hidden session a root whose filesystem is not the one the session started
   from: the writes would reach the disk on top;
@@ -334,16 +335,27 @@ rehearsal state all ask it first. It refuses:
   cannot be read (`storage_unjudged`; run the command with sudo), or the block
   devices in `/sys/class/block` cannot be listed (`storage_unjudged`; run it as
   root on the host, with `/sys` mounted), or because its filesystem shows no
-  disk it stores its data on: an overlay, a FUSE, network or ZFS filesystem, a
-  partition of a disk that is not found, or an image file on one that the
-  decoy neither mounts at `/` or a system folder such as `/home` nor lists in
-  its fstab (`storage_unjudged`);
+  disk it stores its data on: an overlay, a FUSE, network or ZFS filesystem, or
+  an image file on one that the decoy neither mounts at `/` or a system folder
+  such as `/home` nor lists in its fstab (`storage_unjudged`), or because it
+  lies on a partition whose disk the kernel does not show
+  (`storage_unjudged`; run the command on the host, with `/sys` mounted);
 - a root on an image file that no filesystem mounted here holds
   (`storage_unjudged`). The filesystem that holds an image file is the one on
   the device the loop driver recorded for the file, not the one its path leads
   to now, so a filesystem mounted over the image's folder cannot make it look
   separate. Reading that record needs root (`storage_unjudged`; run the
   command with sudo).
+
+The gate follows what sysfs shows below a device, and some devices show
+nothing of where they keep their data. It does not follow a partition of an md
+array into the array: a root on `md0p1` attaches although `md0` itself is
+refused when the array's devices are image files on the decoy's `/home` or a
+logical volume in its encrypted group. A network block device (`nbd`, as
+`qemu-nbd` serves an image file) and a ZFS volume (`zvol`) show nothing below
+them, whole or partitioned, so a root on one attaches even when its data lies
+in a file on the decoy's disk or in the decoy's own ZFS pool. Nothing refuses
+such a root then, so make sure yourself that its data lies elsewhere.
 
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of
