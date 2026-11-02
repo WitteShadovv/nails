@@ -482,6 +482,71 @@ fn a_here_document_without_the_line_that_ends_it_is_a_doubt() {
 }
 
 #[test]
+fn a_quote_in_an_expansion_closes_nothing() {
+    for line in [
+        r#"x=$(echo ")")"#,
+        "x=$(printf '%s)' y)",
+        r#"y=${x//"}"/}"#,
+        r#"(( $(echo ")") ))"#,
+        // A `'` in a `${...}` in double quotes quotes nothing.
+        r#"z="${x:-'}""#,
+        r#"w=`echo ")"`"#,
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{line}\nsource ~/.zsh/history.zsh\n"),
+        );
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new(), "{line}");
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_construct_that_runs_to_the_end_of_the_file_is_a_doubt() {
+    for (line, opener) in [
+        // zsh ends `$'...'` at a `'` without a backslash, the lexer at any:
+        // the last `'` opens a string to the end of the file.
+        (r"x=$'it\'s'", "`'`"),
+        (r#"echo "oops"#, "`\"`"),
+        ("x=$(echo", "`$(`"),
+        ("x=${y", "`${`"),
+        ("x=`echo", "backquote"),
+        ("opts=(a", "`(`"),
+        ("diff <(a", "`<(`"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{line}\nsource ~/.zsh/history.zsh\n"),
+        );
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(
+            scan(&fs, NOT_LOGIN).doubts,
+            [format!(
+                "it cannot tell where the {opener} that /home/alice/.zshrc opens ends"
+            )],
+            "{line}"
+        );
+    }
+}
+
+#[test]
 fn a_login_shell_s_files_count_for_a_login_shell_only() {
     let fs = MockFilesystem::new();
     seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
@@ -804,6 +869,14 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
     assert!(
         tokens("cat <<-EOF; e\n\tsetopt c\n\tEOF\n")
             .contains(&Token::Text("\tsetopt c\n".to_string()))
+    );
+    assert_eq!(
+        words(r#"x=$(echo ")") 'a)' "$(b ')')""#),
+        [
+            (r#"x=$(echo ")")"#.to_string(), true),
+            ("a)".to_string(), false),
+            ("$(b ')')".to_string(), true),
+        ]
     );
     assert_eq!(
         tokens("(( a << (b) ))\nc"),

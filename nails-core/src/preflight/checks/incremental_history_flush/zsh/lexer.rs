@@ -46,6 +46,10 @@ pub(super) enum Token {
     /// The delimiter of a here-document whose body runs to the end of the
     /// text without the line that ends it, or that has none.
     Unended(String),
+    /// What opens a quote, an expansion or another construct that runs to
+    /// the end of the text without closing, as a message names it: all that
+    /// follows it is in its word.
+    Unclosed(String),
     /// An arithmetic command, `(( ... ))`, as written: no `<<` in it opens
     /// a here-document.
     Arithmetic(String),
@@ -69,6 +73,24 @@ struct Lexer<'a> {
     /// on the next line: each one's delimiter, and whether `<<-` lets its
     /// lines start with tabs.
     heredocs: Vec<(String, bool)>,
+    /// What opens the construct that runs to the end of the text, once one
+    /// does.
+    unclosed: Option<String>,
+}
+
+/// What a quoted or nested part of a word that [`Lexer::balanced`] reads is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Nest {
+    /// `$(...)` or `(...)`, which ends at its `)`.
+    Paren,
+    /// `${...}`, which ends at its `}`; `quoted` inside double quotes, where
+    /// a `'` quotes nothing.
+    Brace {
+        quoted: bool,
+    },
+    Double,
+    Single,
+    Back,
 }
 
 impl Lexer<'_> {
@@ -99,55 +121,66 @@ impl Lexer<'_> {
             },
             '\'' => {
                 self.word();
+                let mut closed = false;
                 for c in self.chars.by_ref() {
                     if c == '\'' {
+                        closed = true;
                         break;
                     }
                     self.word.as_mut().expect("a word").text.push(c);
                 }
+                if !closed {
+                    self.unclosed("`'`");
+                }
             }
             '"' => {
                 self.word();
+                let mut closed = false;
                 while let Some(c) = self.chars.next() {
                     match c {
-                        '"' => break,
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
                         '\\' => match self.chars.next() {
                             Some('\n') | None => {}
                             Some(escaped) => self.word().text.push(escaped),
                         },
-                        '$' | '`' => self.expansion(c),
+                        '$' | '`' => self.expansion(c, true),
                         c => self.word().text.push(c),
                     }
                 }
+                if !closed {
+                    self.unclosed("`\"`");
+                }
             }
-            '$' | '`' => self.expansion(c),
+            '$' | '`' => self.expansion(c, false),
             '(' => {
                 // A glob qualifier or the like, inside a word.
                 self.word().text.push('(');
-                self.balanced('(', ')');
+                if !self.balanced(Nest::Paren) {
+                    self.unclosed("`(`");
+                }
             }
             c => self.word().text.push(c),
         }
     }
 
+    /// Note that what `opener` opens runs to the end of the text, unless
+    /// something that holds it does too.
+    fn unclosed(&mut self, opener: &str) {
+        self.unclosed.get_or_insert_with(|| opener.to_string());
+    }
+
     /// Read an expansion that starts with `c` (`$` or a backquote) into the
-    /// current word, as written.
-    fn expansion(&mut self, c: char) {
+    /// current word, as written; `quoted` inside double quotes.
+    fn expansion(&mut self, c: char, quoted: bool) {
         let word = self.word();
         word.expands = true;
         word.text.push(c);
         if c == '`' {
-            while let Some(c) = self.chars.next() {
-                self.word().text.push(c);
-                match c {
-                    '`' => break,
-                    '\\' => {
-                        if let Some(escaped) = self.chars.next() {
-                            self.word().text.push(escaped);
-                        }
-                    }
-                    _ => {}
-                }
+            if !self.balanced(Nest::Back) {
+                self.unclosed("backquote");
             }
             return;
         }
@@ -155,7 +188,14 @@ impl Lexer<'_> {
             Some(open @ ('(' | '{')) => {
                 self.chars.next();
                 self.word().text.push(open);
-                self.balanced(open, if open == '(' { ')' } else { '}' });
+                let (nest, opener) = if open == '(' {
+                    (Nest::Paren, "`$(`")
+                } else {
+                    (Nest::Brace { quoted }, "`${`")
+                };
+                if !self.balanced(nest) {
+                    self.unclosed(opener);
+                }
             }
             _ => {
                 while let Some(c) = self.chars.next_if(|c| {
@@ -168,33 +208,65 @@ impl Lexer<'_> {
         }
     }
 
-    /// Read up to the `close` that matches an `open` already read, into the
-    /// current word.
-    fn balanced(&mut self, open: char, close: char) {
-        let mut depth = 1;
-        while let Some(c) = self.chars.next() {
+    /// Read the rest of `nest`, whose opening was read, into the current word
+    /// as written, up to what closes it: past what the quotes and the
+    /// expansions nested in it hold, so a `)` or `}` in quotes closes
+    /// nothing. Whether it closes before the end of the text.
+    fn balanced(&mut self, nest: Nest) -> bool {
+        let mut stack = vec![nest];
+        while let Some(&inner) = stack.last() {
+            let Some(c) = self.chars.next() else {
+                return false;
+            };
             self.word().text.push(c);
-            if c == '\\' {
-                if let Some(escaped) = self.chars.next() {
-                    self.word().text.push(escaped);
+            let quoted = matches!(inner, Nest::Brace { quoted: true });
+            match (inner, c) {
+                (Nest::Single, '\'') | (Nest::Back, '`') | (Nest::Double, '"') => {
+                    stack.pop();
                 }
-            } else if c == open {
-                depth += 1;
-            } else if c == close {
-                depth -= 1;
-                if depth == 0 {
-                    return;
+                (Nest::Single, _) => {}
+                (_, '\\') => {
+                    let escaped = self.chars.next();
+                    self.word().text.extend(escaped);
                 }
+                (Nest::Back, _) => {}
+                (_, '`') => stack.push(Nest::Back),
+                (_, '$') => {
+                    if let Some(open) = self.chars.next_if(|c| matches!(c, '(' | '{')) {
+                        self.word().text.push(open);
+                        stack.push(if open == '(' {
+                            Nest::Paren
+                        } else {
+                            Nest::Brace {
+                                quoted: quoted || inner == Nest::Double,
+                            }
+                        });
+                    }
+                }
+                (Nest::Double, _) => {}
+                (_, '"') => stack.push(Nest::Double),
+                (_, '\'') if !quoted => stack.push(Nest::Single),
+                (Nest::Paren, '(') => stack.push(Nest::Paren),
+                (Nest::Paren, ')') | (Nest::Brace { .. }, '}') => {
+                    stack.pop();
+                }
+                (Nest::Brace { .. }, '{') => stack.push(Nest::Brace { quoted }),
+                _ => {}
             }
         }
+        true
     }
 
     /// The elements of an array whose `(` was read, up to its `)`.
     fn array(&mut self) -> Vec<Word> {
         let mut items = Vec::new();
+        let mut closed = false;
         while let Some(c) = self.chars.next() {
             match c {
-                ')' => break,
+                ')' => {
+                    closed = true;
+                    break;
+                }
                 '#' if self.word.is_none() => self.comment(),
                 c if c.is_whitespace() => {
                     if let Some(word) = self.word.take() {
@@ -205,6 +277,9 @@ impl Lexer<'_> {
             }
         }
         items.extend(self.word.take());
+        if !closed {
+            self.unclosed("`(`");
+        }
         items
     }
 
@@ -265,27 +340,21 @@ impl Lexer<'_> {
     /// when its parentheses do not close as one `))`, as those of two
     /// subshells, `((a); b)`, do.
     fn arithmetic(&mut self) -> Option<String> {
-        let mut ahead = self.chars.clone();
-        ahead.next();
-        let mut text = String::from("((");
-        let mut depth = 2;
-        while let Some(c) = ahead.next() {
-            text.push(c);
-            match c {
-                '\\' => text.extend(ahead.next()),
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 1 {
-                        ahead.next_if_eq(&')')?;
-                        text.push(')');
-                        self.chars = ahead;
-                        return Some(text);
-                    }
-                }
-                _ => {}
-            }
+        let chars = self.chars.clone();
+        let unclosed = self.unclosed.clone();
+        self.chars.next();
+        self.word = Some(Word {
+            text: "((".to_string(),
+            expands: true,
+        });
+        if self.balanced(Nest::Paren) && self.chars.next_if_eq(&')').is_some() {
+            let mut text = self.word.take().expect("the arithmetic command").text;
+            text.push(')');
+            return Some(text);
         }
+        self.word = None;
+        self.chars = chars;
+        self.unclosed = unclosed;
         None
     }
 
@@ -302,6 +371,7 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
         tokens: Vec::new(),
         word: None,
         heredocs: Vec::new(),
+        unclosed: None,
     };
     while let Some(c) = lexer.chars.next() {
         match c {
@@ -381,7 +451,9 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
                 word.expands = true;
                 word.text.push(c);
                 word.text.push('(');
-                lexer.balanced('(', ')');
+                if !lexer.balanced(Nest::Paren) {
+                    lexer.unclosed(&format!("`{c}(`"));
+                }
             }
             '<' if lexer.chars.peek() == Some(&'<') => {
                 lexer.end_word();
@@ -418,5 +490,8 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
     for (delimiter, _) in std::mem::take(&mut lexer.heredocs) {
         lexer.tokens.push(Token::Unended(delimiter));
     }
+    lexer
+        .tokens
+        .extend(lexer.unclosed.take().map(Token::Unclosed));
     lexer.tokens
 }
