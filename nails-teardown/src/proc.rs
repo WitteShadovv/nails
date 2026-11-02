@@ -190,6 +190,9 @@ pub struct Invocation {
     pub chain: Vec<u32>,
     /// Further pids to spare, handed in by the caller.
     pub extra: Vec<u32>,
+    /// The interactive shell the command was typed into: the one the walk
+    /// ended at. `None` when the walk ended anywhere else.
+    pub shell: Option<u32>,
 }
 
 /// What the invocation rule reads of one process.
@@ -235,7 +238,7 @@ impl Invocation {
         let mut ancestry = vec![own];
         let mut chain = vec![own];
         let mut joining = typed;
-        let mut typed_into_a_shell = false;
+        let mut shell = None;
         let mut node = own_node;
         while let Some(current) = node {
             let parent = current.stat.ppid;
@@ -248,20 +251,24 @@ impl Invocation {
                 match &parent_node {
                     Some(n) if joins(parent, n, own_cgroup.as_deref()) => chain.push(parent),
                     end => {
-                        typed_into_a_shell = end.as_ref().is_some_and(|n| n.interactive_shell);
+                        shell = end
+                            .as_ref()
+                            .is_some_and(|n| n.interactive_shell)
+                            .then_some(parent);
                         joining = false;
                     }
                 }
             }
             node = parent_node;
         }
-        if !typed_into_a_shell {
+        if shell.is_none() {
             chain.truncate(1);
         }
         Self {
             ancestry,
             chain,
             extra: Vec::new(),
+            shell,
         }
     }
 
