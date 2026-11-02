@@ -735,7 +735,12 @@ impl Model {
                     Check::Done(report) => report.in_decoy_home(),
                     _ => false,
                 };
-                activation::activate_question(plan, &self.allowed, in_decoy_home)
+                activation::activate_question(
+                    plan,
+                    &self.allowed,
+                    self.options.summary(),
+                    in_decoy_home,
+                )
             }
             (Some(PlanFor::Deactivation), PlanData::Deactivate(plan)) => {
                 if self.deactivation == Some(Deactivation::Replanning) && plan.poweroff {

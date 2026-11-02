@@ -495,6 +495,11 @@ pub const FLAKE_NOT_A_REFERENCE: &str = "A flake reference holds no control char
 pub const FACT_OPTIONS: &str = "Activation options";
 /// The option of this computer's system, as the fact names it.
 pub const OPTION_OVERLAY_ONLY: &str = "this computer's own system";
+/// What the activation's question says of the options set.
+#[must_use]
+pub fn activation_options(options: &str) -> String {
+    format!("{FACT_OPTIONS}: {options}.")
+}
 /// The option of a flake, as the fact names it.
 #[must_use]
 pub fn option_flake(flake: &str) -> String {

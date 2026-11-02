@@ -142,6 +142,7 @@ pub fn allow_question(message: &str, locked: bool) -> Question {
 pub fn activate_question(
     data: &ActivatePlanData,
     allowed: &BTreeSet<Risk>,
+    options: Option<String>,
     in_decoy_home: bool,
 ) -> Question {
     let mut lines: Vec<String> = data
@@ -155,6 +156,7 @@ pub fn activate_question(
         .collect();
     lines.push(text::ACTIVATE_CONSEQUENCE.to_string());
     lines.extend(allowed.iter().map(|risk| text::allowed_by_you(risk.what())));
+    lines.extend(options.map(|options| text::activation_options(&options)));
     if let Some(warning) = &data.warning {
         lines.push(text::sentence(warning));
     }
