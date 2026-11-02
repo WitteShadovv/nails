@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The tokens of zsh code: words with their quotes and escapes taken off and
-//! their expansions kept as written, array assignments, the places where a
-//! command ends, and the bodies of here-documents, which are text, not code.
+//! their expansions kept as written, array assignments, arithmetic commands,
+//! the places where a command ends, and the bodies of here-documents, which
+//! are text, not code.
 
 /// A word of zsh code.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,6 +43,12 @@ pub(super) enum Token {
     Redirect,
     /// The body of a here-document: text a command reads, not code.
     Text(String),
+    /// The delimiter of a here-document whose body runs to the end of the
+    /// text without the line that ends it, or that has none.
+    Unended(String),
+    /// An arithmetic command, `(( ... ))`, as written: no `<<` in it opens
+    /// a here-document.
+    Arithmetic(String),
 }
 
 /// Whether `text` is a shell variable's name.
@@ -217,11 +224,12 @@ impl Lexer<'_> {
     }
 
     /// Read the bodies of the here-documents the line just ended opened,
-    /// each up to the line that holds only its delimiter.
+    /// each up to the line that holds only its delimiter; one that runs to
+    /// the end of the text is [`Token::Unended`] too.
     fn heredoc_bodies(&mut self) {
         for (delimiter, tabs) in std::mem::take(&mut self.heredocs) {
             let mut body = String::new();
-            loop {
+            let closed = loop {
                 let mut line = String::new();
                 let mut ended = false;
                 for c in self.chars.by_ref() {
@@ -236,17 +244,49 @@ impl Lexer<'_> {
                 } else {
                     &line
                 };
-                if shown == delimiter || !ended {
-                    if shown != delimiter {
-                        body.push_str(&line);
-                    }
-                    break;
+                if shown == delimiter {
+                    break true;
                 }
                 body.push_str(&line);
+                if !ended {
+                    break false;
+                }
                 body.push('\n');
-            }
+            };
             self.tokens.push(Token::Text(body));
+            if !closed {
+                self.tokens.push(Token::Unended(delimiter));
+            }
         }
+    }
+
+    /// Read an arithmetic command whose first `(` was read and whose second
+    /// is next, up to the `))` that closes it. `None`, with nothing read,
+    /// when its parentheses do not close as one `))`, as those of two
+    /// subshells, `((a); b)`, do.
+    fn arithmetic(&mut self) -> Option<String> {
+        let mut ahead = self.chars.clone();
+        ahead.next();
+        let mut text = String::from("((");
+        let mut depth = 2;
+        while let Some(c) = ahead.next() {
+            text.push(c);
+            match c {
+                '\\' => text.extend(ahead.next()),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 1 {
+                        ahead.next_if_eq(&')')?;
+                        text.push(')');
+                        self.chars = ahead;
+                        return Some(text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Skip a comment, up to the newline that ends it.
@@ -316,7 +356,13 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
                     lexer.word = Some(word);
                     lexer.word_char('(');
                 }
-                None => lexer.tokens.push(Token::Open),
+                None => match lexer.chars.peek() {
+                    Some('(') => match lexer.arithmetic() {
+                        Some(text) => lexer.tokens.push(Token::Arithmetic(text)),
+                        None => lexer.tokens.push(Token::Open),
+                    },
+                    _ => lexer.tokens.push(Token::Open),
+                },
             },
             ')' => {
                 lexer.end_word();
@@ -346,7 +392,12 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
                 } else {
                     let tabs = lexer.chars.next_if_eq(&'-').is_some();
                     let delimiter = lexer.delimiter();
-                    lexer.heredocs.push((delimiter, tabs));
+                    if delimiter.is_empty() {
+                        // No word to end it: zsh cannot read it either.
+                        lexer.tokens.push(Token::Unended(delimiter));
+                    } else {
+                        lexer.heredocs.push((delimiter, tabs));
+                    }
                 }
             }
             '<' | '>' => {
@@ -363,5 +414,9 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
         }
     }
     lexer.end_word();
+    // A here-document opened on the last line, which has no body at all.
+    for (delimiter, _) in std::mem::take(&mut lexer.heredocs) {
+        lexer.tokens.push(Token::Unended(delimiter));
+    }
     lexer.tokens
 }
