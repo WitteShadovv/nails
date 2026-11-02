@@ -813,68 +813,57 @@ of this changelog for that version becomes the release notes word for word, and
   shell that a NixOS wrapper starts (`.xonsh-wrapped`) counts under its own name. A shell of any
   other name is still not killed: the operator guide and `docs/bash-history-forensics.md` list the
   names.
-- The `incremental-history-flush` check reads the settings of the shell the command was typed
-  into, and names the shell and the setting. It finds that shell by the process tree: the one
-  `sudo` and its monitor run under, or, when `sudo` gets no terminal of its own or `su -c` or a
-  typed script runs the command, the nearest interactive shell on the command's terminal, if the
-  command runs in that terminal's foreground. That one is only likely the shell it was typed into,
-  so it is read as any shell the operator may use, beside every other shell the check knows. When
-  it finds none, as for a window or `run0`, it reads every shell it knows: the operator's login
-  shell, bash and zsh, and fish when the home has its configuration. A root shell is read with the
-  operator's home too, which `sudo -s` can leave it. It read six startup
-  files in the operator's home, whatever shell was in use and none in `/etc`, so it missed the
-  `SHARE_HISTORY` that NixOS's `programs.zsh` sets for every zsh in `/etc/zshrc` by default, and
-  the one Oh My Zsh sets, and it knew neither fish, which writes each command line to its history
-  file as it starts the command unless it runs in private mode, nor `history -w`. It now reads
-  that shell's startup files in `/etc` and in the home of the account the shell runs as (root's
-  for a shell that `sudo -i` opened): the files the shell reads when it starts, and no history
-  file. As root these reads change no file's access time, though a link on the way to one, such as
-  NixOS's `/etc/zshrc`, can still have its own access time changed. zsh's files are read as zsh
-  reads them and fail closed: in zsh's order, once for each home the shell can run with,
-  `zprofile` and `zlogin` only for a login shell, only `/etc/zshenv` for a zsh started with `-f`,
-  `--no-rcs` or `-o norcs`, and no other file in `/etc` for one started with `-d`, a line ending
-  in a backslash going on in the
-  next, a here-document's body as text, not code, in a `$(...)` too, a sourced file read where it
-  is sourced when its path resolves (so Home Manager's `dotDir`, whose sourced `.zshenv` sets
-  `ZDOTDIR`, is followed), and `INC_APPEND_HISTORY_TIME` named as writing a line once its command
-  ends. An
-  option counts as on where a `setopt` turns it on and where any other word names it without a
-  `no` prefix, as Home Manager's `set_opts=(...)` array does, whose loop is read item by item, and
-  as off again only where an `unsetopt` certainly runs at the top of the one file zsh can read for
-  its stage: not in one of both `/etc/zshrc` and `/etc/zsh/zshrc` or of two `ZDOTDIR`s, not in a
-  function, an anonymous one too, and not in a group or loop sent into the background or a
-  pipeline. A root shell has the option off only when it is off with both homes. A `setopt` with
-  an expansion the check cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a process
-  substitution, `: ${ZDOTDIR:=...}`), a `source` without a file, and a quote, an expansion or a
-  here-document that runs to the end of the file without closing (a `<<` in `(( ... ))` is a
-  shift and a quote there a character, a `)` or `}` in quotes closes nothing, a `\'` does not end
-  a `$'...'`, `$$` is a parameter, and glob flags such as `(#i)` start a word, no comment), and
-  an expansion that holds what the check cannot read as zsh does (a `case` in a `$(...)`, a
-  `${ command }`) make it warn that it cannot tell, and so do a startup file that is there but
-  cannot be read, which it
-  passed over before, and a shell other than bash, zsh, fish and dash. A command in an arm of a
-  `case` starts after the pattern's `)`, the number of a descriptor before a redirection (`2>`)
-  is no command, zsh's short forms (`repeat 3 cmd`, `for x (a) cmd`, `if [[ ... ]] cmd`) take
-  their body, an `eval` of words the check can read is read as code, and a command whose name an
-  expansion makes (`$cmd`) is a doubt. zsh's files are counted line by line too, without reading
-  the code and wherever the words stand, for the three options, `source`, a `.` with a word after
-  it, `eval`, an alias that stands for `.` and the `ZDOTDIR` settings, a line that is a comment
-  left out: what a line names beyond what was read as code the check follows counts as on, for
-  an option, or makes the check warn that it cannot tell, so an option a comment names at the end
-  of a line counts as on, and a `source` or `eval` in an `echo`, a string, an alias or a
-  here-document, or an `eval` of what a command prints, warns too. Such a warning gives the line
-  that settles it, `unsetopt share_history inc_append_history inc_append_history_time` at the end
-  of `.zshrc`: zsh runs the file top to bottom, so every doubt before that line is settled, but
-  none about `ZDOTDIR`, about code before `.zshrc` or about `.zlogin`. It settles nothing unless
-  that line is a plain `unsetopt` that runs as written, and no file zsh reads redefines it,
-  defines a trap, a hook or a global alias, loads a plugin later, turns on `err_return` or
-  `err_exit`, or may stop before the line: then the warning says why, and to type the decoy
-  commands in a shell that keeps no history, such as `zsh -f`. The operator guide names the hooks
-  an init script may install, which the check cannot see. bash's files are
-  read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going
-  on in the next. It still only warns: such a shell has written the
-  decoy commands before activation starts, so a refusal would take none of them back, and for a
-  shell that writes a line once its command ends, a refused activation would add its own.
+- The `incremental-history-flush` check reads the settings of the shell the command was typed into,
+  and names the shell and the setting. It finds that shell by the process tree: the one `sudo` and
+  its monitor run under, or, when `sudo` gets no terminal of its own or `su -c` or a typed script
+  runs the command, the nearest interactive shell on the command's terminal, if the command runs in
+  that terminal's foreground. That one is only likely the shell it was typed into, so it is read as
+  any shell the operator may use, beside every other shell the check knows. When it finds none, as
+  for a window or `run0`, it reads every shell it knows: the operator's login shell, bash and zsh,
+  and fish when the home has its configuration. A root shell is read with the operator's home too,
+  which `sudo -s` can leave it. It read six startup files in the operator's home, whatever shell was
+  in use and none in `/etc`, so it missed the `SHARE_HISTORY` that NixOS's `programs.zsh` sets for
+  every zsh in `/etc/zshrc` by default, and the one Oh My Zsh sets, and it knew neither fish, which
+  writes each command line to its history file as it starts the command unless it runs in private
+  mode, nor `history -w`. It now reads that shell's startup files in `/etc` and in the home of the
+  account the shell runs as (root's for a shell that `sudo -i` opened): the files the shell reads
+  when it starts, and no history file. As root these reads change no file's access time, though a
+  link on the way to one, such as NixOS's `/etc/zshrc`, can still have its own access time changed.
+  zsh's files are read as zsh reads them and fail closed: in zsh's order, once for each home the
+  shell can run with, `zprofile` and `zlogin` only for a login shell, only `/etc/zshenv` for a zsh
+  started with `-f`, `--no-rcs` or `-o norcs`, and no other file in `/etc` for one started with
+  `-d`, a sourced file read where it is sourced when its path resolves (so Home Manager's `dotDir`,
+  whose sourced `.zshenv` sets `ZDOTDIR`, is followed), an `eval` of words the check can read as
+  code, a here-document's body as text, and `INC_APPEND_HISTORY_TIME` named as writing a line once
+  its command ends. An option counts as on wherever a file zsh reads names it, outside a line that
+  is a comment, an `unsetopt` as much as a `setopt`: zsh can still end with the option on after a
+  turn-off, through a redefined `unsetopt`, a trap or a hook that sets it again, a plugin loaded
+  after the first prompt or an error that stops the file before the line, and no reading of the
+  files can show that a turn-off holds. So zsh passes only when no file it reads names the three
+  options and nothing is left the check cannot tell, which is zsh's default. An operator who turns
+  the options off in `.zshrc` now gets a warning, whose fix the check can see: typing the decoy
+  commands in a zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv`, or on NixOS
+  taking the option out of `programs.zsh.setOptions`. The check warns that it cannot tell at a
+  `setopt` with an expansion it cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a
+  process substitution, `: ${ZDOTDIR:=...}`), a `source` without a file, a quote, an expansion or a
+  here-document that runs to the end of the file, an expansion that holds what it cannot read as zsh
+  does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion makes (`$cmd`),
+  a startup file that is there but cannot be read, which it passed over before, and a shell other
+  than bash, zsh, fish and dash. The lexer reads zsh's code as zsh does where that matters for what
+  it can hide: a `<<` in `(( ... ))` is a shift and a quote there a character, a `)` or `}` in
+  quotes closes nothing, a `\'` does not end a `$'...'`, `$$` is a parameter, glob flags such as
+  `(#i)` start a word, a command in an arm of a `case` starts after the pattern's `)`, the number of
+  a descriptor before a redirection is no command, and zsh's short forms (`repeat 3 cmd`,
+  `for x (a) cmd`, `if [[ ... ]] cmd`) take their body. zsh's files are counted line by line too,
+  without reading the code and wherever the words stand, for the three options, `source`, a `.` with
+  a word after it, `eval`, an alias that stands for `.` and the `ZDOTDIR` settings, a line that is a
+  comment left out: what a line names beyond what was read as code the check follows counts as on,
+  for an option, or makes the check warn that it cannot tell, so a `source` or `eval` in an `echo`,
+  a string, an alias or a here-document, or an `eval` of what a command prints, warns too. bash's
+  files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a
+  backslash going on in the next. It still only warns: such a shell has written the decoy commands
+  before activation starts, so a refusal would take none of them back, and for a shell that writes a
+  line once its command ends, a refused activation would add its own.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

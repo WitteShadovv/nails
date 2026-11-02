@@ -50,13 +50,8 @@ pub(super) enum Event {
     /// A line names an option where the walk read no code: in a comment, or
     /// in what a misread hid.
     Unread(usize),
-    /// Something the check cannot follow, as the warning names it: code
-    /// that may do anything.
+    /// Something the check cannot follow, as the warning names it.
     Doubt(String),
-    /// Options a `setopt` or `set -o` turns on that the check cannot list.
-    OptionDoubt(String),
-    /// A `ZDOTDIR` the check cannot follow.
-    ZdotdirDoubt(String),
     /// `source` or `.` of `path`.
     Source { path: Word, unconditional: bool },
     /// Oh My Zsh is loaded.
@@ -142,8 +137,6 @@ struct Pending {
     function_next: bool,
     /// It is a function's whole body, which does not run where it stands.
     body: bool,
-    /// A redirection goes with it.
-    redirected: bool,
 }
 
 /// The walk over one file's tokens, which finds its [`Event`]s.
@@ -166,9 +159,6 @@ struct Walker<'a> {
     /// How often it read `ZDOTDIR` set ([`zdotdir_writes`]).
     zdotdirs: usize,
     pending: Pending,
-    /// Which of [`OPTIONS`] the commands since the last other one turned
-    /// off, each certainly, at the top level.
-    trailing: [bool; 3],
 }
 
 impl Walker<'_> {
@@ -188,7 +178,6 @@ impl Walker<'_> {
     /// Open `frame` where the command being read starts, in its condition
     /// (`head`) or not.
     fn open(&mut self, frame: Frame, head: bool) {
-        self.trailing = [false; 3];
         let pattern = frame == Frame::Case;
         self.frames.push(Open {
             frame,
@@ -410,7 +399,6 @@ impl Walker<'_> {
         let piped = self.pending.piped || piped_after;
         self.command(words, after, piped);
         self.pending.body = false;
-        self.pending.redirected = false;
     }
 
     /// Close the innermost frame with a `}`: a group, a function's body, a
@@ -540,7 +528,6 @@ impl Walker<'_> {
 
     /// The events of an array's assignment.
     fn array(&mut self, name: String, items: Vec<Word>) {
-        self.trailing = [false; 3];
         for item in &items {
             self.mention(&item.text);
         }
@@ -637,7 +624,6 @@ impl Walker<'_> {
                 Token::Redirect => {
                     // The redirection's target is no word of the command, but
                     // what a here-string or a file name says still counts.
-                    self.pending.redirected = true;
                     if let Some(Token::Word(target)) =
                         self.tokens.next_if(|token| matches!(token, Token::Word(_)))
                     {
@@ -649,7 +635,6 @@ impl Walker<'_> {
                     // A command of its own, which sets no option; in a
                     // condition, its end (`if (( ... )) cmd`).
                     self.pending.function_next = false;
-                    self.trailing = [false; 3];
                     self.mention(&text);
                     if self.pending.words.is_empty() && self.in_head() && self.next_starts_body() {
                         self.short_body();
@@ -672,10 +657,8 @@ impl Walker<'_> {
 }
 
 /// What the walk over zsh code found: its events, whether it lost track of
-/// the structure, what it read that the lines may name ([`backstop`]),
-/// whether a `return` or `exit` may end the file early, whether its last
-/// commands turn every one of [`OPTIONS`] off, and whether the lexer found
-/// what it could not read.
+/// the structure, what it read that the lines may name ([`backstop`]), and
+/// whether a `return` or `exit` may end the file early.
 struct Walked {
     events: Vec<Event>,
     confused: bool,
@@ -683,29 +666,19 @@ struct Walked {
     evals: usize,
     zdotdirs: usize,
     may_stop: bool,
-    ends_off: bool,
-    flawed: bool,
 }
 
 /// What a startup file's code does, as [`events`] reads it.
 pub(super) struct Read {
     pub(super) events: Vec<Event>,
-    /// The check lost track of its structure, so none of its turn-offs
-    /// count.
+    /// The check lost track of its structure.
     pub(super) confused: bool,
-    /// Its last commands are plain `unsetopt`s, each certainly run at the
-    /// top level with no redirection, that turn every one of [`OPTIONS`] off.
-    pub(super) ends_off: bool,
-    /// The lexer found what it could not read, a parse error zsh may stop
-    /// at among it.
-    pub(super) flawed: bool,
 }
 
 /// Walk zsh code `text` from the file at `place`; what the lexer could not
 /// read is a doubt.
 fn walk_text(text: &str, place: &str) -> Walked {
     let (tokens, flaws) = lex(text);
-    let flawed = !flaws.is_empty();
     let walker = Walker {
         tokens: tokens.into_iter().peekable(),
         place,
@@ -718,7 +691,6 @@ fn walk_text(text: &str, place: &str) -> Walked {
         evals: 0,
         zdotdirs: 0,
         pending: Pending::default(),
-        trailing: [false; 3],
     }
     .walk();
     let mut events = walker.events;
@@ -743,8 +715,6 @@ fn walk_text(text: &str, place: &str) -> Walked {
         evals: walker.evals,
         zdotdirs: walker.zdotdirs,
         may_stop: walker.may_stop,
-        ends_off: walker.trailing == [true; 3],
-        flawed,
     }
 }
 
@@ -787,14 +757,12 @@ pub(super) fn events(text: &str, place: &str) -> Read {
         )));
     }
     if named.zdotdirs > walked.zdotdirs {
-        events.push(Event::ZdotdirDoubt(format!(
+        events.push(Event::Doubt(format!(
             "it cannot follow a ZDOTDIR that a line of {place} may set"
         )));
     }
     Read {
         events,
         confused: walked.confused,
-        ends_off: walked.ends_off,
-        flawed: walked.flawed,
     }
 }
