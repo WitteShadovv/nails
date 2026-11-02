@@ -950,6 +950,28 @@ fn a_warning_that_it_cannot_tell_gives_the_line_that_settles_it() {
 }
 
 #[test]
+fn a_warning_says_why_the_final_line_cannot_settle_it() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "eval \"$(starship init zsh)\"\nprecmd() { : }\n\
+         unsetopt share_history inc_append_history inc_append_history_time\n",
+    );
+    let message = warning(zsh(&fs));
+    assert!(
+        message.ends_with(
+            "Ending its .zshrc with \
+             `unsetopt share_history inc_append_history inc_append_history_time` cannot settle \
+             it, as a hook or plugin manager in /home/alice/.zshrc can set it again after the \
+             line runs. Type the decoy commands in a shell that keeps no history instead, such \
+             as one started with `zsh -f`."
+        ),
+        "{message}"
+    );
+}
+
+#[test]
 fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
     let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
     let fs = MockFilesystem::new();
