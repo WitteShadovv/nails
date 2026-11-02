@@ -580,10 +580,11 @@ history yourself so an interactive shell has nowhere to write:
   files can show that a turn-off holds: leave them out of every startup file
   (on NixOS, out of `programs.zsh.setOptions`), or type the decoy commands in
   a zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv`.
-  Home Manager names them in `.zshrc` whether it turns them on or off, so
-  with it, `zsh -f` is the way. A history tool that records each command
-  itself, such as atuin, writes as the command runs too. No kill takes back
-  what such a shell has written.
+  With NixOS's or Home Manager's `programs.zsh`, only `zsh -f` passes the
+  check: NixOS's generated files hold code it cannot follow, and Home
+  Manager names the options in `.zshrc` whether it turns them on or off. A
+  history tool that records each command itself, such as atuin, writes as
+  the command runs too. No kill takes back what such a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation
