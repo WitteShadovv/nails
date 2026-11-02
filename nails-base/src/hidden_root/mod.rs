@@ -160,9 +160,11 @@ pub enum Allow {
     #[default]
     Nothing,
     /// A root the [`separation`] judge places on the decoy's storage attaches
-    /// with a warning. Everything else still refuses: a missing root, a
-    /// folder that is no mount point, a covered one, storage that cannot be
-    /// judged and a root on `/`'s own device.
+    /// with a warning: a bind of a folder of `/` too, which the judge places
+    /// there before the gate's own test of `/`'s device. Everything else
+    /// still refuses: a missing root, a folder that is no mount point, a
+    /// covered one, storage that cannot be judged, and a root on `/`'s own
+    /// device the judge does not place.
     DecoyStorage,
 }
 

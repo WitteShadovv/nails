@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use nails_api::CheckOutcome;
 use nails_api::protocol::{
-    ActivateArgs, CheckArgs, DiscardPlanArgs, DiscardPlanData, InitArgs, InitPlanData,
-    RehearsePlantArgs, RehearseScanArgs, VerifyArgs,
+    ActivateArgs, ActivatePlanData, CheckArgs, DiscardPlanArgs, DiscardPlanData, InitArgs,
+    InitPlanData, RehearsePlantArgs, RehearseScanArgs, VerifyArgs,
 };
 use serde_json::{Value, json};
 
@@ -1470,6 +1470,21 @@ fn activation_options_reach_the_check_and_the_activation() {
             nixos_flake: Some("/srv/flake#decoy".to_string()),
             ..ActivateArgs::default()
         }))))
+    );
+    // The question before it names them too.
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(Update::Planned(PlanData::Activate(ActivatePlanData {
+        warning: None,
+        defaults_notice: None,
+        builds_hidden_system: true,
+        advisories: Vec::new(),
+        token: "0".repeat(32),
+    })));
+    let body = model.page().question.expect("the question").body;
+    assert!(
+        body.lines()
+            .any(|line| line == text::activation_options(&text::option_flake("/srv/flake#decoy"))),
+        "{body}"
     );
 
     // This computer's own system takes no flake.

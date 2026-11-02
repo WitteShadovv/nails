@@ -408,6 +408,10 @@ impl Model {
 
     /// What the page's second action does, while the page has one.
     pub fn secondary(&mut self) -> Option<Effect> {
+        // A question that waits holds the page.
+        if self.question.is_some() {
+            return None;
+        }
         let label = self.page().secondary?;
         self.tool_action(label)
     }
