@@ -21,7 +21,9 @@
 use crate::Filesystem;
 use crate::blockdev::{self, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::filesystem::mountinfo::MountEntry;
-use crate::hidden_root::separation::{DeviceMap, FileHolder, LoopFile, NodeKind};
+use crate::hidden_root::separation::{
+    Claimed, DeviceMap, FileHolder, LoopFile, NodeKind, SYS_CLASS_BLOCK,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -104,27 +106,11 @@ impl Graph {
     /// From the partition `name` into its disk, where the disk keeps its data
     /// elsewhere. A partition of a plain disk ends the way itself.
     fn partition_disk<F: Filesystem>(&mut self, fs: &F, name: &str, layer: &Layer) -> Vec<PathBuf> {
-        let Some(dir) = layer
-            .partition
-            .as_ref()
-            .and_then(|partition| partition.disk.as_ref())
-            .and(layer.sysfs.parent())
-        else {
+        let Some((dir, disk)) = disk_keeping_data_elsewhere(fs, layer) else {
             return Vec::new();
         };
-        let walk = blockdev::walk(fs, dir, LoopFollow::Never, 1);
-        let Some(disk) = walk.layers.first() else {
-            return Vec::new();
-        };
-        let elsewhere = disk.dm.is_some()
-            || disk.loop_device.is_some()
-            || !disk.slaves.is_empty()
-            || leaf_kind(&key(disk)).is_some();
-        if !elsewhere {
-            return Vec::new();
-        }
-        self.below.insert(name.to_string(), vec![key(disk)]);
-        vec![dir.to_path_buf()]
+        self.below.insert(name.to_string(), vec![disk]);
+        vec![dir]
     }
 
     /// From the loop device `name` over `file` into the devices of the
@@ -201,6 +187,56 @@ impl Graph {
         );
         devices
     }
+}
+
+/// The disk of the partition `layer`, as its sysfs directory and name, when
+/// the disk keeps its data elsewhere: a loop or device-mapper device, a disk
+/// built on others (an md array), or one whose storage sysfs does not show.
+fn disk_keeping_data_elsewhere<F: Filesystem>(fs: &F, layer: &Layer) -> Option<(PathBuf, String)> {
+    let dir = layer
+        .partition
+        .as_ref()
+        .and_then(|partition| partition.disk.as_ref())
+        .and(layer.sysfs.parent())?;
+    let walk = blockdev::walk(fs, dir, LoopFollow::Never, 1);
+    let disk = walk.layers.first()?;
+    let elsewhere = disk.dm.is_some()
+        || disk.loop_device.is_some()
+        || !disk.slaves.is_empty()
+        || leaf_kind(&key(disk)).is_some();
+    elsewhere.then(|| (dir.to_path_buf(), key(disk)))
+}
+
+/// `claimed`, the devices the decoy claims, with what the rule for
+/// partitions adds: a claimed partition whose disk keeps its data elsewhere
+/// claims that disk and every device below it too, as the same piece of the
+/// decoy's storage. The decoy's root on a partition of an md array makes the
+/// array's devices the decoy's, as its boot opens them.
+pub(super) fn widen_claims<F: Filesystem>(
+    fs: &F,
+    mounts: &[MountEntry],
+    recorded: &DeviceMap,
+    claimed: BTreeMap<String, Claimed>,
+) -> BTreeMap<String, Claimed> {
+    let mut widened = claimed.clone();
+    for (name, holds) in &claimed {
+        let dir = Path::new(SYS_CLASS_BLOCK).join(name);
+        let walk = blockdev::walk(fs, &dir, LoopFollow::Never, 1);
+        let Some((disk, _)) = walk
+            .layers
+            .first()
+            .and_then(|layer| disk_keeping_data_elsewhere(fs, layer))
+        else {
+            continue;
+        };
+        for below in Graph::read(fs, mounts, recorded, &[disk])
+            .layers
+            .into_keys()
+        {
+            widened.entry(below).or_insert_with(|| holds.clone());
+        }
+    }
+    widened
 }
 
 /// The block devices the filesystem mounted as `mount` keeps its data on, as

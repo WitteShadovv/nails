@@ -17,9 +17,11 @@
 //! records for the file (see [`graph`]). Every way down to a device at the
 //! bottom must pass an encrypting layer that is not one of the decoy's: not a
 //! device the decoy claims as its own storage ([`separation::claimed_devices`]),
-//! nor a volume opened under any name from a device the decoy's crypttab
-//! opens. A logical volume spread over two disks, an md mirror of two or a
-//! btrfs filesystem of two passes only when the way down to each disk does.
+//! or one below a claimed partition on a disk that keeps its data elsewhere
+//! (the devices of the md array the decoy's root lies on), nor a volume opened
+//! under any name from a device the decoy's crypttab opens. A logical volume
+//! spread over two disks, an md mirror of two or a btrfs filesystem of two
+//! passes only when the way down to each disk does.
 //!
 //! It only warns. Encryption is not deniability (a LUKS header shows that an
 //! encrypted volume exists), and a root kept in RAM to try NAILS out is no
@@ -39,7 +41,7 @@ mod graph;
 #[cfg(test)]
 mod tests;
 
-use graph::{Graph, MAX_DEVICES, filesystem_devices, leaf_kind};
+use graph::{Graph, MAX_DEVICES, filesystem_devices, leaf_kind, widen_claims};
 
 /// The cryptsetup types that encrypt, as the `<TYPE>` of a `CRYPT-<TYPE>-`
 /// device-mapper uuid. `INTEGRITY` and `VERITY` encrypt nothing.
@@ -143,7 +145,12 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEncryptionCheck {
         }
 
         let collected = separation::collect(fs, &table, Path::new("/"));
-        let claimed = separation::claimed_devices(&collected.scene(&table), hidden);
+        let claimed = widen_claims(
+            fs,
+            &table,
+            &collected.devices,
+            separation::claimed_devices(&collected.scene(&table), hidden),
+        );
         let cover = filesystem_devices(fs, hidden)
             .and_then(|roots| {
                 let graph = Graph::read(fs, &table, &collected.devices, &roots);
