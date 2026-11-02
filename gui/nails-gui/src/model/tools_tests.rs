@@ -44,6 +44,8 @@ fn fixture(name: &str) -> Value {
         "rehearse-scan-image-absent" => {
             include_str!("../../tests/fixtures/rehearse-scan-image-absent.json")
         }
+        "init-plan-hardware" => include_str!("../../tests/fixtures/init-plan-hardware.json"),
+        "init-plan-no-layout" => include_str!("../../tests/fixtures/init-plan-no-layout.json"),
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).unwrap()
@@ -1223,6 +1225,84 @@ fn init_plan(warnings: &[&str]) -> Update {
         warnings: warnings.iter().map(|w| (*w).to_string()).collect(),
         token: "e".repeat(32),
     }))
+}
+
+/// A plan of a set up the helper gave, recorded on a volume of its own:
+/// seeded from a named hardware configuration, or without the hidden NixOS
+/// layout.
+fn recorded_init_plan(name: &str) -> Update {
+    Update::Planned(PlanData::Init(
+        serde_json::from_value(fixture(name)["data"].clone()).unwrap(),
+    ))
+}
+
+/// Set Up lays out the hidden NixOS system from the file its field names
+/// (`--hardware-config`), or leaves it out when its switch is off
+/// (`--no-hardware-config`); the question says which, in the plan's words.
+/// A path the helper would refuse unread is never sent.
+#[test]
+fn set_up_lays_out_hidden_nixos_from_the_file_named_or_not_at_all() {
+    let mut model = decoy();
+    open(&mut model, ToolKind::SetUp);
+    let page = model.page();
+    assert!(page.switch_first);
+    let switch = page.switch.unwrap();
+    assert_eq!(
+        (switch.title.as_str(), switch.on),
+        (text::SWITCH_LAYOUT, true)
+    );
+    assert_eq!(page.field.unwrap().label, text::FIELD_HARDWARE_CONFIG);
+    model.edited("hardware.nix");
+    let page = model.page();
+    assert!(page.action_locked);
+    assert_eq!(page.field.unwrap().hint, text::HARDWARE_CONFIG_NOT_ABSOLUTE);
+    assert_eq!(model.action(), None);
+    model.edited(" /srv/hardware.nix ");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Init(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: false,
+            hardware_config: Some("/srv/hardware.nix".to_string()),
+            no_hardware_config: false,
+        }))))
+    );
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(recorded_init_plan("init-plan-hardware"));
+    let question = model.page().question.unwrap();
+    assert!(
+        question
+            .body
+            .lines()
+            .any(|line| line == text::set_up_nixos("/srv/hardware.nix")),
+        "{}",
+        question.body
+    );
+
+    let mut model = decoy();
+    open(&mut model, ToolKind::SetUp);
+    model.edited("/srv/hardware.nix");
+    model.toggled(false);
+    let page = model.page();
+    assert!(!page.switch.unwrap().on);
+    assert_eq!(page.field, None, "nothing to seed what is left out");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Init(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: false,
+            hardware_config: None,
+            no_hardware_config: true,
+        }))))
+    );
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(recorded_init_plan("init-plan-no-layout"));
+    let question = model.page().question.unwrap();
+    assert!(
+        !question.body.contains("hardware-configuration"),
+        "{}",
+        question.body
+    );
 }
 
 #[test]

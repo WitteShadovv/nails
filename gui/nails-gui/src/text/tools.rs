@@ -438,6 +438,19 @@ pub const SET_UP: &str = "Set Up Hidden Volume";
 pub const SET_UP_ROW: &str = "Write the folders and the settings file NAILS needs.";
 /// The action that asks for the plan; the question follows.
 pub const SET_UP_ACTION: &str = "Set Up\u{2026}";
+/// The switch of the hidden NixOS layout (off: `--no-hardware-config`).
+pub const SWITCH_LAYOUT: &str = "Lay out hidden NixOS";
+/// The line under it.
+pub const LAYOUT_WHAT: &str = "The hidden NixOS system's layout on the volume, seeded from \
+     this computer's hardware configuration";
+/// The field of the file it is seeded from (`--hardware-config`).
+pub const FIELD_HARDWARE_CONFIG: &str = "Hardware configuration";
+/// The line under it.
+pub const HARDWARE_CONFIG_HINT: &str = "Optional: the file to seed it from, instead of \
+     /etc/nixos/hardware-configuration.nix";
+/// The line under it once what it holds is no full path.
+pub const HARDWARE_CONFIG_NOT_ABSOLUTE: &str = "Give the file's full path, starting with /, or \
+     leave it empty.";
 /// The question before a set up.
 pub const SET_UP_QUESTION: &str = "Set Up the Hidden Volume?";
 /// The button that sets it up.

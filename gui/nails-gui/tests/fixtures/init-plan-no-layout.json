@@ -1,0 +1,12 @@
+{
+  "command": "init",
+  "data": {
+    "hardware_config": null,
+    "path": "/mnt/data",
+    "skipped": "--no-hardware-config: skipping the hidden NixOS layout",
+    "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "warnings": []
+  },
+  "ok": true,
+  "schema_version": 2
+}

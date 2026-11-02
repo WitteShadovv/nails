@@ -402,6 +402,7 @@ const PAGES: &[Page] = &[
         may_power_off_short_scrolled,
     ),
     ("23-scan-an-image", scan_an_image),
+    ("24-set-up-narrow", set_up_narrow),
 ];
 
 fn narrow(win: Win) -> Win {
@@ -548,6 +549,14 @@ fn scan_an_image() -> Win {
     win.app.invoke_field_edited("/mnt/decoy".into());
     win.app.invoke_switch_toggled(true);
     win.app.invoke_field2_edited("/mnt/decoy.img".into());
+    win
+}
+
+/// Set Up on a ready decoy, its layout switch first, at the window's
+/// narrowest.
+fn set_up_narrow() -> Win {
+    let win = narrow(decoy(ready_check(), 0));
+    win.app.invoke_link_activated(3);
     win
 }
 

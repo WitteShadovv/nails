@@ -458,6 +458,30 @@ fn a_discard_of_a_home_lists_what_goes_and_waits_for_the_folder_typed() {
     );
 }
 
+/// Set Up's switch, which a screen reader reads as one, comes first: off,
+/// the plan leaves the hidden NixOS layout out, and the file it is seeded
+/// from has no field.
+#[test]
+fn set_up_leaves_the_hidden_nixos_layout_out_with_its_switch_off() {
+    let screen = decoy();
+    press(&screen, text::SET_UP);
+    let switch = screen.find_with(text::SWITCH_LAYOUT, AccessibleRole::Switch);
+    assert_eq!(switch.accessible_checked(), Some(true));
+    assert!(screen.shows(text::FIELD_HARDWARE_CONFIG));
+    switch.invoke_accessible_default_action();
+    assert!(!screen.shows(text::FIELD_HARDWARE_CONFIG));
+    press(&screen, text::SET_UP_ACTION);
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Plan(Plan::Init(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: false,
+            hardware_config: None,
+            no_hardware_config: true,
+        }))]
+    );
+}
+
 #[test]
 fn set_up_asks_first_and_lists_each_part_it_wrote() {
     let screen = decoy();

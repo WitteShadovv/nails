@@ -300,6 +300,7 @@ impl Model {
             Some(Tool::Settings(settings)) => settings.edited(typed),
             Some(Tool::Rehearsal(rehearsal)) => rehearsal.edited(typed),
             Some(Tool::Verify(verify)) => verify.edited(typed),
+            Some(Tool::SetUp(set_up)) => set_up.edited(typed),
             _ => {}
         }
     }
@@ -319,6 +320,7 @@ impl Model {
         match &mut self.tool {
             Some(Tool::Verify(verify)) => verify.toggled(on),
             Some(Tool::Rehearsal(rehearsal)) => rehearsal.toggled(on),
+            Some(Tool::SetUp(set_up)) => set_up.toggled(on),
             _ => {}
         }
     }
