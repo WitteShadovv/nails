@@ -49,7 +49,8 @@
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
 //! the [`Filesystem`](crate::Filesystem) trait, and [`judge_storage`] does
-//! both for the attach gate.
+//! both for the attach gate. [`claimed_devices`] lists the devices the claims
+//! hold, for a check that weighs the hidden root's own stack against them.
 
 mod collect;
 mod judge;
@@ -57,7 +58,7 @@ mod judge;
 mod tests;
 
 pub use collect::{Collected, collect, judge_storage};
-pub use judge::{judge, shown_fstype};
+pub use judge::{claimed_devices, judge, shown_fstype};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;
