@@ -370,13 +370,13 @@ fn plain_ext4_on_a_partition_warns_with_the_fix() {
 
 #[test]
 fn integrity_or_verity_alone_encrypts_nothing() {
-    for uuid in ["CRYPT-INTEGRITY-data", "CRYPT-VERITY-0a1b-data"] {
-        let result = external(uuid).run();
+    for layer in ["CRYPT-INTEGRITY-data", "CRYPT-VERITY-0a1b-data"] {
+        let result = external(layer).run();
         assert!(
             warning(&result).starts_with(&format!(
                 "Nothing encrypts the hidden root at {ROOT} on sdb:"
             )),
-            "{uuid}: {result:?}"
+            "{layer}: {result:?}"
         );
     }
 }
