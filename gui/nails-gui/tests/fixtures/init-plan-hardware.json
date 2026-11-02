@@ -1,0 +1,12 @@
+{
+  "command": "init",
+  "data": {
+    "hardware_config": "/srv/hardware.nix",
+    "path": "/mnt/data",
+    "skipped": null,
+    "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "warnings": []
+  },
+  "ok": true,
+  "schema_version": 2
+}

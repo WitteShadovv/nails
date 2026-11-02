@@ -12,12 +12,12 @@
 //! made or already there, with the engine's warnings and notes.
 
 use nails_api::CheckOutcome;
-use nails_api::protocol::{InitArgs, InitPlanData};
+use nails_api::protocol::{InitArgs, InitPlanData, Op, validate};
 
 use super::{Context, ToolKind, error_of, group, row, tool_page};
 use crate::client::{Answer, Plan};
 use crate::envelope::{self, InitData, InitItemStatus};
-use crate::model::{Page, Question};
+use crate::model::{Field, Page, Question, Switch};
 use crate::text;
 use crate::worker::{Ask, Kind};
 
@@ -26,6 +26,11 @@ use crate::worker::{Ask, Kind};
 pub(crate) struct SetUp {
     /// How the last plan or apply came out.
     outcome: Option<Outcome>,
+    /// The hidden NixOS layout is left out (`--no-hardware-config`).
+    no_layout: bool,
+    /// The hardware configuration to seed it from, as typed
+    /// (`--hardware-config`); empty for the one the engine reads by default.
+    hardware_config: String,
 }
 
 #[derive(Debug, Clone)]
@@ -42,19 +47,39 @@ impl SetUp {
         matches!(self.outcome, Some(Outcome::Done(_)))
     }
 
+    /// The hardware configuration field changed to `typed`.
+    pub(crate) fn edited(&mut self, typed: &str) {
+        typed.clone_into(&mut self.hardware_config);
+    }
+
+    /// The hidden NixOS layout's switch turned `on` or off.
+    pub(crate) fn toggled(&mut self, on: bool) {
+        self.no_layout = !on;
+    }
+
+    /// The plan's arguments for the hidden volume `root`: without the hidden
+    /// NixOS layout when its switch is off, else seeded from the file typed,
+    /// when one is. `None` until the helper would take them.
+    fn args(&self, root: &str) -> Option<InitArgs> {
+        let file = self.hardware_config.trim();
+        let args = InitArgs {
+            path: root.to_string(),
+            allow_decoy_storage: false,
+            hardware_config: (!self.no_layout && !file.is_empty()).then(|| file.to_string()),
+            no_hardware_config: self.no_layout,
+        };
+        validate(&Op::InitPlan(args.clone())).ok().map(|()| args)
+    }
+
     /// The ask for `label`, the page's action, for the hidden volume `root`.
     pub(crate) fn action(&mut self, label: &str, root: Option<&str>) -> Option<Ask> {
         let root = root.filter(|root| root.starts_with('/'))?;
         if label != text::SET_UP_ACTION {
             return None;
         }
+        let args = self.args(root)?;
         self.outcome = None;
-        Some(Ask::Plan(Plan::Init(InitArgs {
-            path: root.to_string(),
-            allow_decoy_storage: false,
-            hardware_config: None,
-            no_hardware_config: false,
-        })))
+        Some(Ask::Plan(Plan::Init(args)))
     }
 
     /// Take in the answer of a plan that settled, or of the apply.
@@ -92,6 +117,26 @@ impl SetUp {
         // Never in a hidden session, by either reading: fail closed.
         if !matches!(self.outcome, Some(Outcome::Done(_))) && root.starts_with('/') && !cx.hidden {
             page.action = Some(text::SET_UP_ACTION);
+            page.action_locked = self.args(root).is_none();
+            page.switch_first = true;
+            page.switch = Some(Switch {
+                title: text::SWITCH_LAYOUT.to_string(),
+                subtitle: text::LAYOUT_WHAT.to_string(),
+                on: !self.no_layout,
+            });
+            if !self.no_layout {
+                let file = self.hardware_config.trim();
+                page.field = Some(Field {
+                    label: text::FIELD_HARDWARE_CONFIG.to_string(),
+                    text: self.hardware_config.clone(),
+                    hint: if file.is_empty() || file.starts_with('/') {
+                        text::HARDWARE_CONFIG_HINT
+                    } else {
+                        text::HARDWARE_CONFIG_NOT_ABSOLUTE
+                    }
+                    .to_string(),
+                });
+            }
         }
         page
     }

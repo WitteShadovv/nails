@@ -217,7 +217,9 @@ of this changelog for that version becomes the release notes word for word, and
   read in full; a scan that could not run says so, and never shows the verdict of the scan before
   it. On the decoy, where no desktop is admitted yet, the tools also discard the hidden changes of a
   folder, typed as its full path and sent as the engine reads it (`//home` and `/./home` are
-  `/home`), and set up the hidden volume (`nails init`), each as a plan, its token and its apply:
+  `/home`), and set up the hidden volume (`nails init`), with or without the hidden NixOS layout
+  (its switch first, off for `--no-hardware-config`) and seeded from the hardware configuration its
+  field names (`--hardware-config`), each as a plan, its token and its apply:
   the question says what goes (every path the discard deletes from the hidden volume) or what is
   written, and a discard of a folder that holds a home, or of `/nix`, acts only once the folder is
   typed. Both are offered only where the window's own reading of the mount table agrees with the
