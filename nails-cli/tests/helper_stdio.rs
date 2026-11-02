@@ -1195,4 +1195,101 @@ mod kernel_tests {
             },
         );
     }
+    /// Validate `instance` against the committed schema of `command`.
+    fn assert_matches_schema(command: &str, instance: &Value) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../docs/schemas")
+            .join(format!("{command}.schema.json"));
+        let schema: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let errors: Vec<String> = validator
+            .iter_errors(instance)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}\n{instance:#}");
+    }
+
+    /// A root that binds a folder of this computer's own storage (the
+    /// build's scratch directory): the helper's Set Up and Discard refuse it
+    /// naming the override that accepts it, as their schemas allow, and plan
+    /// with that flag. Where the scratch directory lies on a RAM filesystem,
+    /// the bind is a volume of its own and nothing is refused: the test then
+    /// fails when the kernel tier is required, and says so otherwise.
+    #[test]
+    fn set_up_and_discard_name_the_override_for_a_root_on_this_computers_storage() {
+        in_namespace(
+            test_path!(set_up_and_discard_name_the_override_for_a_root_on_this_computers_storage),
+            || {
+                let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+                let folder = dir.path().join("folder");
+                let root = dir.path().join("data");
+                std::fs::create_dir(&folder).unwrap();
+                std::fs::create_dir(&root).unwrap();
+                nix::mount::mount(
+                    Some(&folder),
+                    &root,
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND,
+                    None::<&str>,
+                )
+                .expect("bind the folder over the root");
+                let config = dir.path().join("nails.toml");
+                std::fs::write(
+                    &config,
+                    format!(
+                        "hidden_volume_root = {:?}\nshow_opsec_reminders = false\n",
+                        root.display().to_string()
+                    ),
+                )
+                .unwrap();
+                let init = |allow: bool| {
+                    Op::InitPlan(InitArgs {
+                        path: root.display().to_string(),
+                        allow_decoy_storage: allow,
+                        hardware_config: None,
+                        no_hardware_config: true,
+                    })
+                };
+                let discard = |allow: bool| {
+                    Op::DiscardPlan(DiscardPlanArgs {
+                        target: "/srv/data".to_string(),
+                        allow_decoy_storage: allow,
+                    })
+                };
+                let mut helper = Helper::greeted(&config);
+                let (exit, refused) = helper.result(init(false));
+                if refused["error"]["code"] != "not_separate_volume" {
+                    assert!(
+                        std::env::var_os(nails_core::test_support::REQUIRE_USERNS_ENV).is_none(),
+                        "the scratch directory is no storage of this computer: {refused}"
+                    );
+                    eprintln!("the scratch directory is no storage of this computer: {refused}");
+                    helper.close();
+                    nix::mount::umount(&root).unwrap();
+                    return;
+                }
+                assert_eq!(exit, 4, "{refused}");
+                assert_eq!(refused["error"]["allowable"], "decoy_storage", "{refused}");
+                assert_matches_schema("init", &refused);
+                let (exit, planned) = helper.result(init(true));
+                assert_eq!(exit, 0, "{planned}");
+                assert!(
+                    planned["data"]["warnings"][0]
+                        .as_str()
+                        .unwrap_or_default()
+                        .starts_with("--allow-decoy-storage: using"),
+                    "{planned}"
+                );
+                let (exit, refused) = helper.result(discard(false));
+                assert_eq!(exit, 4, "{refused}");
+                assert_eq!(refused["error"]["allowable"], "decoy_storage", "{refused}");
+                assert_matches_schema("discard", &refused);
+                let (exit, planned) = helper.result(discard(true));
+                assert_eq!(exit, 0, "{planned}");
+                assert_matches_schema("discard", &planned);
+                helper.close();
+                nix::mount::umount(&root).unwrap();
+            },
+        );
+    }
 }

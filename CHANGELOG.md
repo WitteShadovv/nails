@@ -367,8 +367,9 @@ of this changelog for that version becomes the release notes word for word, and
   a refused check does: `activate`, `check`, `init` and `discard` name `decoy_storage` when they
   refuse a hidden root on this computer's own storage, which their `--allow-decoy-storage` accepts.
   No other refusal names one, and `rehearse` and `config` refuse the same root naming none. This
-  changes the JSON contract: every command's schema now allows `allowable` in its error object,
-  which is still strict otherwise, and a reader that ignores it reads errors as before.
+  changes the JSON contract: the schemas of those four commands now allow `allowable`, as
+  `decoy_storage` only, in their error object, which is still strict otherwise, and a reader that
+  ignores it reads errors as before.
 - `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
   the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
   unexplained; a later successful switch clears it.
