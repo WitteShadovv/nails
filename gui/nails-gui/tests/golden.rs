@@ -12,10 +12,12 @@
 //! The text is drawn with one font, the Inter that Slint itself bundles
 //! (`tests/golden/Inter-VariableFont.ttf`), and no other: the test runs
 //! itself again as a child with SLINT_DEFAULT_FONT naming it and a
-//! fontconfig that knows no font, which Slint reads once, before the first
-//! text, and a test cannot set in its own environment. The pages come from
-//! the controller, fed with envelopes recorded from the real CLI; nothing
-//! runs a worker, a helper or an emergency.
+//! fontconfig that knows only the directory it is in, which Slint reads once,
+//! before the first text, and a test cannot set in its own environment. A
+//! fontconfig that knows no font at all is not enough: where it then finds no
+//! match, as on the CI's Ubuntu, the toolkit's font lookup panics. The pages
+//! come from the controller, fed with envelopes recorded from the real CLI;
+//! nothing runs a worker, a helper or an emergency.
 //!
 //! `NAILS_GUI_GOLDEN=update` writes the images instead of comparing them;
 //! `NAILS_GUI_GOLDEN_OUT=<directory>` also saves each page drawn there, and
@@ -77,11 +79,12 @@ fn run_child() {
         &fonts,
         format!(
             "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n\
-             <fontconfig><cachedir>{}</cachedir></fontconfig>\n",
+             <fontconfig><dir>{}</dir><cachedir>{}</cachedir></fontconfig>\n",
+            golden_dir().display(),
             scratch.join("cache").display()
         ),
     )
-    .expect("an empty fontconfig");
+    .expect("a fontconfig that knows only the bundled font");
     let mut child = Command::new(std::env::current_exe().expect("the test binary"))
         .args([TEST, "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD, "1")
