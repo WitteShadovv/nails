@@ -1837,6 +1837,15 @@ fn set_up_lays_out_hidden_nixos_from_the_file_named_or_not_at_all() {
         "{}",
         question.body
     );
+    // It says the layout is left out, in the plan's words.
+    assert!(
+        question
+            .body
+            .lines()
+            .any(|line| line == "--no-hardware-config: skipping the hidden NixOS layout."),
+        "{}",
+        question.body
+    );
 }
 
 #[test]

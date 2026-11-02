@@ -503,13 +503,13 @@ pub fn option_flake(flake: &str) -> String {
 /// The switch of the hidden NixOS layout (off: `--no-hardware-config`).
 pub const SWITCH_LAYOUT: &str = "Lay out hidden NixOS";
 /// The line under it.
-pub const LAYOUT_WHAT: &str = "The hidden NixOS system's layout on the volume, seeded from \
-     this computer's hardware configuration";
+pub const LAYOUT_WHAT: &str = "The hidden NixOS system's layout on the volume, seeded from a \
+     hardware configuration";
 /// The field of the file it is seeded from (`--hardware-config`).
 pub const FIELD_HARDWARE_CONFIG: &str = "Hardware configuration";
 /// The line under it.
-pub const HARDWARE_CONFIG_HINT: &str = "Optional: the file to seed it from, instead of \
-     /etc/nixos/hardware-configuration.nix";
+pub const HARDWARE_CONFIG_HINT: &str = "The file to seed it from. Left empty, NixOS seeds it \
+     from /etc/nixos/hardware-configuration.nix, and another system lays out none";
 /// The line under it once what it holds is no full path.
 pub const HARDWARE_CONFIG_NOT_ABSOLUTE: &str = "Give the file's full path, starting with /, or \
      leave it empty.";
