@@ -844,8 +844,8 @@ of this changelog for that version becomes the release notes word for word, and
   an expansion the check cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a process
   substitution, `: ${ZDOTDIR:=...}`), a `source` without a file, and a quote, an expansion or a
   here-document that runs to the end of the file without closing (a `<<` in `(( ... ))` is a
-  shift, and a `)` or `}` in quotes closes nothing) make it warn that it cannot tell, and so do a
-  startup file that is there but cannot be read, which it
+  shift, a `)` or `}` in quotes closes nothing, and a `\'` does not end a `$'...'`) make it warn
+  that it cannot tell, and so do a startup file that is there but cannot be read, which it
   passed over before, and a shell other than bash, zsh, fish and dash. bash's files are read for
   `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going on in
   the next. It still only warns: such a shell has written the

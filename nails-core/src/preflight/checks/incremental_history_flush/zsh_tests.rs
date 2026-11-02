@@ -513,11 +513,41 @@ fn a_quote_in_an_expansion_closes_nothing() {
 }
 
 #[test]
+fn an_ansi_c_string_ends_at_its_first_quote_without_a_backslash() {
+    for (first, third) in [
+        (r"x=$'it\'s'", "# don't touch this"),
+        (r"x=$'it\'s'", r"y=don\'t"),
+        (r"x=$'it\'s'", r"y='a' z=it\'s"),
+        (r"q=$'\''", "# it's here"),
+        (r"x=$(print $'it\'s')", "# don't touch this"),
+        (r"x=${y:-$'it\'s'}", "# don't touch this"),
+        // In double quotes, `$'` is a `$` and a `'`.
+        (r#"x="$'""#, "# don't touch this"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{first}\nsource ~/.zsh/history.zsh\n{third}\n"),
+        );
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new(), "{first}");
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+            "{first}"
+        );
+    }
+}
+
+#[test]
 fn a_construct_that_runs_to_the_end_of_the_file_is_a_doubt() {
     for (line, opener) in [
-        // zsh ends `$'...'` at a `'` without a backslash, the lexer at any:
-        // the last `'` opens a string to the end of the file.
-        (r"x=$'it\'s'", "`'`"),
+        (r"x=$'it\'s", "`$'`"),
         (r#"echo "oops"#, "`\"`"),
         ("x=$(echo", "`$(`"),
         ("x=${y", "`${`"),
@@ -869,6 +899,10 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
     assert!(
         tokens("cat <<-EOF; e\n\tsetopt c\n\tEOF\n")
             .contains(&Token::Text("\tsetopt c\n".to_string()))
+    );
+    assert_eq!(
+        words(r"x=$'it\'s' y"),
+        [(r"x=$'it\'s'".to_string(), true), ("y".to_string(), false)]
     );
     assert_eq!(
         words(r#"x=$(echo ")") 'a)' "$(b ')')""#),
