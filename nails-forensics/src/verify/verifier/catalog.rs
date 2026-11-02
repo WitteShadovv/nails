@@ -260,6 +260,8 @@ mod tests {
     #[test]
     fn areas_not_checked_come_from_the_catalog() {
         let root = tempfile::tempdir().unwrap();
+        // An empty root is refused, so the image holds one folder.
+        std::fs::create_dir(root.path().join("etc")).unwrap();
         let result = offline_scan(root.path());
         let areas = result.areas_not_checked.join("\n");
 

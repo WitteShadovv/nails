@@ -473,7 +473,9 @@ pub struct VerifyArgs {
     #[arg(long, requires = "root")]
     pub offline: bool,
 
-    /// Root of the mounted decoy image to scan in `--offline` mode.
+    /// Root of the mounted decoy image to scan in `--offline` mode. A path
+    /// that does not exist, is not a folder or is empty is refused, since
+    /// nothing would be scanned.
     #[arg(long, value_name = "MOUNT", value_hint = ValueHint::DirPath, requires = "offline")]
     pub root: Option<std::path::PathBuf>,
 

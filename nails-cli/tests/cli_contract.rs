@@ -696,6 +696,68 @@ fn verify_offline_examiner_json_matches_schema_and_groups_traces() {
     assert!(plain["data"].get("examiner").is_none(), "{plain:#}");
 }
 
+#[test]
+fn verify_offline_refuses_a_root_with_nothing_to_scan() {
+    // Each of these read as a secure image (exit 0), with no setup trace under
+    // --examiner. The empty folder is the mount point of an image that was
+    // never mounted.
+    let harness = Harness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("decoy.img");
+    std::fs::write(&image, b"not a tree").unwrap();
+    let mount_point = dir.path().join("decoy");
+    std::fs::create_dir(&mount_point).unwrap();
+    for (root, says) in [
+        (dir.path().join("absent"), "does not exist"),
+        (image, "is not a folder"),
+        (mount_point.clone(), "is empty"),
+    ] {
+        let root = root.to_str().unwrap();
+        for examiner in [&[][..], &["--examiner"][..]] {
+            let args = [&["verify", "--offline", "--root", root][..], examiner].concat();
+            let (code, value) = run_json(&harness.config, &args);
+            assert_eq!(code, 1, "{args:?}: {value:#}");
+            assert_matches_schema(&load_schema("verify"), &value);
+            assert_eq!(value["ok"], false, "{value:#}");
+            assert!(value.get("data").is_none(), "{value:#}");
+            assert_eq!(value["error"]["code"], "nothing_to_scan", "{value:#}");
+            assert_eq!(value["error"]["next"], Value::Null, "{value:#}");
+            let message = value["error"]["message"].as_str().unwrap();
+            assert!(
+                message.starts_with(&format!(
+                    "{root} {says}, so there is nothing to scan\nMount the decoy image or \
+                     partition read-only on a folder (`sudo mount -o ro <device> <mount>`)"
+                )),
+                "{message}"
+            );
+        }
+    }
+
+    // A person reads the same, the next step indented under the error.
+    let shown = mount_point.to_str().unwrap();
+    let output = run(
+        &harness.config,
+        &[],
+        &["verify", "--offline", "--root", shown],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "error: {shown} is empty, so there is nothing to scan\n  Mount the decoy image"
+        )),
+        "{stderr}"
+    );
+
+    // Once the mount point holds the image's files, they are scanned.
+    std::fs::create_dir(mount_point.join("etc")).unwrap();
+    let (code, value) = run_json(&harness.config, &["verify", "--offline", "--root", shown]);
+    assert_eq!(code, 0, "{value:#}");
+    assert_matches_schema(&load_schema("verify"), &value);
+    assert_eq!(value["data"]["status"], "secure", "{value:#}");
+}
+
 // ---------------------------------------------------------------------------
 // activate: the schema refuses the version-1 shapes
 //
