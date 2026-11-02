@@ -222,6 +222,7 @@ impl OtherDisks {
         }
         page.action = Some(text::SCAN);
         page.action_locked = self.args().is_none();
+        page.subpage = Some(text::SCAN_OTHER.to_string());
         page
     }
 }

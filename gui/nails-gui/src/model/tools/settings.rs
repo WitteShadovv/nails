@@ -308,7 +308,10 @@ impl Settings {
                 ..tool_page(ToolKind::Settings, text::SETTINGS_WHEN)
             },
             (Some(shown), None) => self.list_page(shown),
-            (Some(_), Some(index)) => self.key_page(&SETTINGS[index], cx.hidden),
+            (Some(_), Some(index)) => Page {
+                subpage: Some(SETTINGS[index].key.to_string()),
+                ..self.key_page(&SETTINGS[index], cx.hidden)
+            },
         };
         if let Some(notice) = self.notice.as_ref().filter(|notice| **notice != page.note) {
             page.note = crate::model::pages::join(notice, &page.note);

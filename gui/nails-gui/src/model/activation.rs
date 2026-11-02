@@ -12,9 +12,9 @@
 //!   word it shows: allowing a risk is never one click. The window then
 //!   checks again with the flag, names the risk on the page and in the
 //!   question before the activation, and gives the flag to that activation.
-//!   Once its apply is answered or its plan withdrawn, or a recovery ran, the
-//!   window forgets the risk and checks again without the flag. Nothing is
-//!   stored. The launcher's gate refuses a decoy that keeps a persistent
+//!   Once its apply is answered, or its plan withdrawn or refused, or a
+//!   recovery ran, the window forgets the risk and checks again without the
+//!   flag. Nothing is stored. The launcher's gate refuses a decoy that keeps a persistent
 //!   record before the window opens, so that risk shows only on a decoy that
 //!   starts keeping one afterwards.
 //! - **The question** names what the plan says: the logout, each risk

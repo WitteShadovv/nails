@@ -346,6 +346,21 @@ fn scan_an_image_takes_its_paths_and_the_examiners_view() {
     );
 }
 
+/// A tool's own page opened from the keyboard starts its focus again at the
+/// page's start, as a new page does: here Scan an Image, from its row.
+#[test]
+fn a_tools_own_page_opened_from_the_keyboard_starts_its_focus_again() {
+    let screen = hidden();
+    press(&screen, text::VERIFY);
+    while screen.focused() != text::SCAN_IMAGE_ROW {
+        screen.press(Key::Tab);
+    }
+    screen.press(Key::Return);
+    assert!(screen.shows(text::SCAN_IMAGE_WHAT));
+    assert_eq!(screen.focused(), "");
+    assert_eq!(screen.walk(Key::Tab, 1), [text::BACK]);
+}
+
 /// Scan Other Disks: its switch first, then the disks, or the images and
 /// the token file, and where each read stops; the scan asks for them.
 #[test]

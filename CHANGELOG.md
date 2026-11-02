@@ -161,9 +161,9 @@ of this changelog for that version becomes the release notes word for word, and
   "Allow for This Activation…", whose button acts only once the word "allow" is typed (the launcher
   refuses a decoy that keeps a persistent record before the window opens); the window then checks
   again with the flag, names the risk on the page and in the question, and gives the flag to that
-  one activation, storing nothing: once its apply is answered or its plan withdrawn, or a recovery
-  ran, the window forgets the risk and checks again without it. Activation Options, a tool of the
-  decoy's page, takes this computer's own system (`--overlay-only`), or else a NixOS flake
+  one activation, storing nothing: once its apply is answered, its plan withdrawn or refused, or a
+  recovery ran, the window forgets the risk and checks again without it. Activation Options, a tool
+  of the decoy's page, takes this computer's own system (`--overlay-only`), or else a NixOS flake
   (`--nixos-flake`), to the checks and the activation while the window is open, and the page names
   them. The page of an interrupted
   activation offers Clean Up, and that of a record that cannot be read on the decoy Reset Record,

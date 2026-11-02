@@ -219,6 +219,12 @@ impl Verify {
 /// The page that scans an image: where it is mounted, the examiner's view
 /// and the disk behind it, then the last scan's result.
 fn image_page(image: &ImageScan, cx: &Context) -> Page {
+    let mut page = image_page_of(image, cx);
+    page.subpage = Some(text::SCAN_IMAGE.to_string());
+    page
+}
+
+fn image_page_of(image: &ImageScan, cx: &Context) -> Page {
     if cx.running == Some(Kind::Verify) {
         return Page {
             heading: text::SCANNING_IMAGE.to_string(),
