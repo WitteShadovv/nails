@@ -328,6 +328,126 @@ fn a_clean_disk_reports_nothing() {
     assert!(report.checks_run.contains(&"examiner-disk"));
 }
 
+/// A decoy root with alice's account and `/home` an absolute link to
+/// `target`, a folder of the machine running verify.
+fn root_with_home_linked_to(target: &Path) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "/etc/passwd",
+        b"alice:x:1000:100::/home/alice:/bin/bash\n",
+    );
+    std::os::unix::fs::symlink(target, root.path().join("home")).unwrap();
+    root
+}
+
+#[test]
+fn a_home_that_leads_out_of_the_image_is_not_read() {
+    // On the machine running verify the link leads to a history that opens
+    // a VeraCrypt volume, which was reported as the decoy's. Inside the image
+    // it leads to nothing.
+    let outside = tempfile::tempdir().unwrap();
+    write(
+        outside.path(),
+        "/alice/.bash_history",
+        b"veracrypt --mount /home/alice/vault.hc /mnt/v\n",
+    );
+    let root = root_with_home_linked_to(outside.path());
+    let report = examine(root.path(), &ExaminerOptions::default());
+    assert!(
+        !ids(&report).contains("container-history"),
+        "{:#?}",
+        report.groups
+    );
+}
+
+#[test]
+fn the_decoys_config_is_read_through_its_links_inside_the_root() {
+    // NixOS links /etc/fstab and /etc/crypttab into /etc/static, itself a
+    // link into the store: O_NOFOLLOW refused both, and an encrypted mount
+    // there gave no group.
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "/nix/store/abc-etc/etc/fstab",
+        b"/dev/mapper/vault /data ext4 defaults 0 0\n",
+    );
+    write(
+        root.path(),
+        "/nix/store/abc-etc/etc/crypttab",
+        b"secret /dev/sdb2 none tcrypt\n",
+    );
+    std::fs::create_dir(root.path().join("etc")).unwrap();
+    for name in ["fstab", "crypttab"] {
+        std::os::unix::fs::symlink(
+            format!("/etc/static/{name}"),
+            root.path().join("etc").join(name),
+        )
+        .unwrap();
+    }
+    std::os::unix::fs::symlink("/nix/store/abc-etc/etc", root.path().join("etc/static")).unwrap();
+    let report = examine(root.path(), &ExaminerOptions::default());
+    let config: Vec<(&str, &str)> = report
+        .findings()
+        .filter(|finding| finding.catalog_id == "crypttab-fstab")
+        .map(|finding| (finding.location.as_str(), finding.evidence.as_str()))
+        .collect();
+    assert_eq!(
+        config,
+        [
+            (
+                "/etc/crypttab",
+                "encrypted mapping secret from /dev/sdb2 (tcrypt)"
+            ),
+            (
+                "/etc/fstab",
+                "/dev/mapper/vault mounted on /data (defaults)"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_file_that_does_not_resolve_inside_the_root_is_not_checked() {
+    // The store the links point into is not mounted under the root, and
+    // alice's history is a link out of the image.
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "/etc/passwd",
+        b"alice:x:1000:100::/home/alice:/bin/bash\n",
+    );
+    std::os::unix::fs::symlink("/etc/static/fstab", root.path().join("etc/fstab")).unwrap();
+    std::fs::create_dir_all(root.path().join("home/alice")).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write(outside.path(), "/history", b"ls\n");
+    std::os::unix::fs::symlink(
+        outside.path().join("history"),
+        root.path().join("home/alice/.bash_history"),
+    )
+    .unwrap();
+    let report = examine(root.path(), &ExaminerOptions::default());
+    let unread = |rel: &str, purpose: &str| {
+        format!(
+            "{rel}, read for {purpose} (a link that leads to no readable file inside the root, \
+             as one into a store that is not mounted there does not)"
+        )
+    };
+    for area in [
+        unread("/etc/fstab", "the crypttab and fstab entries"),
+        unread(
+            "/home/alice/.bash_history",
+            "history naming a container or unlock",
+        ),
+    ] {
+        assert!(
+            report.not_checked.contains(&area),
+            "{area}: {:#?}",
+            report.not_checked
+        );
+    }
+}
+
 #[test]
 fn a_store_with_nothing_to_read_is_said_so() {
     // A NixOS decoy whose /nix is a filesystem of its own that is not

@@ -3,7 +3,7 @@
 
 //! The examiner checks that read files on the mounted decoy root.
 
-use super::{ExaminerFinding, ExaminerOptions, rebase};
+use super::{ExaminerFinding, ExaminerOptions, in_root, in_root_entry};
 use crate::filesystem::real::{OpenKind, open_noatime, read_dir_noatime};
 use crate::forensic::entropy;
 use crate::forensic::tree::{WalkLimits, walk_files};
@@ -42,6 +42,31 @@ fn read_text(path: &Path, limit: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// The text of the decoy's file `rel`, read inside the root ([`in_root`])
+/// with [`read_text`]. A file that is there but cannot be read, a link that
+/// leads to no readable file inside the root among them, goes to
+/// `not_checked`, with what it is read `for`.
+fn read_decoy(
+    root: &Path,
+    rel: &str,
+    purpose: &str,
+    not_checked: &mut Vec<String>,
+) -> Option<String> {
+    if let Some(text) = read_text(&in_root(root, rel), TEXT_LIMIT) {
+        return Some(text);
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(in_root_entry(root, rel)) {
+        let why = if meta.file_type().is_symlink() {
+            "a link that leads to no readable file inside the root, as one into a store that is \
+             not mounted there does not"
+        } else {
+            "it could not be read"
+        };
+        not_checked.push(format!("{rel}, read for {purpose} ({why})"));
+    }
+    None
+}
+
 fn finding(
     id: &'static str,
     severity: Severity,
@@ -69,9 +94,10 @@ fn config_lines(text: &str) -> impl Iterator<Item = &str> {
 /// any option systemd opens as one,
 /// [`is_tcrypt`](nails_base::crypttab::CrypttabEntry::is_tcrypt)), a
 /// headerless `plain` mapping or a file.
-pub(super) fn config_entries(root: &Path) -> Vec<ExaminerFinding> {
+pub(super) fn config_entries(root: &Path, not_checked: &mut Vec<String>) -> Vec<ExaminerFinding> {
+    const PURPOSE: &str = "the crypttab and fstab entries";
     let mut out = Vec::new();
-    if let Some(text) = read_text(&rebase(root, "/etc/crypttab"), TEXT_LIMIT) {
+    if let Some(text) = read_decoy(root, "/etc/crypttab", PURPOSE, not_checked) {
         for entry in parse_crypttab(&text) {
             let deniable = entry.is_tcrypt() || entry.has_option("plain");
             let source = entry.source.as_str();
@@ -93,7 +119,7 @@ pub(super) fn config_entries(root: &Path) -> Vec<ExaminerFinding> {
             ));
         }
     }
-    if let Some(text) = read_text(&rebase(root, "/etc/fstab"), TEXT_LIMIT) {
+    if let Some(text) = read_decoy(root, "/etc/fstab", PURPOSE, not_checked) {
         for line in config_lines(&text) {
             let fields: Vec<&str> = line.split_whitespace().collect();
             let source = fields.first().copied().unwrap_or("");
@@ -146,7 +172,7 @@ fn lvm_vg_name(text: &str) -> Option<&str> {
 pub(super) fn lvm_metadata(root: &Path) -> Vec<ExaminerFinding> {
     let mut out = Vec::new();
     for dir in ["/etc/lvm/archive", "/etc/lvm/backup"] {
-        let path = rebase(root, dir);
+        let path = in_root(root, dir);
         let Ok(entries) = read_dir_noatime(&path) else {
             continue;
         };
@@ -215,13 +241,13 @@ pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
     for (tool, severity) in TOOLS {
         for dir in TOOL_DIRS {
             let rel = format!("{dir}/{tool}");
-            let path = rebase(root, &rel);
+            let path = in_root_entry(root, &rel);
             if std::fs::symlink_metadata(&path).is_ok() {
                 found.push((rel, path, *severity));
             }
         }
     }
-    if let Ok(entries) = read_dir_noatime(&rebase(root, "/nix/store")) {
+    if let Ok(entries) = read_dir_noatime(&in_root(root, "/nix/store")) {
         for entry in entries {
             let name = entry.name.to_string_lossy();
             for (tool, severity) in TOOLS {
@@ -229,7 +255,7 @@ pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
                 if name.to_lowercase().contains(&marker) && !name.ends_with(".drv") {
                     for sub in ["bin", "sbin"] {
                         let rel = format!("/nix/store/{name}/{sub}/{tool}");
-                        let path = rebase(root, &rel);
+                        let path = in_root_entry(root, &rel);
                         if std::fs::symlink_metadata(&path).is_ok() {
                             found.push((rel, path, *severity));
                         }
@@ -264,8 +290,8 @@ pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
 /// cannot be listed, as when the decoy's `/nix` is a filesystem of its own
 /// that is not mounted there. A root without `/nix` keeps no store.
 pub(super) fn store_unread(root: &Path) -> bool {
-    std::fs::symlink_metadata(rebase(root, "/nix")).is_ok_and(|meta| meta.is_dir())
-        && read_dir_noatime(&rebase(root, "/nix/store")).map_or(true, |entries| entries.is_empty())
+    std::fs::metadata(in_root(root, "/nix")).is_ok_and(|meta| meta.is_dir())
+        && read_dir_noatime(&in_root(root, "/nix/store")).map_or(true, |entries| entries.is_empty())
 }
 
 fn stamp(secs: i64) -> String {
@@ -402,9 +428,14 @@ pub(super) fn containers(root: &Path, options: &ExaminerOptions) -> Containers {
 }
 
 /// The homes to read history from: /root and every passwd home on the image.
-fn homes(root: &Path) -> Vec<String> {
+fn homes(root: &Path, not_checked: &mut Vec<String>) -> Vec<String> {
     let mut homes = vec!["/root".to_string()];
-    if let Some(passwd) = read_text(&rebase(root, "/etc/passwd"), TEXT_LIMIT) {
+    if let Some(passwd) = read_decoy(
+        root,
+        "/etc/passwd",
+        "the homes whose history is read",
+        not_checked,
+    ) {
         for line in passwd.lines() {
             let fields: Vec<&str> = line.split(':').collect();
             if fields.len() >= 7
@@ -415,7 +446,7 @@ fn homes(root: &Path) -> Vec<String> {
             }
         }
     }
-    if let Ok(entries) = read_dir_noatime(&rebase(root, "/home")) {
+    if let Ok(entries) = read_dir_noatime(&in_root(root, "/home")) {
         for entry in entries {
             let home = format!("/home/{}", entry.name.to_string_lossy());
             if !homes.contains(&home) {
@@ -440,7 +471,12 @@ const CONTAINER_SUFFIXES: &[&str] = &[".hc", ".tc", ".vc", ".luks"];
 
 /// Recent-files entries, VeraCrypt history and shell lines that name a
 /// container or an unlock.
-pub(super) fn history(root: &Path, candidates: &[String]) -> Vec<ExaminerFinding> {
+pub(super) fn history(
+    root: &Path,
+    candidates: &[String],
+    not_checked: &mut Vec<String>,
+) -> Vec<ExaminerFinding> {
+    const PURPOSE: &str = "history naming a container or unlock";
     let mut out = Vec::new();
     let names_container = |text: &str| {
         candidates.iter().any(|path| text.contains(path.as_str()))
@@ -449,9 +485,9 @@ pub(super) fn history(root: &Path, candidates: &[String]) -> Vec<ExaminerFinding
                     .any(|word| word.to_lowercase().ends_with(suffix))
             })
     };
-    for home in homes(root) {
+    for home in homes(root, not_checked) {
         let recent = format!("{home}/.local/share/recently-used.xbel");
-        if let Some(text) = read_text(&rebase(root, &recent), TEXT_LIMIT) {
+        if let Some(text) = read_decoy(root, &recent, PURPOSE, not_checked) {
             for line in text.lines().filter(|line| line.contains("href=")) {
                 if names_container(line) {
                     let href = line
@@ -470,7 +506,7 @@ pub(super) fn history(root: &Path, candidates: &[String]) -> Vec<ExaminerFinding
         }
         for name in ["History.xml", "Favorite Volumes.xml"] {
             let rel = format!("{home}/.config/VeraCrypt/{name}");
-            if let Some(text) = read_text(&rebase(root, &rel), TEXT_LIMIT) {
+            if let Some(text) = read_decoy(root, &rel, PURPOSE, not_checked) {
                 let volumes: Vec<&str> = text
                     .split("<volume")
                     .skip(1)
@@ -493,7 +529,7 @@ pub(super) fn history(root: &Path, candidates: &[String]) -> Vec<ExaminerFinding
             ".local/share/fish/fish_history",
         ] {
             let rel = format!("{home}/{name}");
-            if let Some(text) = read_text(&rebase(root, &rel), TEXT_LIMIT) {
+            if let Some(text) = read_decoy(root, &rel, PURPOSE, not_checked) {
                 for line in text.lines() {
                     let lower = line.to_lowercase();
                     if UNLOCK_COMMANDS.iter().any(|cmd| lower.contains(cmd))

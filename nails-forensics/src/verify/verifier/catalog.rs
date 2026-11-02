@@ -64,7 +64,8 @@ impl<F: Filesystem> Verifier<F> {
                 continue;
             };
             for path in paths {
-                let probe = self.rebase(Path::new(path));
+                // Inside the root, as the decoy sees the path.
+                let probe = self.place(Path::new(path));
                 if !residue_catalog::path_probe_hit(&self.filesystem, &probe) {
                     continue;
                 }
@@ -223,6 +224,29 @@ mod tests {
             "{finding:?}"
         );
         assert_eq!(result.status, crate::VerifyStatus::Warning);
+    }
+
+    #[test]
+    fn a_catalog_path_behind_a_link_out_of_the_image_is_not_probed() {
+        // The image's /var/log is an absolute link: on the machine running
+        // verify it leads to a sudo I/O log, which was reported as the decoy's.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("sudo-io/00/00")).unwrap();
+        std::fs::write(outside.path().join("sudo-io/00/00/log"), "session").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("var")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("var/log")).unwrap();
+
+        let result = offline_scan(root.path());
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|f| !f.message.contains("[sudo-io-log]")),
+            "{:?}",
+            result.findings
+        );
     }
 
     #[test]

@@ -12,7 +12,9 @@
 //! [`ResidueClass::conclusion`](crate::residue_catalog::ResidueClass::conclusion)).
 //!
 //! It reports only. Every read is read-only and `O_NOATIME` (see
-//! [`crate::forensic`]); nothing is changed, removed or mounted. Its findings
+//! [`crate::forensic`]), and every path is looked up inside the root
+//! ([`in_root`]), so no link in the image leads to the files of the machine
+//! running verify; nothing is changed, removed or mounted. Its findings
 //! never change verify's status: a decoy with full-disk encryption always has
 //! a LUKS header, and only the operator can say which traces are explained.
 
@@ -22,6 +24,7 @@ mod files;
 #[cfg(test)]
 mod tests;
 
+use crate::Filesystem;
 use crate::residue_catalog::{self, Probe, ResidueKind};
 use crate::verify::Severity;
 use serde::Serialize;
@@ -106,7 +109,7 @@ pub fn examine(root: &Path, options: &ExaminerOptions) -> ExaminerReport {
     findings.extend(catalog_paths(root));
     checks_run.push("examiner-catalog-paths");
 
-    findings.extend(files::config_entries(root));
+    findings.extend(files::config_entries(root, &mut not_checked));
     checks_run.push("examiner-config");
 
     findings.extend(files::lvm_metadata(root));
@@ -127,7 +130,11 @@ pub fn examine(root: &Path, options: &ExaminerOptions) -> ExaminerReport {
     not_checked.extend(containers.not_checked);
     checks_run.push("examiner-containers");
 
-    findings.extend(files::history(root, &containers.candidates));
+    findings.extend(files::history(
+        root,
+        &containers.candidates,
+        &mut not_checked,
+    ));
     checks_run.push("examiner-history");
 
     if let Some(disk) = &options.disk {
@@ -162,7 +169,7 @@ fn catalog_paths(root: &Path) -> Vec<ExaminerFinding> {
             continue;
         };
         for path in paths {
-            let probe = rebase(root, path);
+            let probe = in_root(root, path);
             if residue_catalog::path_probe_hit(&fs, &probe) {
                 out.push(ExaminerFinding {
                     catalog_id: row.id,
@@ -206,7 +213,23 @@ fn group(findings: Vec<ExaminerFinding>) -> Vec<ExaminerGroup> {
     groups
 }
 
-/// `path` (absolute on the decoy) under the mounted image root.
-pub(crate) fn rebase(root: &Path, path: &str) -> PathBuf {
-    root.join(path.trim_start_matches('/'))
+/// The decoy's `path` (absolute on the decoy) under the image root `root`,
+/// its links followed inside the root as the decoy itself follows them
+/// (`openat2` with `RESOLVE_IN_ROOT`): an absolute link in the image resolves
+/// in the image, never on the machine running verify. For the files the audit
+/// reads and the folders it lists or probes.
+pub(crate) fn in_root(root: &Path, path: impl AsRef<Path>) -> PathBuf {
+    let inside = crate::RealFilesystem.canonical_in_root(root, path.as_ref());
+    root.join(inside.strip_prefix("/").unwrap_or(&inside))
+}
+
+/// The entry the decoy's `path` names under `root`: its folder resolved
+/// inside the root as [`in_root`] resolves it, its last part as it is, so a
+/// link there is seen, and counts, as a link.
+pub(crate) fn in_root_entry(root: &Path, path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => in_root(root, parent).join(name),
+        _ => in_root(root, path),
+    }
 }

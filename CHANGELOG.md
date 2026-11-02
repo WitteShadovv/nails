@@ -708,11 +708,17 @@ of this changelog for that version becomes the release notes word for word, and
   a link into the store, is read from the image's store, and one that cannot be read there is
   listed as not read. The examiner's view says when the decoy's `/nix/store` is missing or empty
   under the root, where its tool check had nothing to read.
-- A deep offline scan looks up the histories, desktop recent-file lists and temp and log folders
-  of the decoy inside the root, as the decoy sees them. It followed a link in the image on the
-  machine running verify: a `/home` that is an absolute link out of the image made `--deep` read
-  that machine's own `/home/alice/.bash_history` and report it as a trace on the decoy, and in a
-  hidden session a decoy link such as `/home` to `/data/home` led to the session's own folders.
+- An offline scan and its examiner's view look up the decoy's files and folders inside the root,
+  as the decoy sees them, with `openat2` and `RESOLVE_IN_ROOT`. They followed a link in the image
+  on the machine running verify: a `/home` that is an absolute link out of the image made `--deep`
+  read that machine's own `/home/alice/.bash_history` and report it as a trace on the decoy, and
+  made `--examiner` report from it that encrypted volumes were opened from that account. In a
+  hidden session a decoy link such as `/home` to `/data/home` led to the session's own folders. On
+  NixOS the examiner's view never read `/etc/fstab` or `/etc/crypttab`, links into the store it
+  refused to follow, and said nothing: they are now read from the image's store, and a file that
+  is there but does not resolve inside the root is listed as not checked. The probe for the known
+  NAILS paths, mostly under `/run` and `/etc/nixos`, still follows a link on the way on the
+  machine running verify.
 - The operator guide, the `--root` help and the message of a refused root mount the decoy so that
   nothing writes to its disk. They said `mount -o ro`, but on a filesystem that was not cleanly
   unmounted ext4 replays its journal and cleans up orphaned files on a read-only mount, btrfs
