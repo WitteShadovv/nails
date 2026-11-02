@@ -435,7 +435,8 @@ impl Model {
             // next plan only behind the word.
             let asked = match &self.tool {
                 Some(Tool::SetUp(set_up))
-                    if label == text::ALLOW_FOR_SET_UP && set_up.offers_storage() =>
+                    if label == text::ALLOW_FOR_SET_UP
+                        && set_up.offers_storage(self.context().root.as_deref()) =>
                 {
                     Some((text::ALLOW_FOR_SET_UP_QUESTION, set_up.refusal()))
                 }

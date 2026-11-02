@@ -1433,6 +1433,141 @@ fn a_set_up_on_this_computers_storage_is_allowed_only_behind_the_word() {
     assert_eq!(model.page().question, None);
 }
 
+/// The flag the word allowed goes to the one plan it was allowed for, and
+/// no further: a plan that held and was cancelled leaves the next plain
+/// Set Up… without it, and asks nothing on its own.
+#[test]
+fn a_set_up_allowed_once_and_cancelled_plans_plainly_after() {
+    let mut model = decoy();
+    open(&mut model, ToolKind::SetUp);
+    model.toggled(false);
+    let plan = |allow: bool| {
+        Some(Effect::Ask(Ask::Plan(Plan::Init(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: allow,
+            hardware_config: None,
+            no_hardware_config: true,
+        }))))
+    };
+    model.action();
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(answered(
+        Kind::Plan,
+        4,
+        fixture("init-refused-decoy-storage"),
+    ));
+    model.secondary();
+    model.typed("allow");
+    assert_eq!(model.answer(true).map(Effect::Ask), plan(true));
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(recorded_init_plan("init-plan-decoy-storage"));
+    // Cancelled: the plan is withdrawn.
+    assert_eq!(model.answer(false), Some(Ask::Withdraw));
+    model.apply(Update::Withdrawn);
+    model.apply(status("decoy", Value::Null));
+    let page = model.page();
+    assert_eq!(
+        page.secondary, None,
+        "nothing is offered for a plan not refused"
+    );
+    assert_eq!(model.action(), plan(false), "the next plan carries no flag");
+
+    // Refused again, then a plain plan that held: no stale offer either.
+    let mut model = decoy();
+    open(&mut model, ToolKind::SetUp);
+    model.toggled(false);
+    model.action();
+    model.apply(answered(
+        Kind::Plan,
+        4,
+        fixture("init-refused-decoy-storage"),
+    ));
+    model.action();
+    model.apply(recorded_init_plan("init-plan-no-layout"));
+    assert_eq!(model.answer(false), Some(Ask::Withdraw));
+    model.apply(Update::Withdrawn);
+    assert_eq!(model.page().secondary, None);
+    assert_eq!(model.tool_action(text::ALLOW_FOR_SET_UP), None);
+    assert_eq!(model.page().question, None);
+}
+
+/// No allow is armed while no plan could go: with a hardware configuration
+/// that is no full path, the override is not offered, and asking for it
+/// opens nothing.
+#[test]
+fn a_set_up_offers_no_allow_while_its_plan_cannot_go() {
+    let mut model = decoy();
+    open(&mut model, ToolKind::SetUp);
+    model.action();
+    model.apply(answered(
+        Kind::Plan,
+        4,
+        fixture("init-refused-decoy-storage"),
+    ));
+    assert_eq!(model.page().secondary, Some(text::ALLOW_FOR_SET_UP));
+    model.edited("hardware.nix");
+    let page = model.page();
+    assert!(page.action_locked);
+    assert_eq!(page.secondary, None, "no allow while the plan cannot go");
+    assert_eq!(model.tool_action(text::ALLOW_FOR_SET_UP), None);
+    assert_eq!(model.page().question, None);
+    model.edited("/srv/hardware.nix");
+    assert_eq!(model.page().secondary, Some(text::ALLOW_FOR_SET_UP));
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Init(InitArgs {
+            path: "/mnt/data".to_string(),
+            allow_decoy_storage: false,
+            hardware_config: Some("/srv/hardware.nix".to_string()),
+            no_hardware_config: false,
+        })))),
+        "the plain plan carries no flag"
+    );
+}
+
+/// The same holds for a discard: allowed once, held and cancelled, the next
+/// discard, of another folder, carries no flag and is offered nothing.
+#[test]
+fn a_discard_allowed_once_and_cancelled_plans_plainly_after() {
+    let mut model = decoy();
+    open(&mut model, ToolKind::Discard);
+    model.edited("/srv/data");
+    model.action();
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(answered(
+        Kind::Plan,
+        4,
+        fixture("discard-refused-decoy-storage"),
+    ));
+    model.secondary();
+    model.typed("allow");
+    assert_eq!(
+        model.answer(true),
+        Some(Ask::Plan(Plan::Discard(DiscardPlanArgs {
+            target: "/srv/data".to_string(),
+            allow_decoy_storage: true,
+        })))
+    );
+    model.apply(Update::Running(Kind::Plan));
+    model.apply(discard_plan(
+        "/srv/data",
+        &["/mnt/data/root/upper/srv/data/a"],
+        false,
+    ));
+    assert_eq!(model.answer(false), Some(Ask::Withdraw));
+    model.apply(Update::Withdrawn);
+    model.apply(status("decoy", Value::Null));
+    model.edited("/srv/other");
+    assert_eq!(model.page().secondary, None);
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Discard(DiscardPlanArgs {
+            target: "/srv/other".to_string(),
+            allow_decoy_storage: false,
+        }))))
+    );
+}
+
 /// Discard refused for the same reason offers the same, and its next plan
 /// carries `--allow-decoy-storage`.
 #[test]

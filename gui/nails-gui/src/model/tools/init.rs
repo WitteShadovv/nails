@@ -34,8 +34,6 @@ pub(crate) struct SetUp {
     /// The engine refused the last plan for a hidden volume on this
     /// computer's storage, which `--allow-decoy-storage` accepts.
     storage_refused: bool,
-    /// The person allowed that, behind the word, for the next plan.
-    allow_storage: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,12 +62,13 @@ impl SetUp {
 
     /// The plan's arguments for the hidden volume `root`: without the hidden
     /// NixOS layout when its switch is off, else seeded from the file typed,
-    /// when one is. `None` until the helper would take them.
-    fn args(&self, root: &str) -> Option<InitArgs> {
+    /// when one is, and with the hidden volume on this computer's storage
+    /// allowed when `allow`. `None` until the helper would take them.
+    fn args(&self, root: &str, allow: bool) -> Option<InitArgs> {
         let file = self.hardware_config.trim();
         let args = InitArgs {
             path: root.to_string(),
-            allow_decoy_storage: self.allow_storage,
+            allow_decoy_storage: allow,
             hardware_config: (!self.no_layout && !file.is_empty()).then(|| file.to_string()),
             no_hardware_config: self.no_layout,
         };
@@ -77,9 +76,10 @@ impl SetUp {
     }
 
     /// Whether the page offers to allow the hidden volume on this
-    /// computer's storage, which the engine named for its refusal.
-    pub(crate) fn offers_storage(&self) -> bool {
-        self.storage_refused && !self.allow_storage
+    /// computer's storage: the engine named that for its last refusal, and
+    /// a plan for the hidden volume `root` can go.
+    pub(crate) fn offers_storage(&self, root: Option<&str>) -> bool {
+        self.storage_refused && root.and_then(|root| self.args(root, false)).is_some()
     }
 
     /// The refusal the question before allowing it repeats.
@@ -91,14 +91,13 @@ impl SetUp {
     }
 
     /// The plan again for the hidden volume `root`, its place on this
-    /// computer's storage allowed once its question was answered with the
-    /// word.
+    /// computer's storage allowed for that plan alone once its question was
+    /// answered with the word.
     pub(crate) fn allow_storage(&mut self, root: Option<&str>) -> Option<Ask> {
-        if !self.offers_storage() {
+        if !self.offers_storage(root) {
             return None;
         }
-        self.allow_storage = true;
-        self.action(text::SET_UP_ACTION, root)
+        self.plan(root?, true)
     }
 
     /// The ask for `label`, the page's action, for the hidden volume `root`.
@@ -107,16 +106,21 @@ impl SetUp {
         if label != text::SET_UP_ACTION {
             return None;
         }
-        let args = self.args(root)?;
+        self.plan(root, false)
+    }
+
+    /// The plan for the hidden volume `root`, its place on this computer's
+    /// storage allowed when `allow`. A new plan ends whatever the last
+    /// refusal offered.
+    fn plan(&mut self, root: &str, allow: bool) -> Option<Ask> {
+        let args = self.args(root, allow)?;
         self.outcome = None;
+        self.storage_refused = false;
         Some(Ask::Plan(Plan::Init(args)))
     }
 
     /// Take in the answer of a plan that settled, or of the apply.
     pub(crate) fn answered(&mut self, _kind: Kind, answer: &Answer) {
-        // What was allowed held for the plan that answered only: its apply
-        // carries the token, not the flag.
-        self.allow_storage = false;
         self.storage_refused = false;
         self.outcome =
             Some(match envelope::read::<InitData>(&answer.envelope, "init") {
@@ -158,10 +162,10 @@ impl SetUp {
         // Never in a hidden session, by either reading: fail closed.
         if !matches!(self.outcome, Some(Outcome::Done(_))) && root.starts_with('/') && !cx.hidden {
             page.action = Some(text::SET_UP_ACTION);
-            if self.offers_storage() {
+            if self.offers_storage(Some(root)) {
                 page.secondary = Some(text::ALLOW_FOR_SET_UP);
             }
-            page.action_locked = self.args(root).is_none();
+            page.action_locked = self.args(root, false).is_none();
             page.switch_first = true;
             page.switch = Some(Switch {
                 title: text::SWITCH_LAYOUT.to_string(),
