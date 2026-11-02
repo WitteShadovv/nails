@@ -287,6 +287,9 @@ enum Asking {
     Plan { word: Option<String>, typed: String },
     /// Whether to allow `risk` for one activation; `typed` so far.
     Allow { risk: Risk, typed: String },
+    /// Whether to scan in the session that planted the test words
+    /// (`--allow-same-boot`); `typed` so far.
+    SameBoot { typed: String },
 }
 
 /// What the window knows of the session.
@@ -497,6 +500,12 @@ impl Model {
                 self.allowed.insert(risk);
                 Some(Ask::Check(activation::check_args(&self.allowed)))
             }
+            Some(Asking::SameBoot { typed }) => {
+                if !(confirmed && activation::is_the_word(&typed)) {
+                    return None;
+                }
+                self.scan_same_boot()
+            }
             Some(Asking::Plan { word, typed }) => {
                 let typed_it = word.is_none_or(|word| tools::is_the_folder(&word, &typed));
                 self.answer_plan(confirmed && typed_it)
@@ -618,7 +627,7 @@ impl Model {
     /// What the person typed so far into the open question's field.
     pub fn typed(&mut self, typed: &str) {
         let locked = match &mut self.asking {
-            Some(Asking::Allow { typed: so_far, .. }) => {
+            Some(Asking::Allow { typed: so_far, .. } | Asking::SameBoot { typed: so_far }) => {
                 typed.clone_into(so_far);
                 !activation::is_the_word(typed)
             }

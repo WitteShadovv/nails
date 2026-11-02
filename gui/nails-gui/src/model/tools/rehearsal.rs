@@ -42,7 +42,7 @@ use nails_api::protocol::{Op, RehearsePlantArgs, RehearseScanArgs, validate};
 use super::{Context, ToolKind, error_of, group, row, tool_page};
 use crate::client::Answer;
 use crate::envelope::{self, Channel, DeviceScan, Phase, RehearseData, ScanReport};
-use crate::model::{Choice, Field, Group, Page, StepView, Switch};
+use crate::model::{Choice, Field, Group, Page, Question, StepView, Switch};
 use crate::text;
 use crate::worker::{Ask, Kind, Rehearse};
 
@@ -295,6 +295,25 @@ impl Rehearsal {
         }
     }
 
+    /// Whether the page offers a scan in the session that planted the test
+    /// words, which needs the CLI's `--allow-same-boot` and asks first.
+    pub(crate) fn offers_same_boot(&self) -> bool {
+        self.planted_here
+            && matches!(self.phase, Some(Phase::Planted | Phase::Scanned))
+            && !self.other.open
+    }
+
+    /// The scan in the session that planted, asked for once its question
+    /// was answered with the word.
+    pub(crate) fn scan_same_boot(&mut self) -> Rehearse {
+        self.asked = Step::Scan;
+        self.notice = None;
+        Rehearse::Scan(RehearseScanArgs {
+            allow_same_boot: true,
+            ..RehearseScanArgs::default()
+        })
+    }
+
     /// Back, from the page that scans other disks to the rehearsal's:
     /// whether there was such a page to leave.
     pub(crate) fn back(&mut self) -> bool {
@@ -463,9 +482,20 @@ impl Rehearsal {
                 None,
                 None,
             ),
-            Phase::Planted if self.planted_here => {
-                ([DONE, NOW, NEXT], text::AFTER_PLANT, None, None)
-            }
+            // The session that planted: its scan proves little, and asks
+            // first (`--allow-same-boot`).
+            Phase::Planted if self.planted_here => (
+                [DONE, NOW, NEXT],
+                text::AFTER_PLANT,
+                None,
+                Some(text::SCAN_SAME_BOOT),
+            ),
+            Phase::Scanned if self.planted_here => (
+                [DONE, DONE, DONE],
+                text::REHEARSAL_SCANNED,
+                None,
+                Some(text::SCAN_SAME_BOOT),
+            ),
             Phase::Planted => (
                 [DONE, DONE, NOW],
                 if hidden {
@@ -542,6 +572,21 @@ impl Rehearsal {
         validate(&Op::RehearsePlant(args.clone()))
             .ok()
             .map(|()| args)
+    }
+}
+
+/// The question before a scan in the session that planted the test words:
+/// what such a scan proves, and that it holds once. Its button acts only
+/// once the word is typed.
+pub(crate) fn same_boot_question() -> Question {
+    Question {
+        heading: text::SAME_BOOT_QUESTION.to_string(),
+        body: format!("{}\n{}", text::SAME_BOOT_WHAT, text::SAME_BOOT_ONCE),
+        confirm: text::SAME_BOOT_CONFIRM.to_string(),
+        destructive: true,
+        prompt: Some(text::type_to_continue(text::ALLOW_WORD)),
+        locked: true,
+        alternative: None,
     }
 }
 

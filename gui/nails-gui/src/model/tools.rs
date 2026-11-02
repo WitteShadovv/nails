@@ -396,6 +396,17 @@ impl Model {
 
     /// What the open tool's action `label` does.
     pub(super) fn tool_action(&mut self, label: &str) -> Option<Effect> {
+        if label == text::SCAN_SAME_BOOT {
+            // A scan in the session that planted asks first, behind the word.
+            if matches!(&self.tool, Some(Tool::Rehearsal(rehearsal)) if rehearsal.offers_same_boot())
+            {
+                self.asking = Some(super::Asking::SameBoot {
+                    typed: String::new(),
+                });
+                self.question = Some(rehearsal::same_boot_question());
+            }
+            return None;
+        }
         let Context { hidden, root, .. } = self.context();
         let ask = match self.tool.as_mut()? {
             Tool::Verify(verify) => verify.action(label),
@@ -410,6 +421,18 @@ impl Model {
             self.plan_for = Some(PlanFor::Tool);
         }
         Some(Effect::Ask(ask))
+    }
+
+    /// The scan in the session that planted, once its question was answered
+    /// with the word.
+    pub(super) fn scan_same_boot(&mut self) -> Option<Ask> {
+        let Some(Tool::Rehearsal(rehearsal)) = &mut self.tool else {
+            return None;
+        };
+        if !rehearsal.offers_same_boot() {
+            return None;
+        }
+        Some(Ask::Rehearse(rehearsal.scan_same_boot()))
     }
 
     /// Whether the answer of a `kind` request is the open tool's.

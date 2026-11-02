@@ -204,9 +204,11 @@ of this changelog for that version becomes the release notes word for word, and
   behind it when one is named (`--disk`); the scan waits for full paths. Rehearsal shows the
   rehearsal's three steps, where it stands and the action of the next
   one: Plant Test Words in a hidden session, for the account its field names (`rehearse plant
-  --user`) or else the window's own, and Scan for Test Words once they are planted, but not in the
-  session that planted them, which the engine refuses and the window remembers for as long as it is
-  open. Scan Other Disks, beside the scan, scans the disks named instead of this computer's mounted
+  --user`) or else the window's own, and Scan for Test Words once they are planted. In the session
+  that planted them, which the engine refuses to scan and the window remembers for as long as it is
+  open, Scan in This Session… asks first, since such a scan proves little, and its button acts only
+  once the word "allow" is typed (`--allow-same-boot`). Scan Other Disks, beside the scan, scans the
+  disks named instead of this computer's mounted
   ones (`rehearse scan --device`), or with its switch images of them (`--offline --image`, with
   `--token-file` when one is named), and stops each read after the megabytes given (`--max-bytes`);
   it waits for full paths and a whole number. Removing the test words (Remove Test Words, `rehearse
