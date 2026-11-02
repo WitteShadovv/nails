@@ -174,8 +174,8 @@ of this changelog for that version becomes the release notes word for word, and
   without asking again. Where the plan says the way back turns the return into a power-off, the
   question says first, in the CLI's words, that the session ends with the machine powering off
   instead of returning, and where that holds whatever happens before the way back runs it offers no
-  Return to Decoy. After Return to Decoy on a plan whose return may power off, the page says so as
-  well. The page then reads "Ending the Hidden Session", takes no input but the Emergency
+  Return to Decoy. After Return to Decoy on a plan whose return may power off, the page says so in
+  the CLI's words. The page then reads "Ending the Hidden Session", takes no input but the Emergency
   control and, where the hidden volume could not be marked to close, says so without naming its
   device; a session still there a minute later gets its Close back, and the page names the Emergency
   control and the power button. A hidden session's window has the Emergency control at the start of
