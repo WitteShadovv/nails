@@ -209,6 +209,10 @@ pub struct Page {
     pub emergency: bool,
     /// Which page this is.
     pub view: View,
+    /// Which page of a tool this is, when the tool has more than one (a
+    /// setting's own page, the scan of an image or of other disks): like a
+    /// new page, another one starts its focus again at its start.
+    pub subpage: Option<String>,
     /// Rows that open the window's tools, on the session's page once it
     /// settled.
     pub links: Vec<Link>,
@@ -846,6 +850,10 @@ impl Model {
                 }
             }
             Kind::Plan | Kind::Apply => {
+                // What was allowed held for that one plan, refused too.
+                if matches!(self.plan_for, Some(PlanFor::Activation)) {
+                    self.forget_allowed();
+                }
                 self.plan_for = None;
                 self.close_question();
                 // A plan that settled instead of holding switches nothing.

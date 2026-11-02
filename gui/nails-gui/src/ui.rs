@@ -52,8 +52,9 @@ pub struct Controller {
     /// Whether the timer runs for the page that shows.
     timing_switch: bool,
     /// The page drawn last, whose focus goes back to the page's start when
-    /// another one replaces it.
+    /// another one replaces it, and the page of a tool it was.
     view: View,
+    subpage: Option<String>,
 }
 
 impl Controller {
@@ -68,6 +69,7 @@ impl Controller {
             switch_timer: slint::Timer::default(),
             timing_switch: false,
             view: View::default(),
+            subpage: None,
         }));
         controller.borrow_mut().me = Rc::downgrade(&controller);
         wire(window, &controller);
@@ -118,10 +120,11 @@ impl Controller {
         if let Some(window) = self.window.upgrade() {
             let page = self.model.page();
             draw(&window, &page);
-            if page.view != self.view {
+            if page.view != self.view || page.subpage != self.subpage {
                 // The control that had the focus went with the page before:
                 // the focus starts again at the new page's start.
                 self.view = page.view;
+                self.subpage = page.subpage;
                 window.invoke_focus_page();
             }
         }

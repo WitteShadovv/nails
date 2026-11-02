@@ -820,3 +820,27 @@ fn what_was_allowed_goes_with_a_recovery() {
     assert_eq!(asks, vec![Ask::Status]);
     allowed_no_more(&mut model);
 }
+
+/// What was allowed held for one plan, refused too: once the engine
+/// refused the activation's plan, the check runs again without the flag,
+/// refuses again and offers Allow again.
+#[test]
+fn what_was_allowed_goes_with_a_refused_plan() {
+    let mut model = allowed();
+    assert!(matches!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Activate(ActivateArgs {
+            allow_persistent_decoy: true,
+            ..
+        }))))
+    ));
+    model.apply(Update::Running(Kind::Plan));
+    let asks = model.apply(answered(
+        Kind::Plan,
+        json!({"schema_version": 2, "command": "activate", "ok": false,
+            "data": {"status": "failed"},
+            "error": {"code": "not_ready", "message": "Pre-flight checks failed", "next": null}}),
+    ));
+    assert_eq!(asks, vec![Ask::Status]);
+    allowed_no_more(&mut model);
+}
