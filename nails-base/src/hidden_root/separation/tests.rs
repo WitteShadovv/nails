@@ -1393,6 +1393,34 @@ fn the_decoys_entry_for_the_hidden_volume_claims_nothing() {
 }
 
 #[test]
+fn the_claims_are_built_from_the_stack_the_judge_walks() {
+    // An md mirror of two LUKS volumes the decoy's crypttab opens, and the
+    // hidden root on the array or on a partition of it: either way those
+    // lines open the hidden drive, so they claim nothing.
+    for (root, dev) in [("/dev/md0", "9:0"), ("/dev/md0p1", "259:10")] {
+        let world = plain_decoy(&format!("5 1 {dev} / /mnt rw - ext4 {root} rw\n"))
+            .disk("sdb", "8:16")
+            .part("sdb1", "8:17", "sdb")
+            .disk("sdc", "8:32")
+            .part("sdc1", "8:33", "sdc")
+            .crypt("dm-20", "254:20", "leg0", &["sdb1"])
+            .crypt("dm-21", "254:21", "leg1", &["sdc1"])
+            .node("md0", "9:0", NodeKind::Disk, &["dm-20", "dm-21"])
+            .part("md0p1", "259:10", "md0")
+            .crypttab("leg0 /dev/sdb1 none luks\nleg1 /dev/sdc1 none luks\n");
+        assert_eq!(
+            entry_kinds(&world.judge("/mnt")),
+            vec![(EntryKind::Blocking, CRYPTTAB); 2],
+            "{root}"
+        );
+        let claimed = world.claimed("/mnt");
+        for leg in ["dm-20", "sdb1", "dm-21", "sdc1"] {
+            assert!(!claimed.contains_key(leg), "{root} {leg}: {claimed:?}");
+        }
+    }
+}
+
+#[test]
 fn nothing_is_claimed_for_a_ram_root() {
     let world = plain_decoy("5 1 0:40 / /mnt rw - tmpfs tmpfs rw\n");
     assert!(world.claimed("/mnt").is_empty());

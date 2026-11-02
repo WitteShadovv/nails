@@ -33,17 +33,7 @@ pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
             entries: Vec::new(),
         };
     }
-    let devices = scene.devices;
-    // A stacked filesystem names no device of its own: whatever its source
-    // says, its storage is elsewhere.
-    let top = (!is_stacked(&hidden.fstype))
-        .then(|| devices.node_of_mount(hidden))
-        .flatten()
-        .map(str::to_string);
-    let stack: Vec<String> = top
-        .as_deref()
-        .map(|t| devices.full_stack(t))
-        .unwrap_or_default();
+    let (top, stack) = hidden_stack(scene.devices, hidden);
     let (claims, entries) = claims(scene, hidden, &stack);
     let verdict = if scene.unreadable.is_empty() {
         verdict(scene, hidden, top.as_deref(), &stack, &claims)
@@ -75,7 +65,9 @@ pub fn claimed_devices(scene: &Scene<'_>, hidden: &MountEntry) -> BTreeMap<Strin
     claimed
 }
 
-/// The device `hidden` sits on, and that device with everything below it.
+/// The device `hidden` sits on, and that device with everything below it,
+/// into an md array below a partition too: the stack the judge walks, and
+/// the one the claims are built from.
 fn hidden_stack(devices: &DeviceMap, hidden: &MountEntry) -> (Option<String>, Vec<String>) {
     // A stacked filesystem names no device of its own: whatever its source
     // says, its storage is elsewhere.
@@ -83,7 +75,10 @@ fn hidden_stack(devices: &DeviceMap, hidden: &MountEntry) -> (Option<String>, Ve
         .then(|| devices.node_of_mount(hidden))
         .flatten()
         .map(str::to_string);
-    let stack = top.as_deref().map(|t| devices.stack(t)).unwrap_or_default();
+    let stack = top
+        .as_deref()
+        .map(|t| devices.full_stack(t))
+        .unwrap_or_default();
     (top, stack)
 }
 
