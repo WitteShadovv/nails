@@ -9,19 +9,22 @@ const HOME: &str = "/home/alice";
 /// A login shell that reads every startup file.
 const LOGIN: Start = Start {
     login: Some(true),
-    every_file: true,
+    rcs: true,
+    global_rcs: true,
 };
 
 /// An interactive shell that is not a login shell.
 const NOT_LOGIN: Start = Start {
     login: Some(false),
-    every_file: true,
+    rcs: true,
+    global_rcs: true,
 };
 
 /// A shell the check cannot tell is a login shell.
 const UNKNOWN: Start = Start {
     login: None,
-    every_file: true,
+    rcs: true,
+    global_rcs: true,
 };
 
 /// A file of `text` at `path`.
@@ -1210,15 +1213,72 @@ fn a_login_shell_s_files_count_for_a_login_shell_only() {
 }
 
 #[test]
-fn a_zsh_that_skips_startup_files_has_no_turn_off_count() {
-    for argv in [&["zsh", "-f"][..], &["zsh", "-d"], &["zsh", "--no-rcs"]] {
-        let argv: Vec<String> = argv.iter().map(|word| word.to_string()).collect();
-        let start = Start::of(&argv);
-        assert!(!start.every_file, "{argv:?}");
+fn a_zsh_started_without_its_startup_files_reads_only_what_it_reads() {
+    let start = |words: &[&str]| {
+        Start::of(
+            &words
+                .iter()
+                .map(|word| word.to_string())
+                .collect::<Vec<_>>(),
+        )
+    };
+    // Without RCS: /etc/zshenv alone, and what it sources.
+    for argv in [
+        &["zsh", "-f"][..],
+        &["zsh", "--no-rcs"],
+        &["zsh", "--norcs"],
+        &["zsh", "-o", "norcs"],
+        &["zsh", "-o", "NO_RCS"],
+        &["zsh", "+o", "rcs"],
+        &["zsh", "-fi"],
+        &["zsh", "-if"],
+    ] {
+        let start = start(argv);
+        assert!(!start.rcs && start.global_rcs, "{argv:?}");
+        let fs = MockFilesystem::new();
+        seed(&fs, "/etc/zshenv", "source /etc/zshenv.local\n");
+        seed(&fs, "/etc/zshenv.local", "setopt share_history\n");
+        seed(&fs, "/etc/zshrc", "setopt inc_append_history\n");
+        seed(
+            &fs,
+            "/home/alice/.zshenv",
+            "setopt inc_append_history_time\n",
+        );
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            "setopt inc_append_history_time\n",
+        );
+        assert_eq!(
+            on(&fs, start),
+            ["/etc/zshenv.local sets SHARE_HISTORY"],
+            "{argv:?}"
+        );
+    }
+    // Without GLOBAL_RCS: /etc/zshenv and the user's own, no other in /etc.
+    for argv in [
+        &["zsh", "-d"][..],
+        &["zsh", "--no-global-rcs"],
+        &["zsh", "+o", "globalrcs"],
+    ] {
+        let start = start(argv);
+        assert!(start.rcs && !start.global_rcs, "{argv:?}");
         let fs = MockFilesystem::new();
         seed(&fs, "/etc/zshenv", "setopt share_history\n");
-        seed(&fs, "/home/alice/.zshrc", "unsetopt share_history\n");
-        assert_eq!(on(&fs, start), ["/home/alice/.zshrc sets SHARE_HISTORY"]);
+        seed(&fs, "/etc/zshrc", "setopt inc_append_history\n");
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            "setopt inc_append_history_time\n",
+        );
+        assert_eq!(
+            on(&fs, start),
+            [
+                "/etc/zshenv sets SHARE_HISTORY",
+                "/home/alice/.zshrc sets INC_APPEND_HISTORY_TIME",
+            ],
+            "{argv:?}"
+        );
     }
 }
 
@@ -1238,11 +1298,13 @@ fn a_zsh_s_command_line_says_whether_it_is_a_login_shell() {
     assert_eq!(start(&["zsh", "--login"]), LOGIN);
     assert_eq!(start(&["zsh"]), NOT_LOGIN);
     assert_eq!(start(&["zsh", "-i", "--", "-l"]), NOT_LOGIN);
+    assert_eq!(start(&["zsh", "-o", "login"]), LOGIN);
     assert_eq!(
         start(&["zsh", "-d"]),
         Start {
             login: Some(false),
-            every_file: false
+            rcs: true,
+            global_rcs: false
         }
     );
 }
