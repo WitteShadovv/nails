@@ -178,6 +178,29 @@ fn the_mount_source_is_the_visible_mounts() {
 }
 
 #[test]
+fn a_table_keeps_the_label_a_test_set_for_the_path() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(STACKED);
+    fs.mock_set_mount_source(
+        Path::new("/mnt/data"),
+        MountSource {
+            device: Some("/dev/elsewhere".into()),
+            label: Some("data".into()),
+            ..MountSource::default()
+        },
+    );
+    // The table names the device; the label is the one set.
+    assert_eq!(
+        fs.mount_source(Path::new("/mnt/data")).unwrap(),
+        Some(MountSource {
+            device: Some("/dev/mapper/second".into()),
+            dm_name: Some("second".into()),
+            label: Some("data".into()),
+        })
+    );
+}
+
+#[test]
 fn the_queries_resolve_the_mocks_symlinks_first() {
     let fs = MockFilesystem::new();
     fs.mock_set_mount_table(STACKED);

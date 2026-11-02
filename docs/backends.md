@@ -8,9 +8,12 @@ lists what has been tested, what every backend must provide, and the
 deniability trade-offs of each supported backend.
 
 The examples use the neutral mapping name `data` and the hidden root
-`/mnt/data`. Substitute your own, and keep the mapping name, mount point and
-filesystem label free of anything that hints at hidden storage: they surface in
-`/dev/mapper`, `/dev/disk/by-label`, generated mount unit names and the journal.
+`/mnt/data`. Substitute your own, and keep the mapping name and mount point
+free of anything that hints at hidden storage: they surface in `/dev/mapper`,
+generated mount unit names and the journal. Give the filesystem no label at all
+(`mkfs.ext4` sets none unless you pass `-L`): even a neutral one shows in
+`/dev/disk/by-label`, in systemd's device units, in file managers and in
+`lsblk`, and the `hidden-volume` check warns about any.
 
 ## Support matrix
 

@@ -229,8 +229,9 @@ supported; [docs/distribution.md](docs/distribution.md) explains why.
    ```
 
 The examples use the mapping name `data` and the mount point `/mnt/data`. Keep
-yours neutral too: names surface in `/dev/mapper`, `/dev/disk/by-label`, mount
-unit names and the journal, and NAILS warns when one contains a telling word.
+yours neutral too, and give the filesystem no label: names surface in
+`/dev/mapper`, `/dev/disk/by-label`, mount unit names and the journal. NAILS
+warns when one contains a telling word, and about any filesystem label.
 
 <details>
 <summary><b>Upgrading the binary</b></summary>

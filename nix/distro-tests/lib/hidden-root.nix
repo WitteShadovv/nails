@@ -19,9 +19,11 @@
 # again on the decoy (reopenHiddenRoot), as a rehearsal needs. /run/blk.dev
 # names it; the file is gone with the next boot.
 #
-# Every name is neutral ("data", "blk"): the loop device, the device-mapper name,
-# the ext4 label and the mount points must never hint at hidden storage, because
-# they survive in /dev, /dev/mapper, /proc/mounts and the kernel log.
+# Every name is neutral ("data", "blk"): the loop device, the device-mapper name
+# and the mount points must never hint at hidden storage, because they survive
+# in /dev, /dev/mapper, /proc/mounts and the kernel log. The ext4 filesystem
+# gets no label: even a neutral one shows in /dev/disk/by-label, and the
+# hidden-volume check warns about any.
 {
   # Shell that creates and mounts the hidden root at /mnt/data. Idempotent: when
   # the root is still mounted it is reused as is, never re-formatted; after a
@@ -53,12 +55,12 @@
         echo -n 'test-passphrase' | cryptsetup luksFormat -q --type luks2 \
           --pbkdf pbkdf2 --iter-time 1 "$loop" -
         echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
-        mkfs.ext4 -q -L data /dev/mapper/data
+        mkfs.ext4 -q /dev/mapper/data
         mkdir -p "$mountpoint"
         mount /dev/mapper/data "$mountpoint"
       else
         echo 'cryptsetup absent: backing the hidden root with plain ext4 on loop'
-        mkfs.ext4 -q -L data "$loop"
+        mkfs.ext4 -q "$loop"
         mkdir -p "$mountpoint"
         mount "$loop" "$mountpoint"
       fi
