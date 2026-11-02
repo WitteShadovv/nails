@@ -95,6 +95,8 @@ export component AppWindow inherits Window {
     in property <string> switch-title;
     in property <string> switch-subtitle;
     in property <bool> switch-on;
+    // The switch comes before the field, as it says what the fields take.
+    in property <bool> switch-first;
     in property <string> field2-label;
     in-out property <string> field2-text;
     in property <string> field2-hint;
@@ -283,6 +285,20 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        if root.switch-first && root.switch-title != "": BoxedList {
+                            SwitchRow {
+                                title: root.switch-title;
+                                subtitle: root.switch-subtitle;
+                                on: root.switch-on;
+                                first: true;
+                                last: true;
+                                reachable: root.reachable;
+                                toggled(on) => {
+                                    root.switch-toggled(on);
+                                }
+                            }
+                        }
+
                         if root.field-label != "": FieldRow {
                             label: root.field-label;
                             hint: root.field-hint;
@@ -293,7 +309,7 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                        if root.switch-title != "": BoxedList {
+                        if !root.switch-first && root.switch-title != "": BoxedList {
                             SwitchRow {
                                 title: root.switch-title;
                                 subtitle: root.switch-subtitle;

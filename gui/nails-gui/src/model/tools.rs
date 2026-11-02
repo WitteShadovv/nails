@@ -269,6 +269,11 @@ impl Model {
         {
             return None;
         }
+        if let Some(Tool::Rehearsal(rehearsal)) = &mut self.tool
+            && rehearsal.back()
+        {
+            return None;
+        }
         let tool = self.tool.take()?;
         let changed = match &tool {
             Tool::Discard(discard) => discard.changed(),
@@ -302,15 +307,19 @@ impl Model {
     /// What the person typed so far into the open tool's field `index` of
     /// those that follow its switch.
     pub fn edited_more(&mut self, index: usize, typed: &str) {
-        if let Some(Tool::Verify(verify)) = &mut self.tool {
-            verify.edited_more(index, typed);
+        match &mut self.tool {
+            Some(Tool::Verify(verify)) => verify.edited_more(index, typed),
+            Some(Tool::Rehearsal(rehearsal)) => rehearsal.edited_more(index, typed),
+            _ => {}
         }
     }
 
     /// The person turned the open tool's switch `on` or off.
     pub fn toggled(&mut self, on: bool) {
-        if let Some(Tool::Verify(verify)) = &mut self.tool {
-            verify.toggled(on);
+        match &mut self.tool {
+            Some(Tool::Verify(verify)) => verify.toggled(on),
+            Some(Tool::Rehearsal(rehearsal)) => rehearsal.toggled(on),
+            _ => {}
         }
     }
 
@@ -321,9 +330,16 @@ impl Model {
             return None;
         }
         let hidden = self.context().hidden;
-        if let Some(Tool::Verify(verify)) = &mut self.tool {
-            verify.choose(index);
-            return None;
+        match &mut self.tool {
+            Some(Tool::Verify(verify)) => {
+                verify.choose(index);
+                return None;
+            }
+            Some(Tool::Rehearsal(rehearsal)) => {
+                rehearsal.choose(index);
+                return None;
+            }
+            _ => {}
         }
         let Some(Tool::Settings(settings)) = &mut self.tool else {
             return None;

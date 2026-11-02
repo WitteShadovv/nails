@@ -220,6 +220,9 @@ pub struct Page {
     pub field: Option<Field>,
     /// The switch that follows the field, if the page has one.
     pub switch: Option<Switch>,
+    /// The switch comes before the field instead: it says what the fields
+    /// take.
+    pub switch_first: bool,
     /// The fields that follow the switch, two at most.
     pub more_fields: Vec<Field>,
     /// The page has Back, to the session's page.

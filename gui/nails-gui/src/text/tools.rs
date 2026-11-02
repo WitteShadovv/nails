@@ -165,6 +165,47 @@ pub const PLANTING: &str = "Planting the test words";
 pub const SCAN: &str = "Scan for Test Words";
 /// The same, once a scan ran.
 pub const SCAN_AGAIN: &str = "Scan Again";
+/// The row of the rehearsal's page that opens the scan of other disks or of
+/// images (`rehearse scan --device`, `--offline --image`).
+pub const SCAN_OTHER_ROW: &str = "Scan Other Disks\u{2026}";
+/// The line under it.
+pub const SCAN_OTHER_ROW_WHAT: &str = "Disks you name, or disk images, instead of this \
+     computer's mounted disks";
+/// The page that scans them.
+pub const SCAN_OTHER: &str = "Scan Other Disks";
+/// What it does.
+pub const SCAN_OTHER_WHAT: &str = "Scan the disks you name, or images of them, for the test \
+     words, instead of this computer's mounted disks.";
+/// The switch to images (`--offline`).
+pub const SWITCH_IMAGES: &str = "Scan images";
+/// The line under it.
+pub const IMAGES_WHAT: &str = "Disk images or devices named below, instead of this computer's \
+     mounts";
+/// The field of the disks (`--device`, each one).
+pub const FIELD_DISKS: &str = "Disks";
+/// The line under it.
+pub const DISKS_HINT: &str = "Optional: devices separated by spaces, such as /dev/sdb";
+/// The field of the images (`--image`, each one).
+pub const FIELD_IMAGES: &str = "Images";
+/// The line under it.
+pub const IMAGES_HINT: &str = "Images or devices separated by spaces, such as /srv/decoy.raw";
+/// The field of the file the test words' token is read from
+/// (`--token-file`).
+pub const FIELD_TOKEN_FILE: &str = "Token file";
+/// The line under it.
+pub const TOKEN_FILE_HINT: &str = "Optional: read the token from this file instead of the \
+     hidden volume";
+/// The field of where each disk's read stops (`--max-bytes`).
+pub const FIELD_STOP_AFTER: &str = "Stop after (MB)";
+/// The line under it.
+pub const STOP_AFTER_HINT: &str = "Optional: stop reading each disk after this many megabytes";
+/// The line under a field whose paths are not all full paths, or whose
+/// number is no whole number.
+pub const PATHS_NOT_ABSOLUTE: &str = "Give full paths, each starting with /.";
+/// The same, for the images, which the switch needs.
+pub const IMAGES_NEEDED: &str = "Name at least one image, by its full path.";
+/// The same, for the megabytes.
+pub const STOP_AFTER_NOT_A_NUMBER: &str = "Give a whole number of megabytes, or leave it empty.";
 /// While a scan runs.
 pub const SCANNING: &str = "Scanning";
 /// What runs meanwhile.

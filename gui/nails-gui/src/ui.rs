@@ -490,6 +490,7 @@ fn draw_tools(window: &AppWindow, page: &Page) {
     window.set_switch_title(switch.title.as_str().into());
     window.set_switch_subtitle(switch.subtitle.as_str().into());
     window.set_switch_on(switch.on);
+    window.set_switch_first(page.switch_first);
 }
 
 /// Draw `field` into one of the window's field slots: its label and hint

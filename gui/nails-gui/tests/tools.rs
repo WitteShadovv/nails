@@ -346,6 +346,29 @@ fn scan_an_image_takes_its_paths_and_the_examiners_view() {
     );
 }
 
+/// Scan Other Disks: its switch first, then the disks, or the images and
+/// the token file, and where each read stops; the scan asks for them.
+#[test]
+fn scan_other_disks_takes_the_disks_named() {
+    let screen = hidden();
+    rehearsal(&screen, "rehearse-status-planted");
+    press(&screen, text::SCAN_OTHER_ROW);
+    assert!(screen.shows(text::SCAN_OTHER_WHAT));
+    // The switch comes first: it says what the fields take.
+    assert_eq!(screen.walk(Key::Tab, 2), [text::BACK, text::SWITCH_IMAGES]);
+    type_into(&screen, text::FIELD_DISKS, "/dev/sdb");
+    type_into(&screen, text::FIELD_STOP_AFTER, "64");
+    press(&screen, text::SCAN);
+    assert_eq!(
+        screen.asks(),
+        [Ask::Rehearse(Rehearse::Scan(RehearseScanArgs {
+            devices: vec!["/dev/sdb".to_string()],
+            max_bytes: Some(64_000_000),
+            ..RehearseScanArgs::default()
+        }))]
+    );
+}
+
 /// The plant's field, labelled for a screen reader, names the account the
 /// test words are planted for.
 #[test]

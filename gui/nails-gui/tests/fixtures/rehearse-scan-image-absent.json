@@ -1,0 +1,34 @@
+{
+  "command": "rehearse",
+  "data": {
+    "channels": [],
+    "fingerprint": "0f1e2d…",
+    "next_step": "Step 1 of 3: activate a hidden session, then run `sudo /mnt/data/nails rehearse plant`.",
+    "phase": "none",
+    "scan": {
+      "devices": [
+        {
+          "bytes_scanned": 0,
+          "bytes_skipped": 0,
+          "device": "/srv/decoy.raw",
+          "error": "No such file or directory (os error 2)",
+          "hits": [],
+          "hits_capped": false,
+          "limit_reached": false,
+          "size": 0
+        }
+      ],
+      "not_visible": [
+        "flash cells an SSD has remapped or keeps in reserve (wear levelling, over-provisioning): no host read reaches them, only a chip-off read does",
+        "blocks discarded with TRIM: they read back as zeros here even where the flash still holds them",
+        "disks and partitions not mounted while the scan runs (a second disk, an unused swap partition) unless named with --device",
+        "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, an f2fs made with compression): this raw plaintext scan cannot match it, so such storage is reported not checked. A mounted device is judged by its mount, an image or an unmounted --device by its superblock (a whole disk partition by partition), and an encrypted container, or storage on which the scan identifies no filesystem, is reported not checked too",
+        "a canary stored encrypted or compressed file by file (in an eCryptfs folder, an encrypted directory of an ext4 or f2fs, a compressed NTFS folder, or a vault a FUSE tool such as gocryptfs, CryFS or EncFS encrypts): this raw plaintext scan cannot match it either. A device that holds the folder of an eCryptfs mount (a whole disk too), an ext4 or f2fs with the encrypt feature, and an NTFS (or any fuseblk mount) are reported not checked, but these escape it: an eCryptfs folder not mounted during the scan, one whose mount or filesystem was moved or detached after it was mounted (mount --move, umount -l), every eCryptfs folder in an --offline scan, which reads no mount table, a device a program serves from a folder's storage (an NBD or ublk device), one that reaches a folder's image file by another path (a hard link, another mount of its filesystem), and a FUSE tool's vault",
+        "anything outside the decrypted mapping: the encryption header area and other partitions of the same disk",
+        "firmware storage (EFI variables, pstore) and RAM"
+      ]
+    }
+  },
+  "ok": true,
+  "schema_version": 2
+}
