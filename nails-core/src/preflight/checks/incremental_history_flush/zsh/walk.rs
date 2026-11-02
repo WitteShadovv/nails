@@ -570,6 +570,10 @@ impl Walker<'_> {
                     "it cannot tell where the {opener} that {} opens ends",
                     self.place
                 ))),
+                Token::Unfollowed(opener, what) => self.events.push(Event::Doubt(format!(
+                    "it cannot follow the {opener} that {} opens, which holds {what}",
+                    self.place
+                ))),
                 Token::Arithmetic(text) => {
                     // A command of its own, which sets no option.
                     function_next = false;
