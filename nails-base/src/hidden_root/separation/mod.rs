@@ -31,8 +31,8 @@
 //! The [`Verdict`], first match wins: the inputs could not all be read; the
 //! root is on a claimed filesystem (a bind, a subvolume, the filesystem
 //! itself); no block device of the root can be found, so its storage cannot
-//! be followed (an overlay, FUSE, a network filesystem, a partition of a disk
-//! that is not found); it shares a device with a claim; it is an image file,
+//! be followed (an overlay, FUSE, a network filesystem), or the disk of its
+//! partition is not found; it shares a device with a claim; it is an image file,
 //! or an encrypted container file, on a claimed filesystem, or on one whose
 //! device cannot be found, or on none mounted here; else it is separate. A
 //! tmpfs or ramfs root is always separate. A partition of a loop device lies
@@ -346,6 +346,10 @@ pub enum Verdict {
         /// The type of that filesystem.
         fstype: String,
     },
+    /// The root is on a partition whose disk sysfs does not show, so nothing
+    /// tells whether that disk keeps the partition's data elsewhere (a loop
+    /// device over a file, say). Where its writes land cannot be told.
+    DiskNotFound,
     /// The root is an image file that no filesystem mounted here holds (see
     /// [`FileHolder::Unplaced`]). Where its writes land cannot be told.
     UnplacedImageFile {
@@ -424,6 +428,9 @@ impl Verdict {
                 format!(
                     "it is on a filesystem of type {fstype}, which shows no disk it stores its data on"
                 )
+            }
+            Verdict::DiskNotFound => {
+                "it is on a partition whose disk the kernel does not show".to_string()
             }
             Verdict::UnplacedImageFile { file } => format!(
                 "it is an image file ({}) that no filesystem mounted here holds",

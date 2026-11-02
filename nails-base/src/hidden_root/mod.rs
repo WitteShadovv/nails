@@ -111,7 +111,8 @@ pub enum RefusalKind {
         unreadable: Vec<PathBuf>,
     },
     /// Nothing shows on which disk the root's storage lies (see
-    /// [`separation::Verdict::UntracedStorage`] and
+    /// [`separation::Verdict::UntracedStorage`],
+    /// [`separation::Verdict::DiskNotFound`] and
     /// [`separation::Verdict::UnplacedImageFile`]).
     StorageUntraced {
         /// Why it cannot be followed.
@@ -278,6 +279,7 @@ impl HiddenRoot {
                 (
                     _,
                     verdict @ (separation::Verdict::UntracedStorage { .. }
+                    | separation::Verdict::DiskNotFound
                     | separation::Verdict::UnplacedImageFile { .. }),
                 ) => {
                     return refuse(RefusalKind::StorageUntraced { verdict }, root);

@@ -94,9 +94,7 @@ fn verdict(
     // Nor can a partition whose disk is not found: that disk could be a loop
     // device over a file anywhere.
     if stack.iter().any(|name| devices.on_an_unknown_disk(name)) {
-        return Verdict::UntracedStorage {
-            fstype: shown_fstype(&hidden.fstype),
-        };
+        return Verdict::DiskNotFound;
     }
 
     let sharing: Vec<(&Claim, &String)> = claims

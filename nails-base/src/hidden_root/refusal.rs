@@ -194,6 +194,15 @@ impl Refusal {
             RefusalKind::StorageUnjudged { .. } => {
                 vec!["Run the command again with sudo.".into()]
             }
+            // A partition always lies inside its disk in the sysfs of the
+            // host; one that does not is read without the host's /sys.
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::DiskNotFound,
+            } => vec![
+                "Run the command again on the host rather than in a container, with /sys \
+                 mounted."
+                    .into(),
+            ],
             RefusalKind::StorageUntraced { .. } => vec![
                 "Use a volume on a disk or partition of its own, or an encrypted volume opened \
                  from one: only such a volume can be told apart from this computer's own storage."
@@ -363,6 +372,9 @@ mod tests {
                     file: PathBuf::from("/home/u/disk.img"),
                 },
             },
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::DiskNotFound,
+            },
         ]
         .into_iter()
         .map(|kind| Refusal::new(kind, root))
@@ -377,7 +389,7 @@ mod tests {
             .collect();
         assert_eq!(&codes[..13], &[NOT_SEPARATE_VOLUME; 13]);
         assert_eq!(&codes[13..15], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 4]);
+        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 5]);
     }
 
     #[test]
