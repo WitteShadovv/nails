@@ -938,11 +938,89 @@ fn a_here_document_in_a_command_substitution_hides_no_sourced_file() {
     );
 }
 
+/// NixOS's `/etc/zshenv`, as `programs.zsh` writes it.
+const NIXOS_ZSHENV: &str = "\
+# /etc/zshenv: DO NOT EDIT -- this file has been generated automatically.
+# This file is read for all shells.
+
+# Only execute this file once per shell.
+if [ -n \"${__ETC_ZSHENV_SOURCED-}\" ]; then return; fi
+__ETC_ZSHENV_SOURCED=1
+
+if [ -z \"${__NIXOS_SET_ENVIRONMENT_DONE-}\" ]; then
+    . /nix/store/00000000000000000000000000000000-set-environment
+fi
+
+HELPDIR=\"/nix/store/00000000000000000000000000000000-zsh-5.9/share/zsh/$ZSH_VERSION/help\"
+
+# Tell zsh how to find installed completions.
+for p in ${(z)NIX_PROFILES}; do
+    fpath=($p/share/zsh/site-functions $p/share/zsh/$ZSH_VERSION/functions $p/share/zsh/vendor-completions $fpath)
+done
+
+# Read system-wide modifications.
+if test -f /etc/zshenv.local; then
+    . /etc/zshenv.local
+fi
+";
+
+/// NixOS's `/etc/zshrc`, as `programs.zsh` writes it by default, with
+/// `programs.zsh.setOptions` set to `options`.
+fn nixos_zshrc(options: &str) -> String {
+    format!(
+        "\
+# /etc/zshrc: DO NOT EDIT -- this file has been generated automatically.
+# This file is read for interactive shells.
+
+# Only execute this file once per shell.
+if [ -n \"$__ETC_ZSHRC_SOURCED\" -o -n \"$NOSYSZSHRC\" ]; then return; fi
+__ETC_ZSHRC_SOURCED=1
+
+# Set zsh options.
+setopt {options}
+
+# Setup command line history.
+SAVEHIST=2000
+HISTSIZE=2000
+HISTFILE=$HOME/.zsh_history
+
+# Configure sane keyboard defaults.
+. /etc/zinputrc
+
+# Enable autocompletion.
+autoload -U compinit && compinit
+
+# Extra colors for directory listings.
+eval \"$(/nix/store/00000000000000000000000000000000-coreutils-9.5/bin/dircolors -b)\"
+
+# Setup aliases.
+alias -- l='ls -alh'
+alias -- ll='ls -l'
+alias -- ls='ls --color=tty'
+
+# Setup prompt.
+autoload -U promptinit && promptinit && prompt suse && setopt prompt_sp
+
+# Disable some features to support TRAMP.
+if [ \"$TERM\" = dumb ]; then
+    unsetopt zle prompt_cr prompt_subst
+    unset RPS1 RPROMPT
+    PS1='$ '
+    PROMPT='$ '
+fi
+
+# Read system-wide modifications.
+if test -f /etc/zshrc.local; then
+    . /etc/zshrc.local
+fi
+"
+    )
+}
+
 #[test]
-fn a_warning_gives_fixes_the_check_can_see() {
+fn a_warning_gives_the_fix_the_check_can_see() {
     let fix = "Type the decoy commands in a zsh started as `zsh -f`, which reads no startup \
                file but /etc/zshenv.";
-    let nixos = "On NixOS, take the option out of programs.zsh.setOptions, then rebuild.";
     // A final unsetopt is no fix: it names the option all the same.
     let fs = MockFilesystem::new();
     seed(
@@ -953,7 +1031,7 @@ fn a_warning_gives_fixes_the_check_can_see() {
     );
     let message = warning(zsh(&fs));
     assert!(
-        message.contains(fix) && !message.contains(nixos),
+        message.contains("/home/alice/.zshrc names SHARE_HISTORY") && message.contains(fix),
         "{message}"
     );
     // A doubt alone gives the same fix.
@@ -963,21 +1041,69 @@ fn a_warning_gives_fixes_the_check_can_see() {
         message.starts_with("The check cannot tell whether zsh") && message.ends_with(fix),
         "{message}"
     );
-    // NixOS's /etc/zshrc names an option: the NixOS fix too.
+    // NixOS's defaults turn SHARE_HISTORY on in /etc/zshrc. Taken out of
+    // programs.zsh.setOptions, it is named no more, but the generated files
+    // still hold what the check cannot follow, so the fix is zsh -f there too.
     let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshenv", NIXOS_ZSHENV);
     seed(
         &fs,
         "/etc/zshrc",
-        "# /etc/zshrc: DO NOT EDIT -- this file has been generated automatically.\n\
-         setopt HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK\n",
+        &nixos_zshrc("HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK"),
     );
     let message = warning(zsh(&fs));
-    assert!(message.ends_with(&format!("{fix} {nixos}")), "{message}");
-    // And a zsh started so, whose /etc/zshenv names none, passes.
+    assert!(
+        message.contains("/etc/zshrc names SHARE_HISTORY")
+            && message.contains(fix)
+            && !message.contains("setOptions"),
+        "{message}"
+    );
+    seed(
+        &fs,
+        "/etc/zshrc",
+        &nixos_zshrc("HIST_IGNORE_DUPS HIST_FCNTL_LOCK"),
+    );
+    let message = warning(zsh(&fs));
+    let dir = |dir: &str| {
+        format!(
+            "it cannot follow the directory that /etc/zshenv adds to fpath as `{dir}`, where zsh \
+             looks for the functions the files autoload"
+        )
+    };
+    assert_eq!(
+        message,
+        format!(
+            "The check cannot tell whether zsh, the shell this command was typed into, writes \
+             each command line to its history file as it runs: it cannot follow an `eval` that \
+             a line of /etc/zshrc may run; {}; {}; {}. If it does, {ON_DISK}. {fix}",
+            dir("$p/share/zsh/site-functions"),
+            dir("$p/share/zsh/$ZSH_VERSION/functions"),
+            dir("$p/share/zsh/vendor-completions"),
+        )
+    );
+    // A zsh started so reads /etc/zshenv alone, which names none and
+    // autoloads none: it passes, with SHARE_HISTORY in /etc/zshrc too.
+    seed(
+        &fs,
+        "/etc/zshrc",
+        &nixos_zshrc("HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK"),
+    );
     assert!(matches!(
         run(&fs, typed("zsh", &["zsh", "-f"])),
         CheckResult::Pass(_)
     ));
+    // When what it reads names an option, the fix is there.
+    seed(&fs, "/etc/zshenv.local", "setopt share_history\n");
+    let message = warning(run(&fs, typed("zsh", &["zsh", "-f"])));
+    assert!(
+        message.contains("/etc/zshenv.local names SHARE_HISTORY")
+            && message.contains(
+                "A zsh started as `zsh -f` still reads /etc/zshenv and what it sources, so \
+                 take what the check names out of them."
+            )
+            && !message.contains(fix),
+        "{message}"
+    );
 }
 
 #[test]
