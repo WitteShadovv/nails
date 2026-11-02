@@ -465,3 +465,42 @@ fn the_decoys_own_label_is_let_be_on_a_decoy_filesystem_the_operator_accepted() 
         result.message()
     );
 }
+
+#[test]
+fn only_a_root_on_a_decoy_filesystem_carries_the_decoys_label() {
+    use crate::hidden_root::separation::{Claimed, Sharing};
+    let refusal = |verdict| {
+        Refusal::new(
+            RefusalKind::DecoyStorage { verdict },
+            Path::new(NEUTRAL_ROOT),
+        )
+    };
+    for how in [Sharing::Bind, Sharing::Subvolume, Sharing::Filesystem] {
+        let verdict = Verdict::OnDecoyFilesystem {
+            how,
+            at: PathBuf::from("/home"),
+        };
+        assert!(on_a_decoy_filesystem(&refusal(verdict)), "{how:?}");
+    }
+    // On the decoy's storage, but a filesystem of its own, with its own label.
+    for verdict in [
+        Verdict::ContainerOnDecoy {
+            file: PathBuf::from("/home/u/box.img"),
+            at: PathBuf::from("/home"),
+        },
+        Verdict::ImageFileOnDecoy {
+            file: PathBuf::from("/home/u/box.img"),
+            at: PathBuf::from("/home"),
+        },
+        Verdict::InsideDecoyStorage {
+            device: "dm-0".to_string(),
+            holds: Claimed::Mount(PathBuf::from("/")),
+            noauto_only: true,
+        },
+    ] {
+        assert!(
+            !on_a_decoy_filesystem(&refusal(verdict.clone())),
+            "{verdict:?}"
+        );
+    }
+}

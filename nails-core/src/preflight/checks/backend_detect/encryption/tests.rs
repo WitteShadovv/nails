@@ -612,6 +612,71 @@ fn an_unreadable_mount_table_cannot_be_confirmed() {
 }
 
 // ------------------------------------------------------------------------
+// Several ways down
+// ------------------------------------------------------------------------
+
+#[test]
+fn of_two_plain_ways_the_first_is_named() {
+    let result = Host::new("254:9", "ext4", "/dev/mapper/vg-data")
+        .disk("sdb", "8:16")
+        .disk("sdc", "8:32")
+        .mapping("dm-9", "254:9", "vg-data", "LVM-c3d4-data", &["sdb", "sdc"])
+        .run();
+    assert!(
+        warning(&result).starts_with(&format!(
+            "Nothing encrypts the hidden root at {ROOT} on sdb:"
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn the_most_serious_way_is_the_one_reported() {
+    // A logical volume spread over some of: the decoy's own LUKS mapping
+    // dm-0, a device of a kind the check does not know, a plain disk.
+    let spread = |slaves: &[&str]| {
+        Host::new("254:9", "ext4", "/dev/mapper/vg-data")
+            .disk("sdc", "8:32")
+            .disk("sdd", "8:48")
+            .mapping("dm-7", "254:7", "mp", "mpath-36005", &["sdd"])
+            .mapping("dm-9", "254:9", "vg-data", "LVM-c3d4-data", slaves)
+            .run()
+    };
+    // A plain disk comes before the decoy's own encryption and a doubt.
+    let result = spread(&["dm-0", "dm-7", "sdc"]);
+    assert!(
+        warning(&result).starts_with(&format!(
+            "Nothing encrypts the hidden root at {ROOT} on sdc:"
+        )),
+        "{result:?}"
+    );
+    // The decoy's own encryption comes before a doubt.
+    let result = spread(&["dm-0", "dm-7"]);
+    assert!(
+        warning(&result).contains("is the decoy's own: LUKS mapping dm-0"),
+        "{result:?}"
+    );
+    let result = spread(&["dm-7"]);
+    assert!(
+        warning(&result).contains("dm-7 is a device-mapper device of a kind"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_mapping_of_an_unknown_kind_over_the_decoys_encryption_cannot_be_confirmed() {
+    // Whether the device in between encrypts cannot be told, so the decoy's
+    // encryption may not be all there is.
+    let result = Host::new("254:9", "ext4", "/dev/mapper/mp")
+        .mapping("dm-9", "254:9", "mp", "mpath-3600508b4", &["dm-0"])
+        .run();
+    assert!(
+        warning(&result).contains("dm-9 is a device-mapper device of a kind"),
+        "{result:?}"
+    );
+}
+
+// ------------------------------------------------------------------------
 // RAM, a folder and the check itself
 // ------------------------------------------------------------------------
 
