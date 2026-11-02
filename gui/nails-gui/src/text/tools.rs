@@ -79,6 +79,11 @@ pub const DISK_NOT_ABSOLUTE: &str = "Give the full path, starting with /, or lea
 pub const SCAN_IMAGE_ACTION: &str = "Scan Image";
 /// The fact that names the image a result is of.
 pub const FACT_SCANNED_IMAGE: &str = "Scanned image";
+/// The step after a folder refused as holding nothing to scan, in place of
+/// the engine's line that runs the CLI's scan.
+pub const MOUNT_THEN_SCAN_AGAIN: &str = "Mount the decoy's root filesystem on a folder so that \
+     nothing can write to it, and what its /etc/fstab mounts on the folders below it, then give \
+     that folder as the mounted image and press Scan Image again.";
 /// While it runs.
 pub const SCANNING_IMAGE: &str = "Scanning the Image";
 /// The group of the traces that suggest one conclusion, in the examiner's

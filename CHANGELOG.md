@@ -204,8 +204,10 @@ of this changelog for that version becomes the release notes word for word, and
   lists it. Scan an Image, from Verify's page, scans a decoy's disk or image mounted read-only
   instead of this computer (`verify --offline --root`), with the examiner's view of its setup
   traces, grouped by what they suggest, when its switch is on (`--examiner`), and the raw disk
-  behind it when one is named (`--disk`); the scan waits for full paths. Rehearsal shows the
-  rehearsal's three steps, where it stands and the action of the next
+  behind it when one is named (`--disk`); the scan waits for full paths. A folder the engine refuses
+  as holding nothing to scan says why and, in the engine's words, how to mount the image so that
+  nothing writes to it, then to scan again. Rehearsal shows the rehearsal's three steps, where it
+  stands and the action of the next
   one: Plant Test Words in a hidden session, for the account its field names (`rehearse plant
   --user`) or else the window's own, and Scan for Test Words once they are planted. In the session
   that planted them, which the engine refuses to scan and the window remembers for as long as it is

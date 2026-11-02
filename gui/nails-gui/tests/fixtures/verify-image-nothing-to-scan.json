@@ -1,0 +1,10 @@
+{
+  "command": "verify",
+  "error": {
+    "code": "nothing_to_scan",
+    "message": "/mnt/decoy is empty, so there is nothing to scan\nMount the decoy's root filesystem on a folder so that nothing can write to it, and what its /etc/fstab mounts on the folders below it, then run `sudo /mnt/data/nails verify --offline --root <mount>`.\nIn a hidden session, where the decoy root is mounted already, mount its device again and make that mount read-only: `sudo mount <device> <mount> && sudo mount -o remount,bind,ro <mount>`.\nElsewhere make the device read-only first (`sudo blockdev --setro <device>`, and `--setrw` after the scan), then mount it with `-o ro,noload` for ext4, `-o ro,rescue=nologreplay` for btrfs or `-o ro,norecovery` for XFS and f2fs: a plain `-o ro` can replay a journal onto the disk.",
+    "next": null
+  },
+  "ok": false,
+  "schema_version": 2
+}
