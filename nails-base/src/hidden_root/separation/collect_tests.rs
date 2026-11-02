@@ -495,6 +495,73 @@ fn an_unreadable_loop_record_refuses_only_the_root_stored_on_it() {
     assert_eq!(other.assess(), Assessment::Attached);
 }
 
+/// A disk image with a partition table on the decoy's `/home` (`259:4`),
+/// attached with `losetup -P` as `loop0`, and the hidden root the ext4 in its
+/// first partition, `loop0p1`, at `/mnt`.
+fn partitioned_image_on_home() -> Decoy {
+    let loop0 = "/sys/devices/virtual/block/loop0";
+    let decoy = Decoy::new(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
+         2 1 259:4 / /home rw - ext4 /dev/nvme0n1p4 rw\n\
+         5 1 259:8 / /mnt rw - ext4 /dev/loop0p1 rw\n",
+    )
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .partition(
+        "/sys/devices/pci0/nvme/nvme0n1/nvme0n1p4",
+        "nvme0n1p4",
+        "259:4",
+    )
+    .device(loop0, "loop0", "7:0", &[])
+    .partition(&format!("{loop0}/loop0p1"), "loop0p1", "259:8")
+    .file("/etc/fstab", "/dev/nvme0n1p3 / ext4 defaults 0 1\n");
+    decoy.attr(loop0, "loop/backing_file", "/home/op/disk.img");
+    decoy
+}
+
+#[test]
+fn a_partition_of_an_image_file_on_the_decoys_home_is_refused() {
+    // The partition has no slaves; the image file behind its loop device is
+    // what holds it, as for the loop device itself.
+    let decoy = partitioned_image_on_home();
+    decoy
+        .fs
+        .mock_set_loop_backing_device(Path::new(LOOP0_NODE), rustix::fs::makedev(259, 4));
+    match decoy.assess() {
+        Assessment::Refused(refusal) => {
+            assert_eq!(
+                refusal.kind,
+                RefusalKind::DecoyStorage {
+                    verdict: Verdict::ImageFileOnDecoy {
+                        file: PathBuf::from("/home/op/disk.img"),
+                        at: PathBuf::from("/home"),
+                    }
+                }
+            );
+            assert_eq!(
+                refusal.reason,
+                "/mnt is not a volume of its own: it is an unencrypted image file \
+                 (/home/op/disk.img) on /home"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_partition_of_a_loop_device_whose_record_cannot_be_read_is_refused() {
+    // Unprivileged, the loop device's record of its file cannot be read.
+    match partitioned_image_on_home().assess() {
+        Assessment::Refused(refusal) => assert_eq!(
+            refusal.kind,
+            RefusalKind::StorageUnjudged {
+                unreadable: vec![PathBuf::from(LOOP0_NODE)]
+            }
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn an_unreadable_crypttab_refuses_a_disk_root_but_not_a_tmpfs() {
     let decoy = external_veracrypt().unreadable("/etc/crypttab");
