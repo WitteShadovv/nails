@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// Pre-flight check that validates the hidden volume is mounted and accessible
 ///
-/// This check performs three-step validation and then one name audit:
+/// This check validates in three steps and then audits the names in two:
 /// 1. **Path Existence**: Hidden volume path must exist
 /// 2. **The attach gate**: a volume of its own must be mounted at the path
 ///    ([`HiddenRoot::assess`]): not a folder, not a root covered by a second
