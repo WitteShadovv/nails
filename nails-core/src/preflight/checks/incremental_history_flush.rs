@@ -200,15 +200,23 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
         Kind::Zsh => (
             zsh::zsh(fs, shell.homes, shell.zsh),
             "turns on INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY",
-            "Type the decoy commands in a zsh that saves no history (run `unset HISTFILE` in \
-             it first), or turn the option off for that zsh (`unsetopt` it at the end of its \
-             .zshrc).",
+            format!(
+                "Type the decoy commands in a zsh that saves no history (run `unset HISTFILE` \
+                 in it first), or turn the option off for that zsh (`unsetopt` it at the end \
+                 of {}).",
+                if shell.homes.len() > 1 {
+                    "the .zshrc in each home it can run with"
+                } else {
+                    "its .zshrc"
+                }
+            ),
         ),
         Kind::Bash => (
             startup::bash(fs, shell.homes),
             "runs `history -a` or `history -w` from PROMPT_COMMAND",
             "Type the decoy commands in a bash whose history is off (run `set +o history` in \
-             it first), or take `history -a` and `history -w` out of PROMPT_COMMAND.",
+             it first), or take `history -a` and `history -w` out of PROMPT_COMMAND."
+                .to_string(),
         ),
         Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => {
             return CheckResult::Pass(format!(

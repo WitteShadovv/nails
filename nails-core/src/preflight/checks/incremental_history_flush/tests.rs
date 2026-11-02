@@ -570,6 +570,32 @@ fn a_shell_of_another_account_is_read_in_both_homes() {
 }
 
 #[test]
+fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
+    // A root zsh that `sudo -i` opened reads /root/.zshrc, not the
+    // operator's, though one that `sudo -s` opened can.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
+    seed(&fs, "/home/alice/.zshrc", "unsetopt share_history\n");
+    let shell = InspectedShell {
+        program: "zsh".to_string(),
+        homes: vec![PathBuf::from("/root"), PathBuf::from(HOME)],
+        argv: vec!["-zsh".to_string()],
+        origin: ShellOrigin::Typed,
+    };
+    let message = warning(run(&fs, shell.clone()));
+    assert!(
+        message.contains("/etc/zshrc sets SHARE_HISTORY")
+            && message.contains("at the end of the .zshrc in each home it can run with"),
+        "{message}"
+    );
+    // The operator's own zsh reads it, and so does the root shell with
+    // either home when both turn the option off.
+    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
+    seed(&fs, "/root/.zshrc", "unsetopt share_history\n");
+    assert!(matches!(run(&fs, shell), CheckResult::Pass(_)));
+}
+
+#[test]
 fn a_shell_is_named_by_its_program_when_that_is_a_shell_s() {
     use std::path::Path;
     let comm = |name: &str| Some(name.to_string());
