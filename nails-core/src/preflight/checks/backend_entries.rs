@@ -17,6 +17,11 @@
 //! An entry that opens only another volume on the same drive (a VeraCrypt
 //! outer volume of another partition) warns: the decoy is configured to open
 //! storage on that drive.
+//!
+//! An entry the decoy's own boot needs (one that mounts its root or another
+//! of its filesystems or its swap, or opens a device below one of them) cannot
+//! go: the hidden root lies on the decoy's own storage then, and the check says
+//! to put it on storage of its own instead.
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::filesystem::mountinfo::top_mount_at;
@@ -27,6 +32,11 @@ use std::path::{Path, PathBuf};
 /// What the operator does about a blocking entry.
 pub const REMEDIATION: &str =
     "Remove the line long before the next use; open the volume by hand each time.";
+
+/// What the operator does when the decoy's own boot needs a blocking entry:
+/// removing it would break the decoy, so the hidden root has to move.
+pub const STORAGE_OF_ITS_OWN: &str = "Do not remove a line the decoy's own boot needs: put the \
+     hidden root on storage of its own instead.";
 
 /// Pre-flight check that no decoy fstab or crypttab entry opens or mounts the
 /// hidden volume.
@@ -42,11 +52,19 @@ impl BackendEntriesCheck {
     }
 }
 
-/// `<file>: '<line>' (<why>)` for each finding.
+/// `<file>: '<line>' (<why>)` for each finding, and whether the decoy's own
+/// boot needs it.
 fn describe(findings: &[&EntryFinding]) -> String {
     findings
         .iter()
-        .map(|f| format!("{}: '{}' ({})", f.file, f.line, f.why))
+        .map(|f| {
+            let needed = if f.boot_needs {
+                ", and the decoy's own boot needs it"
+            } else {
+                ""
+            };
+            format!("{}: '{}' ({}{needed})", f.file, f.line, f.why)
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -110,6 +128,11 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
 
         let blocking = of_kind(EntryKind::Blocking);
         if !blocking.is_empty() {
+            let remediation = if blocking.iter().any(|f| f.boot_needs) {
+                STORAGE_OF_ITS_OWN
+            } else {
+                REMEDIATION
+            };
             return Ok(CheckResult::fail_with(
                 format!(
                     "The decoy's configuration names the volume at {}: {}. Such an entry is \
@@ -118,7 +141,7 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
                     root.display(),
                     describe(&blocking)
                 ),
-                REMEDIATION,
+                remediation,
             ));
         }
         let outer = of_kind(EntryKind::OuterWarning);

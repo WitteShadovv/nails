@@ -594,6 +594,11 @@ of this changelog for that version becomes the release notes word for word, and
   is now judged as one on the array, and `backend-entries` names the decoy's fstab and crypttab
   lines for the array's devices as it does for the array. Two partitions of one array still share
   nothing, as two partitions of one disk share nothing.
+- `backend-entries` no longer says to remove a line the decoy's own boot needs. Where a flagged
+  fstab line mounts the decoy's root, another of its filesystems or its swap, or a flagged crypttab
+  line opens a device below one of them (the LUKS devices of the md array the decoy's root is on,
+  say), the hidden root lies on the decoy's own storage and removing the line would break the
+  decoy, so the check now says to put the hidden root on storage of its own instead.
 - Activation and `emergency` kill the interactive shells the newest first. A login shell that
   leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
   console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at

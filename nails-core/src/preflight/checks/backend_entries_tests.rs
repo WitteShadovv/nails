@@ -17,7 +17,7 @@ const SDB: &str = "/sys/devices/pci0/usb/sdb";
 const SDB1: &str = "/sys/devices/pci0/usb/sdb/sdb1";
 const SDB2: &str = "/sys/devices/pci0/usb/sdb/sdb2";
 const SDC: &str = "/sys/devices/pci0/usb/sdc";
-const DM9: &str = "/sys/devices/virtual/block/dm-9";
+const SDC1: &str = "/sys/devices/pci0/usb/sdc/sdc1";
 
 struct Decoy {
     fs: MockFilesystem,
@@ -73,9 +73,10 @@ impl Decoy {
     }
 
     fn mapping(self, name: &str, dev: &str, dm: &str, below: (&str, &str)) -> Self {
-        let decoy = self.device(DM9, name, dev, &[below]);
-        decoy.attr(DM9, "dm/name", dm);
-        decoy.attr(DM9, "dm/uuid", &format!("CRYPT-LUKS2-00-{dm}"));
+        let dir = format!("/sys/devices/virtual/block/{name}");
+        let decoy = self.device(&dir, name, dev, &[below]);
+        decoy.attr(&dir, "dm/name", dm);
+        decoy.attr(&dir, "dm/uuid", &format!("CRYPT-LUKS2-00-{dm}"));
         decoy.link(&format!("/dev/mapper/{dm}"), &format!("/dev/{name}"));
         decoy
     }
@@ -128,6 +129,56 @@ fn a_crypttab_line_that_opens_the_volume_fails() {
         "{message}"
     );
     assert_eq!(result.remediation(), Some(REMEDIATION));
+}
+
+#[test]
+fn a_line_the_decoys_own_boot_needs_says_to_move_the_hidden_root_instead() {
+    // The decoy's root on md0p2 of an md mirror of two LUKS volumes its
+    // crypttab opens at boot, and the hidden volume on md0p1 of the same
+    // array: removing those lines would break the decoy.
+    let md0 = "/sys/devices/virtual/block/md0";
+    let result = Decoy::new(
+        "1 0 259:12 / / rw - ext4 /dev/md0p2 rw\n\
+         5 1 259:11 / /mnt rw - ext4 /dev/md0p1 rw\n",
+    )
+    .device(SDB, "sdb", "8:16", &[])
+    .partition(SDB1, "sdb1", "8:17")
+    .device(SDC, "sdc", "8:32", &[])
+    .partition(SDC1, "sdc1", "8:33")
+    .mapping("dm-20", "254:20", "leg0", ("sdb1", SDB1))
+    .mapping("dm-21", "254:21", "leg1", ("sdc1", SDC1))
+    .device(
+        md0,
+        "md0",
+        "9:0",
+        &[
+            ("dm-20", "/sys/devices/virtual/block/dm-20"),
+            ("dm-21", "/sys/devices/virtual/block/dm-21"),
+        ],
+    )
+    .partition(&format!("{md0}/md0p1"), "md0p1", "259:11")
+    .partition(&format!("{md0}/md0p2"), "md0p2", "259:12")
+    .file("/etc/fstab", "/dev/md0p2 / ext4 defaults 0 1\n")
+    .file(
+        "/etc/crypttab",
+        "leg0 /dev/sdb1 none luks\nleg1 /dev/sdc1 none luks\n",
+    )
+    .run();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "/etc/crypttab: 'leg0 /dev/sdb1' (it opens the volume at /mnt or a device it is \
+             stored on, and the decoy's own boot needs it)"
+        ),
+        "{}",
+        result.message()
+    );
+    assert_eq!(result.remediation(), Some(STORAGE_OF_ITS_OWN));
+    assert_eq!(
+        STORAGE_OF_ITS_OWN,
+        "Do not remove a line the decoy's own boot needs: put the hidden root on storage of its \
+         own instead."
+    );
 }
 
 #[test]
