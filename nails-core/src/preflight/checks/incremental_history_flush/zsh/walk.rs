@@ -7,6 +7,7 @@
 //! an option; what the check cannot follow; the files it sources; and the
 //! `ZDOTDIR` and `XDG_CONFIG_HOME` it sets.
 
+use super::backstop::{self, zdotdir_writes};
 use super::lexer::{End, Flaw, Token, Word, is_name, lex};
 use super::{OH_MY_ZSH, OPTIONS};
 use std::collections::BTreeMap;
@@ -44,6 +45,9 @@ pub(super) enum Event {
     },
     /// A word names an option outside an understood `setopt`.
     Mention(usize),
+    /// A line names an option where the walk read no code: in a comment, or
+    /// in what a misread hid.
+    Unread(usize),
     /// Something the check cannot follow, as the warning names it.
     Doubt(String),
     /// `source` or `.` of `path`.
@@ -113,6 +117,10 @@ struct Walker<'a> {
     may_stop: bool,
     /// The structure did not close as zsh's would.
     confused: bool,
+    /// How many `source` and `.` commands it read.
+    sources: usize,
+    /// How often it read `ZDOTDIR` set ([`zdotdir_writes`]).
+    zdotdirs: usize,
 }
 
 /// The precommand words that run the word after them as the command.
@@ -258,6 +266,7 @@ impl Walker<'_> {
             .iter()
             .any(|form| text.contains(form))
         {
+            self.zdotdirs += zdotdir_writes(text);
             self.events.push(Event::Doubt(format!(
                 "it cannot follow where `{text}` in {} sets ZDOTDIR",
                 self.place
@@ -322,6 +331,7 @@ impl Walker<'_> {
                 }
             }
             "source" | "." => {
+                self.sources += 1;
                 let mut args = args.into_iter();
                 match args.next() {
                     Some(path) if path.text.ends_with(OH_MY_ZSH) => {
@@ -365,10 +375,15 @@ impl Walker<'_> {
             Some(("ZDOTDIR", _)) => "ZDOTDIR",
             Some(("XDG_CONFIG_HOME", _)) => "XDG_CONFIG_HOME",
             _ => {
+                if word.text == "ZDOTDIR" {
+                    // Exported or declared as it is.
+                    self.zdotdirs += 1;
+                }
                 self.mention(&word.text);
                 return;
             }
         };
+        self.zdotdirs += zdotdir_writes(&word.text);
         self.mention_options(&word.text);
         let value = word.text[name.len() + 1..].to_string();
         self.events.push(Event::Assign {
@@ -460,7 +475,7 @@ impl Walker<'_> {
     }
 
     /// Walk every token, finding the events in order.
-    fn walk(mut self) -> (Vec<Event>, bool) {
+    fn walk(mut self) -> Self {
         let mut words: Vec<Word> = Vec::new();
         let mut after_condition = false;
         let mut piped = false;
@@ -609,17 +624,34 @@ impl Walker<'_> {
             }
         }
         self.command(std::mem::take(&mut words), after_condition || body, piped);
-        let confused = self.confused || !self.frames.is_empty();
-        (self.events, confused)
+        self.confused |= !self.frames.is_empty();
+        self
     }
 }
 
 /// The events of zsh code `text` from the file at `place`, and whether the
 /// check lost track of its structure, in which case none of its turn-offs
-/// count. What the lexer could not read is a doubt.
+/// count. What the lexer could not read is a doubt, and so is a `source`, a
+/// `.` or a `ZDOTDIR` setting the file's lines hold beyond those the walk
+/// read; an option they name beyond those the tokens name counts as on
+/// ([`backstop`]).
 pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
     let (tokens, flaws) = lex(text);
-    let (mut events, confused) = Walker {
+    let mut read = [0; 3];
+    for token in &tokens {
+        let texts: Vec<&str> = match token {
+            Token::Word(word) => vec![&word.text],
+            Token::Array(name, items) => std::iter::once(name.as_str())
+                .chain(items.iter().map(|item| item.text.as_str()))
+                .collect(),
+            Token::Text(text) | Token::Arithmetic(text) => vec![text],
+            _ => Vec::new(),
+        };
+        for (at, _) in texts.into_iter().flat_map(backstop::options) {
+            read[at] += 1;
+        }
+    }
+    let walked = Walker {
         tokens: tokens.into_iter().peekable(),
         place,
         frames: Vec::new(),
@@ -627,8 +659,11 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
         events: Vec::new(),
         may_stop: false,
         confused: false,
+        sources: 0,
+        zdotdirs: 0,
     }
     .walk();
+    let mut events = walked.events;
     events.extend(flaws.into_iter().map(|flaw| {
         Event::Doubt(match flaw {
             Flaw::Unended(delimiter) => format!(
@@ -643,5 +678,21 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
             }
         })
     }));
-    (events, confused)
+    let named = backstop::named(text);
+    for (at, (&lines, &tokens)) in named.options.iter().zip(&read).enumerate() {
+        if lines > tokens {
+            events.push(Event::Unread(at));
+        }
+    }
+    if named.sources > walked.sources {
+        events.push(Event::Doubt(format!(
+            "it cannot follow a `source` or `.` that a line of {place} may run"
+        )));
+    }
+    if named.zdotdirs > walked.zdotdirs {
+        events.push(Event::Doubt(format!(
+            "it cannot follow a ZDOTDIR that a line of {place} may set"
+        )));
+    }
+    (events, walked.confused)
 }
