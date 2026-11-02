@@ -41,8 +41,12 @@
 //! arithmetic command, `(( ... ))`, is a shift, not a here-document, a `)` or
 //! `}` in quotes closes no expansion, a `\'` does not end a `$'...'`, and the
 //! here-documents and comments of a `$(...)` are read as text, as at the top
-//! level.
+//! level. Beside the code, the lines of each file are counted for what they
+//! name ([`backstop`]): an option named beyond what the code names counts as
+//! on, and a `source`, `.` or `ZDOTDIR` setting beyond what the walk read is
+//! a doubt.
 
+mod backstop;
 mod lexer;
 mod walk;
 
@@ -233,6 +237,11 @@ impl<F: Filesystem> Reader<'_, F> {
             } if certain => self.options[option] = None,
             Event::Set { option, .. } | Event::Mention(option) => {
                 self.options[option] = Some(place.to_string());
+            }
+            Event::Unread(option) => {
+                self.options[option] = Some(format!(
+                    "a line of {place} that the check cannot read as code"
+                ));
             }
             Event::OhMyZsh => {
                 self.options[1] = Some(format!("Oh My Zsh, which {place} loads,"));

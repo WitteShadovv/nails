@@ -755,9 +755,13 @@ of this changelog for that version becomes the release notes word for word, and
   an expansion that holds what the check cannot read as zsh does (a `case` in a `$(...)`, a
   `${ command }`) make it warn that it cannot tell, and so do a startup file that is there but
   cannot be read, which it
-  passed over before, and a shell other than bash, zsh, fish and dash. bash's files are read for
-  `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going on in
-  the next. It still only warns: such a shell has written the
+  passed over before, and a shell other than bash, zsh, fish and dash. zsh's files are counted
+  line by line too, without reading the code, for the three options, the `source` and `.`
+  commands and the `ZDOTDIR` settings they name, a line that is a comment left out: what a line
+  names beyond what was read as code counts as on, for an option, or makes the check warn that it
+  cannot tell, so an option a comment names at the end of a line counts as on. bash's files are
+  read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going
+  on in the next. It still only warns: such a shell has written the
   decoy commands before activation starts, so a refusal would take none of them back, and for a
   shell that writes a line once its command ends, a refused activation would add its own.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so

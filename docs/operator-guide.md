@@ -1342,6 +1342,15 @@ afterwards:
   (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
   keeps its own record of each command, such as atuin.
 
+  Beside reading zsh's files as code, it counts in their lines, without
+  reading the code, the three options, the `source` and `.` commands and the
+  `ZDOTDIR` settings they name, leaving out only a line that is a comment.
+  What a line names beyond what it read as code makes it fail closed, in case
+  it read the code otherwise than zsh does: such an option counts as on, and
+  such a `source`, `.` or `ZDOTDIR` makes it warn that it cannot tell. So an
+  option a comment names at the end of a line counts as on, and a `source` in
+  a string or a here-document makes it warn too.
+
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
 hardening you configure yourself.
