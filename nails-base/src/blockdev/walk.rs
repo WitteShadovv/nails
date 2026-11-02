@@ -42,9 +42,13 @@ pub fn walk<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow, limit: usize)
         let mut layer = read_layer(fs, &dir);
         let slaves = sorted_listing(fs, &dir.join("slaves"));
         layer.slaves = names(&slaves);
+        layer.below = layer.slaves.clone();
         pending.extend(slaves);
         match below_loop(fs, &layer, follow, &mut mounts) {
-            Below::Device(below) => pending.push_back(below),
+            Below::Device(below) => {
+                layer.below.extend(file_name(&below));
+                pending.push_back(below);
+            }
             Below::Unplaced => walk.unplaced_loops.push(layer.name.clone()),
             Below::Stop => {}
         }
@@ -197,6 +201,7 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
             .and_then(parse_u64)
             .unwrap_or(0),
         slaves: Vec::new(),
+        below: Vec::new(),
         holders: names(&sorted_listing(fs, &dir.join("holders"))),
         partition: read_partition(fs, dir, &uevent),
         loop_device: read_loop(fs, dir),
