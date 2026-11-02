@@ -1435,19 +1435,24 @@ afterwards:
   without closing, when an expansion holds what it cannot read as zsh does
   (a `case` in a `$(...)`, a `${ command }`), or when the shell is not bash,
   zsh, fish or dash (dash keeps no history file). It does not see a setting
-  made by a plugin manager or an `eval`, one you typed into the shell, a file
+  made by a plugin manager's function, one you typed into the shell, a file
   a bash startup file sources, or a shell started with other startup files
   (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
   keeps its own record of each command, such as atuin.
 
-  Beside reading zsh's files as code, it counts in their lines, without
-  reading the code, the three options, the `source` and `.` commands and the
-  `ZDOTDIR` settings they name, leaving out only a line that is a comment.
-  What a line names beyond what it read as code makes it fail closed, in case
-  it read the code otherwise than zsh does: such an option counts as on, and
-  such a `source`, `.` or `ZDOTDIR` makes it warn that it cannot tell. So an
-  option a comment names at the end of a line counts as on, and a `source` in
-  a string or a here-document makes it warn too.
+  It reads an `eval` of words it can read as code, and warns that it cannot
+  tell what a command runs whose name an expansion makes (`$cmd`,
+  `${:-source}`). Beside reading zsh's files as code, it counts in their
+  lines, without reading the code and wherever they stand, the three
+  options, `source`, a `.` with a word after it, `eval`, an alias that
+  stands for `.`, and the `ZDOTDIR` settings, leaving out only a line that is
+  a comment. What a line names beyond what it read as code it follows makes
+  it fail closed, in case it read the code otherwise than zsh does: such an
+  option counts as on, and the rest makes it warn that it cannot tell. So an
+  option a comment names at the end of a line counts as on, and a `source`
+  or `eval` anywhere but in a command it follows, in an `echo`, a string, an
+  alias or a here-document, makes it warn too, and so does an `eval` of what
+  a command prints (`eval "$(tool init zsh)"`).
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

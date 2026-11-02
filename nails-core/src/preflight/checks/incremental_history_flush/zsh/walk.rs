@@ -64,17 +64,28 @@ pub(super) enum Event {
     },
 }
 
+/// How a loop's body ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Closer {
+    /// At `done`.
+    Done,
+    /// At `}`.
+    Brace,
+    /// At `end`, as `foreach`'s does.
+    End,
+}
+
 /// A compound command the walk is inside of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Frame {
     If,
     Case,
     /// A loop, with the items the check can list when it runs over a list it
-    /// knows; it ends at `done`, or at `}` when `brace`.
+    /// knows, and how its body ends.
     Loop {
         var: Option<String>,
         items: Option<Vec<String>>,
-        brace: bool,
+        closer: Closer,
     },
     Group,
     Subshell,
@@ -104,6 +115,28 @@ struct Open {
     start: usize,
     /// The arrays the walk knew when it opened.
     arrays: BTreeMap<String, Vec<String>>,
+    /// In the condition of an `if`, `elif`, `while` or `until`, before its
+    /// body.
+    head: bool,
+    /// Its body is one command or group, as in zsh's short forms, and ends
+    /// with the line or the `;` after it.
+    short: bool,
+    /// A `case` that reads a pattern next.
+    pattern: bool,
+}
+
+/// What the walk keeps of the command it is reading.
+#[derive(Debug, Default)]
+struct Pending {
+    words: Vec<Word>,
+    /// It runs after `&&` or `||`.
+    after_condition: bool,
+    /// It runs in a pipeline.
+    piped: bool,
+    /// The next word or `{` is a function's body.
+    function_next: bool,
+    /// It is a function's whole body, which does not run where it stands.
+    body: bool,
 }
 
 /// The walk over one file's tokens, which finds its [`Event`]s.
@@ -121,8 +154,11 @@ struct Walker<'a> {
     confused: bool,
     /// How many `source` and `.` commands it read.
     sources: usize,
+    /// How many `eval`s it read whole.
+    evals: usize,
     /// How often it read `ZDOTDIR` set ([`zdotdir_writes`]).
     zdotdirs: usize,
+    pending: Pending,
 }
 
 impl Walker<'_> {
@@ -139,14 +175,18 @@ impl Walker<'_> {
                 .all(|open| open.certain && open.frame.runs())
     }
 
-    /// Open `frame` where a command can start, after a condition or in a
-    /// pipeline or not.
-    fn open(&mut self, frame: Frame, after_condition: bool, piped: bool) {
+    /// Open `frame` where the command being read starts, in its condition
+    /// (`head`) or not.
+    fn open(&mut self, frame: Frame, head: bool) {
+        let pattern = frame == Frame::Case;
         self.frames.push(Open {
             frame,
-            certain: !after_condition && !piped,
+            certain: !self.pending.after_condition && !self.pending.piped,
             start: self.events.len(),
             arrays: self.arrays.clone(),
+            head,
+            short: false,
+            pattern,
         });
     }
 
@@ -173,7 +213,7 @@ impl Walker<'_> {
                 {
                     return false;
                 }
-                Some(Token::End(End::Line | End::Condition) | Token::Close) | None => {
+                Some(Token::End(End::Line | End::Condition | End::Arm) | Token::Close) | None => {
                     return false;
                 }
                 Some(_) => return true,
@@ -204,20 +244,39 @@ impl Walker<'_> {
         }
     }
 
-    /// The header of a `for` loop, read past `for`: its variable and list.
-    fn for_header(&mut self) -> Frame {
-        let var = match self.tokens.next() {
+    /// The header of a `for`, `foreach` or `select` loop, read past its
+    /// keyword: its variables and list, and how its body ends. Also whether
+    /// the body is one command or group, as in zsh's short forms
+    /// (`for x (a) cmd`).
+    fn for_header(&mut self, foreach: bool) -> (Frame, bool) {
+        let mut var = match self.tokens.next() {
             Some(Token::Word(word)) if is_name(&word.text) => Some(word.text),
             // `for (( ...; ...; ... ))`, over nothing the check can list.
             Some(Token::Arithmetic(text)) => {
                 self.mention(&text);
-                None
+                let (closer, short) = self.body_closer(foreach);
+                let frame = Frame::Loop {
+                    var: None,
+                    items: None,
+                    closer,
+                };
+                return (frame, short);
             }
             _ => {
                 self.confused = true;
                 None
             }
         };
+        // More variables, as zsh takes them (`for key value in ...`).
+        while self
+            .tokens
+            .next_if(|token| {
+                matches!(token, Token::Word(word) if is_name(&word.text) && !matches!(word.text.as_str(), "in" | "do"))
+            })
+            .is_some()
+        {
+            var = None;
+        }
         let mut list = Vec::new();
         let mut listed = false;
         match self.tokens.peek() {
@@ -246,111 +305,322 @@ impl Walker<'_> {
             self.mention(&text);
         }
         let items = if listed { self.list(&list) } else { None };
-        // The body: `do ... done` or `{ ... }`, past any line end.
+        let (closer, short) = self.body_closer(foreach);
+        (Frame::Loop { var, items, closer }, short)
+    }
+
+    /// How the body of a loop whose header was read ends: `do ... done`,
+    /// `{ ... }` or, for `foreach`, `... end`, past any line end, or with one
+    /// command or group, as in zsh's short forms (then `true`).
+    fn body_closer(&mut self, foreach: bool) -> (Closer, bool) {
         while self.tokens.next_if_eq(&Token::End(End::Line)).is_some() {}
-        let brace = match self.tokens.next() {
-            Some(Token::Word(word)) if word.text == "do" => false,
-            Some(Token::Word(word)) if word.text == "{" => true,
-            _ => {
-                self.confused = true;
-                false
-            }
+        let (closer, short) = match self.tokens.peek() {
+            Some(Token::Word(word)) if word.text == "do" => (Closer::Done, false),
+            Some(Token::Word(word)) if word.text == "{" => (Closer::Brace, false),
+            _ if foreach => (Closer::End, false),
+            _ => (Closer::Done, true),
         };
-        Frame::Loop { var, items, brace }
+        if !short && closer != Closer::End {
+            self.tokens.next();
+        }
+        (closer, short)
+    }
+
+    /// Read `repeat`'s count and how its body ends.
+    fn repeat(&mut self) {
+        if let Some(Token::Word(count)) =
+            self.tokens.next_if(|token| matches!(token, Token::Word(_)))
+        {
+            self.mention(&count.text);
+        }
+        let closer = match self.tokens.peek() {
+            Some(Token::Word(word)) if word.text == "do" => Some(Closer::Done),
+            Some(Token::Word(word)) if word.text == "{" => Some(Closer::Brace),
+            _ => None,
+        };
+        if closer.is_some() {
+            self.tokens.next();
+        }
+        self.open(
+            Frame::Loop {
+                var: None,
+                items: None,
+                closer: closer.unwrap_or(Closer::Done),
+            },
+            false,
+        );
+        if closer.is_none() {
+            self.short_body();
+        }
+    }
+
+    /// Whether the innermost frame is in its condition, before its body.
+    fn in_head(&self) -> bool {
+        self.frames.last().is_some_and(|open| open.head)
+    }
+
+    /// Whether the token next starts a body: a command or a group, not the
+    /// `then` or `do` of the long forms.
+    fn next_starts_body(&mut self) -> bool {
+        matches!(self.tokens.peek(), Some(Token::Word(word)) if !matches!(word.text.as_str(), "then" | "do"))
+    }
+
+    /// Make the innermost frame's body one command or group, as in zsh's
+    /// short forms (`if [[ ... ]] cmd`, `repeat 3 cmd`).
+    fn short_body(&mut self) {
+        if let Some(open) = self.frames.last_mut() {
+            open.head = false;
+            open.short = true;
+        }
+    }
+
+    /// Close the frames whose short body just ended.
+    fn end_short(&mut self) {
+        while self.frames.last().is_some_and(|open| open.short) {
+            self.frames.pop();
+        }
+    }
+
+    /// Mark whether the innermost frame, when one of `frames`, is in its
+    /// condition (`then`, `do`, `else`: not; `elif`: again).
+    fn set_head(&mut self, head: bool, frames: fn(&Frame) -> bool) {
+        if let Some(open) = self.frames.last_mut()
+            && frames(&open.frame)
+        {
+            open.head = head;
+        }
+    }
+
+    /// Finish the command being read, in a pipeline after it (`piped_after`)
+    /// or not.
+    fn finish(&mut self, piped_after: bool) {
+        let words = std::mem::take(&mut self.pending.words);
+        let after = self.pending.after_condition || self.pending.body;
+        let piped = self.pending.piped || piped_after;
+        self.command(words, after, piped);
+        self.pending.body = false;
+    }
+
+    /// Close the innermost frame with a `}`: a group, a function's body, a
+    /// loop's, or zsh's `case word { ... }`.
+    fn close_brace(&mut self) {
+        self.end_short();
+        self.close(|frame| {
+            matches!(
+                frame,
+                Frame::Group
+                    | Frame::Function
+                    | Frame::Case
+                    | Frame::Loop {
+                        closer: Closer::Brace,
+                        ..
+                    }
+            )
+        });
+    }
+
+    /// The events of a word.
+    fn word(&mut self, word: Word) {
+        if !self.pending.words.is_empty() {
+            if word.text == "}" {
+                self.finish(false);
+                self.close_brace();
+                return;
+            }
+            let condition = word.text == "]]"
+                && self
+                    .pending
+                    .words
+                    .first()
+                    .is_some_and(|first| first.text == "[[");
+            self.pending.words.push(word);
+            if condition && self.in_head() && self.next_starts_body() {
+                // `if [[ ... ]] cmd`: the condition ends, the body starts.
+                self.finish(false);
+                self.short_body();
+            }
+            return;
+        }
+        let loop_frame = |closer| Frame::Loop {
+            var: None,
+            items: None,
+            closer,
+        };
+        match word.text.as_str() {
+            "if" => self.open(Frame::If, true),
+            "case" => self.open(Frame::Case, false),
+            "while" | "until" => self.open(loop_frame(Closer::Done), true),
+            "repeat" => self.repeat(),
+            "for" | "foreach" | "select" => {
+                let (frame, short) = self.for_header(word.text == "foreach");
+                self.open(frame, false);
+                if short {
+                    self.short_body();
+                }
+            }
+            "then" | "else" => self.set_head(false, |frame| *frame == Frame::If),
+            "elif" => self.set_head(true, |frame| *frame == Frame::If),
+            "do" => self.set_head(false, |frame| matches!(frame, Frame::Loop { .. })),
+            "in" => {}
+            "fi" => {
+                self.end_short();
+                self.close(|frame| *frame == Frame::If);
+            }
+            "esac" => {
+                self.end_short();
+                self.close(|frame| *frame == Frame::Case);
+            }
+            "done" => {
+                self.end_short();
+                self.close(|frame| {
+                    matches!(
+                        frame,
+                        Frame::Loop {
+                            closer: Closer::Done,
+                            ..
+                        }
+                    )
+                });
+            }
+            "end"
+                if self.frames.last().is_some_and(|open| {
+                    matches!(
+                        open.frame,
+                        Frame::Loop {
+                            closer: Closer::End,
+                            ..
+                        }
+                    )
+                }) =>
+            {
+                self.frames.pop();
+            }
+            "{" => {
+                let frame = if self.pending.function_next {
+                    Frame::Function
+                } else {
+                    Frame::Group
+                };
+                self.pending.function_next = false;
+                if self.in_head() {
+                    self.short_body();
+                }
+                self.open(frame, false);
+            }
+            "}" => self.close_brace(),
+            "function" => {
+                if let Some(Token::Word(name)) = self.tokens.next() {
+                    self.mention(&name.text);
+                }
+                if self.tokens.next_if_eq(&Token::Open).is_some() {
+                    self.tokens.next_if_eq(&Token::Close);
+                }
+                self.pending.function_next = true;
+            }
+            _ if self.pending.function_next => {
+                self.pending.function_next = false;
+                self.pending.body = true;
+                self.pending.words.push(word);
+            }
+            _ => self.pending.words.push(word),
+        }
+    }
+
+    /// The events of an array's assignment.
+    fn array(&mut self, name: String, items: Vec<Word>) {
+        for item in &items {
+            self.mention(&item.text);
+        }
+        let literal: Option<Vec<String>> = items
+            .iter()
+            .map(|item| (!item.expands).then(|| item.text.clone()))
+            .collect();
+        match literal {
+            Some(literal)
+                if self.pending.words.is_empty()
+                    && self.certain(self.pending.after_condition, self.pending.piped) =>
+            {
+                self.arrays.insert(name, literal);
+            }
+            _ => {
+                self.arrays.remove(&name);
+            }
+        }
+    }
+
+    /// The events of a token where a `case` reads a pattern: none but the
+    /// names in it, up to the `)` after which a command starts, or the
+    /// `esac` or `}` that closes the `case`.
+    fn pattern_token(&mut self, token: Token) {
+        match token {
+            Token::Word(word) if matches!(word.text.as_str(), "esac" | "}") => {
+                self.close(|frame| *frame == Frame::Case);
+            }
+            Token::Word(word) => self.mention(&word.text),
+            Token::Close => {
+                if let Some(open) = self.frames.last_mut() {
+                    open.pattern = false;
+                }
+                self.pending = Pending::default();
+            }
+            Token::Text(text) | Token::Arithmetic(text) => self.mention_options(&text),
+            Token::Array(_, items) => {
+                for item in items {
+                    self.mention(&item.text);
+                }
+            }
+            Token::Open | Token::End(_) | Token::Redirect => {}
+        }
+    }
+
+    /// The events of the end of a command.
+    fn end(&mut self, end: End) {
+        self.finish(matches!(end, End::Pipe | End::Background));
+        match end {
+            End::Line | End::Background => self.end_short(),
+            End::Arm => {
+                self.end_short();
+                if let Some(open) = self.frames.last_mut()
+                    && open.frame == Frame::Case
+                {
+                    open.pattern = true;
+                }
+            }
+            End::Condition | End::Pipe => {}
+        }
+        self.pending.after_condition = end == End::Condition;
+        self.pending.piped = end == End::Pipe;
+    }
+
+    /// The events of a `(`: a function's or an anonymous function's `()`, or
+    /// a subshell.
+    fn open_paren(&mut self) {
+        let words = self.pending.words.len();
+        if words <= 1 && self.tokens.peek() == Some(&Token::Close) {
+            // `name()`: what follows is its body; `() { ... }`: an anonymous
+            // function, which runs at once but can keep its options local
+            // (`localoptions`, `emulate -L`).
+            self.tokens.next();
+            if let Some(name) = self.pending.words.pop() {
+                self.mention(&name.text);
+            }
+            self.pending.function_next = true;
+            return;
+        }
+        self.finish(false);
+        self.open(Frame::Subshell, false);
     }
 
     /// Walk every token, finding the events in order.
     fn walk(mut self) -> Self {
-        let mut words: Vec<Word> = Vec::new();
-        let mut after_condition = false;
-        let mut piped = false;
-        let mut function_next = false;
-        // The command being read is a function's whole body, which does not
-        // run where it stands.
-        let mut body = false;
         while let Some(token) = self.tokens.next() {
+            if self.frames.last().is_some_and(|open| open.pattern) {
+                self.pattern_token(token);
+                continue;
+            }
             match token {
-                Token::Word(word) if words.is_empty() => match word.text.as_str() {
-                    "if" => self.open(Frame::If, after_condition, piped),
-                    "case" => self.open(Frame::Case, after_condition, piped),
-                    "while" | "until" | "select" | "repeat" => self.open(
-                        Frame::Loop {
-                            var: None,
-                            items: None,
-                            brace: false,
-                        },
-                        after_condition,
-                        piped,
-                    ),
-                    "for" | "foreach" => {
-                        let frame = self.for_header();
-                        self.open(frame, after_condition, piped);
-                    }
-                    "then" | "else" | "elif" | "do" | "in" => {}
-                    "fi" => self.close(|frame| *frame == Frame::If),
-                    "esac" => self.close(|frame| *frame == Frame::Case),
-                    "done" => self.close(|frame| matches!(frame, Frame::Loop { brace: false, .. })),
-                    "{" => {
-                        let frame = if function_next {
-                            Frame::Function
-                        } else {
-                            Frame::Group
-                        };
-                        function_next = false;
-                        self.open(frame, after_condition, piped);
-                    }
-                    "}" => self.close(|frame| {
-                        matches!(
-                            frame,
-                            Frame::Group | Frame::Function | Frame::Loop { brace: true, .. }
-                        )
-                    }),
-                    "function" => {
-                        if let Some(Token::Word(name)) = self.tokens.next() {
-                            self.mention(&name.text);
-                        }
-                        if self.tokens.next_if_eq(&Token::Open).is_some() {
-                            self.tokens.next_if_eq(&Token::Close);
-                        }
-                        function_next = true;
-                    }
-                    _ if function_next => {
-                        function_next = false;
-                        body = true;
-                        words.push(word);
-                    }
-                    _ => words.push(word),
-                },
-                Token::Word(word) if word.text == "}" => {
-                    self.command(std::mem::take(&mut words), after_condition || body, piped);
-                    body = false;
-                    self.close(|frame| {
-                        matches!(
-                            frame,
-                            Frame::Group | Frame::Function | Frame::Loop { brace: true, .. }
-                        )
-                    });
-                }
-                Token::Word(word) => words.push(word),
-                Token::Array(name, items) => {
-                    for item in &items {
-                        self.mention(&item.text);
-                    }
-                    let literal: Option<Vec<String>> = items
-                        .iter()
-                        .map(|item| (!item.expands).then(|| item.text.clone()))
-                        .collect();
-                    match literal {
-                        Some(literal)
-                            if words.is_empty() && self.certain(after_condition, piped) =>
-                        {
-                            self.arrays.insert(name, literal);
-                        }
-                        _ => {
-                            self.arrays.remove(&name);
-                        }
-                    }
-                }
+                Token::Word(word) => self.word(word),
+                Token::Array(name, items) => self.array(name, items),
                 Token::Redirect => {
                     // The redirection's target is no word of the command, but
                     // what a here-string or a file name says still counts.
@@ -362,81 +632,47 @@ impl Walker<'_> {
                 }
                 Token::Text(text) => self.mention_options(&text),
                 Token::Arithmetic(text) => {
-                    // A command of its own, which sets no option.
-                    function_next = false;
+                    // A command of its own, which sets no option; in a
+                    // condition, its end (`if (( ... )) cmd`).
+                    self.pending.function_next = false;
                     self.mention(&text);
+                    if self.pending.words.is_empty() && self.in_head() && self.next_starts_body() {
+                        self.short_body();
+                    }
                 }
-                Token::Open | Token::Close
-                    if self
-                        .frames
-                        .last()
-                        .is_some_and(|open| open.frame == Frame::Case) => {}
-                Token::Open if words.is_empty() && self.tokens.peek() == Some(&Token::Close) => {
-                    // `() { ... }`: an anonymous function, which runs at once
-                    // but can keep its options local (`localoptions`,
-                    // `emulate -L`).
-                    self.tokens.next();
-                    function_next = true;
-                }
-                Token::Open if words.len() == 1 && self.tokens.peek() == Some(&Token::Close) => {
-                    // `name()`: what follows is its body.
-                    self.tokens.next();
-                    let name = words.pop().expect("the function's name");
-                    self.mention(&name.text);
-                    function_next = true;
-                }
-                Token::Open => {
-                    self.command(std::mem::take(&mut words), after_condition || body, piped);
-                    body = false;
-                    self.open(Frame::Subshell, after_condition, piped);
-                }
+                Token::Open => self.open_paren(),
                 Token::Close => {
-                    self.command(std::mem::take(&mut words), after_condition || body, piped);
-                    body = false;
+                    self.finish(false);
+                    self.end_short();
                     self.close(|frame| *frame == Frame::Subshell);
                 }
-                Token::End(end) => {
-                    let pipe_after = matches!(end, End::Pipe | End::Background);
-                    self.command(
-                        std::mem::take(&mut words),
-                        after_condition || body,
-                        piped || pipe_after,
-                    );
-                    body = false;
-                    after_condition = end == End::Condition;
-                    piped = end == End::Pipe;
-                }
+                Token::End(end) => self.end(end),
             }
         }
-        self.command(std::mem::take(&mut words), after_condition || body, piped);
+        self.finish(false);
+        self.end_short();
         self.confused |= !self.frames.is_empty();
         self
     }
 }
 
-/// The events of zsh code `text` from the file at `place`, and whether the
-/// check lost track of its structure, in which case none of its turn-offs
-/// count. What the lexer could not read is a doubt, and so is a `source`, a
-/// `.` or a `ZDOTDIR` setting the file's lines hold beyond those the walk
-/// read; an option they name beyond those the tokens name counts as on
-/// ([`backstop`]).
-pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
+/// What the walk over zsh code found: its events, whether it lost track of
+/// the structure, what it read that the lines may name ([`backstop`]), and
+/// whether a `return` or `exit` may end the file early.
+struct Walked {
+    events: Vec<Event>,
+    confused: bool,
+    sources: usize,
+    evals: usize,
+    zdotdirs: usize,
+    may_stop: bool,
+}
+
+/// Walk zsh code `text` from the file at `place`; what the lexer could not
+/// read is a doubt.
+fn walk_text(text: &str, place: &str) -> Walked {
     let (tokens, flaws) = lex(text);
-    let mut read = [0; 3];
-    for token in &tokens {
-        let texts: Vec<&str> = match token {
-            Token::Word(word) => vec![&word.text],
-            Token::Array(name, items) => std::iter::once(name.as_str())
-                .chain(items.iter().map(|item| item.text.as_str()))
-                .collect(),
-            Token::Text(text) | Token::Arithmetic(text) => vec![text],
-            _ => Vec::new(),
-        };
-        for (at, _) in texts.into_iter().flat_map(backstop::options) {
-            read[at] += 1;
-        }
-    }
-    let walked = Walker {
+    let walker = Walker {
         tokens: tokens.into_iter().peekable(),
         place,
         frames: Vec::new(),
@@ -445,10 +681,12 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
         may_stop: false,
         confused: false,
         sources: 0,
+        evals: 0,
         zdotdirs: 0,
+        pending: Pending::default(),
     }
     .walk();
-    let mut events = walked.events;
+    let mut events = walker.events;
     events.extend(flaws.into_iter().map(|flaw| {
         Event::Doubt(match flaw {
             Flaw::Unended(delimiter) => format!(
@@ -463,6 +701,40 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
             }
         })
     }));
+    Walked {
+        events,
+        confused: walker.confused,
+        sources: walker.sources,
+        evals: walker.evals,
+        zdotdirs: walker.zdotdirs,
+        may_stop: walker.may_stop,
+    }
+}
+
+/// The events of zsh code `text` from the file at `place`, and whether the
+/// check lost track of its structure, in which case none of its turn-offs
+/// count. What the lexer could not read is a doubt, and so is a `source`, a
+/// `.`, an `eval` or a `ZDOTDIR` setting the file's lines hold beyond those
+/// the walk read; an option they name beyond those the tokens name counts as
+/// on ([`backstop`]).
+pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
+    let (tokens, _) = lex(text);
+    let mut read = [0; 3];
+    for token in &tokens {
+        let texts: Vec<&str> = match token {
+            Token::Word(word) => vec![&word.text],
+            Token::Array(name, items) => std::iter::once(name.as_str())
+                .chain(items.iter().map(|item| item.text.as_str()))
+                .collect(),
+            Token::Text(text) | Token::Arithmetic(text) => vec![text],
+            _ => Vec::new(),
+        };
+        for (at, _) in texts.into_iter().flat_map(backstop::options) {
+            read[at] += 1;
+        }
+    }
+    let walked = walk_text(text, place);
+    let mut events = walked.events;
     let named = backstop::named(text);
     for (at, (&lines, &tokens)) in named.options.iter().zip(&read).enumerate() {
         if lines > tokens {
@@ -472,6 +744,11 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool) {
     if named.sources > walked.sources {
         events.push(Event::Doubt(format!(
             "it cannot follow a `source` or `.` that a line of {place} may run"
+        )));
+    }
+    if named.evals > walked.evals {
+        events.push(Event::Doubt(format!(
+            "it cannot follow an `eval` that a line of {place} may run"
         )));
     }
     if named.zdotdirs > walked.zdotdirs {

@@ -690,6 +690,171 @@ fn what_zsh_reads_as_code_after_a_glob_flag_an_arithmetic_quote_or_a_pid_is_read
 }
 
 #[test]
+fn a_source_in_a_case_arm_a_short_form_or_after_a_descriptor_is_followed() {
+    for body in [
+        // In an arm of a `case`, which starts after the pattern's `)`.
+        "case $TERM in\n  *) {} ;;\nesac",
+        "case $TERM in\n  (*) {} ;;\nesac",
+        "case $TERM in\n  a|*) {} ;;\nesac",
+        "case $TERM in\n  a) : ;&\n  *) {} ;;\nesac",
+        "case a in a) {};; esac",
+        "case a { a) {} ;; }",
+        // After the number of a descriptor a redirection takes.
+        "2>/dev/null {}",
+        "1>&2 {}",
+        "3>/dev/null {}",
+        "2>&1 >/dev/null {}",
+        "X=1 2>/dev/null {}",
+        // zsh's short forms, whose body is one command or group.
+        "repeat 1 {}",
+        "repeat 1 { {} }",
+        "for x (a) {}",
+        "for x in a; {}",
+        "for ((i=0;i<1;i++)) {}",
+        "if [[ -n 1 ]] {}",
+        "if [[ -n 1 ]] { {} }",
+        "if (( 1 )) {}",
+        "n=0; while (( n++ < 1 )) {}",
+        "foreach x (a) {}\nend",
+        // An `eval` of words the walk can read.
+        "eval '{}'",
+        "builtin eval '{}'",
+    ] {
+        for source in ["source ~/.zsh/history.zsh", ". ~/.zsh/history.zsh"] {
+            let text = format!("{}\n", body.replace("{}", source));
+            let fs = MockFilesystem::new();
+            seed(&fs, "/home/alice/.zshrc", &text);
+            seed(
+                &fs,
+                "/home/alice/.zsh/history.zsh",
+                "setopt share_history\n",
+            );
+            assert_eq!(
+                scan(&fs, NOT_LOGIN).doubts,
+                Vec::<String>::new(),
+                "{text:?}"
+            );
+            assert_eq!(
+                on(&fs, NOT_LOGIN),
+                ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"],
+                "{text:?}"
+            );
+        }
+    }
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "eval source ~/.zsh/history.zsh\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zsh/history.zsh",
+        "setopt share_history\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zsh/history.zsh sets SHARE_HISTORY"]
+    );
+
+    // A short form's body ends with its line, and `foreach`'s at `end`.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "for x ($list) :\nunsetopt share_history\n",
+    );
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "foreach x ($list)\n  :\n  unsetopt share_history\nend\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zshrc sets SHARE_HISTORY"]
+    );
+}
+
+#[test]
+fn a_source_the_walk_cannot_follow_as_a_command_is_a_doubt() {
+    let source_doubt =
+        "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run";
+    let eval_doubt = "it cannot follow an `eval` that a line of /home/alice/.zshrc may run";
+    let command =
+        |text: &str| format!("it cannot tell what command `{text}` in /home/alice/.zshrc runs");
+    for (text, doubts) in [
+        // A command word that an expansion makes.
+        (
+            "${:-source} ~/.zsh/history.zsh",
+            vec![command("${:-source}")],
+        ),
+        (
+            "\"${:-source}\" ~/.zsh/history.zsh",
+            vec![command("${:-source}")],
+        ),
+        (
+            "$(print source) ~/.zsh/history.zsh",
+            vec![command("$(print source)"), source_doubt.to_string()],
+        ),
+        (
+            "`print source` ~/.zsh/history.zsh",
+            vec![command("`print source`"), source_doubt.to_string()],
+        ),
+        (
+            "c=source; $c ~/.zsh/history.zsh",
+            vec![command("$c"), source_doubt.to_string()],
+        ),
+        // An alias that stands for a source.
+        (
+            "alias src=source\nsrc ~/.zsh/history.zsh",
+            vec![source_doubt.to_string()],
+        ),
+        (
+            "alias src='source ~/.zsh/history.zsh'\nsrc",
+            vec![source_doubt.to_string()],
+        ),
+        (
+            "alias src=.\nsrc ~/.zsh/history.zsh",
+            vec![source_doubt.to_string()],
+        ),
+        (
+            "alias src='. ~/.zsh/history.zsh'\nsrc",
+            vec![source_doubt.to_string()],
+        ),
+        // An `eval` of what the walk cannot read.
+        (
+            "eval \"$(print source ~/.zsh/history.zsh)\"",
+            vec![source_doubt.to_string(), eval_doubt.to_string()],
+        ),
+        (
+            "x=eval; $x 'source ~/.zsh/history.zsh'",
+            vec![
+                command("$x"),
+                source_doubt.to_string(),
+                eval_doubt.to_string(),
+            ],
+        ),
+        // What it costs: a source or eval in any text.
+        (
+            "print -r -- source ~/.zsh/history.zsh",
+            vec![source_doubt.to_string()],
+        ),
+        ("print -r -- eval", vec![eval_doubt.to_string()]),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{text}\n"));
+        seed(
+            &fs,
+            "/home/alice/.zsh/history.zsh",
+            "setopt share_history\n",
+        );
+        assert_eq!(scan(&fs, NOT_LOGIN).doubts, doubts, "{text:?}");
+    }
+}
+
+#[test]
 fn a_doubt_of_the_lexer_is_one_no_structure_can_take() {
     // A `for` header the walk cannot read takes the token after it for its
     // body, and the quote that runs to the end of the file is no token.
