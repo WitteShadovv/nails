@@ -329,12 +329,21 @@ impl<F: Filesystem> Verifier<F> {
             ScanDepth::Standard
         };
 
+        // What the decoy mounts at a place that holds nothing under the image
+        // root was not read, by this scan nor by the examiner's view.
+        let unmounted = if offline {
+            self.unmounted_areas()
+        } else {
+            Vec::new()
+        };
+
         // 8. The examiner audit of setup traces, offline only. Its findings are
         //    reported apart and never change the status computed above.
         let examiner = match (&self.context, &self.examiner) {
             (VerifyContext::Offline { root }, Some(options)) => {
-                let report = super::examiner::examine(root, options);
+                let mut report = super::examiner::examine(root, options);
                 ran.extend(report.checks_run.iter().copied());
+                report.not_checked.extend(unmounted.iter().cloned());
                 Some(report)
             }
             _ => None,
@@ -343,8 +352,9 @@ impl<F: Filesystem> Verifier<F> {
         let mut areas_not_checked = self.areas_not_checked(deep, journal_searched);
         areas_not_checked.extend(scanner_not_checked);
         areas_not_checked.extend(self.catalog_areas_not_checked(&ran, examiner.is_some()));
-        if let Some(report) = &examiner {
-            areas_not_checked.extend(report.not_checked.iter().cloned());
+        match &examiner {
+            Some(report) => areas_not_checked.extend(report.not_checked.iter().cloned()),
+            None => areas_not_checked.extend(unmounted),
         }
 
         let mut result = if self.config.is_some() {
@@ -447,3 +457,6 @@ mod session;
 #[cfg(test)]
 mod session_tests;
 mod system;
+mod unmounted;
+#[cfg(test)]
+mod unmounted_tests;

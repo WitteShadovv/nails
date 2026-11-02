@@ -151,10 +151,8 @@ impl<F: Filesystem> Verifier<F> {
                     Err(_) => continue,
                 };
                 let home = fields[5];
-                let shell = fields[6];
-                let has_login_shell =
-                    !shell.is_empty() && !shell.ends_with("/nologin") && !shell.ends_with("/false");
-                let is_real_user = uid == 0 || (uid >= FIRST_LOGIN_UID && has_login_shell);
+                let is_real_user =
+                    uid == 0 || (uid >= FIRST_LOGIN_UID && is_login_shell(fields[6]));
                 if is_real_user && !home.is_empty() {
                     homes.insert(PathBuf::from(home));
                 }
@@ -178,4 +176,10 @@ impl<F: Filesystem> Verifier<F> {
 
         homes.into_iter().collect()
     }
+}
+
+/// Whether `shell`, the last field of an `/etc/passwd` line, lets its account
+/// log in: set, and neither `nologin` nor `false`.
+pub(super) fn is_login_shell(shell: &str) -> bool {
+    !shell.is_empty() && !shell.ends_with("/nologin") && !shell.ends_with("/false")
 }

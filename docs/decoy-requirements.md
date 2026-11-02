@@ -788,8 +788,9 @@ examiner would see.
 An examiner looks for traces of the setup as well as of a session: the backend's
 headers and tooling, configuration that opens encrypted storage, and history
 that names a container. `nails verify --offline --root <image> --examiner`
-reports these on a mounted decoy image, grouped by what an examiner would
-conclude from them. It reports only and changes nothing.
+reports these on a decoy image mounted so that nothing writes to its disk (see
+[Verifying the decoy](operator-guide.md#verifying-the-decoy)), grouped by what
+an examiner would conclude from them. It reports only and changes nothing.
 
 ### LVM metadata archives
 

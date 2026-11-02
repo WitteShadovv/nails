@@ -5,7 +5,6 @@
 //! ([`super::NailsError::RefusedOfflineRoot`]).
 
 use std::fmt;
-use std::path::Path;
 
 use crate::next_step::{NextStep, sudo_line};
 
@@ -60,24 +59,35 @@ impl fmt::Display for OfflineRootProblem {
 }
 
 impl OfflineRootProblem {
-    /// What to do about `root`, refused for this problem: mount the image
-    /// and scan the folder it is mounted on, on btrfs the folder of the
-    /// subvolume that holds the system.
-    pub fn hint(&self, root: &Path) -> String {
+    /// What to do about a root refused for this problem: mount the decoy's
+    /// root filesystem so that nothing can write to it, with what its fstab
+    /// mounts below, and scan that. A plain read-only mount is not enough:
+    /// ext4 replays its journal and cleans up orphans on one, btrfs replays
+    /// its tree log, XFS and f2fs recover their logs. In a hidden session the
+    /// filesystem is mounted already, so a second mount replays nothing, but
+    /// a read-only one is refused there as busy. On btrfs the system is a
+    /// subvolume, named at the mount.
+    pub fn hint(&self) -> String {
         let scan = sudo_line(NextStep::VerifyOffline);
-        match self {
-            OfflineRootProblem::NoEtcFolder { .. } => format!(
-                "Mount the decoy's root filesystem read-only on a folder \
-                 (`sudo mount -o ro <device> <mount>`), then run `{scan}`. On btrfs that \
-                 root is a subvolume: give its folder, such as {} or {}.",
-                root.join("@").display(),
-                root.join("root").display()
-            ),
-            _ => format!(
-                "Mount the decoy image or partition read-only on a folder \
-                 (`sudo mount -o ro <device> <mount>`), then run `{scan}`."
-            ),
+        let mut hint = format!(
+            "Mount the decoy's root filesystem on a folder so that nothing can write to it, and \
+             what its /etc/fstab mounts on the folders below it, then run `{scan}`.\n\
+             In a hidden session, where the decoy root is mounted already, mount its device again \
+             and make that mount read-only: `sudo mount <device> <mount> && sudo mount -o \
+             remount,bind,ro <mount>`.\n\
+             Elsewhere make the device read-only first (`sudo blockdev --setro <device>`, and \
+             `--setrw` after the scan), then mount it with `-o ro,noload` for ext4, \
+             `-o ro,rescue=nologreplay` for btrfs or `-o ro,norecovery` for XFS and f2fs: a plain \
+             `-o ro` can replay a journal onto the disk."
+        );
+        if let OfflineRootProblem::NoEtcFolder { .. } = self {
+            hint.push_str(
+                "\nOn btrfs the system is a subvolume: add `subvol=@` (Fedora: `subvol=root`) to \
+                 its mount, and mount each subvolume its /etc/fstab mounts, such as @home, on its \
+                 folder.",
+            );
         }
+        hint
     }
 }
 

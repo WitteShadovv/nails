@@ -142,6 +142,12 @@ fn an_init_seeded_session_reports_its_own_files_as_notes_and_nothing_critical() 
         "{guidance}"
     );
     assert!(guidance.contains("verify --offline --root"), "{guidance}");
+    // The decoy root is mounted already in the session: a read-only mount of
+    // its device is refused as busy, so the mount is made read-only after.
+    assert!(
+        guidance.contains("`sudo mount <device> <mount> && sudo mount -o remount,bind,ro <mount>`"),
+        "{guidance}"
+    );
     assert!(!guidance.contains("rm -rf"), "{guidance}");
     // The registry's entry for the staged module source names the same link
     // on the hidden root.

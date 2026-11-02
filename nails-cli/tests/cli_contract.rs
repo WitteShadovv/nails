@@ -716,29 +716,33 @@ fn verify_offline_refuses_a_root_with_nothing_to_scan() {
     let top = dir.path().join("top");
     std::fs::create_dir_all(top.join("@/etc")).unwrap();
     std::fs::create_dir(top.join("@home")).unwrap();
-    let mount = "read-only on a folder (`sudo mount -o ro <device> <mount>`), then run `sudo ";
-    let image_hint = format!("Mount the decoy image or partition {mount}");
-    let root_hint = format!("Mount the decoy's root filesystem {mount}");
+    // Every next step starts with a mount that cannot write to the disk; a
+    // root with no etc adds the btrfs subvolumes.
+    let first = "Mount the decoy's root filesystem on a folder so that nothing can write to it";
+    let journal = "a plain `-o ro` can replay a journal onto the disk.";
+    let btrfs = "On btrfs the system is a subvolume: add `subvol=@` (Fedora: `subvol=root`) to its \
+                 mount, and mount each subvolume its /etc/fstab mounts, such as @home, on its \
+                 folder.";
     let no_etc = "holds no etc folder, so it is not the root of a decoy system";
-    for (root, says, hint) in [
+    for (root, says, last) in [
         (
             dir.path().join("absent"),
             "does not exist, so there is nothing to scan",
-            &image_hint,
+            journal,
         ),
         (
             image,
             "is not a folder, so there is nothing to scan",
-            &image_hint,
+            journal,
         ),
         (
             mount_point.clone(),
             "is empty, so there is nothing to scan",
-            &image_hint,
+            journal,
         ),
-        (fresh, no_etc, &root_hint),
-        (kept, no_etc, &root_hint),
-        (top.clone(), no_etc, &root_hint),
+        (fresh, no_etc, btrfs),
+        (kept, no_etc, btrfs),
+        (top.clone(), no_etc, btrfs),
     ] {
         let root = root.to_str().unwrap();
         for examiner in [&[][..], &["--examiner"][..]] {
@@ -752,26 +756,13 @@ fn verify_offline_refuses_a_root_with_nothing_to_scan() {
             assert_eq!(value["error"]["next"], Value::Null, "{value:#}");
             let message = value["error"]["message"].as_str().unwrap();
             assert!(
-                message.starts_with(&format!("{root} {says}\n{hint}")),
+                message.starts_with(&format!("{root} {says}\n{first}")),
                 "{message}"
             );
+            assert!(message.ends_with(last), "{message}");
         }
     }
-    // The next step for a btrfs top level names the subvolume to give, and
-    // that subvolume is scanned.
-    let (_, value) = run_json(
-        &harness.config,
-        &["verify", "--offline", "--root", top.to_str().unwrap()],
-    );
-    let message = value["error"]["message"].as_str().unwrap();
-    assert!(
-        message.ends_with(&format!(
-            "On btrfs that root is a subvolume: give its folder, such as {} or {}.",
-            top.join("@").display(),
-            top.join("root").display()
-        )),
-        "{message}"
-    );
+    // The subvolume that holds the system is scanned.
     let subvolume = top.join("@");
     let (code, value) = run_json(
         &harness.config,
@@ -792,7 +783,7 @@ fn verify_offline_refuses_a_root_with_nothing_to_scan() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(&format!(
-            "error: {shown} is empty, so there is nothing to scan\n  Mount the decoy image"
+            "error: {shown} is empty, so there is nothing to scan\n  {first}"
         )),
         "{stderr}"
     );
@@ -803,6 +794,83 @@ fn verify_offline_refuses_a_root_with_nothing_to_scan() {
     assert_eq!(code, 0, "{value:#}");
     assert_matches_schema(&load_schema("verify"), &value);
     assert_eq!(value["data"]["status"], "secure", "{value:#}");
+}
+
+#[test]
+fn verify_offline_lists_what_the_decoy_mounts_but_the_root_does_not_hold() {
+    // A btrfs decoy scanned by its system subvolume @ alone: its fstab mounts
+    // @home on /home, which is the empty folder in @, and the history that
+    // names the tool lies in @home beside it. This read as a clean, complete
+    // scan (exit 0, nothing not checked), with --deep and --examiner too.
+    let harness = Harness::new();
+    let top = tempfile::tempdir().unwrap();
+    let system = top.path().join("@");
+    std::fs::create_dir_all(system.join("etc")).unwrap();
+    std::fs::create_dir(system.join("home")).unwrap();
+    std::fs::write(
+        system.join("etc/passwd"),
+        "root:x:0:0::/root:/bin/bash\nalice:x:1000:1000::/home/alice:/bin/bash\n",
+    )
+    .unwrap();
+    std::fs::write(
+        system.join("etc/fstab"),
+        "UUID=1 / btrfs subvol=/@ 0 0\nUUID=1 /home btrfs subvol=/@home 0 0\n",
+    )
+    .unwrap();
+    let history = "sudo /mnt/data/nails activate\n";
+    std::fs::create_dir_all(top.path().join("@home/alice")).unwrap();
+    std::fs::write(top.path().join("@home/alice/.bash_history"), history).unwrap();
+    let root = system.to_str().unwrap();
+    let not_checked = "/home, which the decoy's /etc/fstab mounts (missing or empty under the \
+                       root: mount it there before the scan)";
+
+    for examiner in [&[][..], &["--examiner"][..]] {
+        let args = [
+            &["verify", "--offline", "--root", root, "--deep"][..],
+            examiner,
+        ]
+        .concat();
+        let (code, value) = run_json(&harness.config, &args);
+        assert_eq!(code, 0, "{args:?}: {value:#}");
+        assert_matches_schema(&load_schema("verify"), &value);
+        let areas: Vec<&str> = value["data"]["areas_not_checked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            areas.iter().filter(|area| **area == not_checked).count(),
+            1,
+            "{args:?}: {areas:#?}"
+        );
+        if !examiner.is_empty() {
+            let report = &value["data"]["examiner"]["not_checked"];
+            assert!(
+                report
+                    .as_array()
+                    .unwrap()
+                    .contains(&Value::from(not_checked)),
+                "{report:#}"
+            );
+        }
+    }
+
+    // With @home in place, its history is found and /home is not listed.
+    std::fs::create_dir(system.join("home/alice")).unwrap();
+    std::fs::write(system.join("home/alice/.bash_history"), history).unwrap();
+    let (code, value) = run_json(
+        &harness.config,
+        &["verify", "--offline", "--root", root, "--deep"],
+    );
+    assert_eq!(code, 10, "{value:#}");
+    assert!(
+        !value["data"]["areas_not_checked"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::from(not_checked)),
+        "{value:#}"
+    );
 }
 
 // ---------------------------------------------------------------------------
