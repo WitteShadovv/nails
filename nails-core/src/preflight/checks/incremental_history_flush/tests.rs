@@ -11,7 +11,7 @@ const HOME: &str = "/home/alice";
 fn typed(program: &str, argv: &[&str]) -> InspectedShell {
     InspectedShell {
         program: program.to_string(),
-        home: PathBuf::from(HOME),
+        homes: vec![PathBuf::from(HOME)],
         argv: argv.iter().map(|word| word.to_string()).collect(),
         origin: ShellOrigin::Typed,
     }
@@ -482,6 +482,10 @@ fn fish_writes_each_command_unless_it_runs_in_private_mode() {
     }
 }
 
+/// The start of every result of the check without a typed shell.
+const NOT_TYPED: &str = "This command was not typed into a shell the check can see, so it read \
+                         the startup files of every shell it knows";
+
 #[test]
 fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
     let operator =
@@ -491,19 +495,98 @@ fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
         shell,
         InspectedShell {
             program: "fish".to_string(),
-            home: PathBuf::from(HOME),
+            homes: vec![PathBuf::from(HOME)],
             argv: Vec::new(),
             origin: ShellOrigin::Login,
         }
     );
     let fs = MockFilesystem::new();
-    assert!(warning(run(&fs, shell)).starts_with("fish, the operator's login shell, writes"));
+    assert!(warning(run(&fs, shell)).starts_with(&format!(
+        "{NOT_TYPED}. fish, the operator's login shell, writes"
+    )));
 
     let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/zsh");
     seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
     assert!(
-        warning(run(&fs, InspectedShell::login(&operator)))
-            .starts_with("zsh, the operator's login shell, writes")
+        warning(run(&fs, InspectedShell::login(&operator))).starts_with(&format!(
+            "{NOT_TYPED}. zsh, the operator's login shell, writes"
+        ))
+    );
+}
+
+#[test]
+fn without_a_typed_shell_every_shell_the_check_knows_is_read() {
+    let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
+    let fs = MockFilesystem::new();
+    match run(&fs, InspectedShell::login(&operator)) {
+        CheckResult::Pass(message) => assert_eq!(
+            message,
+            format!(
+                "{NOT_TYPED}: bash (the operator's login shell): no startup file the check reads \
+                 runs `history -a` or `history -w` from PROMPT_COMMAND; zsh (a shell the \
+                 operator may use): no startup file the check reads turns on \
+                 INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
+            )
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    // A login bash, and zsh's settings that a decoy zsh would follow.
+    seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
+    let message = warning(run(&fs, InspectedShell::login(&operator)));
+    assert!(
+        message.starts_with(&format!(
+            "{NOT_TYPED}. zsh, a shell the operator may use, writes each command line to its \
+             history file as you enter it: /etc/zshrc sets SHARE_HISTORY."
+        )),
+        "{message}"
+    );
+
+    // fish when the home has its configuration.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/home/alice/.config/fish", crate::filesystem::PathKind::Dir);
+    let message = warning(run(&fs, InspectedShell::login(&operator)));
+    assert!(
+        message.starts_with(&format!(
+            "{NOT_TYPED}. fish, a shell the operator may use, writes each command line"
+        )),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_shell_of_another_account_is_read_in_both_homes() {
+    // A root shell that may run with the operator's home, as `sudo -s` can
+    // leave it.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.bashrc", "PROMPT_COMMAND='history -a'\n");
+    let shell = InspectedShell {
+        program: "bash".to_string(),
+        homes: vec![PathBuf::from("/root"), PathBuf::from(HOME)],
+        argv: vec!["bash".to_string()],
+        origin: ShellOrigin::Typed,
+    };
+    assert!(warning(run(&fs, shell)).contains("/home/alice/.bashrc runs `history -a`"));
+}
+
+#[test]
+fn a_shell_is_named_by_its_program_when_that_is_a_shell_s() {
+    use std::path::Path;
+    let comm = |name: &str| Some(name.to_string());
+    // /bin/sh leads to bash.
+    assert_eq!(
+        program_name(Some(Path::new("/usr/bin/bash")), comm("sh")),
+        comm("bash")
+    );
+    // xonsh is a script Python runs.
+    assert_eq!(
+        program_name(Some(Path::new("/usr/bin/python3.12")), comm("xonsh")),
+        comm("xonsh")
+    );
+    assert_eq!(program_name(None, comm("zsh")), comm("zsh"));
+    assert_eq!(
+        program_name(Some(Path::new("/usr/bin/python3")), None),
+        None
     );
 }
 
@@ -538,9 +621,6 @@ fn a_program_is_named_by_its_file() {
     assert_eq!(file_name(Path::new("/usr/bin/zsh")), "zsh");
     assert_eq!(file_name(Path::new("/usr/bin/zsh (deleted)")), "zsh");
     assert_eq!(file_name(Path::new("/")), "");
-    // This test binary's own program, from its /proc link.
-    let own = std::env::current_exe().unwrap();
-    assert_eq!(program(std::process::id()), Some(file_name(&own)));
 }
 
 #[test]
@@ -656,4 +736,16 @@ fn a_turn_off_that_may_not_run_does_not_hide_an_option() {
             "{off}: {result:?}"
         );
     }
+}
+
+#[test]
+fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
+    let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
+    let message = warning(run(&fs, InspectedShell::login(&operator)));
+    assert!(
+        message.contains("/etc/zshrc sets SHARE_HISTORY"),
+        "{message}"
+    );
 }

@@ -60,8 +60,9 @@ NAILS does at runtime is:
    on the decoy: an access would itself leave a fresh timestamp. Decoy-history
    hygiene is decoy configuration and the operator's pre-activation routine.
 4. **Warn on incremental flushing.** A preflight check warns when the shell
-   you typed the command into, else your login shell, writes each command line
-   to its history file as it runs (zsh's `INC_APPEND_HISTORY`, `SHARE_HISTORY`
+   you typed the command into, or any shell it knows when it finds none,
+   writes each command line to its history file as it runs (zsh's
+   `INC_APPEND_HISTORY`, `SHARE_HISTORY`
    or `INC_APPEND_HISTORY_TIME`, `history -a` or `history -w` in bash's
    `PROMPT_COMMAND`, fish outside private mode), because such a shell writes
    the unlock and mount commands to disk before activation can help. It reads
