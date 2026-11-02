@@ -1260,7 +1260,9 @@ afterwards:
   every name) and it reads its commands from a terminal, whatever its other
   descriptors are, so `zsh 2>/dev/null` counts. A shell of any other name is
   not killed and writes its history at the switch as at any shutdown: type
-  the decoy commands in one NAILS knows.
+  the decoy commands in one NAILS knows, with its history off, since the kill
+  cannot take back what a shell writes as each command runs (see the next
+  points).
 - NAILS makes no write to, and no read of, the decoy history after the fact,
   because such an access is itself an artifact. Your protection is that the
   history never reaches the decoy in the first place, backed by an amnesic decoy.
