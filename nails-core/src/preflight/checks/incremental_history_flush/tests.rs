@@ -337,7 +337,7 @@ proptest::proptest! {
     fn fuzz_no_startup_file_text_makes_the_check_panic(
         text in "(setopt|unsetopt|set|[-+]o|source|\\.|oh-my-zsh\\.sh|ZDOTDIR=|XDG_CONFIG_HOME=|\
                  PROMPT_COMMAND=|history|-a|-w|#|;|&|[|(){}'\"`=~]|\\$HOME|\\$\\{|:-|\
-                 <<-?|<<<|<<=|[<>=]\\(|\\(\\(|\\)\\)|for|>|EOF|2>&1|\\$'|\\$\\(|\\\\'|[ \\t\\n]|[a-zé_ç]|\\PC){0,48}"
+                 <<-?|<<<|<<=|[<>=]\\(|\\(\\(|\\)\\)|for|>|EOF|2>&1|\\$'|\\$\\(|\\\\'|case|esac|\\$\\{\\||[ \\t\\n]|[a-zé_ç]|\\PC){0,48}"
     ) {
         let fs = MockFilesystem::new();
         for path in ["/home/alice/.zshenv", "/home/alice/.zshrc", "/home/alice/.bashrc"] {
@@ -869,6 +869,27 @@ fn an_ansi_c_string_hides_no_sourced_file() {
         &fs,
         "/home/alice/.zshrc",
         "x=$'it\\'s'\nsource ~/.zsh/history.zsh\n# don't touch this\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zsh/history.zsh",
+        "setopt share_history\n",
+    );
+    let message = warning(zsh(&fs));
+    assert!(
+        message.contains("/home/alice/.zsh/history.zsh sets SHARE_HISTORY"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_here_document_in_a_command_substitution_hides_no_sourced_file() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "x=$(cat <<EOF\nit's\nEOF\n)\nsource ~/.zsh/history.zsh\n# don't\ncase $TERM in\n  \
+         dumb) ;;\nesac\n",
     );
     seed(
         &fs,
