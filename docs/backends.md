@@ -97,24 +97,35 @@ mount point is skipped; the `hidden-volume` check fails it.
 ## Encryption in preflight
 
 The `backend-encryption` check asks whether the hidden root's storage has
-encryption of its own. It only warns. It walks the device stack under the
-hidden root as `backend-detect` does, and goes on below a loop device: into
-the device behind a loop over a block device, and for a loop over a file into
-the device of the filesystem that holds the file, which it finds through the
-file's path. Each way down to a device at the bottom of the stack has to pass
-an encrypting layer that is not the decoy's own storage as the attach gate
+encryption of its own. It only warns. It starts from every device of the
+hidden root's filesystem (each device of a btrfs filesystem, and each one a
+bcachefs filesystem names in its source) and walks the device stack under
+each as `backend-detect` does, going on further:
+
+- from a partition into its disk, when that disk keeps its data elsewhere: a
+  loop or device-mapper device, or a disk built on others, such as an md
+  array;
+- into the device behind a loop over a block device;
+- for a loop over a file, into every device of the filesystem that the loop
+  driver recorded for the file. Reading that record needs root; without it
+  the check goes by the file's path. A path that leads to another filesystem
+  than the record, as after a mount over the file's folder, ends that way in
+  doubt.
+
+Each way down to a device at the bottom of the stack has to pass an
+encrypting layer that is not the decoy's own storage as the attach gate
 counts it: the filesystems at `/` and at the system folders, every
 `/etc/fstab` entry and every `/etc/crypttab` volume (see
-[the attach gate](threat-model.md#the-attach-gate)). So a logical volume spread
-over an encrypted and a plain disk, or a mirror with one plain disk, warns about
-the plain disk.
+[the attach gate](threat-model.md#the-attach-gate)). So a logical volume
+spread over an encrypted and a plain disk, a mirror with one plain disk, or a
+btrfs filesystem with one plain device warns about the plain disk.
 
 | Result | When |
 |---|---|
-| Passes | Each way down passes a layer the decoy does not use: a cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK or FVAULT2 (`dm/uuid` starts with `CRYPT-<type>-`), a SUBDEV mapping (cryptsetup's name for the layers it puts below such a mapping, such as the further ciphers of a VeraCrypt cascade), or a mapping the VeraCrypt application made (`veracrypt<N>`, with no uuid). |
+| Passes | Each way down passes a layer that is not the decoy's: a cryptsetup mapping of type TCRYPT, LUKS1, LUKS2, PLAIN, LOOPAES, BITLK or FVAULT2 (`dm/uuid` starts with `CRYPT-<type>-`), a SUBDEV mapping (cryptsetup's name for the layers it puts below such a mapping, such as the further ciphers of a VeraCrypt cascade), or a mapping the VeraCrypt application made (`veracrypt<N>`, with no uuid). |
 | Warns: nothing encrypts it | A way down reaches a device, which the warning names, with no encrypting layer above it. Anyone who reads that device, or a copy of it, reads the hidden root's files. dm-integrity and dm-verity encrypt nothing. |
 | Warns: only the decoy's own encryption | The only encryption on a way down is a layer of the decoy's own storage, such as the LUKS volume under its `/home` for an image file kept there. Whoever unlocks the decoy reads the hidden root's files, and the threat model counts on an adversary who gets the decoy's credentials (see [Compelled disclosure of the decoy](threat-model.md#compelled-disclosure-of-the-decoy)). |
-| Warns: encryption cannot be confirmed | A way down passes a device-mapper device of a kind the check does not know (it never reads a mapping's table, which holds the key of a crypt mapping), a cryptsetup type it does not know, a loop device whose file it cannot follow to a disk, or more devices than the 16 it reads; or the filesystem shows no block device at all, as a ZFS dataset or a network filesystem. A pass also needs `/etc/fstab` and `/etc/crypttab` read, since either may name the encryption found as the decoy's. |
+| Warns: encryption cannot be confirmed | A way down passes a device-mapper device of a kind the check does not know (it never reads a mapping's table, which holds the key of a crypt mapping), a cryptsetup type it does not know, a loop device whose file it cannot follow to a disk, whose path and recorded filesystem disagree or whose recorded filesystem is not mounted here, or a ZFS volume, a network block device (`nbd`), a userspace block device (`ublk`) or a `zram` device, which keep their data where sysfs does not show; or the stack holds more devices than the check reads (16 below any one device, 64 in all); or the filesystem shows no block device at all, as a ZFS dataset or a network filesystem. A pass also needs `/etc/fstab` and `/etc/crypttab` read, since either may name the encryption found as the decoy's. |
 | Warns: in RAM | The hidden root is a tmpfs or ramfs. Nothing on it survives a power-off or a reboot, so it serves to try NAILS out, not to keep a hidden environment. |
 
 The check confirms encryption, not deniability. A LUKS header shows that an
