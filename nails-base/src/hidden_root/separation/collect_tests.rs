@@ -605,6 +605,61 @@ fn a_partition_whose_disk_is_not_found_is_refused_as_untraced() {
     }
 }
 
+/// An md array over two loop devices whose image files lie on the decoy's
+/// `/home` (`259:4`), partitioned, with `line` the hidden root's line of the
+/// mount table.
+fn array_of_images_on_home(line: &str) -> Decoy {
+    let loop1 = "/sys/devices/virtual/block/loop1";
+    let loop2 = "/sys/devices/virtual/block/loop2";
+    let md0 = "/sys/devices/virtual/block/md0";
+    let decoy = Decoy::new(&format!(
+        "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
+         2 1 259:4 / /home rw - ext4 /dev/nvme0n1p4 rw\n{line}"
+    ))
+    .device(NVME, "nvme0n1", "259:0", &[])
+    .partition(P3, "nvme0n1p3", "259:3")
+    .partition(
+        "/sys/devices/pci0/nvme/nvme0n1/nvme0n1p4",
+        "nvme0n1p4",
+        "259:4",
+    )
+    .device(loop1, "loop1", "7:1", &[])
+    .device(loop2, "loop2", "7:2", &[])
+    .device(md0, "md0", "9:0", &[("loop1", loop1), ("loop2", loop2)])
+    .partition(&format!("{md0}/md0p1"), "md0p1", "259:10")
+    .file("/etc/fstab", "/dev/nvme0n1p3 / ext4 defaults 0 1\n");
+    decoy.attr(loop1, "loop/backing_file", "/home/op/a.img");
+    decoy.attr(loop2, "loop/backing_file", "/home/op/b.img");
+    for node in ["/dev/loop1", "/dev/loop2"] {
+        decoy
+            .fs
+            .mock_set_loop_backing_device(Path::new(node), rustix::fs::makedev(259, 4));
+    }
+    decoy
+}
+
+#[test]
+fn the_gate_refuses_a_partition_of_an_md_array_of_images_on_the_decoys_home() {
+    for line in [
+        "5 1 9:0 / /mnt rw - ext4 /dev/md0 rw\n",
+        "5 1 259:10 / /mnt rw - ext4 /dev/md0p1 rw\n",
+    ] {
+        match array_of_images_on_home(line).assess() {
+            Assessment::Refused(refusal) => assert_eq!(
+                refusal.kind,
+                RefusalKind::DecoyStorage {
+                    verdict: Verdict::ImageFileOnDecoy {
+                        file: PathBuf::from("/home/op/a.img"),
+                        at: PathBuf::from("/home"),
+                    }
+                },
+                "{line}"
+            ),
+            other => panic!("{line}: {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn an_unreadable_crypttab_refuses_a_disk_root_but_not_a_tmpfs() {
     let decoy = external_veracrypt().unreadable("/etc/crypttab");

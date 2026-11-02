@@ -347,15 +347,16 @@ rehearsal state all ask it first. It refuses:
   separate. Reading that record needs root (`storage_unjudged`; run the
   command with sudo).
 
-The gate follows what sysfs shows below a device, and some devices show
-nothing of where they keep their data. It does not follow a partition of an md
-array into the array: a root on `md0p1` attaches although `md0` itself is
-refused when the array's devices are image files on the decoy's `/home` or a
-logical volume in its encrypted group. A network block device (`nbd`, as
-`qemu-nbd` serves an image file) and a ZFS volume (`zvol`) show nothing below
-them, whole or partitioned, so a root on one attaches even when its data lies
-in a file on the decoy's disk or in the decoy's own ZFS pool. Nothing refuses
-such a root then, so make sure yourself that its data lies elsewhere.
+The gate follows what sysfs shows below a device. A root on a partition of a
+loop device, a device-mapper mapping or an md array is judged as one on that
+device, which holds the partition's data, but two partitions of one disk or md
+array share nothing: a partition the decoy uses does not make another one
+beside it the decoy's. Some devices show nothing of where they keep their
+data. A network block device (`nbd`, as `qemu-nbd` serves an image file) and a
+ZFS volume (`zvol`) show nothing below them, whole or partitioned, so a root on
+one attaches even when its data lies in a file on the decoy's disk or in the
+decoy's own ZFS pool. Nothing refuses such a root then, so make sure yourself
+that its data lies elsewhere.
 
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of
