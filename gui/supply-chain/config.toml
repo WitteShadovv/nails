@@ -1338,9 +1338,9 @@ criteria = "safe-to-deploy"
 notes = "Not audited by this project, and no imported audit covers 1.0.18. It is built only for a system other than Linux, through slint (the Slint toolkit the window draws with): no Linux build of the window compiles it. Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.pulldown-cmark]]
-version = "0.13.5"
+version = "0.13.6"
 criteria = "safe-to-deploy"
-notes = "Not audited by this project, and no imported audit covers 0.13.5. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
+notes = "Not audited by this project, and no imported audit covers 0.13.6, the release that fixes RUSTSEC-2026-0433. It is in the window through slint (the Slint toolkit the window draws with), and runs at build time through slint (the Slint toolkit the window draws with) and slint-build (the Slint compiler that turns the window's markup into Rust), and in its tests. Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.pxfm]]
 version = "0.1.30"
