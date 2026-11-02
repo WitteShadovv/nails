@@ -6,7 +6,7 @@
 //! processes it spares. `nails-core/tests/whole_root_kernel/spare.rs` builds
 //! such trees with real processes.
 
-use super::{Invocation, Node, Stat};
+use super::{Invocation, Node, Stat, TypingShell};
 use std::collections::HashMap;
 
 /// The terminal a desktop's terminal emulator holds (`/dev/pts/0`).
@@ -45,6 +45,12 @@ impl Tree {
             pgid,
             sid,
             tty,
+            // In its terminal's foreground, unless a test says otherwise.
+            tpgid: if tty == NO_TTY {
+                -1
+            } else {
+                i32::try_from(pgid).unwrap()
+            },
             flags: 0,
             start_time: u64::from(pid),
         };
@@ -72,8 +78,18 @@ impl Tree {
         Invocation::walk(own, |pid| self.0.get(&pid).cloned())
     }
 
+    /// Put the process group `tpgid` in the foreground of `pid`'s terminal.
+    fn foreground(&mut self, pid: u32, tpgid: u32) -> &mut Self {
+        self.0
+            .get_mut(&pid)
+            .expect("a process of the tree")
+            .stat
+            .tpgid = i32::try_from(tpgid).unwrap();
+        self
+    }
+
     /// The shell the command `own` was typed into ([`super::typing_shell`]).
-    fn typing_shell(&self, own: u32) -> Option<u32> {
+    fn typing_shell(&self, own: u32) -> Option<TypingShell> {
         super::typing_shell(own, |pid| self.0.get(&pid).cloned())
     }
 
@@ -417,14 +433,14 @@ fn a_parent_that_is_gone_or_its_own_ancestor_ends_the_walk() {
 fn the_shell_a_command_was_typed_into_is_found_with_or_without_sudo_s_terminal() {
     // Through `sudo` and its monitor, as the walk finds it.
     let tree = terminal();
-    assert_eq!(tree.typing_shell(600), Some(310));
+    assert_eq!(tree.typing_shell(600), Some(TypingShell::Certain(310)));
     // Typed into a root shell, as a job of its own.
     let mut tree = desktop();
     tree.add(300, 100, 100, 100, NO_TTY, TERMINAL_SCOPE)
         .add(310, 300, 310, 310, PTS0, TERMINAL_SCOPE)
         .shell(310)
         .add(400, 310, 400, 310, PTS0, TERMINAL_SCOPE);
-    assert_eq!(tree.typing_shell(400), Some(310));
+    assert_eq!(tree.typing_shell(400), Some(TypingShell::Certain(310)));
 }
 
 #[test]
@@ -439,7 +455,7 @@ fn the_shell_a_command_was_typed_into_is_found_on_its_own_terminal() {
         .add(400, 310, 400, 310, PTS0, TERMINAL_SCOPE)
         .add(410, 400, 400, 310, PTS0, TERMINAL_SCOPE);
     assert_eq!(tree.invocation(410).shell, None);
-    assert_eq!(tree.typing_shell(410), Some(310));
+    assert_eq!(tree.typing_shell(410), Some(TypingShell::Likely(310)));
 
     // `su -c` through a shell that runs a command string: the nearest
     // interactive shell on the same terminal, not a login shell further up
@@ -453,7 +469,7 @@ fn the_shell_a_command_was_typed_into_is_found_on_its_own_terminal() {
         .add(400, 310, 400, 310, PTS0, TERMINAL_SCOPE)
         .add(410, 400, 400, 310, PTS0, TERMINAL_SCOPE)
         .add(420, 410, 400, 310, PTS0, TERMINAL_SCOPE);
-    assert_eq!(tree.typing_shell(420), Some(310));
+    assert_eq!(tree.typing_shell(420), Some(TypingShell::Likely(310)));
 }
 
 #[test]
@@ -470,4 +486,32 @@ fn a_command_without_a_terminal_was_typed_into_no_shell() {
     assert_eq!(tree.typing_shell(210), None);
     // A process the tree does not hold.
     assert_eq!(tree.typing_shell(999), None);
+}
+
+#[test]
+fn a_program_a_console_desktop_starts_in_the_background_was_typed_into_no_shell() {
+    // A desktop started at the console's prompt (`startx` typed into the
+    // login shell 60) keeps the console as its programs' controlling
+    // terminal. A program a launcher started in a process group of its own
+    // is not in the console's foreground, which the desktop (100) holds.
+    let mut tree = Tree::new();
+    tree.add(60, 1, 60, 60, TTY1, LOGIN)
+        .shell(60)
+        .add(100, 60, 100, 60, TTY1, LOGIN)
+        .add(200, 100, 200, 60, TTY1, LOGIN)
+        .foreground(200, 100)
+        .add(210, 200, 200, 60, TTY1, LOGIN)
+        .foreground(210, 100);
+    assert_eq!(tree.invocation(210).shell, None);
+    assert_eq!(tree.typing_shell(210), None);
+
+    // One the desktop started in its own process group is in the
+    // foreground, so the login shell is only likely the one it was typed
+    // into.
+    let mut tree = Tree::new();
+    tree.add(60, 1, 60, 60, TTY1, LOGIN)
+        .shell(60)
+        .add(100, 60, 100, 60, TTY1, LOGIN)
+        .add(210, 100, 100, 60, TTY1, LOGIN);
+    assert_eq!(tree.typing_shell(210), Some(TypingShell::Likely(60)));
 }

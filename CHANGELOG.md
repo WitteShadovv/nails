@@ -816,9 +816,11 @@ of this changelog for that version becomes the release notes word for word, and
 - The `incremental-history-flush` check reads the settings of the shell the command was typed
   into, and names the shell and the setting. It finds that shell by the process tree: the one
   `sudo` and its monitor run under, or, when `sudo` gets no terminal of its own or `su -c` or a
-  typed script runs the command, the nearest interactive shell on the command's terminal. When it
-  finds none, as for a window or `run0`, it reads every shell it knows: the operator's login
-  shell, bash and zsh, and fish when the home has its configuration. A root shell is read in the
+  typed script runs the command, the nearest interactive shell on the command's terminal, if the
+  command runs in that terminal's foreground. That one is only likely the shell it was typed into,
+  so it is read as any shell the operator may use, beside every other shell the check knows. When
+  it finds none, as for a window or `run0`, it reads every shell it knows: the operator's login
+  shell, bash and zsh, and fish when the home has its configuration. A root shell is read with the
   operator's home too, which `sudo -s` can leave it. It read six startup
   files in the operator's home, whatever shell was in use and none in `/etc`, so it missed the
   `SHARE_HISTORY` that NixOS's `programs.zsh` sets for every zsh in `/etc/zshrc` by default, and
