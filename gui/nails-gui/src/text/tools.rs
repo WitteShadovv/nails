@@ -173,6 +173,18 @@ pub const SCAN_OTHER_ROW_WHAT: &str = "Disks you name, or disk images, instead o
      computer's mounted disks";
 /// The page that scans them.
 pub const SCAN_OTHER: &str = "Scan Other Disks";
+/// The action that scans in the session that planted the test words
+/// (`rehearse scan --allow-same-boot`): it asks first.
+pub const SCAN_SAME_BOOT: &str = "Scan in This Session\u{2026}";
+/// The question before it.
+pub const SAME_BOOT_QUESTION: &str = "Scan in This Session?";
+/// What it says.
+pub const SAME_BOOT_WHAT: &str = "A scan in the session that planted the test words proves \
+     little: what the session wrote may not have reached the disk yet.";
+/// That it holds once.
+pub const SAME_BOOT_ONCE: &str = "This is allowed for this scan only.";
+/// The button that scans.
+pub const SAME_BOOT_CONFIRM: &str = "Scan";
 /// What it does.
 pub const SCAN_OTHER_WHAT: &str = "Scan the disks you name, or images of them, for the test \
      words, instead of this computer's mounted disks.";

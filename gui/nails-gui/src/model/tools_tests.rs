@@ -855,6 +855,59 @@ fn a_scan_reads_as_a_pass_only_when_the_engine_and_every_disk_say_so() {
     assert_eq!(model.page().description, text::NOT_CLEAN_UNEXPLAINED);
 }
 
+/// In the session that planted, the scan the engine refuses is offered
+/// behind a question (`rehearse scan --allow-same-boot`): it says what such
+/// a scan proves, and its button acts only once the word is typed.
+#[test]
+fn a_scan_in_the_planting_session_asks_first_and_needs_the_word() {
+    let mut model = hidden();
+    open(&mut model, ToolKind::Rehearsal);
+    model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-status-none")));
+    model.action();
+    model.apply(Update::Running(Kind::Rehearse));
+    model.apply(answered(
+        Kind::Rehearse,
+        0,
+        fixture("rehearse-status-planted"),
+    ));
+    let page = model.page();
+    assert_eq!(
+        page.action, None,
+        "no plain scan in the session that planted"
+    );
+    assert_eq!(page.secondary, Some(text::SCAN_SAME_BOOT));
+    assert_eq!(model.secondary(), None, "the question comes first");
+    let question = model.page().question.expect("the question is open");
+    assert_eq!(question.heading, text::SAME_BOOT_QUESTION);
+    assert_eq!(
+        question.body,
+        format!("{}\n{}", text::SAME_BOOT_WHAT, text::SAME_BOOT_ONCE)
+    );
+    assert!(question.locked && question.destructive);
+    assert_eq!(model.answer(true), None, "not without the word");
+    model.secondary();
+    model.typed("allow");
+    assert!(!model.page().question.unwrap().locked);
+    assert_eq!(
+        model.answer(true),
+        Some(Ask::Rehearse(Rehearse::Scan(RehearseScanArgs {
+            allow_same_boot: true,
+            ..RehearseScanArgs::default()
+        })))
+    );
+    model.apply(Update::Running(Kind::Rehearse));
+    model.apply(answered(Kind::Rehearse, 0, fixture("rehearse-scan-clean")));
+    let page = model.page();
+    assert_eq!(page.heading, text::PASSED);
+    // Scanned, the session still planted: a scan again asks again.
+    assert_eq!(page.secondary, Some(text::SCAN_SAME_BOOT));
+    assert_eq!(page.action, None);
+    // Cancelled, it asks for nothing.
+    model.secondary();
+    model.typed("allow");
+    assert_eq!(model.answer(false), None);
+}
+
 #[test]
 fn a_scan_refused_in_the_planting_session_offers_no_scan_until_it_ended() {
     let mut model = hidden();

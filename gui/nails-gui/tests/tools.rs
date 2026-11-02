@@ -369,6 +369,54 @@ fn scan_other_disks_takes_the_disks_named() {
     );
 }
 
+/// In the session that planted, Scan in This Session asks first, and its
+/// button acts only once the word is typed; the scan then carries the CLI's
+/// `--allow-same-boot`.
+#[test]
+fn a_scan_in_the_planting_session_waits_for_the_typed_word() {
+    let screen = hidden();
+    rehearsal(&screen, "rehearse-status-none");
+    press(&screen, text::PLANT);
+    screen.asks();
+    screen.update(Update::Running(Kind::Rehearse));
+    screen.update(answered(
+        Kind::Rehearse,
+        0,
+        fixture("rehearse-status-planted"),
+    ));
+    press(&screen, text::SCAN_SAME_BOOT);
+    let dialog = screen.find_with(text::SAME_BOOT_QUESTION, AccessibleRole::Groupbox);
+    assert!(
+        dialog
+            .accessible_description()
+            .unwrap_or_default()
+            .starts_with(text::SAME_BOOT_WHAT)
+    );
+    let scan = screen.find_with(text::SAME_BOOT_CONFIRM, AccessibleRole::Button);
+    assert_eq!(
+        scan.accessible_enabled(),
+        Some(false),
+        "the word comes first"
+    );
+    scan.invoke_accessible_default_action();
+    assert!(screen.asks().is_empty(), "no click scans");
+    screen
+        .find_with(
+            &text::type_to_continue(text::ALLOW_WORD),
+            AccessibleRole::TextInput,
+        )
+        .set_accessible_value("allow");
+    assert_eq!(scan.accessible_enabled(), Some(true));
+    scan.invoke_accessible_default_action();
+    assert_eq!(
+        screen.asks(),
+        [Ask::Rehearse(Rehearse::Scan(RehearseScanArgs {
+            allow_same_boot: true,
+            ..RehearseScanArgs::default()
+        }))]
+    );
+}
+
 /// The plant's field, labelled for a screen reader, names the account the
 /// test words are planted for.
 #[test]
