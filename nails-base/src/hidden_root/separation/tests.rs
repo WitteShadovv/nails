@@ -128,12 +128,13 @@ impl World {
         self
     }
 
-    fn judge(&self, root: &str) -> Judgement {
+    /// `ask` of the scene and the mount at `root`.
+    fn ask<T>(&self, root: &str, ask: impl FnOnce(&Scene<'_>, &MountEntry) -> T) -> T {
         let mounts = parse_mountinfo(&self.mountinfo);
         let fstab = parse_fstab(&self.fstab);
         let crypttab = parse_crypttab(&self.crypttab);
         let hidden = top_mount_at(&mounts, Path::new(root)).expect("a mount at the root");
-        judge(
+        ask(
             &Scene {
                 mounts: &mounts,
                 fstab: &fstab,
@@ -143,6 +144,14 @@ impl World {
             },
             hidden,
         )
+    }
+
+    fn judge(&self, root: &str) -> Judgement {
+        self.ask(root, judge)
+    }
+
+    fn claimed(&self, root: &str) -> BTreeMap<String, Claimed> {
+        self.ask(root, claimed_devices)
     }
 
     fn verdict(&self, root: &str) -> Verdict {
@@ -1308,6 +1317,85 @@ fn a_container_on_a_zfs_dataset_the_fstab_lists_follows_the_container_setting() 
             at: PathBuf::from("/data"),
         }
     );
+}
+
+// ---------------------------------------------------------------------------
+// The devices the decoy claims
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_decoys_devices_are_claimed_and_an_external_volume_is_not() {
+    let claimed = external_veracrypt().claimed("/mnt");
+    assert_eq!(
+        claimed.get("sda1"),
+        Some(&Claimed::Mount(PathBuf::from("/")))
+    );
+    assert_eq!(
+        claimed.get("sda2"),
+        Some(&Claimed::Mount(PathBuf::from("/home")))
+    );
+    for own in ["dm-9", "sdb"] {
+        assert!(!claimed.contains_key(own), "{own}: {claimed:?}");
+    }
+}
+
+#[test]
+fn every_device_below_a_claim_is_claimed_by_the_first_claim_that_reaches_it() {
+    // The decoy's root on LVM on LUKS, and the hidden root a LUKS volume on
+    // another logical volume of the same group.
+    let world = World::new(
+        "1 0 254:1 / / rw - ext4 /dev/mapper/vg-root rw\n\
+         5 1 254:4 / /mnt rw - ext4 /dev/mapper/vault rw\n",
+    )
+    .disk("nvme0n1", "259:0")
+    .part("nvme0n1p3", "259:3", "nvme0n1")
+    .crypt("dm-0", "254:0", "cryptroot", &["nvme0n1p3"])
+    .lv("dm-1", "254:1", "vg-root", &["dm-0"])
+    .lv("dm-3", "254:3", "vg-vault", &["dm-0"])
+    .crypt("dm-4", "254:4", "vault", &["dm-3"])
+    .fstab("/dev/mapper/vg-root / ext4 defaults 0 1\n")
+    .crypttab("cryptroot UUID=e1 none luks,discard\n")
+    .spec("UUID=e1", "nvme0n1p3");
+    let claimed = world.claimed("/mnt");
+    let root = Claimed::Mount(PathBuf::from("/"));
+    for device in ["dm-1", "dm-0", "nvme0n1p3"] {
+        assert_eq!(claimed.get(device), Some(&root), "{device}");
+    }
+    for own in ["dm-4", "dm-3"] {
+        assert!(!claimed.contains_key(own), "{own}: {claimed:?}");
+    }
+}
+
+#[test]
+fn a_crypttab_line_claims_its_device_and_its_mapping() {
+    // A backup drive the decoy opens by hand under the name `backup`.
+    let claimed = external_veracrypt()
+        .disk("sdc", "8:32")
+        .crypt("dm-5", "254:5", "backup", &["sdc"])
+        .crypttab("backup /dev/sdc none luks,noauto\n")
+        .claimed("/mnt");
+    let backup = Claimed::Encrypted("backup".to_string());
+    assert_eq!(claimed.get("dm-5"), Some(&backup));
+    assert_eq!(claimed.get("sdc"), Some(&backup));
+}
+
+#[test]
+fn the_decoys_entry_for_the_hidden_volume_claims_nothing() {
+    let world = external_veracrypt().crypttab("veracrypt1 /dev/sdb none tcrypt,noauto\n");
+    assert_eq!(
+        entry_kinds(&world.judge("/mnt")),
+        vec![(EntryKind::Blocking, CRYPTTAB)]
+    );
+    let claimed = world.claimed("/mnt");
+    for own in ["dm-9", "sdb"] {
+        assert!(!claimed.contains_key(own), "{own}: {claimed:?}");
+    }
+}
+
+#[test]
+fn nothing_is_claimed_for_a_ram_root() {
+    let world = plain_decoy("5 1 0:40 / /mnt rw - tmpfs tmpfs rw\n");
+    assert!(world.claimed("/mnt").is_empty());
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::hidden_root::mount_holding;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// One piece of the decoy's storage.
@@ -53,6 +53,38 @@ pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
         }
     };
     Judgement { verdict, entries }
+}
+
+/// The block devices the decoy claims as its own storage when [`judge`]
+/// judges `hidden` in `scene`, by kernel name: every device a claim names,
+/// and every device below it, each with what of the decoy's storage it holds
+/// (the first claim that reaches it). The decoy's entries for the hidden drive
+/// claim nothing here either, except an fstab entry the boot mounts. A RAM
+/// filesystem claims nothing, as the judge follows no device for it.
+pub fn claimed_devices(scene: &Scene<'_>, hidden: &MountEntry) -> BTreeMap<String, Claimed> {
+    let mut claimed = BTreeMap::new();
+    if is_ram(&hidden.fstype) {
+        return claimed;
+    }
+    let (_, stack) = hidden_stack(scene.devices, hidden);
+    for claim in claims(scene, hidden, &stack).0 {
+        for node in claim.nodes {
+            claimed.entry(node).or_insert_with(|| claim.what.clone());
+        }
+    }
+    claimed
+}
+
+/// The device `hidden` sits on, and that device with everything below it.
+fn hidden_stack(devices: &DeviceMap, hidden: &MountEntry) -> (Option<String>, Vec<String>) {
+    // A stacked filesystem names no device of its own: whatever its source
+    // says, its storage is elsewhere.
+    let top = (!is_stacked(&hidden.fstype))
+        .then(|| devices.node_of_mount(hidden))
+        .flatten()
+        .map(str::to_string);
+    let stack = top.as_deref().map(|t| devices.stack(t)).unwrap_or_default();
+    (top, stack)
 }
 
 fn verdict(
