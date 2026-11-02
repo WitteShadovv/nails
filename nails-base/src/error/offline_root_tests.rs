@@ -66,40 +66,42 @@ fn a_long_list_of_subvolumes_is_cut_short() {
     );
 }
 
+/// The lines of the next step every refusal gives, after the scan command.
+const MOUNTS: [&str; 2] = [
+    "In a hidden session, where the decoy root is mounted already, mount its device again and \
+     make that mount read-only: `sudo mount <device> <mount> && sudo mount -o remount,bind,ro \
+     <mount>`.",
+    "Elsewhere make the device read-only first (`sudo blockdev --setro <device>`, and `--setrw` \
+     after the scan), then mount it with `-o ro,noload` for ext4, `-o ro,rescue=nologreplay` for \
+     btrfs or `-o ro,norecovery` for XFS and f2fs: a plain `-o ro` can replay a journal onto the \
+     disk.",
+];
+
 #[test]
-fn the_next_step_says_what_to_mount_and_on_btrfs_which_subvolume() {
-    let then_scan = "(`sudo mount -o ro <device> <mount>`), then run `sudo ";
-    for problem in [
-        OfflineRootProblem::Missing,
-        OfflineRootProblem::NotAFolder,
-        OfflineRootProblem::Empty,
+fn the_next_step_mounts_without_writing_and_on_btrfs_names_the_subvolumes() {
+    let first = "Mount the decoy's root filesystem on a folder so that nothing can write to it, \
+                 and what its /etc/fstab mounts on the folders below it, then run `sudo ";
+    let btrfs = "On btrfs the system is a subvolume: add `subvol=@` (Fedora: `subvol=root`) to \
+                 its mount, and mount each subvolume its /etc/fstab mounts, such as @home, on its \
+                 folder.";
+    for (problem, lines) in [
+        (OfflineRootProblem::Missing, 3),
+        (OfflineRootProblem::NotAFolder, 3),
+        (OfflineRootProblem::Empty, 3),
+        (subvolumes(&[]), 4),
+        (subvolumes(&["@", "@home"]), 4),
     ] {
         let hint = refused(problem).hint().expect("a next step");
+        let hint: Vec<&str> = hint.lines().collect();
+        assert_eq!(hint.len(), lines, "{hint:#?}");
+        assert!(hint[0].starts_with(first), "{hint:#?}");
         assert!(
-            hint.starts_with(&format!(
-                "Mount the decoy image or partition read-only on a folder {then_scan}"
-            )),
-            "{hint}"
+            hint[0].ends_with(" verify --offline --root <mount>`."),
+            "{hint:#?}"
         );
-        assert!(
-            hint.ends_with(" verify --offline --root <mount>`."),
-            "{hint}"
-        );
+        assert_eq!(hint[1..3], MOUNTS, "{hint:#?}");
+        if lines == 4 {
+            assert_eq!(hint[3], btrfs, "{hint:#?}");
+        }
     }
-    let hint = refused(subvolumes(&["@", "@home"]))
-        .hint()
-        .expect("a next step");
-    assert!(
-        hint.starts_with(&format!(
-            "Mount the decoy's root filesystem read-only on a folder {then_scan}"
-        )),
-        "{hint}"
-    );
-    assert!(
-        hint.ends_with(
-            " verify --offline --root <mount>`. On btrfs that root is a subvolume: give its \
-             folder, such as /mnt/decoy/@ or /mnt/decoy/root."
-        ),
-        "{hint}"
-    );
 }

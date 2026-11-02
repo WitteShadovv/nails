@@ -40,10 +40,17 @@ fn recover_fix() -> String {
 
 /// How to check the decoy itself from inside the hidden session, where the
 /// hidden layer hides what lies beneath it. Names the real binary path.
+///
+/// The decoy root is mounted already there, read-write, beneath the session:
+/// a second mount of its device shares that filesystem, so nothing is
+/// replayed onto the disk, and a read-only one is refused as busy. The mount
+/// is made read-only right after it is made.
 pub(super) fn check_decoy_offline() -> String {
     use nails_base::next_step::{NextStep, sudo_line};
     format!(
-        "run `{}` against a read-only mount of the decoy root",
+        "mount the decoy root's device again on a folder and make that mount read-only \
+         (`sudo mount <device> <mount> && sudo mount -o remount,bind,ro <mount>`), with what its \
+         /etc/fstab mounts on the folders below it the same way, then run `{}`",
         sudo_line(NextStep::VerifyOffline)
     )
 }

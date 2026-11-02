@@ -683,19 +683,38 @@ of this changelog for that version becomes the release notes word for word, and
   root moves they are flagged no more and would stay behind naming it.
 - `verify --offline` refuses a `--root` that does not exist, is not a folder or holds no `etc`
   folder before anything is scanned: the error `nothing_to_scan`, exit 1, and its message says how
-  to mount the image read-only first. Every offline check looks for a path of the decoy system
-  below the root, so such a root found nothing and was reported as a secure image with exit 0, and
+  to mount the decoy first. Every offline check looks for a path of the decoy system below the
+  root, so such a root found nothing and was reported as a secure image with exit 0, and
   `--examiner` reported no setup trace either. An empty folder is what the mount point looks like
-  when the image was never mounted on it. A plain `mount -o ro` of a Fedora, Ubuntu or archinstall
+  when the image was never mounted on it, and a plain mount of a Fedora, Ubuntu or archinstall
   root on btrfs mounts the whole filesystem, whose top level holds the system in a subvolume: the
-  refusal names the subvolumes it finds there and says to give the folder of the one that holds
-  the system, such as `<mount>/@` or `<mount>/root`. The root is looked up with `lstat` and `stat`,
-  and only one without `etc` is listed, with `O_NOATIME`, as the rest of the scan reads the image.
-  So the check writes nothing and, run as root, changes no access time of the folder the root
-  names or of what it holds. A link on the way to that folder is followed, as by any lookup, and
-  the link's own access time changes. A folder that holds `etc` is scanned as it is, whether a
+  refusal names the subvolumes it finds there. The root is looked up with `lstat` and `stat`, and
+  only one without `etc` is listed, with `O_NOATIME`, as the rest of the scan reads the image. So
+  the check writes nothing and, run as root, changes no access time of the folder the root names
+  or of what it holds. A link on the way to that folder is followed, as by any lookup, and the
+  link's own access time changes. A folder that holds `etc` is scanned as it is, whether a
   filesystem is mounted there or not, since a copy of the decoy's files and the folder of a
   subvolume are no mount points either.
+- `verify --offline` lists as not checked each mount point of the decoy's `/etc/fstab` that is
+  missing or empty under the root, and each home of a login account of its `/etc/passwd` that is,
+  and so does the examiner's view. A btrfs decoy scanned by its system subvolume alone read as
+  complete: its `@home`, and on archinstall its `@log`, lie beside that subvolume, so a history
+  that names the tool or a sudo log there was not read, and nothing said so. Only mounts from a
+  disk count, not `/` itself, swap, filesystems in RAM, host shares or network filesystems. The
+  two files and each place are read as the root is, and a link is not followed, so NixOS's
+  `/etc/fstab`, a link into the store, is not read.
+- The operator guide, the `--root` help and the message of a refused root mount the decoy so that
+  nothing writes to its disk. They said `mount -o ro`, but on a filesystem that was not cleanly
+  unmounted ext4 replays its journal and cleans up orphaned files on a read-only mount, btrfs
+  replays its tree log, and XFS and f2fs recover their logs, all onto the disk. A disk that is not
+  mounted yet is now made read-only with `blockdev --setro` before it is mounted with `ro,noload`
+  (ext4), `ro,rescue=nologreplay` (btrfs) or `ro,norecovery` (XFS, f2fs), and an image goes through
+  a read-only loop device. A filesystem that was not cleanly unmounted then shows what it held
+  before its journal, so what the decoy wrote last may be missing from the scan. In a hidden
+  session the decoy root is mounted already beneath the session, where a read-only mount of its
+  device is refused as busy: it is mounted again and that mount made read-only. On btrfs the
+  guide mounts the subvolume of the system with `subvol=`, then each subvolume the decoy's fstab
+  mounts on its folder below it, such as `@home` on `home`.
 - Activation and `emergency` kill the interactive shells the newest first. A login shell that
   leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
   console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at

@@ -445,7 +445,7 @@ impl NailsError {
             NailsError::RefusedUnmanagedUnmount { .. } => {
                 "Unmount the path yourself if it is safe to do so; nails will not touch a mount it did not create."
             }
-            NailsError::RefusedOfflineRoot { root, problem } => return Some(problem.hint(root)),
+            NailsError::RefusedOfflineRoot { problem, .. } => return Some(problem.hint()),
             // Pre-flight failures carry their own per-check remediation list, and
             // the remaining variants are already specific about the fault.
             _ => return None,

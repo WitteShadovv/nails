@@ -1079,8 +1079,10 @@ When the journal keeps files on disk, every entry is a warning. On the decoy
 any other entry is a warning too: only you can tell whether it is the decoy's
 own record or one a hidden session left.
 
-To inspect the decoy itself for leftovers, mount its image or partition
-read-only and scan it offline (again from the hidden side):
+To inspect the decoy itself for leftovers, scan its root filesystem offline
+(again from the hidden side). `--root` is the folder that filesystem is mounted
+on, with what the decoy's `/etc/fstab` mounts mounted on the folders below it,
+as the decoy mounts them at boot: the scan reads only what is there.
 
 ```bash
 sudo /mnt/data/nails verify --offline --root /mnt/decoy
@@ -1088,28 +1090,74 @@ sudo /mnt/data/nails verify --offline --root /mnt/decoy
 
 In offline mode every path is read under `--root`, and the live-only checks
 (running processes, the kernel mount table, open block devices, platform package
-drift) are skipped. A decoy partition you mount by hand in the hidden session is
-outside the fstab policy and is written directly, so mount it read-only
-(`mount -o ro`).
+drift) are skipped.
 
-`--root` is the root of the decoy system. A plain `mount -o ro <device>` of a
-Fedora, Ubuntu or archinstall root on btrfs mounts the whole filesystem and
-shows its top level, and the system lies in a subvolume there. Give `--root`
-the folder of that subvolume, such as `/mnt/decoy/@` (Ubuntu, archinstall) or
-`/mnt/decoy/root` (Fedora), or mount the subvolume alone
-(`mount -o ro,subvol=@ <device> /mnt/decoy`).
+Mount the decoy so that nothing can write to its disk. A plain `mount -o ro` is
+not enough: on a filesystem that was not cleanly unmounted, ext4 replays its
+journal and cleans up orphaned files, btrfs replays its tree log, and XFS and
+f2fs recover their logs, all onto the disk, read-only mount or not.
+
+- **In a hidden session** the decoy root is mounted already, read-write,
+  beneath the session, and so is each filesystem the session carries. A second
+  mount of the device shares that filesystem, so nothing is replayed, but a
+  read-only one is refused there as busy, and a mount you make by hand is
+  outside the fstab policy: what is written to it lands on the decoy disk.
+  Mount the device again and make that mount read-only right away, and do the
+  same on the folders below for what the decoy's fstab mounts (a filesystem the
+  decoy mounts read-only takes `-o ro` instead):
+
+  ```bash
+  sudo mount /dev/sda2 /mnt/decoy && sudo mount -o remount,bind,ro /mnt/decoy
+  ```
+
+- **Anywhere else** (the disk attached to another machine, or an image) the
+  filesystem is not mounted yet. Make its device read-only first, so that every
+  write to it fails, then mount it with the option that skips the replay:
+  `ro,noload` for ext4, `ro,rescue=nologreplay` for btrfs and `ro,norecovery`
+  for XFS and f2fs. A filesystem that was not cleanly unmounted then shows what
+  it held before its journal: what the decoy wrote last may be missing from the
+  scan. Make the device writable again when you are done. For an image,
+  `sudo losetup --read-only --find --show --partscan decoy.img` gives a
+  read-only loop device to mount the same way.
+
+  ```bash
+  sudo blockdev --setro /dev/sdb2
+  sudo mount -o ro,noload /dev/sdb2 /mnt/decoy
+  sudo /mnt/data/nails verify --offline --root /mnt/decoy
+  sudo umount /mnt/decoy && sudo blockdev --setrw /dev/sdb2
+  ```
+
+On btrfs the system lies in a subvolume, and a plain mount of the device shows
+the top level of the filesystem instead. Name the subvolume with `subvol=`
+(`@` on Ubuntu and archinstall, `root` on Fedora), then mount each subvolume
+the decoy's fstab mounts on its folder below it: `@home` (Fedora: `home`) on
+`home`, and on archinstall `@log` on `var/log`:
+
+```bash
+sudo mount -o ro,rescue=nologreplay,subvol=@ /dev/sdb2 /mnt/decoy
+sudo mount -o ro,rescue=nologreplay,subvol=@home /dev/sdb2 /mnt/decoy/home
+sudo mount -o ro,rescue=nologreplay,subvol=@log /dev/sdb2 /mnt/decoy/var/log
+```
+
+In a hidden session give each of these mounts its `subvol=` alone and make it
+read-only right after, as above.
 
 A `--root` that does not exist, is not a folder or holds no `etc` folder is
 refused before anything is scanned (the error `nothing_to_scan`, exit 1),
 since a scan of it would find nothing. An empty folder is what a mount point
 looks like when the image is not mounted on it, and the top level of a btrfs
 filesystem holds no `etc` either: the refusal names the subvolumes it finds
-there. The check writes nothing and, run as root, changes no access time of
-the folder `--root` names or of what that folder holds. A link on the way to
-it is followed, as by any lookup, which changes the link's own access time.
-`verify` does not check that a filesystem is mounted at `--root`, so a folder
-that holds an `etc` folder is scanned as it is, whether it is a copy of the
-decoy's files or the wrong folder: mount the image before you scan it.
+there. Each mount point of the decoy's `/etc/fstab` that is missing or empty
+under `--root`, and each home of a login account of its `/etc/passwd` that is,
+is listed as not checked, in the examiner's view as well, so a scan of the
+system subvolume alone does not read as complete. These checks write nothing
+and, run as root, change no access time of the folder `--root` names or of what
+it holds. A link on the way to that folder is followed, as by any lookup, which
+changes the link's own access time. A link below it is not followed, so
+NixOS's `/etc/fstab`, a link into the store, is not read. `verify` does not
+check that a filesystem is mounted at `--root`, so a folder that holds an `etc`
+folder is scanned as it is, whether it is a copy of the decoy's files or the
+wrong folder: mount the image before you scan it.
 
 To see the decoy the way an examiner would, add `--examiner`, and `--disk` with
 the raw disk or image behind the mounted root:
