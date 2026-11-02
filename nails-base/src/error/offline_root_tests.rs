@@ -68,13 +68,14 @@ fn a_long_list_of_subvolumes_is_cut_short() {
 
 /// The lines of the next step every refusal gives, after the scan command.
 const MOUNTS: [&str; 2] = [
-    "In a hidden session, where the decoy root is mounted already, mount its device again and \
-     make that mount read-only: `sudo mount <device> <mount> && sudo mount -o remount,bind,ro \
-     <mount>`.",
-    "Elsewhere make the device read-only first (`sudo blockdev --setro <device>`, and `--setrw` \
-     after the scan), then mount it with `-o ro,noload` for ext4, `-o ro,rescue=nologreplay` for \
-     btrfs or `-o ro,norecovery` for XFS and f2fs: a plain `-o ro` can replay a journal onto the \
-     disk.",
+    "A device that findmnt shows mounted already, as the decoy root is in a hidden session: mount \
+     it again and make that mount read-only, `sudo mount <device> <mount> && sudo mount -o \
+     remount,bind,ro <mount>` (where its filesystem is read-only already, `sudo mount -o ro \
+     <device> <mount>`).",
+    "Any other device, in a hidden session or not: make it read-only first (`sudo blockdev \
+     --setro <device>`, and `--setrw` after the scan), then mount it with `-o ro,noload` for \
+     ext4, `-o ro,rescue=nologreplay` for btrfs or `-o ro,norecovery` for XFS and f2fs: a plain \
+     `-o ro` can replay a journal onto the disk.",
 ];
 
 #[test]

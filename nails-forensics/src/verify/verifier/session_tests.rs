@@ -143,7 +143,8 @@ fn an_init_seeded_session_reports_its_own_files_as_notes_and_nothing_critical() 
     );
     assert!(guidance.contains("verify --offline --root"), "{guidance}");
     // The decoy root is mounted already in the session: a read-only mount of
-    // its device is refused as busy, so the mount is made read-only after.
+    // its device would make its filesystem read-only, which ext4, XFS and
+    // f2fs refuse as busy, so the mount is made read-only after it is made.
     assert!(
         guidance.contains("`sudo mount <device> <mount> && sudo mount -o remount,bind,ro <mount>`"),
         "{guidance}"

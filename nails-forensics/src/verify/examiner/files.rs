@@ -206,6 +206,10 @@ const TOOL_DIRS: &[&str] = &[
 /// On an FHS root the usual bin directories are probed; on a NixOS root the
 /// store directory names are listed (without reading the store) and the tool
 /// binary inside each matching store path is probed.
+///
+/// A decoy whose `/nix` is a filesystem of its own that is not mounted under
+/// the root shows an empty store, and the store reads clean then: see
+/// [`store_unread`].
 pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
     let mut found: Vec<(String, PathBuf, Severity)> = Vec::new();
     for (tool, severity) in TOOLS {
@@ -253,6 +257,15 @@ pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
             finding("backend-tooling", severity, rel, evidence)
         })
         .collect()
+}
+
+/// Whether the decoy keeps a Nix store the tool check had nothing to read in:
+/// `/nix` is a folder under `root`, but `/nix/store` is missing, empty or
+/// cannot be listed, as when the decoy's `/nix` is a filesystem of its own
+/// that is not mounted there. A root without `/nix` keeps no store.
+pub(super) fn store_unread(root: &Path) -> bool {
+    std::fs::symlink_metadata(rebase(root, "/nix")).is_ok_and(|meta| meta.is_dir())
+        && read_dir_noatime(&rebase(root, "/nix/store")).map_or(true, |entries| entries.is_empty())
 }
 
 fn stamp(secs: i64) -> String {

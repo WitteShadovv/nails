@@ -821,8 +821,14 @@ fn verify_offline_lists_what_the_decoy_mounts_but_the_root_does_not_hold() {
     std::fs::create_dir_all(top.path().join("@home/alice")).unwrap();
     std::fs::write(top.path().join("@home/alice/.bash_history"), history).unwrap();
     let root = system.to_str().unwrap();
-    let not_checked = "/home, which the decoy's /etc/fstab mounts (missing or empty under the \
-                       root: mount it there before the scan)";
+    // Its device is not on this machine: it is made read-only and mounted on
+    // the folder without a replay of the btrfs tree log.
+    let not_checked: &str = &format!(
+        "/home, which the decoy's /etc/fstab mounts (missing or empty under the root. Its device \
+         is not mounted here: make it read-only and mount it there without a journal replay \
+         before the scan, with `sudo blockdev --setro /dev/disk/by-uuid/1 && sudo mount -o \
+         ro,rescue=nologreplay,subvol=/@home /dev/disk/by-uuid/1 {root}/home`)"
+    );
 
     for examiner in [&[][..], &["--examiner"][..]] {
         let args = [

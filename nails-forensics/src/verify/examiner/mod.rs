@@ -114,6 +114,13 @@ pub fn examine(root: &Path, options: &ExaminerOptions) -> ExaminerReport {
 
     findings.extend(files::tooling(root));
     checks_run.push("examiner-tooling");
+    if files::store_unread(root) {
+        not_checked.push(
+            "encryption tooling in the decoy's Nix store (/nix/store is missing or empty under \
+             the root, so the tool check had nothing to read: mount the decoy's /nix there)"
+                .to_string(),
+        );
+    }
 
     let containers = files::containers(root, options);
     findings.extend(containers.findings);

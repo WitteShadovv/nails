@@ -1129,3 +1129,47 @@ fn a_link_to_a_mount_point_is_no_mount_point_itself() {
     // A link is one, never the mount point it leads to.
     assert_eq!(RealFilesystem.mount_root(&link).unwrap(), MountRoot::Link);
 }
+
+#[test]
+fn a_file_of_a_root_is_read_and_placed_with_its_links_followed_inside_it() {
+    // NixOS's /etc/fstab: a link to /etc/static/fstab, itself a link into the
+    // store. Inside the root both resolve in the root's own store.
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    fs::create_dir_all(r.join("store/etc")).unwrap();
+    fs::create_dir(r.join("etc")).unwrap();
+    let text = "UUID=1 / ext4 defaults 0 1\n";
+    fs::write(r.join("store/etc/fstab"), text).unwrap();
+    std::os::unix::fs::symlink("/etc/static/fstab", r.join("etc/fstab")).unwrap();
+    std::os::unix::fs::symlink("/store/etc", r.join("etc/static")).unwrap();
+    let real = RealFilesystem;
+    assert_eq!(
+        real.read_file_in_root(r, Path::new("/etc/fstab")).unwrap(),
+        text
+    );
+    assert_eq!(
+        real.canonical_in_root(r, Path::new("/etc/fstab")),
+        Path::new("/store/etc/fstab")
+    );
+    // A part that does not exist is appended to what resolves.
+    assert_eq!(
+        real.canonical_in_root(r, Path::new("/etc/static/absent")),
+        Path::new("/store/etc/absent")
+    );
+
+    // A link to a file of the machine leads to nothing inside the root.
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret"), "the machine's own").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret"), r.join("etc/secret")).unwrap();
+    assert!(real.read_file_in_root(r, Path::new("/etc/secret")).is_err());
+    assert_eq!(
+        real.canonical_in_root(r, Path::new("/etc/secret")),
+        outside.path().join("secret")
+    );
+    // Bytes that are no text are an error.
+    fs::write(r.join("store/etc/binary"), [0xff, 0xfe]).unwrap();
+    assert!(
+        real.read_file_in_root(r, Path::new("/etc/static/binary"))
+            .is_err()
+    );
+}

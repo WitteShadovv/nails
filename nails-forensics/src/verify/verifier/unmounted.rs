@@ -3,49 +3,102 @@
 
 //! What an offline scan cannot read because it is not mounted under the
 //! root: the mount points of the decoy's fstab and the homes of its login
-//! accounts that hold nothing there.
+//! accounts that hold nothing there, and how to mount each without writing
+//! to the decoy's disk.
 
 use super::deep_scan::is_login_shell;
 use super::*;
-use nails_base::fstab::parse_fstab;
+use crate::filesystem::MountEntry;
+use nails_base::fstab::{FstabEntry, parse_fstab};
+use nails_base::next_step::shell_word;
 
-/// The decoy's table of the filesystems it mounts, read under the root.
+/// The decoy's table of the filesystems it mounts.
 const FSTAB_FILE: &str = "/etc/fstab";
+
+/// How the device an fstab entry names is mounted on the machine that runs
+/// verify, by the superblock its mounts share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mounted {
+    /// Mounted, its filesystem read-write (the decoy's own in a session).
+    ReadWrite,
+    /// Mounted, its filesystem read-only.
+    ReadOnly,
+    /// Not mounted, or not found on this machine.
+    No,
+}
 
 impl<F: Filesystem> Verifier<F> {
     /// The places of the decoy system an offline scan cannot read, because
     /// what the decoy mounts there is not mounted under the root: each mount
     /// point of the decoy's `/etc/fstab` that is missing or empty there, and
     /// each home of a login account of its `/etc/passwd` that is, outside
-    /// those mount points. A btrfs decoy scanned by its system subvolume alone
-    /// misses its `@home` this way, and on archinstall its `@log`.
+    /// those mount points, and the fstab itself when it cannot be read inside
+    /// the root. A btrfs decoy scanned by its system subvolume alone misses
+    /// its `@home` this way, and on archinstall its `@log`. The line of a
+    /// mount point says how to mount it without writing to the decoy's disk:
+    /// again and read-only when its device is mounted already, read-only and
+    /// without a journal replay when it is not.
     ///
-    /// Read as the root itself is ([`Self::refuse_a_root_with_nothing_to_scan`]):
-    /// the two files with `O_NOATIME`, each place with `lstat` and `stat`, and
-    /// a folder with an `O_NOATIME` listing. No link is followed, so a fstab
-    /// that is a link, as NixOS's is, is not read, and a place that cannot be
-    /// looked at is left out.
+    /// The two files are read inside the root ([`Self::read_in_image`]), so
+    /// NixOS's `/etc/fstab`, a link into the store, is followed into the
+    /// image's store, and each place is resolved inside the root
+    /// ([`Self::place`]), so no link leads out of the image. A place is then
+    /// looked at with `lstat` and `stat` and listed with `O_NOATIME`, and one
+    /// that cannot be looked at is left out.
     pub(super) fn unmounted_areas(&self) -> Vec<String> {
-        let mut mount_points = self.fstab_mount_points();
-        mount_points.sort();
-        mount_points.dedup();
-        let mut unmounted: Vec<PathBuf> = Vec::new();
         let mut areas = Vec::new();
-        for point in mount_points {
-            if !unmounted.iter().any(|seen| point.starts_with(seen)) && self.holds_nothing(&point) {
+        let table = self.filesystem.mount_table().unwrap_or_default();
+        let mut entries = match self.read_in_image(Path::new(FSTAB_FILE)) {
+            Ok(text) => parse_fstab(&text)
+                .into_iter()
+                .filter(|entry| {
+                    entry.file.is_absolute()
+                        && entry.file != Path::new("/")
+                        && !entry.is_swap()
+                        && !entry.is_virtual()
+                        && !entry.is_host_share()
+                        && !entry.is_network()
+                        // The source of a bind lies in the image, and was scanned.
+                        && !entry.is_bind()
+                })
+                .collect(),
+            Err(_) => {
+                if self.present_in_image(Path::new(FSTAB_FILE)) {
+                    areas.push(
+                        "/etc/fstab, the decoy's table of what it mounts (it could not be read \
+                         inside the root, as a link into a store that is not mounted there cannot \
+                         be: what it mounts is not known)"
+                            .to_string(),
+                    );
+                }
+                Vec::new()
+            }
+        };
+        entries.sort_by(|a, b| a.file.cmp(&b.file));
+        entries.dedup_by(|a, b| a.file == b.file);
+
+        let mut unmounted: Vec<PathBuf> = Vec::new();
+        for entry in entries {
+            if unmounted.iter().any(|seen| entry.file.starts_with(seen)) {
+                continue;
+            }
+            let place = self.place(&entry.file);
+            if self.holds_nothing(&place) {
                 areas.push(format!(
-                    "{}, which the decoy's /etc/fstab mounts (missing or empty under the root: \
-                     mount it there before the scan)",
-                    point.display()
+                    "{}, which the decoy's /etc/fstab mounts (missing or empty under the root. {})",
+                    entry.file.display(),
+                    self.how_to_mount(&entry, &place, &table)
                 ));
-                unmounted.push(point);
+                unmounted.push(entry.file);
             }
         }
         for (user, home) in self.login_homes() {
-            if !unmounted.iter().any(|seen| home.starts_with(seen)) && self.holds_nothing(&home) {
+            if !unmounted.iter().any(|seen| home.starts_with(seen))
+                && self.holds_nothing(&self.place(&home))
+            {
                 areas.push(format!(
                     "{}, the home of {user} in the decoy's /etc/passwd (missing or empty under \
-                     the root: mount what holds it there before the scan)",
+                     the root: mount what holds it there without writing to it before the scan)",
                     home.display()
                 ));
             }
@@ -53,31 +106,10 @@ impl<F: Filesystem> Verifier<F> {
         areas
     }
 
-    /// The mount points of the filesystems the decoy's fstab mounts from a
-    /// disk: neither `/` itself, swap, a filesystem in RAM or the kernel, a
-    /// host share nor a network filesystem.
-    fn fstab_mount_points(&self) -> Vec<PathBuf> {
-        let Some(text) = self.read_unlinked(Path::new(FSTAB_FILE)) else {
-            return Vec::new();
-        };
-        parse_fstab(&text)
-            .into_iter()
-            .filter(|entry| {
-                entry.file.is_absolute()
-                    && entry.file != Path::new("/")
-                    && !entry.is_swap()
-                    && !entry.is_virtual()
-                    && !entry.is_host_share()
-                    && !entry.is_network()
-            })
-            .map(|entry| entry.file)
-            .collect()
-    }
-
     /// The login accounts of the decoy's `/etc/passwd` (from
     /// [`FIRST_LOGIN_UID`] on, with a login shell) and their homes.
     fn login_homes(&self) -> Vec<(String, PathBuf)> {
-        let Some(text) = self.read_unlinked(Path::new(PASSWD_FILE)) else {
+        let Ok(text) = self.read_in_image(Path::new(PASSWD_FILE)) else {
             return Vec::new();
         };
         text.lines()
@@ -94,33 +126,119 @@ impl<F: Filesystem> Verifier<F> {
             .collect()
     }
 
-    /// The text of the decoy's file at `path`, read under the root unless it
-    /// is a link, which could lead out of the image.
-    fn read_unlinked(&self, path: &Path) -> Option<String> {
-        let file = self.rebase(path);
-        if !matches!(self.filesystem.is_symlink(&file), Ok(false)) {
-            return None;
-        }
-        self.filesystem.read_file_content(&file).ok()
+    /// Whether anything is at the decoy's `path` under the root, a link
+    /// included: what is there but could not be read is worth naming.
+    fn present_in_image(&self, path: &Path) -> bool {
+        let entry = self.rebase(path);
+        matches!(self.filesystem.is_symlink(&entry), Ok(true))
+            || matches!(self.filesystem.path_exists(&entry), Ok(true))
     }
 
-    /// Whether the decoy's place `path` is missing under the root or an empty
-    /// folder there. A link is not followed, and answers no.
-    fn holds_nothing(&self, path: &Path) -> bool {
-        let place = self.rebase(path);
-        if !matches!(self.filesystem.is_symlink(&place), Ok(false)) {
+    /// Whether `place`, a decoy path resolved under the root, is missing or
+    /// an empty folder. A link (one whose target could not be resolved, say)
+    /// is not followed, and answers no.
+    fn holds_nothing(&self, place: &Path) -> bool {
+        if !matches!(self.filesystem.is_symlink(place), Ok(false)) {
             return false;
         }
-        match self.filesystem.inode(&place) {
+        match self.filesystem.inode(place) {
             Ok(None) => true,
             Ok(Some(_)) => {
-                matches!(self.filesystem.is_directory(&place), Ok(true))
+                matches!(self.filesystem.is_directory(place), Ok(true))
                     && self
                         .filesystem
-                        .list_directory(&place)
+                        .list_directory(place)
                         .is_ok_and(|entries| entries.is_empty())
             }
             Err(_) => false,
         }
+    }
+
+    /// How to mount what `entry` mounts on `place` without writing to the
+    /// decoy's disk. A device that is mounted already has its journal behind
+    /// it: a second mount shares that filesystem, read-only as it is or made
+    /// read-only once mounted. Any other device is made read-only first and
+    /// mounted with the option that skips its filesystem's journal replay.
+    fn how_to_mount(&self, entry: &FstabEntry, place: &Path, table: &[MountEntry]) -> String {
+        let device = entry
+            .device()
+            .map_or_else(|| "<device>".to_string(), |dev| shell_word(dev.as_os_str()));
+        let at = shell_word(place.as_os_str());
+        // A btrfs subvolume is named at each mount of it.
+        let subvol = entry
+            .option_value("subvol")
+            .map(|subvol| format!("subvol={subvol}"))
+            .or_else(|| {
+                entry
+                    .option_value("subvolid")
+                    .map(|id| format!("subvolid={id}"))
+            });
+        let with = |first: Option<&str>| {
+            let options: Vec<&str> = first.into_iter().chain(subvol.as_deref()).collect();
+            if options.is_empty() {
+                String::new()
+            } else {
+                format!("-o {} ", options.join(","))
+            }
+        };
+        match self.mounted_now(entry, table) {
+            Mounted::ReadWrite => format!(
+                "Its device is mounted here already, read-write: mount it there again and make \
+                 that mount read-only before the scan, with `sudo mount {}{device} {at} && sudo \
+                 mount -o remount,bind,ro {at}`",
+                with(None)
+            ),
+            Mounted::ReadOnly => format!(
+                "Its device is mounted here already, read-only: mount it there before the scan, \
+                 with `sudo mount {}{device} {at}`",
+                with(Some("ro"))
+            ),
+            Mounted::No => format!(
+                "Its device is not mounted here: make it read-only and mount it there without a \
+                 journal replay before the scan, with `sudo blockdev --setro {device} && sudo \
+                 mount {}{device} {at}`",
+                with(Some(replay_free(&entry.vfstype)))
+            ),
+        }
+    }
+
+    /// How the device `entry` names is mounted here now: the device node of
+    /// its spec, its links followed, against the source of each mount of the
+    /// mount table, theirs followed too. A device that is not found here is
+    /// not mounted.
+    fn mounted_now(&self, entry: &FstabEntry, table: &[MountEntry]) -> Mounted {
+        let Some(device) = entry
+            .device()
+            .and_then(|dev| self.filesystem.canonicalize(&dev).ok())
+        else {
+            return Mounted::No;
+        };
+        let mounted = table.iter().find(|mount| {
+            mount.source.starts_with("/dev/")
+                && self
+                    .filesystem
+                    .canonicalize(&mount.source)
+                    .is_ok_and(|source| source == device)
+        });
+        match mounted {
+            None => Mounted::No,
+            Some(mount) if mount.super_opts.split(',').any(|option| option == "ro") => {
+                Mounted::ReadOnly
+            }
+            Some(_) => Mounted::ReadWrite,
+        }
+    }
+}
+
+/// The options that mount a filesystem of type `fstype` read-only without
+/// replaying its journal or log onto the disk, which a plain `ro` does on
+/// ext4, btrfs, XFS and f2fs (mount(8), ext4(5), btrfs(5), xfs(5), the
+/// kernel's f2fs documentation). Other types keep no journal to replay.
+fn replay_free(fstype: &str) -> &'static str {
+    match fstype {
+        "ext2" | "ext3" | "ext4" => "ro,noload",
+        "btrfs" => "ro,rescue=nologreplay",
+        "xfs" | "f2fs" => "ro,norecovery",
+        _ => "ro",
     }
 }
