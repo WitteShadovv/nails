@@ -972,6 +972,23 @@ fn a_warning_says_why_the_final_line_cannot_settle_it() {
 }
 
 #[test]
+fn a_zsh_started_with_f_is_read_by_its_etc_zshenv_alone() {
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
+    seed(&fs, "/home/alice/.zshrc", "setopt inc_append_history\n");
+    assert!(matches!(
+        run(&fs, typed("zsh", &["zsh", "-f"])),
+        CheckResult::Pass(_)
+    ));
+    seed(&fs, "/etc/zshenv", "setopt share_history\n");
+    let message = warning(run(&fs, typed("zsh", &["zsh", "-f"])));
+    assert!(
+        message.contains("/etc/zshenv sets SHARE_HISTORY"),
+        "{message}"
+    );
+}
+
+#[test]
 fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
     let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
     let fs = MockFilesystem::new();
