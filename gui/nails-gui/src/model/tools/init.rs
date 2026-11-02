@@ -11,8 +11,8 @@
 //! The apply checks again and writes the layout; its page lists each part,
 //! made or already there, with the engine's warnings and notes.
 
-use nails_api::CheckOutcome;
 use nails_api::protocol::{InitArgs, InitPlanData, Op, validate};
+use nails_api::{Allowable, CheckOutcome};
 
 use super::{Context, ToolKind, error_of, group, row, tool_page};
 use crate::client::{Answer, Plan};
@@ -31,6 +31,11 @@ pub(crate) struct SetUp {
     /// The hardware configuration to seed it from, as typed
     /// (`--hardware-config`); empty for the one the engine reads by default.
     hardware_config: String,
+    /// The engine refused the last plan for a hidden volume on this
+    /// computer's storage, which `--allow-decoy-storage` accepts.
+    storage_refused: bool,
+    /// The person allowed that, behind the word, for the next plan.
+    allow_storage: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,11 +69,36 @@ impl SetUp {
         let file = self.hardware_config.trim();
         let args = InitArgs {
             path: root.to_string(),
-            allow_decoy_storage: false,
+            allow_decoy_storage: self.allow_storage,
             hardware_config: (!self.no_layout && !file.is_empty()).then(|| file.to_string()),
             no_hardware_config: self.no_layout,
         };
         validate(&Op::InitPlan(args.clone())).ok().map(|()| args)
+    }
+
+    /// Whether the page offers to allow the hidden volume on this
+    /// computer's storage, which the engine named for its refusal.
+    pub(crate) fn offers_storage(&self) -> bool {
+        self.storage_refused && !self.allow_storage
+    }
+
+    /// The refusal the question before allowing it repeats.
+    pub(crate) fn refusal(&self) -> Option<&str> {
+        match &self.outcome {
+            Some(Outcome::Failed(message)) => message.lines().next(),
+            _ => None,
+        }
+    }
+
+    /// The plan again for the hidden volume `root`, its place on this
+    /// computer's storage allowed once its question was answered with the
+    /// word.
+    pub(crate) fn allow_storage(&mut self, root: Option<&str>) -> Option<Ask> {
+        if !self.offers_storage() {
+            return None;
+        }
+        self.allow_storage = true;
+        self.action(text::SET_UP_ACTION, root)
     }
 
     /// The ask for `label`, the page's action, for the hidden volume `root`.
@@ -84,16 +114,27 @@ impl SetUp {
 
     /// Take in the answer of a plan that settled, or of the apply.
     pub(crate) fn answered(&mut self, _kind: Kind, answer: &Answer) {
-        self.outcome = Some(match envelope::read::<InitData>(&answer.envelope, "init") {
-            Ok(read) => match read.data {
-                Some(data) => Outcome::Done(data),
-                None => Outcome::Failed(
-                    error_of(&answer.envelope)
-                        .map_or_else(|| text::NOTHING_CHANGED.to_string(), |(_, message)| message),
-                ),
-            },
-            Err(error) => Outcome::Failed(text::sentence(&error.0)),
-        });
+        // What was allowed held for the plan that answered only: its apply
+        // carries the token, not the flag.
+        self.allow_storage = false;
+        self.storage_refused = false;
+        self.outcome =
+            Some(match envelope::read::<InitData>(&answer.envelope, "init") {
+                Ok(read) => match read.data {
+                    Some(data) => Outcome::Done(data),
+                    None => {
+                        self.storage_refused = read
+                            .error
+                            .as_ref()
+                            .is_some_and(|error| error.allowable == Some(Allowable::DecoyStorage));
+                        Outcome::Failed(error_of(&answer.envelope).map_or_else(
+                            || text::NOTHING_CHANGED.to_string(),
+                            |(_, message)| message,
+                        ))
+                    }
+                },
+                Err(error) => Outcome::Failed(text::sentence(&error.0)),
+            });
     }
 
     /// The page.
@@ -117,6 +158,9 @@ impl SetUp {
         // Never in a hidden session, by either reading: fail closed.
         if !matches!(self.outcome, Some(Outcome::Done(_))) && root.starts_with('/') && !cx.hidden {
             page.action = Some(text::SET_UP_ACTION);
+            if self.offers_storage() {
+                page.secondary = Some(text::ALLOW_FOR_SET_UP);
+            }
             page.action_locked = self.args(root).is_none();
             page.switch_first = true;
             page.switch = Some(Switch {

@@ -1,0 +1,9 @@
+{
+  "command": "discard",
+  "data": {
+    "removed": [],
+    "target": "/srv/data"
+  },
+  "ok": true,
+  "schema_version": 2
+}

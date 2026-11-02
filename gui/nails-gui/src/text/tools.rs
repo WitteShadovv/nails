@@ -450,6 +450,19 @@ pub const SET_UP: &str = "Set Up Hidden Volume";
 pub const SET_UP_ROW: &str = "Write the folders and the settings file NAILS needs.";
 /// The action that asks for the plan; the question follows.
 pub const SET_UP_ACTION: &str = "Set Up\u{2026}";
+/// The second action of a set up the engine refused for a hidden volume on
+/// this computer's storage (`init --allow-decoy-storage`): it asks first.
+pub const ALLOW_FOR_SET_UP: &str = "Allow for This Set Up\u{2026}";
+/// Its question.
+pub const ALLOW_FOR_SET_UP_QUESTION: &str = "Allow for This Set Up?";
+/// The same for a discard (`discard --allow-decoy-storage`).
+pub const ALLOW_FOR_DISCARD: &str = "Allow for This Discard\u{2026}";
+/// Its question.
+pub const ALLOW_FOR_DISCARD_QUESTION: &str = "Allow for This Discard?";
+/// What either says after the refusal: what is written there, and that it
+/// holds once.
+pub const STORAGE_ONCE: &str = "Everything written there lands on this computer's storage, \
+     where an examination can find it. This is allowed for this one plan only.";
 
 /// The tool of the options the checks and the activation take.
 pub const ACTIVATION_OPTIONS: &str = "Activation Options";

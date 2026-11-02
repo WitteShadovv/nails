@@ -194,6 +194,22 @@ pub(super) fn group(title: &str, rows: Vec<CheckView>) -> Option<Group> {
     })
 }
 
+/// The question before a set up or a discard is planned again with the
+/// hidden volume on this computer's storage allowed: the engine's refusal,
+/// what that means, and that it holds once. Its button acts only once the
+/// word is typed.
+fn storage_question(heading: &str, refusal: &str) -> Question {
+    Question {
+        heading: heading.to_string(),
+        body: format!("{}\n{}", text::sentence(refusal), text::STORAGE_ONCE),
+        confirm: text::ALLOW_CONFIRM.to_string(),
+        destructive: true,
+        prompt: Some(text::type_to_continue(text::ALLOW_WORD)),
+        locked: true,
+        alternative: None,
+    }
+}
+
 /// The page every tool's page starts from: its title, Back, and nothing
 /// else yet.
 pub(super) fn tool_page(kind: ToolKind, description: &str) -> Page {
@@ -414,6 +430,31 @@ impl Model {
 
     /// What the open tool's action `label` does.
     pub(super) fn tool_action(&mut self, label: &str) -> Option<Effect> {
+        if matches!(label, text::ALLOW_FOR_SET_UP | text::ALLOW_FOR_DISCARD) {
+            // The hidden volume on this computer's storage, allowed for the
+            // next plan only behind the word.
+            let asked = match &self.tool {
+                Some(Tool::SetUp(set_up))
+                    if label == text::ALLOW_FOR_SET_UP && set_up.offers_storage() =>
+                {
+                    Some((text::ALLOW_FOR_SET_UP_QUESTION, set_up.refusal()))
+                }
+                Some(Tool::Discard(discard))
+                    if label == text::ALLOW_FOR_DISCARD && discard.offers_storage() =>
+                {
+                    Some((text::ALLOW_FOR_DISCARD_QUESTION, discard.refusal()))
+                }
+                _ => None,
+            };
+            if let Some((heading, refusal)) = asked {
+                let question = storage_question(heading, refusal.unwrap_or_default());
+                self.asking = Some(super::Asking::AllowStorage {
+                    typed: String::new(),
+                });
+                self.question = Some(question);
+            }
+            return None;
+        }
         if label == text::SCAN_SAME_BOOT {
             // A scan in the session that planted asks first, behind the word.
             if matches!(&self.tool, Some(Tool::Rehearsal(rehearsal)) if rehearsal.offers_same_boot())
@@ -440,6 +481,23 @@ impl Model {
             self.plan_for = Some(PlanFor::Tool);
         }
         Some(Effect::Ask(ask))
+    }
+
+    /// The plan of the set up or the discard again, the hidden volume on this
+    /// computer's storage allowed once its question was answered with the
+    /// word. Never in a hidden session, by either reading: fail closed.
+    pub(super) fn plan_storage_allowed(&mut self) -> Option<Ask> {
+        let Context { hidden, root, .. } = self.context();
+        if hidden {
+            return None;
+        }
+        let ask = match &mut self.tool {
+            Some(Tool::SetUp(set_up)) => set_up.allow_storage(root.as_deref()),
+            Some(Tool::Discard(discard)) => discard.allow_storage(),
+            _ => None,
+        }?;
+        self.plan_for = Some(PlanFor::Tool);
+        Some(ask)
     }
 
     /// The scan in the session that planted, once its question was answered

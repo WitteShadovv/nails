@@ -149,7 +149,7 @@ pub(crate) fn lock_error_body(
             let exe = std::env::current_exe().ok();
             (
                 ExitStatus::PreflightRefused,
-                crate::cli::output::refusal::refusal_error(&refusal, exe.as_deref()),
+                crate::cli::output::refusal::refusal_error_of(command, &refusal, exe.as_deref()),
             )
         }
         LockError::Unavailable(error) => (

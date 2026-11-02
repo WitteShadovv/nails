@@ -227,7 +227,10 @@ of this changelog for that version becomes the release notes word for word, and
   field names (`--hardware-config`), each as a plan, its token and its apply:
   the question says what goes (every path the discard deletes from the hidden volume) or what is
   written, and a discard of a folder that holds a home, or of `/nix`, acts only once the folder is
-  typed. Both are offered only where the window's own reading of the mount table agrees with the
+  typed. Either one refused for a hidden volume on this computer's own storage offers Allow for This
+  Set Up… or Allow for This Discard…, whose button acts only once the word "allow" is typed, and
+  plans again with `--allow-decoy-storage` for that one plan. Both are offered only where the
+  window's own reading of the mount table agrees with the
   engine's status that this is the decoy. In a hidden session the tools also show the settings
   (`nails config show`): each key a value can be set for, its value and where it comes from. A
   key's page offers its states or options, or a field for a number, a path, a flake or a list of
@@ -358,6 +361,12 @@ of this changelog for that version becomes the release notes word for word, and
   `--allow-decoy-storage` and `discards` for `--allow-discards`. A refusal no flag covers, such as a
   hidden root that is a folder, names none, so a front end can offer an override only where it
   works.
+- An error that a flag of its command accepts for one run names that flag as its `allowable`, as
+  a refused check does: `activate`, `check`, `init` and `discard` name `decoy_storage` when they
+  refuse a hidden root on this computer's own storage, which their `--allow-decoy-storage` accepts.
+  No other refusal names one, and `rehearse` and `config` refuse the same root naming none. This
+  changes the JSON contract: every command's schema now allows `allowable` in its error object,
+  which is still strict otherwise, and a reader that ignores it reads errors as before.
 - `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
   the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
   unexplained; a later successful switch clears it.

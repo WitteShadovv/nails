@@ -87,6 +87,10 @@ pub struct ErrorBody {
     /// The next NAILS command, when the remedy is one; `null` otherwise. Always
     /// present so a reader can branch on it.
     pub next: Option<NextStep>,
+    /// The override that accepts this refusal for one run, when the command
+    /// takes the flag that covers it; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowable: Option<crate::Allowable>,
 }
 
 impl ErrorBody {
@@ -96,7 +100,16 @@ impl ErrorBody {
             code,
             message: message.into(),
             next: None,
+            allowable: None,
         }
+    }
+
+    /// This refusal, which `allowable` accepts for one run of the command
+    /// that reports it.
+    #[must_use]
+    pub fn accepted_by(mut self, allowable: crate::Allowable) -> Self {
+        self.allowable = Some(allowable);
+        self
     }
 
     /// Append free-form guidance to the message, each line of it on its own
@@ -222,6 +235,19 @@ mod tests {
         assert!(value["error"].get("next").is_some());
         assert_eq!(value["error"]["next"], serde_json::Value::Null);
         assert!(value.get("data").is_none());
+        // An error names an override only when one accepts it.
+        assert!(value["error"].get("allowable").is_none());
+    }
+
+    #[test]
+    fn an_error_a_flag_accepts_names_that_override() {
+        let env = error_envelope(
+            "init",
+            ErrorBody::new("not_separate_volume", "on the decoy's storage")
+                .accepted_by(crate::Allowable::DecoyStorage),
+        );
+        let value: serde_json::Value = serde_json::from_str(&env.to_line()).unwrap();
+        assert_eq!(value["error"]["allowable"], "decoy_storage");
     }
 
     #[test]

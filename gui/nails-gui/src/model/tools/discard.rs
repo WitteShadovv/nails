@@ -20,8 +20,8 @@
 
 use std::path::{Component, Path};
 
-use nails_api::CheckOutcome;
 use nails_api::protocol::{DiscardPlanArgs, DiscardPlanData};
+use nails_api::{Allowable, CheckOutcome};
 
 use super::{Context, ToolKind, error_of, group, row, tool_page};
 use crate::client::{Answer, Plan};
@@ -44,6 +44,11 @@ pub(crate) struct Discard {
     outcome: Option<Outcome>,
     /// An apply deleted something.
     deleted: bool,
+    /// The engine refused the last plan for a hidden volume on this
+    /// computer's storage, which `--allow-decoy-storage` accepts.
+    storage_refused: bool,
+    /// The person allowed that, behind the word, for the next plan.
+    allow_storage: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -113,12 +118,42 @@ impl Discard {
         if label != text::DISCARD_ACTION {
             return None;
         }
+        self.plan()
+    }
+
+    /// The plan of the folder typed, with the hidden volume on this
+    /// computer's storage allowed when the person allowed it.
+    fn plan(&mut self) -> Option<Ask> {
         let target = canonical_folder(&self.folder)?;
         self.outcome = None;
         Some(Ask::Plan(Plan::Discard(DiscardPlanArgs {
             target,
-            allow_decoy_storage: false,
+            allow_decoy_storage: self.allow_storage,
         })))
+    }
+
+    /// Whether the page offers to allow the hidden volume on this
+    /// computer's storage, which the engine named for its refusal.
+    pub(crate) fn offers_storage(&self) -> bool {
+        self.storage_refused && !self.allow_storage
+    }
+
+    /// The refusal the question before allowing it repeats.
+    pub(crate) fn refusal(&self) -> Option<&str> {
+        match &self.outcome {
+            Some(Outcome::Failed { message, .. }) => message.lines().next(),
+            _ => None,
+        }
+    }
+
+    /// The plan again, the hidden volume on this computer's storage allowed
+    /// once its question was answered with the word.
+    pub(crate) fn allow_storage(&mut self) -> Option<Ask> {
+        if !self.offers_storage() {
+            return None;
+        }
+        self.allow_storage = true;
+        self.plan()
     }
 
     /// Take in the answer of a plan that settled, or of the apply.
@@ -134,6 +169,13 @@ impl Discard {
                 return;
             }
         };
+        self.storage_refused = read
+            .error
+            .as_ref()
+            .is_some_and(|error| error.allowable == Some(Allowable::DecoyStorage));
+        // What was allowed held for the plan that answered only: its apply
+        // carries the token, not the flag.
+        self.allow_storage = false;
         self.outcome = Some(match (read.data, error_of(&answer.envelope)) {
             (Some(data), _) if data.removed.is_empty() => Outcome::Nothing(data.target),
             (Some(data), _) => {
@@ -208,6 +250,9 @@ impl Discard {
         // Never in a hidden session, by either reading: fail closed.
         if !cx.hidden {
             page.action = Some(text::DISCARD_ACTION);
+            if self.offers_storage() {
+                page.secondary = Some(text::ALLOW_FOR_DISCARD);
+            }
         }
         page.action_kind = ActionKind::Destructive;
         page.action_locked = !valid_folder(&self.folder);
