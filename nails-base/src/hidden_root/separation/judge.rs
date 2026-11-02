@@ -42,7 +42,7 @@ pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
         .map(str::to_string);
     let stack: Vec<String> = top
         .as_deref()
-        .map(|t| devices.hidden_stack(t))
+        .map(|t| devices.full_stack(t))
         .unwrap_or_default();
     let (claims, entries) = claims(scene, hidden, &stack);
     let verdict = if scene.unreadable.is_empty() {
@@ -156,7 +156,7 @@ fn verdict(
             matches!(
                 devices.nodes.get(above).map(|n| &n.kind),
                 Some(NodeKind::Crypt { .. })
-            ) && devices.hidden_stack(above).contains(node)
+            ) && devices.full_stack(above).contains(node)
         });
         return if encrypted {
             Verdict::ContainerOnDecoy {
@@ -271,7 +271,8 @@ fn claims(
         let line = format!("{} {} {}", entry.spec, entry.file.display(), entry.vfstype);
         let node = devices.node_of_spec(&entry.spec);
         if let Some(node) = node.filter(|n| stack.iter().any(|s| s == n)) {
-            let why = if Some(node) == stack.first().map(String::as_str) {
+            let own = Some(node) == stack.first().map(String::as_str);
+            let why = if own {
                 format!("it mounts the volume at {}", hidden.mount_point.display())
             } else {
                 format!(
@@ -279,7 +280,13 @@ fn claims(
                     hidden.mount_point.display()
                 )
             };
-            entries.push(blocking(FSTAB, line, why));
+            // A line the boot mounts for a device below the volume, outside
+            // the hidden root, mounts one of the decoy's own filesystems or
+            // its swap.
+            let boot_needs = !own
+                && !entry.is_noauto()
+                && (entry.is_swap() || !entry.file.starts_with(&hidden.mount_point));
+            entries.push(blocking(FSTAB, line, why, boot_needs));
             // An entry the boot mounts (or swaps on) makes the device the
             // decoy's own storage as well; only a `noauto` one is a mere
             // recipe for the hidden drive.
@@ -335,6 +342,7 @@ fn claims(
                 CRYPTTAB,
                 line,
                 "it opens the hidden volume of a TrueCrypt or VeraCrypt container".to_string(),
+                false,
             ));
             continue;
         }
@@ -351,7 +359,8 @@ fn claims(
                     hidden.mount_point.display()
                 )
             };
-            entries.push(blocking(CRYPTTAB, line, why));
+            let boot_needs = boot_needs(devices, &claims, hidden, stack, [source, mapping]);
+            entries.push(blocking(CRYPTTAB, line, why, boot_needs));
             continue;
         }
         if entry.is_tcrypt() && source.is_some_and(|s| same_drive(devices, s, stack)) {
@@ -360,6 +369,7 @@ fn claims(
                 file: CRYPTTAB,
                 line,
                 why: "the decoy is configured to open storage on this drive".to_string(),
+                boot_needs: false,
             });
             continue;
         }
@@ -378,13 +388,38 @@ fn claims(
     (claims, entries)
 }
 
-fn blocking(file: &'static str, line: String, why: String) -> EntryFinding {
+fn blocking(file: &'static str, line: String, why: String, boot_needs: bool) -> EntryFinding {
     EntryFinding {
         kind: EntryKind::Blocking,
         file,
         line,
         why,
+        boot_needs,
     }
+}
+
+/// Whether the decoy's boot needs a volume opened from or as one of `named`:
+/// it lies below the decoy's root, another filesystem its boot mounts or its
+/// swap, as far down as their data goes (into an md array too, which the boot
+/// assembles from it). A mount of the hidden volume itself, at the hidden
+/// root or elsewhere, is no such need.
+fn boot_needs(
+    devices: &DeviceMap,
+    claims: &[Claim],
+    hidden: &MountEntry,
+    stack: &[String],
+    named: [Option<&str>; 2],
+) -> bool {
+    claims
+        .iter()
+        .filter(|claim| !claim.noauto && !claim.tops.iter().any(|t| stack.first() == Some(t)))
+        .filter(|claim| match &claim.what {
+            Claimed::Mount(at) => !at.starts_with(&hidden.mount_point),
+            Claimed::Swap(_) => true,
+            Claimed::Encrypted(_) => false,
+        })
+        .flat_map(|claim| claim.tops.iter().flat_map(|top| devices.full_stack(top)))
+        .any(|node| named.contains(&Some(node.as_str())))
 }
 
 /// Whether the device `node` is on a disk the hidden stack also uses.

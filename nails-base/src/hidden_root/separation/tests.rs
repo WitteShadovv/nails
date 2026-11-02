@@ -594,7 +594,7 @@ fn a_device_reached_twice_is_walked_once() {
 }
 
 #[test]
-fn only_the_hidden_roots_stack_goes_on_from_a_partition_into_its_md_array() {
+fn only_the_full_stack_goes_on_from_a_partition_into_its_md_array() {
     let devices = World::default()
         .disk("sda", "8:0")
         .part("sda1", "8:1", "sda")
@@ -604,12 +604,12 @@ fn only_the_hidden_roots_stack_goes_on_from_a_partition_into_its_md_array() {
         .part("md0p1", "259:11", "md0")
         .devices;
     assert_eq!(
-        devices.hidden_stack("md0p1"),
+        devices.full_stack("md0p1"),
         vec!["md0p1", "md0", "sda1", "sdb1"]
     );
     assert_eq!(devices.stack("md0p1"), vec!["md0p1"]);
     // A partition of a disk built on nothing leads into it for neither.
-    assert_eq!(devices.hidden_stack("sda1"), vec!["sda1"]);
+    assert_eq!(devices.full_stack("sda1"), vec!["sda1"]);
 }
 
 #[test]
@@ -1032,20 +1032,95 @@ fn the_crypttab_lines_of_an_md_arrays_devices_name_the_hidden_drive_from_a_parti
             .crypttab("leg0 /dev/sdb1 none luks\nleg1 /dev/sdc1 none luks\n")
             .judge("/mnt");
         assert_eq!(judgement.verdict, Verdict::Separate, "{root}");
-        let lines: Vec<(EntryKind, &str)> = judgement
-            .entries
-            .iter()
-            .map(|entry| (entry.kind, entry.line.as_str()))
-            .collect();
+        // Only the hidden drive needs them: the decoy's boot does not.
         assert_eq!(
-            lines,
+            entry_needs(&judgement),
             [
-                (EntryKind::Blocking, "leg0 /dev/sdb1"),
-                (EntryKind::Blocking, "leg1 /dev/sdc1"),
+                (EntryKind::Blocking, "leg0 /dev/sdb1", false),
+                (EntryKind::Blocking, "leg1 /dev/sdc1", false),
             ],
             "{root}"
         );
     }
+}
+
+/// Each entry's kind and line, and whether the decoy's own boot needs it.
+fn entry_needs(judgement: &Judgement) -> Vec<(EntryKind, &str, bool)> {
+    judgement
+        .entries
+        .iter()
+        .map(|entry| (entry.kind, entry.line.as_str(), entry.boot_needs))
+        .collect()
+}
+
+#[test]
+fn the_crypttab_lines_of_the_array_the_decoys_root_is_on_are_lines_its_boot_needs() {
+    // The decoy's root on md0p2 of an md mirror of two LUKS volumes its
+    // crypttab opens, and the hidden root on md0p1: the hidden root lies in
+    // volumes the decoy opens at every boot.
+    let judgement = World::new(
+        "1 0 259:12 / / rw - ext4 /dev/md0p2 rw\n\
+         5 1 259:11 / /mnt rw - ext4 /dev/md0p1 rw\n",
+    )
+    .disk("sda", "8:0")
+    .part("sda1", "8:1", "sda")
+    .disk("sdb", "8:16")
+    .part("sdb1", "8:17", "sdb")
+    .crypt("dm-20", "254:20", "leg0", &["sda1"])
+    .crypt("dm-21", "254:21", "leg1", &["sdb1"])
+    .node("md0", "9:0", NodeKind::Disk, &["dm-20", "dm-21"])
+    .part("md0p1", "259:11", "md0")
+    .part("md0p2", "259:12", "md0")
+    .fstab("/dev/md0p2 / ext4 defaults 0 1\n")
+    .crypttab("leg0 /dev/sda1 none luks\nleg1 /dev/sdb1 none luks\n")
+    .judge("/mnt");
+    assert_eq!(judgement.verdict, Verdict::Separate);
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            (EntryKind::Blocking, "leg0 /dev/sda1", true),
+            (EntryKind::Blocking, "leg1 /dev/sdb1", true),
+        ]
+    );
+}
+
+#[test]
+fn an_fstab_line_for_a_filesystem_of_the_decoys_below_the_volume_is_one_its_boot_needs() {
+    // A loop device over the decoy's /home partition, partitioned, holds the
+    // hidden root: the decoy's line for /home mounts a device the volume is
+    // stored on.
+    let judgement = plain_decoy("5 1 259:8 / /mnt rw - ext4 /dev/loop1p1 rw\n")
+        .node("loop1", "7:1", NodeKind::Loop { file: None }, &["sda2"])
+        .part("loop1p1", "259:8", "loop1")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [(EntryKind::Blocking, "/dev/sda2 /home ext4", true)]
+    );
+}
+
+#[test]
+fn lines_that_open_and_mount_the_volume_at_boot_are_none_the_decoy_needs() {
+    // The decoy's boot opens the hidden volume and mounts it at the hidden
+    // root: both lines serve the hidden drive alone.
+    let judgement = external_veracrypt()
+        .fstab(
+            "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n\
+             /dev/mapper/veracrypt1 /mnt ext4 defaults 0 2\n",
+        )
+        .crypttab("veracrypt1 /dev/sdb none tcrypt\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_needs(&judgement),
+        [
+            (
+                EntryKind::Blocking,
+                "/dev/mapper/veracrypt1 /mnt ext4",
+                false
+            ),
+            (EntryKind::Blocking, "veracrypt1 /dev/sdb", false),
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------

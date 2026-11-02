@@ -26,7 +26,11 @@
 //! enabler stored on the decoy; the attach gate ignores the finding (writing to
 //! the root stays safe) and the `backend-entries` check reports it. It is no
 //! claim, except an fstab entry the boot mounts or swaps on: that device is the
-//! decoy's own storage too.
+//! decoy's own storage too. A finding the decoy's own boot needs, an fstab
+//! entry that mounts another of its filesystems or its swap or a crypttab entry
+//! that opens a device below one of them, is marked so: the hidden root then
+//! lies on the decoy's own storage and has to move, since removing the entry
+//! would break the decoy.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read; the
 //! root is on a claimed filesystem (a bind, a subvolume, the filesystem
@@ -204,20 +208,21 @@ impl DeviceMap {
         self.by_spec.get(spec).map(String::as_str)
     }
 
-    /// `name` and every device below it. Below a partition of a loop or
-    /// device-mapper device lies that device: the partition's data is where
-    /// the device keeps its own, in an image file or on the devices below it.
+    /// `name` and every device below it, as a claim reaches them. Below a
+    /// partition of a loop or device-mapper device lies that device: the
+    /// partition's data is where the device keeps its own, in an image file
+    /// or on the devices below it. A partition of an md array ends the walk,
+    /// so a partition of the array that the decoy uses shares nothing with
+    /// another one, as two partitions of one disk share nothing.
     fn stack(&self, name: &str) -> Vec<String> {
         self.walk(name, false)
     }
 
-    /// The stack of the hidden root's device `name`: as [`Self::stack`], and
-    /// below a partition of a disk built on other devices (an md array) lie
-    /// that disk and its devices too, which hold the partition's data. A
-    /// claim's stack stops at such a partition, so a partition of the array
-    /// that the decoy uses shares nothing with another one, as two partitions
-    /// of one disk share nothing.
-    fn hidden_stack(&self, name: &str) -> Vec<String> {
+    /// As [`Self::stack`], and below a partition of a disk built on other
+    /// devices (an md array) lie that disk and its devices too: everything
+    /// that holds the partition's data and has to be opened to use it. The
+    /// hidden root is judged by this stack.
+    fn full_stack(&self, name: &str) -> Vec<String> {
         self.walk(name, true)
     }
 
@@ -490,6 +495,10 @@ pub struct EntryFinding {
     pub line: String,
     /// Why it is reported.
     pub why: String,
+    /// Whether the decoy's own boot needs the entry: it mounts the decoy's
+    /// root or another of its filesystems or its swap, or it opens a device
+    /// below one of them. The hidden root then lies on the decoy's storage.
+    pub boot_needs: bool,
 }
 
 /// The judge's answer: the verdict and the entries for the hidden drive.

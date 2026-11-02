@@ -796,10 +796,13 @@ device on the hidden volume's drive or one that cannot be found, or while an
 fstab line mounts it or a device below it, `noauto` lines included. A crypttab
 line that opens only another volume on the same drive (a VeraCrypt outer volume
 on another partition) warns. Remove such a line long before the next use, since
-the decoy's configuration history can keep it. If the check cannot read
-`/etc/crypttab` (some distributions make it readable by root only), it fails and
-asks you to run the command with sudo. `--allow-decoy-storage` does not cover
-it.
+the decoy's configuration history can keep it. A line the decoy's own boot needs
+(one that mounts its root or another of its filesystems or its swap, or opens a
+device below one of them) cannot go: the hidden root then lies on the decoy's own
+storage, and the check says to put it on storage of its own instead. If the
+check cannot read `/etc/crypttab` (some distributions make it readable by root
+only), it fails and asks you to run the command with sudo.
+`--allow-decoy-storage` does not cover it.
 
 ### Encryption headers, high-entropy space and containers
 
