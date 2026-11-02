@@ -27,7 +27,8 @@ use std::path::Path;
 /// - [`ExitStatus::Ok`] when the system is secure
 /// - [`ExitStatus::VerifyWarning`] / [`ExitStatus::VerifyCritical`] for findings
 /// - [`ExitStatus::Config`] when the config file could not be loaded
-/// - [`ExitStatus::Failed`] when the verification itself could not run
+/// - [`ExitStatus::Failed`] when the verification itself could not run, an
+///   offline root with nothing to scan among them
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
@@ -53,14 +54,7 @@ pub fn execute(
 
     let result = match nails_core::app::verify::verify(env, config, &options) {
         Ok(result) => result,
-        Err(e) => {
-            return report_error(
-                json,
-                "verify",
-                ExitStatus::Failed,
-                ErrorBody::new("verify_error", format!("Error running verification: {e}")),
-            );
-        }
+        Err(e) => return report_error(json, "verify", ExitStatus::Failed, error_body(&e)),
     };
 
     if json {
@@ -71,4 +65,20 @@ pub fn execute(
 
     let _ = std::io::stdout().flush();
     verify_exit_status(result.status)
+}
+
+/// The error body of a verification that did not run. An offline root that
+/// holds nothing to scan is `nothing_to_scan`, its message followed by the
+/// mount to make first; any other failure is `verify_error`.
+fn error_body(error: &nails_core::NailsError) -> ErrorBody {
+    match error {
+        nails_core::NailsError::RefusedOfflineRoot { .. } => {
+            ErrorBody::new("nothing_to_scan", error.to_string())
+                .with_hint(error.hint().unwrap_or_default())
+        }
+        _ => ErrorBody::new(
+            "verify_error",
+            format!("Error running verification: {error}"),
+        ),
+    }
 }

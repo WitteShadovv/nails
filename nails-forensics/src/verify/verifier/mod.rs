@@ -153,6 +153,9 @@ impl<F: Filesystem> Verifier<F> {
     /// the live-only checks (running processes, the kernel mount table, open
     /// block devices and the host platform scanners) are skipped, because they
     /// describe the machine running `verify`, not the image under inspection.
+    /// A root that does not exist, is not a folder or is empty holds nothing
+    /// to scan: [`run`](Self::run) refuses it with
+    /// [`NailsError::RefusedOfflineRoot`](crate::NailsError::RefusedOfflineRoot).
     pub fn offline_under(mut self, root: PathBuf) -> Self {
         self.context = VerifyContext::Offline { root };
         self
@@ -212,7 +215,17 @@ impl<F: Filesystem> Verifier<F> {
     /// # Returns
     ///
     /// `VerifyResult` containing all findings and overall status
+    ///
+    /// # Errors
+    ///
+    /// Fails when the offline root holds nothing to scan, which is refused
+    /// before any check runs ([`offline_under`](Self::offline_under)), and
+    /// when a check returns an error.
     pub fn run(&self, deep: bool) -> Result<VerifyResult> {
+        if let VerifyContext::Offline { root } = &self.context {
+            self.refuse_a_root_with_nothing_to_scan(root)?;
+        }
+
         let mut findings = Vec::new();
         let mut config_paths_checked: usize = 0;
         let mut ran: BTreeSet<&'static str> = BTreeSet::new();
@@ -426,6 +439,9 @@ mod deep_scan;
 mod journal_scan;
 #[cfg(test)]
 mod journal_scan_tests;
+mod offline_root;
+#[cfg(test)]
+mod offline_root_tests;
 mod session;
 #[cfg(test)]
 mod session_tests;

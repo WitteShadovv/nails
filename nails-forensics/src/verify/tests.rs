@@ -31,6 +31,15 @@ fn overlay_verifier(mountinfo: &str) -> (MockFilesystem, Verifier<MockFilesystem
     (fs, verifier)
 }
 
+/// Make `root` in `fs` the mount point of a decoy image: a folder that holds
+/// the image's `/etc`. An offline scan refuses a root that is missing or empty.
+#[cfg(test)]
+fn decoy_image(fs: &MockFilesystem, root: &str) {
+    let path = std::path::Path::new(root);
+    fs.mock_set_path_type(root, PathKind::Dir);
+    fs.mock_set_directory_contents(path, vec![path.join("etc")]);
+}
+
 /// The captured scene's hidden root (`/fixture/mnt/hidden root`, printed with
 /// `\040`) is backed by `/dev/mapper/vault`: that open mapper is the hidden
 /// volume's own, reported at Info, not as a foreign second volume.
@@ -332,6 +341,7 @@ fn test_offline_scan_finds_planted_indicator_and_skips_live_checks() {
 
     // A read-only decoy image mounted at /mnt/decoy with a leftover /run/nails.
     let fs = MockFilesystem::new();
+    decoy_image(&fs, "/mnt/decoy");
     fs.mock_set_path_exists("/mnt/decoy/run/nails", true);
     // A live NAILS process and a hidden-volume overlay that an offline scan must
     // ignore: they describe the machine running verify, not the image.
@@ -1591,7 +1601,15 @@ fn deep_scan_unreadable_journal_is_reported_as_not_checked() {
 fn offline_scan_never_searches_the_journal() {
     // An offline image scan has no live journald; the reader must be untouched.
     let reader = FakeJournalReader::unreadable("must not be called offline");
-    let verifier = journal_verifier(reader).offline_under(std::path::PathBuf::from("/mnt/image"));
+    let fs = MockFilesystem::new();
+    decoy_image(&fs, "/mnt/image");
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        ..crate::config::Config::default()
+    };
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
+        .with_journal_reader(Box::new(reader))
+        .offline_under(std::path::PathBuf::from("/mnt/image"));
     let result = verifier.run(true).unwrap();
 
     assert!(result.findings.iter().all(|f| f.category != "journal"));

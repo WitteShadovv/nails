@@ -1092,6 +1092,14 @@ drift) are skipped. A decoy partition you mount by hand in the hidden session is
 outside the fstab policy and is written directly, so mount it read-only
 (`mount -o ro`).
 
+A `--root` that does not exist, is not a folder or is empty is refused before
+anything is scanned (the error `nothing_to_scan`, exit 1): an empty folder is
+what a mount point looks like when the image is not mounted on it, and a scan
+of it would find nothing. Run as root, the check changes no access time of the
+root. `verify` does not check that a filesystem is mounted at `--root`, so a
+folder that holds files is scanned as it is, whether it is a copy of the
+decoy's files or the wrong folder: mount the image before you scan it.
+
 To see the decoy the way an examiner would, add `--examiner`, and `--disk` with
 the raw disk or image behind the mounted root:
 

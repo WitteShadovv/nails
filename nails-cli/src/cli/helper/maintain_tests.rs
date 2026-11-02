@@ -39,6 +39,8 @@ fn result(answer: Answer) -> (ExitStatus, serde_json::Value) {
 fn an_offline_verify_answers_with_the_verify_envelope() {
     let (_dir, config) = scratch_config();
     let image = tempfile::tempdir().unwrap();
+    // An empty image root is refused, so the image holds one folder.
+    std::fs::create_dir(image.path().join("etc")).unwrap();
     let args = VerifyArgs {
         offline: true,
         root: Some(image.path().display().to_string()),
@@ -47,6 +49,7 @@ fn an_offline_verify_answers_with_the_verify_envelope() {
     let (exit, envelope) = result(verify(&RuntimeEnv::default(), &args, Some(&config)));
     assert_eq!(envelope["command"], "verify", "{envelope}");
     assert_eq!(envelope["ok"], exit == ExitStatus::Ok, "{envelope}");
+    assert!(envelope["data"].is_object(), "{envelope}");
     assert!(envelope["data"].get("examiner").is_none(), "{envelope}");
 }
 

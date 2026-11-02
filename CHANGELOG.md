@@ -681,6 +681,15 @@ of this changelog for that version becomes the release notes word for word, and
   decoy, so the check now says to put the hidden root on storage of its own instead. Where it also
   flags lines only the hidden volume needs, it still says to remove those, since once the hidden
   root moves they are flagged no more and would stay behind naming it.
+- `verify --offline` refuses a `--root` that does not exist, is not a folder or is empty before
+  anything is scanned: the error `nothing_to_scan`, exit 1, whose next step is to mount the image
+  read-only first. Every offline check looks below the root, so such a root found nothing and was
+  reported as a secure image with exit 0, and `--examiner` reported no setup trace either. An empty
+  folder is what the mount point looks like when the image was never mounted on it. The root is
+  looked up with `stat` and listed with `O_NOATIME`, as the rest of the scan reads the image, so
+  the check writes nothing and, run as root, changes no access time. A folder that holds files is
+  still scanned as it is, whether a filesystem is mounted there or not, since a copy of the
+  decoy's files and a subvolume of an image mounted from its top level are no mount points either.
 - Activation and `emergency` kill the interactive shells the newest first. A login shell that
   leads a console's session, as util-linux's `login` (Fedora's and Arch's) starts it, hangs up the
   console as it dies, and a desktop started from it in the foreground (`sway` or `startx` typed at

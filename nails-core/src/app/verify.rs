@@ -39,7 +39,10 @@ pub struct VerifyOptions {
 /// together are refused, never dropped: an offline scan without the root of
 /// its image, which would run as a scan of the live host, and an image root
 /// or the examiner's view without an offline scan, or the examiner's disk
-/// without the examiner's view, which would be ignored.
+/// without the examiner's view, which would be ignored. The verifier refuses
+/// an image root that holds nothing to scan
+/// ([`NailsError::RefusedOfflineRoot`](crate::NailsError::RefusedOfflineRoot)),
+/// which would read as a clean image.
 pub fn verify(env: &RuntimeEnv, config: Config, options: &VerifyOptions) -> Result<VerifyResult> {
     if let Some(reason) = refused_combination(options) {
         return Err(crate::NailsError::InvalidArgument(reason.to_string()));
@@ -140,6 +143,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = config_rooted_at(root.path());
         let expected_path = config.state_file_path.clone();
+        // An empty image root is refused, so the image holds one folder.
+        std::fs::create_dir(root.path().join("etc")).unwrap();
 
         let result = verify(
             &RuntimeEnv::default(),
@@ -204,6 +209,37 @@ mod tests {
                 if message.contains("root of the mounted decoy image")),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn an_image_root_with_nothing_to_scan_is_refused() {
+        // A root that does not exist read as a secure image, the examiner's
+        // view with no trace, and so did an empty folder: the mount point of
+        // an image that was never mounted.
+        use crate::error::OfflineRootProblem;
+        let dir = tempfile::tempdir().unwrap();
+        let mount_point = dir.path().join("decoy");
+        std::fs::create_dir(&mount_point).unwrap();
+        for (root, problem) in [
+            (dir.path().join("absent"), OfflineRootProblem::Missing),
+            (mount_point, OfflineRootProblem::Empty),
+        ] {
+            let options = VerifyOptions {
+                examiner: true,
+                ..offline_options(&root)
+            };
+            let error = verify(
+                &RuntimeEnv::default(),
+                config_rooted_at(dir.path()),
+                &options,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, crate::NailsError::RefusedOfflineRoot { root: refused, problem: named }
+                    if *refused == root && *named == problem),
+                "{error:?}"
+            );
+        }
     }
 
     /// An image root, the examiner's view or its disk outside the scan they
