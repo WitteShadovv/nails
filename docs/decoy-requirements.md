@@ -565,7 +565,10 @@ history yourself so an interactive shell has nowhere to write:
   name of their process (bash, zsh, fish, dash, the Korn and C shells, yash,
   nu, elvish and xonsh; [bash-history-forensics.md](bash-history-forensics.md#the-flush-race)
   lists every name). Type the decoy commands in one of them, started under its
-  own name.
+  own name, and with its history off: the kill keeps a shell from writing
+  what it still holds when it ends, not what it writes as each command runs,
+  as ksh93, nu (by default) and elvish do and the other Korn shells and yash
+  can.
 - **No write after every command.** Turn off zsh's `INC_APPEND_HISTORY`,
   `SHARE_HISTORY` and `INC_APPEND_HISTORY_TIME` (NixOS's `programs.zsh` sets
   `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, Home
