@@ -139,12 +139,12 @@ pub fn build_registry<F: Filesystem>(
     config_layer: Option<&dyn crate::platform::ConfigLayer<F>>,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
-        BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
-        DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck,
-        InheritedAutostartCheck, MemoryWipeCheck, MountNamespaceCheck, NetworkToolsCheck,
-        NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck,
-        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck,
+        BackendDetectCheck, BackendEncryptionCheck, BackendEntriesCheck, BinaryLocationCheck,
+        DecoyPersistenceCheck, DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck,
+        IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
+        MountNamespaceCheck, NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck,
+        PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
+        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
@@ -242,6 +242,11 @@ pub fn build_registry<F: Filesystem>(
         BackendDetectCheck::new(hidden_root.clone())
             .allowing_discards(inputs.options.allow_discards),
     ));
+
+    // Warns (never fails) when the hidden root's storage has no encryption of
+    // its own: nothing encrypts it, only the decoy's own encryption does, the
+    // stack cannot be judged, or the root is in RAM. Read-only.
+    registry.add_check(Box::new(BackendEncryptionCheck::new(hidden_root.clone())));
 
     // Check-time advice, keyed on the installed cryptsetup version: it cannot
     // open a VeraCrypt volume made with Argon2id, so one must use PBKDF2. The

@@ -203,7 +203,10 @@ Keep all of it `root`-owned on the hidden volume.
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
    decoy's `/etc/nixos` names the hidden volume's device, mount point or the
    storage it is on, opens its mapping, or names NAILS; [the decoy
-   requirements](decoy-requirements.md#nixos) list each form), `backend-detect`, `storage-readiness`, `swap`,
+   requirements](decoy-requirements.md#nixos) list each form), `backend-detect`,
+   `backend-encryption` (the hidden volume has encryption of its own; it only
+   warns, see [the backends](backends.md#encryption-in-preflight)),
+   `storage-readiness`, `swap`,
    `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks
    and leaves no file and no mount behind (see
@@ -1004,6 +1007,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
 [ ] Reviewed the fstab-policy decisions in `nails check`: the ESP read-only,
     other decoy filesystems overlaid, swap and unmounted disks masked
 [ ] backend-detect preflight warnings resolved or accepted (see backends.md)
+[ ] backend-encryption passes: encryption of the hidden volume's own, not only
+    the decoy's
 [ ] nails binary exists ONLY on the hidden volume; no copies on the decoy
 [ ] Reviewed inherited decoy state in `nails check` (autostart, user services,
     lingering, autologin)

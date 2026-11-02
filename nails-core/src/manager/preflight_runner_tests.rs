@@ -735,6 +735,20 @@ fn backend_entries_runs_right_after_the_hidden_volume_check() {
     assert_eq!(&names[..2], &["hidden-volume", "backend-entries"]);
 }
 
+#[test]
+fn backend_encryption_runs_right_after_backend_detect() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    let detect = names
+        .iter()
+        .position(|name| *name == "backend-detect")
+        .expect("backend-detect is registered");
+    assert_eq!(names[detect + 1], "backend-encryption", "{names:?}");
+}
+
 /// Register one block device under `dir` in the mock sysfs, as the
 /// backend-detect fixtures do: a `dev`/`uevent` pair, an optional dm uuid and
 /// loop backing file, and the runtime discard policy.
