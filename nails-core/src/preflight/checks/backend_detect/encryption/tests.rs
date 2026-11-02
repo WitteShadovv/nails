@@ -1001,6 +1001,55 @@ fn a_partition_beside_the_decoys_on_its_md_array_has_only_the_decoys_encryption(
 }
 
 #[test]
+fn the_decoys_crypttab_volumes_under_its_md_array_stay_the_decoys() {
+    // As above, with the two legs opened by the decoy's crypttab. The judge
+    // counts those lines as lines for the hidden drive, but the decoy's root
+    // on md0p2 still claims the array and every device below it.
+    let plain = "40 1 259:1 / /mnt/data rw - ext4 /dev/md0p1 rw\n";
+    let result = on_the_decoys_md_array(plain, |host| {
+        host.file(
+            "/etc/crypttab",
+            "leg0 /dev/sda1 none luks\nleg1 /dev/sdb1 none luks\n",
+        )
+    });
+    assert!(
+        warning(&result).contains(
+            "is the decoy's own: LUKS mapping dm-20, which also holds the decoy's filesystem at /."
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_md_array_of_volumes_the_decoys_crypttab_opens_for_the_hidden_root_alone_passes() {
+    // Nothing of the decoy's lies on the array: its crypttab lines open only
+    // the hidden drive, which backend-entries refuses, whether the hidden root
+    // is on the array or on a partition of it.
+    for (dev, source) in [("9:0", "/dev/md0"), ("259:1", "/dev/md0p1")] {
+        let result = Host::new(dev, "ext4", source)
+            .disk("sda", "8:0")
+            .partition("sda1", "8:1", "sda")
+            .disk("sdb", "8:16")
+            .partition("sdb1", "8:17", "sdb")
+            .luks("dm-20", "254:20", "leg0", &["sda1"])
+            .luks("dm-21", "254:21", "leg1", &["sdb1"])
+            .device(
+                "/sys/devices/virtual/block/md0",
+                "md0",
+                "9:0",
+                &["dm-20", "dm-21"],
+            )
+            .partition("md0p1", "259:1", "md0")
+            .file(
+                "/etc/crypttab",
+                "leg0 /dev/sda1 none luks\nleg1 /dev/sdb1 none luks\n",
+            )
+            .run();
+        assert_pass(&result, "LUKS mapping dm-20, LUKS mapping dm-21");
+    }
+}
+
+#[test]
 fn a_device_that_keeps_its_data_out_of_sight_cannot_be_confirmed() {
     for (name, dev, kind) in [
         ("zd0", "230:0", "a ZFS volume"),
