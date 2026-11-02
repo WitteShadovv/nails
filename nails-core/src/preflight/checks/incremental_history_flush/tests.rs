@@ -251,7 +251,7 @@ fn a_zdotdir_the_check_cannot_follow_is_a_doubt() {
             "{value}: {message}"
         );
         assert!(
-            message.contains("the startup files in the ZDOTDIR that /home/alice/.zshenv sets"),
+            message.contains("it cannot follow the ZDOTDIR that /home/alice/.zshenv sets"),
             "{message}"
         );
     }
@@ -312,7 +312,7 @@ fn a_startup_file_the_check_cannot_read_is_a_doubt() {
         "{message}"
     );
     assert!(
-        message.contains("The check could not read /etc/zshrc"),
+        message.contains("Beyond that, it could not read /etc/zshrc"),
         "{message}"
     );
 }
@@ -566,4 +566,94 @@ fn missing_startup_files_pass() {
     let fs = MockFilesystem::new();
     assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
     assert!(matches!(bash(&fs), CheckResult::Pass(_)));
+}
+
+/// Home Manager's `.zshrc` options block with `history.share` on.
+const HOME_MANAGER_ZSHRC: &str = "\
+# Set shell options
+set_opts=(
+  HIST_FCNTL_LOCK HIST_IGNORE_DUPS SHARE_HISTORY NO_APPEND_HISTORY
+  NO_EXTENDED_HISTORY
+)
+for opt in \"${set_opts[@]}\"; do
+  setopt \"$opt\"
+done
+unset opt set_opts
+";
+
+#[test]
+fn home_manager_s_zsh_options_and_dot_dir_are_seen() {
+    // In the home.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", HOME_MANAGER_ZSHRC);
+    let message = warning(run(&fs, typed("zsh", &["zsh"])));
+    assert!(
+        message.contains("as you enter it: /home/alice/.zshrc sets SHARE_HISTORY."),
+        "{message}"
+    );
+
+    // In a `dotDir`, whose `.zshenv` the home's sources and which sets
+    // ZDOTDIR.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "source '/home/alice/.config/zsh/.zshenv'\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshenv",
+        "export ZDOTDIR=/home/alice/.config/zsh\n",
+    );
+    seed(&fs, "/home/alice/.config/zsh/.zshrc", HOME_MANAGER_ZSHRC);
+    let message = warning(run(&fs, typed("zsh", &["zsh"])));
+    assert!(
+        message.contains("/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_setting_continued_on_the_next_line_is_seen() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "setopt \\\n  HIST_IGNORE_DUPS \\\n  SHARE_HISTORY\n",
+    );
+    assert!(warning(run(&fs, typed("zsh", &["zsh"]))).contains(".zshrc sets SHARE_HISTORY"));
+
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.bashrc",
+        "PROMPT_COMMAND=\"history \\\n  -a\"\n",
+    );
+    assert!(warning(bash(&fs)).contains(".bashrc runs `history -a` from PROMPT_COMMAND"));
+}
+
+#[test]
+fn a_turn_off_that_may_not_run_does_not_hide_an_option() {
+    for (path, off) in [
+        (
+            "/home/alice/.zshrc",
+            "alias quiet='unsetopt share_history'\n",
+        ),
+        ("/home/alice/.zshrc", "quiet() { unsetopt share_history }\n"),
+        (
+            "/home/alice/.zshrc",
+            "[[ -n $QUIET ]] && unsetopt share_history\n",
+        ),
+        // A zsh that is no login shell reads no .zlogin.
+        ("/home/alice/.zlogin", "unsetopt share_history\n"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/etc/zshrc", "setopt SHARE_HISTORY\n");
+        seed(&fs, path, off);
+        let result = run(&fs, typed("zsh", &["zsh"]));
+        assert!(
+            matches!(&result, CheckResult::Warn(message) if message.contains("sets SHARE_HISTORY")),
+            "{off}: {result:?}"
+        );
+    }
 }
