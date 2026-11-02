@@ -16,9 +16,10 @@
 //! loop device over a file into the devices of the filesystem the loop driver
 //! records for the file (see [`graph`]). Every way down to a device at the
 //! bottom must pass an encrypting layer that is not one of the decoy's: not a
-//! device the decoy claims as its own storage ([`separation::claimed_devices`]).
-//! A logical volume spread over two disks, an md mirror of two or a btrfs
-//! filesystem of two passes only when the way down to each disk does.
+//! device the decoy claims as its own storage ([`separation::claimed_devices`]),
+//! nor a volume opened under any name from a device the decoy's crypttab
+//! opens. A logical volume spread over two disks, an md mirror of two or a
+//! btrfs filesystem of two passes only when the way down to each disk does.
 //!
 //! It only warns. Encryption is not deniability (a LUKS header shows that an
 //! encrypted volume exists), and a root kept in RAM to try NAILS out is no
@@ -348,7 +349,10 @@ impl<'a> Stack<'a> {
             return Cover::Unknown(format!("sysfs shows {name} below itself"));
         }
         let role = role(layer);
-        let claim = self.claimed.get(name);
+        let claim = self
+            .claimed
+            .get(name)
+            .or_else(|| self.decoys_volume_below(name, &role));
         if let (Role::Encrypts(label), None) = (&role, claim) {
             return Cover::Own(BTreeSet::from([format!("{label} mapping {}", layer.name)]));
         }
@@ -385,6 +389,41 @@ impl<'a> Stack<'a> {
             },
             _ => below,
         }
+    }
+
+    /// The decoy's crypttab volume that the encrypting layer `name` opens
+    /// under a name of its own: the device the layer reads its ciphertext
+    /// from (below the inner layers of a cipher chain), when the decoy's
+    /// crypttab opens that device. A mapping the decoy opened itself, which an
+    /// encrypting layer of its own may lie on, does not count.
+    fn decoys_volume_below(&self, name: &str, kind: &Role) -> Option<&'a Claimed> {
+        if !matches!(kind, Role::Encrypts(_)) {
+            return None;
+        }
+        let mut at = name;
+        for _ in 0..MAX_DEVICES {
+            let [next] = self.graph.children(at, self.graph.layers.get(at)?) else {
+                return None;
+            };
+            let below = self.graph.layers.get(next.as_str())?;
+            let inner_cipher = matches!(
+                below.dm.as_ref().map(|dm| &dm.kind),
+                Some(DmKind::CryptSubdev | DmKind::VeraCrypt)
+            );
+            if inner_cipher {
+                at = next;
+                continue;
+            }
+            return match self.claimed.get(next.as_str()) {
+                Some(holds @ Claimed::Encrypted(_))
+                    if !matches!(role(below), Role::Encrypts(_)) =>
+                {
+                    Some(holds)
+                }
+                _ => None,
+            };
+        }
+        None
     }
 
     /// What a way that ends at `layer`, a device the check goes on below
