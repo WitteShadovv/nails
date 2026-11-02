@@ -119,17 +119,28 @@ impl Walker<'_> {
 
     /// The events of one simple command, `words`, which ran `after` a
     /// condition (`&&`, `||`) or not, and in a pipeline or the background or
-    /// not; and which options a run of commands that certainly turn them off
-    /// has turned off since the last other command.
+    /// not; and which options a run of plain `unsetopt`s that certainly turn
+    /// them off has turned off since the last other command.
     pub(super) fn command(&mut self, words: Vec<Word>, after_condition: bool, piped: bool) {
         if words.is_empty() {
             return;
         }
-        let setter = matches!(words[0].text.as_str(), "setopt" | "unsetopt" | "set");
+        // A turn-off that runs as written: a plain `unsetopt`, at the top
+        // level, alone, with no redirection.
+        let plain = match words[0].text.as_str() {
+            "unsetopt" => true,
+            "builtin" => words.get(1).is_some_and(|word| word.text == "unsetopt"),
+            _ => false,
+        };
+        let alone = plain
+            && self.frames.is_empty()
+            && !after_condition
+            && !piped
+            && !self.pending.redirected;
         let start = self.events.len();
         self.run(words, after_condition, piped);
         let events = &self.events[start..];
-        if setter
+        if alone
             && events.iter().all(|event| {
                 matches!(
                     event,

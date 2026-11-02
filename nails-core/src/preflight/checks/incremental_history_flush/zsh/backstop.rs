@@ -29,6 +29,209 @@ pub(super) struct Named {
     pub(super) zdotdirs: usize,
 }
 
+/// The names of zsh's options (zsh 5.9), as zsh compares them: in lower
+/// case, without `_`.
+const ZSH_OPTIONS: &str = "\
+    aliases aliasfuncdef allexport alwayslastprompt alwaystoend appendcreate appendhistory \
+    autocd autocontinue autolist automenu autonamedirs autoparamkeys autoparamslash autopushd \
+    autoremoveslash autoresume badpattern banghist bareglobqual bashautolist bashrematch beep \
+    bgnice braceccl braceexpand bsdecho caseglob casematch casepaths cbases cdablevars \
+    cdsilent chasedots chaselinks checkjobs checkrunningjobs clobber clobberempty \
+    combiningchars completealiases completeinword continueonerror correct correctall \
+    cprecedences cshjunkiehistory cshjunkieloops cshjunkiequotes cshnullcmd cshnullglob \
+    debugbeforecmd dotglob dvorak emacs equals errexit errreturn evallineno exec extendedglob \
+    extendedhistory flowcontrol forcefloat functionargzero glob globalexport globalrcs \
+    globassign globcomplete globdots globstarshort globsubst hashall hashcmds hashdirs \
+    hashexecutablesonly hashlistall histallowclobber histappend histbeep histexpand \
+    histexpiredupsfirst histfcntllock histfindnodups histignorealldups histignoredups \
+    histignorespace histlexwords histnofunctions histnostore histreduceblanks histsavebycopy \
+    histsavenodups histsubstpattern histverify hup ignorebraces ignoreclosebraces ignoreeof \
+    incappendhistory incappendhistorytime interactive interactivecomments ksharrays \
+    kshautoload kshglob kshoptionprint kshtypeset kshzerosubscript listambiguous listbeep \
+    listpacked listrowsfirst listtypes localloops localoptions localpatterns localtraps log \
+    login longlistjobs magicequalsubst mailwarn mailwarning markdirs menucomplete monitor \
+    multibyte multifuncdef multios nomatch notify nullglob numericglobsort octalzeroes onecmd \
+    overstrike pathdirs pathscript physical pipefail posixaliases posixargzero posixbuiltins \
+    posixcd posixidentifiers posixjobs posixstrings posixtraps printeightbit printexitvalue \
+    privileged promptbang promptcr promptpercent promptsp promptsubst promptvars \
+    pushdignoredups pushdminus pushdsilent pushdtohome rcexpandparam rcquotes rcs recexact \
+    rematchpcre restricted rmstarsilent rmstarwait sharehistory shfileexpansion shglob \
+    shinstdin shnullcmd shoptionletters shortloops shortrepeat shwordsplit singlecommand \
+    singlelinezle sourcetrace stdin sunkeyboardhack trackall transientrprompt trapsasync \
+    typesetsilent typesettounset unset verbose vi warncreateglobal warnnestedvar xtrace zle";
+
+/// Whether zsh knows `name` as an option, in any spelling and either form.
+fn zsh_option(name: &str) -> bool {
+    let name: String = name
+        .trim_matches(['\'', '"'])
+        .chars()
+        .filter(|c| *c != '_')
+        .collect::<String>()
+        .to_lowercase();
+    let known = |name: &str| ZSH_OPTIONS.split_whitespace().any(|option| option == name);
+    known(&name) || name.strip_prefix("no").is_some_and(known)
+}
+
+/// The words of `line` in each piece of it where a command can start.
+fn pieces(line: &str) -> impl Iterator<Item = Vec<&str>> {
+    line.split([';', '&', '|', '(', ')', '{', '}', '`'])
+        .map(|piece| piece.split_whitespace().collect())
+}
+
+/// What in zsh code `text`, from the file at `place`, keeps a last `unsetopt`
+/// from settling the doubts before it, as a clause of the warning: what may
+/// redefine `unsetopt`, `setopt` or `builtin`, or any word as a global alias;
+/// a trap, a hook or a plugin manager's deferred loading, which may set an
+/// option again after it; `err_return` or `err_exit`; and what may stop the
+/// file before it.
+pub(super) fn blocker(text: &str, place: &str) -> Option<String> {
+    for line in text.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if redefines(line) {
+            return Some(format!(
+                "an alias or function in {place} can change what the line runs"
+            ));
+        }
+        if hooks(line) {
+            return Some(format!(
+                "a hook or plugin manager in {place} can set it again after the line runs"
+            ));
+        }
+        if errs(line) {
+            return Some(format!(
+                "{place} can turn on err_return or err_exit, which may stop zsh before the line runs"
+            ));
+        }
+        if stops(line) {
+            return Some(format!(
+                "{place} holds what may stop it before the line runs"
+            ));
+        }
+    }
+    None
+}
+
+/// Whether `line` may redefine `unsetopt`, `setopt` or `builtin` (an alias,
+/// a function, `disable`, `aliases[...]`, `functions[...]`) or define a global
+/// alias.
+fn redefines(line: &str) -> bool {
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
+    ["disable", "aliases", "galiases", "saliases", "functions"]
+        .iter()
+        .any(|word| whole_words(line, word) > 0)
+        || ["unsetopt", "setopt", "builtin"].iter().any(|name| {
+            line.match_indices(name).any(|(at, found)| {
+                let before = &line[..at];
+                let after = line[at + found.len()..].trim_start();
+                !before.chars().next_back().is_some_and(part)
+                    && (after.starts_with('=')
+                        || after.starts_with('(')
+                        || before.trim_end().ends_with("function"))
+            })
+        })
+        || pieces(line).any(|words| {
+            words.windows(2).any(|pair| {
+                pair[0] == "alias" && pair[1].starts_with(['-', '+']) && pair[1].contains('g')
+            })
+        })
+}
+
+/// Whether `line` may define a trap or a hook, or load a plugin later, as
+/// zinit's `wait` does: any word of them.
+fn hooks(line: &str) -> bool {
+    [
+        "trap",
+        "precmd",
+        "preexec",
+        "chpwd",
+        "periodic",
+        "sched",
+        "zshexit",
+        "zshaddhistory",
+        "add-zsh-hook",
+        "add-zle-hook-widget",
+        "zle",
+        "zsh-defer",
+        "zinit",
+        "zi",
+        "zplugin",
+    ]
+    .iter()
+    .any(|word| whole_words(line, word) > 0)
+        || line.contains("zle-")
+        || line
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|word| {
+                word.strip_prefix("TRAP").is_some_and(|signal| {
+                    !signal.is_empty()
+                        && signal
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                }) || word
+                    .strip_suffix("_functions")
+                    .is_some_and(|name| !name.is_empty())
+            })
+}
+
+/// Whether `line` may turn on `err_return` or `err_exit`: either named in any
+/// spelling, or `set -e`.
+fn errs(line: &str) -> bool {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|word| {
+            let word: String = word
+                .chars()
+                .filter(|c| *c != '_')
+                .collect::<String>()
+                .to_lowercase();
+            let word = word.strip_prefix("no").unwrap_or(&word);
+            matches!(word, "errexit" | "errreturn")
+        })
+        || pieces(line).any(|words| {
+            words.windows(2).any(|pair| {
+                pair[0] == "set"
+                    && pair[1].starts_with('-')
+                    && !pair[1].starts_with("--")
+                    && pair[1][1..].contains('e')
+            })
+        })
+}
+
+/// Whether `line` holds what zsh may stop a file at: `${name:?...}` or
+/// `${name?...}`, a read-only or a numeric variable, arithmetic in which a
+/// division appears, and `set -o` with a name zsh does not know.
+fn stops(line: &str) -> bool {
+    let within = |open: &str, close: &str| {
+        line.match_indices(open).any(|(at, _)| {
+            line[at..]
+                .split(close)
+                .next()
+                .is_some_and(|inside| inside.contains(['/', '%']))
+        })
+    };
+    line.match_indices("${").any(|(at, _)| {
+        line[at..]
+            .split('}')
+            .next()
+            .is_some_and(|inside| inside.contains('?'))
+    }) || ["readonly", "integer", "float"]
+        .iter()
+        .any(|word| whole_words(line, word) > 0)
+        || within("((", "))")
+        || within("$[", "]")
+        || (whole_words(line, "let") > 0 && line.contains(['/', '%']))
+        || pieces(line).any(|words| {
+            words.windows(2).any(|pair| {
+                matches!(pair[0], "typeset" | "declare" | "local" | "export")
+                    && pair[1].starts_with(['-', '+'])
+                    && pair[1].contains(['r', 'i', 'E', 'F'])
+            }) || words.windows(3).any(|three| {
+                three[0] == "set" && matches!(three[1], "-o" | "+o") && !zsh_option(three[2])
+            })
+        })
+}
+
 /// What the lines of zsh code `text` name.
 pub(super) fn named(text: &str) -> Named {
     let mut named = Named::default();

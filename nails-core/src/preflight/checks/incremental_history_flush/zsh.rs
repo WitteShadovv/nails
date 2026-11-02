@@ -46,11 +46,12 @@
 //! on, and a `source`, `.` or `ZDOTDIR` setting beyond what the walk read is
 //! a doubt.
 //!
-//! A file whose last commands certainly turn all three options off settles
-//! every doubt before it, as zsh runs it top to bottom, except one about
-//! `ZDOTDIR`, one about code read before `.zshrc`, which may move `ZDOTDIR`
-//! and so the `.zshrc` zsh reads, and one about what zsh reads after
-//! `.zshrc`.
+//! A `.zshrc` whose last commands are plain `unsetopt`s that turn all three
+//! options off settles every doubt before it, as zsh runs it top to bottom,
+//! except one about `ZDOTDIR`, one about code read before `.zshrc`, which may
+//! move `ZDOTDIR` and so the `.zshrc` zsh reads, and one about what zsh reads
+//! after `.zshrc`; and none at all when a file zsh reads holds what may undo
+//! the line or stop zsh before it ([`backstop::blocker`]).
 
 mod backstop;
 mod lexer;
@@ -129,6 +130,13 @@ enum Stage {
     After,
 }
 
+/// Where a `.zshrc` ended with a plain `unsetopt` of every option: how many
+/// doubts came before it, and the options as it left them.
+struct Settle {
+    doubts: usize,
+    options: [Option<String>; 3],
+}
+
 /// What a doubt is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -159,6 +167,10 @@ struct Reader<'a, F: Filesystem> {
     /// The doubts so far, each with whether turning the options off at the
     /// end of `.zshrc` does not settle it.
     doubts: Vec<(String, bool)>,
+    /// Where the user's `.zshrc` ended turning every option off.
+    settle: Option<Settle>,
+    /// What in a file read keeps that from settling the doubts before it.
+    blocked: Option<String>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -265,17 +277,35 @@ impl<F: Filesystem> Reader<'_, F> {
             return;
         }
         let place = path.to_string_lossy().into_owned();
-        let (events, confused, ends_off) = events(&text, &place);
+        let read = events(&text, &place);
         self.stack.push(path.to_path_buf());
-        for event in events {
-            self.apply(event, &place, certain && !confused);
+        for event in read.events {
+            self.apply(event, &place, certain && !read.confused);
         }
         self.stack.pop();
-        if certain && !confused && ends_off {
+        if self.blocked.is_none() {
+            self.blocked = if read.confused || read.flawed {
+                Some(format!(
+                    "the check cannot follow all of {place}, which may stop before the line runs"
+                ))
+            } else {
+                backstop::blocker(&text, &place)
+            };
+        }
+        if certain
+            && !read.confused
+            && read.ends_off
+            && self.stage == Stage::Rc
+            && self.stack.is_empty()
+            && path.file_name().is_some_and(|name| name == ".zshrc")
+        {
             // zsh runs a file top to bottom: whatever came before, the
-            // options are off once its last commands ran.
-            self.options = Default::default();
-            self.doubts.retain(|(_, lasting)| *lasting);
+            // options are off once its last commands ran, unless something
+            // [`Reader::blocked`] names keeps them from it.
+            self.settle = Some(Settle {
+                doubts: self.doubts.len(),
+                options: self.options.clone(),
+            });
         }
     }
 
@@ -387,6 +417,9 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
             }
         }
         scan.lasting |= one.lasting;
+        if scan.blocked.is_none() {
+            scan.blocked = one.blocked;
+        }
     }
     scan
 }
@@ -403,6 +436,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         stack: Vec::new(),
         stage: Stage::Before,
         doubts: Vec::new(),
+        settle: None,
+        blocked: None,
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
@@ -433,8 +468,29 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
             reader.file(&dir.join(format!(".{stage}")), certain && dirs.len() == 1);
         }
     }
+    if let Some(settle) = reader.settle.take()
+        && reader.blocked.is_none()
+    {
+        // Every doubt before the line is settled but one it cannot settle,
+        // and an option on there is off.
+        let mut at = 0;
+        reader.doubts.retain(|(_, lasting)| {
+            at += 1;
+            *lasting || at > settle.doubts
+        });
+        for (option, then) in reader.options.iter_mut().zip(settle.options) {
+            if then.is_some() && *option == then {
+                *option = None;
+            }
+        }
+    }
     let mut scan = Scan {
         lasting: reader.doubts.iter().any(|(_, lasting)| *lasting),
+        blocked: if reader.doubts.is_empty() {
+            None
+        } else {
+            reader.blocked
+        },
         doubts: reader.doubts.into_iter().map(|(doubt, _)| doubt).collect(),
         ..Scan::default()
     };

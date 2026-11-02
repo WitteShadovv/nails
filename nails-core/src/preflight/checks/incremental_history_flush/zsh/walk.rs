@@ -142,6 +142,8 @@ struct Pending {
     function_next: bool,
     /// It is a function's whole body, which does not run where it stands.
     body: bool,
+    /// A redirection goes with it.
+    redirected: bool,
 }
 
 /// The walk over one file's tokens, which finds its [`Event`]s.
@@ -408,6 +410,7 @@ impl Walker<'_> {
         let piped = self.pending.piped || piped_after;
         self.command(words, after, piped);
         self.pending.body = false;
+        self.pending.redirected = false;
     }
 
     /// Close the innermost frame with a `}`: a group, a function's body, a
@@ -634,6 +637,7 @@ impl Walker<'_> {
                 Token::Redirect => {
                     // The redirection's target is no word of the command, but
                     // what a here-string or a file name says still counts.
+                    self.pending.redirected = true;
                     if let Some(Token::Word(target)) =
                         self.tokens.next_if(|token| matches!(token, Token::Word(_)))
                     {
@@ -669,8 +673,9 @@ impl Walker<'_> {
 
 /// What the walk over zsh code found: its events, whether it lost track of
 /// the structure, what it read that the lines may name ([`backstop`]),
-/// whether a `return` or `exit` may end the file early, and whether its last
-/// commands turn every one of [`OPTIONS`] off.
+/// whether a `return` or `exit` may end the file early, whether its last
+/// commands turn every one of [`OPTIONS`] off, and whether the lexer found
+/// what it could not read.
 struct Walked {
     events: Vec<Event>,
     confused: bool,
@@ -679,12 +684,28 @@ struct Walked {
     zdotdirs: usize,
     may_stop: bool,
     ends_off: bool,
+    flawed: bool,
+}
+
+/// What a startup file's code does, as [`events`] reads it.
+pub(super) struct Read {
+    pub(super) events: Vec<Event>,
+    /// The check lost track of its structure, so none of its turn-offs
+    /// count.
+    pub(super) confused: bool,
+    /// Its last commands are plain `unsetopt`s, each certainly run at the
+    /// top level with no redirection, that turn every one of [`OPTIONS`] off.
+    pub(super) ends_off: bool,
+    /// The lexer found what it could not read, a parse error zsh may stop
+    /// at among it.
+    pub(super) flawed: bool,
 }
 
 /// Walk zsh code `text` from the file at `place`; what the lexer could not
 /// read is a doubt.
 fn walk_text(text: &str, place: &str) -> Walked {
     let (tokens, flaws) = lex(text);
+    let flawed = !flaws.is_empty();
     let walker = Walker {
         tokens: tokens.into_iter().peekable(),
         place,
@@ -723,17 +744,15 @@ fn walk_text(text: &str, place: &str) -> Walked {
         zdotdirs: walker.zdotdirs,
         may_stop: walker.may_stop,
         ends_off: walker.trailing == [true; 3],
+        flawed,
     }
 }
 
-/// The events of zsh code `text` from the file at `place`, whether the check
-/// lost track of its structure, in which case none of its turn-offs count,
-/// and whether its last commands certainly turn every one of [`OPTIONS`]
-/// off. What the lexer could not read is a doubt, and so is a `source`, a
-/// `.`, an `eval` or a `ZDOTDIR` setting the file's lines hold beyond those
-/// the walk read; an option they name beyond those the tokens name counts as
-/// on ([`backstop`]).
-pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool, bool) {
+/// What zsh code `text` from the file at `place` does ([`Read`]). What the
+/// lexer could not read is a doubt, and so is a `source`, a `.`, an `eval` or
+/// a `ZDOTDIR` setting the file's lines hold beyond those the walk read; an
+/// option they name beyond those the tokens name counts as on ([`backstop`]).
+pub(super) fn events(text: &str, place: &str) -> Read {
     let (tokens, _) = lex(text);
     let mut read = [0; 3];
     for token in &tokens {
@@ -772,5 +791,10 @@ pub(super) fn events(text: &str, place: &str) -> (Vec<Event>, bool, bool) {
             "it cannot follow a ZDOTDIR that a line of {place} may set"
         )));
     }
-    (events, walked.confused, walked.ends_off)
+    Read {
+        events,
+        confused: walked.confused,
+        ends_off: walked.ends_off,
+        flawed: walked.flawed,
+    }
 }
