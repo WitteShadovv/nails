@@ -201,3 +201,10 @@ path = "fuzz_targets/helper_request.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "udev_label"
+path = "fuzz_targets/udev_label.rs"
+test = false
+doc = false
+bench = false

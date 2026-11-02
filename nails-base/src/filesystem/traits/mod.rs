@@ -57,8 +57,8 @@ pub struct MountSource {
     /// (`/dev/mapper/<name>`, or `/dev/dm-N` resolved via
     /// `/sys/block/dm-N/dm/name`).
     pub dm_name: Option<String>,
-    /// The filesystem label, when `/dev/disk/by-label` holds a symlink that
-    /// resolves to the source device.
+    /// The filesystem label, from udev's record of the source device, or,
+    /// without one, from the `/dev/disk/by-label` symlink that resolves to it.
     pub label: Option<String>,
 }
 
