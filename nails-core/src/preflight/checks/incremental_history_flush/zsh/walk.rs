@@ -408,6 +408,11 @@ impl Walker<'_> {
     fn for_header(&mut self) -> Frame {
         let var = match self.tokens.next() {
             Some(Token::Word(word)) if is_name(&word.text) => Some(word.text),
+            // `for (( ...; ...; ... ))`, over nothing the check can list.
+            Some(Token::Arithmetic(text)) => {
+                self.mention(&text);
+                None
+            }
             _ => {
                 self.confused = true;
                 None
@@ -556,6 +561,16 @@ impl Walker<'_> {
                     }
                 }
                 Token::Text(text) => self.mention_options(&text),
+                Token::Unended(delimiter) => self.events.push(Event::Doubt(format!(
+                    "it cannot tell where the here-document that {} opens with `<<{delimiter}` \
+                     ends",
+                    self.place
+                ))),
+                Token::Arithmetic(text) => {
+                    // A command of its own, which sets no option.
+                    function_next = false;
+                    self.mention(&text);
+                }
                 Token::Open | Token::Close
                     if self
                         .frames

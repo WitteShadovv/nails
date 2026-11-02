@@ -747,8 +747,9 @@ of this changelog for that version becomes the release notes word for word, and
   function, an anonymous one too, and not in a group or loop sent into the background or a
   pipeline. A root shell has the option off only when it is off with both homes. A `setopt` with
   an expansion the check cannot list, a sourced file or a `ZDOTDIR` it cannot follow (a process
-  substitution, `: ${ZDOTDIR:=...}`), and a `source` without a file make it warn that it cannot
-  tell, and so do a startup file that is there but cannot be read, which it
+  substitution, `: ${ZDOTDIR:=...}`), a `source` without a file, and a here-document without the
+  line that ends it (a `<<` in `(( ... ))` is a shift) make it warn that it cannot tell, and so
+  do a startup file that is there but cannot be read, which it
   passed over before, and a shell other than bash, zsh, fish and dash. bash's files are read for
   `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going on in
   the next. It still only warns: such a shell has written the
