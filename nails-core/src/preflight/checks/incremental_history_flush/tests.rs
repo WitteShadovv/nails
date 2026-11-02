@@ -337,7 +337,7 @@ proptest::proptest! {
     fn fuzz_no_startup_file_text_makes_the_check_panic(
         text in "(setopt|unsetopt|set|[-+]o|source|\\.|oh-my-zsh\\.sh|ZDOTDIR=|XDG_CONFIG_HOME=|\
                  PROMPT_COMMAND=|history|-a|-w|#|;|&|[|(){}'\"`=~]|\\$HOME|\\$\\{|:-|\
-                 <<-?|<<<|<<=|[<>=]\\(|\\(\\(|\\)\\)|for|>|EOF|2>&1|\\$'|\\$\\(|\\\\'|case|esac|\\$\\{\\||[ \\t\\n]|[a-zé_ç]|\\PC){0,48}"
+                 <<-?|<<<|<<=|[<>=]\\(|\\(\\(|\\)\\)|for|>|EOF|2>&1|\\$'|\\$\\(|\\\\'|case|esac|\\$\\{\\||\\$\\$|\\(#|[ \\t\\n]|[a-zé_ç]|\\PC){0,48}"
     ) {
         let fs = MockFilesystem::new();
         for path in ["/home/alice/.zshenv", "/home/alice/.zshrc", "/home/alice/.bashrc"] {

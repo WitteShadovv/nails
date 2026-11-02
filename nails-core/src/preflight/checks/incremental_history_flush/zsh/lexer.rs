@@ -43,6 +43,15 @@ pub(super) enum Token {
     Redirect,
     /// The body of a here-document: text a command reads, not code.
     Text(String),
+    /// An arithmetic command, `(( ... ))`, as written: no `<<` in it opens
+    /// a here-document.
+    Arithmetic(String),
+}
+
+/// What the lexer could not read as zsh does, kept apart from the tokens so
+/// that no misread structure can take it for one of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Flaw {
     /// The delimiter of a here-document whose body runs to the end of the
     /// text without the line that ends it, or that has none.
     Unended(String),
@@ -54,10 +63,34 @@ pub(super) enum Token {
     /// the lexer cannot read as zsh does, and what that is, as a message
     /// names them.
     Unfollowed(String, String),
-    /// An arithmetic command, `(( ... ))`, as written: no `<<` in it opens
-    /// a here-document.
-    Arithmetic(String),
 }
+
+/// The words after which the next word starts a command, so that a `(` there
+/// opens a subshell, or `((` an arithmetic command, rather than a word.
+const COMMAND_FOLLOWS: &[&str] = &[
+    "if",
+    "then",
+    "else",
+    "elif",
+    "do",
+    "while",
+    "until",
+    "for",
+    "foreach",
+    "select",
+    "repeat",
+    "in",
+    "!",
+    "{",
+    "time",
+    "coproc",
+    "nocorrect",
+    "noglob",
+    "exec",
+    "command",
+    "builtin",
+    "-",
+];
 
 /// Whether `text` is a shell variable's name.
 pub(super) fn is_name(text: &str) -> bool {
@@ -83,6 +116,22 @@ struct Lexer<'a> {
     /// What opens the first expansion that holds what the lexer cannot read
     /// as zsh does, and what that is.
     unfollowed: Option<(String, String)>,
+    /// The here-documents that end without their delimiter's line.
+    unended: Vec<String>,
+}
+
+/// What [`Lexer::balanced`] keeps track of in the commands of a command
+/// substitution.
+struct Commands {
+    /// Whether the next character starts a word.
+    start: bool,
+    /// Whether that word starts a command.
+    command: bool,
+    /// The word being read while nothing but letters, digits and `_` are in
+    /// it.
+    bare: Option<String>,
+    /// The here-documents the line read so far opens.
+    heredocs: Vec<(String, bool)>,
 }
 
 /// What a quoted or nested part of a word that [`Lexer::balanced`] reads is.
@@ -91,9 +140,15 @@ enum Nest {
     /// The commands of `$(...)`, of a process substitution or of a subshell
     /// in one, which end at its `)`.
     Command,
-    /// Parentheses that hold no commands, which end at their `)`: a glob
-    /// qualifier's, or an arithmetic expression's, `((...))` or `$((...))`.
+    /// Parentheses that hold no commands, which end at their `)`: those of a
+    /// word outside a command substitution, a glob qualifier's.
     Group,
+    /// The parentheses of a word in a command substitution, which end at
+    /// their `)`, or with the word at a `;`, `&`, `<` or `>`, as in zsh.
+    Word,
+    /// Arithmetic, `((...))` or `$((...))`, which ends at its `)`, and in
+    /// which zsh counts only parentheses: a quote in it is a character.
+    Arith,
     /// `${...}`, which ends at its `}`; `quoted` inside double quotes, where
     /// a `'` quotes nothing.
     Brace {
@@ -115,6 +170,26 @@ impl Lexer<'_> {
     fn end_word(&mut self) {
         if let Some(word) = self.word.take() {
             self.tokens.push(Token::Word(word));
+        }
+    }
+
+    /// Whether a word read now would start a command, by the token before
+    /// it.
+    fn command_position(&self) -> bool {
+        let mut before = self.tokens.iter().rev();
+        match before.next() {
+            None | Some(Token::End(_) | Token::Open | Token::Close | Token::Text(_)) => true,
+            Some(Token::Word(word)) if !word.expands => {
+                let text = word.text.as_str();
+                COMMAND_FOLLOWS.contains(&text)
+                    || text.split_once('=').is_some_and(|(name, _)| is_name(name))
+                    // `for name (list)`, zsh's short form.
+                    || matches!(
+                        before.next(),
+                        Some(Token::Word(word)) if matches!(word.text.as_str(), "for" | "foreach" | "select")
+                    )
+            }
+            _ => false,
         }
     }
 
@@ -227,13 +302,18 @@ impl Lexer<'_> {
                     (&[Nest::Brace { quoted }], "`${`")
                 } else if self.chars.next_if_eq(&'(').is_some() {
                     self.word().text.push('(');
-                    (&[Nest::Group, Nest::Group], "`$((`")
+                    (&[Nest::Arith, Nest::Arith], "`$((`")
                 } else {
                     (&[Nest::Command], "`$(`")
                 };
                 if !self.balanced(nests, opener) {
                     self.unclosed(opener);
                 }
+            }
+            Some('$') => {
+                // `$$`, the shell's process ID.
+                self.chars.next();
+                self.word().text.push('$');
             }
             _ => {
                 while let Some(c) = self.chars.next_if(|c| {
@@ -249,144 +329,216 @@ impl Lexer<'_> {
     /// Read the rest of `nests`, whose openings were read, the innermost
     /// last, into the current word as written, up to what closes them: past
     /// what the quotes and the expansions nested in them hold, so a `)` or
-    /// `}` in quotes closes nothing, and in a command substitution past its
-    /// comments and here-documents too. What zsh reads otherwise than the
-    /// lexer does, a `case` in a command substitution among it, is noted as
+    /// `}` in quotes closes nothing, in a command substitution past its
+    /// comments and here-documents too, and in arithmetic counting only
+    /// parentheses, as zsh does. What zsh reads otherwise than the lexer
+    /// does, a `case` in a command substitution among it, is noted as
     /// unfollowed in what `opener` opens. Whether they close before the end
     /// of the text.
     fn balanced(&mut self, nests: &[Nest], opener: &str) -> bool {
         let mut stack = nests.to_vec();
-        // In the commands of a command substitution: whether the next
-        // character starts a word, the word being read while nothing but
-        // letters, digits and `_` are in it, and the here-documents the line
-        // read so far opens.
-        let mut start = true;
-        let mut bare = Some(String::new());
-        let mut heredocs: Vec<(String, bool)> = Vec::new();
-        while let Some(&inner) = stack.last() {
+        let mut commands = Commands {
+            start: true,
+            command: true,
+            bare: Some(String::new()),
+            heredocs: Vec::new(),
+        };
+        while let Some(&top) = stack.last() {
             let Some(c) = self.chars.next() else {
                 return false;
             };
             self.word().text.push(c);
-            if inner == Nest::Command {
-                let boundary =
-                    c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>');
-                if boundary {
-                    if bare.as_deref() == Some("case") {
-                        // Its patterns end in a `)` that closes nothing.
-                        self.unfollowed(opener, "a `case`");
-                    }
-                    bare = Some(String::new());
-                } else if c.is_ascii_alphanumeric() || c == '_' {
-                    if let Some(word) = bare.as_mut() {
-                        word.push(c);
-                    }
-                } else {
-                    bare = None;
+            let mut inner = top;
+            if inner == Nest::Word && matches!(c, ';' | '&' | '<' | '>') {
+                // These end the word whose parentheses are open, as in zsh,
+                // which then finds them unbalanced.
+                while stack.last() == Some(&Nest::Word) {
+                    stack.pop();
                 }
-                let at_start = std::mem::replace(&mut start, boundary);
-                match c {
-                    '#' if at_start => {
-                        // A comment, to the end of its line.
-                        while let Some(c) = self.chars.next_if(|c| *c != '\n') {
-                            self.word().text.push(c);
-                        }
-                        continue;
-                    }
-                    '\n' => {
-                        if !self.heredoc_lines(std::mem::take(&mut heredocs)) {
-                            return false;
-                        }
-                        continue;
-                    }
-                    '<' if self.chars.peek() == Some(&'<') => {
-                        self.chars.next();
-                        self.word().text.push('<');
-                        if self.chars.next_if_eq(&'<').is_some() {
-                            // A here-string: its word is the text.
-                            self.word().text.push('<');
-                        } else {
-                            let tabs = self.chars.next_if_eq(&'-').is_some();
-                            let delimiter = self.delimiter();
-                            self.word().text.push_str(&delimiter);
-                            if delimiter.is_empty() {
-                                self.unfollowed(opener, "a here-document with no word to end it");
-                            } else {
-                                heredocs.push((delimiter, tabs));
-                            }
-                        }
-                        continue;
-                    }
-                    '(' if at_start => {
-                        // A subshell, or an arithmetic command, `((...))`.
-                        if self.chars.next_if_eq(&'(').is_some() {
-                            self.word().text.push('(');
-                            stack.extend([Nest::Group, Nest::Group]);
-                        } else {
-                            stack.push(Nest::Command);
-                            start = true;
-                        }
-                        continue;
-                    }
-                    _ => {}
-                }
+                let Some(&outer) = stack.last() else {
+                    return true;
+                };
+                inner = outer;
             }
-            let quoted = matches!(inner, Nest::Brace { quoted: true });
-            match (inner, c) {
-                (Nest::Single | Nest::Ansi, '\'') | (Nest::Back, '`') | (Nest::Double, '"') => {
-                    stack.pop();
-                }
-                (Nest::Single, _) => {}
-                (_, '\\') => {
-                    let escaped = self.chars.next();
-                    self.word().text.extend(escaped);
-                }
-                (Nest::Back | Nest::Ansi, _) => {}
-                (_, '`') => stack.push(Nest::Back),
-                (_, '$') => {
-                    if self.chars.next_if_eq(&'(').is_some() {
-                        self.word().text.push('(');
-                        if self.chars.next_if_eq(&'(').is_some() {
-                            self.word().text.push('(');
-                            stack.extend([Nest::Group, Nest::Group]);
-                        } else {
-                            stack.push(Nest::Command);
-                            start = true;
-                            bare = Some(String::new());
+            match inner {
+                Nest::Command => match self.command_char(c, &mut commands, &mut stack, opener) {
+                    Some(true) => continue,
+                    Some(false) => return false,
+                    None => {}
+                },
+                Nest::Arith => {
+                    // zsh finds the end of arithmetic by its parentheses
+                    // alone.
+                    match c {
+                        '\\' => {
+                            let escaped = self.chars.next();
+                            self.word().text.extend(escaped);
                         }
-                    } else if self.chars.next_if_eq(&'{').is_some() {
-                        self.word().text.push('{');
-                        if self
-                            .chars
-                            .peek()
-                            .is_some_and(|c| c.is_whitespace() || *c == '|')
-                        {
-                            self.unfollowed(opener, "a command");
+                        '(' => stack.push(Nest::Arith),
+                        ')' => {
+                            stack.pop();
                         }
-                        stack.push(Nest::Brace {
-                            quoted: quoted || inner == Nest::Double,
-                        });
-                    } else if !quoted
-                        && inner != Nest::Double
-                        && self.chars.next_if_eq(&'\'').is_some()
-                    {
-                        // `$'...'`; in double quotes a `$` and a `'`.
-                        self.word().text.push('\'');
-                        stack.push(Nest::Ansi);
+                        _ => {}
                     }
+                    continue;
                 }
-                (Nest::Double, _) => {}
-                (_, '"') => stack.push(Nest::Double),
-                (_, '\'') if !quoted => stack.push(Nest::Single),
-                (Nest::Command | Nest::Group, '(') => stack.push(Nest::Group),
-                (Nest::Command | Nest::Group, ')') | (Nest::Brace { .. }, '}') => {
-                    stack.pop();
-                }
-                (Nest::Brace { .. }, '{') => stack.push(Nest::Brace { quoted }),
                 _ => {}
             }
+            self.nested_char(c, inner, &mut stack, &mut commands, opener);
         }
         true
+    }
+
+    /// Read `c` in the commands of a command substitution, as zsh would: a
+    /// comment, the here-documents a line opens, a subshell and the
+    /// parentheses of a word. `Some(true)` when that read it whole,
+    /// `Some(false)` when a here-document runs to the end of the text, and
+    /// `None` when [`Lexer::nested_char`] reads it.
+    fn command_char(
+        &mut self,
+        c: char,
+        commands: &mut Commands,
+        stack: &mut Vec<Nest>,
+        opener: &str,
+    ) -> Option<bool> {
+        let at_start = commands.start;
+        let separator = matches!(c, ';' | '&' | '|' | '\n');
+        let boundary = c.is_whitespace()
+            || separator
+            || matches!(c, ')' | '<' | '>')
+            || (c == '(' && at_start);
+        if boundary {
+            match commands.bare.as_deref() {
+                Some("case") => {
+                    // Its patterns end in a `)` that closes nothing.
+                    self.unfollowed(opener, "a `case`");
+                    commands.command = false;
+                }
+                Some("") => {}
+                Some(word) => commands.command = COMMAND_FOLLOWS.contains(&word),
+                None => commands.command = false,
+            }
+            commands.command |= separator;
+            commands.bare = Some(String::new());
+        } else if c.is_ascii_alphanumeric() || c == '_' || (at_start && matches!(c, '{' | '!')) {
+            if let Some(word) = commands.bare.as_mut() {
+                word.push(c);
+            }
+        } else {
+            commands.bare = None;
+        }
+        commands.start = boundary;
+        match c {
+            '#' if at_start => {
+                // A comment, to the end of its line.
+                while let Some(c) = self.chars.next_if(|c| *c != '\n') {
+                    self.word().text.push(c);
+                }
+            }
+            '\n' => return Some(self.heredoc_lines(std::mem::take(&mut commands.heredocs))),
+            '<' if self.chars.peek() == Some(&'<') => {
+                self.chars.next();
+                self.word().text.push('<');
+                if self.chars.next_if_eq(&'<').is_some() {
+                    // A here-string: its word is the text.
+                    self.word().text.push('<');
+                } else {
+                    let tabs = self.chars.next_if_eq(&'-').is_some();
+                    let delimiter = self.delimiter();
+                    self.word().text.push_str(&delimiter);
+                    if delimiter.is_empty() {
+                        self.unfollowed(opener, "a here-document with no word to end it");
+                    } else {
+                        commands.heredocs.push((delimiter, tabs));
+                    }
+                }
+            }
+            '(' if at_start && commands.command && self.chars.peek() != Some(&'#') => {
+                // A subshell, or an arithmetic command, `((...))`.
+                if self.chars.next_if_eq(&'(').is_some() {
+                    self.word().text.push('(');
+                    stack.extend([Nest::Arith, Nest::Arith]);
+                } else {
+                    stack.push(Nest::Command);
+                    commands.start = true;
+                    commands.command = true;
+                }
+            }
+            // The parentheses of a word: a pattern's, or glob flags',
+            // `(#i)`.
+            '(' => stack.push(Nest::Word),
+            _ => return None,
+        }
+        Some(true)
+    }
+
+    /// Read `c` in `inner`, a part of a word nested in `stack`: a quote, an
+    /// escape, an expansion, or what closes `inner`.
+    fn nested_char(
+        &mut self,
+        c: char,
+        inner: Nest,
+        stack: &mut Vec<Nest>,
+        commands: &mut Commands,
+        opener: &str,
+    ) {
+        let quoted = matches!(inner, Nest::Brace { quoted: true });
+        match (inner, c) {
+            (Nest::Single | Nest::Ansi, '\'') | (Nest::Back, '`') | (Nest::Double, '"') => {
+                stack.pop();
+                commands.start = false;
+            }
+            (Nest::Single, _) => {}
+            (_, '\\') => {
+                let escaped = self.chars.next();
+                self.word().text.extend(escaped);
+            }
+            (Nest::Back | Nest::Ansi, _) => {}
+            (_, '`') => stack.push(Nest::Back),
+            (_, '$') => {
+                if self.chars.next_if_eq(&'(').is_some() {
+                    self.word().text.push('(');
+                    if self.chars.next_if_eq(&'(').is_some() {
+                        self.word().text.push('(');
+                        stack.extend([Nest::Arith, Nest::Arith]);
+                    } else {
+                        stack.push(Nest::Command);
+                        commands.start = true;
+                        commands.command = true;
+                        commands.bare = Some(String::new());
+                    }
+                } else if self.chars.next_if_eq(&'{').is_some() {
+                    self.word().text.push('{');
+                    if self
+                        .chars
+                        .peek()
+                        .is_some_and(|c| c.is_whitespace() || *c == '|')
+                    {
+                        self.unfollowed(opener, "a command");
+                    }
+                    stack.push(Nest::Brace {
+                        quoted: quoted || inner == Nest::Double,
+                    });
+                } else if self.chars.next_if_eq(&'$').is_some() {
+                    // `$$`, the shell's process ID.
+                    self.word().text.push('$');
+                } else if !quoted && inner != Nest::Double && self.chars.next_if_eq(&'\'').is_some()
+                {
+                    // `$'...'`; in double quotes a `$` and a `'`.
+                    self.word().text.push('\'');
+                    stack.push(Nest::Ansi);
+                }
+            }
+            (Nest::Double, _) => {}
+            (_, '"') => stack.push(Nest::Double),
+            (_, '\'') if !quoted => stack.push(Nest::Single),
+            (Nest::Group | Nest::Word, '(') => stack.push(inner),
+            (Nest::Command | Nest::Group | Nest::Word, ')') | (Nest::Brace { .. }, '}') => {
+                commands.start = stack.pop() == Some(Nest::Command);
+            }
+            (Nest::Brace { .. }, '{') => stack.push(Nest::Brace { quoted }),
+            _ => {}
+        }
     }
 
     /// Read the bodies of `heredocs`, opened in a command substitution on the
@@ -499,7 +651,7 @@ impl Lexer<'_> {
             };
             self.tokens.push(Token::Text(body));
             if !closed {
-                self.tokens.push(Token::Unended(delimiter));
+                self.unended.push(delimiter);
             }
         }
     }
@@ -517,7 +669,7 @@ impl Lexer<'_> {
             text: "((".to_string(),
             expands: true,
         });
-        if self.balanced(&[Nest::Group], "`((`") && self.chars.next_if_eq(&')').is_some() {
+        if self.balanced(&[Nest::Arith], "`((`") && self.chars.next_if_eq(&')').is_some() {
             let mut text = self.word.take().expect("the arithmetic command").text;
             text.push(')');
             return Some(text);
@@ -536,7 +688,7 @@ impl Lexer<'_> {
 }
 
 /// The tokens of zsh code `text`.
-pub(super) fn tokens(text: &str) -> Vec<Token> {
+pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
     let mut lexer = Lexer {
         chars: text.chars().peekable(),
         tokens: Vec::new(),
@@ -544,6 +696,7 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
         heredocs: Vec::new(),
         unclosed: None,
         unfollowed: None,
+        unended: Vec::new(),
     };
     while let Some(c) = lexer.chars.next() {
         match c {
@@ -598,6 +751,14 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
                     lexer.word = Some(word);
                     lexer.word_char('(');
                 }
+                // Glob flags, `(#i)`, or a pattern's parentheses where no
+                // command starts: the start of a word. `name ()` defines a
+                // function.
+                None if lexer.chars.peek() == Some(&'#')
+                    || (!lexer.command_position() && lexer.chars.peek() != Some(&')')) =>
+                {
+                    lexer.word_char('(');
+                }
                 None => match lexer.chars.peek() {
                     Some('(') => match lexer.arithmetic() {
                         Some(text) => lexer.tokens.push(Token::Arithmetic(text)),
@@ -639,7 +800,7 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
                     let delimiter = lexer.delimiter();
                     if delimiter.is_empty() {
                         // No word to end it: zsh cannot read it either.
-                        lexer.tokens.push(Token::Unended(delimiter));
+                        lexer.unended.push(delimiter);
                     } else {
                         lexer.heredocs.push((delimiter, tabs));
                     }
@@ -661,16 +822,20 @@ pub(super) fn tokens(text: &str) -> Vec<Token> {
     lexer.end_word();
     // A here-document opened on the last line, which has no body at all.
     for (delimiter, _) in std::mem::take(&mut lexer.heredocs) {
-        lexer.tokens.push(Token::Unended(delimiter));
+        lexer.unended.push(delimiter);
     }
-    lexer
-        .tokens
-        .extend(lexer.unclosed.take().map(Token::Unclosed));
-    lexer.tokens.extend(
+    let mut flaws: Vec<Flaw> = lexer.unended.into_iter().map(Flaw::Unended).collect();
+    flaws.extend(lexer.unclosed.map(Flaw::Unclosed));
+    flaws.extend(
         lexer
             .unfollowed
-            .take()
-            .map(|(opener, what)| Token::Unfollowed(opener, what)),
+            .map(|(opener, what)| Flaw::Unfollowed(opener, what)),
     );
-    lexer.tokens
+    (lexer.tokens, flaws)
+}
+
+/// The tokens of zsh code `text`.
+#[cfg(test)]
+pub(super) fn tokens(text: &str) -> Vec<Token> {
+    lex(text).0
 }
