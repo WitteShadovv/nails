@@ -566,6 +566,10 @@ impl Walker<'_> {
                      ends",
                     self.place
                 ))),
+                Token::Unclosed(opener) => self.events.push(Event::Doubt(format!(
+                    "it cannot tell where the {opener} that {} opens ends",
+                    self.place
+                ))),
                 Token::Arithmetic(text) => {
                     // A command of its own, which sets no option.
                     function_next = false;

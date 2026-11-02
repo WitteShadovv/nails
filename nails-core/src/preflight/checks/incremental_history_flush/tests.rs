@@ -843,6 +843,26 @@ fn a_shift_in_an_arithmetic_command_hides_no_sourced_file() {
 }
 
 #[test]
+fn a_quote_in_a_command_substitution_hides_no_sourced_file() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "x=$(echo \")\")\nsource ~/.zsh/history.zsh\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.zsh/history.zsh",
+        "setopt share_history\n",
+    );
+    let message = warning(zsh(&fs));
+    assert!(
+        message.contains("/home/alice/.zsh/history.zsh sets SHARE_HISTORY"),
+        "{message}"
+    );
+}
+
+#[test]
 fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
     let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
     let fs = MockFilesystem::new();
