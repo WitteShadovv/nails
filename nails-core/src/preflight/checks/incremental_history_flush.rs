@@ -20,17 +20,19 @@
 //! into, as its process tree shows ([`InspectedShell::typed`]), else the
 //! operator's login shell ([`InspectedShell::login`]). Of that shell it reads
 //! the startup files in `/etc` and in the home of the account the shell runs
-//! as, the files the shell itself read when it started ([`startup`]), through
-//! the [`Filesystem`] seam, whose reads open a file with `O_NOATIME`, so a
-//! read as root changes no access time; it never reads a history file. A
-//! startup file that is there but cannot be read makes it warn that it cannot
-//! tell. It knows the settings of bash, zsh and fish, and that dash keeps no
-//! history file; of any other shell it warns that it cannot tell. It does not
-//! see a setting made in a file the startup files source (Oh My Zsh's aside),
-//! one typed into the shell, or a shell started with other startup files
-//! (`--rcfile`, a `ZDOTDIR` from its environment).
+//! as ([`startup`], and [`zsh`], which follows zsh's files as zsh runs them
+//! and fails closed on what it cannot follow), through the [`Filesystem`]
+//! seam: as root a read changes no file's access time, but a link on the way
+//! to one is followed and its access time can change. It never reads a history
+//! file. What it cannot read or follow makes it warn that it cannot tell. It
+//! knows the settings of bash, zsh and fish, and that dash keeps no history
+//! file; of any other shell it warns that it cannot tell. It does not see a
+//! setting typed into the shell, one a plugin manager or an `eval` makes, or
+//! one in the files of a shell started with others (`--rcfile`, a `ZDOTDIR`
+//! from its environment).
 
 mod startup;
+mod zsh;
 
 use std::path::{Path, PathBuf};
 
@@ -186,16 +188,24 @@ impl IncrementalHistoryFlushCheck {
 fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
     let program = nails_teardown::shells::unwrapped(&shell.program);
     let origin = shell.origin.describe();
+    let homes = std::slice::from_ref(&shell.home);
+    let start = match shell.origin {
+        ShellOrigin::Typed => zsh::Start::of(&shell.argv),
+        ShellOrigin::Login => zsh::Start {
+            login: None,
+            every_file: true,
+        },
+    };
     let (scan, settings, remedy) = match kind(program) {
         Kind::Zsh => (
-            startup::zsh(fs, &shell.home),
+            zsh::zsh(fs, homes, start),
             "turns on INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY",
             "Type the decoy commands in a zsh that saves no history (run `unset HISTFILE` in \
              it first), or turn the option off for that zsh (`unsetopt` it at the end of its \
              .zshrc).",
         ),
         Kind::Bash => (
-            startup::bash(fs, &shell.home),
+            startup::bash(fs, homes),
             "runs `history -a` or `history -w` from PROMPT_COMMAND",
             "Type the decoy commands in a bash whose history is off (run `set +o history` in \
              it first), or take `history -a` and `history -w` out of PROMPT_COMMAND.",
@@ -232,8 +242,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
             )),
             Some(doubts) => CheckResult::Warn(format!(
                 "The check cannot tell whether {program}, {origin}, writes each command line to \
-                 its history file as it runs: it could not read {doubts}. If it does, \
-                 {ON_DISK}."
+                 its history file as it runs: {doubts}. If it does, {ON_DISK}."
             )),
         };
     }
@@ -248,7 +257,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
         .map(|write| write.what.as_str())
         .collect();
     let unread = doubts
-        .map(|doubts| format!(" The check could not read {doubts}."))
+        .map(|doubts| format!(" Beyond that, {doubts}."))
         .unwrap_or_default();
     CheckResult::Warn(format!(
         "{program}, {origin}, writes each command line to its history file {when}: {}. So \

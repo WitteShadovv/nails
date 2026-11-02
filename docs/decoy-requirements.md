@@ -549,8 +549,9 @@ history yourself so an interactive shell has nowhere to write:
   own name.
 - **No write after every command.** Turn off zsh's `INC_APPEND_HISTORY`,
   `SHARE_HISTORY` and `INC_APPEND_HISTORY_TIME` (NixOS's `programs.zsh` sets
-  `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, and so does
-  Oh My Zsh), keep `history -a` and `history -w` out of bash's
+  `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, Home
+  Manager's `programs.zsh` through `history.share`, which is on by default,
+  and so does Oh My Zsh), keep `history -a` and `history -w` out of bash's
   `PROMPT_COMMAND`, and type the decoy commands in fish only as
   `fish --private`. A history tool that records each command itself, such as
   atuin, writes as the command runs too. No kill takes back what such a shell

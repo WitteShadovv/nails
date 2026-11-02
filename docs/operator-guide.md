@@ -1283,18 +1283,36 @@ afterwards:
   shell reads when it starts, and never a history file. Run as root, it
   reads them without changing their access times; a link on the way, such as
   NixOS's `/etc/zshrc`, is followed, which can change the link's (see
-  [What `check` touches](#what-check-touches)). zsh's files it reads in the
-  order zsh does, so an `unsetopt` in a later file counts, and from the
-  `ZDOTDIR` a `zshenv` sets. It knows that Oh My Zsh turns `SHARE_HISTORY` on,
-  and it reads the `/etc/zshrc` where NixOS's `programs.zsh` sets that option
-  by default. It warns that it cannot tell when one of those files is there but
-  cannot be read, when a `zshenv` sets a `ZDOTDIR` it cannot follow, or when
-  the shell is not bash, zsh, fish or dash (dash keeps no history file). It
-  does not see a setting made in a file those source
-  (Oh My Zsh's aside) or by a plugin manager, one you typed into the shell,
-  or a shell started with other startup files (`bash --rcfile`, a `ZDOTDIR`
-  from the environment), nor a history tool that keeps its own record of each
-  command, such as atuin.
+  [What `check` touches](#what-check-touches)). bash's files it reads for
+  `history -a` or `history -w` in a file that names `PROMPT_COMMAND`, a line
+  ending in a backslash going on in the next. zsh's it reads as zsh does and
+  fails closed where it cannot follow them:
+
+  - in zsh's order, `zprofile` and `zlogin` only for a login shell, a line
+    ending in a backslash going on in the next, and a file they source read
+    where it is sourced when its path resolves, so it follows Home Manager's
+    `dotDir`, whose `.zshenv` the home's sources and which sets `ZDOTDIR`;
+  - an option counts as on where a `setopt` turns it on, wherever that is,
+    and where any other word names it without a `no` prefix, as Home
+    Manager's `set_opts=(... SHARE_HISTORY ...)` array, an alias or a test
+    does; a loop over a list it can read, as Home Manager's over `set_opts`,
+    is read item by item;
+  - an option counts as off again only where an `unsetopt` turns it off
+    unconditionally at the top of a file zsh certainly reads: one in a
+    condition, a function, an alias, a subshell or a pipeline, after a
+    `return`, or in a `zlogin` of a shell that may not be a login shell,
+    counts as naming the option, which turns it on.
+
+  It knows that Oh My Zsh turns `SHARE_HISTORY` on, and it reads the
+  `/etc/zshrc` where NixOS's `programs.zsh` sets that option by default. It
+  warns that it cannot tell when one of those files is there but cannot be
+  read, when a `setopt` takes an expansion it cannot list, when a sourced
+  file's path or a `ZDOTDIR` does not resolve, or when the shell is not bash,
+  zsh, fish or dash (dash keeps no history file). It does not see a setting
+  made by a plugin manager or an `eval`, one you typed into the shell, a file
+  a bash startup file sources, or a shell started with other startup files
+  (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
+  keeps its own record of each command, such as atuin.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

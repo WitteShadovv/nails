@@ -1,0 +1,540 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use super::*;
+use crate::filesystem::MockFilesystem;
+
+const HOME: &str = "/home/alice";
+
+/// A login shell that reads every startup file.
+const LOGIN: Start = Start {
+    login: Some(true),
+    every_file: true,
+};
+
+/// An interactive shell that is not a login shell.
+const NOT_LOGIN: Start = Start {
+    login: Some(false),
+    every_file: true,
+};
+
+/// A shell the check cannot tell is a login shell.
+const UNKNOWN: Start = Start {
+    login: None,
+    every_file: true,
+};
+
+/// A file of `text` at `path`.
+fn seed(fs: &MockFilesystem, path: &str, text: &str) {
+    fs.mock_set_file_content(path, text);
+}
+
+/// What `fs` sets for a zsh started as `start`, in the home.
+fn scan(fs: &MockFilesystem, start: Start) -> Scan {
+    zsh(fs, &[PathBuf::from(HOME)], start)
+}
+
+/// The settings `fs` turns on, as the warning names them.
+fn on(fs: &MockFilesystem, start: Start) -> Vec<String> {
+    scan(fs, start)
+        .writes
+        .into_iter()
+        .map(|write| write.what)
+        .collect()
+}
+
+/// NixOS's `/etc/zshrc` with `programs.zsh`'s default options, behind its
+/// guard against a second read.
+const NIXOS_ZSHRC: &str = "\
+# /etc/zshrc: DO NOT EDIT -- this file has been generated automatically.
+if [ -n \"$__ETC_ZSHRC_SOURCED\" -o -n \"$NOSYSZSHRC\" ]; then return; fi
+__ETC_ZSHRC_SOURCED=1
+
+# Set zsh options.
+setopt HIST_IGNORE_DUPS SHARE_HISTORY HIST_FCNTL_LOCK
+
+SAVEHIST=2000
+HISTFILE=$HOME/.zsh_history
+. /etc/zinputrc
+";
+
+/// Home Manager's options block, as its zsh module writes it, with
+/// `history.share` on (`share`) or off.
+fn home_manager_options(share: bool) -> String {
+    let share = if share {
+        "SHARE_HISTORY"
+    } else {
+        "NO_SHARE_HISTORY"
+    };
+    format!(
+        "# Set shell options
+set_opts=(
+  HIST_FCNTL_LOCK HIST_IGNORE_DUPS {share} NO_APPEND_HISTORY
+  NO_EXTENDED_HISTORY
+)
+for opt in \"${{set_opts[@]}}\"; do
+  setopt \"$opt\"
+done
+unset opt set_opts
+"
+    )
+}
+
+#[test]
+fn home_manager_s_options_are_read_item_by_item() {
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", &home_manager_options(true));
+    let found = scan(&fs, NOT_LOGIN);
+    assert_eq!(
+        found.writes,
+        vec![Write {
+            what: "/home/alice/.zshrc sets SHARE_HISTORY".to_string(),
+            entered: true,
+        }]
+    );
+    assert!(found.doubts.is_empty(), "{:?}", found.doubts);
+
+    // `history.share = false` turns off what NixOS's /etc/zshrc turned on.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zshrc", &home_manager_options(false));
+    assert_eq!(scan(&fs, NOT_LOGIN), Scan::default());
+}
+
+#[test]
+fn home_manager_s_dot_dir_is_followed_through_the_zshenv_it_sources() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "source '/home/alice/.config/zsh/.zshenv'\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshenv",
+        "# Environment variables\n\
+         . \"/nix/store/x-hm-session-vars/etc/profile.d/hm-session-vars.sh\"\n\
+         export ZDOTDIR=/home/alice/.config/zsh\n",
+    );
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshrc",
+        &home_manager_options(true),
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.config/zsh/.zshrc sets SHARE_HISTORY"]
+    );
+}
+
+#[test]
+fn a_setopt_line_goes_on_after_a_backslash() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "setopt \\\n  HIST_IGNORE_DUPS \\\n  INC_APPEND_HISTORY\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.zshrc sets INC_APPEND_HISTORY"]
+    );
+}
+
+#[test]
+fn a_turn_off_that_may_not_run_leaves_the_option_on() {
+    for off in [
+        "alias quiet='unsetopt share_history'",
+        "quiet() { unsetopt share_history }",
+        "quiet() unsetopt share_history",
+        "function quiet {\n  unsetopt share_history\n}",
+        "[[ -n $QUIET ]] && unsetopt share_history",
+        "[[ -z $QUIET ]] || unsetopt share_history",
+        "if [[ -n $QUIET ]]; then\n  unsetopt share_history\nfi",
+        "case $TERM in\n  dumb) unsetopt share_history ;;\nesac",
+        "while false; do unsetopt share_history; done",
+        "for name in $names; do unsetopt share_history; done",
+        "( unsetopt share_history )",
+        "unsetopt share_history | cat",
+        "unsetopt share_history &",
+        "[[ -n $QUIET ]] && return\nunsetopt share_history",
+        "if true; then\nunsetopt share_history\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+        seed(&fs, "/home/alice/.zshrc", &format!("{off}\n"));
+        let found = on(&fs, NOT_LOGIN);
+        assert_eq!(found.len(), 1, "{off}: {found:?}");
+        assert!(found[0].ends_with("sets SHARE_HISTORY"), "{off}: {found:?}");
+    }
+}
+
+#[test]
+fn a_turn_off_that_certainly_runs_counts() {
+    for off in [
+        "unsetopt share_history",
+        "setopt no_share_history",
+        "set +o sharehistory",
+        "unsetopt share_history || true",
+        "{ unsetopt share_history }",
+        "for name in share_history; do unsetopt $name; done",
+        "noglob unsetopt share_history 2>/dev/null",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+        seed(&fs, "/home/alice/.zshrc", &format!("{off}\n"));
+        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{off}");
+    }
+}
+
+#[test]
+fn a_login_shell_s_files_count_for_a_login_shell_only() {
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(&fs, "/home/alice/.zlogin", "unsetopt share_history\n");
+    seed(&fs, "/home/alice/.zprofile", "setopt inc_append_history\n");
+
+    // A login shell reads both: the turn-off counts, and so does the
+    // turn-on.
+    assert_eq!(
+        on(&fs, LOGIN),
+        ["/home/alice/.zprofile sets INC_APPEND_HISTORY"]
+    );
+    // A shell that is not one reads neither.
+    assert_eq!(on(&fs, NOT_LOGIN), ["/etc/zshrc sets SHARE_HISTORY"]);
+    // One that may be: what they turn on counts, what they turn off does
+    // not.
+    let found = on(&fs, UNKNOWN);
+    assert!(
+        found.contains(&"/home/alice/.zprofile sets INC_APPEND_HISTORY".to_string())
+            && found
+                .iter()
+                .any(|what| what.ends_with("sets SHARE_HISTORY")),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_zsh_that_skips_startup_files_has_no_turn_off_count() {
+    for argv in [&["zsh", "-f"][..], &["zsh", "-d"], &["zsh", "--no-rcs"]] {
+        let argv: Vec<String> = argv.iter().map(|word| word.to_string()).collect();
+        let start = Start::of(&argv);
+        assert!(!start.every_file, "{argv:?}");
+        let fs = MockFilesystem::new();
+        seed(&fs, "/etc/zshenv", "setopt share_history\n");
+        seed(&fs, "/home/alice/.zshrc", "unsetopt share_history\n");
+        assert_eq!(on(&fs, start), ["/home/alice/.zshrc sets SHARE_HISTORY"]);
+    }
+}
+
+#[test]
+fn a_zsh_s_command_line_says_whether_it_is_a_login_shell() {
+    let start = |words: &[&str]| {
+        Start::of(
+            &words
+                .iter()
+                .map(|word| word.to_string())
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(start(&["-zsh"]), LOGIN);
+    assert_eq!(start(&["zsh", "-l"]), LOGIN);
+    assert_eq!(start(&["zsh", "-il"]), LOGIN);
+    assert_eq!(start(&["zsh", "--login"]), LOGIN);
+    assert_eq!(start(&["zsh"]), NOT_LOGIN);
+    assert_eq!(start(&["zsh", "-i", "--", "-l"]), NOT_LOGIN);
+    assert_eq!(
+        start(&["zsh", "-d"]),
+        Start {
+            login: Some(false),
+            every_file: false
+        }
+    );
+}
+
+#[test]
+fn a_setopt_the_check_cannot_list_is_a_doubt() {
+    for line in [
+        "setopt $HISTORY_OPTIONS",
+        "for opt in $opts; do setopt \"$opt\"; done",
+        "setopt -m '*share*'",
+        "set -o $option",
+        "unsetopt ${(k)off}",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        let found = scan(&fs, NOT_LOGIN);
+        assert_eq!(found.doubts.len(), 1, "{line}: {found:?}");
+        assert!(
+            found.doubts[0].starts_with("it cannot tell which options `")
+                && found.doubts[0].ends_with("` in /home/alice/.zshrc turns on"),
+            "{line}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn a_sourced_file_is_followed_where_its_path_resolves() {
+    for (line, path) in [
+        (
+            "source /home/alice/.zsh/history.zsh",
+            "/home/alice/.zsh/history.zsh",
+        ),
+        (". ~/.zsh/history.zsh", "/home/alice/.zsh/history.zsh"),
+        (
+            "source \"${ZDOTDIR:-$HOME}/.zsh/history.zsh\"",
+            "/home/alice/.zsh/history.zsh",
+        ),
+        (
+            "[[ -f $HOME/.zsh/history.zsh ]] && source $HOME/.zsh/history.zsh",
+            "/home/alice/.zsh/history.zsh",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        seed(&fs, path, "setopt share_history\n");
+        assert_eq!(
+            on(&fs, NOT_LOGIN),
+            [format!("{path} sets SHARE_HISTORY")],
+            "{line}"
+        );
+    }
+
+    // A turn-off in a file sourced under a condition does not count.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "[[ -n $QUIET ]] && source ~/.quiet.zsh\n",
+    );
+    seed(&fs, "/home/alice/.quiet.zsh", "unsetopt share_history\n");
+    assert_eq!(on(&fs, NOT_LOGIN).len(), 1);
+
+    // A file that is not there holds nothing; one that sources itself or
+    // another in a loop is read once.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "source ~/.missing.zsh\nsource ~/.a.zsh\n",
+    );
+    seed(&fs, "/home/alice/.a.zsh", "source ~/.b.zsh\n");
+    seed(
+        &fs,
+        "/home/alice/.b.zsh",
+        "source ~/.a.zsh\nsetopt inc_append_history_time\n",
+    );
+    let found = scan(&fs, NOT_LOGIN);
+    assert!(found.doubts.is_empty(), "{found:?}");
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["/home/alice/.b.zsh sets INC_APPEND_HISTORY_TIME"]
+    );
+}
+
+#[test]
+fn a_sourced_file_whose_path_does_not_resolve_is_a_doubt() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "source $ZSH_CUSTOM/history.zsh\n. relative.zsh\n",
+    );
+    let found = scan(&fs, NOT_LOGIN);
+    assert_eq!(
+        found.doubts,
+        [
+            "it cannot follow the file /home/alice/.zshrc sources as `$ZSH_CUSTOM/history.zsh`",
+            "it cannot follow the file /home/alice/.zshrc sources as `relative.zsh`",
+        ]
+    );
+
+    // Sourced files are followed so deep.
+    let fs = MockFilesystem::new();
+    for at in 0..=SOURCE_DEPTH {
+        seed(
+            &fs,
+            &format!("/home/alice/.z{at}"),
+            &format!("source /home/alice/.z{}\n", at + 1),
+        );
+    }
+    seed(&fs, "/home/alice/.zshrc", "source /home/alice/.z0\n");
+    let found = scan(&fs, NOT_LOGIN);
+    assert_eq!(found.doubts.len(), 1, "{found:?}");
+    assert!(found.doubts[0].starts_with("it follows sourced files 8 deep"));
+}
+
+#[test]
+fn oh_my_zsh_turns_share_history_on_where_it_is_loaded() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "export ZSH=\"$HOME/.oh-my-zsh\"\nsource $ZSH/oh-my-zsh.sh\n",
+    );
+    assert_eq!(
+        on(&fs, NOT_LOGIN),
+        ["Oh My Zsh, which /home/alice/.zshrc loads, sets SHARE_HISTORY"]
+    );
+}
+
+#[test]
+fn any_other_word_that_names_an_option_turns_it_on() {
+    for line in [
+        "options[sharehistory]=on",
+        "opts+=(SHARE_HISTORY)",
+        "[[ -o share_history ]] && print shared",
+        "zstyle ':prezto:module:history' options 'share_history'",
+        "local opt=inc_append_history; setopt $opt",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        assert!(!on(&fs, NOT_LOGIN).is_empty(), "{line}");
+    }
+    // Its `no` form, a comment and an unrelated name do not.
+    for line in [
+        "opts=(NO_SHARE_HISTORY)",
+        "# setopt share_history",
+        "setopt hist_ignore_dups  # not share_history",
+        "HISTFILE=~/.zsh_history",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
+        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{line}");
+    }
+}
+
+#[test]
+fn a_structure_the_check_cannot_follow_has_no_turn_off_count() {
+    for text in [
+        "fi\nunsetopt share_history\n",
+        "{\nunsetopt share_history\n",
+        "unsetopt share_history\ndone\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/etc/zshrc", NIXOS_ZSHRC);
+        seed(&fs, "/home/alice/.zshrc", text);
+        assert_eq!(on(&fs, NOT_LOGIN).len(), 1, "{text:?}");
+    }
+}
+
+#[test]
+fn a_zdotdir_set_under_a_condition_adds_where_zsh_may_look() {
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshenv",
+        "[[ -d ~/.config/zsh ]] && export ZDOTDIR=~/.config/zsh\n",
+    );
+    seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
+    seed(
+        &fs,
+        "/home/alice/.config/zsh/.zshrc",
+        "setopt inc_append_history\n",
+    );
+    let found = on(&fs, NOT_LOGIN);
+    assert_eq!(
+        found,
+        [
+            "/home/alice/.config/zsh/.zshrc sets INC_APPEND_HISTORY",
+            "/home/alice/.zshrc sets SHARE_HISTORY",
+        ]
+    );
+
+    // One the check cannot follow stops the reads in the home, and is a
+    // doubt.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshenv", "export ZDOTDIR=$(zdotdir)\n");
+    seed(&fs, "/home/alice/.zshrc", "unsetopt share_history\n");
+    let found = scan(&fs, NOT_LOGIN);
+    assert!(found.writes.is_empty());
+    assert_eq!(
+        found.doubts,
+        ["it cannot follow the ZDOTDIR that /home/alice/.zshenv sets (`$(zdotdir)`)"]
+    );
+}
+
+#[test]
+fn the_tokens_keep_expansions_whole_and_drop_comments() {
+    let words = |text: &str| -> Vec<(String, bool)> {
+        tokens(text)
+            .into_iter()
+            .filter_map(|token| match token {
+                Token::Word(word) => Some((word.text, word.expands)),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        words("echo \"${a:-$(b; c)}\"x 'it''s' a\\ b # c d"),
+        [
+            ("echo".to_string(), false),
+            ("${a:-$(b; c)}x".to_string(), true),
+            ("its".to_string(), false),
+            ("a b".to_string(), false),
+        ]
+    );
+    assert_eq!(
+        tokens("a=(x y\n z) # c\n"),
+        [
+            Token::Array(
+                "a".to_string(),
+                vec![
+                    Word {
+                        text: "x".to_string(),
+                        expands: false
+                    },
+                    Word {
+                        text: "y".to_string(),
+                        expands: false
+                    },
+                    Word {
+                        text: "z".to_string(),
+                        expands: false
+                    },
+                ]
+            ),
+            Token::End(End::Line),
+        ]
+    );
+    assert_eq!(
+        tokens("f() { x } && y || z | w &"),
+        [
+            Token::Word(Word {
+                text: "f".to_string(),
+                expands: false
+            }),
+            Token::Open,
+            Token::Close,
+            Token::Word(Word {
+                text: "{".to_string(),
+                expands: false
+            }),
+            Token::Word(Word {
+                text: "x".to_string(),
+                expands: false
+            }),
+            Token::Word(Word {
+                text: "}".to_string(),
+                expands: false
+            }),
+            Token::End(End::Condition),
+            Token::Word(Word {
+                text: "y".to_string(),
+                expands: false
+            }),
+            Token::End(End::Condition),
+            Token::Word(Word {
+                text: "z".to_string(),
+                expands: false
+            }),
+            Token::End(End::Pipe),
+            Token::Word(Word {
+                text: "w".to_string(),
+                expands: false
+            }),
+            Token::End(End::Background),
+        ]
+    );
+}

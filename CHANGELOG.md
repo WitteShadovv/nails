@@ -726,12 +726,20 @@ of this changelog for that version becomes the release notes word for word, and
   file as it starts the command unless it runs in private mode, nor `history -w`. It now reads
   that shell's startup files in `/etc` and in the home of the account the shell runs as (root's
   for a shell that `sudo -i` opened): the files the shell reads when it starts, and no history
-  file, with the reads that leave access times alone when NAILS runs as root. zsh's are read in
-  the order zsh reads them, so an `unsetopt` in a later file counts, and from the `ZDOTDIR` a
-  `zshenv` sets, and `INC_APPEND_HISTORY_TIME` is named as writing a line once its command ends.
-  An `unsetopt` or a `no_` spelling of an option no longer counts as turning it on. A startup file
-  that is there but cannot be read, which it passed over before, and a shell other than bash, zsh,
-  fish and dash now make it warn that it cannot tell. It still only warns: such a shell has written the
+  file. As root these reads change no file's access time, though a link on the way to one, such as
+  NixOS's `/etc/zshrc`, can still have its own access time changed. zsh's files are read as zsh
+  reads them and fail closed: in zsh's order, `zprofile` and `zlogin` only for a login shell, a
+  line ending in a backslash going on in the next, a sourced file read where it is sourced when
+  its path resolves (so Home Manager's `dotDir`, whose sourced `.zshenv` sets `ZDOTDIR`, is
+  followed), and `INC_APPEND_HISTORY_TIME` named as writing a line once its command ends. An
+  option counts as on where a `setopt` turns it on and where any other word names it without a
+  `no` prefix, as Home Manager's `set_opts=(...)` array does, whose loop is read item by item, and
+  as off again only where an `unsetopt` certainly runs at the top of a file. A `setopt` with an
+  expansion the check cannot list, and a sourced file or a `ZDOTDIR` it cannot follow, make it
+  warn that it cannot tell, and so do a startup file that is there but cannot be read, which it
+  passed over before, and a shell other than bash, zsh, fish and dash. bash's files are read for
+  `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going on in
+  the next. It still only warns: such a shell has written the
   decoy commands before activation starts, so a refusal would take none of them back, and for a
   shell that writes a line once its command ends, a refused activation would add its own.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
