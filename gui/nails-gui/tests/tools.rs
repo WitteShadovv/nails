@@ -356,7 +356,7 @@ fn scan_other_disks_takes_the_disks_named() {
     assert!(screen.shows(text::SCAN_OTHER_WHAT));
     // The switch comes first: it says what the fields take.
     assert_eq!(screen.walk(Key::Tab, 2), [text::BACK, text::SWITCH_IMAGES]);
-    type_into(&screen, text::FIELD_DISKS, "/dev/sdb");
+    type_into(&screen, text::FIELD_DISK_SCAN, "/dev/sdb");
     type_into(&screen, text::FIELD_STOP_AFTER, "64");
     press(&screen, text::SCAN);
     assert_eq!(

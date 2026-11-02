@@ -17,9 +17,9 @@
 //! session, is never sent: the scan waits for a full path.
 
 use nails_api::CheckOutcome;
-use nails_api::protocol::{Op, VerifyArgs, validate};
+use nails_api::protocol::{Op, VerifyArgs};
 
-use super::{Context, ToolKind, error_of, group, row, tool_page};
+use super::{Context, ToolKind, error_of, fits, group, row, tool_page};
 use crate::client::Answer;
 use crate::envelope::{self, ExaminerView, Severity, VerifyData, VerifyStatus};
 use crate::model::{ActionKind, Choice, Field, Page, Switch};
@@ -68,7 +68,7 @@ impl ImageScan {
             disk: (self.examiner && !disk.is_empty()).then(|| disk.to_string()),
             ..VerifyArgs::default()
         };
-        validate(&Op::Verify(args.clone())).ok().map(|()| args)
+        fits(&Op::Verify(args.clone())).then_some(args)
     }
 }
 

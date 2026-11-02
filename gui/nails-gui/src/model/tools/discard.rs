@@ -20,10 +20,10 @@
 
 use std::path::{Component, Path};
 
-use nails_api::protocol::{DiscardPlanArgs, DiscardPlanData};
+use nails_api::protocol::{DiscardPlanArgs, DiscardPlanData, Op};
 use nails_api::{Allowable, CheckOutcome};
 
-use super::{Context, ToolKind, error_of, group, row, tool_page};
+use super::{Context, ToolKind, error_of, fits, group, row, tool_page};
 use crate::client::{Answer, Plan};
 use crate::envelope::{self, DiscardData};
 use crate::model::{ActionKind, Field, Page, Question};
@@ -123,20 +123,27 @@ impl Discard {
     /// computer's storage allowed for that one plan when `allow`. A new plan
     /// ends whatever the last refusal offered.
     fn plan(&mut self, allow: bool) -> Option<Ask> {
-        let target = canonical_folder(&self.folder)?;
+        let args = self.args(allow)?;
         self.outcome = None;
         self.storage_refused = false;
-        Some(Ask::Plan(Plan::Discard(DiscardPlanArgs {
-            target,
+        Some(Ask::Plan(Plan::Discard(args)))
+    }
+
+    /// The plan's arguments for the folder typed, `None` until the helper
+    /// would take them.
+    fn args(&self, allow: bool) -> Option<DiscardPlanArgs> {
+        let args = DiscardPlanArgs {
+            target: canonical_folder(&self.folder)?,
             allow_decoy_storage: allow,
-        })))
+        };
+        fits(&Op::DiscardPlan(args.clone())).then_some(args)
     }
 
     /// Whether the page offers to allow the hidden volume on this
     /// computer's storage: the engine named that for its last refusal, and
     /// a plan of the folder typed can go.
     pub(crate) fn offers_storage(&self) -> bool {
-        self.storage_refused && valid_folder(&self.folder)
+        self.storage_refused && self.args(false).is_some()
     }
 
     /// The refusal the question before allowing it repeats.
@@ -252,7 +259,7 @@ impl Discard {
             }
         }
         page.action_kind = ActionKind::Destructive;
-        page.action_locked = !valid_folder(&self.folder);
+        page.action_locked = self.args(false).is_none();
         page
     }
 }
