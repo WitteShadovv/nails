@@ -144,7 +144,7 @@ of this changelog for that version becomes the release notes word for word, and
   engine confirms first runs as a plan and its apply, and its question sends the plan's token back
   or withdraws the plan at once, and keeps the keyboard until it is answered, Escape cancelling it.
   A question taller than the window scrolls its sentence between its heading and its answers, which
-  stay in view, with the wheel, a drag or the arrow and page keys.
+  stay in view, with the wheel, a drag or, from its buttons, the arrow and page keys.
   A ready decoy activates from the window: Activate… asks first, with what the activation's plan
   says (the advisories the CLI writes before it asks to log out, such as hidden sessions' package
   database no longer following the decoy's, each with its fix, then the logout, each risk allowed,
