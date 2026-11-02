@@ -127,9 +127,9 @@ criteria = "safe-to-deploy"
 notes = "Not audited by this project, and no imported audit covers 2.5.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.async-executor]]
-version = "1.14.0"
+version = "1.14.1"
 criteria = "safe-to-deploy"
-notes = "Not audited by this project, and no imported audit covers 1.14.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
+notes = "Not audited by this project, and no imported audit covers 1.14.1, the release that replaces the yanked 1.14.0. It is in the window through slint (the Slint toolkit the window draws with). Exempted at this version only, so a new version needs an audit or a new exemption."
 
 [[exemptions.async-io]]
 version = "2.6.0"
