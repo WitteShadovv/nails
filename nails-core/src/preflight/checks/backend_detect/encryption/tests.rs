@@ -923,6 +923,50 @@ fn a_partition_of_a_mirror_of_two_encrypted_disks_passes() {
     assert_pass(&result, "LUKS mapping dm-7, LUKS mapping dm-8");
 }
 
+/// The decoy's root on md0p2 of an md array over two LUKS legs its boot
+/// opens without a crypttab line (an initrd's own configuration), with
+/// `hidden` the hidden root's line of the mount table and `extra` what else
+/// the host holds.
+fn on_the_decoys_md_array(hidden: &str, extra: fn(Host) -> Host) -> CheckResult {
+    let host = Host::with_mounts("")
+        .disk("sda", "8:0")
+        .partition("sda1", "8:1", "sda")
+        .disk("sdb", "8:16")
+        .partition("sdb1", "8:17", "sdb")
+        .luks("dm-20", "254:20", "leg0", &["sda1"])
+        .luks("dm-21", "254:21", "leg1", &["sdb1"])
+        .device(
+            "/sys/devices/virtual/block/md0",
+            "md0",
+            "9:0",
+            &["dm-20", "dm-21"],
+        )
+        .partition("md0p1", "259:1", "md0")
+        .partition("md0p2", "259:2", "md0")
+        .file("/etc/fstab", "/dev/md0p2 / ext4 defaults 0 1\n");
+    let host = extra(host);
+    host.fs
+        .mock_set_mount_table(&format!("1 0 259:2 / / rw - ext4 /dev/md0p2 rw\n{hidden}"));
+    host.run()
+}
+
+#[test]
+fn a_partition_beside_the_decoys_on_its_md_array_has_only_the_decoys_encryption() {
+    let plain = "40 1 259:1 / /mnt/data rw - ext4 /dev/md0p1 rw\n";
+    let result = on_the_decoys_md_array(plain, |host| host);
+    assert!(
+        warning(&result).contains(
+            "is the decoy's own: LUKS mapping dm-20, which also holds the decoy's filesystem at /."
+        ),
+        "{result:?}"
+    );
+    // A LUKS volume of its own on md0p1 still passes.
+    let own = "40 1 254:30 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
+    let result =
+        on_the_decoys_md_array(own, |host| host.luks("dm-30", "254:30", "data", &["md0p1"]));
+    assert_pass(&result, "LUKS mapping dm-30");
+}
+
 #[test]
 fn a_device_that_keeps_its_data_out_of_sight_cannot_be_confirmed() {
     for (name, dev, kind) in [
