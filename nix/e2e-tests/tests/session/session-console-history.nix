@@ -24,9 +24,13 @@
 #      ancestor of the activation.
 #   2. The window is the compositor's own child, in its process group, as cage
 #      starts its application.
-#   3. No compositor: `sudo -i` at the prompt opens a root shell, and the
+#   3. The window's shell starts `zsh 2>/dev/null`, and the activation is
+#      typed into that zsh. It is interactive by zsh's rule, which wants only
+#      standard input on a terminal, and writes its history on SIGHUP: the
+#      kill must count it, or the window's shell, dying first, hangs it up.
+#   4. No compositor: `sudo -i` at the prompt opens a root shell, and the
 #      activation is typed into that.
-#   4. On the plain decoy, `sudo nails emergency --poweroff` is typed into a
+#   5. On the plain decoy, `sudo nails emergency --poweroff` is typed into a
 #      window as in 1, and the machine powers off and boots again.
 #
 # After each, back on the decoy, neither testuser nor root has a history
@@ -111,6 +115,7 @@ in
         self.packages.${pkgs.stdenv.hostPlatform.system}.nails
         compositor
         terminal
+        pkgs.zsh
       ];
       # Shadow's login, NixOS's own, leads the console's session itself and
       # starts the shell in it.
@@ -125,7 +130,11 @@ in
     ${testHelpers.canonicalDeactivateFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
-    HISTORIES = ("/home/testuser/.bash_history", "/root/.bash_history")
+    HISTORIES = (
+        "/home/testuser/.bash_history",
+        "/home/testuser/.zsh_history",
+        "/root/.bash_history",
+    )
     IDLE = 400
 
 
@@ -193,6 +202,22 @@ in
             assert ids(terminal)[1] == login, ids(terminal)
 
 
+    def start_zsh_without_errors():
+        """In the window, start zsh with its standard error on /dev/null."""
+        window = int(
+            machine.succeed(
+                "pgrep -u testuser -x bash -P $(pgrep -u testuser -f bin/terminal)"
+            ).strip()
+        )
+        machine.send_chars("zsh 2>/dev/null\n")
+        zsh = int(
+            machine.wait_until_succeeds(
+                f"pgrep -u testuser -x zsh -P {window}", timeout=60
+            ).strip()
+        )
+        assert machine.succeed(f"readlink /proc/{zsh}/fd/2").strip() == "/dev/null"
+
+
     def start_root_shell():
         login = int(machine.succeed("pgrep -u testuser -x bash -t tty1").strip())
         assert ids(login)[1] == login, ids(login)
@@ -242,6 +267,13 @@ in
     machine.wait_for_unit("multi-user.target")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("nails init /mnt/data")
+    # zsh saves its history when it exits or is hung up, not after each
+    # command; the comment at the end of a typed line is one in zsh too.
+    machine.succeed(
+        "install -m 0644 -o testuser -g users /dev/null /home/testuser/.zshrc"
+        " && printf 'HISTFILE=~/.zsh_history\\nSAVEHIST=100\\nsetopt interactive_comments\\n'"
+        " > /home/testuser/.zshrc"
+    )
     machine.succeed(
         f"cat > {CONFIG} <<'EOF'\n"
         "hidden_volume_root = \"/mnt/data\"\n"
@@ -256,6 +288,14 @@ in
             start_idle_processes()
             start_window(layout)
             activate_typed(f"activate-from-a-{layout}-window")
+
+    with subtest("activation typed into a zsh a window's shell started with no error output"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        login_tty1()
+        start_idle_processes()
+        start_window("detached")
+        start_zsh_without_errors()
+        activate_typed("activate-from-a-zsh-without-errors")
 
     with subtest("activation typed into a root shell that sudo -i opened on the console"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
