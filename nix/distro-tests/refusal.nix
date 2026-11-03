@@ -25,8 +25,10 @@
 # the suite's disk-image helpers use, read ext4, and a raw scan misses what a
 # compressed extent holds. The scenario judges the live entries of the mounted
 # disk filesystems and the journal, not an ESP that systemd mounts on demand,
-# swap or deleted data. Like the probes it is a host driver, run by hand on a
-# KVM-capable host (the build server has none), so it is not part of CI.
+# swap or deleted data. Like the probes it is a host driver: it runs on a
+# KVM-capable host by hand (the build server has none), or in the refusal suite
+# of distro-e2e.yml, whose job builds the driver and runs it on a hosted KVM
+# runner.
 {
   self,
   pkgs,
@@ -403,4 +405,12 @@ let
       '';
     };
 in
-lib.mapAttrs' (name: entry: lib.nameValuePair "${name}-refusal" (refusalFor entry)) refusedImages
+{
+  # Image name -> its refusal driver.
+  drivers = lib.mapAttrs (_: refusalFor) refusedImages;
+  # The images whose refusal a run can boot: those pinned or hosted.
+  runnable = builtins.attrNames (lib.filterAttrs (_: distroVm.imageAvailable) refusedImages);
+  # The seconds a run gets, from the boot to its last assertion; a hosted run
+  # stops the driver after them.
+  timeout = 1200;
+}

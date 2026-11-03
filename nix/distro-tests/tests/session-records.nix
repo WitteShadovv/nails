@@ -30,10 +30,11 @@
 # Records are read live in the guest and carried to the host-side readers in
 # nix/e2e-tests/lib/records.py (reading live keeps install, power cycle and
 # session in one QEMU process; a disk image would end QEMU and the next boot would
-# be the pristine cloud image again -- see lib/distro-vm.nix). Like the smoke
-# suite it needs the guest's network to install a record package on Debian, so it
-# runs on nix-vm-test's `driver` target, on a KVM host under the heavy-job lock,
-# never in CI.
+# be the pristine cloud image again -- see lib/distro-vm.nix). It needs the
+# guest's network to install a record package on Debian, so it runs on
+# nix-vm-test's `driver` target, outside the Nix sandbox: on a KVM host, or in the
+# records suite of distro-e2e.yml, whose job runs the driver on a hosted KVM
+# runner.
 {
   self,
   pkgs,

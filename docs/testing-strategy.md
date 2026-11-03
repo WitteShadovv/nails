@@ -103,9 +103,12 @@ the time budgets in `performance` (the `trigger_to_settled` time of activate and
 deactivate and the `trigger_to_backdoor` time of emergency). A time budget turns
 a slow regression into a failing test; budgets need generous headroom on shared
 runners. On Fedora and Arch, which NAILS does not admit yet, a refusal scenario
-run by hand checks that NAILS refuses them, that a refused `activate` changes
-nothing on the hidden root, and that nothing on the decoy's disk filesystems or
-in its journal names the refused run.
+checks that NAILS refuses them, that a refused `activate` changes nothing on the
+hidden root, and that nothing on the decoy's disk filesystems or in its journal
+names the refused run. On Debian 13 and Ubuntu 24.04, a records scenario checks
+that a session kept past five minutes of uptime leaves the decoy's login and
+boot records as a power cycle would. CI runs both on hosted KVM runners every
+night ([ci.md](ci.md#the-vm-tests-distro-e2eyml)).
 
 The dummy links of `network_way_back_kernel.rs` take a new MAC address while
 they are up, so the way back's retry for a driver that refuses one (it takes

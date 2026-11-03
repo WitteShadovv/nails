@@ -1,22 +1,40 @@
 name: Distro E2E
 
-# The portable Debian/Ubuntu smoke suite, run on numtide/nix-vm-test through the
-# NixOS test driver (nix/distro-tests/). It catches overlay-only regressions on
-# a non-NixOS host, which the NixOS-only e2e.yml suite cannot see.
+# The portable distribution tier, run on numtide/nix-vm-test through the NixOS
+# test driver (nix/distro-tests/). It catches regressions on a non-NixOS host,
+# which the NixOS-only e2e.yml suite cannot see. Its suites:
 #
-# This tier is informational: it gates no merge (keep it off branch protection).
-# It runs on a nightly schedule, when a pull request to main or next gets the
-# 'distro-e2e' label, and on manual dispatch or a reusable call. The runner is
-# an input, because each VM needs KVM; a hosted ubuntu-26.04 runner exposes
-# /dev/kvm, and a self-hosted KVM runner is selected by passing its label list.
-# The nightly run of next is a dispatch from next-nightly.yml.
+#   smoke    one smoke scenario per admitted distribution, built with nix build
+#   records  the login- and boot-record scenarios (Debian 13, Ubuntu 24.04)
+#   refusal  the refusal of each pinned image of a family the family table
+#            does not admit (Fedora, Arch)
+#   probe    the fact probes of the images not admitted yet
 #
-# One smoke scenario per distribution runs by default; the whole matrix is kept
-# at or below eight parallel jobs (distributions times their shards), planned by
-# `python3 -m ci.e2e distro-plan`. Adding a distribution is one entry in
+# A records scenario, a refusal and a probe are host drivers: the job builds
+# the driver and runs it on the runner, so every run boots the image again
+# instead of substituting an earlier run from the binary cache.
+#
+# The records and refusal jobs gate: distro-result fails when one of them
+# fails. The smoke scenarios and the probes are informational, and their
+# failure only warns.
+#
+#   pull request to main  smoke, records and refusal, when the 'distro-e2e'
+#   or next               label is added
+#   nightly schedule      smoke, records and refusal; the nightly run of next
+#                         is a dispatch from next-nightly.yml
+#   dispatch or call      the `suite` input: all (smoke, records and refusal,
+#                         the default), one of them, or the probes
+#
+# The runner is an input, because each VM needs KVM; a hosted ubuntu-26.04
+# runner exposes /dev/kvm, and a self-hosted KVM runner is selected by passing
+# its label list.
+#
+# `python3 -m ci.e2e distro-plan` plans the matrix: the smoke shards are kept
+# at or below max-jobs parallel jobs (distributions times their shards), and
+# each driver is a job of its own. Adding a distribution is one entry in
 # nix/distro-tests/images.nix -- this workflow enumerates whatever it reports.
 #
-# A dispatch or call with `suite` set to probe runs the fact probes instead
+# A dispatch or call with `suite` set to probe runs the fact probes
 # (nix/distro-tests/probe.nix): each boots the stock image of a family not
 # admitted yet without nails, and its job uploads the facts it records as a
 # JSON artifact, the record of the matching nix/distro-tests/probe fixture.
@@ -27,19 +45,20 @@ on:
     - cron: "41 3 * * *"
   pull_request:
     branches: [main, next]
-    # The suite runs only when the 'distro-e2e' label is added; the job
-    # conditions below enforce that.
+    # The suites run only when the 'distro-e2e' label is added; the Plan
+    # condition enforces that.
     types: [labeled]
   workflow_dispatch:
     inputs:
       suite:
         description: >-
-          What the VM jobs run: the smoke scenarios, or the fact probes of the
-          images not admitted yet, each uploading its facts as JSON (distros
-          then names probes, such as fedora-44-enforcing)
+          What the VM jobs run: all (the smoke, records and refusal suites),
+          one of those three alone, or the fact probes of the images not
+          admitted yet, each uploading its facts as JSON (distros then names
+          probes, such as fedora-44-enforcing)
         type: choice
-        default: smoke
-        options: [smoke, probe]
+        default: all
+        options: [all, smoke, records, refusal, probe]
       runner:
         description: >-
           runs-on for the VM jobs, as JSON: "ubuntu-26.04" or a label list such
@@ -48,20 +67,21 @@ on:
         default: '"ubuntu-26.04"'
       distros:
         description: >-
-          Space-separated distributions to run (e.g. "debian-13 ubuntu-24.04"),
-          or probes with the probe suite; empty runs every distribution in the
-          image table, or every probe whose image is pinned.
+          Space-separated names to run: distributions (e.g. "debian-13
+          ubuntu-24.04") for the smoke and records suites, images (e.g.
+          "fedora-44") for the refusal suite, probes for the probe suite. Each
+          suite runs what it has of them; empty runs every entry of each suite.
         type: string
         default: ""
       max-jobs:
-        description: Upper bound on parallel distro jobs (distros x shards).
+        description: Upper bound on parallel smoke jobs (distros x shards).
         type: number
         default: 8
   workflow_call:
     inputs:
       suite:
         type: string
-        default: smoke
+        default: all
       runner:
         type: string
         default: '"ubuntu-26.04"'
@@ -81,15 +101,16 @@ permissions:
 concurrency:
   # Every label added to a pull request to main or next starts a run, but
   # only a run for an added 'distro-e2e' label tests anything (the Plan
-  # condition; the suffix below is its exact complement). Every other pull
-  # request run gets its run ID in the group, so it can neither cancel the
-  # suite nor be cancelled. Adding 'distro-e2e' again cancels the pull
+  # condition; the first suffix below is its exact complement). Every other
+  # pull request run gets its run ID in the group, so it can neither cancel
+  # the suites nor be cancelled. Adding 'distro-e2e' again cancels the pull
   # request's run in progress. A scheduled or dispatched run waits for an
   # earlier run of the same event and ref instead; GitHub keeps one waiting
   # run per group, so a newer run replaces one that has not started. A call
-  # counts as its caller's event. A probe run waits in a group of its own, so
-  # it neither waits for a smoke run of the same ref nor replaces one.
-  group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') && format('-{0}', github.run_id) || '' }}${{ inputs.suite == 'probe' && '-probe' || '' }}
+  # counts as its caller's event. A dispatch of one suite waits in a group of
+  # its own, so it neither waits for a run of all of them on the same ref nor
+  # replaces one.
+  group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'distro-e2e' && format('-{0}', github.run_id) || '' }}${{ inputs.suite && inputs.suite != 'all' && format('-{0}', inputs.suite) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -99,15 +120,18 @@ defaults:
 jobs:
   plan:
     name: Plan
-    # On a pull request, run only when the 'distro-e2e' label was added. The
-    # action is checked too, because a call sees its caller's event.
-    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') }}
+    # A run for a label other than 'distro-e2e' tests nothing. The action is
+    # checked, not only the event, because a call sees its caller's event.
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'distro-e2e' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     outputs:
-      suite: ${{ steps.select.outputs.suite }}
+      suites: ${{ steps.select.outputs.suites }}
       runner: ${{ steps.select.outputs.runner }}
       matrix: ${{ steps.matrix.outputs.matrix }}
+      distro-jobs: ${{ steps.matrix.outputs.distro-jobs }}
+      gating: ${{ steps.matrix.outputs.gating }}
+      gating-jobs: ${{ steps.matrix.outputs.gating-jobs }}
 
     steps:
       - name: Checkout repository
@@ -115,7 +139,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Select suite, runner and job ceiling
+      # Without an input (a dispatch or a call sets one), a run is scheduled
+      # or started by the 'distro-e2e' label, and runs every suite but the
+      # probes.
+      - name: Select suites, runner and job ceiling
         id: select
         env:
           SUITE_INPUT: ${{ inputs.suite }}
@@ -123,11 +150,17 @@ jobs:
           MAX_JOBS_INPUT: ${{ inputs.max-jobs }}
         run: |
           set -euo pipefail
-          suite=${SUITE_INPUT:-smoke}
-          if [ "$suite" != smoke ] && [ "$suite" != probe ]; then
-            echo "::error::suite must be smoke or probe, got '$suite'"
-            exit 1
-          fi
+          suites=${SUITE_INPUT:-all}
+          read -ra selected <<< "$suites"
+          for suite in "${selected[@]}"; do
+            case "$suite" in
+              all | smoke | records | refusal | probe) ;;
+              *)
+                echo "::error::suite must be all, smoke, records, refusal or probe, got '$suite'"
+                exit 1
+                ;;
+            esac
+          done
           runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-26.04\"}")
           max_jobs=${MAX_JOBS_INPUT:-8}
           if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
@@ -135,11 +168,11 @@ jobs:
             exit 1
           fi
           {
-            echo "suite=$suite"
+            echo "suites=$suites"
             echo "runner=$runner"
             echo "max-jobs=$max_jobs"
           } >> "$GITHUB_OUTPUT"
-          echo "Suite: $suite, runner: $runner, max jobs: $max_jobs"
+          echo "Suites: $suites, runner: $runner, max jobs: $max_jobs"
 
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
@@ -150,37 +183,57 @@ jobs:
       # of each compiling the static binary (when a cache is configured). A
       # probe boots no nails.
       - name: Build nails
-        if: steps.select.outputs.suite == 'smoke'
+        if: steps.select.outputs.suites != 'probe'
         run: nix build -L --no-link .#nails
 
+      # The records and refusal jobs run as the gating job, apart from the
+      # others, so that distro-result can tell their failure from a smoke
+      # scenario's or a probe's; the planner marks which jobs gate.
       - name: Plan the distro matrix
         id: matrix
         env:
           DISTROS: ${{ inputs.distros }}
-          SUITE: ${{ steps.select.outputs.suite }}
+          SUITES: ${{ steps.select.outputs.suites }}
           MAX_JOBS: ${{ steps.select.outputs.max-jobs }}
         run: |
           set -euo pipefail
           read -ra distros <<< "$DISTROS"
-          matrix=$(python3 -m ci.e2e distro-plan "${distros[@]}" --suite "$SUITE" --max-jobs "$MAX_JOBS")
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          heading="Distro E2E plan"
-          columns="| Distribution | Shard | Scenarios | Timeout (min) |"
-          if [ "$SUITE" = probe ]; then
-            heading="Distro E2E probe plan"
-            columns="| Probe | Shard | Driver | Timeout (min) |"
-          fi
+          read -ra suites <<< "$SUITES"
+          suite_args=()
+          for suite in "${suites[@]}"; do
+            suite_args+=(--suite "$suite")
+          done
+          plan=$(python3 -m ci.e2e distro-plan "${distros[@]}" "${suite_args[@]}" --max-jobs "$MAX_JOBS")
+          matrix=$(jq -c '{include: [.include[] | select(.gating | not)]}' <<< "$plan")
+          gating=$(jq -c '{include: [.include[] | select(.gating)]}' <<< "$plan")
           {
-            echo "## $heading"
-            echo
-            echo "$columns"
-            echo "|---|---|---|---:|"
-            jq -r '.include[] | "| \(.distro) | \(.index)/\(.count) | \(.tests | map("`" + . + "`") | join(" ")) | \(.timeout) |"' <<< "$matrix"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "matrix=$matrix"
+            echo "distro-jobs=$(jq '.include | length' <<< "$matrix")"
+            echo "gating=$gating"
+            echo "gating-jobs=$(jq '.include | length' <<< "$gating")"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$SUITES" = probe ]; then
+            {
+              echo "## Distro E2E probe plan"
+              echo
+              echo "| Probe | Shard | Driver | Timeout (min) |"
+              echo "|---|---|---|---:|"
+              jq -r '.include[] | "| \(.distro) | \(.index)/\(.count) | \(.tests | map("`" + . + "`") | join(" ")) | \(.timeout) |"' <<< "$plan"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Distro E2E plan ($SUITES)"
+              echo
+              echo "| Distribution | Suite | Shard | Scenarios | Gates | Timeout (min) |"
+              echo "|---|---|---|---|---|---:|"
+              jq -r '.include[] | "| \(.distro) | \(.suite) | \(.index)/\(.count) | \(.tests | map("`" + . + "`") | join(" ")) | \(if .gating then "yes" else "no" end) | \(.timeout) |"' <<< "$plan"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   distro:
     name: ${{ matrix.distro }} ${{ matrix.index }}/${{ matrix.count }}
     needs: plan
+    if: needs.plan.outputs.distro-jobs != '0'
     runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -201,7 +254,7 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
       - name: Run the distro smoke scenarios
-        if: needs.plan.outputs.suite == 'smoke'
+        if: matrix.suite == 'smoke'
         env:
           TESTS: ${{ join(matrix.tests, ' ') }}
         run: |
@@ -227,7 +280,7 @@ jobs:
       # NAILS_PROBE_OUT names, and the step adds its log and puts the facts in
       # the job summary.
       - name: Run the probes
-        if: needs.plan.outputs.suite == 'probe'
+        if: matrix.suite == 'probe'
         env:
           TESTS: ${{ join(matrix.tests, ' ') }}
           PROBE_SECONDS: ${{ matrix.seconds }}
@@ -267,7 +320,7 @@ jobs:
       # driver's log; a probe that failed before its record still leaves the
       # log.
       - name: Upload the probe facts
-        if: needs.plan.outputs.suite == 'probe' && !cancelled()
+        if: matrix.suite == 'probe' && !cancelled()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: probe-${{ matrix.distro }}
@@ -275,28 +328,90 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  # The records scenarios and the refusals. Each is a host driver, which the
+  # job builds and runs here as the probe job does, so every run boots the
+  # image afresh; the Debian records scenario installs wtmpdb over the guest's
+  # network, which only a run outside the Nix sandbox has. The driver keeps
+  # its VM state on the root disk, as a probe's does, and the job stops it
+  # after its time limit.
+  gating:
+    name: ${{ matrix.distro }} ${{ matrix.suite }}
+    needs: plan
+    if: needs.plan.outputs.gating-jobs != '0'
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.gating) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
+
+      # A job with no driver would pass having tested nothing, so it fails.
+      - name: Run the ${{ matrix.suite }} driver
+        env:
+          TESTS: ${{ join(matrix.tests, ' ') }}
+          DRIVER_SECONDS: ${{ matrix.seconds }}
+        run: |
+          set -euo pipefail
+          read -ra tests <<< "$TESTS"
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::error::The plan gave this job no driver to run."
+            exit 1
+          fi
+          scratch="$RUNNER_TEMP/vm"
+          mkdir -p "$scratch"
+          for test in "${tests[@]}"; do
+            driver="$RUNNER_TEMP/$test"
+            # Quote the attribute: names such as ubuntu-24.04-records contain a dot.
+            nix build --print-build-logs --out-link "$driver" \
+              ".#legacyPackages.x86_64-linux.e2e-distro.\"$test\""
+            status=0
+            (
+              cd "$scratch"
+              TMPDIR="$scratch" XDG_RUNTIME_DIR="$scratch" \
+                timeout "$DRIVER_SECONDS" "$driver/bin/test-driver" </dev/null
+            ) || status=$?
+            if [ "$status" -eq 124 ]; then
+              echo "::error::$test ran past its time limit of $DRIVER_SECONDS s."
+            fi
+            if [ "$status" -ne 0 ]; then
+              exit "$status"
+            fi
+          done
+
   distro-result:
     name: distro-result
-    needs: [plan, distro]
+    needs: [plan, distro, gating]
     # !cancelled(), not always(): a run cancelled by a newer 'distro-e2e'
     # label reports nothing, rather than a plan or scenario failure it never
-    # had. A skipped check counts as passed, so revisit this before the lane
-    # becomes a required check.
+    # had. A skipped check counts as passed, and a run for another label
+    # passes without testing anything, under this same name, so revisit this
+    # before the lane becomes a required check.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     steps:
       - name: Report the outcome
+        id: report
         env:
-          SUITE: ${{ needs.plan.outputs.suite }}
+          SUITES: ${{ needs.plan.outputs.suites }}
+          DISTRO_JOBS: ${{ needs.plan.outputs.distro-jobs }}
+          GATING_JOBS: ${{ needs.plan.outputs.gating-jobs }}
           PLAN_RESULT: ${{ needs.plan.result }}
           DISTRO_RESULT: ${{ needs.distro.result }}
+          GATING_RESULT: ${{ needs.gating.result }}
         run: |
-          echo "plan: $PLAN_RESULT, distro: $DISTRO_RESULT"
-          # Informational tier: a skipped plan (not a 'distro-e2e' label
-          # event) is success, and a failure is surfaced but does not gate a
-          # merge until this lane is promoted to required.
+          echo "plan: $PLAN_RESULT, distro: $DISTRO_RESULT, gating: $GATING_RESULT"
           if [ "$PLAN_RESULT" = skipped ]; then
             echo "Not a 'distro-e2e' label event; nothing ran."
             exit 0
@@ -305,15 +420,31 @@ jobs:
             echo "::error::Planning the distro run failed."
             exit 1
           fi
-          if [ "$DISTRO_RESULT" != success ] && [ "$DISTRO_RESULT" != skipped ]; then
-            if [ "$SUITE" = probe ]; then
-              echo "::warning::One or more distro probes failed."
+          # Fail closed: a plan that left no suite or no job count behind
+          # would let every job be skipped and pass.
+          if [ -z "$SUITES" ] || [ -z "$DISTRO_JOBS" ] || [ -z "$GATING_JOBS" ]; then
+            echo "::error::The plan set no suites or job counts (suites '$SUITES', jobs '$DISTRO_JOBS' and '$GATING_JOBS')."
+            exit 1
+          fi
+          status=0
+          # The records and refusal jobs gate; a planned job that was skipped
+          # tested nothing and fails as well.
+          if [ "$GATING_JOBS" != 0 ] && [ "$GATING_RESULT" != success ]; then
+            echo "::error::One or more records or refusal scenarios failed or did not run ($GATING_RESULT)."
+            status=1
+          fi
+          # The smoke scenarios and the probes are informational: a failure is
+          # surfaced but does not gate.
+          if [ "$DISTRO_JOBS" != 0 ] && [ "$DISTRO_RESULT" != success ]; then
+            if [ "$SUITES" = probe ]; then
+              echo "::warning::One or more distro probes failed or did not run ($DISTRO_RESULT)."
             else
-              echo "::warning::One or more distro smoke scenarios failed."
+              echo "::warning::One or more distro smoke scenarios failed or did not run ($DISTRO_RESULT)."
             fi
           fi
-          if [ "$SUITE" = probe ]; then
+          if [ "$SUITES" = probe ]; then
             echo "Distro probes finished."
           else
-            echo "Distro smoke tier finished."
+            echo "Distro E2E finished ($SUITES)."
           fi
+          exit "$status"

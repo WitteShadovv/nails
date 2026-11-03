@@ -732,6 +732,24 @@ by mapping over this table, so nothing else changes. Once its runs have printed
 the failed units of every listing, give it a `knownFailedUnits`, with an empty
 phase where none was failed.
 
+### The login- and boot-record scenarios
+
+`records.nix` runs `tests/session-records.nix` on Debian 13 and Ubuntu 24.04,
+as one host driver per distribution (`<distro>-records`). A whole-root session
+returns to the decoy through a soft-reboot, and the decoy's own writers record
+that start: on Debian 13 wtmpdb's boot writer, which the cloud image lacks and
+the scenario installs over the guest's network, and on Ubuntu 24.04 the classic
+wtmp boot record of systemd 255. In one QEMU process the scenario power-cycles
+the decoy for a reference, keeps a session until the kernel has been up for
+more than five minutes (wtmpdb's threshold), deactivates, and asserts that the
+session added one boot, as a power cycle does: named reboot, dated at the way
+back, no earlier than anything before it, and no crash. It also asserts that
+the pieces the way back leaves in `/run` are gone and that `/run` is `noexec`
+again where the decoy had it so. A plain soft-reboot afterwards is the positive
+control and must leave the trace. NixOS is not in it: its records already read
+as a power cycle. CI runs it in the records suite of `distro-e2e.yml`, and its
+driver runs by hand as the refusal's below.
+
 ### The refusal of Fedora and Arch
 
 Fedora and Arch are in the image table, but the family table does not admit
@@ -764,8 +782,9 @@ data, such as old names that btrfs's copy-on-write metadata can keep. Admitting
 a family makes its scenario fail, so the commit that admits a family takes it
 out of the scenario.
 
-Like the probes (`probe.nix`), it needs KVM and runs by hand, outside CI. The
-driver keeps the VM state in `TMPDIR`; point it at a directory on disk:
+Like the probes (`probe.nix`), it needs KVM. CI runs it in the refusal suite of
+`distro-e2e.yml`. By hand, the driver keeps the VM state in `TMPDIR`; point it
+at a directory on disk:
 
 ```sh
 nix build .#legacyPackages.x86_64-linux.e2e-distro.fedora-44-refusal -o fedora-44-refusal
@@ -777,13 +796,18 @@ TMPDIR=/var/tmp/r XDG_RUNTIME_DIR=/var/tmp/r ./fedora-44-refusal/bin/test-driver
 
 The tier needs KVM, so it is a VM tier, not a container one. A hosted
 `ubuntu-26.04` runner exposes `/dev/kvm`; a self-hosted KVM runner is selected by
-passing its label list. The CI matrix is planned by
-`python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs
-(distributions times their shards). `.github/workflows/distro-e2e.yml` runs it on
-a nightly schedule, when a pull request gets the `distro-e2e` label, and on
-manual dispatch, with the runner as an input. The tier is informational and
-gates no merge until promoted to a required check. The NixOS suite in `e2e.yml`
-is unchanged and stays NixOS-only.
+passing its label list. `.github/workflows/distro-e2e.yml` runs it in four
+suites: `smoke`, `records` and `refusal`, which run together as `all`, and
+`probe`. The CI matrix is planned by `python3 -m ci.e2e distro-plan`: the smoke
+shards are kept at or below eight parallel jobs (distributions times their
+shards), and each records scenario, refusal and probe is a job of its own that
+builds its driver and runs `bin/test-driver` on the runner. The nightly runs
+run `all`, and so does a pull request when it gets the `distro-e2e` label. A
+dispatch takes the suite and the runner as inputs. The records and refusal jobs
+gate: the workflow's `distro-result` fails when one of them fails. The smoke
+scenarios and the probes are informational
+([details](../../docs/ci.md#the-vm-tests-distro-e2eyml)). The NixOS suite in
+`e2e.yml` is unchanged and stays NixOS-only.
 
 Build one scenario directly:
 
