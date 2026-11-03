@@ -98,7 +98,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         preflight: Probe::Check("backend-partition-type"),
         preflight_blocks: true,
         verify: Probe::None(
-            "verify judges no partition type, and verify --offline --examiner --disk shows one only beside a trace it finds in that partition; the pre-flight check reads the table of the disk the hidden volume is on",
+            "verify judges no partition type, and its examiner audit of a raw disk shows one only beside a trace it finds in that partition; the pre-flight check reads the table of the disk the hidden volume is on",
         ),
         mitigation: "Give the hidden volume's partition the generic Linux type from a live system or where setup happens, or keep the hidden volume on a disk of its own.",
         doc_anchor: "decoy-requirements.md#partition-types-the-decoys-systemd-acts-on",

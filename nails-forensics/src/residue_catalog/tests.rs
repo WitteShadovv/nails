@@ -206,6 +206,18 @@ fn verify_probes_name_verify_checks() {
 }
 
 #[test]
+fn no_reason_verify_lists_as_unchecked_asks_for_the_raw_disk() {
+    // verify lists a row it has no probe for among the areas it did not
+    // check, even after reading the raw disk, so a reason that names
+    // --disk would read as a hint to pass a flag already given.
+    for row in catalog() {
+        if let Probe::None(reason) = row.verify {
+            assert!(!reason.contains("--disk"), "{}: {reason}", row.id);
+        }
+    }
+}
+
+#[test]
 fn doc_anchors_resolve_to_headings() {
     for row in catalog() {
         let (doc, anchor) = row
