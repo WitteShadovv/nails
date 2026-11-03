@@ -38,8 +38,10 @@
 //!
 //! The page of a hidden session's status names what the control does as a
 //! fact, and every other page names it where the control powers off for one
-//! of these reasons. The control's description says it on every page it
-//! shows on.
+//! of these reasons, but for the page of a deactivation that ends once its
+//! switch has taken the helper with the session, as it does: that page stays
+//! as it is until the switch is overdue and names the control as a way out.
+//! The control's description says it on every page it shows on.
 
 use serde_json::Value;
 
