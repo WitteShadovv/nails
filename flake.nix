@@ -281,6 +281,17 @@
         };
       };
 
+      # fontconfig's stock rules, which the gui/ tests' fonts.conf in the dev
+      # shell includes, less 50-user.conf and 51-local.conf: those two read
+      # the rules of the user's ~/.config/fontconfig and of the host's
+      # /etc/fonts/local.conf, which could pick another font or hide DejaVu.
+      # A fontconfig that drops or renames one of them fails this build.
+      guiTestFontRules = pkgs.runCommand "gui-test-font-rules" { } ''
+        mkdir $out
+        cp -L ${pkgs.fontconfig.out}/etc/fonts/conf.d/*.conf $out/
+        rm $out/50-user.conf $out/51-local.conf
+      '';
+
       nails-release =
         pkgs.runCommand "nails-release-${workspaceVersion}"
           {
@@ -433,16 +444,17 @@
         # gui/ tests lay their text out with no font at all, and a page that
         # the CI's Ubuntu wraps over many lines with DejaVu fits its window
         # here. They put nixpkgs' fontconfig on the loader's path and name a
-        # fonts.conf with fontconfig's own rules and DejaVu's fonts alone: it
-        # drops every font folder the host's or the user's configuration
-        # adds. The golden test hands its child a fonts.conf of its own.
+        # fonts.conf that knows DejaVu's fonts alone, with fontconfig's stock
+        # rules less the two that read the user's and the host's own
+        # (50-user.conf and 51-local.conf), so no font folder or rule of the
+        # machine's or the user's fontconfig reaches the tests. The golden
+        # test hands its child a fonts.conf of its own.
         LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.fontconfig ];
         FONTCONFIG_FILE = pkgs.writeText "fonts.conf" ''
           <?xml version="1.0"?>
           <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
           <fontconfig>
-            <include>${pkgs.fontconfig.out}/etc/fonts/conf.d</include>
-            <reset-dirs />
+            <include>${guiTestFontRules}</include>
             <dir>${pkgs.dejavu_fonts}/share/fonts</dir>
             <cachedir prefix="xdg">fontconfig</cachedir>
           </fontconfig>
