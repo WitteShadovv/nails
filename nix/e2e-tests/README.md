@@ -589,7 +589,8 @@ The distribution tier under `nix/distro-tests/` boots real Debian 13, Ubuntu
 24.04 and Ubuntu 26.04 cloud images on the same NixOS test driver through
 [`numtide/nix-vm-test`](https://github.com/numtide/nix-vm-test), so the
 whole-root session, platform detection, the read-only ESP and the
-decoy-persistence preflight are exercised on a non-NixOS host. Debian 12 is not
+decoy-persistence preflight are exercised on a non-NixOS host, and on Debian
+13 a Nix installed in the hidden session. Debian 12 is not
 in the table: its systemd is too old for a soft-reboot. A container tier cannot
 do this: a privileged container cannot host an overlay upper on an overlay2
 rootfs and cannot exercise journald or a soft-reboot.
@@ -617,7 +618,9 @@ Layout:
   switches to a volatile journal (plus masking an active rsyslog), which the
   decoy-persistence preflight needs.
 - `tests/smoke.nix`: the smoke scenario, generated once per image-table entry.
-- `default.nix`: maps the scenario over the table and exposes the metadata.
+- `tests/nix-trace.nix`: the Nix scenario, run on Debian 13
+  ([below](#the-nix-scenario)).
+- `default.nix`: maps the scenarios over the table and exposes the metadata.
 
 Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
@@ -658,6 +661,40 @@ soft-reboot keeps the kernel and QEMU) and, before each image, mirrors the live
 disk into `<state_dir>/vm.qcow2` over QMP, where `disk_forensics.snapshot` picks
 it up. A soft-reboot carries `/run` but not the mounts below it, so the scenario
 mounts the 9p share again after every switch.
+
+### The Nix scenario
+
+On every distribution but NixOS, Nix belongs inside the hidden session.
+`tests/nix-trace.nix` (`debian-13-nix-trace`) installs it there the way a
+person does, with the multi-user installer of Nix's release tarball, built
+from this flake's Nix with the recipe of Nix's own packaging and shared into
+the guest. It runs as root with `--daemon`, offline: without a channel and
+with no substituter. The scenario then uses the daemon the installer started:
+it adds a file holding a run-unique nonce to the store, evaluates a
+`builtins.toFile` of it and builds a derivation that writes it, as a build
+user in the build sandbox. It asserts that:
+
+- each store path, the installer's files in `/etc` and the build users and
+  group it adds lie in the root overlay's upper on the hidden volume, and
+  `check` skips its `decoy-nix-trace` row in the session;
+- after `deactivate`, the decoy has none of the installer's files, no build
+  user or group and no daemon unit, and the row says what it said before the
+  session;
+- the decoy's image, taken after the way back, lists below `/nix` what the
+  baseline image listed and no other path the check looks for, deleted entries
+  included, and its bytes hold neither the nonce nor the name of a store path
+  the session wrote, nor, beyond what the baseline holds, the name of a store
+  path the installer copies or a line it writes;
+- installed and used on the decoy itself, the positive control, Nix is named
+  by the row, each path the check looks for that the install left included,
+  and the decoy's image lists the store paths and holds the nonce, the
+  installed Nix's name and a line of the build users.
+
+The test driver mounts the host's Nix store below `/nix` at every boot
+(nix-vm-test's `mount-store.service`), so the decoy disk holds three empty
+directories there, and the row names `/nix` on the stock decoy. Before each
+install the scenario unmounts them and removes `/nix`, so the installer starts
+on a system without one; the decoy's next boot mounts them again.
 
 ### Known failures
 

@@ -21,6 +21,7 @@ let
 
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   makeSmoke = import ./tests/smoke.nix { inherit self pkgs nix-vm-test; };
+  makeNixTrace = import ./tests/nix-trace.nix { inherit self pkgs nix-vm-test; };
 
   # Distribution boot plus repeated disk-image conversions make a distro VM
   # slower than a single-boot NixOS test; this leaves margin on a shared runner.
@@ -32,6 +33,20 @@ let
   tests = lib.mapAttrs' (
     name: entry: lib.nameValuePair (scenarioName name) (makeSmoke name entry)
   ) enabledImages;
+
+  # The Nix scenario, keyed "<distro>-nix-trace": Nix installed inside a
+  # hidden session leaves no trace on the decoy, and Nix installed on the decoy
+  # is named by the check and found on its disk (tests/nix-trace.nix). One
+  # Debian image runs it, beside its smoke, in the same CI matrix.
+  nixTraceDistros = lib.filter (name: enabledImages ? ${name}) [ "debian-13" ];
+  nixTraceName = name: "${name}-nix-trace";
+  # Three images of the decoy and two installs of Nix next to one session.
+  nixTraceTimeout = 2700;
+  nixTraces = lib.listToAttrs (
+    map (
+      name: lib.nameValuePair (nixTraceName name) (makeNixTrace name enabledImages.${name})
+    ) nixTraceDistros
+  );
 
   # The login- and boot-record regression scenarios, keyed "<distro>-records".
   # They are host drivers (nix-vm-test `driver`), which a CI job builds and
@@ -70,9 +85,19 @@ let
 
   metadata = {
     inherit distros;
-    scenarios = lib.listToAttrs (map (name: lib.nameValuePair name [ (scenarioName name) ]) distros);
+    scenarios = lib.listToAttrs (
+      map (
+        name:
+        lib.nameValuePair name (
+          [ (scenarioName name) ] ++ lib.optional (builtins.elem name nixTraceDistros) (nixTraceName name)
+        )
+      ) distros
+    );
     timeouts =
       lib.listToAttrs (map (name: lib.nameValuePair (scenarioName name) smokeTimeout) distros)
+      // lib.listToAttrs (
+        map (name: lib.nameValuePair (nixTraceName name) nixTraceTimeout) nixTraceDistros
+      )
       // driverTimeouts probeSet probeName
       // driverTimeouts recordsSet recordsName
       // driverTimeouts refusalSet refusalName;
@@ -106,6 +131,7 @@ let
   ) images;
 in
 tests
+// nixTraces
 // records
 // probes
 // refusals
