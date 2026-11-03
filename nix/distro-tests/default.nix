@@ -5,9 +5,10 @@
 # metadata record. An entry with `enabled = false` is still a full entry the
 # `distro-images` check evaluates and the next package can boot, but it stays
 # out of the smoke set and the CI matrix, so staging a distribution changes
-# nothing that runs today; enabling it is a single flip in images.json. Beside
-# the smokes are the host drivers: the records scenarios, the refusals of the
-# families the family table does not admit, the probes and the oracle images.
+# nothing that runs today; enabling it is a single flip in images.json. Debian
+# 13 runs the Nix scenario among its smokes. Beside the smokes are the host
+# drivers: the records scenarios, the refusals of the families the family table
+# does not admit, the probes and the oracle images.
 {
   self,
   pkgs,
