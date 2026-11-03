@@ -41,6 +41,9 @@ pub(super) struct Scan {
     /// What the check could not follow, each as a clause of the warning
     /// (`it could not read ...`).
     pub doubts: Vec<String>,
+    /// Whether the files a zsh started with `-f` or `-d` reads may turn
+    /// `RCS` or `GLOBAL_RCS` on again, so that it reads what it would skip.
+    pub reopened: bool,
 }
 
 /// The text of the startup file at `path`, read through `fs`: `Ok(None)` when

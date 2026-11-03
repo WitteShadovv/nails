@@ -66,8 +66,10 @@ pub(super) enum Event {
     },
     /// A directory is added to `fpath`, where zsh looks for the functions it
     /// autoloads: the element as written, or `None` for what a line may add
-    /// that the walk did not read.
-    Fpath(Option<Word>),
+    /// that the walk did not read; `first` when zsh looks in it before the
+    /// directories `fpath` held, as where it is put in front of them or
+    /// replaces them.
+    Fpath { dir: Option<Word>, first: bool },
     /// A function is marked to be autoloaded: its name, or the path of its
     /// file.
     Autoload(Word),
@@ -271,7 +273,7 @@ impl Walker<'_> {
             Some(Token::Word(word)) if is_name(&word.text) => Some(word.text),
             // `for (( ...; ...; ... ))`, over nothing the check can list.
             Some(Token::Arithmetic(text)) => {
-                self.mention(&text);
+                self.mention_arithmetic(&text);
                 let (closer, short) = self.body_closer(foreach);
                 let frame = Frame::Loop {
                     var: None,
@@ -565,9 +567,7 @@ impl Walker<'_> {
         }
         if matches!(name.as_str(), "fpath" | "FPATH") {
             self.fpaths += 1;
-            for item in &items {
-                self.fpath_dir(item);
-            }
+            self.fpath_items(&items, append);
         }
         let literal: Option<Vec<String>> = items
             .iter()
@@ -678,7 +678,7 @@ impl Walker<'_> {
                     // A command of its own, which sets no option; in a
                     // condition, its end (`if (( ... )) cmd`).
                     self.pending.function_next = false;
-                    self.mention(&text);
+                    self.mention_arithmetic(&text);
                     if self.pending.words.is_empty() && self.in_head() && self.next_starts_body() {
                         self.short_body();
                     }
@@ -821,7 +821,10 @@ pub(super) fn events(text: &str, place: &str) -> Read {
         )));
     }
     if named.fpaths > walked.fpaths {
-        events.push(Event::Fpath(None));
+        events.push(Event::Fpath {
+            dir: None,
+            first: false,
+        });
     }
     if named.fcs > walked.fcs {
         events.push(Event::Doubt(format!(

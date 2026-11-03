@@ -1078,7 +1078,10 @@ fn a_warning_gives_the_fix_the_check_can_see() {
         format!(
             "The check cannot tell whether zsh, the shell this command was typed into, writes \
              each command line to its history file as it runs: it cannot follow an `eval` that \
-             a line of /etc/zshrc may run; {}; {}; {}. If it does, {ON_DISK}. {fix}",
+             a line of /etc/zshrc may run; {}; {}; {}; it cannot read the functions the files \
+             autoload that no directory they put in front of fpath holds (`compinit` and \
+             `promptinit`), which zsh then finds in one it was built with or one FPATH names. \
+             If it does, {ON_DISK}. {fix}",
             dir("$p/share/zsh/site-functions"),
             dir("$p/share/zsh/$ZSH_VERSION/functions"),
             dir("$p/share/zsh/vendor-completions"),
@@ -1122,6 +1125,41 @@ fn an_fc_that_writes_the_history_file_is_named_in_the_warning() {
              /etc/zshenv."
         )
     );
+}
+
+#[test]
+fn a_zsh_f_whose_command_line_or_zshenv_turns_more_on_warns() {
+    // `zsh -f -o sharehistory`, with no /etc/zshenv.
+    let fs = MockFilesystem::new();
+    let message = warning(run(&fs, typed("zsh", &["zsh", "-f", "-o", "sharehistory"])));
+    assert_eq!(
+        message,
+        format!(
+            "zsh, the shell this command was typed into, may write each command line to its \
+             history file as you enter it: its command line turns on SHARE_HISTORY. So \
+             {ON_DISK}. Type the decoy commands in a zsh started as `zsh -f`, with nothing else \
+             on its command line, which reads no startup file but /etc/zshenv."
+        )
+    );
+    // A zsh -f whose /etc/zshenv turns RCS on again reads ~/.zshrc too.
+    seed(&fs, "/etc/zshenv", "setopt rcs\n");
+    seed(&fs, "/home/alice/.zshrc", "setopt share_history\n");
+    let message = warning(run(&fs, typed("zsh", &["zsh", "-f"])));
+    assert!(
+        message.contains("/home/alice/.zshrc names SHARE_HISTORY")
+            && message.ends_with(
+                "A zsh started as `zsh -f` still reads /etc/zshenv and what it sources, and as \
+                 they name RCS or GLOBAL_RCS, it may read the other startup files too: take \
+                 that out of them."
+            ),
+        "{message}"
+    );
+    // With every file it reads clean, it passes.
+    seed(&fs, "/home/alice/.zshrc", "HISTFILE=~/.zsh_history\n");
+    assert!(matches!(
+        run(&fs, typed("zsh", &["zsh", "-f"])),
+        CheckResult::Pass(_)
+    ));
 }
 
 #[test]

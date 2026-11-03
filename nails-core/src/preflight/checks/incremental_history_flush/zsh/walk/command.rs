@@ -165,24 +165,39 @@ impl Walker<'_> {
     /// The event of `word`, an element added to `fpath`, unless it stands
     /// for what `fpath` holds already ([`holds_fpath`]); a loop's variable
     /// stands for each item the check can list.
-    pub(super) fn fpath_dir(&mut self, word: &Word) {
+    pub(super) fn fpath_dir(&mut self, word: &Word, first: bool) {
         if holds_fpath(&word.text) {
             return;
         }
         if let Some(items) = Self::variable(word).and_then(|var| self.loop_items(var)) {
             let dirs: Vec<Event> = items
                 .iter()
-                .map(|text| {
-                    Event::Fpath(Some(Word {
+                .map(|text| Event::Fpath {
+                    dir: Some(Word {
                         text: text.clone(),
                         expands: false,
-                    }))
+                    }),
+                    first,
                 })
                 .collect();
             self.events.extend(dirs);
             return;
         }
-        self.events.push(Event::Fpath(Some(word.clone())));
+        self.events.push(Event::Fpath {
+            dir: Some(word.clone()),
+            first,
+        });
+    }
+
+    /// The events of `items` assigned to `fpath` as an array, or appended to
+    /// it (`append`): those before what `fpath` held (`$fpath`), or all
+    /// where it held nothing they keep, come first ([`Event::Fpath`]).
+    pub(super) fn fpath_items(&mut self, items: &[Word], append: bool) {
+        let held = items.iter().position(|item| holds_fpath(&item.text));
+        for (at, item) in items.iter().enumerate() {
+            let first = !append && held.is_none_or(|held| at < held);
+            self.fpath_dir(item, first);
+        }
     }
 
     /// The events of an `autoload`, or of the like (`command`), of `args`:
@@ -351,7 +366,6 @@ impl Walker<'_> {
     /// by an assignment the walk reads (`${ZDOTDIR:=...}`, `ZDOTDIR+=...`);
     /// all but the options are doubts.
     pub(super) fn mention(&mut self, text: &str) {
-        self.mention_options(text);
         self.qualifier(text);
         if computed_options(text) {
             self.events.push(Event::Doubt(format!(
@@ -359,6 +373,14 @@ impl Walker<'_> {
                 self.place
             )));
         }
+        self.mention_arithmetic(text);
+    }
+
+    /// Note what an arithmetic command, `text`, names: its options, and a
+    /// `ZDOTDIR` it may set ([`Walker::mention`]); no glob is expanded in
+    /// it, and what `${+name}` tests sets nothing.
+    pub(super) fn mention_arithmetic(&mut self, text: &str) {
+        self.mention_options(text);
         if ["ZDOTDIR=", "ZDOTDIR:=", "ZDOTDIR::=", "ZDOTDIR+="]
             .iter()
             .any(|form| text.contains(form))
@@ -570,12 +592,20 @@ impl Walker<'_> {
             Some(value) => vec![value],
             None => Vec::new(),
         };
-        for part in parts.into_iter().filter(|part| !part.is_empty()) {
-            self.fpath_dir(&Word {
+        let items: Vec<Word> = parts
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .map(|part| Word {
                 text: part.to_string(),
                 expands: part.contains(['$', '`']),
-            });
-        }
+            })
+            .collect();
+        // `fpath+=dir` appends; `fpath[1,0]=dir` and `fpath[1]=dir` put it
+        // in front, and any other element is somewhere after the front.
+        let subscript = target.split_once('[').map(|(_, key)| key);
+        let append = target.ends_with('+')
+            || subscript.is_some_and(|key| !(key.starts_with("1]") || key.starts_with("1,")));
+        self.fpath_items(&items, append);
         true
     }
 }

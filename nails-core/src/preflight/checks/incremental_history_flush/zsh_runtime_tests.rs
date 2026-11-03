@@ -158,6 +158,8 @@ fn a_glob_qualifier_that_runs_code_is_a_doubt() {
     for line in [
         "zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|[._-]=* r:|=*'",
         "HISTSIZE=$((SAVEHIST+1000))",
+        "(( ${+commands[git]} )) && print git",
+        "for (( i = 0; i < ${+x}; i++ )) { : }",
         "x=$(( (a+b) * 2 ))",
         "for f in ~/.zsh/(aliases|functions).zsh; do :; done",
         "print -l ~/.z*(N.om[1,3])",
