@@ -368,7 +368,15 @@ shares between drivers, by the name its driver gives it (`ublkb<N>`). It
 refuses a root whose data reaches one wherever it sits on the way down: the
 disk itself, a partition of it, an encrypted mapping, a logical volume or an
 md array on it, or an image file on a filesystem on it, a filesystem of the
-decoy's included. It refuses a root just the same when it cannot tell what a
+decoy's included. A filesystem's way down starts at every device it keeps
+data on, not only the one it is mounted from: an XFS log or realtime device,
+which its mount options name, an ext3 or ext4 journal on a device of its own,
+which jbd2 lists in `/proc/fs/jbd2` and the filesystem's journal thread names,
+and the other devices of a bcachefs filesystem, which its source names. The
+gate weighs those devices as it weighs the one the filesystem is mounted from,
+for the root, for a filesystem that holds an image file on the root's way and
+for the filesystems the decoy has mounted, and it refuses a root (`storage_unjudged`)
+when one of them cannot be read or found. It refuses a root just the same when it cannot tell what a
 disk on that way is: when `/proc/devices` cannot be read (run the command
 where `/proc` is mounted), or names no driver for the disk's number, when
 sysfs does not list a device that another names below it or cannot list what
@@ -422,7 +430,10 @@ uses, or a remote block device's other users. It does not follow a ZFS dataset
 or a ZFS volume to the disks of its pool, so it refuses a hidden root on ZFS
 even on a pool of its own, and it cannot see where the program behind an `nbd`
 or `ublk` device keeps the data. A remote disk that shows as an ordinary one,
-such as an iSCSI disk, counts as a disk of its own. Nor can it see the traces
+such as an iSCSI disk, counts as a disk of its own. It reads which other
+devices an XFS, ext3, ext4 or bcachefs filesystem keeps data on, but not those
+of an f2fs filesystem made over several devices or a JFS log on a device of its
+own: it takes such a filesystem for one on the device it is mounted from. Nor can it see the traces
 that creating the volume on this computer left behind (the setup tools' own
 files, shell history, a changed partition table): only preparing the volume
 elsewhere avoids them. A refusal names the storage and says nothing was

@@ -114,8 +114,9 @@ pub enum RefusalKind {
     /// Nothing shows on which disk the root's storage lies (see
     /// [`separation::Verdict::UntracedStorage`],
     /// [`separation::Verdict::DiskNotFound`],
-    /// [`separation::Verdict::UnplacedImageFile`] and
-    /// [`separation::Verdict::UntracedDevice`]).
+    /// [`separation::Verdict::UnplacedImageFile`],
+    /// [`separation::Verdict::UntracedDevice`] and
+    /// [`separation::Verdict::ClaimedDeviceNotFound`]).
     StorageUntraced {
         /// Why it cannot be followed.
         verdict: separation::Verdict,
@@ -217,8 +218,9 @@ impl HiddenRoot {
     ///    at the root.
     ///
     /// No subprocess, no write, no cache: it reads the mount table, `fstab`,
-    /// `crypttab`, sysfs and `/proc/devices` on the decoy, and the plan in the
-    /// session, through `fs`.
+    /// `crypttab`, sysfs, `/proc/devices` and the ext3 and ext4 journals jbd2
+    /// lists in `/proc` on the decoy, and the plan in the session, through
+    /// `fs`.
     pub fn assess<F: Filesystem>(fs: &F, root: &Path) -> Result<Assessment> {
         if root.as_os_str().is_empty() {
             return refuse(RefusalKind::NotConfigured, root);
@@ -289,7 +291,8 @@ impl HiddenRoot {
                     verdict @ (separation::Verdict::UntracedStorage { .. }
                     | separation::Verdict::DiskNotFound
                     | separation::Verdict::UnplacedImageFile { .. }
-                    | separation::Verdict::UntracedDevice { .. }),
+                    | separation::Verdict::UntracedDevice { .. }
+                    | separation::Verdict::ClaimedDeviceNotFound),
                 ) => {
                     return refuse(RefusalKind::StorageUntraced { verdict }, root);
                 }

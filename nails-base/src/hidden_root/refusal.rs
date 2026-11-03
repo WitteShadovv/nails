@@ -44,7 +44,13 @@ const DEVICE_ATTRIBUTES: &[(&str, &str)] = &[
     ("slaves", "the devices below a block device"),
     ("backing_dev", "the writeback device of a zram device"),
     ("dev", "the number of a block device"),
+    ("journal_task", JOURNAL),
 ];
+
+/// What the gate reads to tell which device an ext3 or ext4 filesystem keeps
+/// its journal on (the filesystem's `journal_task` in sysfs, and the name of
+/// the thread it names), as the text names it.
+const JOURNAL: &str = "where an ext3 or ext4 filesystem keeps its journal";
 
 /// What to use instead of storage the gate cannot follow to its disks.
 const OWN_VOLUME: &str = "Use a volume on a disk or partition of its own, or an encrypted volume \
@@ -146,6 +152,10 @@ impl RefusalKind {
 fn shown_input(path: &Path) -> String {
     if path.starts_with("/dev") {
         return "the record of a loop device".to_string();
+    }
+    // The name of a thread, as /proc/<pid>/comm shows it.
+    if path.starts_with("/proc") && path.ends_with("comm") {
+        return JOURNAL.to_string();
     }
     let listing = [SYS_CLASS_BLOCK, SYS_FS_BTRFS]
         .iter()
@@ -252,9 +262,10 @@ impl Refusal {
                 vec!["Run the command again with sudo.".into()]
             }
             // A partition always lies inside its disk in the sysfs of the
-            // host; one that does not is read without the host's /sys.
+            // host, and a device a mounted filesystem keeps data on is
+            // listed there: what is missing is read without the host's /sys.
             RefusalKind::StorageUntraced {
-                verdict: Verdict::DiskNotFound,
+                verdict: Verdict::DiskNotFound | Verdict::ClaimedDeviceNotFound,
             } => vec![
                 "Run the command again on the host rather than in a container, with /sys \
                  mounted."
@@ -464,6 +475,9 @@ mod tests {
                     kind: Untraced::NotFound,
                 },
             },
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::ClaimedDeviceNotFound,
+            },
             RefusalKind::StorageUnjudged {
                 unreadable: vec![PathBuf::from("/proc/devices")],
             },
@@ -507,6 +521,14 @@ mod tests {
             "/sys/devices/virtual/block/zd0/size",
             "an attribute of a block device",
         ),
+        (
+            "/sys/fs/ext4/dm-3/journal_task",
+            "where an ext3 or ext4 filesystem keeps its journal",
+        ),
+        (
+            "/proc/412/comm",
+            "where an ext3 or ext4 filesystem keeps its journal",
+        ),
     ];
 
     #[test]
@@ -517,7 +539,7 @@ mod tests {
             .collect();
         assert_eq!(&codes[..15], &[NOT_SEPARATE_VOLUME; 15]);
         assert_eq!(&codes[15..17], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 15]);
+        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 18]);
     }
 
     #[test]
@@ -539,6 +561,7 @@ mod tests {
         for input in [
             "/etc/crypttab",
             "/proc/devices",
+            "/proc/fs/jbd2",
             "/sys/class/block",
             "/sys/fs/btrfs",
         ] {
@@ -570,6 +593,23 @@ mod tests {
         );
         assert_eq!(refusal.hint(None), [OWN_VOLUME]);
         assert!(!Allow::DecoyStorage.covers(&refusal.kind));
+        // What this computer's own storage lies on cannot be found.
+        let claimed = Refusal::new(
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::ClaimedDeviceNotFound,
+            },
+            Path::new("/mnt"),
+        );
+        assert_eq!(
+            claimed.message(),
+            "/mnt cannot be told apart from this computer's own storage, which keeps data on a \
+             device that cannot be found, so where it lives cannot be told. Nothing was written."
+        );
+        assert_eq!(
+            claimed.hint(None),
+            ["Run the command again on the host rather than in a container, with /sys mounted."]
+        );
+        assert!(!Allow::DecoyStorage.covers(&claimed.kind));
     }
 
     #[test]
@@ -664,6 +704,11 @@ mod tests {
                 "/dev/",
                 "/sys/devices",
                 "/sys/fs/btrfs/",
+                "/sys/fs/ext4/",
+                "dm-3",
+                "dm-5",
+                "loop1",
+                "zram0",
             ] {
                 assert!(!text.contains(word), "{word} in {text}");
             }

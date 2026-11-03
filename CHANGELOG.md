@@ -754,8 +754,14 @@ of this changelog for that version becomes the release notes word for word, and
   disks by the driver `/proc/devices` lists for their device number, and a `ublk` disk, whose
   number comes from the range the kernel shares between drivers, by the name its driver gives it.
   It refuses a root whose data reaches one anywhere on the way down: the disk itself, a partition
-  of it, an encrypted mapping, a logical volume or an md array on it, or an image file on a
-  filesystem on it. An `nbd` or `ublk` device is refused as not storage of its own
+  of it, an encrypted mapping, a logical volume or an md array on it, an image file on a
+  filesystem on it, or a device the root's filesystem keeps data on besides the one it is mounted
+  from. That is an XFS log or realtime device, which the mount options name, an ext3 or ext4
+  journal on a device of its own, which jbd2 lists and the filesystem's journal thread names, and
+  the other devices of a bcachefs filesystem, which its source names. The gate weighs those
+  devices for a filesystem that holds an image file on the root's way and for the decoy's mounted
+  filesystems too, and refuses a root as storage that cannot be judged (`storage_unjudged`) when
+  one of them cannot be read or found. An `nbd` or `ublk` device is refused as not storage of its own
   (`not_separate_volume`), and `--allow-decoy-storage` turns that into a warning for a device you
   know is served from storage the decoy does not use, so the window offers "Allow for This
   Activation…" for it. An image file on a decoy filesystem that lies on such a device is refused
