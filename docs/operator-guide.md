@@ -1370,9 +1370,10 @@ afterwards:
     files define (`print -r -- "$1" | tee -a ~/.zlog`), and so is any program a
     hook runs where a hook sets a parameter that is not the function's own to
     what an expansion makes (`preexec() { LINE=$1; logger }`), which zsh gives
-    the program in its environment once it is exported. A global alias is a
-    doubt where a word of the code the check reads holds its name beyond its
-    definition, as zsh puts its value in place of that word (`function X`,
+    the program in its environment once it is exported, but for a value of
+    parameters zsh keeps a number in alone (`start=$SECONDS`). A global alias
+    is a doubt where a word of the code the check reads holds its name beyond
+    its definition, as zsh puts its value in place of that word (`function X`,
     `set -A X w`, `read X`, `print -r -- "$1" G`). An `exec` that keeps a
     descriptor open on any file but a device (`exec 3>>~/.zlog`,
     `exec >~/.zlog`, `exec >&3`), a `sysopen` that opens one to write, a
@@ -1488,21 +1489,23 @@ afterwards:
     of each parameter it names as arithmetic again, so an assignment in them
     may set a parameter whose name no file writes (`n='TTY=5'; (( n ))`). An
     expression that holds an expansion other than a count or a test of a
-    parameter (`$#x`, `${+x}`), or names a parameter other than one zsh keeps a
-    number in (`EUID`, `HISTSIZE`, `SECONDS`) or one a part of the expression
-    before assigns (`for (( i = 0; i < 3; i++ ))`), is a doubt, but for a
-    subscript of an array whose keys are strings (`commands`, `terminfo`, one a
-    file declares with `typeset -A`). A parameter declared to hold numbers
-    where no function makes it its own (`integer n`) is evaluated as it is
-    declared, which is a doubt too;
+    parameter (`$#x`, `${+x}`) or an index a pattern finds in an array of zsh's
+    own (`${precmd_functions[(I)f]}`), or names a parameter other than one zsh
+    keeps a number in (`EUID`, `HISTSIZE`, `SECONDS`) or one a part of the
+    expression before assigns (`for (( i = 0; i < 3; i++ ))`), is a doubt, but
+    for a subscript of an array whose keys are strings (`commands`, `terminfo`,
+    one a file declares with `typeset -A` outside a function and does not
+    unset). A parameter declared to hold numbers where no function makes it its
+    own (`integer n`) is evaluated as it is declared, which is a doubt too;
   - a file the check would read that is not there now is a doubt where a file
     it reads names it beyond the commands that source it and the tests that ask
-    about it (`cp ~/.src ~/.gen; . ~/.gen`), and so is any file it reads where
-    a command that runs before zsh reads it, at the top or in a function the
-    top runs, writes to a path whose last part is its name, or one an expansion
-    or a brace expansion may make its name (`>> ~/.zshrc.local`, `>> $log`,
-    `cp ~/.src ${f}en`). A program that writes a file it is not given the name
-    of it does not see;
+    about it (`cp ~/.src ~/.gen; . ~/.gen`), and so is any file it reads, a
+    function's file among them, where a command that runs before zsh reads it,
+    at the top or in a function the top runs, writes to a path whose last part
+    is its name or its compiled form's (`.zwc`, which zsh runs in its place),
+    or one an expansion or a brace expansion may make so (`>> ~/.zshrc.local`,
+    `>> $log`, `cp ~/.src ${f}en`); a `touch` writes nothing in a file. A
+    program that writes a file it is not given the name of it does not see;
   - an option counts as on wherever a file zsh reads names it, outside a line
     that is a comment: a `setopt`, an `unsetopt`, Home Manager's
     `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a comment

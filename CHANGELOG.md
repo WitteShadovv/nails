@@ -900,15 +900,15 @@ of this changelog for that version becomes the release notes word for word, and
   (`function X`, `read X`), at a `bindkey -s` string with a key that edits the line (`^A`, `^H`) and
   at any such string where a file binds a key a line is typed with or makes a widget, at a write in
   a hook to a descriptor above 2 (`print -u 7`, `>&7`, `/dev/fd/7`), a `zsystem flock`, a `zsocket`
-  or a `ztcp`, at a program a hook runs where a hook sets a parameter to what an expansion makes
-  (`preexec() { LINE=$1; logger }`), at a `MAILPATH`, `NULLCMD` or `module_path` a file sets and a
-  `MAILPATH` in the environment, at a file the startup code may make or write before zsh reads it
-  (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), at an `fpath` element quotes join into one, at a dump
-  file with a carriage return or a count that is no number, and at a `#compdef -kn` first line. It
-  reads every name of a function's definition (`function a b`, `a b ()`), counts what a `bindkey -s`
-  string types for the names the files use, and reads what `print -z` puts in the line as a hook's
-  code. A global alias the code does not use is no doubt, so the commands the check took as filters
-  for one (`| grep`) are gone.
+  or a `ztcp`, at a program a hook runs where a hook sets a parameter to what an expansion makes,
+  but of parameters zsh keeps a number in alone (`preexec() { LINE=$1; logger }`), at a `MAILPATH`,
+  `NULLCMD` or `module_path` a file sets and a `MAILPATH` in the environment, at a file the startup
+  code may make or write before zsh reads it (`cp ~/.src ~/.gen; . ~/.gen`, `>> $log`), at an
+  `fpath` element quotes join into one, at a dump file with a carriage return or a count that is no
+  number, and at a `#compdef -kn` first line. It reads every name of a function's definition
+  (`function a b`, `a b ()`), counts what a `bindkey -s` string types for the names the files use,
+  and reads what `print -z` puts in the line as a hook's code. A global alias the code does not use
+  is no doubt, so the commands the check took as filters for one (`| grep`) are gone.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
