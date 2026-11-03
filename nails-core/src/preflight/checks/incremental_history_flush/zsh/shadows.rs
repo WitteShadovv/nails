@@ -10,11 +10,14 @@
 //! expansion makes; a `TRAP...` function or a `trap`, which zsh runs inside
 //! the command substitution and whose output `eval` then reads; a
 //! `disable`, after which `eval` may be another command; and an `LD_`
-//! variable of the dynamic loader, which may make the program print other
-//! code.
+//! variable of the dynamic loader or `ARGV0`, the name zsh gives every program
+//! it runs, which picks the program a multi-call coreutils runs, each set by
+//! a file or held by the shell's environment, which may make the program
+//! print other code.
 
 use super::Reader;
 use super::backstop::Forms;
+use super::walk::may_expand;
 use crate::Filesystem;
 
 /// What a file read may change what a later command runs with: what the
@@ -43,12 +46,13 @@ pub(super) struct Snapshot {
 /// Whether a function named `name` changes what the dircolors line that
 /// runs `program` runs: one named `eval` or `export`, which it runs, or
 /// like `program`, a `TRAP...` function, which zsh may run in its command
-/// substitution, or one whose name an expansion makes, which may be any.
+/// substitution, or one zsh may expand into another (`$n`, `{a,b}`, a glob,
+/// `=dircolors`), which may be any.
 fn changes(name: &str, program: &str) -> bool {
     matches!(name, "eval" | "export")
         || name == program
         || name.starts_with("TRAP")
-        || name.contains(['$', '`'])
+        || may_expand(name)
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -131,7 +135,29 @@ impl<F: Filesystem> Reader<'_, F> {
     /// run before it, which the check reads once the startup files are,
     /// noted.
     pub(super) fn dircolors_doubts(&mut self) {
+        // What the shell's environment holds that may change what any program
+        // it runs prints: ARGV0, the name zsh gives it, which picks the
+        // program a multi-call coreutils runs, and a variable of the dynamic
+        // loader; one the check does not know may hold either.
+        let env = self.install.env.as_ref();
+        let environment = match env {
+            None => Some("the check does not know the shell's environment, which may set ARGV0"),
+            Some(env) if env.argv0.is_some() => {
+                Some("the shell's environment sets ARGV0, which names the program coreutils runs")
+            }
+            Some(env) if env.loader => {
+                Some("the shell's environment sets a variable of the dynamic loader (`LD_...`)")
+            }
+            Some(_) => None,
+        };
         for snapshot in self.dircolors.clone() {
+            if let Some(why) = environment {
+                self.doubt(format!(
+                    "it cannot tell what the `eval` of what dircolors prints in {} runs, as {why}",
+                    snapshot.place
+                ));
+                continue;
+            }
             let before = self.run_before(&snapshot);
             let found = self.changers.iter().enumerate().find(|(at, changer)| {
                 let runs_before = *at < snapshot.changers

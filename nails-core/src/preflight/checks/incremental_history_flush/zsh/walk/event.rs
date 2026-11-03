@@ -21,6 +21,22 @@ pub(in super::super) enum Input {
     Piped(Vec<(String, bool)>),
 }
 
+/// Where an arithmetic expression stands ([`Event::Arith`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in super::super) enum Arith {
+    /// Where zsh evaluates it whatever it holds (`(( ... ))`).
+    Plain,
+    /// The subscript of the array named, arithmetic unless its keys are
+    /// strings.
+    Keyed(String),
+    /// The value assigned to the parameter named, arithmetic where it holds
+    /// a number.
+    Value(String),
+    /// The parameter named, whose value zsh evaluates as it declares it to
+    /// hold a number (`integer n`), which holds no number then.
+    Old,
+}
+
 /// What a file's code does, in order, as [`super::Walker`] finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in super::super) enum Event {
@@ -105,10 +121,11 @@ pub(in super::super) enum Event {
     /// it be a hook, as `doubt` says (`zle complete-word`, which runs the
     /// completion functions the check does not read).
     HookDoubt { function: String, doubt: String },
-    /// A global alias is defined, named `name` as written; empty when an
-    /// expansion makes its name. zsh expands it wherever a word of code is
-    /// its name, a redirection's target among them (`/dev/tty`).
-    GlobalAlias(String),
+    /// A global alias is defined, named `name` as written, by the word
+    /// `text` (`G=| grep`). zsh puts its value in place of any word of code
+    /// that is its name, a redirection's target among them (`/dev/tty`), as
+    /// it reads the code.
+    GlobalAlias { name: String, text: String },
     /// An element given `fpath` that the walk reads as the directories an
     /// expansion holds, each as it is (`$fpath`, `$p`), as written: one
     /// `SH_WORD_SPLIT` splits, or `KSH_ARRAYS` cuts to its first, may hold
@@ -127,4 +144,36 @@ pub(in super::super) enum Event {
     /// The function `name` is autoloaded without `-U`, so zsh expands the
     /// aliases the files define in its code as it loads it.
     Expanding(String),
+    /// The code a key or a command types as a line (`bindkey -s`, `zle -U`,
+    /// `print -z`), as typed, which counts for the names it holds; `keys`
+    /// when zsh reads it as keys pressed, which the files' key bindings may
+    /// turn into others.
+    Typed { text: String, keys: bool },
+    /// A key a line is typed with is bound or unbound, a widget is made or a
+    /// keymap made, linked or reset, which may change what typed keys do.
+    Rebind,
+    /// An arithmetic expression, as written, where `kind` says
+    /// ([`super::arith`]).
+    Arith { text: String, kind: Arith },
+    /// A parameter is declared an array whose keys are strings (`typeset -A`)
+    /// or one that holds numbers (`integer`).
+    Declared {
+        name: String,
+        keyed: bool,
+        numeric: bool,
+    },
+    /// A parameter is unset, by its name; empty when an expansion or a
+    /// pattern names it.
+    Unset(String),
+    /// A test asks about the file a word names (`[[ -f ~/.x ]]`), as written.
+    Tested(String),
+    /// The function `function` sets the parameter `name` to what an
+    /// expansion makes or what it reads, as written; `local` when it is the
+    /// function's own, which zsh exports to no program unless every
+    /// parameter is (`ALL_EXPORT`).
+    Computed {
+        function: String,
+        name: String,
+        local: bool,
+    },
 }

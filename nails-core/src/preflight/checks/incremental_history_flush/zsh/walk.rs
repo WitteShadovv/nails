@@ -14,6 +14,7 @@ use super::backstop;
 use super::lexer::{End, Flaw, Token, Word, lex};
 use std::collections::BTreeMap;
 
+mod arith;
 mod command;
 mod descriptors;
 mod event;
@@ -22,10 +23,12 @@ mod hooks;
 mod keys;
 mod loops;
 mod names;
+mod sets;
 mod strings;
 
 pub(super) use super::builtins::HOOKS;
-pub(super) use event::{Event, Input};
+pub(super) use event::{Arith, Event, Input};
+pub(super) use hooks::may_expand;
 pub(super) use strings::PROMPTS;
 
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the
@@ -288,6 +291,7 @@ impl Walker<'_> {
                     dir: Some(Word {
                         text: std::mem::take(written),
                         expands: true,
+                        quoted: false,
                     }),
                     first: *first,
                 };
@@ -530,14 +534,19 @@ impl Walker<'_> {
             }
             "}" => self.close_brace(),
             "function" => {
-                if let Some(Token::Word(name)) = self.tokens.next() {
-                    self.mention(&name.text);
-                    self.events.push(Event::Define(name.text.clone()));
-                    self.pending.function_name = Some(name.text);
+                // Every word up to the body or its `()` names the function,
+                // as zsh reads `function a b { ... }`.
+                let mut names = Vec::new();
+                while let Some(Token::Word(name)) = self
+                    .tokens
+                    .next_if(|token| matches!(token, Token::Word(name) if name.text != "{"))
+                {
+                    names.push(name);
                 }
                 if self.tokens.next_if_eq(&Token::Open).is_some() {
                     self.tokens.next_if_eq(&Token::Close);
                 }
+                self.define(names);
                 self.pending.function_next = true;
             }
             _ if self.pending.function_next => {
@@ -565,14 +574,7 @@ impl Walker<'_> {
         {
             self.hooks += 1;
             for item in &items {
-                if item.expands {
-                    self.events.push(Event::Doubt(format!(
-                        "it cannot tell which function `{}` in {} makes a hook",
-                        item.text, self.place
-                    )));
-                } else {
-                    self.events.push(Event::Hook(item.text.clone()));
-                }
+                self.hook_value(item);
             }
         }
         let functions = matches!(name.as_str(), "functions" | "dis_functions");
@@ -603,10 +605,18 @@ impl Walker<'_> {
             )));
         }
         self.counted();
-        if matches!(name.as_str(), "fpath" | "FPATH") {
+        if name == "FPATH" {
+            // A scalar's value as an array: what zsh makes of it the check
+            // cannot follow.
             self.fpaths += 1;
-            if append || name != "fpath" || !self.profiles_fpath(&items) {
-                self.fpath_items(&items, append, true);
+            self.events.push(Event::Fpath {
+                dir: None,
+                first: false,
+            });
+        } else if name == "fpath" {
+            self.fpaths += 1;
+            if append || !self.profiles_fpath(&items) {
+                self.fpath_items(&items, append, fpath::Given::Array);
             }
         }
         let literal: Option<Vec<String>> = items
@@ -686,17 +696,14 @@ impl Walker<'_> {
     /// The events of a `(`: a function's or an anonymous function's `()`, or
     /// a subshell.
     fn open_paren(&mut self) {
-        let words = self.pending.words.len();
-        if words <= 1 && self.tokens.peek() == Some(&Token::Close) {
-            // `name()`: what follows is its body; `() { ... }`: an anonymous
-            // function, which runs at once but can keep its options local
-            // (`localoptions`, `emulate -L`).
+        if self.tokens.peek() == Some(&Token::Close) {
+            // `name()`, or `a b ()`, which names it by each word: what follows
+            // is its body; `() { ... }`: an anonymous function, which runs at
+            // once but can keep its options local (`localoptions`,
+            // `emulate -L`).
             self.tokens.next();
-            if let Some(name) = self.pending.words.pop() {
-                self.mention(&name.text);
-                self.events.push(Event::Define(name.text.clone()));
-                self.pending.function_name = Some(name.text);
-            }
+            let names = std::mem::take(&mut self.pending.words);
+            self.define(names);
             self.pending.function_next = true;
             return;
         }
@@ -727,21 +734,24 @@ impl Walker<'_> {
                         let descriptor = dup
                             && (target.text.chars().all(|c| c.is_ascii_digit())
                                 || matches!(target.text.as_str(), "-" | "p"));
+                        // `exec 3>>file` keeps the descriptor open.
+                        let kept = matches!(
+                            self.pending.words.as_slice(),
+                            [word] if word.text == "exec"
+                        );
                         if !writes {
                             // What the command reads: `<<< "$1"`, `< $f`.
                             self.pending.fed |= computed;
                         } else if !descriptor {
-                            // `exec 3>>file` keeps the descriptor open.
-                            let kept = matches!(
-                                self.pending.words.as_slice(),
-                                [word] if word.text == "exec"
-                            );
                             self.events.push(Event::Redirect {
                                 computed,
                                 function: self.function(),
                                 target: target.text,
                                 kept,
                             });
+                        } else if target.text.chars().all(|c| c.is_ascii_digit()) {
+                            // `>&7`: the file the shell has open there.
+                            self.duplicated(&target.text, kept);
                         }
                     }
                 }
@@ -805,6 +815,9 @@ struct Walked {
     alias_params: usize,
     function_params: usize,
     may_stop: bool,
+    /// How many `((` and `$[` the texts of its tokens hold
+    /// ([`arith::marks`]).
+    marks: usize,
 }
 
 /// What a startup file's code does, as [`events`] reads it.
@@ -820,6 +833,7 @@ pub(super) struct Read {
 /// `outer`, when in one; what the lexer could not read is a doubt.
 fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
     let (tokens, flaws) = lex(text);
+    let (arithmetic, marks) = arith::of_tokens(&tokens);
     let walker = Walker {
         tokens: tokens.into_iter().peekable(),
         place,
@@ -850,6 +864,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
     }
     .walk();
     let mut events = walker.events;
+    events.extend(arithmetic);
     events.extend(flaws.into_iter().map(|flaw| {
         Event::Doubt(match flaw {
             Flaw::Unended(delimiter) => format!(
@@ -880,6 +895,7 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         alias_params: walker.alias_params,
         function_params: walker.function_params,
         may_stop: walker.may_stop,
+        marks,
     }
 }
 
@@ -973,6 +989,12 @@ pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
         events.push(Event::Doubt(format!(
             "it cannot tell what alias a line of {place} may give by the parameters that hold \
              them, which zsh then expands"
+        )));
+    }
+    if named.arith > walked.marks {
+        events.push(Event::Doubt(format!(
+            "it cannot follow arithmetic that a line of {place} may hold, which may set a \
+             parameter by a name the check cannot read"
         )));
     }
     if named.function_params > walked.function_params {

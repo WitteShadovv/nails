@@ -6,31 +6,8 @@
 //! zsh runs as hooks write or may write, and where the aliases the files
 //! define are used.
 
-use super::{Forms, Reader, Word, backstop, builtins, walk};
+use super::{Forms, Reader, backstop, builtins, walk};
 use crate::Filesystem;
-
-/// The commands that print what they read and write no file but where a
-/// word names one (`sort -o file`), as a global alias feeds them
-/// (`alias -g G='| grep'`).
-const FILTERS: &[&str] = &[
-    "grep", "egrep", "fgrep", "rg", "ag", "less", "more", "most", "head", "tail", "sort", "uniq",
-    "wc", "cut", "tr", "column", "fmt", "fold", "nl", "cat", "bat", "jq", "yq", "tac", "rev",
-    "xclip", "xsel", "wl-copy", "pbcopy",
-];
-
-/// Whether a word of `args`, the words the command `command` is given, may
-/// name a file it writes: one an expansion makes or a path (`~/.zlog`,
-/// `of=/x`), and for a command that is no filter ([`FILTERS`]) any word but
-/// an option (`tee zlog`).
-pub(super) fn names_file(command: &str, args: &[Word]) -> bool {
-    let filter = FILTERS.contains(&command);
-    args.iter().any(|arg| {
-        arg.expands
-            || arg.text.contains('/')
-            || arg.text.starts_with('~')
-            || (!filter && !arg.text.starts_with('-'))
-    })
-}
 
 /// How a command a function runs may write what the shell's code gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,11 +25,11 @@ pub(super) enum Fed {
 
 /// Whether `target`, a redirection's target as written, is a device that
 /// is no file: the terminal (`/dev/tty`, `$TTY`), nothing (`/dev/null`), or
-/// a descriptor the shell has open (`/dev/stderr`, `/dev/fd/2`).
+/// standard input, output or error (`/dev/stderr`, `/dev/fd/2`).
 fn device(target: &str) -> bool {
-    let descriptor = |rest: Option<&str>| {
-        rest.is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
-    };
+    // Standard input, output and error: a descriptor above 2 may be any file
+    // the shell has open (`zsystem flock`, `exec 3>>file`).
+    let descriptor = |rest: Option<&str>| rest.is_some_and(|rest| matches!(rest, "0" | "1" | "2"));
     matches!(
         target,
         "/dev/null" | "/dev/tty" | "/dev/stdout" | "/dev/stderr" | "/dev/stdin" | "$TTY" | "${TTY}"
@@ -78,6 +55,10 @@ impl<F: Filesystem> Reader<'_, F> {
         kept: bool,
         place: &str,
     ) {
+        if !device(target) {
+            let what = format!("{place} redirects output to `{target}`");
+            self.makes(target, what, function.clone());
+        }
         if backstop::history_path(target) {
             let what = format!("{place} redirects output to `{target}`");
             if !self.fc.contains(&what) {
@@ -98,8 +79,8 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         if kept {
             self.doubt(format!(
-                "it cannot tell where the descriptor that `exec` in {place} opens to `{target}` \
-                 goes, which may be the history file a hook writes each command line to"
+                "it cannot tell where the descriptor that {place} keeps open to `{target}` goes, \
+                 which may be the history file a hook writes each command line to"
             ));
         } else if let Some(function) = function {
             let doubt = if computed {
@@ -123,7 +104,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// the files make it one or a hook runs it (`hooked`), or as it is named
     /// like a builtin, which zsh's own code runs as each line is entered
     /// (`zstyle`, `zle`).
-    fn is_hook(function: &str, hooked: &[String]) -> bool {
+    pub(super) fn is_hook(function: &str, hooked: &[String]) -> bool {
         walk::HOOKS.contains(&function)
             || builtins::builtin(function)
             || function.starts_with("TRAP")
@@ -189,6 +170,18 @@ impl<F: Filesystem> Reader<'_, F> {
                 ));
             }
         }
+        self.global_alias_uses();
+        // Keys a file binds or unbinds may make the keys a string types run
+        // other widgets than the ones that type it.
+        if let Some(rebound) = self.rebound.clone() {
+            for (text, place) in std::mem::take(&mut self.typed_keys) {
+                self.doubt(format!(
+                    "it cannot tell what the keys that type `{}` in {place} run, as {rebound} \
+                     binds a key a line is typed with or changes a widget or a keymap",
+                    text.trim()
+                ));
+            }
+        }
         // What a function holds counts where zsh runs it as a hook: by its name,
         // as the files make it one, as a hook runs it, or as it is named like a
         // builtin.
@@ -204,6 +197,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 break;
             }
         }
+        self.handed(&hooked);
         for (function, found) in std::mem::take(&mut self.in_functions) {
             let hook = Self::is_hook(&function, &hooked);
             match found {
@@ -217,20 +211,12 @@ impl<F: Filesystem> Reader<'_, F> {
         // shell's code gives it may write that, the command line among it
         // (`print -r -- "$1" | tee -a file`), unless it is a function or an
         // alias the check reads, or a builtin that writes no file.
-        for (function, command, place, fed, names_file) in std::mem::take(&mut self.computed_calls)
-        {
+        for (function, command, place, fed) in std::mem::take(&mut self.computed_calls) {
             if !Self::is_hook(&function, &hooked)
                 || self.defined.contains(&command)
                 || self.autoloads.contains(&command)
                 || builtins::quiet(&command)
             {
-                continue;
-            }
-            // A global alias's value that feeds a command what comes before
-            // the alias where it is used (`alias -g G='| grep'`) runs as a
-            // hook only where a hook uses it: one that writes to a file a word
-            // names (`| tee -a file`) may write the command line there.
-            if function.starts_with("alias ") && fed != Fed::Word && !names_file {
                 continue;
             }
             let what = match fed {
@@ -249,6 +235,36 @@ impl<F: Filesystem> Reader<'_, F> {
             ));
         }
         self.dircolors_doubts();
+    }
+
+    /// Note a doubt for each global alias the files define whose name a word
+    /// of the code they read holds beyond its definitions: zsh puts its value
+    /// in place of that word as it reads the code, which may then run, set or
+    /// define anything (`set -A X w`, `function X`, `read X`, `print -r -- "$1"
+    /// X`). An alias defined twice alike counts once, so the second is a use.
+    fn global_alias_uses(&mut self) {
+        let mut definitions = std::mem::take(&mut self.global_alias_defs);
+        definitions.sort();
+        definitions.dedup();
+        for (name, text, place) in &definitions {
+            let defined: usize = definitions
+                .iter()
+                .filter(|(other, ..)| other == name)
+                .map(|(_, text, _)| Forms::of(text).uses(name))
+                .sum();
+            let named: usize = self
+                .texts
+                .iter()
+                .chain(&self.dump_texts)
+                .map(|forms| forms.uses(name))
+                .sum();
+            if named > defined {
+                self.doubt(format!(
+                    "it cannot tell what the code that uses the global alias `{text}` in {place} \
+                     runs, as zsh puts the alias's value in place of each word that is its name"
+                ));
+            }
+        }
     }
 
     /// Whether the commands that feed a pipeline, `feeders`, each one's name

@@ -1042,7 +1042,18 @@ fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
         );
         assert!(warned(&scan_with(&fs, UNKNOWN, &known)), "{line}");
     }
-    for line in ["#autoload", "#autoload +X", "#compdef git"] {
+    for line in [
+        "#autoload",
+        "#autoload +X",
+        "#compdef git",
+        "#compdef -p 'git-*'",
+        "#compdef -Pn '*'",
+        "#compdef -value-,PATH,-default- -k",
+        "#compdef git -K x",
+        // Only the first word binds keys: zsh 5.9.2 makes `-k` a command
+        // name here, and Enter stays accept-line.
+        "#compdef git -k complete-word ^M",
+    ] {
         seed(&fs, "/home/alice/zcomp/_b", &format!("{line}\n:\n"));
         assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{line}");
     }
@@ -1056,7 +1067,17 @@ fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
         ("_complete_tag", "#compdef -k complete-word \\C-xt x"),
         ("_complete_tag", "#compdef -k complete-word \\C-xt "),
         ("_b", "#compdef -K _b complete-word ' '"),
-        ("_b", "#compdef git -k complete-word ^M"),
+        // compinit takes `-kn` and `-Kn` as it takes `-k` and `-K`, whose `n`
+        // binds only a key with no widget: zsh 5.9.2 runs `_x` as `ma` is
+        // typed in `marker`.
+        ("_b", "#compdef -kn complete-word ma"),
+        ("_b", "#compdef -Kn _xw complete-word ma"),
+        ("_complete_tag", "#compdef -kn complete-word \\C-xt"),
+        ("_b", "#compdef\t-kn complete-word \\x20"),
+        ("_b", "  #compdef -kx complete-word ma"),
+        // A control character, which the check may split otherwise.
+        ("_b", "#compdef\x0b-k complete-word ma"),
+        ("_b", "#compdef git\r"),
     ] {
         let fs = MockFilesystem::new();
         nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
@@ -1312,4 +1333,31 @@ fn the_zshenv_of_nixpkgs_zsh_reads_zshenv_local_on_nixos() {
     seed(&fs, "/etc/zshenv.local", "setopt share_history\n");
     seed(&fs, "/etc/set-environment", "setopt share_history\n");
     assert_eq!(scan(&fs, bare), Scan::default());
+}
+
+#[test]
+fn the_count_of_a_dump_file_s_first_line_is_arithmetic() {
+    // compinit 5.9.2 reads the second word of the dump file's first line as
+    // arithmetic (`$_i_line[2] -eq $#_i_files`), which sets TTY with this
+    // one, so a hook's output to $TTY goes to the history file.
+    let rc = "autoload -Uz compinit && compinit\nprecmd() { print -Pn '%~' > $TTY }\n";
+    for header in [
+        "#files: TTY=5\tversion: 5.9.2",
+        "#files: n\tversion: 5.9.2",
+        "#files: 5\r\tversion: 5.9.2",
+    ] {
+        let fs = MockFilesystem::new();
+        nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, "/home/alice/.zcompdump", &format!("{header}\n"));
+        assert!(
+            warned(&scan_with(&fs, UNKNOWN, &install(&fs, &[]))),
+            "{header}"
+        );
+    }
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+    seed(&fs, "/home/alice/.zshrc", rc);
+    seed(&fs, "/home/alice/.zcompdump", "#files: 5\tversion: 5.9.2\n");
+    assert_eq!(scan_with(&fs, UNKNOWN, &install(&fs, &[])), Scan::default());
 }

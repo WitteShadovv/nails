@@ -46,6 +46,21 @@ pub(super) fn completes(widget: &Word) -> bool {
         || COMPLETION_WIDGETS.contains(&name)
 }
 
+/// Whether `word`, a name of a function, a widget or a hook as written, is
+/// one zsh may expand into another (`$n`, `{preexec,x}`, `preexe[c]`,
+/// `=ls`, `~/x`): it may then name any, a hook among them.
+pub(super) fn computed_name(word: &Word) -> bool {
+    word.expands || may_expand(&word.text)
+}
+
+/// Whether `text`, a name as written, holds what zsh may expand it with
+/// into another name ([`computed_name`]).
+pub(in super::super) fn may_expand(text: &str) -> bool {
+    text.contains([
+        '$', '`', '{', '}', '*', '?', '[', ']', '(', ')', '|', '<', '>', '^', '#', '~', '=',
+    ])
+}
+
 /// Whether `name` is an array of the functions zsh runs as hooks
 /// (`precmd_functions`).
 pub(super) fn hook_array(name: &str) -> bool {
@@ -54,6 +69,32 @@ pub(super) fn hook_array(name: &str) -> bool {
 }
 
 impl Walker<'_> {
+    /// The events of a function's definition by the words `names` (`function
+    /// a b`, `a b ()`): each defines it, the first one's code is its body, and
+    /// each other runs it, so that it counts as a hook where any is one. A
+    /// name zsh may expand into another may be a hook's, so its code counts
+    /// as a hook's ([`computed_name`]).
+    pub(super) fn define(&mut self, names: Vec<Word>) {
+        let mut first: Option<String> = None;
+        for name in names {
+            self.mention(&name.text);
+            self.events.push(Event::Define(name.text.clone()));
+            if computed_name(&name) {
+                self.events.push(Event::Hook(name.text.clone()));
+            }
+            match &first {
+                None => first = Some(name.text),
+                Some(first) => self.events.push(Event::Call {
+                    name: first.clone(),
+                    args: Vec::new(),
+                    function: Some(name.text),
+                    input: Input::None,
+                }),
+            }
+        }
+        self.pending.function_name = first;
+    }
+
     /// The events of an `add-zsh-hook`, an `add-zle-hook-widget` or a `zle`
     /// of `args`: the function it makes a hook, which zsh runs as commands
     /// are entered or end, or as a key is pressed ([`Event::Hook`]); one an
@@ -72,6 +113,30 @@ impl Walker<'_> {
             .filter(|arg| !arg.text.starts_with('-'))
             .collect();
         let flag = args.first().map(|flag| flag.text.as_str());
+        // The words that name the hook, the widget and the function: one zsh
+        // may expand into others (`{preexec,w}`) may make any a hook.
+        let named: &[&Word] = match command {
+            "add-zsh-hook" | "add-zle-hook-widget" => &words[..words.len().min(2)],
+            _ if matches!(flag, Some("-N" | "-A")) => &words[..words.len().min(2)],
+            _ if matches!(flag, Some("-C" | "-T"))
+                || flag.is_some_and(|flag| flag.starts_with("-F")) =>
+            {
+                &words
+            }
+            _ => &[],
+        };
+        // A widget made, copied or deleted may change what typed keys do
+        // (`zle -N self-insert f`).
+        if command == "zle" && matches!(flag, Some("-N" | "-C" | "-A" | "-D")) {
+            self.events.push(Event::Rebind);
+        }
+        if let Some(word) = named.iter().find(|word| computed_name(word)) {
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which function `{command} ... {}` in {} makes a hook",
+                word.text, self.place
+            )));
+            return;
+        }
         let function = match command {
             // `add-zsh-hook hook function`, `add-zle-hook-widget hook widget`.
             "add-zsh-hook" | "add-zle-hook-widget" => words.get(1),
@@ -153,6 +218,10 @@ impl Walker<'_> {
                     )));
                 } else {
                     let hook = format!("zle -U {}", typed.text);
+                    self.events.push(Event::Typed {
+                        text: typed.text.clone(),
+                        keys: true,
+                    });
                     self.events.push(Event::Hook(hook.clone()));
                     self.nested_in(&typed.text, false, Some(hook));
                 }
@@ -184,7 +253,7 @@ impl Walker<'_> {
     /// (`precmd_functions[1]=name`, `set -A precmd_functions name`): a hook,
     /// or a doubt when an expansion names it.
     pub(super) fn hook_value(&mut self, word: &Word) {
-        if word.expands || word.text.contains(['$', '`']) {
+        if computed_name(word) {
             self.events.push(Event::Doubt(format!(
                 "it cannot tell which function `{}` in {} makes a hook",
                 word.text, self.place
@@ -204,8 +273,12 @@ impl Walker<'_> {
             .filter(|arg| !arg.text.starts_with('-'))
             .collect();
         match names.as_slice() {
-            [from, to] if !from.expands && !to.expands => {
+            [from, to] if !computed_name(from) => {
                 self.events.push(Event::Define(to.text.clone()));
+                // A name zsh may expand into another may be a hook's.
+                if computed_name(to) {
+                    self.events.push(Event::Hook(to.text.clone()));
+                }
                 self.events.push(Event::Call {
                     name: from.text.clone(),
                     args: Vec::new(),

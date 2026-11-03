@@ -24,9 +24,12 @@ use std::path::{Path, PathBuf};
 /// for the functions it autoloads (`FPATH`), what NixOS's `/etc/zshenv`
 /// reads the Nix profiles from (`NIX_PROFILES`, and the `USER` and
 /// `XDG_STATE_HOME` its `set-environment` writes them with), the directory
-/// whose own the stock `compaudit` puts in `fpath` (`_compdir`), and where
-/// zsh reads the user's startup files (`HOME`, `ZDOTDIR`).
-pub(in super::super) const ENVIRONMENT: [&str; 7] = [
+/// whose own the stock `compaudit` puts in `fpath` (`_compdir`), where zsh
+/// reads the user's startup files (`HOME`, `ZDOTDIR`), the name zsh gives
+/// every program it runs (`ARGV0`), the mail messages it expands before a
+/// prompt (`MAILPATH`), and, as `LD_` without a value, whether a variable of
+/// the dynamic loader is set (`LD_PRELOAD`).
+pub(in super::super) const ENVIRONMENT: [&str; 10] = [
     "FPATH",
     "NIX_PROFILES",
     "USER",
@@ -34,7 +37,15 @@ pub(in super::super) const ENVIRONMENT: [&str; 7] = [
     "_compdir",
     "HOME",
     "ZDOTDIR",
+    "ARGV0",
+    "MAILPATH",
+    LOADER,
 ];
+
+/// The name the check keeps, without a value, for any variable of the
+/// dynamic loader a shell's environment holds (`LD_PRELOAD`,
+/// `LD_LIBRARY_PATH`).
+pub(in super::super) const LOADER: &str = "LD_";
 
 /// How many bytes of a zsh program the check reads for the directories it
 /// names: 64 MiB, more than any zsh program holds.
@@ -69,6 +80,10 @@ pub(in super::super) struct Env {
     pub compdir: Option<String>,
     pub home: Option<String>,
     pub zdotdir: Option<String>,
+    pub argv0: Option<String>,
+    pub mailpath: Option<String>,
+    /// Whether a variable of the dynamic loader is set ([`LOADER`]).
+    pub loader: bool,
 }
 
 impl Install {
@@ -106,6 +121,9 @@ impl Install {
                 compdir: get("_compdir"),
                 home: get("HOME"),
                 zdotdir: get("ZDOTDIR"),
+                argv0: get("ARGV0"),
+                mailpath: get("MAILPATH"),
+                loader: get(LOADER).is_some(),
             }),
         }
     }
