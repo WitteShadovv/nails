@@ -204,3 +204,21 @@ fn an_expansion_of_fpath_that_joins_its_elements_is_one_the_check_cannot_follow(
         assert_eq!(found, Scan::default(), "{setup}");
     }
 }
+
+#[test]
+fn a_function_s_file_the_code_may_make_before_zsh_loads_it_is_a_doubt() {
+    // zsh 5.9.2 loads the compinit the code copies into the directory in
+    // front of fpath first, by a path an expansion makes, in place of its
+    // own.
+    for setup in [
+        "d=~/zfn\nn=compinit\ncp ~/.src $d/$n\n",
+        "cp ~/.src ~/zfn/comp${x:-init}\n",
+        "cp ~/.src ~/zfn/compinit\n",
+    ] {
+        let rc = format!("{setup}fpath=(~/zfn $fpath)\nautoload -Uz compinit && compinit\n");
+        assert!(warned(&known_with(&rc)), "{setup}");
+    }
+    // A write to another name is none.
+    let rc = "cp ~/.src ~/zfn/other\nfpath=(~/zfn $fpath)\nautoload -Uz compinit && compinit\n";
+    assert_eq!(known_with(rc), Scan::default());
+}
