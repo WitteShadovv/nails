@@ -11,22 +11,31 @@
 //! autoloads in one directory of its own store path,
 //! `share/zsh/<version>/functions`, unless `FPATH` in its environment names
 //! others, which zsh then takes instead. The check knows that directory
-//! only when the program names it and no other of zsh's, and it holds no
-//! directory, so that a zsh built otherwise counts as one it cannot tell. It
-//! reads the environment of a shell that runs now; of one that may run later
-//! it knows neither.
+//! only when every path the program names is one a nixpkgs build of zsh
+//! names ([`nix_functions`]), and the directory holds no directory, so that a
+//! zsh built otherwise counts as one it cannot tell. It reads the environment
+//! of a shell that runs now; of one that may run later it knows neither.
 
-use super::{GLOB, Reader, Word};
+use super::{Reader, Word};
 use crate::Filesystem;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 /// The variables of a shell's environment the check reads: where zsh looks
-/// for the functions it autoloads (`FPATH`), and what NixOS's `/etc/zshenv`
+/// for the functions it autoloads (`FPATH`), what NixOS's `/etc/zshenv`
 /// reads the Nix profiles from (`NIX_PROFILES`, and the `USER` and
-/// `XDG_STATE_HOME` its `set-environment` writes them with).
-pub(in super::super) const ENVIRONMENT: [&str; 4] =
-    ["FPATH", "NIX_PROFILES", "USER", "XDG_STATE_HOME"];
+/// `XDG_STATE_HOME` its `set-environment` writes them with), the directory
+/// whose own the stock `compaudit` puts in `fpath` (`_compdir`), and where
+/// zsh reads the user's startup files (`HOME`, `ZDOTDIR`).
+pub(in super::super) const ENVIRONMENT: [&str; 7] = [
+    "FPATH",
+    "NIX_PROFILES",
+    "USER",
+    "XDG_STATE_HOME",
+    "_compdir",
+    "HOME",
+    "ZDOTDIR",
+];
 
 /// How many bytes of a zsh program the check reads for the directories it
 /// names: 64 MiB, more than any zsh program holds.
@@ -52,12 +61,15 @@ pub(in super::super) struct Install {
     pub env: Option<Env>,
 }
 
-/// What a shell's environment holds of what NixOS's `/etc/zshenv` reads.
+/// What a shell's environment holds of [`ENVIRONMENT`] but `FPATH`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in super::super) struct Env {
     pub nix_profiles: Option<String>,
     pub user: Option<String>,
     pub xdg_state_home: Option<String>,
+    pub compdir: Option<String>,
+    pub home: Option<String>,
+    pub zdotdir: Option<String>,
 }
 
 impl Install {
@@ -92,6 +104,9 @@ impl Install {
                 nix_profiles: get("NIX_PROFILES"),
                 user: get("USER"),
                 xdg_state_home: get("XDG_STATE_HOME"),
+                compdir: get("_compdir"),
+                home: get("HOME"),
+                zdotdir: get("ZDOTDIR"),
             }),
         }
     }
@@ -112,33 +127,84 @@ fn store_name<'a>(name: &'a str, package: &str) -> Option<&'a str> {
     .then_some(version)
 }
 
-/// The directories of zsh's own that the zsh program `bytes` names: each run
-/// of printable characters in it that names a directory under `share/zsh` or
-/// one of the directories zsh may be built to look in beside its own.
-fn named_dirs(bytes: &[u8]) -> Vec<String> {
-    bytes
-        .split(|byte| !(0x20..0x7f).contains(byte))
-        .filter_map(|run| std::str::from_utf8(run).ok())
+/// The paths that the zsh program `bytes` names: each string in it, a run
+/// of printable characters between two NUL bytes, that starts with `/`.
+fn named_paths(bytes: &[u8]) -> Vec<String> {
+    let mut paths: Vec<String> = bytes
+        .split(|byte| *byte == 0)
         .filter(|run| {
-            [
-                "/share/zsh",
-                "site-functions",
-                "vendor-functions",
-                "vendor-completions",
-            ]
-            .iter()
-            .any(|part| run.contains(part))
+            run.first() == Some(&b'/') && run.iter().all(|byte| (0x20..0x7f).contains(byte))
         })
+        .filter_map(|run| std::str::from_utf8(run).ok())
         .map(str::to_string)
-        .collect()
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// The paths a nixpkgs build of zsh 5.9 to 5.9.2 names that are none where
+/// it looks for functions: the startup files in `/etc`, devices, its
+/// temporary files, the directories of its default `PATH`, and the like.
+const NON_FPATH: &[&str] = &[
+    "/",
+    "/bin/sh",
+    "/cur",
+    "/dev/",
+    "/dev/fd/",
+    "/dev/null",
+    "/dev/tty",
+    "/etc/profile",
+    "/etc/suid_profile",
+    "/etc/zlogin",
+    "/etc/zlogout",
+    "/etc/zprofile",
+    "/etc/zshrc",
+    "/new",
+    "/pid-%ld/host-",
+    "/proc/self/fd",
+    "/run/current-system/sw/bin:/bin:/usr/bin",
+    "/run/current-system/sw/bin:/bin:/usr/bin:/nix/var/nix/profiles/default/bin",
+    "/tmp",
+    "/tmp/zsh",
+    "/usr/bin",
+    "/usr/local/bin",
+    "/usr/ucb",
+];
+
+/// Whether `path`, a path the program of the zsh at the store path `own`
+/// names, is one a nixpkgs build of zsh names ([`NON_FPATH`]): its own
+/// files (`etc/zshenv`, `lib/zsh/<version>` and `dir`, where it looks for
+/// functions), the libraries it links (a list of store paths' `lib`
+/// directories) or its program interpreter.
+fn nixpkgs_path(path: &str, own: &Path, version: &str, dir: &Path) -> bool {
+    let own = own.to_string_lossy();
+    let store_lib = |part: &str| {
+        part.strip_prefix("/nix/store/")
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(name, rest)| {
+                name.len() > 33
+                    && name[..32].chars().all(|c| NIX_BASE32.contains(c))
+                    && (rest == "lib"
+                        || (rest.starts_with("lib/ld-linux") && !rest[4..].contains('/')))
+            })
+    };
+    NON_FPATH.contains(&path)
+        || path == format!("{own}/etc/zshenv")
+        || path == format!("{own}/lib/zsh/{version}")
+        || Path::new(path) == dir
+        || path.split(':').all(store_lib)
 }
 
 /// The directory where a zsh from the Nix store looks for the functions it
 /// autoloads when its environment names none, and its version: for the
 /// program `/nix/store/<hash>-zsh-<version>/bin/zsh`, `share/zsh/<version>/
 /// functions` in that store path, when the program names that directory and
-/// no other of zsh's, and it holds no directory, as nixpkgs builds zsh.
-/// `None` for any other program, or when the check cannot read it.
+/// no path a nixpkgs build of zsh does not name ([`nixpkgs_path`]), so that
+/// it was built to look in no other (`--enable-site-fndir`,
+/// `--enable-additional-fpath`), and the directory holds no directory, as
+/// nixpkgs builds zsh. `None` for any other program, or when the check
+/// cannot read it.
 fn nix_functions<F: Filesystem>(fs: &F, program: &Path) -> Option<(PathBuf, String)> {
     let mut parts = program.strip_prefix("/nix/store").ok()?.components();
     let name = parts.next()?.as_os_str().to_str()?;
@@ -146,19 +212,20 @@ fn nix_functions<F: Filesystem>(fs: &F, program: &Path) -> Option<(PathBuf, Stri
         return None;
     }
     let version = store_name(name, "zsh")?;
-    let dir = Path::new("/nix/store")
-        .join(name)
-        .join("share/zsh")
-        .join(version)
-        .join("functions");
+    let own = Path::new("/nix/store").join(name);
+    let dir = own.join("share/zsh").join(version).join("functions");
     if fs.file_size(program).ok()? > PROGRAM_LIMIT {
         return None;
     }
     let bytes = fs.read_file_bytes(program).ok()?;
-    let mut named = named_dirs(&bytes);
-    named.sort();
-    named.dedup();
-    if named != [dir.to_string_lossy().into_owned()] {
+    let named = named_paths(&bytes);
+    // A string of `/` and one byte (`/0`) is a piece of data, unless it
+    // names a directory.
+    let other = |path: &&String| {
+        !nixpkgs_path(path, &own, version, &dir)
+            && !(path.len() == 2 && matches!(fs.is_directory(Path::new(path.as_str())), Ok(false)))
+    };
+    if !named.iter().any(|path| Path::new(path) == dir) || named.iter().any(|path| other(&path)) {
         return None;
     }
     let entries = fs.list_directory(&dir).ok()?;
@@ -175,28 +242,51 @@ const NIXOS_ZSHRC: &str =
 
 /// Whether `line` is the one that NixOS's `programs.zsh.enableLsColors`
 /// writes in `/etc/zshrc`, as written there:
-/// `eval "$(/nix/store/<hash>-coreutils-<version>/bin/dircolors -b)"`, which
-/// runs what coreutils' `dircolors` prints, the `LS_COLORS` it sets.
-fn dircolors(line: &str) -> bool {
+/// `eval "$(/nix/store/<hash>-coreutils-<version>/bin/dircolors -b)"`, and
+/// the program it names is coreutils' own ([`coreutils_dircolors`]), which
+/// prints the `LS_COLORS` it sets.
+fn dircolors<F: Filesystem>(fs: &F, line: &str) -> bool {
     line.strip_prefix("eval \"$(/nix/store/")
         .and_then(|rest| rest.strip_suffix("/bin/dircolors -b)\""))
-        .is_some_and(|name| store_name(name, "coreutils").is_some())
+        .is_some_and(|name| {
+            store_name(name, "coreutils").is_some() && coreutils_dircolors(fs, name)
+        })
+}
+
+/// Whether the store path `name` holds coreutils' `dircolors`, as nixpkgs
+/// builds it: `bin/dircolors` links to the one `coreutils` program beside
+/// it, an ELF program that holds the code GNU dircolors prints for a Bourne
+/// shell (`LS_COLORS='...';` and `export LS_COLORS`).
+fn coreutils_dircolors<F: Filesystem>(fs: &F, name: &str) -> bool {
+    let bin = Path::new("/nix/store").join(name).join("bin");
+    let program = bin.join("coreutils");
+    let holds = |bytes: &[u8], wanted: &[u8]| bytes.windows(wanted.len()).any(|at| at == wanted);
+    fs.canonicalize(&bin.join("dircolors")).ok().as_deref() == Some(program.as_path())
+        && matches!(fs.is_regular_file(&program), Ok(true))
+        && fs
+            .file_size(&program)
+            .is_ok_and(|size| size <= PROGRAM_LIMIT)
+        && fs.read_file_bytes(&program).is_ok_and(|bytes| {
+            bytes.starts_with(b"\x7fELF")
+                && holds(&bytes, b"LS_COLORS='")
+                && holds(&bytes, b"';\nexport LS_COLORS\n")
+        })
 }
 
 /// `text`, the file at `path`, with the lines the check knows to do nothing
 /// that writes history left out: in the `/etc/zshrc` NixOS's `programs.zsh`
 /// writes, its `eval` of what `dircolors` prints ([`dircolors`]).
-pub(super) fn known_lines<'a>(path: &Path, text: &'a str) -> Cow<'a, str> {
+pub(super) fn known_lines<'a, F: Filesystem>(fs: &F, path: &Path, text: &'a str) -> Cow<'a, str> {
     if path != Path::new("/etc/zshrc")
         || text.lines().next() != Some(NIXOS_ZSHRC)
-        || !text.lines().any(dircolors)
+        || !text.lines().any(|line| dircolors(fs, line))
     {
         return Cow::Borrowed(text);
     }
     Cow::Owned(
         text.split_inclusive('\n')
             .map(|line| {
-                if dircolors(line.strip_suffix('\n').unwrap_or(line)) {
+                if dircolors(fs, line.strip_suffix('\n').unwrap_or(line)) {
                     "\n"
                 } else {
                     line
@@ -207,11 +297,25 @@ pub(super) fn known_lines<'a>(path: &Path, text: &'a str) -> Cow<'a, str> {
 }
 
 /// Whether `profile` is a Nix profile's path as the check can follow it: an
-/// absolute path with nothing zsh expands in it.
+/// absolute path of letters, digits and `/._+@-` alone, in which zsh expands
+/// nothing and its `${(z)...}` splits nothing off (`;`, `&`, `>`).
 pub(super) fn plain_profile(profile: &str) -> bool {
     profile.starts_with('/')
-        && !profile.contains(['$', '`', '~', '\\', '\'', '"'])
-        && !profile.contains(GLOB)
+        && profile
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '+' | '@' | '-'))
+}
+
+/// The Nix profiles `value`, a value of `NIX_PROFILES`, names, as
+/// `${(z)NIX_PROFILES}` splits it: at spaces and tabs, each a plain profile
+/// ([`plain_profile`]); `None` when it holds anything else, which zsh may
+/// split otherwise (a newline, a `;`, a no-break space).
+pub(super) fn profile_words(value: &str) -> Option<Vec<String>> {
+    value
+        .split([' ', '\t'])
+        .filter(|word| !word.is_empty())
+        .map(|word| plain_profile(word).then(|| word.to_string()))
+        .collect()
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -230,7 +334,8 @@ impl<F: Filesystem> Reader<'_, F> {
         let state = env.xdg_state_home.clone().unwrap_or_default();
         let resolved: Option<Vec<String>> = value
             .text
-            .split_whitespace()
+            .split([' ', '\t'])
+            .filter(|word| !word.is_empty())
             .map(|word| {
                 let mut word = word.to_string();
                 for (pattern, with) in [
@@ -288,5 +393,28 @@ impl<F: Filesystem> Reader<'_, F> {
                 ))),
             }
         }
+    }
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use crate::Filesystem;
+    use crate::filesystem::MockFilesystem;
+    use std::path::Path;
+
+    /// coreutils at the store path `name` as nixpkgs builds it:
+    /// `bin/dircolors` links to `bin/coreutils`, an ELF program that holds
+    /// what GNU dircolors prints for a Bourne shell.
+    pub(in super::super::super) fn seed_coreutils(fs: &MockFilesystem, name: &str) {
+        let bin = format!("/nix/store/{name}/bin");
+        fs.mock_set_file_bytes(
+            &format!("{bin}/coreutils"),
+            b"\x7fELF\0LS_COLORS='\0';\nexport LS_COLORS\n\0",
+        );
+        fs.create_symlink(
+            Path::new("coreutils"),
+            Path::new(&format!("{bin}/dircolors")),
+        )
+        .expect("a link");
     }
 }

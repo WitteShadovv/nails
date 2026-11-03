@@ -526,3 +526,228 @@ fn a_function_a_hook_runs_counts_as_a_hook() {
     );
     assert_eq!(scan(&fs, UNKNOWN), Scan::default());
 }
+
+/// Whether a scan of `fs` for a zsh that may be a login shell finds what
+/// writes the history file, or a doubt: anything but a pass.
+fn warns(fs: &MockFilesystem) -> bool {
+    scan(fs, UNKNOWN) != Scan::default()
+}
+
+#[test]
+fn a_name_is_read_as_zsh_reads_a_word_before_it_names_a_parameter() {
+    // zsh 5.9.2 sets TTY with each of these, as it takes quotes and
+    // backslashes off a word, joins a line that ends in a backslash with the
+    // next, decodes `$'...'` and reads an option's argument after its
+    // letters, and a hook's output to $TTY then goes to the history file.
+    let hook = "preexec() { print -r -- \"$1\" >> $TTY }\n";
+    for set in [
+        "x='\n#'; TTY=$HOME/.zsh_history",
+        "T\\\nTY=$HOME/.zsh_history",
+        "read T''TY <<< $HOME/.zsh_history",
+        "typeset -g T''TY=$HOME/.zsh_history",
+        "print -v T\\TY $HOME/.zsh_history",
+        "export \"T\"TY=$HOME/.zsh_history",
+        "print -vTTY $HOME/.zsh_history",
+        "zstyle :x y ~/.zsh_history; zstyle -s :x y 'TTY'",
+        ": ${TTY[1,-1]::=$HOME/.zsh_history}",
+        "print -v $'\\x54'TY $HOME/.zsh_history",
+        "print -v $'\\124'TY $HOME/.zsh_history",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n{hook}"));
+        assert!(warns(&fs), "{set}");
+    }
+    // A name an expansion makes, for the builtins that set one by a name,
+    // and what names it as an option's argument.
+    for set in [
+        "printf -vTTY %s $HOME/.zsh_history",
+        "n=T; zformat -f ${n}TY \"%s\" s:$HOME/.zsh_history",
+        "n=T; print -z $HOME/.zsh_history; getln ${n}TY",
+        "n=T; zpty -r w ${n}TY",
+        "n=T; syswrite -c ${n}TY x",
+        "n=T; stat -A ${n}TY /",
+        "x=options; y=history; set -A $x share$y on",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n{hook}"));
+        assert!(warns(&fs), "{set}");
+    }
+    // A comment, a read and a name of which TTY is a part set none.
+    for rc in [
+        "# write to TTY in a hook\n",
+        "print $TTY ${TTY} ${#TTY} ${TTY:-x}\n",
+        "GPG_TTY=$TTY; MYTTY=1; TTYS=2\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{rc}{hook}"));
+        assert!(!warns(&fs), "{rc}");
+    }
+}
+
+#[test]
+fn the_forms_of_a_file_hold_what_zsh_reads_its_words_as() {
+    let forms = backstop::Forms::of(
+        "print -v T\\TY x\nT\\\nTY=1\nx=$'\\x54\\u0054\\U00000059'=\n# TTY=1\n",
+    );
+    assert_eq!(forms.writes("TTY"), 3);
+    // A line a backslash joins to a comment line holds no more code.
+    let forms = backstop::Forms::of("x=a\\\n  #; source ~/.zsh/history.zsh\n");
+    assert_eq!(forms.uses("source"), 0);
+    assert_eq!(backstop::named("x=a\\\n  #; source ~/x\n").sources, 0);
+    // A line that starts with `#` inside a quote is code once it closes.
+    assert_eq!(backstop::Forms::of("x='\n#'; TTY=1\n").writes("TTY"), 1);
+}
+
+#[test]
+fn a_hook_made_in_any_form_zsh_runs_one_is_read_as_one() {
+    // zsh 5.9.2 runs `myhook` after each command with each of these, and it
+    // writes each command line to HISTFILE.
+    let body = "f=$HISTFILE\nmyhook() { print -r -- ${history[$((HISTCMD-1))]} >> $f }\n";
+    for made in [
+        "functions -c myhook precmd",
+        "precmd_functions[1]=myhook",
+        "set -A precmd_functions myhook",
+        "read -A precmd_functions <<< myhook",
+        "zle -C zle-line-finish .complete-word myhook",
+        "zle -N w myhook; zle -A w zle-line-finish",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{body}{made}\n"));
+        assert!(warns(&fs), "{made}");
+    }
+    // These count too, as the check reads each form a hook may take alike.
+    for made in [
+        "precmd_functions+=myhook",
+        "print -v precmd_functions myhook",
+        "pre''cmd_functions+=(myhook)",
+        "zle -F 0 myhook",
+        "zle -C w .complete-word f; zle -A w zle-line-init",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{body}{made}\n"));
+        assert!(warns(&fs), "{made}");
+    }
+    // A completion widget of another name runs only as completion does.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        &format!("{body}zle -C mycomp .complete-word myhook\n"),
+    );
+    assert!(!warns(&fs));
+    // Declared, or taken away, an array of hooks makes none.
+    for rc in [
+        "typeset -ga precmd_functions\n",
+        "unset precmd_functions\n",
+        "(( ${precmd_functions[(I)x]} )) && print hooked\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn what_a_hook_runs_from_its_own_file_or_one_it_sources_is_a_hook_s() {
+    // zsh 5.9.2 writes each command line as it is entered with each.
+    let write = "print -r -- \"$1\" >> $f\n";
+    for (rc, file) in [
+        (
+            "f=$HISTFILE\nfpath=(~/zfn $fpath)\nautoload -Uz preexec\n",
+            "/home/alice/zfn/preexec",
+        ),
+        (
+            "f=$HISTFILE\nfpath=(~/zfn $fpath)\nautoload -Uz myhook\npreexec_functions+=(myhook)\n",
+            "/home/alice/zfn/myhook",
+        ),
+        (
+            "f=$HISTFILE\nautoload -Uz ~/zfn/preexec\n",
+            "/home/alice/zfn/preexec",
+        ),
+        (
+            "f=$HISTFILE\npreexec() { . ~/hookbody }\n",
+            "/home/alice/hookbody",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, file, write);
+        assert!(warns(&fs), "{rc}");
+        // The same file read outside a hook writes once, as zsh starts.
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", "f=$HISTFILE\n. ~/hookbody\n");
+        seed(&fs, "/home/alice/hookbody", write);
+        assert!(!warns(&fs), "{rc}");
+    }
+}
+
+#[test]
+fn a_command_a_hook_runs_that_may_write_a_file_an_expansion_names_is_a_doubt() {
+    // zsh 5.9.2 writes each command line to HISTFILE with each.
+    for rc in [
+        "f=$HISTFILE\npreexec() { print -r -- \"$1\" | tee -a $f >/dev/null }\n",
+        "f=$HISTFILE\npreexec() { command tee -a \"$f\" <<< \"$1\" >/dev/null }\n",
+        "f=$HISTFILE\nalias w='print -r -- \"$1\" >> $f'\npreexec() { w }\n",
+        "f=$HISTFILE\nalias -g LOG='>> $f'\npreexec() { print -r -- \"$1\" LOG }\n",
+        "f=$HISTFILE\ncommand_not_found_handler() { print -r -- \"$*\" >> $f; return 127 }\n",
+        "f=$HISTFILE\nexec 3>>$f\npreexec() { print -r -u3 -- \"$1\" }\n",
+        "f=$HISTFILE\ncoproc tee -a $f >/dev/null\npreexec() { print -p -r -- \"$1\" }\n",
+        "zmodload zsh/mapfile\nf=$HISTFILE\npreexec() { mapfile[$f]+=\"$1\" }\n",
+        "preexec() { fc -p -a ~/.zlog; print -sr -- \"$1\" }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // These count too: an element of mapfile set otherwise writes its file,
+    // and an `fc -p` pushes a list zsh writes to its file as it pops it.
+    for rc in [
+        "zmodload zsh/mapfile\nf=$HISTFILE\npreexec() { : ${mapfile[$f]::=$1} }\n",
+        "zmodload zsh/mapfile\npreexec() { print -v 'mapfile[~/.zsh_history]' \"$1\" }\n",
+        "zshaddhistory() { fc -pa ~/.zlog }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // A builtin that writes no file, a function the files define, and a
+    // command outside a hook are none.
+    for rc in [
+        "preexec() { print -n \"\\e]0;$1\\a\" }\n",
+        "title() { print -n \"$1\" }\npreexec() { title \"$1\" }\n",
+        "f() { tee -a $log }\n",
+        "precmd() { [[ -n $VIRTUAL_ENV ]] && psvar[1]=${VIRTUAL_ENV:t} }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_function_named_like_a_builtin_is_a_hook() {
+    // The hooks `add-zle-hook-widget` makes run `zstyle` and `zle` as each
+    // line is entered, once zsh/zle is loaded, and zsh 5.9.2 writes it to
+    // HISTFILE with each then.
+    for rc in [
+        "zstyle() { print -r -- \"$BUFFER\" >> $log; builtin zstyle \"$@\" }\n",
+        "zle() { print -r -- \"$BUFFER\" >> $log; builtin zle \"$@\" }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("log=~/.zsh_history\n{rc}"),
+        );
+        assert!(warns(&fs), "{rc}");
+        // Named otherwise, it runs only where it is called.
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &rc.replace("zstyle() {", "mystyle() {")
+                .replace("zle() {", "myzle() {"),
+        );
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}

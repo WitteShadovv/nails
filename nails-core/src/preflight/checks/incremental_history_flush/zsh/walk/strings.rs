@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The code that zsh runs from a string a startup file holds: an alias's
-//! value as it is used, a trap's, a `sched`'s and a `zstyle -e`'s, and a
-//! prompt's when `PROMPT_SUBST` is on. A string the walk can read whole is
-//! read as an `eval`'s words are; one with an expansion in it, which may make
-//! any code, is a doubt.
+//! value as it is used, a trap's, a `sched`'s, a `zstyle -e`'s and the keys
+//! a `bindkey -s` types, and a prompt's when `PROMPT_SUBST` is on. A string
+//! the walk can read whole is read as an `eval`'s words are; one with an
+//! expansion in it, which may make any code, is a doubt. What runs as zsh
+//! looks a style up, at a time or as keys are pressed counts as a hook's, and
+//! an alias's value as the code of a function of its name, where it is used.
 
-use super::super::backstop::{FC_WRITES, is_fc_flag};
+use super::super::backstop::{FC_WRITES, history_path, is_fc_flag};
 use super::super::lexer::{Token, Word, lex};
 use super::{Event, Walker};
 
@@ -48,6 +50,33 @@ const OPEN: &[&str] = &[
     "nocorrect",
     "-",
     "time",
+    "compinit",
+    "compdef",
+    "prompt",
+    "add-zsh-hook",
+    "add-zle-hook-widget",
+    "zle",
+    "bindkey",
+    "getopts",
+    "vared",
+    "zparseopts",
+    "zformat",
+    "getln",
+    "zpty",
+    "sysopen",
+    "syswrite",
+    "sysread",
+    "zselect",
+    "zstat",
+    "stat",
+    "strftime",
+    "pcre_match",
+    "zregexparse",
+    "zsystem",
+    "ztie",
+    "zcurses",
+    "private",
+    "coproc",
 ];
 
 /// The name of the alias that `text` defines: `name` of `name=value`, or of
@@ -68,9 +97,22 @@ fn alias_name(text: &str) -> Option<&str> {
 /// The parameters whose value zsh shows as a prompt, which `PROMPT_SUBST`
 /// makes it expand, a command substitution and an assignment in an
 /// expansion among it, as it shows them.
-pub(super) const PROMPTS: &[&str] = &[
-    "PS1", "PROMPT", "RPS1", "RPROMPT", "PS2", "PROMPT2", "RPS2", "RPROMPT2", "PS3", "PROMPT3",
-    "PS4", "PROMPT4",
+pub(in super::super) const PROMPTS: &[&str] = &[
+    "PS1",
+    "PROMPT",
+    "prompt",
+    "RPS1",
+    "RPROMPT",
+    "PS2",
+    "PROMPT2",
+    "RPS2",
+    "RPROMPT2",
+    "PS3",
+    "PROMPT3",
+    "PS4",
+    "PROMPT4",
+    "SPROMPT",
+    "PROMPT_EOL_MARK",
 ];
 
 /// Whether `word`, a string of zsh code as the lexer gives it, holds an
@@ -110,6 +152,42 @@ fn listing_fc(command: &str) -> bool {
     flaws.is_empty()
         && words.next().is_some_and(|word| word == "fc")
         && words.all(|word| !is_fc_flag(word) || !word.contains(FC_WRITES))
+}
+
+/// The line that the keys `text` types, a `bindkey -s` string as written,
+/// as zsh reads it: `^M`, `^J`, `\r`, `\n`, `\C-m` and `\C-j` end a line,
+/// another `^` or `\` escape is a key that edits the line, which types
+/// nothing; `None` when it holds an escape key (`^[`, `\e`, `\M-`), which
+/// may run a widget by its name, or a character given by its number.
+fn typed_line(text: &str) -> Option<String> {
+    let mut line = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '^' => match chars.next()? {
+                'M' | 'm' | 'J' | 'j' => line.push('\n'),
+                '[' => return None,
+                _ => {}
+            },
+            '\\' => match chars.next()? {
+                'n' | 'r' => line.push('\n'),
+                // An escape key, or a character by its number.
+                'e' | 'E' | 'M' | 'x' | 'u' | 'U' | '0'..='9' => return None,
+                'C' => {
+                    chars.next_if_eq(&'-');
+                    match chars.next()? {
+                        'm' | 'M' | 'j' | 'J' => line.push('\n'),
+                        '[' => return None,
+                        _ => {}
+                    }
+                }
+                c if c.is_ascii_alphanumeric() => {}
+                c => line.push(c),
+            },
+            c => line.push(c),
+        }
+    }
+    Some(line)
 }
 
 impl Walker<'_> {
@@ -160,7 +238,26 @@ impl Walker<'_> {
             self.events.push(doubt(self.place));
             return;
         }
-        self.nested(value, unconditional);
+        let name = alias_name(text);
+        // A regular alias's value runs where its name is used, as a function
+        // of that name would; a global or suffix alias's anywhere, as a hook.
+        let outer = match name.filter(|_| regular) {
+            Some(name) => {
+                self.events.push(Event::Define(name.to_string()));
+                name.to_string()
+            }
+            None => {
+                let hook = format!("alias {text}");
+                self.events.push(Event::Hook(hook.clone()));
+                hook
+            }
+        };
+        if !regular && history_path(value) {
+            // A global alias for the history file (`alias -g /dev/tty=...`)
+            // stands for it in a redirection.
+            self.events.push(Event::Fc(format!("alias {text}")));
+        }
+        self.nested_in(value, unconditional, Some(outer));
         // The command the words the alias is used with go to: its value's
         // last, past its assignments and precommands.
         let last = value
@@ -174,7 +271,6 @@ impl Walker<'_> {
                     "builtin" | "command" | "noglob" | "nocorrect" | "exec" | "-" | "time"
                 )
         });
-        let name = alias_name(text);
         if value.ends_with(char::is_whitespace) {
             self.events.push(doubt(self.place));
         } else if let Some(name) = name.filter(|_| regular && listing_fc(last)) {
@@ -241,7 +337,68 @@ impl Walker<'_> {
             return;
         }
         let words: Vec<&str> = command.iter().map(|word| word.text.as_str()).collect();
-        self.nested(&words.join(" "), unconditional);
+        let code = words.join(" ");
+        self.hooked(&code, unconditional, format!("sched {code}"));
+    }
+
+    /// The events of zsh code `text` that zsh runs later as a hook would,
+    /// at a time, as a style is looked up or as keys are pressed, read as the
+    /// code of a hook named `hook`.
+    fn hooked(&mut self, text: &str, unconditional: bool, hook: String) {
+        self.events.push(Event::Hook(hook.clone()));
+        self.nested_in(text, unconditional, Some(hook));
+    }
+
+    /// The events of a `bindkey` of `args`: with `-s`, the keys each string
+    /// after a key types, which zsh reads as the line typed when the key is
+    /// pressed, read as a hook's code (a line ends at `^M`, `^J`, `\r` or
+    /// `\n`, and another escape is a key that moves or erases); with an
+    /// expansion among its words, or an escape key (`^[`, `\e`) in a string,
+    /// which may run a widget by its name, a doubt.
+    pub(super) fn bindkey(&mut self, args: &[Word], unconditional: bool) {
+        let mut flags = Vec::new();
+        let mut strings = Vec::new();
+        let mut words = args.iter();
+        while let Some(arg) = words.next() {
+            if strings.is_empty() && arg.text.starts_with('-') && arg.text.len() > 1 {
+                if arg.text.contains('M') {
+                    // The keymap it binds in.
+                    words.next();
+                }
+                flags.push(arg.text.as_str());
+                continue;
+            }
+            strings.push(arg);
+        }
+        let macros = flags.iter().any(|flag| flag.contains('s'));
+        if !macros {
+            for arg in args {
+                self.mention(&arg.text);
+            }
+            return;
+        }
+        let place = self.place;
+        let doubt = |text: &str| {
+            Event::Doubt(format!(
+                "it cannot tell what the keys `bindkey -s ... {text}` in {place} types run"
+            ))
+        };
+        for pair in strings.chunks(2) {
+            let [keys, typed] = pair else {
+                continue;
+            };
+            if computed(keys) || computed(typed) {
+                self.events.push(doubt(&typed.text));
+                continue;
+            }
+            match typed_line(&typed.text) {
+                Some(code) => {
+                    let hook = format!("bindkey -s {} {}", keys.text, typed.text);
+                    self.hooked(&code, unconditional, hook);
+                }
+                None => self.events.push(doubt(&typed.text)),
+            }
+        }
     }
 
     /// The events of a `zstyle` of `args`: with `-e`, the code each string
@@ -265,7 +422,8 @@ impl Walker<'_> {
                     arg.text, self.place
                 )));
             } else {
-                self.nested(&arg.text, unconditional);
+                let hook = format!("zstyle -e {}", arg.text);
+                self.hooked(&arg.text, unconditional, hook);
             }
         }
     }
