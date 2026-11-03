@@ -171,7 +171,7 @@ fn open(hidden: bool) -> Win {
             hang_up: Box::new(|| {}),
             close: Box::new(|| {}),
             // Nothing: no emergency line, no power-off.
-            emergency: Box::new(|| {}),
+            emergency: Box::new(|_| {}),
         },
     );
     app.show().expect("the window shows");

@@ -14,19 +14,23 @@
 //!    itself, beside whatever the worker waits for: under the lock the
 //!    client writes its requests under, so it never lands inside one of
 //!    them, and without waiting on a pipe the helper does not read. The
-//!    request asks for a power-off, as every emergency of a hidden session
-//!    ends. The helper takes it as soon as it reads its next request, runs
-//!    the engine's hot path and powers off.
-//! 2. **A power-off of the operator's own**, only when the helper never ran
-//!    the engine's emergency: there is no helper, the request could not be
-//!    written within the [grace](Fallback::grace) of the press, or the
-//!    window still runs a grace after the request was written. The last
-//!    happens only when the helper did not act on it: the engine's hot path
-//!    ends every process of the hidden session, the window included, the
-//!    helper's parent through pkexec as much as the launcher's. It is
-//!    `systemctl poweroff`, which asks logind as a desktop's own Power Off
-//!    does: the orderly power-off, slower than the engine's, but it needs
-//!    neither root nor the helper.
+//!    request asks for the [`Finish`] the emergency fired with, the ending
+//!    `nails emergency` takes from its flags: the way back to the decoy's
+//!    login screen, a power-off or a full reboot. The helper takes it as
+//!    soon as it reads its next request and runs the engine's hot path,
+//!    which ends the session so.
+//! 2. **A power-off of the operator's own**, whatever the finish, only when
+//!    the helper never ran the engine's emergency: there is no helper, the
+//!    request could not be written within the [grace](Fallback::grace) of
+//!    the press, or the window still runs a grace after the request was
+//!    written. The last happens only when the helper did not act on it: the
+//!    engine's hot path ends every process of the hidden session, the window
+//!    included, the helper's parent through pkexec as much as the
+//!    launcher's, whichever way it ends the session. It is `systemctl
+//!    poweroff`, which asks logind as a desktop's own Power Off does: the
+//!    orderly power-off, slower than the engine's, but it needs neither root
+//!    nor the helper. Without the helper the window has no way back to the
+//!    decoy, so this is always a power-off.
 //! 3. **The power button**, which the page names from the start: holding it
 //!    switches the computer off, as on any computer.
 //!
@@ -38,13 +42,16 @@
 //! drawn yet.
 //!
 //! The emergency's request carries the id [`EMERGENCY_ID`], which no request
-//! of the client's has: the client skips the frames that answer it.
+//! of the client's has: the client skips the frames that answer it. The
+//! finish is the window's to know when the person completes the gesture
+//! ([`Emergency::fire`]): the thread learns it with the signal, and asks
+//! nothing of anyone for it.
 
 use std::ffi::OsString;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
@@ -72,6 +79,52 @@ const SYSTEMCTL: [&str; 3] = [
     "/usr/bin/systemctl",
     "/bin/systemctl",
 ];
+
+/// How the engine's emergency ends the hidden session, as the request asks
+/// for it: the ending of `nails emergency`, `--poweroff` and `--reboot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Finish {
+    /// The way back to the decoy's login screen.
+    Return,
+    /// A power-off: RAM decays, the strongest ending, and the only one the
+    /// window has of its own.
+    PowerOff,
+    /// A full reboot, through the firmware.
+    Reboot,
+}
+
+impl Finish {
+    /// The arguments of the engine's emergency that ends so.
+    #[must_use]
+    pub fn args(self) -> EmergencyArgs {
+        EmergencyArgs {
+            poweroff: self == Finish::PowerOff,
+            reboot: self == Finish::Reboot,
+        }
+    }
+
+    /// The finish as the emergency's flag holds it: never 0, which is the
+    /// flag before it fired.
+    fn code(self) -> u8 {
+        match self {
+            Finish::Return => 1,
+            Finish::PowerOff => 2,
+            Finish::Reboot => 3,
+        }
+    }
+
+    /// The finish of a flag that fired; a power-off for any other value.
+    fn of_code(code: u8) -> Self {
+        match code {
+            1 => Finish::Return,
+            3 => Finish::Reboot,
+            _ => Finish::PowerOff,
+        }
+    }
+}
+
+/// The emergency's flag before it fired.
+const NOT_FIRED: u8 = 0;
 
 /// What the emergency did, as its thread reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +192,9 @@ enum Line {
 }
 
 struct Shared {
-    fired: AtomicBool,
+    /// [`NOT_FIRED`], then the [code](Finish::code) of the finish it fired
+    /// with: one flag, so the finish is set with the firing and never after.
+    fired: AtomicU8,
     line: Mutex<Line>,
     changed: Condvar,
 }
@@ -147,6 +202,14 @@ struct Shared {
 impl Shared {
     fn line(&self) -> MutexGuard<'_, Line> {
         self.line.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The finish it fired with, once it fired.
+    fn fired(&self) -> Option<Finish> {
+        match self.fired.load(Ordering::SeqCst) {
+            NOT_FIRED => None,
+            code => Some(Finish::of_code(code)),
+        }
     }
 }
 
@@ -162,7 +225,7 @@ impl Emergency {
     /// takes the path of the module's doc, telling `report` each step.
     pub fn start(fallback: Fallback, report: impl Fn(Outcome) + Send + 'static) -> Self {
         let shared = Arc::new(Shared {
-            fired: AtomicBool::new(false),
+            fired: AtomicU8::new(NOT_FIRED),
             line: Mutex::new(Line::Opening),
             changed: Condvar::new(),
         });
@@ -176,10 +239,16 @@ impl Emergency {
         Self { shared, thread }
     }
 
-    /// Fire the emergency: true the one time it fires. It only sets a flag
-    /// and wakes the emergency's thread, so it never waits.
-    pub fn fire(&self) -> bool {
-        if self.shared.fired.swap(true, Ordering::SeqCst) {
+    /// Fire the emergency to end the session with `finish`: true the one
+    /// time it fires, and only that firing's finish counts. It only sets a
+    /// flag and wakes the emergency's thread, so it never waits.
+    pub fn fire(&self, finish: Finish) -> bool {
+        if self
+            .shared
+            .fired
+            .compare_exchange(NOT_FIRED, finish.code(), Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return false;
         }
         if let Some(thread) = &self.thread {
@@ -191,7 +260,7 @@ impl Emergency {
     /// Whether it has fired.
     #[must_use]
     pub fn fired(&self) -> bool {
-        self.shared.fired.load(Ordering::SeqCst)
+        self.shared.fired().is_some()
     }
 
     /// The session with the helper is open on `line`.
@@ -211,17 +280,20 @@ impl Emergency {
 }
 
 fn run(shared: &Shared, fallback: &Fallback, report: &dyn Fn(Outcome)) {
-    while !shared.fired.load(Ordering::SeqCst) {
-        std::thread::park();
-    }
+    let finish = loop {
+        match shared.fired() {
+            Some(finish) => break finish,
+            None => std::thread::park(),
+        }
+    };
     let deadline = Instant::now() + fallback.grace;
-    if ask_helper(shared, deadline) {
+    if ask_helper(shared, deadline, finish) {
         report(Outcome::HelperAsked);
-        // The engine's emergency enqueues the power-off and ends every
-        // program of the session, this window included, whether the
-        // launcher started it or it started its helper through pkexec. A
-        // window still here a grace after the request means the helper
-        // never ran it: the window asks for the power-off itself.
+        // The engine's emergency enqueues the way back or the power action
+        // and ends every program of the session, this window included,
+        // whether the launcher started it or it started its helper through
+        // pkexec. A window still here a grace after the request means the
+        // helper never ran it: the window asks for the power-off itself.
         std::thread::sleep(fallback.grace);
     }
     report(if power_off(fallback) {
@@ -231,10 +303,10 @@ fn run(shared: &Shared, fallback: &Fallback, report: &dyn Fn(Outcome)) {
     });
 }
 
-/// Write the emergency request onto the helper's pipe by `deadline`,
-/// waiting within it for a session that still opens: true once it is
-/// written whole.
-fn ask_helper(shared: &Shared, deadline: Instant) -> bool {
+/// Write the emergency request for `finish` onto the helper's pipe by
+/// `deadline`, waiting within it for a session that still opens: true once
+/// it is written whole.
+fn ask_helper(shared: &Shared, deadline: Instant, finish: Finish) -> bool {
     let mut state = shared.line();
     let line = loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -259,19 +331,17 @@ fn ask_helper(shared: &Shared, deadline: Instant) -> bool {
             .0;
     };
     drop(state);
-    send(&line, &request_line(), deadline)
+    send(&line, &request_line(finish), deadline)
 }
 
-/// The emergency request, as one line with its newline.
+/// The emergency request that ends the session with `finish`, as one line
+/// with its newline.
 #[must_use]
-pub fn request_line() -> Vec<u8> {
+pub fn request_line(finish: Finish) -> Vec<u8> {
     let request = Request {
         v: PROTOCOL_VERSION,
         id: EMERGENCY_ID,
-        op: Op::Emergency(EmergencyArgs {
-            poweroff: true,
-            reboot: false,
-        }),
+        op: Op::Emergency(finish.args()),
     };
     let mut line = request.to_line().into_bytes();
     line.push(b'\n');
