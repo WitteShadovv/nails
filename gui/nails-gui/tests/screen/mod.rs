@@ -1,10 +1,17 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The window on Slint's headless platform: no display, fixed font metrics,
-//! and the element tree to query. A test drives the controller with the
-//! worker's updates, presses keys, and reads what the window shows and what
-//! it asked the worker for.
+//! The window on Slint's headless platform: no display, and the element tree
+//! to query. A test drives the controller with the worker's updates, presses
+//! keys, and reads what the window shows and what it asked the worker for.
+//!
+//! The text is laid out with the fonts the machine has, as the window's own
+//! is: the window opens fontconfig at run time, so a machine where it cannot
+//! (a build host without it) lays the text out with no font, and one where it
+//! can (the CI's Ubuntu, with DejaVu) wraps a long sentence over many lines.
+//! A page is then longer on one machine than on another, and the element
+//! queries skip what the page's scroll area clips: a test that looks below
+//! the first screen of a page makes the window tall first ([`Screen::tall`]).
 
 #![allow(dead_code)]
 
@@ -149,9 +156,9 @@ impl Screen {
     }
 
     /// Make the window tall enough to show a page of every recorded check at
-    /// once. The element queries skip what the page's scroll area clips;
-    /// the keyboard still reaches it, since Slint scrolls a row that takes
-    /// the focus into view.
+    /// once, whatever fonts lay its text out. The element queries skip what
+    /// the page's scroll area clips; the keyboard still reaches it, since
+    /// Slint scrolls a row that takes the focus into view.
     pub fn tall(&self) {
         self.window
             .window()
