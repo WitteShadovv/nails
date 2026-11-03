@@ -21,26 +21,25 @@
 //! its process tree shows ([`InspectedShell::typed`]). When it can only tell
 //! the shell the command was likely typed into, it reads that one's and every
 //! other shell's it knows; when it finds none (the command ran from a window,
-//! through `run0`, or the like), it reads the settings of every shell it
-//! knows, bash, zsh and the operator's login shell, and fish's when the
-//! operator's home has its configuration ([`InspectedShell::login`]). Of a
-//! shell it reads the startup files in
-//! `/etc` and in the home of the account the shell runs as, and in the
-//! operator's home when that is another ([`startup`], [`zsh`]), through the
-//! [`Filesystem`] seam: as root a read changes no file's access time, but a
-//! link on the way to one is followed and its access time can change. It never
-//! reads a history file. What it cannot read or follow makes it warn that it
-//! cannot tell. Of zsh, any mention of an option counts as on, a turn-off too,
-//! as no reading of the files shows that one holds, so the fix it gives is one
-//! it can see: a zsh started as `zsh -f`, which reads `/etc/zshenv` alone, or
-//! for such a zsh, what the check names taken out of `/etc/zshenv`. It
-//! knows the settings of bash, zsh and fish, and that dash
+//! through `run0`, or the like), it reads the settings of every shell it knows,
+//! bash, zsh and the operator's login shell, and fish's when the operator's
+//! home has its configuration ([`InspectedShell::login`]). Of a shell it reads
+//! the startup files in `/etc` and in the home of the account the shell runs
+//! as, and in the operator's home when that is another ([`startup`], [`zsh`]),
+//! through the [`Filesystem`] seam: as root a read changes no file's access
+//! time, but a link on the way to one is followed and its access time can
+//! change. It never reads a history file. What it cannot read or follow makes
+//! it warn that it cannot tell. Of zsh, any mention of an option counts as on,
+//! a turn-off too, as no reading of the files shows that one holds, so the fix
+//! it gives is one it can see: a zsh started as `zsh -f`, which reads
+//! `/etc/zshenv` alone, or for such a zsh, what the check names taken out of
+//! `/etc/zshenv`. It knows the settings of bash, zsh and fish, and that dash
 //! keeps no history file; of any other shell it warns that it cannot tell. It
-//! does not see a setting typed into the shell, one a plugin manager's
-//! function makes, one a function zsh autoloads from the directories it was
-//! built with makes, one an `eval` in bash's files makes (zsh's it reads, or
-//! warns of), or one in the files of a shell started with others
-//! (`--rcfile`, a `ZDOTDIR` from its environment).
+//! reads the options a zsh's command line turns on too. It does not see a
+//! setting typed into the shell, one a plugin manager's function makes, one an
+//! `eval` in bash's files makes (zsh's it reads, or warns of), or one in the
+//! files of a shell started with others (`--rcfile`, a `ZDOTDIR` from its
+//! environment).
 
 mod startup;
 mod zsh;
@@ -194,6 +193,18 @@ const ZSH_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, whi
 const BARE_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv and what it \
                             sources, so take what the check names out of them.";
 
+/// The fix for a zsh started with `-f` whose `/etc/zshenv` may turn `RCS`
+/// on again, so that it reads every other startup file too.
+const REOPENED_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv and what it \
+                                sources, and as they name RCS or GLOBAL_RCS, it may read the \
+                                other startup files too: take that out of them.";
+
+/// The fix for a zsh whose command line turns an option on, or makes it
+/// read other startup files.
+const COMMAND_LINE_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, with \
+                                nothing else on its command line, which reads no startup file \
+                                but /etc/zshenv.";
+
 /// What a write after every command means for the decoy commands.
 const ON_DISK: &str = "the commands typed in it are on the decoy disk once it writes them, and \
                        killing the shells at activation cannot take them back";
@@ -237,8 +248,21 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
     let part = shell.part;
     match kind(program) {
         Kind::Zsh => {
-            let fix = if shell.zsh.rcs { ZSH_FIX } else { BARE_ZSH_FIX };
-            judge_zsh(&zsh::zsh(fs, shell.homes, shell.zsh), program, part, fix)
+            let mut scan = zsh::zsh(fs, shell.homes, shell.zsh);
+            let line = zsh::CommandLine::of(shell.argv);
+            let writes = line.writes();
+            let fix = if !writes.is_empty() || !line.doubts.is_empty() {
+                COMMAND_LINE_FIX
+            } else if shell.zsh.rcs {
+                ZSH_FIX
+            } else if scan.reopened {
+                REOPENED_ZSH_FIX
+            } else {
+                BARE_ZSH_FIX
+            };
+            scan.writes.extend(writes);
+            scan.doubts.extend(line.doubts);
+            judge_zsh(&scan, program, part, fix)
         }
         Kind::Bash => judge_bash(&startup::bash(fs, shell.homes), program, part),
         Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => CheckResult::Pass(
@@ -349,11 +373,16 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
             },
         ),
         ShellOrigin::Likely => {
-            let mut first = vec![unsure(
-                &shell.program,
-                &shell.homes,
-                "the shell this command was likely typed into",
-            )];
+            // Its command line is its own: what it turns on counts, but zsh
+            // is taken to read every startup file it may read.
+            let mut first = vec![Judged {
+                argv: &shell.argv,
+                ..unsure(
+                    &shell.program,
+                    &shell.homes,
+                    "the shell this command was likely typed into",
+                )
+            }];
             first.extend(
                 shell
                     .login

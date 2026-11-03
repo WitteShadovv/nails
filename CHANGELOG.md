@@ -832,35 +832,42 @@ of this changelog for that version becomes the release notes word for word, and
   zsh's files are read as zsh reads them and fail closed: in zsh's order, once for each home the
   shell can run with, `zprofile` and `zlogin` only for a login shell, only `/etc/zshenv` for a zsh
   started with `-f`, `--no-rcs` or `-o norcs`, and no other file in `/etc` for one started with
-  `-d`, a sourced file read where it is sourced when its path resolves (so Home Manager's `dotDir`,
-  whose sourced `.zshenv` sets `ZDOTDIR`, is followed), an `eval` of words the check can read as
-  code, the file of each function they autoload, by its path or by its name in each directory they
-  add to `fpath` (not in the directories zsh was built with), a here-document's body as text, and
-  `INC_APPEND_HISTORY_TIME` named as writing a line once its command ends. An `fc` that writes the
-  history file (`fc -A`, `fc -W`, `fc -P`, with other flags too, as in `fc -AI`) counts as such a
-  write wherever it stands, as a hook (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs it
-  after each command the way bash's `history -a` runs from `PROMPT_COMMAND`, and one with an
-  expansion among its words is a doubt. An option counts as on wherever a file zsh reads names it,
-  outside a line that is a comment, an `unsetopt` as much as a `setopt`: zsh can still end with the
-  option on after a turn-off, through a redefined `unsetopt`, a trap or a hook that sets it again, a
-  plugin loaded after the first prompt or an error that stops the file before the line, and no
-  reading of the files can show that a turn-off holds. So zsh passes only when no file it reads
-  names the three options and nothing is left the check cannot tell, which is zsh's default. An
-  operator who turns the options off in `.zshrc` now gets a warning, whose fix the check can see:
-  typing the decoy commands in a zsh started as `zsh -f`, which reads no startup file but
-  `/etc/zshenv`, and for a zsh started so, taking what the check names out of `/etc/zshenv`. That is
-  the fix on NixOS too, whose generated `/etc/zshrc` sets `SHARE_HISTORY` by default and, with it
-  taken out of `programs.zsh.setOptions`, still runs an `eval` of what `dircolors` prints and
-  autoloads `compinit` from directories added to `fpath` that the check cannot resolve, and with
-  Home Manager, which names the options whether it turns them on or off. An option counts as on in a
-  word as brace expansion may make it too (`setopt {share,inc_append}_history`, a `{y}` group as
-  `BRACE_CCL` reads it), and after an `o` among flags (`set -oshare_history`). The check warns that
-  it cannot tell at a `setopt` with an expansion it cannot list, an option whose name an expansion
-  makes (`options[$o]=on`, `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a
-  parameter whose name an expansion makes), a glob qualifier that runs code as zsh expands a word
-  (`*(e:'...':)`, `*(+func)`), a sourced file or a `ZDOTDIR` it cannot follow (a process
-  substitution, `: ${ZDOTDIR:=...}`), a path zsh expands into others (a glob, `{a,b}`), a function
-  the files autoload that may be in an `fpath` directory it cannot follow (NixOS's profiles,
+  `-d`, unless what it reads names `RCS` or `GLOBAL_RCS` (`setopt rcs`, `set +f`, an `emulate`),
+  which may turn them on again, a sourced file read where it is sourced when its path resolves (so
+  Home Manager's `dotDir`, whose sourced `.zshenv` sets `ZDOTDIR`, is followed), an `eval` of words
+  the check can read as code, the file of each function they autoload, by its path or by its name in
+  each directory they add to `fpath` (one that no directory they put in front of `fpath` holds is a
+  doubt, as zsh then finds it in a directory it was built with or in one that an `FPATH` from its
+  environment names, so nearly every `.zshrc`, which autoloads `compinit`, makes the check warn that
+  it cannot tell), a here-document's body as text, and `INC_APPEND_HISTORY_TIME` named as writing a
+  line once its command ends. An `fc` that writes the history file (`fc -A`, `fc -W`, `fc -P`, with
+  other flags too, as in `fc -AI`) counts as such a write wherever it stands, as a hook (`precmd`,
+  `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs it after each command the way bash's `history -a`
+  runs from `PROMPT_COMMAND`, and one with an expansion among its words is a doubt. An option counts
+  as on wherever a file zsh reads names it, outside a line that is a comment, an `unsetopt` as much
+  as a `setopt`: zsh can still end with the option on after a turn-off, through a redefined
+  `unsetopt`, a trap or a hook that sets it again, a plugin loaded after the first prompt or an
+  error that stops the file before the line, and no reading of the files can show that a turn-off
+  holds. So zsh passes only when no file it reads names the three options and nothing is left the
+  check cannot tell, which is zsh's default. An operator who turns the options off in `.zshrc` now
+  gets a warning, whose fix the check can see: typing the decoy commands in a zsh started as
+  `zsh -f`, which reads no startup file but `/etc/zshenv`, and for a zsh started so, taking what the
+  check names out of `/etc/zshenv`. That is the fix on NixOS too, whose generated `/etc/zshrc` sets
+  `SHARE_HISTORY` by default and, with it taken out of `programs.zsh.setOptions`, still runs an
+  `eval` of what `dircolors` prints and autoloads `compinit` from directories added to `fpath` that
+  the check cannot resolve, and with Home Manager, which names the options whether it turns them on
+  or off. The options the command line of the shell turns on count too: one of the three
+  (`zsh -o sharehistory`, `zsh --share-history`, `zsh -fo share_history`) is on, and a zsh that runs
+  as sh or ksh, by the name it was started under or `--emulate sh`, which reads their startup files,
+  is a doubt. An option counts as on in a word as brace expansion may make it too
+  (`setopt {share,inc_append}_history`, a `{y}` group as `BRACE_CCL` reads it), and after an `o`
+  among flags (`set -oshare_history`). The check warns that it cannot tell at a `setopt` with an
+  expansion it cannot list, an option whose name an expansion makes (`options[$o]=on`,
+  `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a parameter whose name an
+  expansion makes), a glob qualifier that runs code as zsh expands a word (`*(e:'...':)`,
+  `*(+func)`), a sourced file or a `ZDOTDIR` it cannot follow (a process substitution,
+  `: ${ZDOTDIR:=...}`), a path zsh expands into others (a glob, `{a,b}`), a function the files
+  autoload that may be in an `fpath` directory it cannot follow (NixOS's profiles,
   `$p/share/zsh/site-functions`), compiled code that zsh may run in place of a file (a `.zwc` beside
   it or for an `fpath` directory), a `source` without a file, a quote, an expansion or a
   here-document that runs to the end of the file, an expansion that holds what it cannot read as zsh

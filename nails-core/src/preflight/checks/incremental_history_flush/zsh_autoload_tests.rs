@@ -9,6 +9,15 @@ use super::*;
 /// A file whose code turns `SHARE_HISTORY` on.
 const SETS: &str = "setopt share_history\n";
 
+/// What a doubt about the functions the files autoload that no directory in
+/// front of `fpath` holds, `names`, says.
+pub(super) fn unfound(names: &str) -> String {
+    format!(
+        "it cannot read the functions the files autoload that no directory they put in front of \
+         fpath holds ({names}), which zsh then finds in one it was built with or one FPATH names"
+    )
+}
+
 /// What a doubt about the `fpath` directory that `.zshrc` adds as `dir`
 /// says.
 fn dir_doubt(dir: &str) -> String {
@@ -24,8 +33,6 @@ fn a_function_the_files_autoload_is_read_where_they_add_to_fpath() {
     // has run, as it reads the function from ~/.zfunc.
     for rc in [
         "fpath=(~/.zfunc $fpath)\nautoload -Uz hist_setup\nhist_setup\n",
-        "fpath+=(~/.zfunc)\nautoload -Uz hist_setup\n",
-        "fpath+=~/.zfunc\nautoload hist_setup\n",
         "fpath=(\"$HOME/.zfunc\" \"${fpath[@]}\")\nautoload -U +X hist_setup\n",
         "FPATH=$HOME/.zfunc:$FPATH\nautoload -Uz hist_setup\n",
         "fpath[1,0]=~/.zfunc\nbuiltin autoload -Uz hist_setup\n",
@@ -52,6 +59,26 @@ fn a_function_the_files_autoload_is_read_where_they_add_to_fpath() {
         );
         assert_eq!(scan(&fs, UNKNOWN).doubts, Vec::<String>::new(), "{rc}");
     }
+    // One in a directory put behind the others zsh may find first in one of
+    // its own, which the check does not read.
+    for rc in [
+        "fpath+=(~/.zfunc)\nautoload -Uz hist_setup\n",
+        "fpath+=~/.zfunc\nautoload hist_setup\n",
+        "fpath=($fpath ~/.zfunc)\nautoload hist_setup\n",
+        "FPATH=$FPATH:$HOME/.zfunc\nautoload hist_setup\n",
+        "fpath[3]=~/.zfunc\nautoload hist_setup\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, "/home/alice/.zfunc/hist_setup", SETS);
+        let found = scan(&fs, UNKNOWN);
+        assert_eq!(
+            found.writes.len(),
+            1,
+            "{rc}: the file is read all the same: {found:?}"
+        );
+        assert_eq!(found.doubts, [unfound("`hist_setup`")], "{rc}");
+    }
     // A function's file that adds a directory and autoloads from it.
     let fs = MockFilesystem::new();
     seed(&fs, "/home/alice/.zshenv", "ZDOTDIR=~/.config/zsh\n");
@@ -70,17 +97,24 @@ fn a_function_the_files_autoload_is_read_where_they_add_to_fpath() {
         on(&fs, UNKNOWN),
         ["/home/alice/.zfunc/hist_setup names SHARE_HISTORY"]
     );
-    // A function the files do not autoload, or one they autoload that the
-    // directories they add do not hold, is not read.
+    // A function the files do not autoload is not read, and one they
+    // autoload that the directories they add do not hold is a doubt: zsh
+    // finds it in one of its own.
     let fs = MockFilesystem::new();
     seed(
         &fs,
         "/home/alice/.zshrc",
         "typeset -U path fpath\nfpath=(~/.zfunc ${fpath:#/nowhere})\n\
-         autoload -Uz compinit && compinit\n",
+         autoload -Uz compinit colors && compinit\n",
     );
     seed(&fs, "/home/alice/.zfunc/hist_setup", SETS);
-    assert_eq!(scan(&fs, UNKNOWN), Scan::default());
+    assert_eq!(
+        scan(&fs, UNKNOWN),
+        Scan {
+            doubts: vec![unfound("`compinit` and `colors`")],
+            ..Scan::default()
+        }
+    );
 }
 
 #[test]
@@ -141,7 +175,11 @@ fn an_autoloaded_function_the_check_cannot_find_is_a_doubt() {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
         seed(&fs, "/home/alice/.zfunc/hist", SETS);
-        assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt], "{rc}");
+        let mut expected = vec![doubt];
+        if rc.contains("autoload -Uz hist") {
+            expected.push(unfound("`hist`"));
+        }
+        assert_eq!(scan(&fs, UNKNOWN).doubts, expected, "{rc}");
     }
 }
 
@@ -176,6 +214,7 @@ fn a_directory_added_to_fpath_matters_once_a_function_is_autoloaded() {
         [
             dir("$p/share/zsh/site-functions"),
             dir("$p/share/zsh/$ZSH_VERSION/functions"),
+            unfound("`compinit`"),
         ]
     );
 }
@@ -213,13 +252,15 @@ fn compiled_code_zsh_may_run_in_place_of_a_file_is_a_doubt() {
             seed(&fs, path, text);
         }
         seed(&fs, compiled, "");
-        assert_eq!(
-            scan(&fs, UNKNOWN).doubts,
-            [format!(
-                "it cannot read the compiled code in {compiled} that zsh may run"
-            )],
-            "{compiled}"
-        );
+        let mut expected = vec![format!(
+            "it cannot read the compiled code in {compiled} that zsh may run"
+        )];
+        if compiled == "/home/alice/.zfunc.zwc" {
+            // No file holds the function: zsh finds it in the digest, or in
+            // one of its own directories.
+            expected.push(unfound("`hist`"));
+        }
+        assert_eq!(scan(&fs, UNKNOWN).doubts, expected, "{compiled}");
     }
 }
 

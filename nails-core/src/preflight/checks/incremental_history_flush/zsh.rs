@@ -10,19 +10,24 @@
 //! or in `/etc/zsh` (where Debian's and Arch's zsh look), then the user's own
 //! in `$ZDOTDIR`, which is the home unless a file read so far sets it. A zsh
 //! started with `-f` reads `/etc/zshenv` alone, and one started with `-d` no
-//! other file in `/etc` ([`Start`]). A file that a startup file sources is
-//! read where it is sourced, when its path resolves. A zsh runs with one
-//! home, which `~` and `$HOME` name, so for a shell that may run with several
-//! (a root shell with the operator's), the files are read for each.
+//! other file in `/etc` ([`Start`]), unless a file read so far names `RCS` or
+//! `GLOBAL_RCS`, which may turn them on again ([`backstop::names_rcs`]). The
+//! options its command line turns on count too ([`CommandLine`]). A file that a
+//! startup file sources is read where it is sourced, when its path resolves. A
+//! zsh runs with one home, which `~` and `$HOME` name, so for a shell that may
+//! run with several (a root shell with the operator's), the files are read for
+//! each.
 //!
 //! A function the files autoload is read from its file: the one they name by
 //! its path, or the one of its name in each directory they add to `fpath`,
 //! where zsh looks for it as it first runs it. Once one is autoloaded, a
-//! directory added that the check cannot follow is a doubt; the directories
-//! zsh was built with it does not read. zsh runs compiled code in place of a
-//! file, or of a directory's functions, when a `.zwc` is beside it, and the
-//! check cannot read that code, so such a `.zwc` is a doubt, and so is a path
-//! zsh expands into others (a glob, `{a,b}`).
+//! directory added that the check cannot follow is a doubt, and so is a
+//! function that no directory put in front of `fpath` holds, which zsh then
+//! finds in a directory it was built with or one `FPATH` names, which the check
+//! does not read. zsh runs compiled code in place of a file, or of a
+//! directory's functions, when a `.zwc` is beside it, and the check cannot read
+//! that code, so such a `.zwc` is a doubt, and so is a path zsh expands into
+//! others (a glob, `{a,b}`).
 //!
 //! An option counts as on wherever a file zsh reads names it, outside a line
 //! that is a comment, in either form: a `setopt` or an `unsetopt`, an array, a
@@ -96,57 +101,152 @@ pub(super) struct Start {
 }
 
 impl Start {
-    /// How the zsh started as `argv` reads its startup files: a login shell
-    /// when `argv[0]` starts with `-` or with `-l`, `--login` or `-o login`;
-    /// only `/etc/zshenv` with `-f`, `--no-rcs`, `-o norcs` or `+o rcs`; and
-    /// none of the other files in `/etc` with `-d`, `--no-global-rcs`,
-    /// `-o noglobalrcs` or `+o globalrcs`.
+    /// How the zsh started as `argv` reads its startup files
+    /// ([`CommandLine::of`]).
     pub(super) fn of(argv: &[String]) -> Self {
-        let mut start = Self {
-            login: Some(argv.first().is_some_and(|zero| zero.starts_with('-'))),
-            rcs: true,
-            global_rcs: true,
+        CommandLine::of(argv).start
+    }
+}
+
+/// What the command line of a zsh tells: how it reads its startup files,
+/// which of [`OPTIONS`] it turns on, and what the check cannot tell of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CommandLine {
+    pub start: Start,
+    /// For each of [`OPTIONS`], whether the command line turns it on, as the
+    /// last word that names it says; `None` when none does.
+    pub on: [Option<bool>; 3],
+    /// What the check cannot tell of it, each as a clause of the warning.
+    pub doubts: Vec<String>,
+}
+
+impl CommandLine {
+    /// What the command line `argv` of a zsh tells, read as zsh reads it: a
+    /// login shell when `argv[0]` starts with `-` or with `-l`, `--login` or
+    /// `-o login`; only `/etc/zshenv` with `-f`, `--no-rcs`, `-o norcs` or
+    /// `+o rcs`; none of the other files in `/etc` with `-d`,
+    /// `--no-global-rcs`, `-o noglobalrcs` or `+o globalrcs`; an option by
+    /// `-o name`, `+o name`, `-oname`, `-xo name`, `--long-name` or
+    /// `+-long-name`. A zsh that emulates sh or ksh, as it does when the name
+    /// it runs under starts with `s` or `k` (past a `-` and an `r`) or with
+    /// `--emulate sh`, reads other startup files, which is a doubt, and so is
+    /// an `-o` that names no option.
+    pub(super) fn of(argv: &[String]) -> Self {
+        let mut line = Self {
+            start: Start {
+                login: Some(argv.first().is_some_and(|zero| zero.starts_with('-'))),
+                rcs: true,
+                global_rcs: true,
+            },
+            on: [None; 3],
+            doubts: Vec::new(),
         };
+        if let Some(zero) = argv.first() {
+            let name = Path::new(zero)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let name = name.trim_start_matches('-');
+            if name
+                .strip_prefix('r')
+                .unwrap_or(name)
+                .starts_with(['s', 'k'])
+            {
+                line.emulated(zero);
+            }
+        }
         let mut args = argv.iter().skip(1).map(String::as_str);
         while let Some(arg) = args.next() {
             if matches!(arg, "-" | "--") || !arg.starts_with(['-', '+']) {
                 break;
             }
-            if let Some(long) = arg.strip_prefix("--") {
-                start.option(long, true);
+            if let Some(mode) = arg.strip_prefix("--emulate") {
+                let mode = match mode.strip_prefix('=') {
+                    Some(mode) => Some(mode),
+                    None if mode.is_empty() => args.next(),
+                    None => None,
+                };
+                if mode != Some("zsh") {
+                    line.emulated(arg);
+                }
+            } else if let Some(long) = arg.strip_prefix("--") {
+                line.option(long, true);
+            } else if let Some(long) = arg.strip_prefix("+-") {
+                line.option(long, false);
             } else {
                 let on = arg.starts_with('-');
-                for flag in arg[1..].chars() {
+                for (at, flag) in arg.char_indices().skip(1) {
                     match flag {
-                        'l' => start.login = Some(on),
-                        'f' => start.rcs = !on,
-                        'd' => start.global_rcs = !on,
+                        'l' => line.start.login = Some(on),
+                        'f' => line.start.rcs = !on,
+                        'd' => line.start.global_rcs = !on,
                         'o' => {
-                            if let Some(name) = args.next() {
-                                start.option(name, on);
+                            let rest = &arg[at + 1..];
+                            match if rest.is_empty() {
+                                args.next()
+                            } else {
+                                Some(rest)
+                            } {
+                                Some(name) => line.option(name, on),
+                                None => line.doubts.push(format!(
+                                    "it cannot tell what `{arg}` on its command line turns on"
+                                )),
                             }
+                            break;
                         }
                         _ => {}
                     }
                 }
             }
         }
-        start
+        line
     }
 
-    /// Set the option `name` (`no_rcs`, `GLOBAL_RCS`, ...) on, or off.
+    /// Note that the zsh emulates sh or ksh, as `word` on its command line
+    /// makes it.
+    fn emulated(&mut self, word: &str) {
+        self.doubts.push(format!(
+            "it cannot tell what a zsh started with `{word}` on its command line reads, as zsh \
+             then emulates sh or ksh and reads their startup files"
+        ));
+    }
+
+    /// Set the option `name` (`no_rcs`, `GLOBAL_RCS`, `share-history`, ...)
+    /// on, or off.
     fn option(&mut self, name: &str, on: bool) {
         let name = name.replace(['-', '_'], "").to_lowercase();
+        let known = |name: &str| {
+            matches!(name, "rcs" | "globalrcs" | "login") || walk::option(name).is_some()
+        };
         let (name, on) = match name.strip_prefix("no") {
-            Some(rest) if matches!(rest, "rcs" | "globalrcs" | "login") => (rest.to_string(), !on),
+            Some(rest) if known(rest) => (rest.to_string(), !on),
             _ => (name, on),
         };
         match name.as_str() {
-            "login" => self.login = Some(on),
-            "rcs" => self.rcs = on,
-            "globalrcs" => self.global_rcs = on,
-            _ => {}
+            "login" => self.start.login = Some(on),
+            "rcs" => self.start.rcs = on,
+            "globalrcs" => self.start.global_rcs = on,
+            other => {
+                if let Some((at, true)) = walk::option(other) {
+                    self.on[at] = Some(on);
+                }
+            }
         }
+    }
+
+    /// What the command line turns on that writes each command line as zsh
+    /// runs.
+    pub(super) fn writes(&self) -> Vec<Write> {
+        OPTIONS
+            .iter()
+            .zip(self.on)
+            .filter(|(_, on)| *on == Some(true))
+            .map(|((_, shown, entered), _)| Write {
+                what: format!("its command line turns on {shown}"),
+                entered: *entered,
+                option: false,
+            })
+            .collect()
     }
 }
 
@@ -166,9 +266,11 @@ struct Reader<'a, F: Filesystem> {
     xdg_config_homes: Vec<Option<String>>,
     /// The files being followed, outermost first.
     stack: Vec<PathBuf>,
-    /// The directories the files read add to `fpath`, or the doubt that one
-    /// the check cannot follow is, should they autoload a function.
-    fpath: Vec<Result<PathBuf, String>>,
+    /// The directories the files read add to `fpath`, and whether zsh looks
+    /// in one before the directories it was built with ([`Event::Fpath`]),
+    /// or the doubt that one the check cannot follow is, should they
+    /// autoload a function.
+    fpath: Vec<Result<(PathBuf, bool), String>>,
     /// The functions the files read autoload by name.
     autoloads: Vec<String>,
     /// The `fc` commands that write the history file, as the warning names
@@ -176,12 +278,17 @@ struct Reader<'a, F: Filesystem> {
     fc: Vec<String>,
     /// What the check could not follow.
     doubts: Vec<String>,
+    /// Whether a file read may turn `RCS` or `GLOBAL_RCS` on again
+    /// ([`backstop::names_rcs`]).
+    rcs: bool,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
-    /// Note a doubt.
+    /// Note a doubt, once.
     fn doubt(&mut self, text: String) {
-        self.doubts.push(text);
+        if !self.doubts.contains(&text) {
+            self.doubts.push(text);
+        }
     }
 
     /// Note a doubt when zsh may run compiled code at `path`, which the
@@ -291,6 +398,7 @@ impl<F: Filesystem> Reader<'_, F> {
             ));
             return;
         }
+        self.rcs |= backstop::names_rcs(&text);
         let place = path.to_string_lossy().into_owned();
         let read = events(&text, &place);
         self.stack.push(path.to_path_buf());
@@ -363,11 +471,15 @@ impl<F: Filesystem> Reader<'_, F> {
                     }
                 }
             }
-            Event::Fpath(Some(dir)) => match self.resolve(&dir) {
+            Event::Fpath {
+                dir: Some(dir),
+                first,
+            } => match self.resolve(&dir) {
                 Some(dirs) => {
                     for dir in dirs {
-                        if !self.fpath.contains(&Ok(dir.clone())) {
-                            self.fpath.push(Ok(dir));
+                        let entry = Ok((dir, first));
+                        if !self.fpath.contains(&entry) {
+                            self.fpath.push(entry);
                         }
                     }
                 }
@@ -377,7 +489,7 @@ impl<F: Filesystem> Reader<'_, F> {
                     dir.text
                 ))),
             },
-            Event::Fpath(None) => self.fpath.push(Err(format!(
+            Event::Fpath { dir: None, .. } => self.fpath.push(Err(format!(
                 "it cannot follow what a line of {place} may add to fpath, where zsh looks \
                  for the functions the files autoload"
             ))),
@@ -420,16 +532,19 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Read the files of the functions the files read autoload by name in
     /// each directory they add to `fpath`, where zsh looks for them as they
     /// first run, until those files add no more. Once a function is
-    /// autoloaded, a directory the check cannot follow is a doubt. zsh's own
-    /// `fpath`, the directories it was built with, it does not read.
+    /// autoloaded, a directory the check cannot follow is a doubt, and so is
+    /// a function that no directory zsh looks in first holds: zsh then finds
+    /// it in a directory the files do not add, one it was built with or one
+    /// `FPATH` names in its environment, which the check does not read.
     fn autoloaded(&mut self) {
         let mut looked: Vec<PathBuf> = Vec::new();
         let mut digests: Vec<PathBuf> = Vec::new();
+        let mut found: Vec<String> = Vec::new();
         loop {
             let before = looked.len();
-            for dir in self.fpath.clone() {
-                let dir = match dir {
-                    Ok(dir) => dir,
+            for entry in self.fpath.clone() {
+                let (dir, first) = match entry {
+                    Ok(entry) => entry,
                     Err(doubt) => {
                         if !self.autoloads.is_empty() && !self.doubts.contains(&doubt) {
                             self.doubt(doubt);
@@ -439,6 +554,12 @@ impl<F: Filesystem> Reader<'_, F> {
                 };
                 for name in self.autoloads.clone() {
                     let path = dir.join(&name);
+                    if first
+                        && !found.contains(&name)
+                        && matches!(self.fs.inode(&path), Ok(Some(_)))
+                    {
+                        found.push(name.clone());
+                    }
                     if looked.contains(&path) {
                         continue;
                     }
@@ -453,6 +574,24 @@ impl<F: Filesystem> Reader<'_, F> {
             if looked.len() == before {
                 break;
             }
+        }
+        let unfound: Vec<String> = self
+            .autoloads
+            .iter()
+            .filter(|name| !found.contains(name))
+            .map(|name| format!("`{name}`"))
+            .collect();
+        if let Some((last, rest)) = unfound.split_last() {
+            let names = if rest.is_empty() {
+                last.clone()
+            } else {
+                format!("{} and {last}", rest.join(", "))
+            };
+            self.doubt(format!(
+                "it cannot read the functions the files autoload that no directory they put in \
+                 front of fpath holds ({names}), which zsh then finds in one it was built with \
+                 or one FPATH names"
+            ));
         }
     }
 }
@@ -488,6 +627,7 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
                 scan.doubts.push(doubt);
             }
         }
+        scan.reopened |= one.reopened;
     }
     scan
 }
@@ -506,6 +646,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         autoloads: Vec::new(),
         fc: Vec::new(),
         doubts: Vec::new(),
+        rcs: false,
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
@@ -517,12 +658,13 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         // stage's file in /etc or in /etc/zsh, as it was built, and the
         // user's in one ZDOTDIR.
         // Without `RCS`, zsh reads /etc's zshenv and nothing after it;
-        // without `GLOBAL_RCS`, no other file in /etc.
-        if !start.rcs && stage != "zshenv" {
+        // without `GLOBAL_RCS`, no other file in /etc; a file read so far
+        // may turn them on again.
+        if !(start.rcs || reader.rcs) && stage != "zshenv" {
             break;
         }
         let certain = !login_stage || start.login == Some(true);
-        if start.global_rcs || stage == "zshenv" {
+        if start.global_rcs || reader.rcs || stage == "zshenv" {
             let system = ["/etc", "/etc/zsh"].map(|dir| Path::new(dir).join(stage));
             let present = system
                 .iter()
@@ -532,7 +674,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
                 reader.file(path, certain && present == 1);
             }
         }
-        if !start.rcs {
+        if !(start.rcs || reader.rcs) {
             break;
         }
         // The user's own, from where the files read so far put ZDOTDIR.
@@ -544,6 +686,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
     reader.autoloaded();
     let mut scan = Scan {
         doubts: reader.doubts,
+        reopened: reader.rcs && !(start.rcs && start.global_rcs),
         ..Scan::default()
     };
     for ((_, shown, entered), named) in OPTIONS.iter().zip(reader.options) {
