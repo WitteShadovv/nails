@@ -25,11 +25,15 @@
 //! directory added that the check cannot follow is a doubt, and, where it does
 //! not know where `fpath` starts, so is a function that no directory put in
 //! front of `fpath` holds, which zsh then finds in a directory it was built
-//! with or one `FPATH` names. A stock function of zsh's own is read for what
+//! with or one `FPATH` names; an element of `fpath` that is empty, or that
+//! `SH_WORD_SPLIT` or `KSH_ARRAYS` may change, is one the check cannot follow.
+//! A stock function of zsh's own is read for what
 //! its code does ([`stock`]): `compinit` and `promptinit` mark functions that
 //! zsh runs only when they are run by name, as hooks or, for completion
 //! functions, as a word is completed, which the check reads where the files
-//! run them. zsh runs compiled code in place of a file, or of a
+//! run them. NixOS's dircolors line in `/etc/zshrc` is left out while nothing
+//! that runs before it may change what it runs ([`shadows`]). zsh runs
+//! compiled code in place of a file, or of a
 //! directory's functions, when a `.zwc` is beside it, and the check cannot read
 //! that code, so such a `.zwc` is a doubt, and so is a path zsh expands into
 //! others (a glob, `{a,b}`).
@@ -41,8 +45,9 @@
 //! (`set -oshare_history`). An `fc` with a flag that writes the history file
 //! (`-A`, `-W`, `-P`) counts as such a write wherever it stands, as a hook may
 //! run it after every command, and so does a redirection to the history file
-//! and, in a hook, a word that names it, while a redirection there whose target
-//! an expansion makes is a doubt. An `emulate -R ksh` turns `SHARE_HISTORY` on,
+//! and, in a hook, a word that names it, while a redirection there to any other
+//! file but a device, which may be the one `HISTFILE` names, or whose target an
+//! expansion makes, is a doubt ([`runs`]). An `emulate -R ksh` turns `SHARE_HISTORY` on,
 //! as ksh's defaults hold it. No turn-off counts: zsh can end with the option
 //! on after one, through a redefined `unsetopt`, a trap or a hook, a plugin
 //! loaded later or an error that stops the file before the line, and no reading
@@ -74,6 +79,7 @@ mod functions;
 mod install;
 mod lexer;
 mod runs;
+mod shadows;
 mod stock;
 mod walk;
 
@@ -83,12 +89,13 @@ use backstop::Forms;
 #[cfg(test)]
 pub(super) use install::tests::seed_coreutils;
 pub(super) use install::{ENVIRONMENT, Install};
-use install::{known_lines, profile_words};
+use install::{dircolors_split, profile_words};
 use lexer::Word;
 #[cfg(test)]
 use lexer::{End, Token, tokens};
+use shadows::{Changer, Snapshot};
 use std::path::{Path, PathBuf};
-use walk::{Event, events};
+use walk::{Event, Input, Read, events};
 
 /// The zsh options that write each command line to the history file as zsh
 /// runs: the name as zsh compares it (lower case, without underscores), the
@@ -208,6 +215,7 @@ impl CommandLine {
                         'l' => line.start.login = Some(on),
                         'f' => line.start.rcs = !on,
                         'd' => line.start.global_rcs = !on,
+                        'y' if on => line.option("shwordsplit", true),
                         'o' => {
                             let rest = &arg[at + 1..];
                             match if rest.is_empty() {
@@ -260,6 +268,16 @@ impl CommandLine {
                  command line turns GLOB_SUBST on, which makes a glob qualifier in a value run"
                     .to_string(),
             ),
+            "shwordsplit" | "ksharrays" if on => self.doubts.push(format!(
+                "it cannot tell where zsh looks for the functions the files autoload, as its \
+                 command line turns {} on, which may change the directories an expansion gives \
+                 fpath",
+                if name == "ksharrays" {
+                    "KSH_ARRAYS"
+                } else {
+                    "SH_WORD_SPLIT"
+                }
+            )),
             other => {
                 if let Some((at, true)) = walk::option(other) {
                     self.on[at] = Some(on);
@@ -353,9 +371,13 @@ struct Reader<'a, F: Filesystem> {
     /// The functions the files autoload without `-U`
     /// ([`Event::Expanding`]).
     expanding: Vec<String>,
-    /// The functions that redirect output to `$TTY`, and where: the
-    /// terminal, while no file sets `TTY`.
-    terminals: Vec<(String, String)>,
+    /// The redirections to a device or the terminal (`/dev/tty`, `$TTY`):
+    /// the function they are in, or none for an `exec` that keeps one open,
+    /// the target as written, and where. Each writes no file while no global
+    /// alias may stand for it and no file sets `TTY`.
+    devices: Vec<(Option<String>, String, String)>,
+    /// The words the global aliases the files define stand for, as written.
+    global_aliases: Vec<String>,
     /// The aliases that stand for an `fc` that writes nothing
     /// ([`Event::FcAlias`]): their names, as written, and where.
     fc_aliases: Vec<(String, String, String)>,
@@ -365,10 +387,11 @@ struct Reader<'a, F: Filesystem> {
     /// The functions and regular aliases the files define
     /// ([`Event::Define`]).
     defined: Vec<String>,
-    /// The commands a function runs with a word an expansion makes, and
-    /// where: in a hook, one that is no function may write a file the word
-    /// names (`tee -a $f`).
-    computed_calls: Vec<(String, String, String)>,
+    /// The commands a function runs with a word an expansion makes, or that
+    /// read what the shell's code may make the command line, and where: in a
+    /// hook, one that is no function may write the file the word names
+    /// (`tee -a $f`), or what it reads (`print -r -- "$1" | tee -a file`).
+    computed_calls: Vec<(String, String, String, runs::Fed, bool)>,
     /// The commands the files run by name ([`Event::Call`]), and where.
     calls: Vec<(String, Vec<Word>, String)>,
     /// Each function the files define and a command it runs by name.
@@ -385,6 +408,23 @@ struct Reader<'a, F: Filesystem> {
     dumps: Vec<PathBuf>,
     audited: Vec<PathBuf>,
     first_lines_read: Vec<PathBuf>,
+    /// What the files read may change what a later command runs with
+    /// ([`Changer`]), what of it came before each dircolors line of NixOS's
+    /// `/etc/zshrc` taken as known ([`Snapshot`]), and how many were noted
+    /// once the startup files were read.
+    changers: Vec<Changer>,
+    dircolors: Vec<Snapshot>,
+    startup_changers: usize,
+    /// The function whose code each file being followed is, outermost
+    /// first, beside [`Reader::stack`].
+    outers: Vec<Option<String>>,
+    /// Each function and one it autoloads, which runs as it runs.
+    autoloaded_by: Vec<(String, String)>,
+    /// Where a file read may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, and
+    /// the elements of `fpath` they may change ([`Event::FpathSplits`]), as
+    /// written and where.
+    word_split: Option<String>,
+    fpath_splits: Vec<(String, String)>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -510,7 +550,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// check reads beside its code, in any form zsh may read their words in
     /// ([`Forms`]): `TTY`, `ZSH_VERSION`, `HOME`, `_compdir`, the names the
     /// files use.
-    fn lines(&mut self, text: &str, place: &str) {
+    fn lines(&mut self, text: &str, place: &str) -> Forms {
         let forms = Forms::of(text);
         if self.tty_set.is_none() && forms.writes("TTY") > 0 {
             self.tty_set = Some(place.to_string());
@@ -529,7 +569,8 @@ impl<F: Filesystem> Reader<'_, F> {
         if self.compdir.is_none() && forms.uses("_compdir") > 0 {
             self.compdir = Some(place.to_string());
         }
-        self.texts.push(forms);
+        self.texts.push(forms.clone());
+        forms
     }
 
     /// Read the startup file at `path` and follow what it sets; `certain`
@@ -548,25 +589,56 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Follow what `text`, the code of the file at `path` that runs as the
     /// code of the function `outer` when in one, sets; `certain` when zsh
-    /// certainly runs it whole.
+    /// certainly runs it whole. In NixOS's `/etc/zshrc`, as zsh reads it at
+    /// the top, the `eval` of what dircolors prints is left out
+    /// ([`dircolors_split`]): the lines before it are read first, what they
+    /// and the files read so far may change it with is noted
+    /// ([`Snapshot`]), then the rest; one that does not close its structure
+    /// before the line is read whole.
     fn code_in(&mut self, path: &Path, text: &str, certain: bool, outer: Option<String>) {
-        let text = known_lines(self.fs, path, text);
-        let text = text.as_ref();
+        let place = path.to_string_lossy().into_owned();
+        if outer.is_none()
+            && self.stack.is_empty()
+            && let Some((before, program, after)) = dircolors_split(self.fs, path, text)
+        {
+            let first = events(before, &place, None);
+            if !first.confused {
+                let stops = first.may_stop;
+                self.piece(path, before, first, certain, None);
+                self.snapshot(&place, program);
+                let second = events(after, &place, None);
+                self.piece(path, after, second, certain && !stops, None);
+                return;
+            }
+        }
+        let read = events(text, &place, outer.clone());
+        self.piece(path, text, read, certain, outer);
+    }
+
+    /// Follow what `text`, the code of the file at `path` or a piece of it
+    /// that runs as the code of the function `outer` when in one, sets, as
+    /// `read` reads it; `certain` when zsh certainly runs it whole.
+    fn piece(&mut self, path: &Path, text: &str, read: Read, certain: bool, outer: Option<String>) {
         self.rcs |= backstop::names_rcs(text);
         self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
-        self.lines(text, &place);
+        let forms = self.lines(text, &place);
+        self.shadows(&forms, &place, outer.as_deref());
         if backstop::names_any(text, &["globsubst"]) {
             self.doubt(format!(
                 "it cannot tell what code zsh runs from the values it expands as patterns, as \
                  {place} names GLOB_SUBST, which makes a glob qualifier in a value run"
             ));
         }
-        let read = events(text, &place, outer);
+        if self.word_split.is_none() && forms.word_split() {
+            self.word_split = Some(place.clone());
+        }
         self.stack.push(path.to_path_buf());
+        self.outers.push(outer);
         for event in read.events {
             self.apply(event, &place, certain && !read.confused);
         }
+        self.outers.pop();
         self.stack.pop();
     }
 
@@ -579,10 +651,17 @@ impl<F: Filesystem> Reader<'_, F> {
         }
     }
 
-    /// Mark the function `name` to be read as one the files autoload.
-    fn autoload_name(&mut self, name: &str) {
+    /// Mark the function `name` to be read as one the files autoload, which
+    /// the function `by` autoloads as it runs when it does.
+    fn autoload_name(&mut self, name: &str, by: Option<&str>) {
         if !self.autoloads.iter().any(|known| known == name) {
             self.autoloads.push(name.to_string());
+        }
+        if let Some(by) = by {
+            let edge = (by.to_string(), name.to_string());
+            if !self.autoloaded_by.contains(&edge) {
+                self.autoloaded_by.push(edge);
+            }
         }
     }
 
@@ -641,13 +720,25 @@ impl<F: Filesystem> Reader<'_, F> {
                 name,
                 args,
                 function,
+                input,
             } => {
                 if let Some(function) = function {
-                    if args.iter().any(|arg| arg.expands) {
+                    let fed = if args.iter().any(|arg| arg.expands) {
+                        Some(runs::Fed::Word)
+                    } else {
+                        match input {
+                            Input::None => None,
+                            Input::Computed => Some(runs::Fed::Input),
+                            Input::Piped(feeders) => Some(runs::Fed::Pipe(feeders)),
+                        }
+                    };
+                    if let Some(fed) = fed {
                         self.computed_calls.push((
                             function.clone(),
                             name.clone(),
                             place.to_string(),
+                            fed,
+                            runs::names_file(&name, &args),
                         ));
                     }
                     if !self.edges.contains(&(function.clone(), name.clone())) {
@@ -657,10 +748,20 @@ impl<F: Filesystem> Reader<'_, F> {
                 self.calls.push((name, args, place.to_string()));
             }
             Event::Define(name) => {
+                self.shadow_function(&name, place, "defines");
                 if !self.defined.contains(&name) {
                     self.defined.push(name);
                 }
             }
+            Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
+            Event::GlobalAlias(name) => {
+                // It stands for any word of a later command, as zsh reads it.
+                self.shadow(format!("{place} defines the global alias `{name}`"));
+                if !self.global_aliases.contains(&name) {
+                    self.global_aliases.push(name);
+                }
+            }
+            Event::FpathSplits(text) => self.fpath_splits.push((text, place.to_string())),
             Event::Assign {
                 name,
                 value,
@@ -688,7 +789,24 @@ impl<F: Filesystem> Reader<'_, F> {
                 "it cannot follow what a line of {place} may add to fpath, where zsh looks \
                  for the functions the files autoload"
             ))),
-            Event::Autoload(function) => self.autoload(function, place),
+            Event::Autoload(function) => {
+                let name = function
+                    .text
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                self.shadow_function(&name, place, "autoloads");
+                if let Some(Some(outer)) = self.outers.last()
+                    && !function.text.contains('/')
+                {
+                    let edge = (outer.clone(), name);
+                    if !self.autoloaded_by.contains(&edge) {
+                        self.autoloaded_by.push(edge);
+                    }
+                }
+                self.autoload(function, place);
+            }
             Event::Fc(command) => {
                 let what = format!("{place} names `{command}`");
                 if !self.fc.contains(&what) {
@@ -756,43 +874,6 @@ impl<F: Filesystem> Reader<'_, F> {
                     value.text
                 ));
             }
-        }
-    }
-
-    /// Note a redirection to `target`, as written, in the function `function`
-    /// when in one, by the file at `place`: one to the history file writes it,
-    /// and one whose target an expansion makes (`computed`) is a doubt where
-    /// an `exec` keeps it open (`kept`) or a hook makes it, but for `$TTY`,
-    /// the terminal, while no file sets `TTY`.
-    fn redirect(
-        &mut self,
-        target: &str,
-        function: Option<String>,
-        computed: bool,
-        kept: bool,
-        place: &str,
-    ) {
-        if backstop::history_path(target) {
-            let what = format!("{place} redirects output to `{target}`");
-            if !self.fc.contains(&what) {
-                self.fc.push(what);
-            }
-        } else if computed && kept {
-            self.doubt(format!(
-                "it cannot tell where the descriptor that `exec` in {place} opens to \
-                 `{target}` goes, which a hook may write each command line to"
-            ));
-        } else if computed && let Some(function) = function {
-            if matches!(target, "$TTY" | "${TTY}") {
-                // The terminal zsh runs on, unless code sets TTY.
-                self.terminals.push((function, place.to_string()));
-                return;
-            }
-            let doubt = format!(
-                "it cannot tell where the output that `{function}` in {place} \
-                 redirects to `{target}` goes, which may be the history file"
-            );
-            self.in_functions.push((function, Err(doubt)));
         }
     }
 }
@@ -913,7 +994,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         version_set: false,
         profile_vars_set: false,
         expanding: Vec::new(),
-        terminals: Vec::new(),
+        devices: Vec::new(),
+        global_aliases: Vec::new(),
         fc_aliases: Vec::new(),
         texts: Vec::new(),
         defined: Vec::new(),
@@ -927,6 +1009,13 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         dumps: Vec::new(),
         audited: Vec::new(),
         first_lines_read: Vec::new(),
+        changers: Vec::new(),
+        dircolors: Vec::new(),
+        startup_changers: 0,
+        outers: Vec::new(),
+        autoloaded_by: Vec::new(),
+        word_split: None,
+        fpath_splits: Vec::new(),
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
@@ -972,6 +1061,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
             reader.file(&dir.join(format!(".{stage}")), certain && dirs.len() == 1);
         }
     }
+    reader.startup_changers = reader.changers.len();
     reader.autoloaded();
     reader.runs();
     // A prompt's code runs only when PROMPT_SUBST is on; whether a command

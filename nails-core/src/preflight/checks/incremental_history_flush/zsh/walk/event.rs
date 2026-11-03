@@ -5,6 +5,22 @@
 
 use super::super::lexer::Word;
 
+/// What a command reads beside its words, which the shell's code may make
+/// the command line: its standard input and its environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in super::super) enum Input {
+    /// Nothing the code gives it.
+    None,
+    /// What an expansion makes: a here-string, a here-document or a file
+    /// an expansion names, or a value an expansion makes in its environment
+    /// (`LINE=$1 cmd`).
+    Computed,
+    /// What the commands before it in its pipeline write: each one's name
+    /// as written, and whether an expansion makes a word of it; none when
+    /// what feeds it is no simple command the walk read (a group).
+    Piped(Vec<(String, bool)>),
+}
+
 /// What a file's code does, in order, as [`super::Walker`] finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in super::super) enum Event {
@@ -78,12 +94,26 @@ pub(in super::super) enum Event {
     /// (`h -W`).
     FcAlias { name: String, text: String },
     /// A command runs by the name `name`, as written, with the words `args`,
-    /// in the function `function` when in one.
+    /// in the function `function` when in one, reading `input`.
     Call {
         name: String,
         args: Vec<Word>,
         function: Option<String>,
+        input: Input,
     },
+    /// What the function `function` holds may write the history file should
+    /// it be a hook, as `doubt` says (`zle complete-word`, which runs the
+    /// completion functions the check does not read).
+    HookDoubt { function: String, doubt: String },
+    /// A global alias is defined, named `name` as written; empty when an
+    /// expansion makes its name. zsh expands it wherever a word of code is
+    /// its name, a redirection's target among them (`/dev/tty`).
+    GlobalAlias(String),
+    /// An element given `fpath` that the walk reads as the directories an
+    /// expansion holds, each as it is (`$fpath`, `$p`), as written: one
+    /// `SH_WORD_SPLIT` splits, or `KSH_ARRAYS` cuts to its first, may hold
+    /// others.
+    FpathSplits(String),
     /// A directory is added to `fpath` under each Nix profile that
     /// `NIX_PROFILES` names, as NixOS's `/etc/zshenv` adds them: written as
     /// `written`, `rest` past the profile (`/share/zsh/site-functions`).
