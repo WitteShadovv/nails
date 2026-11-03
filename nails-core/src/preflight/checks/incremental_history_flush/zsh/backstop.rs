@@ -35,6 +35,9 @@ pub(super) struct Named {
     /// `fc` with a flag that writes the history file, or an expansion
     /// ([`fc_writes`]).
     pub(super) fcs: usize,
+    /// A parameter assigned by the name another one holds
+    /// ([`indirect_assignments`]).
+    pub(super) indirects: usize,
 }
 
 /// What the lines of zsh code `text` name.
@@ -53,6 +56,7 @@ pub(super) fn named(text: &str) -> Named {
         named.autoloads += whole_words(line, "autoload");
         named.fpaths += fpath_writes(line);
         named.fcs += fc_writes(line);
+        named.indirects += indirect_assignments(line);
     }
     named
 }
@@ -500,6 +504,30 @@ pub(super) fn qualifier_code(text: &str) -> bool {
         at += 1;
     }
     false
+}
+
+/// How often `text`, zsh code, assigns a parameter whose name another one's
+/// value gives: a `${(P)...}`, the `P` among other flags too, with an `=` in
+/// it (`${(P)name::=value}`, `${(P)name=value}`), which can set any
+/// parameter, the `options` an option is turned on in among them.
+pub(super) fn indirect_assignments(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    text.match_indices("${(")
+        .filter(|&(at, found)| {
+            let rest = &text[at + found.len()..];
+            let Some((flags, _)) = rest.split_once(')') else {
+                return true;
+            };
+            if !flags.contains('P') {
+                return false;
+            }
+            // What the braces hold past the flags, nested ones counted; one
+            // that does not close runs to the end of the text.
+            let end = closing(bytes, at + 1).unwrap_or(text.len());
+            let inner = text.get(at + found.len() + flags.len() + 1..end);
+            inner.is_none_or(|inner| inner.contains('='))
+        })
+        .count()
 }
 
 /// How often `text` names `ZDOTDIR` otherwise than to read it ([`writes`]).

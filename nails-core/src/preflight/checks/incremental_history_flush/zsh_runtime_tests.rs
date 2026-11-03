@@ -277,3 +277,134 @@ fn a_hook_that_writes_the_line_itself_counts_as_a_write() {
     );
     assert_eq!(scan(&fs, UNKNOWN), Scan::default());
 }
+
+#[test]
+fn a_parameter_set_by_a_name_an_expansion_makes_is_a_doubt() {
+    // zsh 5.9.2 runs each with SHARE_HISTORY on, or with TTY or ZDOTDIR set
+    // to what a part of the name holds.
+    let parameter =
+        |what: &str| format!("it cannot tell which parameter `{what}` in /home/alice/.zshrc sets");
+    for (rc, what) in [
+        (
+            "n='options[share'; m='history]'; : ${(P)${:-$n$m}::=on}\n",
+            ": ${(P)${:-$n$m}::=on}",
+        ),
+        (
+            "n=TTY; : ${(P)n::=~/.zsh_history}\n",
+            ": ${(P)n::=~/.zsh_history}",
+        ),
+        ("(( ${(P)n::=1} ))\n", "(( ${(P)n::=1} ))"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        let found = scan(&fs, UNKNOWN);
+        let what = what.trim_start_matches(": ");
+        assert!(found.doubts.contains(&parameter(what)), "{rc}: {found:?}");
+    }
+    for (rc, what) in [
+        ("zstyle -s :x y ${:-TT}Y\n", "zstyle ${:-TT}Y"),
+        ("zstyle -g $name\n", "zstyle $name"),
+        ("getopts a $name\n", "getopts $name"),
+        ("strftime -s $name %s 0\n", "strftime $name"),
+        ("vared $name\n", "vared $name"),
+        ("zparseopts -A $name a\n", "zparseopts $name"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN).doubts, [parameter(what)], "{rc}");
+    }
+    // One that reads a parameter by the name another holds sets none, and
+    // a name the words give as written is read as before.
+    for rc in [
+        ": ${(P)n}\n",
+        "x=${(P)n:-default}\n",
+        "zstyle -s ':completion:*' format fmt\n",
+        "getopts ab opt \"$@\"\n",
+        "zstyle ':completion:*' list-colors ${(s.:.)LS_COLORS}\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+    // A line that holds one beyond what the walk read is a doubt too.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "cat <<EOF\n${(P)n::=on}\nEOF\n");
+    assert!(
+        scan(&fs, UNKNOWN).doubts.contains(
+            &"it cannot tell which parameter a line of /home/alice/.zshrc may set by the name \
+              another one holds"
+                .to_string()
+        ),
+        "{:?}",
+        scan(&fs, UNKNOWN)
+    );
+}
+
+#[test]
+fn a_function_s_body_set_by_its_name_is_read_as_its_code() {
+    // zsh 5.9.2 writes each command line to HISTFILE with the first two.
+    for (rc, write) in [
+        (
+            "functions[preexec]='print -r -- \"$1\" >> ~/.zsh_history'\n",
+            "/home/alice/.zshrc redirects output to `~/.zsh_history`",
+        ),
+        (
+            "functions[precmd]='fc -AI'\n",
+            "/home/alice/.zshrc names `fc -AI`",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(
+            on(&fs, UNKNOWN).contains(&write.to_string()),
+            "{rc}: {:?}",
+            scan(&fs, UNKNOWN)
+        );
+    }
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "functions[preexec]='print -r -- \"$1\" >> $log'\n",
+    );
+    assert_eq!(
+        scan(&fs, UNKNOWN).doubts,
+        [
+            "it cannot tell where the output that `preexec` in /home/alice/.zshrc redirects to \
+             `$log` goes, which may be the history file"
+        ]
+    );
+    // A body or a name an expansion makes, and the arrays that hold bodies or
+    // alias values beside names, are doubts.
+    for (rc, doubt) in [
+        (
+            "functions[precmd]=$code\n",
+            "it cannot tell what code `functions[precmd]=$code` in /home/alice/.zshrc gives a \
+             function",
+        ),
+        (
+            "functions[$name]='print x'\n",
+            "it cannot tell what code `functions[$name]=print x` in /home/alice/.zshrc gives a \
+             function",
+        ),
+        (
+            "functions+=(preexec 'print x')\n",
+            "it cannot tell what code `functions=(...)` in /home/alice/.zshrc gives",
+        ),
+        (
+            "aliases+=(so setopt)\n",
+            "it cannot tell what code `aliases=(...)` in /home/alice/.zshrc gives",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(
+            scan(&fs, UNKNOWN).doubts.contains(&doubt.to_string()),
+            "{rc}: {:?}",
+            scan(&fs, UNKNOWN)
+        );
+    }
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "functions[greet]='print hi'\n");
+    assert_eq!(scan(&fs, UNKNOWN), Scan::default());
+}
