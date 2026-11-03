@@ -63,13 +63,45 @@ pub const REHEARSE_GUIDE_DONE: Message = Message {
     surface: Surface::Cli,
 };
 
-/// The notice an activation cancelled at the prompt or by Ctrl+C prints: the
-/// one cancel shape, as the human neutral line and the `--json` error message.
+/// The notice an activation cancelled at the prompt or by Ctrl+C prints, unless
+/// one of the two below applies: the one cancel shape, as the human neutral
+/// line and the `--json` error message.
 pub const CANCEL_ACTIVATE: Message = Message {
     id: "activate.cancelled",
-    text: "Activation cancelled; nothing was changed.",
+    text: "Activation cancelled. It wrote nothing to this computer's disk.",
     note: "Shown when the operator answers no at the activation prompt, or presses Ctrl+C \
-           before the point of no return. The same text is the --json error message.",
+           before the point of no return, while no hidden NixOS system was being built and \
+           the hidden volume is a volume of its own. \"It\" is the activation; \"this \
+           computer's disk\" is the computer's own storage, which an activation does not \
+           write to before the point of no return. The same text is the --json error message.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
+/// The notice of an activation that builds a hidden NixOS system, cancelled
+/// once its entry began: what the build finished stays on the hidden volume.
+pub const CANCEL_ACTIVATE_KEEPS_BUILD: Message = Message {
+    id: "activate.cancelled-keeps-build",
+    text: "Activation cancelled. It wrote nothing to this computer's disk.\n\
+           Anything already built stays on the hidden volume for the next activation.",
+    note: "Shown instead of activate.cancelled when Ctrl+C stops an activation that builds a \
+           hidden NixOS system after its entry began: what the build had finished stays on \
+           the hidden volume, and the next activation uses it rather than building it again. \
+           \"Anything\" because the cancel may come before the build wrote anything. Two \
+           lines; the same text is the --json error message.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
+/// The notice of a cancelled activation whose hidden volume lies on storage
+/// the operator allowed with `--allow-decoy-storage`.
+pub const CANCEL_ACTIVATE_ALLOWED_STORAGE: Message = Message {
+    id: "activate.cancelled-allowed-storage",
+    text: "Activation cancelled. What it wrote to the storage you allowed stays there.",
+    note: "Shown instead of the other two activation cancel notices when the operator allowed \
+           a hidden volume on storage the decoy uses (--allow-decoy-storage), which may be \
+           this computer's own disk: what the activation wrote there before the cancel stays. \
+           The same text is the --json error message.",
     placeholders: &[],
     surface: Surface::Cli,
 };
@@ -143,6 +175,8 @@ pub const CATALOG: &[Message] = &[
     REHEARSE_GUIDE_SCAN_NOW,
     REHEARSE_GUIDE_DONE,
     CANCEL_ACTIVATE,
+    CANCEL_ACTIVATE_KEEPS_BUILD,
+    CANCEL_ACTIVATE_ALLOWED_STORAGE,
     CANCEL_DEACTIVATE,
     CANCEL_DISCARD,
     CANCEL_EMERGENCY,

@@ -4,6 +4,7 @@
 //! Unit tests for what `activate` reports.
 
 use super::*;
+use nails_core::output::Style;
 
 /// The one-line envelope `activate --json` prints for `result`, built by the
 /// function the printer uses, as a value checked against the committed schema.
@@ -276,7 +277,7 @@ fn a_cancel_reads_as_the_one_cancel_shape() {
     assert_eq!(value["error"]["code"], "cancelled");
     assert_eq!(
         value["error"]["message"],
-        "Activation cancelled; nothing was changed."
+        "Activation cancelled. It wrote nothing to this computer's disk."
     );
     // The cancel shape carries no data.
     assert!(value.get("data").is_none(), "{value}");
@@ -285,8 +286,133 @@ fn a_cancel_reads_as_the_one_cancel_shape() {
     assert!(out.is_empty(), "{out:?}");
     assert_eq!(
         err,
-        vec!["\u{25cb} Activation cancelled; nothing was changed.".to_string()]
+        vec![
+            "\u{25cb} Activation cancelled. It wrote nothing to this computer's disk.".to_string()
+        ]
     );
+    // An error the entry returns for a cancel prints as a cancel without more
+    // knowledge: the plain notice.
+    assert_eq!(err, cancel_lines(Cancel::default(), Style::default()));
+}
+
+/// The envelope of a cancel `print_activate_cancel` prints, as a value
+/// checked against the committed schema.
+fn cancel_value(cancel: Cancel) -> serde_json::Value {
+    let line = cancel_envelope_line(cancel);
+    assert_eq!(line.lines().count(), 1, "one physical line: {line}");
+    crate::cli::output::test_support::envelope("activate", &line)
+}
+
+/// Each notice says only what holds: nothing written to this computer's disk
+/// when the hidden volume is a volume of its own, what a build had finished
+/// kept on the hidden volume once a building entry began, and on storage the
+/// operator allowed, what was written there kept, with no word about the
+/// disk. The window shows the same words, from the envelope's message.
+#[test]
+fn each_cancel_notice_says_only_what_the_cancel_left() {
+    let disk = "Activation cancelled. It wrote nothing to this computer's disk.";
+    let build = "Anything already built stays on the hidden volume for the next activation.";
+    let allowed = "Activation cancelled. What it wrote to the storage you allowed stays there.";
+    for (notice, lines) in [
+        (CancelNotice::Plain, vec![format!("\u{25cb} {disk}")]),
+        (
+            CancelNotice::KeepsBuild,
+            vec![format!("\u{25cb} {disk}"), format!("  {build}")],
+        ),
+        (
+            CancelNotice::AllowedStorage,
+            vec![format!("\u{25cb} {allowed}")],
+        ),
+    ] {
+        let cancel = Cancel {
+            notice,
+            below_echo: false,
+        };
+        assert_eq!(cancel_lines(cancel, Style::default()), lines, "{notice:?}");
+        let value = cancel_value(cancel);
+        assert_eq!(value["ok"], false, "{value}");
+        assert_eq!(value["error"]["code"], "cancelled", "{value}");
+        assert_eq!(value["error"]["message"], notice.text(), "{value}");
+        assert!(value.get("data").is_none(), "{value}");
+    }
+    assert_eq!(
+        CancelNotice::KeepsBuild.text(),
+        format!("{disk}\n{build}"),
+        "the second line follows the first in the one message"
+    );
+    // On allowed storage the disk may hold what was written: never the
+    // sentence that it holds nothing.
+    assert!(!CancelNotice::AllowedStorage.text().contains("nothing"));
+}
+
+/// Which notice an activation's state gives: allowed storage first, since
+/// there the writes may be on this computer's own disk, then a build that may
+/// have begun.
+#[test]
+fn the_notice_follows_where_the_volume_lies_and_whether_a_build_began() {
+    assert_eq!(CancelNotice::new(false, false), CancelNotice::Plain);
+    assert_eq!(CancelNotice::new(false, true), CancelNotice::KeepsBuild);
+    assert_eq!(CancelNotice::new(true, false), CancelNotice::AllowedStorage);
+    assert_eq!(CancelNotice::new(true, true), CancelNotice::AllowedStorage);
+    assert_eq!(CancelNotice::default(), CancelNotice::Plain);
+}
+
+/// A Ctrl+C while nothing is asked leaves the terminal's `^C` echo where the
+/// cursor stands: the notice starts on the next line instead of after it, and
+/// its envelope is the same.
+#[test]
+fn a_notice_below_the_echo_starts_on_a_line_of_its_own() {
+    for notice in [
+        CancelNotice::Plain,
+        CancelNotice::KeepsBuild,
+        CancelNotice::AllowedStorage,
+    ] {
+        let inline = Cancel {
+            notice,
+            below_echo: false,
+        };
+        let below = Cancel {
+            notice,
+            below_echo: true,
+        };
+        let mut expected = vec![String::new()];
+        expected.extend(cancel_lines(inline, Style::default()));
+        assert_eq!(
+            cancel_lines(below, Style::default()),
+            expected,
+            "{notice:?}"
+        );
+        assert_eq!(
+            cancel_envelope_line(below),
+            cancel_envelope_line(inline),
+            "{notice:?}"
+        );
+    }
+}
+
+/// Every line of every notice fits 80 columns as printed, its mark or indent
+/// included, in Unicode and in ASCII.
+#[test]
+fn every_cancel_notice_fits_80_columns() {
+    for ascii in [false, true] {
+        let style = Style {
+            color: false,
+            ascii,
+        };
+        for notice in [
+            CancelNotice::Plain,
+            CancelNotice::KeepsBuild,
+            CancelNotice::AllowedStorage,
+        ] {
+            let cancel = Cancel {
+                notice,
+                below_echo: true,
+            };
+            for line in cancel_lines(cancel, style) {
+                assert!(line.chars().count() <= 80, "{line:?}");
+            }
+        }
+    }
 }
 
 #[test]

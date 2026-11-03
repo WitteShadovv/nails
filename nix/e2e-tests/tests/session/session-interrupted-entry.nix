@@ -16,7 +16,8 @@
 #   2. SIGKILL again, then `nails recover` removes the next root, the plan and
 #      the drop-in, and `check` passes its session-state check again.
 #   3. Ctrl+C (SIGINT to the process group) during the build rolls the entry
-#      back by itself.
+#      back by itself, and its notice says the build's work stays on the
+#      hidden volume while nothing was written to the decoy disk.
 #   4. `nails emergency` during the build detaches the next root, removes
 #      the runtime files and reloads PID 1, which forgets the drop-in.
 { self, pkgs, ... }:
@@ -189,6 +190,19 @@ in
         machine.execute("pkill -9 -f 'sleep [6]000'")
         assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
         session.assert_decoy_root(machine)
+        # The notice says what the cancel left: nothing on the decoy disk, and
+        # what the hidden system's build had finished on the hidden volume.
+        # Not `log`: at the top level of the script that is the driver's logger.
+        cancel_log = machine.succeed("cat /mnt/data/interrupted.log")
+        machine.log(cancel_log)
+        assert (
+            "Activation cancelled. It wrote nothing to this computer's disk." in cancel_log
+        ), cancel_log
+        assert (
+            "Anything already built stays on the hidden volume for the next activation."
+            in cancel_log
+        ), cancel_log
+        assert "nothing was changed" not in cancel_log, cancel_log
 
     with subtest("emergency during an entry detaches it"):
         start_activation("emergency-during")

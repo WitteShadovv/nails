@@ -712,6 +712,17 @@ of this changelog for that version becomes the release notes word for word, and
   that holds the decoy's flake (`git+file:///var/lib/cfg.git`) and `git+ssh://localhost/etc/nixos`,
   through an SSH login to the machine itself, are not recognised. Name the flake by its absolute
   path or a plain URL.
+- A cancelled activation says what it left. Its notice read "Activation cancelled; nothing was
+  changed.", which was not true once the activation had gone on past its question: the residue
+  baseline and the parts of the hidden NixOS system a build had finished stay on the hidden volume.
+  It now reads "Activation cancelled. It wrote nothing to this computer's disk.", and once the
+  entry of an activation that builds a hidden NixOS system has begun, a second line follows:
+  "Anything already built stays on the hidden volume for the next activation." With a hidden root
+  on storage allowed with `--allow-decoy-storage`, where everything the activation writes lands,
+  it reads "Activation cancelled. What it wrote to the storage you allowed stays there." The
+  `--json` cancel envelope and the window carry the same words. A Ctrl+C after the question, or
+  under `-y`, starts the notice on a line of its own on a terminal, where it began right after the
+  `^C` the terminal echoed.
 
 ### Fixed
 

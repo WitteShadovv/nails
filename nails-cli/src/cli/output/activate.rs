@@ -58,10 +58,100 @@ pub enum ActivateResult<'a> {
     Failed(&'a NailsError),
 }
 
-/// What a cancelled activation reports, whether the operator answered `n` at
-/// the prompt or pressed Ctrl+C at it or later in the entry. From the catalogue,
-/// so the CLI and the window show the same words.
-pub const CANCELLED: &str = nails_core::catalog::CANCEL_ACTIVATE.text;
+/// Which notice a cancelled activation prints, whether the operator answered
+/// `n` at the prompt or pressed Ctrl+C at it or later in the entry. From the
+/// catalogue, so the CLI and the window show the same words. What it may say
+/// about this computer's disk depends on where the hidden volume lies, and
+/// what it says about the hidden volume on how far the entry got.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CancelNotice {
+    /// The hidden volume is a volume of its own and no hidden NixOS system
+    /// was being built: the activation wrote nothing to this computer's disk.
+    #[default]
+    Plain,
+    /// As [`Plain`](Self::Plain), but the entry of an activation that builds a
+    /// hidden NixOS system had begun: what the build finished stays on the
+    /// hidden volume, for the next activation.
+    KeepsBuild,
+    /// The hidden volume lies on storage the operator allowed with
+    /// `--allow-decoy-storage`: what the activation wrote there stays.
+    AllowedStorage,
+}
+
+impl CancelNotice {
+    /// The notice of an activation whose hidden volume lies on storage the
+    /// operator allowed (`on_allowed_storage`), or whose entry had begun to
+    /// build a hidden NixOS system (`building`). Allowed storage comes first:
+    /// there the activation's writes may be on this computer's own disk.
+    pub fn new(on_allowed_storage: bool, building: bool) -> Self {
+        if on_allowed_storage {
+            Self::AllowedStorage
+        } else if building {
+            Self::KeepsBuild
+        } else {
+            Self::Plain
+        }
+    }
+
+    /// The notice's words, from the catalogue.
+    pub fn text(self) -> &'static str {
+        use nails_core::catalog;
+        match self {
+            Self::Plain => catalog::CANCEL_ACTIVATE.text,
+            Self::KeepsBuild => catalog::CANCEL_ACTIVATE_KEEPS_BUILD.text,
+            Self::AllowedStorage => catalog::CANCEL_ACTIVATE_ALLOWED_STORAGE.text,
+        }
+    }
+}
+
+/// A cancelled activation as it is reported.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Cancel {
+    /// What it says.
+    pub notice: CancelNotice,
+    /// Whether the notice starts with a line break: a signal stopped the
+    /// activation while no question was waiting for its answer, so the
+    /// terminal echoed `^C` where the notice would begin. At the prompt the
+    /// prompt ends its own line.
+    pub below_echo: bool,
+}
+
+/// The cancel shape every command shares, with the notice of `cancel` as its
+/// message: an error body with the code `cancelled`, no data.
+fn cancel_envelope_line(cancel: Cancel) -> String {
+    error_envelope(
+        "activate",
+        ErrorBody::new("cancelled", cancel.notice.text()),
+    )
+    .to_line()
+}
+
+/// The notice of `cancel` as the lines a person reads on stderr: an empty
+/// line first when it starts below the terminal's `^C`, then the notice's
+/// first line marked as neutral and each line after it indented below it.
+fn cancel_lines(cancel: Cancel, style: nails_core::output::Style) -> Vec<String> {
+    let mut lines = cancel.notice.text().lines();
+    let first = style.marked(Mark::Neutral, lines.next().unwrap_or_default());
+    cancel
+        .below_echo
+        .then(String::new)
+        .into_iter()
+        .chain(std::iter::once(first))
+        .chain(lines.map(|line| format!("  {line}")))
+        .collect()
+}
+
+/// Print a cancelled activation: under `--json` its one envelope on stdout,
+/// otherwise its notice on stderr.
+pub fn print_activate_cancel(cancel: Cancel, settings: &OutputSettings) {
+    if settings.is_json() {
+        crate::cli::output::envelope::print_envelope_line(&cancel_envelope_line(cancel));
+    } else {
+        for line in cancel_lines(cancel, settings.stderr_style()) {
+            crate::cli::output::eprintln_tolerating_broken_pipe(&line);
+        }
+    }
+}
 
 /// `duration` (in seconds) as `status` shows the recorded activation time.
 fn shown_duration(duration: f64) -> String {
@@ -161,13 +251,13 @@ fn failure_error(error: &NailsError) -> ErrorBody {
 
 /// The activation result as one JSON envelope line. A cancel is the one cancel
 /// shape every command shares (an error body with the code `cancelled`, no
-/// data); every other failure keeps its data so a caller learns what was
-/// prepared, with `ok` false; a success and a success-with-warnings are `ok`.
+/// data), with the plain notice, as [`print_activate_cancel`] gives it for a
+/// cancel it knows more of; every other failure keeps its data so a caller
+/// learns what was prepared, with `ok` false; a success and a
+/// success-with-warnings are `ok`.
 pub fn activate_envelope_line(result: &ActivateResult<'_>, duration: f64) -> String {
     match result {
-        ActivateResult::Failed(NailsError::Cancelled) => {
-            error_envelope("activate", ErrorBody::new("cancelled", CANCELLED)).to_line()
-        }
+        ActivateResult::Failed(NailsError::Cancelled) => cancel_envelope_line(Cancel::default()),
         ActivateResult::Failed(error) => Envelope::failure_with_data(
             "activate",
             failure_error(error),
@@ -234,7 +324,7 @@ fn human_lines(
             );
         }
         ActivateResult::Failed(NailsError::Cancelled) => {
-            err.push(err_style.marked(Mark::Neutral, CANCELLED));
+            err.extend(cancel_lines(Cancel::default(), err_style));
         }
         ActivateResult::Failed(error) => {
             if let NailsError::PreFlightCheckFailed(failures) = error {

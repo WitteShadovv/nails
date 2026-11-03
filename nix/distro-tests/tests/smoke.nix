@@ -16,7 +16,8 @@
 # masking them: the target is reached, and their fsck never runs on the decoy
 # disk. A decoy service that keeps a PID
 # file in /run starts again after an emergency killed its hidden copy, and a
-# Ctrl+C during the pre-flight checks cancels an activation. The second
+# Ctrl+C during the pre-flight checks cancels an activation, whose notice says
+# it wrote nothing to the decoy disk. The second
 # session is also a rehearsal, run the way `nails rehearse` guides it: plant in
 # the session (a scan there is refused), a plain deactivate, then on the decoy,
 # in the same boot, the hidden root opened again and a scan of the raw decoy
@@ -810,9 +811,17 @@ distroVm.buildVmTest {
             + "cancelled-activation.service)\" != 0",
             timeout=600,
         )
-        print(vm.succeed(f"cat {log}"))
+        cancel_log = vm.succeed(f"cat {log}")
+        print(cancel_log)
         status = vm.succeed("systemctl show -P ExecMainStatus cancelled-activation.service").strip()
         assert status == "130", f"the cancelled activation exited {status}"
+        # It builds no hidden NixOS system, so its notice says only that it
+        # wrote nothing to the decoy disk.
+        assert (
+            "Activation cancelled. It wrote nothing to this computer's disk." in cancel_log
+        ), cancel_log
+        assert "Anything already built" not in cancel_log, cancel_log
+        assert "nothing was changed" not in cancel_log, cancel_log
         vm.fail("mountpoint -q /run/nextroot")
         vm.fail("test -e /run/overlay-runtime")
         vm.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
