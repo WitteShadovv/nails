@@ -830,8 +830,11 @@ where the window cannot be sure the session ends so, and the page then says
 why: for example while Verify or a step of Rehearsal runs, which NAILS
 finishes before it reads the emergency, or where the window cannot read the
 setting. Where the window cannot reach NAILS in time, it asks logind for the
-power-off itself. Holding the power button always powers off. A plain
-`nails emergency` does not read this setting: its flags choose. See
+power-off itself, and while a deactivation returns to the decoy it asks for
+a power-off right away, since that return can end the window and NAILS
+before NAILS reads the emergency. A return logind already holds may still
+come first. Holding the power button always powers off. A plain `nails
+emergency` does not read this setting: its flags choose. See
 [the window's Emergency control](configuration.md#the-windows-emergency-control).
 
 ### Panic switch

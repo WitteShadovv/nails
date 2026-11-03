@@ -158,8 +158,8 @@ fn a_flood_drawn_a_turn_at_a_time_leaves_room_for_the_hold() {
     let fire = emergency.clone();
     let screen = Screen::with_emergency(
         model,
-        Box::new(move |finish| {
-            fire.fire(finish);
+        Box::new(move |firing| {
+            fire.fire(firing);
         }),
     );
     let turn = || {

@@ -250,6 +250,9 @@ pub const EMERGENCY_BUSY: &str = "while NAILS is busy";
 /// A deactivation powers the computer off: a return or a restart would be
 /// the weaker ending.
 pub const EMERGENCY_POWERING_OFF: &str = "as the computer is powering off";
+/// A deactivation returns to the decoy: the helper reads a restart only
+/// after it, and the window's own ending is a power-off.
+pub const EMERGENCY_RETURNING: &str = "while the session returns to the decoy";
 /// The plan of a return says the way back powers off instead, whatever
 /// happens before it runs.
 pub const EMERGENCY_WAY_BACK_POWERS_OFF: &str = "as this session's way back powers off instead";

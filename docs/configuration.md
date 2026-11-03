@@ -709,7 +709,8 @@ ends as the setting says, and the page then names that and why:
   after it, and the window does not wait that long (below);
 - until the window has read the setting, and where the settings cannot be
   read or hold a value the window does not know;
-- for a return or a restart while a deactivation powers the computer off;
+- for a return or a restart while a deactivation powers the computer off,
+  and for a restart while a deactivation returns to the decoy (below);
 - for a return in a session without a way back, and for a return while the
   question of a deactivation says that the return powers off instead,
   whatever happens before it runs.
@@ -721,7 +722,13 @@ poweroff`), since it has no way back to the decoy of its own. The engine's
 emergency ends the window with the session's other programs, so the window
 still runs then only where NAILS did not act on the request in time: it was
 busy with another request, or the steps of a return or a restart had not
-ended the session yet. Holding the power button always powers off.
+ended the session yet. While a deactivation returns to the decoy, a
+power-off from the control does not wait those 3 seconds: NAILS takes the
+request only after it has started that return, and the switch that follows
+ends the window and NAILS with the session, so neither might act on it. The
+window then asks logind for the power-off right after the request. A return
+that logind already holds may still come first. Holding the power button
+always powers off.
 
 `nails emergency` does not read this setting: its hot path acts before any
 configuration is read, so neither a failed hidden volume nor a file it
