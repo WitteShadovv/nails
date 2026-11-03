@@ -175,6 +175,13 @@ fn fire_while_busy(window: &Window, seen: &Seen, what: &str) {
         .screen
         .find_with(text::FACT_EMERGENCY, AccessibleRole::ListItem);
     assert_eq!(row.accessible_description().as_deref(), Some(said.as_str()));
+    let control = window
+        .screen
+        .find_with(text::EMERGENCY, AccessibleRole::Button);
+    assert_eq!(
+        control.accessible_description().as_deref(),
+        Some(text::emergency_how(Finish::PowerOff))
+    );
     let fired = Instant::now();
     hold(&window.screen);
     assert_eq!(window.screen.finishes(), [Finish::PowerOff]);
