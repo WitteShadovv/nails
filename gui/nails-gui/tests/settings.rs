@@ -137,7 +137,10 @@ fn a_choice_asks_with_its_value_before_and_after_and_saves_only_on_save() {
     assert!(screen.shows("Which home the hidden session starts in."));
     let decoy = screen.find_with("Decoy home", AccessibleRole::Button);
     let line = decoy.accessible_description().unwrap_or_default();
-    assert!(line.starts_with("Now. "), "{line}");
+    assert!(
+        line.starts_with(&format!("{}. ", text::CHOSEN_DEFAULT)),
+        "in force and the default: {line}"
+    );
     press(&screen, "Decoy home");
     assert!(screen.asks().is_empty(), "the value it has already");
 

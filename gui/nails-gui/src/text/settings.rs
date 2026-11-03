@@ -55,6 +55,10 @@ pub const FACT_NOW: &str = "Now";
 pub const FACT_FROM: &str = "Comes from";
 /// The mark of the choice in force.
 pub const CHOSEN: &str = "Now";
+/// The mark of a choice that is the key's default.
+pub const DEFAULT_CHOICE: &str = "The default";
+/// The mark of a choice that is in force and the default.
+pub const CHOSEN_DEFAULT: &str = "Now, the default";
 /// A boolean on.
 pub const ON: &str = "On";
 /// A boolean off.
@@ -176,6 +180,18 @@ pub fn setting(key: &str) -> (&'static str, &'static str) {
             "Sleep keeps the whole session in memory, its key included.",
         ),
         _ => ("Setting", ""),
+    }
+}
+
+/// What a choice's line starts with: whether it is in force `now`, and
+/// whether it is the key's `default`; empty for neither.
+#[must_use]
+pub fn choice_mark(now: bool, default: bool) -> &'static str {
+    match (now, default) {
+        (true, true) => CHOSEN_DEFAULT,
+        (true, false) => CHOSEN,
+        (false, true) => DEFAULT_CHOICE,
+        (false, false) => "",
     }
 }
 

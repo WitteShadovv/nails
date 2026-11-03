@@ -237,8 +237,9 @@ of this changelog for that version becomes the release notes word for word, and
   window's own reading of the mount table agrees with the
   engine's status that this is the decoy. In a hidden session the tools also show the settings
   (`nails config show`): each key a value can be set for, its value and where it comes from. A
-  key's page offers its states or options, or a field for a number, a path, a flake or a list of
-  names, and Use the Default… where the settings file sets it. A change goes through the plan of
+  key's page offers its states or options, the default among the options marked, or a field for a
+  number, a path, a flake or a list of names, and Use the Default… where the settings file sets it.
+  A change goes through the plan of
   `config set` or `config unset`, its token and its apply: the question names each key with its
   value before and after, a file that changed before Save writes nothing and is read again, and an
   answer the window does not expect changes nothing more. The hidden volume and the record cannot

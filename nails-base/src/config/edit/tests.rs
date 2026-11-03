@@ -82,6 +82,8 @@ fn the_window_names_every_setting_and_its_kind_as_the_engine_does() {
     assert_eq!(window, engine);
 }
 
+/// Each key's default is a value of its kind; a choice names its default
+/// first, which is how a window marks the default among the choices.
 #[test]
 fn each_kind_fits_the_default_of_its_key() {
     let tree = serde_json::to_value(Config::default()).unwrap();
@@ -95,7 +97,9 @@ fn each_kind_fits_the_default_of_its_key() {
             Kind::Integer => default.is_u64(),
             Kind::Path => default.is_string(),
             Kind::Text => default.is_null(),
-            Kind::Choice(choices) => default.as_str().is_some_and(|d| choices.contains(&d)),
+            Kind::Choice(choices) => default
+                .as_str()
+                .is_some_and(|d| choices.first() == Some(&d)),
             Kind::Names => default.is_array(),
         };
         assert!(fits, "{}: {:?} for {default}", setting.key, setting.kind);

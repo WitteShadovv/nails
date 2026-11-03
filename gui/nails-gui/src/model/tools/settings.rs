@@ -376,11 +376,16 @@ impl Settings {
                     .collect();
             }
             KeyKind::Choice(options) => {
+                // The engine's table names a choice's default first.
                 page.choices = options
                     .iter()
-                    .map(|option| {
+                    .enumerate()
+                    .map(|(index, option)| {
                         let (title, line) = text::choice(setting.key, option);
-                        let mark = chosen(now.as_ref().and_then(Value::as_str) == Some(*option));
+                        let mark = text::choice_mark(
+                            now.as_ref().and_then(Value::as_str) == Some(*option),
+                            index == 0,
+                        );
                         Choice {
                             title: title.to_string(),
                             subtitle: if mark.is_empty() {
