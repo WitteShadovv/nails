@@ -18,6 +18,7 @@
 
 use super::prompt::{Answer, read_answer_from_stdin};
 use crate::cli::args::ActivateArgs;
+use crate::cli::output::activate::CancelNotice;
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
@@ -182,9 +183,41 @@ pub fn execute(
             &begun.locked.entry_advisories(),
         ))
     {
-        return report_cancelled(settings, status);
+        return report_cancelled(
+            settings,
+            prompt_cancel(begun.locked.accepted().is_some()),
+            status,
+        );
     }
     finish(settings, begun.locked, || {})
+}
+
+/// The cancel at the prompt of an activation whose hidden volume may lie on
+/// storage the operator allowed (`on_allowed_storage`): nothing was built
+/// yet, and the prompt's line is ended already, by the Enter of an answer or,
+/// for a Ctrl+C, by [`confirm_logout`] itself.
+fn prompt_cancel(on_allowed_storage: bool) -> output::activate::Cancel {
+    output::activate::Cancel {
+        notice: CancelNotice::new(on_allowed_storage, false),
+        below_echo: false,
+    }
+}
+
+/// The cancel once the question is answered, or skipped with `-y`, where only
+/// a signal stops the activation (or, for the window, its hang-up): what was
+/// built depends on whether the entry had begun (`entered`) in an activation
+/// that `builds` a hidden NixOS system. The notice starts below the `^C` the
+/// terminal echoed when it goes to a terminal (`on_terminal`).
+fn signal_cancel(
+    on_allowed_storage: bool,
+    builds: bool,
+    entered: bool,
+    on_terminal: bool,
+) -> output::activate::Cancel {
+    output::activate::Cancel {
+        notice: CancelNotice::new(on_allowed_storage, builds && entered),
+        below_echo: on_terminal,
+    }
 }
 
 /// An activation past its gates and holding the state lock, waiting for the
@@ -289,23 +322,25 @@ pub(crate) fn finish(
     at_point_of_no_return: impl FnOnce(),
 ) -> ExitStatus {
     let json = settings.is_json();
+    let builds = locked.builds_hidden_system();
+    let on_allowed_storage = locked.accepted().is_some();
+    let on_terminal = !json && std::io::stderr().is_terminal();
+    let cancelled = |entered: bool| signal_cancel(on_allowed_storage, builds, entered, on_terminal);
     // Ctrl+C sets a flag that every step from here on reads (see
     // nails_core::cancel). At the prompt it ends the activation at once;
     // during the residue baseline, before the entry begins.
     if nails_core::cancel::is_cancelled() {
-        return report_cancelled(settings, ExitStatus::Cancelled);
+        return report_cancelled(settings, cancelled(false), ExitStatus::Cancelled);
     }
     write_baseline(settings, &locked, json);
     if nails_core::cancel::is_cancelled() {
-        return report_cancelled(settings, ExitStatus::Cancelled);
+        return report_cancelled(settings, cancelled(false), ExitStatus::Cancelled);
     }
 
     // Under --json activation prints one envelope and nothing else, so there is
     // no progress line on stdout; a window watches progress on its own channel.
     if !json && settings.verbosity >= Verbosity::Normal {
-        crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(
-            locked.builds_hidden_system(),
-        ));
+        crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(builds));
     }
     let start = Instant::now();
     let result = locked.enter();
@@ -317,12 +352,14 @@ pub(crate) fn finish(
             return ExitStatus::Ok;
         }
         Ok(EnterOutcome::Prepared { entry, elapsed }) => (entry, elapsed),
+        Err(NailsError::Cancelled) => {
+            return report_cancelled(settings, cancelled(true), ExitStatus::Cancelled);
+        }
         Err(error) => {
             print_result(settings, &ActivateResult::Failed(&error), duration);
             return match error {
                 NailsError::PreFlightCheckFailed(_) => ExitStatus::PreflightRefused,
                 NailsError::UnsupportedPlatform { .. } => ExitStatus::Unsupported,
-                NailsError::Cancelled => ExitStatus::Cancelled,
                 _ => ExitStatus::Failed,
             };
         }
@@ -392,14 +429,14 @@ fn stop_status(answer: Answer) -> Option<ExitStatus> {
     }
 }
 
-/// Report an activation cancelled before it changed anything, ending with
+/// Report an activation cancelled before its point of no return, ending with
 /// `status`.
-fn report_cancelled(settings: &OutputSettings, status: ExitStatus) -> ExitStatus {
-    print_result(
-        settings,
-        &ActivateResult::Failed(&NailsError::Cancelled),
-        0.0,
-    );
+fn report_cancelled(
+    settings: &OutputSettings,
+    cancel: output::activate::Cancel,
+    status: ExitStatus,
+) -> ExitStatus {
+    output::activate::print_activate_cancel(cancel, settings);
     status
 }
 

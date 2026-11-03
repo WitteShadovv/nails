@@ -920,7 +920,7 @@ fn activate_schema_accepts_one_result_or_error_envelope() {
     // The one cancel shape: an error, no data.
     let cancelled = serde_json::json!({
         "schema_version": 2, "command": "activate", "ok": false,
-        "error": {"code": "cancelled", "message": "Activation cancelled; nothing was changed.", "next": null}
+        "error": {"code": "cancelled", "message": "Activation cancelled. It wrote nothing to this computer's disk.", "next": null}
     });
     assert_matches_schema(&schema, &cancelled);
 

@@ -313,10 +313,22 @@ Keep all of it `root`-owned on the hidden volume.
    also gives it a start command that does nothing; without one, systemd would
    refuse to load the unit. The way back removes both drop-ins, and leaves any
    other drop-in the decoy had for these units in place. Ctrl+C (or a
-   SIGTERM) up to this point cancels the activation: it stops at the next step
-   and removes everything it built, and the command exits with status 130. A
-   step that runs a program to its end, such as the hidden system's
-   activation, finishes first.
+   SIGTERM) up to this point cancels the activation: it stops at the next step,
+   takes down the next root and removes the runtime files, drop-ins and masks
+   it set up, and the command exits with status 130. A step that runs a
+   program to its end, such as the hidden system's activation, finishes first.
+   What the activation wrote to the hidden volume stays there: the residue
+   baseline in `<hidden-root>/reports/`, and the parts of the hidden NixOS
+   system its build had finished, which the next activation uses rather than
+   building them again. Unless the hidden root lies on storage you allowed
+   with `--allow-decoy-storage`, the activation has written nothing to the
+   decoy disk, and the notice says so:
+   `Activation cancelled. It wrote nothing to this computer's disk.` Once the
+   entry of an activation that builds a hidden NixOS system had begun, a
+   second line follows:
+   `Anything already built stays on the hidden volume for the next activation.`
+   On allowed storage, where everything it writes lands, the notice says that
+   what the activation wrote there stays.
 
 **The hidden NixOS system.** Activation builds the hidden toplevel into the
 next root's store (`nix build --store /run/nextroot`) from the first of:
