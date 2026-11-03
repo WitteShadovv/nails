@@ -505,8 +505,9 @@ of this changelog for that version becomes the release notes word for word, and
   volume with authenticated encryption, is no VeraCrypt or TrueCrypt mapping to it. It passes
   when that mapping is read-only, as `cryptsetup open --readonly` makes it; one the VeraCrypt
   application made warns even when the application mounted it read-only, as it leaves its
-  mapping writable. It reads sysfs and the mount table, never a mapping's table, and never fails.
-  See docs/backends.md.
+  mapping writable. It reads sysfs and the mount table, never a mapping's table, warns when sysfs
+  does not let it list the devices below the hidden root or built on its storage, and never
+  fails. See docs/backends.md.
 - `check` and activation refuse (`backend-partition-type`) a hidden root stored on a partition of
   a disk the decoy boots from whose GPT type systemd-gpt-auto-generator acts on at every later
   boot of the decoy: a `/home`, `/srv`, `/var` or `/var/tmp` partition, which it mounts when no

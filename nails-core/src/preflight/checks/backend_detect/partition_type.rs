@@ -173,7 +173,7 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendPartitionTypeCheck {
             &roots,
             LoopFollow::BlockDevices,
         );
-        if !complete(&graph) {
+        if !graph.complete() {
             return Ok(unchecked(
                 root,
                 "its storage holds more devices than the check reads",
@@ -285,17 +285,6 @@ fn udev_entry<F: Filesystem>(fs: &F, layer: &Layer, partition: &Partition) -> Op
         }),
         _ => None,
     }
-}
-
-/// Whether the graph read every device a layer of it goes on into.
-fn complete(graph: &Graph) -> bool {
-    graph.layers.iter().all(|(name, layer)| {
-        !layer.slaves_unread
-            && graph
-                .children(name, layer)
-                .iter()
-                .all(|child| graph.layers.contains_key(child))
-    })
 }
 
 /// The disks the decoy boots from, by kernel name: every disk below its root

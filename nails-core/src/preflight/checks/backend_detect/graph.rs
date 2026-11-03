@@ -93,6 +93,18 @@ impl Graph {
         self.below.get(name).unwrap_or(&layer.below)
     }
 
+    /// Whether the graph read every device a layer of it goes on into, and
+    /// could list the devices below each one.
+    pub(super) fn complete(&self) -> bool {
+        self.layers.iter().all(|(name, layer)| {
+            !layer.slaves_unread
+                && self
+                    .children(name, layer)
+                    .iter()
+                    .all(|child| self.layers.contains_key(child))
+        })
+    }
+
     /// Where the check goes on from `layer` past the walk, as sysfs
     /// directories still to read.
     fn beyond<F: Filesystem>(
