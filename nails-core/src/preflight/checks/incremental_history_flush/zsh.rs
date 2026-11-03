@@ -223,10 +223,11 @@ struct Reader<'a, F: Filesystem> {
     unset: Vec<String>,
     /// The files the check would read that are not there now, and the
     /// words the files source and test, the paths of the functions they
-    /// autoload among them ([`Reader::made`]).
+    /// autoload among them, and give compinit after `-d` ([`Reader::made`]).
     missing: Vec<(PathBuf, usize)>,
     read_files: Vec<(PathBuf, usize)>,
     known_files: Vec<String>,
+    compinit_dumps: Vec<String>,
     /// The writes to a path an expansion makes (`cp ~/.src $f`, `> $f`):
     /// its last part, what the warning names, where in the files read it is
     /// and the function it is in; the commands the files run where no
@@ -243,8 +244,10 @@ struct Reader<'a, F: Filesystem> {
     /// ([`Event::FcAlias`]): their names, as written, and where.
     fc_aliases: Vec<(String, String, String)>,
     /// The forms of the text of each file read, for the names its lines use
-    /// ([`Forms`]).
+    /// ([`Forms`]), and which of them are the code of a stock function,
+    /// which makes no file the check would read before zsh reads it.
     texts: Vec<Forms>,
+    stock_texts: Vec<usize>,
     /// The functions and regular aliases the files define
     /// ([`Event::Define`]).
     defined: Vec<String>,
@@ -1002,12 +1005,14 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         missing: Vec::new(),
         read_files: Vec::new(),
         known_files: Vec::new(),
+        compinit_dumps: Vec::new(),
         writes: Vec::new(),
         top_calls: Vec::new(),
         order: 0,
         computed: Vec::new(),
         fc_aliases: Vec::new(),
         texts: Vec::new(),
+        stock_texts: Vec::new(),
         defined: Vec::new(),
         computed_calls: Vec::new(),
         calls: Vec::new(),

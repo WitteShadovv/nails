@@ -141,6 +141,10 @@ impl<F: Filesystem> Reader<'_, F> {
                 // count as uses of an alias then.
                 if self.expanding.iter().any(|expanding| expanding == name) {
                     self.lines(&text, &path.to_string_lossy());
+                    // It makes no file the check would read before zsh
+                    // reads it: compdump writes the dump file only once
+                    // compinit has read it or found none.
+                    self.stock_texts.push(self.texts.len() - 1);
                 }
                 self.stock(stock);
             }
@@ -339,6 +343,7 @@ impl<F: Filesystem> Reader<'_, F> {
                     .to_string(),
             );
         }
+        self.compinit_dumps.clear();
         for (name, args, place) in self.calls.clone() {
             if name != "compinit" {
                 continue;
@@ -366,7 +371,12 @@ impl<F: Filesystem> Reader<'_, F> {
                     continue;
                 };
                 match self.resolve(file) {
-                    Some(files) => paths.extend(files),
+                    Some(files) => {
+                        // compinit makes it only once it has read it or
+                        // found none.
+                        self.compinit_dumps.push(file.text.clone());
+                        paths.extend(files);
+                    }
                     None => self.doubt(format!(
                         "it cannot follow the dump file that `compinit -d {}` in {place} \
                          sources",
@@ -639,9 +649,15 @@ pub(super) mod tests {
     use super::{Stock, digest};
 
     /// The text a test gives a stock function's file, which the check takes
-    /// for the stock code of `name` in a test, as no test carries zsh's own.
+    /// for the stock code of `name` in a test, as no test carries zsh's own;
+    /// compinit's names the dump file, as zsh's own does.
     pub(in super::super) fn text(name: &str) -> String {
-        format!("# The stock {name} of a test.\ntypeset -A _i_test\n")
+        let dump = if name == "compinit" {
+            ": ${_comp_dumpfile:=${ZDOTDIR:-$HOME}/.zcompdump}\n"
+        } else {
+            ""
+        };
+        format!("# The stock {name} of a test.\ntypeset -A _i_test\n{dump}")
     }
 
     /// The stock function `name` is in a test when `digest` is that of its

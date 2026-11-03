@@ -1498,14 +1498,17 @@ afterwards:
     unset). A parameter declared to hold numbers where no function makes it its
     own (`integer n`) is evaluated as it is declared, which is a doubt too;
   - a file the check would read that is not there now is a doubt where a file
-    it reads names it beyond the commands that source it and the tests that ask
-    about it (`cp ~/.src ~/.gen; . ~/.gen`), and so is any file it reads, a
-    function's file among them, where a command that runs before zsh reads it,
-    at the top or in a function the top runs, writes to a path whose last part
-    is its name or its compiled form's (`.zwc`, which zsh runs in its place),
-    or one an expansion or a brace expansion may make so (`>> ~/.zshrc.local`,
-    `>> $log`, `cp ~/.src ${f}en`); a `touch` writes nothing in a file. A
-    program that writes a file it is not given the name of it does not see;
+    it reads, but for the stock functions it knows by their SHA-256, names it
+    beyond the commands that source it, the tests that ask about it and a
+    `compinit -d` that gives it as the dump file, which compinit makes only
+    once it has read it or found none (`cp ~/.src ~/.gen; . ~/.gen`), and so is
+    any file it reads, a function's file among them, where a command that runs
+    before zsh reads it, at the top or in a function the top runs, writes to a
+    path whose last part is its name or its compiled form's (`.zwc`, which zsh
+    runs in its place), or one an expansion or a brace expansion may make so
+    (`>> ~/.zshrc.local`, `>> $log`, `cp ~/.src ${f}en`); a `touch` writes
+    nothing in a file. A program that writes a file it is not given the name of
+    it does not see;
   - an option counts as on wherever a file zsh reads names it, outside a line
     that is a comment: a `setopt`, an `unsetopt`, Home Manager's
     `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a comment

@@ -4,15 +4,18 @@
 //! What the startup code may make or change before zsh reads it, or hand to
 //! the programs it runs. A file the check would read that is not there now,
 //! the code may make first (`cp ~/.src ~/.gen; . ~/.gen`), so where a file
-//! read names it beyond the `source` commands and the tests that name it,
-//! that is a doubt; and a file the check reads, there or not, the code may
-//! write before zsh reads it, so where a command that runs before that
-//! writes to a path whose last part is its name, or one an expansion or a
-//! brace expansion may make its name (`>> ~/.zshrc.local`, `>> $log`,
-//! `cp ~/.src ${f}en`), that is a doubt too. A program that writes a file it
-//! is not given the name of, the check does not see. A hook may give the
-//! programs it runs the command line in their environment, once it sets a
-//! parameter to what an expansion makes (`preexec() { LINE=$1; logger }`).
+//! read names it beyond the `source` commands, the tests and the
+//! `compinit -d` that name it, that is a doubt, but for the code of a stock
+//! function, which makes none before zsh reads it (compdump writes the dump
+//! file once compinit has read it or found none); and a file the check
+//! reads, there or not, the code may write before zsh reads it, so where a
+//! command that runs before that writes to a path whose last part is its
+//! name, or one an expansion or a brace expansion may make its name
+//! (`>> ~/.zshrc.local`, `>> $log`, `cp ~/.src ${f}en`), that is a doubt
+//! too. A program that writes a file it is not given the name of, the check
+//! does not see. A hook may give the programs it runs the command line in
+//! their environment, once it sets a parameter to what an expansion makes
+//! (`preexec() { LINE=$1; logger }`).
 
 use super::{Forms, Reader, builtins};
 use crate::Filesystem;
@@ -247,7 +250,7 @@ fn names_file(line: &str, base: &str, by_path: bool) -> usize {
 /// make of it ([`names_of`]), in the form of each file that names it most
 /// ([`Forms::most`]), summed over the files. One pass over the forms counts
 /// every name.
-fn named(texts: &[Forms], bases: &[(&str, bool)]) -> Vec<usize> {
+fn named(texts: &[&Forms], bases: &[(&str, bool)]) -> Vec<usize> {
     let mut total = vec![0; bases.len()];
     if bases.is_empty() {
         return total;
@@ -328,9 +331,10 @@ pub(super) fn creates(command: &str) -> bool {
 impl<F: Filesystem> Reader<'_, F> {
     /// Note a doubt for each file the check would read that is not there
     /// now, as the code may make it before zsh reads it ([the module](self)):
-    /// where a file read names it beyond the `source` commands and the tests
-    /// that name it ([`Reader::known_files`]), a function's file only by a
-    /// path; and for each file it reads, there or not, where a write to a
+    /// where a file read, but for a stock function's code, names it beyond
+    /// the `source` commands, the tests and the `compinit -d` that name it
+    /// ([`Reader::known_files`]), a function's file only by a path; and for
+    /// each file it reads, there or not, where a write to a
     /// path that may be its, or that of the compiled form zsh runs in its
     /// place (`.zwc`), runs before zsh reads it, at the top or in a function
     /// the top runs.
@@ -355,13 +359,21 @@ impl<F: Filesystem> Reader<'_, F> {
             .collect();
         bases.sort_unstable();
         bases.dedup();
+        // The code of a stock function makes none of them first.
+        let texts: Vec<&Forms> = self
+            .texts
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| !self.stock_texts.contains(at))
+            .map(|(_, forms)| forms)
+            .collect();
         let named: HashMap<&str, usize> = bases
             .iter()
             .map(|(base, _)| *base)
-            .zip(named(&self.texts, &bases))
+            .zip(named(&texts, &bases))
             .collect();
         let mut known: HashMap<&str, usize> = HashMap::new();
-        for file in &self.known_files {
+        for file in self.known_files.iter().chain(&self.compinit_dumps) {
             *known.entry(last_part(file)).or_default() += 1;
         }
         let first_calls = self.first_calls();
@@ -548,6 +560,7 @@ mod tests {
             "",
         ];
         let forms: Vec<Forms> = texts.iter().map(|text| Forms::of(text)).collect();
+        let refs: Vec<&Forms> = forms.iter().collect();
         let alone = |base: &str, by_path: bool| -> usize {
             forms
                 .iter()
@@ -568,13 +581,13 @@ mod tests {
             &[("compinit", false), (".gen", true)],
             &[],
         ] {
-            let counted = named(&forms, bases);
+            let counted = named(&refs, bases);
             assert_eq!(counted.len(), bases.len());
             for (at, (base, by_path)) in bases.iter().enumerate() {
                 assert_eq!(counted[at], alone(base, *by_path), "{base} {by_path}");
             }
         }
-        assert_eq!(named(&forms, &[(".gen", false)]), [12]);
+        assert_eq!(named(&refs, &[(".gen", false)]), [12]);
     }
 
     #[test]
