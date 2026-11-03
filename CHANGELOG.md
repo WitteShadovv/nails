@@ -510,20 +510,22 @@ of this changelog for that version becomes the release notes word for word, and
 - `check` and activation refuse (`backend-partition-type`) a hidden root stored on a partition of
   a disk the decoy boots from whose GPT type systemd-gpt-auto-generator acts on at every later
   boot of the decoy: a `/home`, `/srv`, `/var` or `/var/tmp` partition, which it mounts when no
-  fstab line mounts the folder and the folder is empty, and a swap partition, which it uses as
-  swap, asking first for the passphrase of such a partition that is a LUKS volume. A failed mount,
-  a failed swap or a passphrase prompt would show the partition at the decoy's next boot, and the
-  type shows in the partition table either way. The no-auto flag turns the first four into a
-  warning, never swap; the type of a root, EFI system or extended boot loader partition warns, as
-  do a table that does not list the partition where the kernel has it, a damaged table, and a
-  partition neither the disk nor udev's record of it lets the check read. The check reads the
-  disk's table read-only, without root from udev's record of the partition, follows the hidden
-  root's own storage through device-mapper layers and loops over block devices, and leaves a
-  partition the decoy uses itself to `hidden-volume`. The refusal gives the `sgdisk --typecode`
-  command that gives the partition the generic Linux type, to run from a live system or where
-  setup happens. A hidden volume on a disk of its own passes. See docs/backends.md. A new fuzz
-  target, `udev_partition_entry`, reads the partition entries of udev's records, and
-  `disk_layout` checks the flags and names the GPT parser now reads.
+  fstab line mounts the folder and the folder is empty, and a swap partition, the first of which
+  it uses as swap, asking first for the passphrase of such a partition that is a LUKS volume. A
+  failed mount, a failed swap or a passphrase prompt would show the partition at the decoy's next
+  boot, and the type shows in the partition table either way. The no-auto flag, which systemd
+  honours, turns the first four into a warning; a swap partition is refused with or without it.
+  The type of a root, EFI system or extended boot loader partition warns, as systemd acts on it
+  under some conditions, such as a BIOS boot for an EFI system partition, and so do a table that
+  does not list the partition where the kernel has it, a damaged table, and a partition neither
+  the disk nor udev's record of it lets the check read. The check reads the disk's table
+  read-only, without root from udev's record of the partition, follows the hidden root's own
+  storage through device-mapper layers and loops over block devices, and leaves a partition the
+  decoy uses itself to `hidden-volume`. The refusal gives the `sgdisk --typecode` command that
+  gives the partition the generic Linux type, to run from a live system or where setup happens.
+  A hidden volume on a disk of its own passes. See docs/backends.md. A new fuzz target,
+  `udev_partition_entry`, reads the partition entries of udev's records, and `disk_layout` checks
+  the flags and names the GPT parser now reads.
 - docs/backends.md weighs VeraCrypt's rule that on Linux a hidden volume be mounted only from a
   live system writing to a RAM disk: a NAILS setup does not meet it, since you unlock and mount the
   hidden volume with cryptsetup on the running decoy before every session. It also passes on

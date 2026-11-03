@@ -1178,16 +1178,16 @@ the decoy.
 ### Partition types the decoy's systemd acts on
 
 systemd-gpt-auto-generator acts on the partitions of the disk the decoy's root
-file system is on by their GPT type alone, at every boot: it mounts a `/home`,
-`/srv`, `/var` or `/var/tmp` partition at that folder when no fstab line mounts
-the folder and the folder is empty, uses a swap partition as swap, and asks for
-the passphrase first when such a partition is a LUKS volume. A hidden volume on
-a partition of one of these types shows itself at the decoy's next boot, and an
-examiner who reads the partition table sees a partition typed for a use the
-decoy does not have. The `backend-partition-type` pre-flight check refuses such
-a partition on a disk the decoy boots from and gives the command that changes
-its type to the generic Linux type, to run from a live system or where setup
-happens (see [Partition type in
+file system is on by their GPT type alone, at every boot: it mounts the first
+`/home`, `/srv`, `/var` or `/var/tmp` partition at that folder when no fstab
+line mounts the folder and the folder is empty, uses the first swap partition
+as swap, and asks for the passphrase first when such a partition is a LUKS
+volume. A hidden volume on a partition of one of these types shows itself at
+the decoy's next boot, and an examiner who reads the partition table sees a
+partition typed for a use the decoy does not have. The `backend-partition-type`
+pre-flight check refuses such a partition on a disk the decoy boots from and
+gives the command that changes its type to the generic Linux type, to run from
+a live system or where setup happens (see [Partition type in
 preflight](backends.md#partition-type-in-preflight)). A hidden volume on a
 disk of its own, such as an external drive, is not affected.
 

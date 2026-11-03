@@ -94,7 +94,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "the GPT type of the hidden volume's partition on a disk the decoy boots from",
         ),
         platforms: Platforms::ALL,
-        risk: "systemd-gpt-auto-generator mounts a /home, /srv, /var or /var/tmp partition and uses a swap partition of the root's disk at every boot of the decoy, asking first for the passphrase of one that is a LUKS volume, so a hidden volume of such a type shows a failed mount, a failed swap or a passphrase prompt; anyone who reads the partition table sees the type.",
+        risk: "systemd-gpt-auto-generator mounts the first /home, /srv, /var or /var/tmp partition and uses the first swap partition of the root's disk that lack the no-auto flag at every boot of the decoy, asking first for the passphrase of one that is a LUKS volume, so a hidden volume of such a type shows a failed mount, a failed swap or a passphrase prompt; anyone who reads the partition table sees the type.",
         preflight: Probe::Check("backend-partition-type"),
         preflight_blocks: true,
         verify: Probe::None(

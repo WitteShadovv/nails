@@ -227,13 +227,26 @@ the disk the root file system is on. By a partition's GPT type alone it mounts
 the first partition of the `/home`, `/srv`, `/var` or `/var/tmp` type at that
 folder, when no fstab line mounts the folder and the folder is empty (`/var`
 only when the partition's uuid is the one the machine ID gives it); it uses
-every partition of the swap type as swap, unless an fstab line names a swap;
-and it asks for the passphrase first when such a partition is a LUKS volume. A
-hidden volume on a partition of one of these types shows itself at the decoy's
-next boot: a failed mount, a failed swap or a passphrase prompt for a
-partition the decoy knows nothing of. Nothing of this happens in the hidden
-session, whose root is an overlay, which the generator does not act on, but
-the type stays in the partition table for anyone who reads it.
+the first partition of the swap type as swap, unless an fstab line names a
+swap; and it asks for the passphrase first when such a partition is a LUKS
+volume. It leaves a partition with the no-auto flag (bit 63 of its
+attributes) alone, and the next one of its type is then the first. A hidden
+volume on a partition of one of these types shows itself at the decoy's next
+boot: a failed mount, a failed swap or a passphrase prompt for a partition the
+decoy knows nothing of. Nothing of this happens in the hidden session, whose
+root is an overlay, which the generator does not act on, but the type stays in
+the partition table for anyone who reads it.
+
+The generator acts on three more types under some conditions. It mounts the
+first extended boot loader partition of the disk at `/boot`, and the first EFI
+system partition at `/boot` or `/efi`, on first access, when no fstab line
+mounts anything at or below `/boot` or `/efi` and the folder is empty or
+missing. On a UEFI boot it does so only when the boot loader says it started
+from that disk, but on a BIOS boot it skips that condition: there the first
+EFI system partition gets an automount whenever fstab mounts nothing at or
+below those folders and one of them is empty or missing, as `/efi` usually is.
+At boot, when the kernel command line names no root, it takes a root partition
+from the disk of the EFI system partition the boot loader started from.
 
 The `backend-partition-type` check follows the hidden root's own storage
 (through device-mapper layers and loops over block devices, never into the
@@ -247,8 +260,8 @@ partition the decoy uses itself is left to the `hidden-volume` check.
 
 | Result | When |
 |---|---|
-| Refuses | The partition has the GPT type of a `/home`, `/srv`, `/var`, `/var/tmp` or swap partition. The no-auto flag does not help a swap partition. |
-| Warns | The partition has one of the first four types with the no-auto flag (bit 63 of its attributes), which systemd honours; or the type of a root, EFI system or extended boot loader partition, which systemd acts on only under conditions a decoy rarely meets; or the table does not list the partition where the kernel has it, or does not match the checksum it keeps of its entries; or neither the disk nor udev's record of the partition could be read. |
+| Refuses | The partition has the GPT type of a `/home`, `/srv`, `/var`, `/var/tmp` or swap partition. A swap partition is refused with the no-auto flag too, though systemd leaves it alone then. |
+| Warns | The partition has one of the first four types with the no-auto flag, which systemd honours; or the type of a root, EFI system or extended boot loader partition, which systemd acts on only under the conditions above; or the table does not list the partition where the kernel has it, or does not match the checksum it keeps of its entries; or neither the disk nor udev's record of the partition could be read. |
 | Passes | Any other type, an MBR, or no partition of a disk the decoy boots from: a disk of its own such as an external drive, a container file, a RAM filesystem. |
 
 The fix is the generic Linux type, given from a live system or where setup
