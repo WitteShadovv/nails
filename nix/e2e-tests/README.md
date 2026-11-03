@@ -780,7 +780,9 @@ there. It does not look at an ESP that systemd mounts on demand, as on
 arch-boxes, at swap (arch-boxes swaps to a file on the decoy disk) or at deleted
 data, such as old names that btrfs's copy-on-write metadata can keep. Admitting
 a family makes its scenario fail, so the commit that admits a family takes it
-out of the scenario.
+out of the scenario. With no refused family left, the refusal suite of
+`distro-e2e.yml` has nothing to run and fails its plan, so the commit that
+takes the last family out takes the suite out of the run as well.
 
 Like the probes (`probe.nix`), it needs KVM. CI runs it in the refusal suite of
 `distro-e2e.yml`. By hand, the driver keeps the VM state in `TMPDIR`; point it

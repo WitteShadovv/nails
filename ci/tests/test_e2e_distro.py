@@ -405,14 +405,60 @@ class PlanSuitesTest(unittest.TestCase):
             distro.plan_matrix(sample_metadata(), ["records", "refusal"], ["debian-12"])
 
     def test_a_plan_without_a_job_raises(self) -> None:
-        meta = sample_metadata(records={}, refusals={})
-        with self.assertRaisesRegex(distro.DistroError, "the plan holds no job"):
-            distro.plan_matrix(meta, ["records", "refusal"])
+        # debian-13 is a distribution of the smoke suite with no scenario.
+        meta = distro.DistroMetadata(
+            distros=["debian-13"], scenarios={"debian-13": []}, timeouts={}
+        )
+        for suites in (["smoke"], ["smoke", "records"]):
+            with self.subTest(suites=suites):
+                with self.assertRaisesRegex(
+                    distro.DistroError, "the plan holds no job"
+                ):
+                    distro.plan_matrix(meta, suites, ["debian-13"])
 
-    def test_an_empty_suite_is_left_out_of_a_wider_plan(self) -> None:
+    def test_a_suite_with_nothing_to_run_fails_a_wider_plan(self) -> None:
+        # The gate of an emptied suite must not vanish while the run passes.
+        for empty, meta, reason in (
+            ("records", sample_metadata(records={}), "no records scenario can run"),
+            ("refusals", sample_metadata(refusals={}), "no refusal can run"),
+            (
+                "both",
+                sample_metadata(records={}, refusals={}),
+                "no records scenario can run",
+            ),
+        ):
+            for suites in (["records", "refusal"], ["all"]):
+                with self.subTest(empty=empty, suites=suites):
+                    with self.assertRaisesRegex(distro.DistroError, reason):
+                        distro.plan_matrix(meta, suites)
+
+    def test_a_smoke_suite_with_nothing_to_run_fails_the_plan(self) -> None:
+        cases: list[tuple[list[str], dict[str, list[str]]]] = [
+            ([], {}),
+            (["debian-13"], {"debian-13": []}),
+        ]
+        for distros, scenarios in cases:
+            meta = distro.DistroMetadata(
+                distros=distros,
+                scenarios=scenarios,
+                timeouts={"debian-13-records": 1800, "fedora-44-refusal": 900},
+                records={"debian-13": "debian-13-records"},
+                refusals={"fedora-44": "fedora-44-refusal"},
+            )
+            for suites in (["smoke"], ["all"]):
+                with self.subTest(distros=distros, suites=suites):
+                    with self.assertRaisesRegex(
+                        distro.DistroError, "no smoke scenario can run"
+                    ):
+                        distro.plan_matrix(meta, suites)
+
+    def test_the_names_may_leave_a_suite_out(self) -> None:
         meta = sample_metadata(refusals={})
-        include = distro.plan_matrix(meta, ["records", "refusal"])["include"]
-        self.assertEqual({job["suite"] for job in include}, {"records"})
+        include = distro.plan_matrix(meta, ["records", "refusal"], ["debian-13"])
+        self.assertEqual(
+            [(job["suite"], job["tests"]) for job in include["include"]],
+            [("records", ["debian-13-records"])],
+        )
 
     def test_a_suite_alone_plans_as_its_own_planner(self) -> None:
         meta = sample_metadata()
