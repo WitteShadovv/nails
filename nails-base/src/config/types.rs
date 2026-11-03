@@ -280,8 +280,9 @@ pub struct Config {
     pub sleep_policy: SleepPolicyConfig,
 
     /// What the window does in a hidden session: how its Emergency control
-    /// ends the session. Only the window reads it; `nails emergency` reads no
-    /// configuration. See [`WindowConfig`].
+    /// ends the session. Only the window reads it: the hot path of `nails
+    /// emergency` acts before any configuration is read. See
+    /// [`WindowConfig`].
     #[serde(default)]
     pub window: WindowConfig,
 
