@@ -1046,6 +1046,15 @@ The check reads neither the store's database nor what the store holds, and it
 does not look for a Nix installed anywhere else, such as a store at another
 path or a `nix` binary in a user's own directories.
 
+The distribution test `debian-13-nix-trace` shows both sides on Debian 13. It
+installs Nix in a hidden session with the multi-user installer of Nix's
+release tarball and uses it to write to the store, through a build as a build
+user among other ways. After the way back the check reports what it reported
+before the session, and an image of the decoy's disk holds nothing of the
+install. Installed the same way on the decoy, Nix is named by the check, each
+path it looks for that the install left included, and the image shows the
+store ([details](../nix/e2e-tests/README.md#the-nix-scenario)).
+
 ## Session-time records
 
 Some records do not hold what the session did, only that the machine was

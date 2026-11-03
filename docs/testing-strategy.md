@@ -98,7 +98,8 @@ records its kernel and systemd version.
 Whatever needs a booted system runs in the VM suites:
 [nix/e2e-tests](../nix/e2e-tests/README.md) for NixOS and the distribution
 tests in [nix/distro-tests](../nix/distro-tests/) for Debian and Ubuntu. They cover the soft-reboot in both directions,
-emergency, recover, the forensic scans of the decoy disk after a session, and
+emergency, recover, the forensic scans of the decoy disk after a session (on
+Debian also after a Nix install inside the session), and
 the time budgets in `performance` (the `trigger_to_settled` time of activate and
 deactivate and the `trigger_to_backdoor` time of emergency). A time budget turns
 a slow regression into a failing test; budgets need generous headroom on shared
