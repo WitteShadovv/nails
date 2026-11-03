@@ -5,7 +5,8 @@
 //!
 //! A filesystem sits on a stack of block devices: a dm-crypt mapping on a
 //! partition, an LVM volume on a LUKS mapping, a loop device over a file. This
-//! module reads that stack from sysfs and the names in `/dev/disk`, through
+//! module reads that stack from sysfs, the names in `/dev/disk` and the
+//! drivers' major numbers in `/proc/devices`, through
 //! the [`Filesystem`](crate::Filesystem) trait, so it runs unchanged against
 //! `MockFilesystem` fixtures. It never reads a device-mapper table (a crypt
 //! table carries the key), uses no ioctl and opens no device node.
@@ -18,13 +19,16 @@
 //! - [`resolve_spec`] finds the device an fstab or crypttab spec names.
 //! - [`btrfs_members`] lists every device of a btrfs filesystem.
 //! - [`classify_dm`] says what a device-mapper uuid and name describe.
+//! - [`block_majors`] lists the drivers the kernel names by major number.
 
+mod driver;
 mod spec;
 mod walk;
 
 #[cfg(test)]
 mod tests;
 
+pub use driver::{PROC_DEVICES, block_majors, major_of, parse_block_majors};
 pub use spec::{btrfs_members, resolve_spec};
 pub use walk::{classify_dm, device_of_mount, stack, walk};
 

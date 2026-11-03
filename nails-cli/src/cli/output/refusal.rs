@@ -55,7 +55,7 @@ mod tests {
     use super::*;
     use crate::cli::output::envelope::{error_envelope, write_human_error};
     use nails_core::hidden_root::RefusalKind;
-    use nails_core::hidden_root::separation::{Claimed, Sharing, Verdict};
+    use nails_core::hidden_root::separation::{Claimed, Served, Sharing, Untraced, Verdict};
     use std::path::PathBuf;
 
     fn human(refusal: &Refusal, exe: Option<&Path>) -> String {
@@ -139,6 +139,12 @@ mod tests {
                     at: home(),
                 },
             ),
+            (
+                "network_block_device",
+                Verdict::ServedDevice {
+                    kind: Served::Network,
+                },
+            ),
         ];
         for (name, verdict) in cases {
             insta::assert_snapshot!(name, human(&on(verdict), None));
@@ -173,6 +179,14 @@ mod tests {
                 "storage_unjudged",
                 RefusalKind::StorageUnjudged {
                     unreadable: vec![PathBuf::from("/etc/crypttab")],
+                },
+            ),
+            (
+                "zfs_volume",
+                RefusalKind::StorageUntraced {
+                    verdict: Verdict::UntracedDevice {
+                        kind: Untraced::ZfsVolume,
+                    },
                 },
             ),
         ];
@@ -240,6 +254,25 @@ mod tests {
             mount_point: PathBuf::from("/"),
         });
         assert_eq!(refusal_error_of("init", &folder, None).allowable, None);
+        // The flag covers a disk that a program serves, never a ZFS volume.
+        for kind in [Served::Network, Served::Userspace] {
+            let served = on(Verdict::ServedDevice { kind });
+            for command in ["activate", "check", "init", "discard"] {
+                let body = refusal_error_of(command, &served, None);
+                assert_eq!(body.code, "not_separate_volume", "{command}");
+                assert_eq!(body.allowable, Some(Allowable::DecoyStorage), "{command}");
+            }
+        }
+        let zvol = refusal(RefusalKind::StorageUntraced {
+            verdict: Verdict::UntracedDevice {
+                kind: Untraced::ZfsVolume,
+            },
+        });
+        for command in ["activate", "check", "init", "discard"] {
+            let body = refusal_error_of(command, &zvol, None);
+            assert_eq!(body.code, "storage_unjudged", "{command}");
+            assert_eq!(body.allowable, None, "{command}");
+        }
     }
 
     #[test]

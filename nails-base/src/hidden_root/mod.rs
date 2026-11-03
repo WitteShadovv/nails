@@ -99,7 +99,8 @@ pub enum RefusalKind {
         /// The type of the filesystem a lookup reaches.
         fstype: String,
     },
-    /// The root lives on storage the decoy uses (see [`separation`]).
+    /// The root lives on storage the decoy uses, or on a disk that a program
+    /// serves, which can keep it there (see [`separation`]).
     DecoyStorage {
         /// Where it lives.
         verdict: separation::Verdict,
@@ -112,8 +113,9 @@ pub enum RefusalKind {
     },
     /// Nothing shows on which disk the root's storage lies (see
     /// [`separation::Verdict::UntracedStorage`],
-    /// [`separation::Verdict::DiskNotFound`] and
-    /// [`separation::Verdict::UnplacedImageFile`]).
+    /// [`separation::Verdict::DiskNotFound`],
+    /// [`separation::Verdict::UnplacedImageFile`] and
+    /// [`separation::Verdict::UntracedDevice`]).
     StorageUntraced {
         /// Why it cannot be followed.
         verdict: separation::Verdict,
@@ -161,10 +163,12 @@ pub enum Allow {
     Nothing,
     /// A root the [`separation`] judge places on the decoy's storage attaches
     /// with a warning: a bind of a folder of `/` too, which the judge places
-    /// there before the gate's own test of `/`'s device. Everything else
-    /// still refuses: a missing root, a folder that is no mount point, a
-    /// covered one, storage that cannot be judged, and a root on `/`'s own
-    /// device the judge does not place.
+    /// there before the gate's own test of `/`'s device, and a root on a disk
+    /// that a program serves (a network or userspace block device), for an
+    /// operator who knows the program keeps the data elsewhere. Everything
+    /// else still refuses: a missing root, a folder that is no mount point, a
+    /// covered one, storage that cannot be judged or followed (a ZFS volume
+    /// among it), and a root on `/`'s own device the judge does not place.
     DecoyStorage,
 }
 
@@ -204,15 +208,15 @@ impl HiddenRoot {
     /// 5. **Not the decoy's storage** — outside the session, the
     ///    [`separation`] judge: not a subvolume, bind or image file on a
     ///    filesystem the decoy uses, no device shared with it, a block device
-    ///    the judge can follow, and every input it needs readable (a tmpfs or
-    ///    ramfs root needs none). A verdict that only warns attaches with
-    ///    [`Assessment::Warned`].
+    ///    the judge can follow to its disks, none that a program serves, and
+    ///    every input it needs readable (a tmpfs or ramfs root needs none). A
+    ///    verdict that only warns attaches with [`Assessment::Warned`].
     /// 6. **Not `/`'s device** — a backstop for a bind of `/`'s own filesystem
     ///    at the root.
     ///
     /// No subprocess, no write, no cache: it reads the mount table, `fstab`,
-    /// `crypttab` and sysfs on the decoy, and the plan in the session, through
-    /// `fs`.
+    /// `crypttab`, sysfs and `/proc/devices` on the decoy, and the plan in the
+    /// session, through `fs`.
     pub fn assess<F: Filesystem>(fs: &F, root: &Path) -> Result<Assessment> {
         if root.as_os_str().is_empty() {
             return refuse(RefusalKind::NotConfigured, root);
@@ -282,7 +286,8 @@ impl HiddenRoot {
                     _,
                     verdict @ (separation::Verdict::UntracedStorage { .. }
                     | separation::Verdict::DiskNotFound
-                    | separation::Verdict::UnplacedImageFile { .. }),
+                    | separation::Verdict::UnplacedImageFile { .. }
+                    | separation::Verdict::UntracedDevice { .. }),
                 ) => {
                     return refuse(RefusalKind::StorageUntraced { verdict }, root);
                 }

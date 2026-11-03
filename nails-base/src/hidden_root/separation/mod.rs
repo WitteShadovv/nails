@@ -36,15 +36,32 @@
 //! root is on a claimed filesystem (a bind, a subvolume, the filesystem
 //! itself); no block device of the root can be found, so its storage cannot
 //! be followed (an overlay, FUSE, a network filesystem), or the disk of its
-//! partition is not found; it shares a device with a claim; it is an image file,
-//! or an encrypted container file, on a claimed filesystem, or on one whose
-//! device cannot be found, or on none mounted here; else it is separate. A
-//! tmpfs or ramfs root is always separate. A partition of a loop device lies
-//! in the loop device's file and is judged with it, and a root on a partition
-//! of an md array is judged with the array's devices, though a partition of
-//! the array that the decoy uses shares nothing with it. The filesystem that
-//! holds an image file is the one on the device the loop driver recorded for
-//! the file ([`FileHolder`]), not the one its path leads to today.
+//! partition is not found; its data reaches a disk whose kind cannot be read,
+//! a ZFS volume or a disk of a driver the kernel does not name; it shares a
+//! device with a claim the decoy's boot uses; it is an image file on a
+//! filesystem whose device cannot be found or on none mounted here; its data
+//! reaches a disk that a program serves (a network or userspace block
+//! device); it is an image file, or an encrypted container file, on a claimed
+//! filesystem; it shares a device only with entries the decoy never mounts at
+//! boot; else it is separate. A served disk comes after every verdict no
+//! override lifts and before every one that only warns, so accepting it hides
+//! none of the first and none of the second hides it. A tmpfs or ramfs root
+//! is always separate. A partition of a loop device lies in the loop device's
+//! file and is judged with it, and a root on a partition of an md array, or of
+//! a disk that sysfs shows nothing below, is judged with that disk, though a
+//! partition of the disk that the decoy uses shares nothing with it. The
+//! filesystem that holds an image file is the one on the device the loop
+//! driver recorded for the file ([`FileHolder`]), not the one its path leads
+//! to today.
+//!
+//! Where the root's data reaches is its stack, every other device of a btrfs
+//! filesystem in it, and below an image file the devices of the filesystem
+//! that holds the file, the decoy's own included, as far down as these go. A
+//! whole disk that sysfs shows nothing below is known by the driver
+//! `/proc/devices` lists for its major number, or, as for a userspace block
+//! device, by the name its driver gives it ([`Served`], [`Untraced`]); one
+//! whose kind cannot be read is [`NodeKind::Unidentified`], and refused only
+//! when the root's data reaches it.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
@@ -123,6 +140,46 @@ pub enum NodeKind {
         /// device, which appears in `below` instead.
         file: Option<LoopFile>,
     },
+    /// A whole disk that a program serves: nothing in sysfs shows where the
+    /// program keeps the data, which can be a file on the decoy's disk.
+    Served(Served),
+    /// A whole disk whose data lies on disks sysfs does not show.
+    Untraced(Untraced),
+    /// A whole disk with nothing below it in sysfs whose kind could not be
+    /// read: this input (`/proc/devices`, or the disk's `dev`) could not be.
+    Unidentified(PathBuf),
+}
+
+/// What serves a disk that a program serves, as its driver shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Served {
+    /// A network block device (`nbd`, major 43): `qemu-nbd`, `nbd-client` or
+    /// `nbdkit` serve it from a file or a disk, of this computer or another.
+    Network,
+    /// A userspace block device (`ublk`, named `ublkb<N>` by its driver,
+    /// which takes its numbers from the shared range): a program on this
+    /// computer serves it from wherever it keeps the data.
+    Userspace,
+}
+
+impl Served {
+    /// What it is, for the operator.
+    fn what(self) -> &'static str {
+        match self {
+            Served::Network => "a network block device",
+            Served::Userspace => "a userspace block device",
+        }
+    }
+}
+
+/// What a whole disk is whose data lies on disks the gate does not follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Untraced {
+    /// A ZFS volume (`zvol`, named `zd<N>`): its data lies in its pool, and
+    /// nothing here reads which disks a pool is on.
+    ZfsVolume,
+    /// A disk whose major number `/proc/devices` names no driver for.
+    UnnamedDriver,
 }
 
 /// The regular file behind a loop device.
@@ -163,7 +220,8 @@ pub struct Node {
     /// partitions of one disk share no storage. The walk of a stack still
     /// goes on from a partition into its disk where that disk is a loop or
     /// device-mapper device, which keeps the partition's data elsewhere, and
-    /// for the hidden root where it is an md array.
+    /// for the hidden root where it is an md array or a disk that sysfs
+    /// shows nothing below (served, untraced or unidentified).
     pub below: Vec<String>,
 }
 
@@ -221,8 +279,9 @@ impl DeviceMap {
 
     /// As [`Self::stack`], and below a partition of a disk built on other
     /// devices (an md array) lie that disk and its devices too: everything
-    /// that holds the partition's data and has to be opened to use it. The
-    /// hidden root is judged by this stack.
+    /// that holds the partition's data and has to be opened to use it, and
+    /// so does a disk that sysfs shows nothing below (a served, untraced or
+    /// unidentified one). The hidden root is judged by this stack.
     fn full_stack(&self, name: &str) -> Vec<String> {
         self.walk(name, true)
     }
@@ -245,9 +304,23 @@ impl DeviceMap {
         seen
     }
 
+    /// The devices right below `name`, as [`Self::walk`] goes on from it.
+    fn below(&self, name: &str, into_arrays: bool) -> Vec<String> {
+        let Some(node) = self.nodes.get(name) else {
+            return Vec::new();
+        };
+        node.below
+            .iter()
+            .map(String::as_str)
+            .chain(self.disk_below(node, into_arrays))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// The disk the partition `node` lies on, when that disk keeps its data
     /// elsewhere: a loop or device-mapper device, and with `arrays` a disk
-    /// built on other devices, as an md array is.
+    /// built on other devices, as an md array is, or one that sysfs shows
+    /// nothing below.
     fn disk_below<'a>(&self, node: &'a Node, arrays: bool) -> Option<&'a str> {
         let NodeKind::Partition { disk } = &node.kind else {
             return None;
@@ -256,6 +329,7 @@ impl DeviceMap {
         let elsewhere = match on.kind {
             NodeKind::Loop { .. } | NodeKind::Crypt { .. } | NodeKind::Mapper { .. } => true,
             NodeKind::Disk => arrays && !on.below.is_empty(),
+            NodeKind::Served(_) | NodeKind::Untraced(_) | NodeKind::Unidentified(_) => arrays,
             NodeKind::Partition { .. } => false,
         };
         elsewhere.then_some(disk.as_str())
@@ -383,6 +457,20 @@ pub enum Verdict {
         /// The image file, as the loop driver names it.
         file: PathBuf,
     },
+    /// The root's data reaches a disk that a program serves ([`Served`]),
+    /// which can keep it in a file on the decoy's disk. Refused, unless the
+    /// operator knows the program keeps it elsewhere
+    /// ([`Allow::DecoyStorage`](crate::hidden_root::Allow::DecoyStorage)).
+    ServedDevice {
+        /// What serves the disk.
+        kind: Served,
+    },
+    /// The root's data reaches a disk whose data lies on disks the gate does
+    /// not follow ([`Untraced`]). Where its writes land cannot be told.
+    UntracedDevice {
+        /// What the disk is.
+        kind: Untraced,
+    },
     /// The root is separate from everything the decoy claims.
     Separate,
 }
@@ -463,6 +551,17 @@ impl Verdict {
                 "it is an image file ({}) that no filesystem mounted here holds",
                 file.display()
             ),
+            Verdict::ServedDevice { kind } => format!(
+                "it is stored on {}, which a program can serve from a file on this computer's \
+                 own disk",
+                kind.what()
+            ),
+            Verdict::UntracedDevice {
+                kind: Untraced::ZfsVolume,
+            } => "it is stored on a ZFS volume, which shows no disk it stores its data on".into(),
+            Verdict::UntracedDevice {
+                kind: Untraced::UnnamedDriver,
+            } => "it is stored on a device whose driver the kernel does not name".into(),
             Verdict::Separate => "it is separate from this computer's own storage".to_string(),
         }
     }

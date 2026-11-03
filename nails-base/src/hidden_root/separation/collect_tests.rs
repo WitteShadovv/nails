@@ -15,6 +15,15 @@ use crate::filesystem::{Filesystem, MockFilesystem};
 use crate::hidden_root::{Assessment, HiddenRoot, RefusalKind};
 use std::path::{Path, PathBuf};
 
+#[path = "collect_device_tests.rs"]
+mod devices;
+
+/// The drivers' major numbers, as `/proc/devices` lists them on a desktop
+/// with the nbd, zfs and zram modules loaded.
+const PROC_DEVICES: &str = "Character devices:\n  1 mem\n  4 tty\n 10 misc\n\n\
+                            Block devices:\n  7 loop\n  8 sd\n  9 md\n 11 sr\n 43 nbd\n 65 sd\n\
+                            230 zvol\n252 zram\n253 virtblk\n254 device-mapper\n259 blkext\n";
+
 /// A mock decoy, built one device and file at a time.
 struct Decoy {
     fs: MockFilesystem,
@@ -28,6 +37,7 @@ impl Decoy {
         fs.mock_set_mount_table(mountinfo);
         fs.mock_set_path_exists("/mnt", true);
         fs.mock_set_path_exists("/sys/class/block", true);
+        fs.mock_set_file_content("/proc/devices", PROC_DEVICES);
         fs.mock_set_device_id(Path::new("/"), 1);
         fs.mock_set_device_id(Path::new("/mnt"), 2);
         let decoy = Self {

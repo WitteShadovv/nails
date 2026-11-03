@@ -339,7 +339,14 @@ rehearsal state all ask it first. It refuses:
   an image file on one that the decoy neither mounts at `/` or a system folder
   such as `/home` nor lists in its fstab (`storage_unjudged`), or because it
   lies on a partition whose disk the kernel does not show
-  (`storage_unjudged`; run the command on the host, with `/sys` mounted);
+  (`storage_unjudged`; run the command on the host, with `/sys` mounted), or
+  because its data reaches a ZFS volume, or a disk whose driver the kernel
+  does not name or `/proc/devices` cannot be read to tell
+  (`storage_unjudged`; see below);
+- a root whose data reaches a network or userspace block device, `nbd` or
+  `ublk` (`not_separate_volume`): a program serves such a device, and nothing
+  on this computer shows where the program keeps the data, which can be an
+  image file on the decoy's disk;
 - a root on an image file that no filesystem mounted here holds
   (`storage_unjudged`). The filesystem that holds an image file is the one on
   the device the loop driver recorded for the file, not the one its path leads
@@ -351,12 +358,21 @@ The gate follows what sysfs shows below a device. A root on a partition of a
 loop device, a device-mapper mapping or an md array is judged as one on that
 device, which holds the partition's data, but two partitions of one disk or md
 array share nothing: a partition the decoy uses does not make another one
-beside it the decoy's. Some devices show nothing of where they keep their
-data. A network block device (`nbd`, as `qemu-nbd` serves an image file) and a
-ZFS volume (`zvol`) show nothing below them, whole or partitioned, so a root on
-one attaches even when its data lies in a file on the decoy's disk or in the
-decoy's own ZFS pool. Nothing refuses such a root then, so make sure yourself
-that its data lies elsewhere.
+beside it the decoy's. Some disks show nothing below them in sysfs: a network
+block device (`nbd`, as `qemu-nbd` serves an image file), a userspace block
+device (`ublk`) and a ZFS volume (`zvol`), whose data lies in its pool. The
+gate tells them by the driver `/proc/devices` lists for their device number
+(`nbd`, `zvol`), and a `ublk` disk, whose number comes from a range the kernel
+shares between drivers, by the name its driver gives it (`ublkb<N>`). It
+refuses a root whose data reaches one wherever it sits on the way down: the
+disk itself, a partition of it, an encrypted mapping, a logical volume or an
+md array on it, or an image file on a filesystem on it, a filesystem of the
+decoy's included. It refuses a root just the same when it cannot tell what a
+disk on that way is: when `/proc/devices` cannot be read (run the command
+where `/proc` is mounted), or names no driver for the disk's number. A disk the
+root's data does not reach changes nothing, and the gate takes an ordinary disk,
+an iSCSI disk (a SCSI disk to the kernel) and a `zram` device for disks of their
+own.
 
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of
@@ -364,8 +380,11 @@ the parts of the container that changed. `--allow-decoy-storage` (on `init`,
 `activate`, `check` and `discard`) turns the refusal of the decoy's storage into
 a warning; activation then repeats it in the logout confirmation, the session
 plan records it for `status`, and `rehearse plant` refuses, since a rehearsal
-on that storage cannot pass. The override never covers a folder, a covered
-root, storage that cannot be judged, or `backend-entries`.
+on that storage cannot pass. It also turns the refusal of an `nbd` or `ublk`
+device into a warning, for one you know is served from storage the decoy does
+not use, such as another computer. The override never covers a folder, a
+covered root, storage that cannot be judged (a ZFS volume among it), or
+`backend-entries`.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or
@@ -382,10 +401,13 @@ The gate's limits: it judges the storage this computer's mount table, fstab,
 crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by
 hand and never listed, storage another operating system on the same machine
 uses, or a remote block device's other users. It does not follow a ZFS dataset
-to the disks of its pool, so it refuses a hidden root on ZFS even on a pool of
-its own. Nor can it see the traces that creating the volume on this computer
-left behind (the setup tools' own files, shell history, a changed partition
-table): only preparing the volume elsewhere avoids them. A refusal names the
+or a ZFS volume to the disks of its pool, so it refuses a hidden root on ZFS
+even on a pool of its own, and it cannot see where the program behind an `nbd`
+or `ublk` device keeps the data. A remote disk that shows as an ordinary one,
+such as an iSCSI disk, counts as a disk of its own, and the writeback device of
+a `zram` device is not followed. Nor can it see the traces that creating the
+volume on this computer left behind (the setup tools' own files, shell history,
+a changed partition table): only preparing the volume elsewhere avoids them. A refusal names the
 storage and says nothing was written. The override is for storage the gate takes
 for the decoy's that the operator knows the decoy does not use (for example a
 disk its fstab lists but never mounts); everything written there lands on that
