@@ -327,7 +327,7 @@ rehearsal state all ask it first. It refuses:
   mounts there, a logical volume, a device-mapper mapping, an md array or a
   loop device stacked on the decoy's storage or swap, or an unencrypted image
   file on a decoy filesystem, a partition of one attached with `losetup -P`
-  included;
+  and an image file in a filesystem that one holds included;
 - a root with a second filesystem mounted over it (`root_covered`), and in the
   hidden session a root whose filesystem is not the one the session started
   from: the writes would reach the disk on top;
@@ -369,16 +369,26 @@ disk itself, a partition of it, an encrypted mapping, a logical volume or an
 md array on it, or an image file on a filesystem on it, a filesystem of the
 decoy's included. It refuses a root just the same when it cannot tell what a
 disk on that way is: when `/proc/devices` cannot be read (run the command
-where `/proc` is mounted), or names no driver for the disk's number. A disk the
-root's data does not reach changes nothing, and the gate takes an ordinary disk,
-an iSCSI disk (a SCSI disk to the kernel) and a `zram` device for disks of their
-own.
+where `/proc` is mounted), or names no driver for the disk's number, or when
+sysfs does not list a device that another names below it. It refuses a ZFS
+volume, and a disk or a way down it cannot tell, before it weighs the decoy's
+storage, so the override lifts that refusal for no root, not even one on a
+filesystem of the decoy's that lies on such a volume. An image file on a
+filesystem of the decoy's that lies on an `nbd` or `ublk` device is refused as
+an image file on that filesystem; an encrypted container there, which would
+only warn on another disk, is refused as on the device. A disk the root's data
+does not reach changes nothing, and the gate takes an ordinary disk, an iSCSI
+disk (a SCSI disk to the kernel) and a `zram` device for disks of their own.
+When the filesystem that holds the root's image file lies in an image file
+itself, the gate judges that file as it judges the root's own, as deep as such
+files go.
 
-An encrypted container file on a decoy filesystem only warns: filesystem
-journals and copy-on-write snapshots of that filesystem can keep old copies of
-the parts of the container that changed. `--allow-decoy-storage` (on `init`,
-`activate`, `check` and `discard`) turns the refusal of the decoy's storage into
-a warning; activation then repeats it in the logout confirmation, the session
+An encrypted container file on a decoy filesystem only warns (unless that
+filesystem lies on a ZFS volume or an `nbd` or `ublk` device, see above):
+filesystem journals and copy-on-write snapshots of that filesystem can keep old
+copies of the parts of the container that changed. `--allow-decoy-storage` (on
+`init`, `activate`, `check` and `discard`) turns the refusal of the decoy's
+storage into a warning; activation then repeats it in the logout confirmation, the session
 plan records it for `status`, and `rehearse plant` refuses, since a rehearsal
 on that storage cannot pass. It also turns the refusal of an `nbd` or `ublk`
 device into a warning, for one you know is served from storage the decoy does

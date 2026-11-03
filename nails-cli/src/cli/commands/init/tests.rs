@@ -358,6 +358,31 @@ fn allow_decoy_storage_never_covers_a_covered_root_or_unjudged_storage() {
         other => panic!("expected a refusal, got {:?}", other.is_ok()),
     }
     assert!(probes(&unjudged).is_empty());
+
+    // A ZFS volume the decoy's fstab mounts at the target: the decoy's own
+    // filesystem, but on a volume whose disks nothing here can tell.
+    let zvol = attached_mock(root);
+    mark_host_debian(&zvol);
+    zvol.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         10 1 230:0 / /mnt/data rw - ext4 /dev/zd0 rw\n",
+    );
+    zvol.mock_set_file_content(
+        "/etc/fstab",
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/zd0 /mnt/data ext4 defaults 0 2\n",
+    );
+    match plan(&zvol, &args(root)) {
+        Err(InitFailure::NotSeparate(refusal)) => {
+            assert_eq!(refusal.code(), "storage_unjudged");
+            assert!(
+                refusal.reason.contains("is stored on a ZFS volume"),
+                "{}",
+                refusal.reason
+            );
+        }
+        other => panic!("expected a refusal, got {:?}", other.is_ok()),
+    }
+    assert!(probes(&zvol).is_empty(), "{:?}", zvol.mock_ops());
 }
 
 #[test]

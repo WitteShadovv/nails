@@ -449,6 +449,30 @@ fn a_served_disk_names_the_override_and_a_zfs_volume_does_not() {
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 }
 
+#[test]
+fn a_zfs_volume_the_decoys_fstab_mounts_names_no_override() {
+    // The decoy's own filesystem would be a refusal the override lifts; on a
+    // ZFS volume nothing lifts it, so the window offers no "Allow".
+    let fs = on_a_disk("zd0", "230:0");
+    fs.mock_set_file_content(
+        "/etc/fstab",
+        "/dev/vda1 / ext4 defaults 0 1\n/dev/zd0 /mnt/data ext4 defaults 0 2\n",
+    );
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .allowing(allow)
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "{allow:?}: {result:?}");
+        assert!(
+            result.message().contains("is stored on a ZFS volume"),
+            "{}",
+            result.message()
+        );
+        assert_eq!(result.allowable(), None, "{allow:?}");
+    }
+}
+
 /// [`mount_ok`], with the mount source `data` and `label`.
 fn mount_with_label(fs: &MockFilesystem, label: Option<&str>) {
     mount_ok(fs, NEUTRAL_ROOT);
