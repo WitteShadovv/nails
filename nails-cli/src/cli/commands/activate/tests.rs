@@ -543,25 +543,44 @@ fn the_advisories_come_before_the_question() {
 }
 
 /// `n` ends the activation with exit 130 (cancelled), the same as Ctrl+C at the
-/// prompt or any other signal cancel; only `y` goes on.
+/// prompt or any other signal cancel; only `y` goes on. Each cancel at the
+/// prompt has the prompt's notice: nothing built, and no line break, even on
+/// a terminal, since the question has ended its own line.
 #[test]
 fn the_answer_decides_how_the_activation_ends() {
-    use crate::cli::output::ExitStatus;
-    assert_eq!(super::stop_status(super::Answer::Yes), None);
-    // A "no" cancels with 130, the same as a Ctrl+C: both read as a cancel.
-    assert_eq!(
-        super::stop_status(super::Answer::No).map(ExitStatus::code),
-        Some(130)
-    );
-    assert_eq!(
-        super::stop_status(super::Answer::Cancelled).map(ExitStatus::code),
-        Some(130)
-    );
-    // So does the end of the input (Ctrl+D).
-    assert_eq!(
-        super::stop_status(super::Answer::EndOfInput).map(ExitStatus::code),
-        Some(130)
-    );
+    use crate::cli::output::activate::{Cancel, CancelFacts, CancelNotice};
+    use nails_core::app::activate::RootStorage;
+    for storage in [RootStorage::OwnVolume, RootStorage::Allowed] {
+        let facts = CancelFacts {
+            storage,
+            builds: true,
+            on_terminal: true,
+        };
+        assert_eq!(super::stop_status(super::Answer::Yes, facts), None);
+        let notice = match storage {
+            RootStorage::OwnVolume => CancelNotice::Plain,
+            _ => CancelNotice::AllowedStorage,
+        };
+        // A "no" cancels with 130, the same as a Ctrl+C, and so does the end
+        // of the input (Ctrl+D): all read as a cancel.
+        for answer in [
+            super::Answer::No,
+            super::Answer::Cancelled,
+            super::Answer::EndOfInput,
+        ] {
+            let (status, cancel) = super::stop_status(answer, facts).expect("a cancel");
+            assert_eq!(status.code(), 130, "{answer:?}");
+            assert_eq!(
+                cancel,
+                Cancel {
+                    notice,
+                    below_echo: false
+                },
+                "{answer:?} {storage:?}"
+            );
+            assert_eq!(cancel, facts.at_prompt());
+        }
+    }
 }
 
 /// The question ends its own line whatever the answer: an answer typed with

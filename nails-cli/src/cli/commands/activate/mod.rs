@@ -177,13 +177,15 @@ pub fn execute(
         crate::cli::output::eprintln_tolerating_broken_pipe(notice);
     }
     if !args.yes
-        && let Some(status) = stop_status(confirm_logout(
-            settings,
-            begun.locked.accepted(),
-            &begun.locked.entry_advisories(),
-        ))
+        && let Some((status, cancel)) = stop_status(
+            confirm_logout(
+                settings,
+                begun.locked.accepted(),
+                &begun.locked.entry_advisories(),
+            ),
+            cancel_facts(settings, &begun.locked),
+        )
     {
-        let cancel = cancel_facts(settings, &begun.locked).at_prompt();
         return report_cancelled(settings, cancel, status);
     }
     finish(settings, begun.locked, || {})
@@ -400,13 +402,21 @@ fn commit_and_report(
     }
 }
 
-/// How the answer at the prompt ends the activation, if it does: a `n` (or the
-/// end of the input) and a Ctrl+C both cancel with exit 130, so a "no" reads
-/// the same as a signal's cancel. Both print alike ([`report_cancelled`]).
-fn stop_status(answer: Answer) -> Option<ExitStatus> {
+/// How the answer at the prompt ends the activation, if it does, and what its
+/// cancel says: a `n` (or the end of the input) and a Ctrl+C both cancel with
+/// exit 130, so a "no" reads the same as a signal's cancel, and all of them
+/// with the notice of a cancel at the prompt of an activation the `facts`
+/// tell of ([`CancelFacts::at_prompt`]). All print alike
+/// ([`report_cancelled`]).
+fn stop_status(
+    answer: Answer,
+    facts: CancelFacts,
+) -> Option<(ExitStatus, output::activate::Cancel)> {
     match answer {
         Answer::Yes => None,
-        Answer::No | Answer::EndOfInput | Answer::Cancelled => Some(ExitStatus::Cancelled),
+        Answer::No | Answer::EndOfInput | Answer::Cancelled => {
+            Some((ExitStatus::Cancelled, facts.at_prompt()))
+        }
     }
 }
 
