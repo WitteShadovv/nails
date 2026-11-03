@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: /mnt is stored on a ZFS volume, which shows no disk it stores its data on, so where it lives cannot be told. Nothing was written.
+  Use a volume on a disk or partition of its own, or an encrypted volume opened from one: only such a volume can be told apart from this computer's own storage.

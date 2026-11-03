@@ -8,15 +8,20 @@
 //! test configures that directory itself, the mock renders one device for
 //! each mount whose source is a `/dev` path, named after the source and
 //! carrying the mount's `major:minor`: a mounted path is a device of its own,
-//! as the rendered mount table already says. A test hides the list with
+//! as the rendered mount table already says. Unless a test configures
+//! `/proc/devices` too, the mock lists there each major number of those
+//! devices for a driver named `mock`, so the judge takes each for a plain
+//! disk, unless its name says otherwise. A test hides the devices with
 //! [`mock_hide_block_devices`](MockFilesystem::mock_hide_block_devices).
 
 use super::MockFilesystem;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Where the kernel lists every block device.
 const SYS_CLASS_BLOCK: &str = "/sys/class/block";
+/// Where the kernel lists the major numbers of its drivers.
+const PROC_DEVICES: &str = "/proc/devices";
 
 impl MockFilesystem {
     /// Render no block device: `/sys/class/block` cannot be listed, as on a
@@ -74,8 +79,23 @@ impl MockFilesystem {
         )
     }
 
-    /// The rendered contents of `path`, when it is a device's `dev`.
+    /// The rendered contents of `path`, when it is a device's `dev` or
+    /// `/proc/devices`.
     pub(super) fn rendered_file(&self, path: &Path) -> Option<String> {
+        if path == Path::new(PROC_DEVICES) {
+            let majors: BTreeSet<u32> = self
+                .rendered_block_devices()?
+                .values()
+                .filter_map(|dev| dev.split_once(':')?.0.parse().ok())
+                .collect();
+            let lines: String = majors
+                .iter()
+                .map(|major| format!("{major:3} mock\n"))
+                .collect();
+            return Some(format!(
+                "Character devices:\n  1 mem\n\nBlock devices:\n{lines}"
+            ));
+        }
         let mut parts = path.strip_prefix(SYS_CLASS_BLOCK).ok()?.iter();
         let name = parts.next()?.to_string_lossy().into_owned();
         if parts.next()? != "dev" || parts.next().is_some() {

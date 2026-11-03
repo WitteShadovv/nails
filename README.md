@@ -175,12 +175,14 @@ Also refused by the pre-flight checks:
   overlay's upper by a hidden session (`pending-offline-update`);
 - a hidden volume that is not storage of its own: a folder, a btrfs subvolume
   or bind mount of a filesystem the decoy uses, a volume stacked on the
-  decoy's storage, an image file on a decoy filesystem, a filesystem that shows
-  no disk it stores its data on (an overlay, FUSE, a network filesystem), or a
-  root with a second filesystem mounted over it. The attach gate refuses these
-  before anything is written; `--allow-decoy-storage`
-  turns the refusal of the decoy's storage into a warning, and never covers a
-  folder, a covered root or storage that cannot be judged (`hidden-volume`);
+  decoy's storage, an image file on a decoy filesystem, a network or userspace
+  block device (`nbd`, `ublk`), a filesystem that shows no disk it stores its
+  data on (an overlay, FUSE, a network filesystem) or that lies on a ZFS volume,
+  or a root with a second filesystem mounted over it. The attach gate refuses
+  these before anything is written; `--allow-decoy-storage`
+  turns the refusal of the decoy's storage, and of an `nbd` or `ublk` device,
+  into a warning, and never covers a folder, a covered root or storage that
+  cannot be judged (`hidden-volume`);
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
   volume (`backend-entries`);
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,

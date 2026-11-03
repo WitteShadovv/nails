@@ -384,6 +384,71 @@ fn unjudged_storage_fails_even_with_the_override() {
     assert_eq!(result.allowable(), None);
 }
 
+/// A root on the whole disk `name`, numbered `dev`. The mock lists every
+/// number for a plain driver, so only the name its driver gives a disk tells
+/// what it is.
+fn on_a_disk(name: &str, dev: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+    fs.mock_set_writable(NEUTRAL_ROOT, true);
+    fs.mock_set_mount_table(&format!(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 {dev} / /mnt/data rw - ext4 /dev/{name} rw\n"
+    ));
+    fs
+}
+
+#[test]
+fn a_served_disk_names_the_override_and_a_zfs_volume_does_not() {
+    // What the window offers "Allow for This Activation…" for.
+    for (name, dev, what) in [
+        ("nbd0", "43:0", "a network block device"),
+        ("ublkb0", "259:7", "a userspace block device"),
+    ] {
+        let fs = on_a_disk(name, dev);
+        let refused = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .run(&fs)
+            .unwrap();
+        assert!(refused.is_fail(), "{name}: {refused:?}");
+        assert_eq!(
+            refused.message(),
+            format!(
+                "/mnt/data is not a volume of its own: it is stored on {what}, which a program \
+                 can serve from a file on this computer's own disk"
+            )
+        );
+        assert_eq!(refused.allowable(), Some(Allowable::DecoyStorage), "{name}");
+        let allowed = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .allowing(Allow::DecoyStorage)
+            .run(&fs)
+            .unwrap();
+        assert!(allowed.is_warn(), "{name}: {allowed:?}");
+        assert!(
+            allowed.message().starts_with(&format!(
+                "--allow-decoy-storage: using /mnt/data although it is stored on {what}"
+            )),
+            "{}",
+            allowed.message()
+        );
+    }
+
+    let fs = on_a_disk("zd0", "230:0");
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .allowing(allow)
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "{allow:?}: {result:?}");
+        assert_eq!(
+            result.message(),
+            "/mnt/data is stored on a ZFS volume, which shows no disk it stores its data on, so \
+             where it lives cannot be told"
+        );
+        assert_eq!(result.allowable(), None, "{allow:?}");
+    }
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+}
+
 /// [`mount_ok`], with the mount source `data` and `label`.
 fn mount_with_label(fs: &MockFilesystem, label: Option<&str>) {
     mount_ok(fs, NEUTRAL_ROOT);
@@ -503,6 +568,9 @@ fn only_a_root_on_a_decoy_filesystem_carries_the_decoys_label() {
             device: "dm-0".to_string(),
             holds: Claimed::Mount(PathBuf::from("/")),
             noauto_only: true,
+        },
+        Verdict::ServedDevice {
+            kind: crate::hidden_root::separation::Served::Network,
         },
     ] {
         assert!(

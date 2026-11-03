@@ -23,9 +23,18 @@
 //! mounted and its type, and a loop device whose record could not be read by
 //! what it is.
 
-use super::separation::{SYS_CLASS_BLOCK, Sharing, Verdict};
+use super::separation::{Sharing, Verdict};
 use super::{Refusal, RefusalKind};
+use crate::blockdev::PROC_DEVICES;
 use std::path::Path;
+
+/// Where the kernel's block devices and their attributes are read.
+const SYS: &str = "/sys";
+
+/// What to use instead of storage the gate cannot follow to its disks.
+const OWN_VOLUME: &str = "Use a volume on a disk or partition of its own, or an encrypted volume \
+                          opened from one: only such a volume can be told apart from this \
+                          computer's own storage.";
 
 /// The code of a root that is not a volume of its own.
 pub const NOT_SEPARATE_VOLUME: &str = "not_separate_volume";
@@ -180,16 +189,23 @@ impl Refusal {
             RefusalKind::NotTheSessionVolume { .. } => {
                 vec!["Unmount what was mounted over it, then run the command again.".into()]
             }
-            // sudo alone does not bring back a list of block devices that
-            // is missing because /sys is not mounted.
+            // sudo alone does not bring back a list of block devices, or a
+            // device's number, that is missing because /sys is not mounted.
             RefusalKind::StorageUnjudged { unreadable }
-                if unreadable.iter().any(|p| p == Path::new(SYS_CLASS_BLOCK)) =>
+                if unreadable.iter().any(|p| p.starts_with(SYS)) =>
             {
                 vec![
                     "Run the command again as root, on the host rather than in a container, \
                      with /sys mounted."
                         .into(),
                 ]
+            }
+            // Anyone may read the kernel's list of drivers where /proc is
+            // mounted.
+            RefusalKind::StorageUnjudged { unreadable }
+                if unreadable.iter().any(|p| p == Path::new(PROC_DEVICES)) =>
+            {
+                vec!["Run the command where /proc is mounted and readable.".into()]
             }
             RefusalKind::StorageUnjudged { .. } => {
                 vec!["Run the command again with sudo.".into()]
@@ -203,11 +219,7 @@ impl Refusal {
                  mounted."
                     .into(),
             ],
-            RefusalKind::StorageUntraced { .. } => vec![
-                "Use a volume on a disk or partition of its own, or an encrypted volume opened \
-                 from one: only such a volume can be told apart from this computer's own storage."
-                    .into(),
-            ],
+            RefusalKind::StorageUntraced { .. } => vec![OWN_VOLUME.into()],
             RefusalKind::NotConfigured => {
                 vec!["Set the root folder in the configuration file.".into()]
             }
@@ -243,6 +255,17 @@ impl Refusal {
                 lines.extend(self.redirect(exe));
                 lines
             }
+            // The guide says when the override fits a served disk.
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::ServedDevice { .. },
+            } => vec![
+                OWN_VOLUME.into(),
+                format!(
+                    "If the device keeps its data on storage this computer does not use, read \
+                     \"{GUIDE_SECTION}\" in the operator guide on another device: opening it \
+                     here leaves traces such as ~/.lesshst."
+                ),
+            ],
             RefusalKind::DecoyStorage { .. } | RefusalKind::SameDeviceAsRoot => self.redirect(exe),
         }
     }
@@ -282,7 +305,7 @@ impl Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hidden_root::separation::{Claimed, Sharing, Verdict};
+    use crate::hidden_root::separation::{Claimed, Served, Sharing, Untraced, Verdict};
     use std::path::PathBuf;
 
     /// One refusal of every kind, of `root`.
@@ -348,6 +371,16 @@ mod tests {
                     at: at(),
                 },
             },
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::ServedDevice {
+                    kind: Served::Network,
+                },
+            },
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::ServedDevice {
+                    kind: Served::Userspace,
+                },
+            },
             RefusalKind::SameDeviceAsRoot,
             RefusalKind::Covered {
                 below: "ext4".into(),
@@ -375,6 +408,19 @@ mod tests {
             RefusalKind::StorageUntraced {
                 verdict: Verdict::DiskNotFound,
             },
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::UntracedDevice {
+                    kind: Untraced::ZfsVolume,
+                },
+            },
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::UntracedDevice {
+                    kind: Untraced::UnnamedDriver,
+                },
+            },
+            RefusalKind::StorageUnjudged {
+                unreadable: vec![PathBuf::from("/proc/devices")],
+            },
         ]
         .into_iter()
         .map(|kind| Refusal::new(kind, root))
@@ -387,9 +433,77 @@ mod tests {
             .iter()
             .map(Refusal::code)
             .collect();
-        assert_eq!(&codes[..13], &[NOT_SEPARATE_VOLUME; 13]);
-        assert_eq!(&codes[13..15], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 5]);
+        assert_eq!(&codes[..15], &[NOT_SEPARATE_VOLUME; 15]);
+        assert_eq!(&codes[15..17], &[ROOT_COVERED; 2]);
+        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 8]);
+    }
+
+    #[test]
+    fn a_served_disk_says_what_serves_it_and_where_to_read_when_it_is_elsewhere() {
+        let refusal = Refusal::new(
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::ServedDevice {
+                    kind: Served::Network,
+                },
+            },
+            Path::new("/mnt"),
+        );
+        assert_eq!(
+            refusal.message(),
+            "/mnt is not a volume of its own: it is stored on a network block device, which a \
+             program can serve from a file on this computer's own disk. Nothing was written."
+        );
+        // The program on the root is no copy on this computer's disk to
+        // name: nothing shows where the device keeps it.
+        assert_eq!(
+            refusal.hint(Some(Path::new("/mnt/nails"))),
+            [
+                OWN_VOLUME,
+                "If the device keeps its data on storage this computer does not use, read \
+                 \"Where setup happens\" in the operator guide on another device: opening it \
+                 here leaves traces such as ~/.lesshst."
+            ]
+        );
+        assert!(refusal.overridden());
+        assert_eq!(
+            refusal.warning(),
+            "--allow-decoy-storage: using /mnt although it is stored on a network block device, \
+             which a program can serve from a file on this computer's own disk; everything \
+             written there lands on that storage"
+        );
+        let ublk = Refusal::new(
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::ServedDevice {
+                    kind: Served::Userspace,
+                },
+            },
+            Path::new("/mnt"),
+        );
+        assert!(
+            ublk.reason
+                .starts_with("/mnt is not a volume of its own: it is stored on a userspace block"),
+            "{}",
+            ublk.reason
+        );
+    }
+
+    #[test]
+    fn a_zfs_volume_cannot_be_told_apart_from_this_computers_storage() {
+        let refusal = Refusal::new(
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::UntracedDevice {
+                    kind: Untraced::ZfsVolume,
+                },
+            },
+            Path::new("/mnt"),
+        );
+        assert_eq!(
+            refusal.reason,
+            "/mnt is stored on a ZFS volume, which shows no disk it stores its data on, so where \
+             it lives cannot be told"
+        );
+        assert_eq!(refusal.hint(None), [OWN_VOLUME]);
+        assert!(!refusal.overridden());
     }
 
     #[test]
@@ -484,9 +598,15 @@ mod tests {
              mounted.",
         ];
         assert_eq!(hint(&["/sys/class/block"]), sysfs);
+        assert_eq!(hint(&["/sys/devices/virtual/block/zd0/dev"]), sysfs);
         // A loop device's record needs root as well.
         assert_eq!(hint(&["/dev/loop0"]), ["Run the command again with sudo."]);
         assert_eq!(hint(&["/etc/crypttab", "/sys/class/block"]), sysfs);
+        // Anyone can read the drivers' list where /proc is mounted.
+        assert_eq!(
+            hint(&["/proc/devices"]),
+            ["Run the command where /proc is mounted and readable."]
+        );
     }
 
     #[test]

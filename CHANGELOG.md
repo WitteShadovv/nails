@@ -746,6 +746,24 @@ of this changelog for that version becomes the release notes word for word, and
   is now judged as one on the array, and `backend-entries` names the decoy's fstab and crypttab
   lines for the array's devices as it does for the array. Two partitions of one array still share
   nothing, as two partitions of one disk share nothing.
+- The attach gate refuses a hidden root on a network block device (`nbd`) or a userspace block
+  device (`ublk`) unless `--allow-decoy-storage` is given, and one on a ZFS volume (`zvol`)
+  outright. sysfs shows nothing below such a disk, so a root that `qemu-nbd` or a ublk server
+  served from an image file on the decoy's disk, or a ZFS volume in the decoy's own pool,
+  attached, and every write of a session landed on the decoy's disk. The gate now tells these
+  disks by the driver `/proc/devices` lists for their device number, and a `ublk` disk, whose
+  number comes from the range the kernel shares between drivers, by the name its driver gives it.
+  It refuses a root whose data reaches one anywhere on the way down: the disk itself, a partition
+  of it, an encrypted mapping, a logical volume or an md array on it, or an image file on a
+  filesystem on it. An `nbd` or `ublk` device is refused as not storage of its own
+  (`not_separate_volume`), and `--allow-decoy-storage` turns that into a warning for a device you
+  know is served from storage the decoy does not use, so the window offers "Allow for This
+  Activation…" for it. A ZFS volume is refused as storage whose disks cannot be told
+  (`storage_unjudged`), as a ZFS dataset is, and no flag lifts that. A disk whose driver the
+  kernel does not name is refused the same way, and so is a root on any disk where `/proc/devices`
+  cannot be read. A root that shares a device only with entries the decoy never mounts at boot,
+  which only warns, no longer hides such a refusal, nor that of an image file whose filesystem
+  cannot be told. Ordinary disks, iSCSI disks and `zram` devices are judged as before.
 - `backend-entries` no longer says to remove a line the decoy's own boot needs. Where a flagged
   fstab line mounts the decoy's root, another of its filesystems or its swap, or a flagged crypttab
   line opens a device below one of them (the LUKS devices of the md array the decoy's root is on,

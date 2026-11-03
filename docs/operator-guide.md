@@ -64,7 +64,10 @@ storage of its own: a whole device, a partition or an encrypted volume that the
 decoy does not use. A folder, a btrfs subvolume or a bind mount of a filesystem
 the decoy uses, a logical volume or other device stacked on the decoy's own
 storage or swap, or an image file on a decoy filesystem is not: everything
-written there lands on the decoy's disk, where an examination can find it.
+written there lands on the decoy's disk, where an examination can find it. Nor
+is a network or userspace block device (`nbd`, `ublk`), which a program can
+serve from an image file on the decoy's disk, or a ZFS volume, whose pool can
+lie there.
 
 Prepare the volume where nothing reaches the decoy's disk:
 
@@ -86,7 +89,7 @@ one whose storage cannot be judged with `storage_unjudged`: on an unprivileged
 run on a distribution whose `/etc/crypttab` only root can read, or on a root in
 a file container (only root can read the loop device's record of where the file
 lives), run the command with sudo; a filesystem that shows no disk it stores its data on (an overlay,
-FUSE, a network filesystem) is never accepted. A decoy `/etc/crypttab` or
+FUSE, a network filesystem, ZFS) or that lies on a ZFS volume is never accepted. A decoy `/etc/crypttab` or
 `/etc/fstab` line that opens or mounts the hidden volume fails the
 `backend-entries` check: remove it long
 before the next use and open the volume by hand each time. If the boot mounts
@@ -104,8 +107,11 @@ parts of the container that changed. `--allow-decoy-storage` (on `init`,
 `activate`, `check` and `discard`) turns the refusal of the decoy's own storage
 into a warning; use it only for storage the gate takes for the decoy's that you
 know the decoy does not use (for example a disk its fstab lists but never
-mounts), since everything written there lands on it. It never covers a folder, a
-covered root, storage that cannot be judged or a decoy entry for the volume.
+mounts), since everything written there lands on it. It turns the refusal of an
+`nbd` or `ublk` device into a warning too: use it there only when you know the
+program that serves the device keeps the data on storage this computer does not
+use, such as another computer. It never covers a folder, a covered root, storage
+that cannot be judged (a ZFS volume among it) or a decoy entry for the volume.
 See [the attach gate](threat-model.md#the-attach-gate).
 
 Read this guide on another device, not on the decoy: opening it there leaves

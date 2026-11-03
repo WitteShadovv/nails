@@ -6,8 +6,9 @@
 //! `<etc_root>/etc/fstab` and `<etc_root>/etc/crypttab` (read with
 //! `O_NOATIME` by the real filesystem), and from the running system the block
 //! devices in `/sys/class/block`, their stacks, the btrfs filesystems in
-//! `/sys/fs/btrfs` and the names in `/dev/disk`. `etc_root` is `/` for the
-//! running decoy; another root lets an offline scan judge a decoy's files.
+//! `/sys/fs/btrfs`, the names in `/dev/disk` and the drivers `/proc/devices`
+//! lists. `etc_root` is `/` for the running decoy; another root lets an
+//! offline scan judge a decoy's files.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -25,19 +26,29 @@
 //! there is on that device. A loop whose record cannot be read (its node is
 //! readable by root only) is marked so, and only counts when the hidden root
 //! is stored on it.
+//!
+//! A whole disk with nothing below it in sysfs is told apart by the driver
+//! `/proc/devices` lists for its major number: `nbd` is a network block
+//! device and `zvol` a ZFS volume ([`Served`], [`Untraced`]). A userspace
+//! block device takes its number from the range the kernel shares between
+//! drivers, so only the name its driver gives it, `ublkb<N>`, tells it; the
+//! names `nbd<N>` and `zd<N>` count as well. A disk whose major number no
+//! driver is listed for is untraced, and one whose number or list cannot be
+//! read is unidentified: like an unread loop record, that only counts when
+//! the hidden root's data reaches the disk.
 
 #[cfg(test)]
 #[path = "collect_tests.rs"]
 mod tests;
 
-use super::{DeviceMap, SYS_CLASS_BLOCK};
+use super::{DeviceMap, SYS_CLASS_BLOCK, Served, Untraced};
 use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
 use crate::crypttab::{CrypttabEntry, parse_crypttab};
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::{FstabEntry, parse_fstab};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Everything the judge reads besides the mount table.
@@ -95,6 +106,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
     }
 
     let devices = &mut collected.devices;
+    let majors = blockdev::block_majors(fs);
     // Without the list of block devices no claim can be followed to a device,
     // so a missing list is as unreadable as one that cannot be listed.
     let class = Path::new(SYS_CLASS_BLOCK);
@@ -102,7 +114,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         Ok(entries) => {
             for entry in entries {
                 for layer in blockdev::stack(fs, &entry, LoopFollow::BlockDevices) {
-                    add_layer(fs, mounts, devices, &layer);
+                    add_layer(fs, mounts, majors.as_ref(), devices, &layer);
                 }
             }
         }
@@ -174,8 +186,15 @@ fn read_optional<F: Filesystem>(
     }
 }
 
-/// Record one device of a walked stack.
-fn add_layer<F: Filesystem>(fs: &F, mounts: &[MountEntry], devices: &mut DeviceMap, layer: &Layer) {
+/// Record one device of a walked stack. `majors` are the drivers
+/// `/proc/devices` lists, `None` when it cannot be read.
+fn add_layer<F: Filesystem>(
+    fs: &F,
+    mounts: &[MountEntry],
+    majors: Option<&BTreeMap<u32, String>>,
+    devices: &mut DeviceMap,
+    layer: &Layer,
+) {
     let name = file_name(&layer.sysfs).unwrap_or_else(|| layer.name.clone());
     if devices.nodes.contains_key(&name) {
         return;
@@ -210,7 +229,10 @@ fn add_layer<F: Filesystem>(fs: &F, mounts: &[MountEntry], devices: &mut DeviceM
         NodeKind::Partition {
             disk: partition.disk.clone().unwrap_or_default(),
         }
+    } else if below.is_empty() {
+        leaf_kind(&name, layer, majors)
     } else {
+        // An md array: its data lies on the devices below it.
         NodeKind::Disk
     };
     if let Some(dev) = &layer.dev {
@@ -218,6 +240,36 @@ fn add_layer<F: Filesystem>(fs: &F, mounts: &[MountEntry], devices: &mut DeviceM
     }
     devices.by_spec.insert(format!("/dev/{name}"), name.clone());
     devices.nodes.insert(name, Node { kind, below });
+}
+
+/// What the whole disk `name` (read as `layer`) is, with nothing below it in
+/// sysfs: by the driver `majors` names for its major number, and by the name
+/// that driver gives its disks (see the module docs).
+fn leaf_kind(name: &str, layer: &Layer, majors: Option<&BTreeMap<u32, String>>) -> NodeKind {
+    let Some(majors) = majors else {
+        return NodeKind::Unidentified(PathBuf::from(blockdev::PROC_DEVICES));
+    };
+    let Some(major) = layer.dev.as_deref().and_then(blockdev::major_of) else {
+        return NodeKind::Unidentified(layer.sysfs.join("dev"));
+    };
+    let Some(driver) = majors.get(&major) else {
+        return NodeKind::Untraced(Untraced::UnnamedDriver);
+    };
+    // A disk is known by its driver's name for it as well, which only ever
+    // makes the verdict stricter.
+    let named = |prefix: &str| {
+        name.strip_prefix(prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if driver == "zvol" || named("zd") {
+        NodeKind::Untraced(Untraced::ZfsVolume)
+    } else if driver == "nbd" || named("nbd") {
+        NodeKind::Served(Served::Network)
+    } else if named("ublkb") {
+        NodeKind::Served(Served::Userspace)
+    } else {
+        NodeKind::Disk
+    }
 }
 
 /// The filesystem that holds `file`, the backing file of the loop device

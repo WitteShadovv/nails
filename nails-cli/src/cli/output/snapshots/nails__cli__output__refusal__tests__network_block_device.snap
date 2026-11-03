@@ -1,0 +1,7 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&on(verdict), None)"
+---
+error: /mnt is not a volume of its own: it is stored on a network block device, which a program can serve from a file on this computer's own disk. Nothing was written.
+  Use a volume on a disk or partition of its own, or an encrypted volume opened from one: only such a volume can be told apart from this computer's own storage.
+  If the device keeps its data on storage this computer does not use, read "Where setup happens" in the operator guide on another device: opening it here leaves traces such as ~/.lesshst.
