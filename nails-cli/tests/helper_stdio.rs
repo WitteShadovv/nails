@@ -864,9 +864,32 @@ mod kernel_tests {
         })
     }
 
+    /// Send the apply of the activation planned under `token` and close the
+    /// window's end at once, as a window that hangs up does, and return the
+    /// envelope the helper answers with: the CLI's cancel, exit 130.
+    fn hang_up_on_the_apply(helper: &mut Helper, token: &str) -> Value {
+        let id = helper.send(apply_activation(token));
+        drop(helper.stdin.take());
+        match helper.frame() {
+            Some(Frame::Result {
+                id: got,
+                exit,
+                envelope,
+            }) => {
+                assert_eq!(got, id);
+                assert_eq!(exit, 130, "{envelope}");
+                assert_eq!(envelope["error"]["code"], "cancelled", "{envelope}");
+                envelope
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// A window that closes its pipe right after it asks for the activation
     /// cancels it before anything is entered: the helper answers with the
-    /// CLI's cancel and ends, and no session is recorded.
+    /// CLI's cancel and ends, and no session is recorded. The hidden volume
+    /// is a volume of its own, so the notice the window shows says nothing
+    /// was written to this computer's disk.
     #[test]
     fn a_window_that_hangs_up_before_the_point_of_no_return_cancels_the_activation() {
         in_namespace(
@@ -875,20 +898,12 @@ mod kernel_tests {
                 let volume = Volume::new();
                 let mut helper = Helper::greeted(&volume.config);
                 let token = activate_plan(&mut helper);
-                let id = helper.send(apply_activation(&token));
-                drop(helper.stdin.take());
-                match helper.frame() {
-                    Some(Frame::Result {
-                        id: got,
-                        exit,
-                        envelope,
-                    }) => {
-                        assert_eq!(got, id);
-                        assert_eq!(exit, 130, "{envelope}");
-                        assert_eq!(envelope["error"]["code"], "cancelled", "{envelope}");
-                    }
-                    other => panic!("{other:?}"),
-                }
+                let envelope = hang_up_on_the_apply(&mut helper, &token);
+                assert_eq!(
+                    envelope["error"]["message"],
+                    nails_core::catalog::CANCEL_ACTIVATE.text,
+                    "{envelope}"
+                );
                 assert!(helper.frame().is_none());
                 helper.child.wait().unwrap();
                 let state = StateFile::load(&volume.root.join("state.json")).unwrap();
@@ -896,6 +911,82 @@ mod kernel_tests {
                 // The lock went with the helper.
                 let (_, envelope) = cli_json(&volume.config, &["discard", "/srv/x", "-y"]);
                 assert_ne!(envelope["error"]["code"], "state_locked", "{envelope}");
+            },
+        );
+    }
+
+    /// An activation on a root that binds a folder of this computer's own
+    /// storage (the build's scratch directory), accepted with
+    /// `--allow-decoy-storage` and cancelled by a window that hangs up: what
+    /// it wrote landed on that storage, so the notice says it stays there and
+    /// says nothing of the disk. Where the scratch directory lies on a RAM
+    /// filesystem, the bind is a volume of its own and nothing is refused: the
+    /// test then fails when the kernel tier is required, and says so
+    /// otherwise.
+    #[test]
+    fn a_cancelled_activation_on_allowed_storage_says_what_it_wrote_stays() {
+        in_namespace(
+            test_path!(a_cancelled_activation_on_allowed_storage_says_what_it_wrote_stays),
+            || {
+                let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+                let folder = dir.path().join("folder");
+                let root = dir.path().join("data");
+                std::fs::create_dir(&folder).unwrap();
+                std::fs::create_dir(&root).unwrap();
+                nix::mount::mount(
+                    Some(&folder),
+                    &root,
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND,
+                    None::<&str>,
+                )
+                .expect("bind the folder over the root");
+                let config = dir.path().join("nails.toml");
+                std::fs::write(
+                    &config,
+                    format!(
+                        "hidden_volume_root = {:?}\nstate_file_path = {:?}\n\
+                         show_opsec_reminders = false\n",
+                        root.display().to_string(),
+                        root.join("state.json").display().to_string()
+                    ),
+                )
+                .unwrap();
+                let plan = |allow_decoy_storage: bool| {
+                    Op::ActivatePlan(ActivateArgs {
+                        overlay_only: true,
+                        allow_decoy_storage,
+                        ..ActivateArgs::default()
+                    })
+                };
+                let mut helper = Helper::greeted(&config);
+                let (exit, refused) = helper.result(plan(false));
+                if refused["error"]["code"] != "not_separate_volume" {
+                    assert!(
+                        std::env::var_os(nails_core::test_support::REQUIRE_USERNS_ENV).is_none(),
+                        "the scratch directory is no storage of this computer: {refused}"
+                    );
+                    eprintln!("the scratch directory is no storage of this computer: {refused}");
+                    helper.close();
+                    nix::mount::umount(&root).unwrap();
+                    return;
+                }
+                assert_eq!(exit, 4, "{refused}");
+                let (exit, planned) = helper.result(plan(true));
+                assert_eq!(exit, 0, "{planned}");
+                let token = planned["data"]["token"]
+                    .as_str()
+                    .expect("a token")
+                    .to_string();
+                let envelope = hang_up_on_the_apply(&mut helper, &token);
+                assert_eq!(
+                    envelope["error"]["message"],
+                    nails_core::catalog::CANCEL_ACTIVATE_ALLOWED_STORAGE.text,
+                    "{envelope}"
+                );
+                assert!(helper.frame().is_none());
+                helper.child.wait().unwrap();
+                nix::mount::umount(&root).unwrap();
             },
         );
     }
