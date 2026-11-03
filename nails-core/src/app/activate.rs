@@ -93,6 +93,23 @@ pub enum Prepared {
     Proceed(Box<ReadyActivation>),
 }
 
+/// Where the attach gate found an activation's hidden root, for what the
+/// activation may claim to have left alone. Only a root it raised no warning
+/// about is storage of its own; on any other the activation's writes may land
+/// on storage the decoy uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootStorage {
+    /// A volume of its own: the gate raised no warning about it.
+    OwnVolume,
+    /// Storage the gate accepted with a warning of its own, without an
+    /// override: an encrypted container file on a filesystem the decoy uses,
+    /// or a device the decoy shares only with storage it never mounts at boot.
+    Warned,
+    /// Storage the decoy uses, which the operator allowed with
+    /// `--allow-decoy-storage`.
+    Allowed,
+}
+
 /// A pre-mount residue baseline written before the overlays go up.
 pub struct Baseline {
     /// The scan result, for the summary line.
@@ -139,8 +156,10 @@ impl ReadyActivation {
         self.options.allow()
     }
 
-    /// The warning the attach gate raised (an overridden decoy-storage warning),
-    /// for the front end to print before it confirms.
+    /// The warning the attach gate raised, for the front end to print before
+    /// it confirms: for a root on the decoy's storage the operator allowed, or
+    /// one that only warns by itself, such as an encrypted container file on a
+    /// decoy filesystem.
     pub fn warning(&self) -> Option<&str> {
         self.warning.as_deref()
     }
@@ -149,6 +168,17 @@ impl ReadyActivation {
     /// at the confirmation prompt.
     pub fn accepted(&self) -> Option<&Refusal> {
         self.accepted.as_ref()
+    }
+
+    /// Where the attach gate found the hidden root: an override comes first,
+    /// then a warning of the gate's own; a root with neither is a volume of
+    /// its own.
+    pub fn root_storage(&self) -> RootStorage {
+        match (&self.accepted, &self.warning) {
+            (Some(_), _) => RootStorage::Allowed,
+            (None, Some(_)) => RootStorage::Warned,
+            (None, None) => RootStorage::OwnVolume,
+        }
     }
 
     /// Whether the recorded state can be trusted. A corrupt or unreadable state
@@ -201,6 +231,12 @@ impl LockedActivation {
     /// at the confirmation prompt.
     pub fn accepted(&self) -> Option<&Refusal> {
         self.ready.accepted()
+    }
+
+    /// Where the attach gate found the hidden root (see
+    /// [`ReadyActivation::root_storage`]).
+    pub fn root_storage(&self) -> RootStorage {
+        self.ready.root_storage()
     }
 
     /// Whether this activation builds a hidden NixOS system (for the progress line).
@@ -505,6 +541,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ready = ready(manager_at(dir.path()), EnterOptions::default(), None, None);
         assert!(ready.accepted().is_none());
+    }
+
+    /// Only a root the gate raised no warning about is a volume of its own: a
+    /// container file on a decoy filesystem, which warns without an override,
+    /// is not, and an override comes first. The locked handle answers as the
+    /// ready one.
+    #[test]
+    fn the_root_storage_follows_the_gates_warning_and_the_override() {
+        use crate::hidden_root::separation::Verdict;
+        let container = Refusal::new(
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::ContainerOnDecoy {
+                    file: PathBuf::from("/home/op/vault.hc"),
+                    at: PathBuf::from("/home"),
+                },
+            },
+            Path::new("/mnt/data"),
+        );
+        assert!(!container.overridden(), "a container only warns by itself");
+        let allowed = Refusal::new(RefusalKind::SameDeviceAsRoot, Path::new("/mnt/data"));
+        for (accepted, warning, storage) in [
+            (None, None, RootStorage::OwnVolume),
+            (None, Some(container.warning()), RootStorage::Warned),
+            (
+                Some(allowed.clone()),
+                Some("w".into()),
+                RootStorage::Allowed,
+            ),
+            (Some(allowed), None, RootStorage::Allowed),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let ready = ready(
+                manager_at(dir.path()),
+                Default::default(),
+                accepted,
+                warning,
+            );
+            assert_eq!(ready.root_storage(), storage);
+            assert_eq!(locked(ready).root_storage(), storage);
+        }
     }
 
     #[test]

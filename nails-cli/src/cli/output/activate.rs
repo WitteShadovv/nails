@@ -11,6 +11,7 @@
 //! window watches progress on its own channel).
 
 use nails_core::NailsError;
+use nails_core::app::activate::RootStorage;
 use nails_core::output::Mark;
 use nails_core::session::Entry;
 use serde::Serialize;
@@ -61,35 +62,40 @@ pub enum ActivateResult<'a> {
 /// Which notice a cancelled activation prints, whether the operator answered
 /// `n` at the prompt or pressed Ctrl+C at it or later in the entry. From the
 /// catalogue, so the CLI and the window show the same words. What it may say
-/// about this computer's disk depends on where the hidden volume lies, and
-/// what it says about the hidden volume on how far the entry got.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// about this computer's disk depends on where the attach gate found the
+/// hidden volume, and what it says about the hidden volume on how far the
+/// entry got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelNotice {
-    /// The hidden volume is a volume of its own and no hidden NixOS system
-    /// was being built: the activation wrote nothing to this computer's disk.
-    #[default]
+    /// The gate found the hidden volume a volume of its own, with no warning,
+    /// and no hidden NixOS system was being built: the activation wrote
+    /// nothing to this computer's disk.
     Plain,
     /// As [`Plain`](Self::Plain), but the entry of an activation that builds a
     /// hidden NixOS system had begun: what the build finished stays on the
     /// hidden volume, for the next activation.
     KeepsBuild,
+    /// The gate accepted the hidden volume with a warning of its own, such as
+    /// one in an encrypted container file on a filesystem the decoy uses:
+    /// what the activation wrote stays on the hidden volume, and the notice
+    /// says nothing about this computer's disk.
+    WarnedStorage,
     /// The hidden volume lies on storage the operator allowed with
     /// `--allow-decoy-storage`: what the activation wrote there stays.
     AllowedStorage,
 }
 
 impl CancelNotice {
-    /// The notice of an activation whose hidden volume lies on storage the
-    /// operator allowed (`on_allowed_storage`), or whose entry had begun to
-    /// build a hidden NixOS system (`building`). Allowed storage comes first:
-    /// there the activation's writes may be on this computer's own disk.
-    pub fn new(on_allowed_storage: bool, building: bool) -> Self {
-        if on_allowed_storage {
-            Self::AllowedStorage
-        } else if building {
-            Self::KeepsBuild
-        } else {
-            Self::Plain
+    /// The notice of an activation whose hidden volume the attach gate found
+    /// on `storage`, and whose entry had begun to build a hidden NixOS system
+    /// (`building`). Only a volume of its own lets the notice say nothing was
+    /// written to this computer's disk, so the storage decides first.
+    pub fn new(storage: RootStorage, building: bool) -> Self {
+        match storage {
+            RootStorage::Allowed => Self::AllowedStorage,
+            RootStorage::Warned => Self::WarnedStorage,
+            RootStorage::OwnVolume if building => Self::KeepsBuild,
+            RootStorage::OwnVolume => Self::Plain,
         }
     }
 
@@ -99,13 +105,49 @@ impl CancelNotice {
         match self {
             Self::Plain => catalog::CANCEL_ACTIVATE.text,
             Self::KeepsBuild => catalog::CANCEL_ACTIVATE_KEEPS_BUILD.text,
+            Self::WarnedStorage => catalog::CANCEL_ACTIVATE_WARNED_STORAGE.text,
             Self::AllowedStorage => catalog::CANCEL_ACTIVATE_ALLOWED_STORAGE.text,
         }
     }
 }
 
+/// What a cancel of an activation may say, read once from the activation and
+/// the output settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CancelFacts {
+    /// Where the attach gate found the hidden volume.
+    pub storage: RootStorage,
+    /// Whether the activation builds a hidden NixOS system.
+    pub builds: bool,
+    /// Whether stderr is a terminal, where a Ctrl+C's `^C` echo stands before
+    /// the notice.
+    pub on_terminal: bool,
+}
+
+impl CancelFacts {
+    /// The cancel at the prompt: nothing was built yet, and the prompt has
+    /// ended its own line.
+    pub fn at_prompt(self) -> Cancel {
+        Cancel {
+            notice: CancelNotice::new(self.storage, false),
+            below_echo: false,
+        }
+    }
+
+    /// The cancel once the question is answered, or skipped with `-y`, where
+    /// only a signal stops the activation (or, for the window, its hang-up):
+    /// what was built depends on whether the entry had begun (`entered`), and
+    /// on a terminal the notice starts below the `^C` the terminal echoed.
+    pub fn by_signal(self, entered: bool) -> Cancel {
+        Cancel {
+            notice: CancelNotice::new(self.storage, self.builds && entered),
+            below_echo: self.on_terminal,
+        }
+    }
+}
+
 /// A cancelled activation as it is reported.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cancel {
     /// What it says.
     pub notice: CancelNotice,
@@ -114,6 +156,17 @@ pub struct Cancel {
     /// terminal echoed `^C` where the notice would begin. At the prompt the
     /// prompt ends its own line.
     pub below_echo: bool,
+}
+
+impl Cancel {
+    /// A cancel reported without knowing where the hidden volume lies: the
+    /// notice that claims nothing about this computer's disk.
+    fn unjudged() -> Self {
+        Self {
+            notice: CancelNotice::WarnedStorage,
+            below_echo: false,
+        }
+    }
 }
 
 /// The cancel shape every command shares, with the notice of `cancel` as its
@@ -251,13 +304,13 @@ fn failure_error(error: &NailsError) -> ErrorBody {
 
 /// The activation result as one JSON envelope line. A cancel is the one cancel
 /// shape every command shares (an error body with the code `cancelled`, no
-/// data), with the plain notice, as [`print_activate_cancel`] gives it for a
-/// cancel it knows more of; every other failure keeps its data so a caller
-/// learns what was prepared, with `ok` false; a success and a
-/// success-with-warnings are `ok`.
+/// data), with the notice of a cancel that knows nothing of where the hidden
+/// volume lies ([`print_activate_cancel`] prints one that knows); every other
+/// failure keeps its data so a caller learns what was prepared, with `ok`
+/// false; a success and a success-with-warnings are `ok`.
 pub fn activate_envelope_line(result: &ActivateResult<'_>, duration: f64) -> String {
     match result {
-        ActivateResult::Failed(NailsError::Cancelled) => cancel_envelope_line(Cancel::default()),
+        ActivateResult::Failed(NailsError::Cancelled) => cancel_envelope_line(Cancel::unjudged()),
         ActivateResult::Failed(error) => Envelope::failure_with_data(
             "activate",
             failure_error(error),
@@ -324,7 +377,7 @@ fn human_lines(
             );
         }
         ActivateResult::Failed(NailsError::Cancelled) => {
-            err.extend(cancel_lines(Cancel::default(), err_style));
+            err.extend(cancel_lines(Cancel::unjudged(), err_style));
         }
         ActivateResult::Failed(error) => {
             if let NailsError::PreFlightCheckFailed(failures) = error {
