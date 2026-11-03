@@ -43,9 +43,11 @@ pub(super) enum Token {
     Open,
     Close,
     /// A redirection, whose target is the next word; `writes` when it opens
-    /// the target to write (`>`, `>>`, `>|`, `<>`).
+    /// the target to write (`>`, `>>`, `>|`, `<>`), and `dup` when an `&`
+    /// follows, which makes a number or `-` after it a descriptor (`>&2`).
     Redirect {
         writes: bool,
+        dup: bool,
     },
     /// The body of a here-document: text a command reads, not code.
     Text(String),
@@ -830,7 +832,10 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                 lexer.chars.next();
                 if lexer.chars.next_if_eq(&'<').is_some() {
                     // A here-string: its word is the text.
-                    lexer.tokens.push(Token::Redirect { writes: false });
+                    lexer.tokens.push(Token::Redirect {
+                        writes: false,
+                        dup: false,
+                    });
                 } else {
                     let tabs = lexer.chars.next_if_eq(&'-').is_some();
                     let delimiter = lexer.delimiter();
@@ -845,13 +850,15 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
             '<' | '>' => {
                 lexer.end_word_before_redirection();
                 let mut writes = c == '>';
+                let mut dup = false;
                 while let Some(next) = lexer
                     .chars
                     .next_if(|c| matches!(c, '<' | '>' | '&' | '|' | '!'))
                 {
                     writes |= next == '>';
+                    dup |= next == '&';
                 }
-                lexer.tokens.push(Token::Redirect { writes });
+                lexer.tokens.push(Token::Redirect { writes, dup });
             }
             c if c.is_whitespace() => lexer.end_word(),
             c => lexer.word_char(c),

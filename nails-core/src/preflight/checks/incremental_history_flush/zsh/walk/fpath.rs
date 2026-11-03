@@ -15,7 +15,9 @@ use super::{Event, Frame, Walker};
 /// `$FPATH` and `${FPATH}` whole; not a directory made from it
 /// (`${fpath[1]}/sub`, `${fpath/a/b}`), one that flags change
 /// (`${(s:/:)fpath}`), an element a subscript flag finds (`${fpath[(I)x]}`,
-/// an index), or a slice of `FPATH`'s characters (`$FPATH[2,10]`).
+/// an index), or a slice of `FPATH`'s characters (`$FPATH[2,10]`). A
+/// subscript outside braces (`$fpath[1]`) is an element only while
+/// `KSH_ARRAYS` is off ([`Event::FpathSplits`]).
 fn holds_fpath(text: &str) -> bool {
     let Some(rest) = text.strip_prefix('$') else {
         return false;
@@ -62,12 +64,25 @@ fn holds_fpath(text: &str) -> bool {
 impl Walker<'_> {
     /// The event of `word`, an element added to `fpath`, unless it stands
     /// for what `fpath` holds already ([`holds_fpath`]); a loop's variable
-    /// stands for each item the check can list.
-    pub(super) fn fpath_dir(&mut self, word: &Word, first: bool) {
+    /// stands for each item the check can list. Either, in an array
+    /// (`array`), may split into others ([`Event::FpathSplits`]).
+    pub(super) fn fpath_dir(&mut self, word: &Word, first: bool, array: bool) {
+        // An array's element, which zsh splits under SH_WORD_SPLIT, unlike a
+        // value assigned, and a subscript outside braces, which KSH_ARRAYS
+        // makes the first element and `[1]` (`$fpath[1]`).
         if holds_fpath(&word.text) {
+            if array || word.text.ends_with(']') && !word.text.starts_with("${") {
+                self.events.push(Event::FpathSplits(word.text.clone()));
+            }
             return;
         }
-        if let Some(items) = Self::variable(word).and_then(|var| self.loop_items(var)) {
+        if let Some(items) = Self::variable(word)
+            .and_then(|var| self.loop_items(var))
+            .map(<[String]>::to_vec)
+        {
+            if array {
+                self.events.push(Event::FpathSplits(word.text.clone()));
+            }
             let dirs: Vec<Event> = items
                 .iter()
                 .map(|text| Event::Fpath {
@@ -87,14 +102,15 @@ impl Walker<'_> {
         });
     }
 
-    /// The events of `items` assigned to `fpath` as an array, or appended to
-    /// it (`append`): those before what `fpath` held (`$fpath`), or all
-    /// where it held nothing they keep, come first ([`Event::Fpath`]).
-    pub(super) fn fpath_items(&mut self, items: &[Word], append: bool) {
+    /// The events of `items` assigned to `fpath` as an array's elements
+    /// (`array`) or a value, or appended to it (`append`): those before what
+    /// `fpath` held (`$fpath`), or all where it held nothing they keep, come
+    /// first ([`Event::Fpath`]).
+    pub(super) fn fpath_items(&mut self, items: &[Word], append: bool, array: bool) {
         let held = items.iter().position(|item| holds_fpath(&item.text));
         for (at, item) in items.iter().enumerate() {
             let first = !append && held.is_none_or(|held| at < held);
-            self.fpath_dir(item, first);
+            self.fpath_dir(item, first, array);
         }
     }
 
@@ -127,6 +143,8 @@ impl Walker<'_> {
             return false;
         }
         for (rest, written) in RESTS.iter().zip(written) {
+            // An array's element, which SH_WORD_SPLIT splits.
+            self.events.push(Event::FpathSplits(written.clone()));
             self.events.push(Event::ProfileFpath {
                 written,
                 rest: (*rest).to_string(),
@@ -155,9 +173,10 @@ impl Walker<'_> {
             Some(value) => vec![value],
             None => Vec::new(),
         };
+        // An empty part is an element too, which zsh reads as the directory
+        // it runs in (`fpath+=`, `FPATH=:$FPATH`).
         let items: Vec<Word> = parts
             .into_iter()
-            .filter(|part| !part.is_empty())
             .map(|part| Word {
                 text: part.to_string(),
                 expands: part.contains(['$', '`']),
@@ -168,7 +187,7 @@ impl Walker<'_> {
         let subscript = target.split_once('[').map(|(_, key)| key);
         let append = target.ends_with('+')
             || subscript.is_some_and(|key| !(key.starts_with("1]") || key.starts_with("1,")));
-        self.fpath_items(&items, append);
+        self.fpath_items(&items, append, false);
         true
     }
 }

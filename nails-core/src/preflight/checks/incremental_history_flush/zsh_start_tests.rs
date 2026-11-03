@@ -147,4 +147,33 @@ fn an_option_the_command_line_turns_on_counts() {
              command line turns GLOB_SUBST on, which makes a glob qualifier in a value run"
         ]
     );
+    // SH_WORD_SPLIT and KSH_ARRAYS may change the directories an expansion
+    // gives fpath (`fpath=($fpath)` with IFS=/): zsh 5.9.2 started with `-y`
+    // loads a compinit it finds from where it runs.
+    let split = |name: &str| {
+        format!(
+            "it cannot tell where zsh looks for the functions the files autoload, as its command \
+             line turns {name} on, which may change the directories an expansion gives fpath"
+        )
+    };
+    for words in [
+        &["zsh", "-y"][..],
+        &["zsh", "-iy"],
+        &["zsh", "-o", "shwordsplit"],
+        &["zsh", "--sh-word-split"],
+        &["zsh", "-oSH_WORD_SPLIT"],
+    ] {
+        assert_eq!(line(words).doubts, [split("SH_WORD_SPLIT")], "{words:?}");
+    }
+    assert_eq!(
+        line(&["zsh", "-o", "ksh_arrays"]).doubts,
+        [split("KSH_ARRAYS")]
+    );
+    for words in [
+        &["zsh", "+y"][..],
+        &["zsh", "+o", "shwordsplit"],
+        &["zsh", "-o", "noshwordsplit"],
+    ] {
+        assert_eq!(line(words).doubts, Vec::<String>::new(), "{words:?}");
+    }
 }

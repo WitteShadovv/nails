@@ -11,6 +11,7 @@
 
 use super::super::backstop::{FC_WRITES, history_path, is_fc_flag};
 use super::super::lexer::{Token, Word, lex};
+use super::hooks::completes;
 use super::{Event, Walker};
 
 /// The commands that take the words after them as options, code, names or
@@ -158,7 +159,9 @@ fn listing_fc(command: &str) -> bool {
 /// as zsh reads it: `^M`, `^J`, `\r`, `\n`, `\C-m` and `\C-j` end a line,
 /// another `^` or `\` escape is a key that edits the line, which types
 /// nothing; `None` when it holds an escape key (`^[`, `\e`, `\M-`), which
-/// may run a widget by its name, or a character given by its number.
+/// may run a widget by its name, a key that completes a word as zsh binds it
+/// (Tab, `^D` at the end of a line) or starts one that may (`^X`), or a
+/// character given by its number.
 fn typed_line(text: &str) -> Option<String> {
     let mut line = String::new();
     let mut chars = text.chars().peekable();
@@ -166,28 +169,44 @@ fn typed_line(text: &str) -> Option<String> {
         match c {
             '^' => match chars.next()? {
                 'M' | 'm' | 'J' | 'j' => line.push('\n'),
-                '[' => return None,
+                '[' | 'I' | 'i' | 'D' | 'd' | 'X' | 'x' => return None,
                 _ => {}
             },
             '\\' => match chars.next()? {
                 'n' | 'r' => line.push('\n'),
-                // An escape key, or a character by its number.
-                'e' | 'E' | 'M' | 'x' | 'u' | 'U' | '0'..='9' => return None,
+                // An escape key, Tab, or a character by its number.
+                'e' | 'E' | 'M' | 'x' | 'u' | 'U' | 't' | '0'..='9' => return None,
                 'C' => {
                     chars.next_if_eq(&'-');
                     match chars.next()? {
                         'm' | 'M' | 'j' | 'J' => line.push('\n'),
-                        '[' => return None,
+                        '[' | 'I' | 'i' | 'D' | 'd' | 'X' | 'x' => return None,
                         _ => {}
                     }
                 }
                 c if c.is_ascii_alphanumeric() => {}
                 c => line.push(c),
             },
+            // Tab itself.
+            '\t' => return None,
             c => line.push(c),
         }
     }
     Some(line)
+}
+
+/// Whether `keys`, a key sequence as `bindkey` is given it, is one the
+/// check takes the operator to press only to complete a word, as zsh binds
+/// such keys: Tab, `^D` (which zsh binds to `delete-char-or-list`), or a
+/// sequence that starts with `^X` or an escape (`^[`, `\e`, `\M-`), past
+/// which no key types a command line.
+fn completion_keys(keys: &str) -> bool {
+    matches!(
+        keys,
+        "^I" | "^i" | "\\t" | "\t" | "\\C-i" | "\\C-I" | "^D" | "^d" | "\\C-d" | "\\C-D"
+    ) || ["^X", "^x", "\\C-x", "\\C-X", "^[", "\\e", "\\E", "\\M-"]
+        .iter()
+        .any(|prefix| keys.len() > prefix.len() && keys.starts_with(prefix))
 }
 
 impl Walker<'_> {
@@ -249,6 +268,15 @@ impl Walker<'_> {
             None => {
                 let hook = format!("alias {text}");
                 self.events.push(Event::Hook(hook.clone()));
+                if !regular {
+                    // The word it stands for, past `galiases[`.
+                    let (target, _) = text.split_once('=').unwrap_or((text, ""));
+                    let named = target
+                        .split_once('[')
+                        .and_then(|(_, key)| key.strip_suffix(']'))
+                        .unwrap_or(target);
+                    self.events.push(Event::GlobalAlias(named.to_string()));
+                }
                 hook
             }
         };
@@ -304,8 +332,10 @@ impl Walker<'_> {
                     .map(|signal| signal.text.as_str())
                     .filter(|signal| signal.chars().all(|c| c.is_ascii_alphanumeric()))
                     .unwrap_or_default();
-                let outer = Some(format!("TRAP{signal}"));
-                self.nested_in(&code.text, unconditional, outer);
+                let outer = format!("TRAP{signal}");
+                // As a `TRAP...` function of its signal is defined.
+                self.events.push(Event::Define(outer.clone()));
+                self.nested_in(&code.text, unconditional, Some(outer));
             }
         }
         for arg in args {
@@ -375,6 +405,25 @@ impl Walker<'_> {
             for arg in args {
                 self.mention(&arg.text);
             }
+            // A widget that completes a word bound to a key typed as a line
+            // is (Space, a letter, Enter) runs completion functions the check
+            // does not read as each line is typed.
+            let keymaps = flags
+                .iter()
+                .any(|flag| flag.contains(['A', 'N', 'l', 'L', 'r', 'd']));
+            for pair in strings.chunks(2) {
+                let [keys, widget] = pair else {
+                    continue;
+                };
+                if !keymaps && completes(widget) && (computed(keys) || !completion_keys(&keys.text))
+                {
+                    self.events.push(Event::Doubt(format!(
+                        "it cannot tell what the completion functions that `bindkey {} {}` in {} \
+                         runs as a line is typed write",
+                        keys.text, widget.text, self.place
+                    )));
+                }
+            }
             return;
         }
         let place = self.place;
@@ -407,6 +456,22 @@ impl Walker<'_> {
     /// with an expansion, a doubt. Any other `zstyle` sets data, whose words
     /// count for the options they name.
     pub(super) fn zstyle(&mut self, args: &[Word], unconditional: bool) {
+        // The style the stock add-zle-hook-widget runs the widgets of as each
+        // line is entered, or one an expansion names, which may be it.
+        let style = match args.first().map(|flag| flag.text.as_str()) {
+            Some("-e") => args.get(2),
+            Some(flag) if flag.starts_with('-') => None,
+            _ => args.get(1),
+        };
+        if style.is_some_and(|style| style.text == "widgets" || computed(style)) {
+            let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which widgets `zstyle {}` in {} makes add-zle-hook-widget run \
+                 as each line is entered",
+                words.join(" "),
+                self.place
+            )));
+        }
         if args.first().is_none_or(|flag| flag.text != "-e") {
             for arg in args {
                 self.mention(&arg.text);

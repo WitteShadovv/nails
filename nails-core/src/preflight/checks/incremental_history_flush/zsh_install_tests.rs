@@ -9,6 +9,15 @@ use super::autoload::unfound;
 use super::*;
 use crate::filesystem::PathKind;
 
+// What may change what NixOS's dircolors line runs.
+#[path = "zsh_dircolors_tests.rs"]
+mod dircolors;
+
+// The elements of fpath the check cannot follow where it knows where fpath
+// starts, prompt themes and completion functions as hooks.
+#[path = "zsh_fpath_tests.rs"]
+mod fpath;
+
 /// A zsh 5.9.2 from the Nix store.
 const ZSH: &str = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-zsh-5.9.2";
 
@@ -1033,15 +1042,45 @@ fn compinit_s_marks_by_the_first_line_of_a_completion_function_are_read() {
         );
         assert!(warned(&scan_with(&fs, UNKNOWN, &known)), "{line}");
     }
-    for line in [
-        "#autoload",
-        "#autoload +X",
-        "#compdef git",
-        "#compdef -k complete-word \\C-xt",
-    ] {
+    for line in ["#autoload", "#autoload +X", "#compdef git"] {
         seed(&fs, "/home/alice/zcomp/_b", &format!("{line}\n:\n"));
         assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default(), "{line}");
     }
+    // Keys a first line binds the function to are zsh's own, in its own
+    // function, or a doubt: compinit binds a key that has no widget, which a
+    // file may make Space or Enter (`bindkey -r ' '`).
+    let rc = "fpath=(~/zcomp $fpath)\nautoload -Uz compinit && compinit -D\n";
+    for (name, line) in [
+        ("_b", "#compdef -k complete-word \\C-xt"),
+        ("_complete_tag", "#compdef -k complete-word \\C-xa"),
+        ("_complete_tag", "#compdef -k complete-word \\C-xt x"),
+        ("_complete_tag", "#compdef -k complete-word \\C-xt "),
+        ("_b", "#compdef -K _b complete-word ' '"),
+        ("_b", "#compdef git -k complete-word ^M"),
+    ] {
+        let fs = MockFilesystem::new();
+        nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+        let path = format!("/home/alice/zcomp/{name}");
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, &path, &format!("{line}\n:\n"));
+        fs.mock_set_directory_contents(Path::new("/home/alice/zcomp"), vec![PathBuf::from(&path)]);
+        let known = install(&fs, &[]);
+        assert!(warned(&scan_with(&fs, UNKNOWN, &known)), "{name}: {line}");
+    }
+    let fs = MockFilesystem::new();
+    nix_zsh(&fs, &[OWN], &["compinit", "compaudit", "compdump"]);
+    let known = install(&fs, &[]);
+    seed(&fs, "/home/alice/.zshrc", rc);
+    seed(
+        &fs,
+        "/home/alice/zcomp/_complete_tag",
+        "#compdef -k complete-word \\C-xt\n:\n",
+    );
+    fs.mock_set_directory_contents(
+        Path::new("/home/alice/zcomp"),
+        vec![PathBuf::from("/home/alice/zcomp/_complete_tag")],
+    );
+    assert_eq!(scan_with(&fs, UNKNOWN, &known), Scan::default());
     // A dump file that marks with `-w` is read as code, a doubt.
     seed(&fs, "/home/alice/zcomp/_b", "#autoload\n:\n");
     seed(

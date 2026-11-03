@@ -19,10 +19,11 @@ mod event;
 mod fpath;
 mod hooks;
 mod loops;
+mod names;
 mod strings;
 
 pub(super) use super::builtins::HOOKS;
-pub(super) use event::Event;
+pub(super) use event::{Event, Input};
 pub(super) use strings::PROMPTS;
 
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the
@@ -130,6 +131,13 @@ struct Pending {
     body: bool,
     /// The name of the function whose body comes next.
     function_name: Option<String>,
+    /// The commands of the pipeline it is in that run before it, each one's
+    /// name and whether an expansion makes a word of it; `None` when one is
+    /// no simple command the walk read (a group).
+    feeders: Option<Vec<(String, bool)>>,
+    /// It reads what an expansion makes: a here-string or a file an
+    /// expansion names (`<<< "$1"`, `< $f`).
+    fed: bool,
 }
 
 /// The walk over one file's tokens, which finds its [`Event`]s.
@@ -173,6 +181,14 @@ struct Walker<'a> {
     /// function runs from a string (`eval`, a trap's).
     outer: Option<String>,
     pending: Pending,
+    /// Where the events of the commands of the line being read start, and
+    /// of the line before it, whose here-documents' bodies come next.
+    line_start: usize,
+    bodies_start: usize,
+    /// How often it read an alias set by the parameters that hold them
+    /// ([`backstop::alias_writes`]), and a function by `functions`.
+    alias_params: usize,
+    function_params: usize,
 }
 
 impl Walker<'_> {
@@ -344,10 +360,44 @@ impl Walker<'_> {
         let words = std::mem::take(&mut self.pending.words);
         let after = self.pending.after_condition || self.pending.body;
         let piped = self.pending.piped || piped_after;
-        self.command(words, after, piped);
+        // What the command reads: what the commands before it in its
+        // pipeline write, or what an expansion makes.
+        let input = if std::mem::take(&mut self.pending.fed) {
+            Input::Computed
+        } else if self.pending.piped {
+            Input::Piped(self.pending.feeders.clone().unwrap_or_default())
+        } else {
+            Input::None
+        };
+        let feeder = Self::feeder(&words);
+        self.command(words, after, piped, input);
+        if !piped_after {
+            self.pending.feeders = Some(Vec::new());
+        } else if self.pending.piped {
+            // A command in a pipeline after another: one more of them.
+            match (self.pending.feeders.as_mut(), feeder) {
+                (Some(feeders), Some(feeder)) => feeders.push(feeder),
+                _ => self.pending.feeders = None,
+            }
+        } else {
+            // The first command of a pipeline.
+            self.pending.feeders = feeder.map(|feeder| vec![feeder]);
+        }
         if std::mem::take(&mut self.pending.body) {
             self.pending.function_name = None;
         }
+    }
+
+    /// The name of the simple command `words` and whether an expansion makes
+    /// one of its words, as what it writes feeds the commands after it in a
+    /// pipeline; `None` for no simple command (a group's end).
+    fn feeder(words: &[Word]) -> Option<(String, bool)> {
+        let mut command = words
+            .iter()
+            .skip_while(|word| command::is_assignment(&word.text));
+        let name = command.next()?;
+        let expands = name.expands || words.iter().any(|word| word.expands);
+        Some((name.text.clone(), expands))
     }
 
     /// The name of the function whose body the walk is in, when it is in
@@ -523,11 +573,12 @@ impl Walker<'_> {
                 }
             }
         }
-        if matches!(
-            name.as_str(),
-            "functions" | "dis_functions" | "aliases" | "galiases" | "saliases"
-        ) {
+        let functions = matches!(name.as_str(), "functions" | "dis_functions");
+        let aliases = command::ALIAS_PARAMETERS.contains(&name.as_str());
+        if functions || aliases {
             // Function bodies or alias values, each beside its name.
+            self.function_params += usize::from(functions);
+            self.alias_params += usize::from(aliases);
             self.events.push(Event::Doubt(format!(
                 "it cannot tell what code `{name}=(...)` in {} gives",
                 self.place
@@ -553,7 +604,7 @@ impl Walker<'_> {
         if matches!(name.as_str(), "fpath" | "FPATH") {
             self.fpaths += 1;
             if append || name != "fpath" || !self.profiles_fpath(&items) {
-                self.fpath_items(&items, append);
+                self.fpath_items(&items, append, true);
             }
         }
         let literal: Option<Vec<String>> = items
@@ -590,7 +641,10 @@ impl Walker<'_> {
                 if let Some(open) = self.frames.last_mut() {
                     open.pattern = false;
                 }
-                self.pending = Pending::default();
+                self.pending = Pending {
+                    feeders: Some(Vec::new()),
+                    ..Pending::default()
+                };
             }
             Token::Text(text) | Token::Arithmetic(text) => self.mention_options(&text),
             Token::Array(_, items) => {
@@ -605,6 +659,12 @@ impl Walker<'_> {
     /// The events of the end of a command.
     fn end(&mut self, end: End) {
         self.finish(matches!(end, End::Pipe | End::Background));
+        if end == End::Line {
+            // The here-documents the line opens come next, as the input of
+            // its commands.
+            self.bodies_start = self.line_start;
+            self.line_start = self.events.len();
+        }
         match end {
             End::Line | End::Background => self.end_short(),
             End::Arm => {
@@ -652,7 +712,7 @@ impl Walker<'_> {
             match token {
                 Token::Word(word) => self.word(word),
                 Token::Array(name, items) => self.array(name, items),
-                Token::Redirect { writes } => {
+                Token::Redirect { writes, dup } => {
                     // The redirection's target is no word of the command, but
                     // what a here-string or a file name says still counts.
                     if let Some(Token::Word(target)) =
@@ -660,14 +720,22 @@ impl Walker<'_> {
                     {
                         self.mention_options(&target.text);
                         self.qualifier(&target.text);
-                        if writes {
+                        let computed = target.expands || target.text.contains(['$', '`']);
+                        // `>&2`, `2>&1`, `>&-`: a descriptor, no file.
+                        let descriptor = dup
+                            && (target.text.chars().all(|c| c.is_ascii_digit())
+                                || matches!(target.text.as_str(), "-" | "p"));
+                        if !writes {
+                            // What the command reads: `<<< "$1"`, `< $f`.
+                            self.pending.fed |= computed;
+                        } else if !descriptor {
                             // `exec 3>>file` keeps the descriptor open.
                             let kept = matches!(
                                 self.pending.words.as_slice(),
                                 [word] if word.text == "exec"
                             );
                             self.events.push(Event::Redirect {
-                                computed: target.expands || target.text.contains(['$', '`']),
+                                computed,
                                 function: self.function(),
                                 target: target.text,
                                 kept,
@@ -678,7 +746,16 @@ impl Walker<'_> {
                 Token::Text(text) => {
                     self.mention_options(&text);
                     // A here-document's body is expanded as the command reads
-                    // it, unless its delimiter is quoted.
+                    // it, unless its delimiter is quoted, and is what the
+                    // commands of the line that opens it read.
+                    if text.contains(['$', '`']) {
+                        let (from, to) = (self.bodies_start, self.line_start);
+                        for event in &mut self.events[from..to] {
+                            if let Event::Call { input, .. } = event {
+                                *input = Input::Computed;
+                            }
+                        }
+                    }
                     self.substituted(&text);
                 }
                 Token::Arithmetic(text) => {
@@ -723,6 +800,8 @@ struct Walked {
     indirects: usize,
     hooks: usize,
     prompts: usize,
+    alias_params: usize,
+    function_params: usize,
     may_stop: bool,
 }
 
@@ -731,6 +810,8 @@ pub(super) struct Read {
     pub(super) events: Vec<Event>,
     /// The check lost track of its structure.
     pub(super) confused: bool,
+    /// A `return` or `exit` may end it before its end.
+    pub(super) may_stop: bool,
 }
 
 /// Walk zsh code `text` from the file at `place` that runs in the function
@@ -756,7 +837,14 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         hooks: 0,
         prompts: 0,
         outer,
-        pending: Pending::default(),
+        pending: Pending {
+            feeders: Some(Vec::new()),
+            ..Pending::default()
+        },
+        line_start: 0,
+        bodies_start: 0,
+        alias_params: 0,
+        function_params: 0,
     }
     .walk();
     let mut events = walker.events;
@@ -787,6 +875,8 @@ fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
         indirects: walker.indirects,
         hooks: walker.hooks,
         prompts: walker.prompts,
+        alias_params: walker.alias_params,
+        function_params: walker.function_params,
         may_stop: walker.may_stop,
     }
 }
@@ -877,8 +967,20 @@ pub(super) fn events(text: &str, place: &str, outer: Option<String>) -> Read {
              shows the prompt, as PROMPT_SUBST may be on"
         )));
     }
+    if named.alias_params > walked.alias_params {
+        events.push(Event::Doubt(format!(
+            "it cannot tell what alias a line of {place} may give by the parameters that hold \
+             them, which zsh then expands"
+        )));
+    }
+    if named.function_params > walked.function_params {
+        events.push(Event::Doubt(format!(
+            "it cannot tell what code a line of {place} may give a function by `functions`"
+        )));
+    }
     Read {
         events,
         confused: walked.confused,
+        may_stop: walked.may_stop,
     }
 }

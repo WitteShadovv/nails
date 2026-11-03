@@ -16,16 +16,19 @@
 //!   names start with `_`, to be autoloaded, as the first line of each says
 //!   (`#compdef`, `#autoload` and their words), when it finds no dump file it
 //!   can use. zsh runs those only as completion runs, when a key bound to a
-//!   completion widget is pressed (Tab), or when code runs them by name. It
-//!   names none of the three options and holds no `fc` that writes the
-//!   history file.
+//!   completion widget is pressed (Tab), or when code runs them by name; the
+//!   check reads one as a hook where a key typed in a line may run it
+//!   (`compdef -k`, a widget's function), and doubts a key binding of a first
+//!   line other than zsh's own ([`KEY_LINES`]). It names none of the three
+//!   options and holds no `fc` that writes the history file.
 //! - `compaudit` checks the owners and modes of the `fpath` directories and
 //!   may put the directories under one that holds a `Base` directory at the
 //!   end of `fpath`; `compdump` writes the dump file.
 //! - `promptinit` autoloads `add-zsh-hook` and `add-zle-hook-widget`, and
 //!   marks the prompt themes it finds in `fpath`, the `prompt_*_setup` files,
 //!   to be autoloaded. It defines `prompt`, which runs the theme it names
-//!   (`prompt suse` runs `prompt_suse_setup`), may turn `PROMPT_SUBST` on as
+//!   (`prompt suse` runs `prompt_suse_setup`) each time it runs, a hook's
+//!   among them, may turn `PROMPT_SUBST` on as
 //!   the theme asks, keeps code a theme gives it to run as the theme changes
 //!   (`prompt_cleanup`), and keeps code to restore the prompt, which runs
 //!   `prompt_default_setup` (`prompt restore`).
@@ -152,7 +155,7 @@ impl<F: Filesystem> Reader<'_, F> {
             Stock::Compinit => {
                 self.compinit = true;
                 for name in ["compaudit", "compdump"] {
-                    self.autoload_name(name);
+                    self.autoload_name(name, Some("compinit"));
                 }
             }
             Stock::Compaudit => self.compaudit = true,
@@ -161,7 +164,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 // A theme may ask for it.
                 self.prompt_subst = true;
                 for name in ["add-zsh-hook", "add-zle-hook-widget"] {
-                    self.autoload_name(name);
+                    self.autoload_name(name, Some("promptinit"));
                 }
             }
             Stock::Compdump | Stock::AddZshHook | Stock::AddZleHookWidget => {}
@@ -223,8 +226,21 @@ impl<F: Filesystem> Reader<'_, F> {
         for (name, args, place) in self.calls.clone() {
             if self.promptinit && name == "prompt" {
                 // The code `prompt` keeps to restore the prompt, which a
-                // theme runs (`prompt restore`), runs prompt_default_setup.
-                self.autoload_name("prompt_default_setup");
+                // theme runs (`prompt restore`), runs prompt_default_setup;
+                // it runs the functions promptinit defines, which a file may
+                // define in their place, as it runs, a hook among what runs it.
+                self.autoload_name("prompt_default_setup", Some("prompt"));
+                for helper in [
+                    "prompt_default_setup",
+                    "set_prompt",
+                    "prompt_preview_safely",
+                    "prompt_preview_theme",
+                ] {
+                    let edge = ("prompt".to_string(), helper.to_string());
+                    if !self.edges.contains(&edge) {
+                        self.edges.push(edge);
+                    }
+                }
                 self.prompt(&args, &place);
             } else if self.promptinit
                 && matches!(
@@ -242,12 +258,12 @@ impl<F: Filesystem> Reader<'_, F> {
             } else if self.compinit && name == "compdef" {
                 self.compdef(&args, &place);
             } else if self.marks(&name) {
-                self.autoload_name(&name);
+                self.autoload_name(&name, None);
             }
         }
         for hook in self.hooks.clone() {
             if self.marks(&hook) {
-                self.autoload_name(&hook);
+                self.autoload_name(&hook, None);
             }
         }
     }
@@ -256,7 +272,8 @@ impl<F: Filesystem> Reader<'_, F> {
     /// defines, with `args` in the file at `place` autoloads or binds to
     /// keys: with `-a`, `-k` or `-K` among its flags, the first word past
     /// them, which zsh then loads from `fpath` where the files or a key runs
-    /// it; one an expansion names is a doubt.
+    /// it; one an expansion names is a doubt. One bound to keys (`-k`, `-K`)
+    /// is a hook, as a key typed in a line (Space) may be among them.
     fn compdef(&mut self, args: &[Word], place: &str) {
         let flags: Vec<&Word> = args
             .iter()
@@ -270,7 +287,12 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         match args.get(flags.len()) {
             Some(function) if !function.expands && flags.iter().all(|flag| !flag.expands) => {
-                self.autoload_name(&function.text);
+                self.autoload_name(&function.text, Some("compdef"));
+                if flags.iter().any(|flag| flag.text.contains(['k', 'K']))
+                    && !self.hooks.contains(&function.text)
+                {
+                    self.hooks.push(function.text.clone());
+                }
             }
             _ => {
                 let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
@@ -379,7 +401,14 @@ impl<F: Filesystem> Reader<'_, F> {
         };
         for name in themes {
             match theme(name) {
-                Some(function) => self.autoload_name(&function),
+                Some(function) => {
+                    // A theme runs as `prompt` does, a hook's among them.
+                    let edge = ("prompt".to_string(), function.clone());
+                    if !self.edges.contains(&edge) {
+                        self.edges.push(edge);
+                    }
+                    self.autoload_name(&function, Some("prompt"));
+                }
                 None => {
                     let doubt = doubt();
                     self.doubt(doubt);
@@ -420,7 +449,7 @@ impl<F: Filesystem> Reader<'_, F> {
                         continue;
                     }
                 };
-                if !known_first_line(&line) {
+                if !known_first_line(name, &line) {
                     self.doubt(format!(
                         "it cannot tell what the first line of {} makes compinit mark (`{line}`)",
                         entry.display()
@@ -509,16 +538,54 @@ fn first_line<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>, Stri
     }
 }
 
-/// Whether `line`, the first line of a completion function, is one whose
-/// marks the check knows, as the stock `compinit` reads it (its words split
-/// at blanks): any but an `#autoload` with a word other than `+X`, which
-/// loads the function at once without running it. compinit runs
+/// The completion functions of zsh 5.9 to 5.9.2 whose first line binds keys
+/// to them, and that line, which binds keys a line is not typed with.
+const KEY_LINES: [(&str, &str); 12] = [
+    ("_read_comp", "#compdef -k complete-word \\C-x\\C-r"),
+    ("_next_tags", "#compdef -k list-choices \\C-xn"),
+    ("_most_recent_file", "#compdef -k complete-word \\C-xm"),
+    (
+        "_history_complete_word",
+        "#compdef -K _history-complete-older complete-word \\e/ _history-complete-newer \
+         complete-word \\e,",
+    ),
+    (
+        "_expand_word",
+        "#compdef -K _expand_word complete-word \\C-xe _list_expansions list-choices \\C-xd",
+    ),
+    (
+        "_expand_alias",
+        "#compdef -K _expand_alias complete-word \\C-xa",
+    ),
+    ("_correct_word", "#compdef -k complete-word \\C-xc"),
+    ("_correct_filename", "#compdef -k complete-word \\C-xC"),
+    ("_complete_tag", "#compdef -k complete-word \\C-xt"),
+    ("_complete_help", "#compdef -k complete-word \\C-xh"),
+    ("_complete_debug", "#compdef -k complete-word \\C-x?"),
+    (
+        "_bash_completions",
+        "#compdef -K _bash_complete-word complete-word \\e~ _bash_list-choices list-choices ^X~",
+    ),
+];
+
+/// Whether `line`, the first line of the completion function `name`, is
+/// one whose marks the check knows, as the stock `compinit` reads it (its
+/// words split at blanks): any but an `#autoload` with a word other than
+/// `+X`, which loads the function at once without running it, and a
+/// `#compdef` that binds keys (`-k`, `-K`) that is not one of zsh's own
+/// ([`KEY_LINES`]), which may bind a key a line is typed with. compinit runs
 /// `autoload -rUz` with the words of an `#autoload` line and the function's
 /// name; a `#compdef` line names the commands and keys whose completion runs
 /// the function.
-fn known_first_line(line: &str) -> bool {
+fn known_first_line(name: &str, line: &str) -> bool {
     let mut words = line.split([' ', '\t']).filter(|word| !word.is_empty());
-    words.next() != Some("#autoload") || words.all(|word| word == "+X")
+    match words.next() {
+        Some("#autoload") => words.all(|word| word == "+X"),
+        Some("#compdef") if words.any(|word| matches!(word, "-k" | "-K")) => KEY_LINES
+            .iter()
+            .any(|(stock, known)| *stock == name && *known == line),
+        _ => true,
+    }
 }
 
 #[cfg(test)]

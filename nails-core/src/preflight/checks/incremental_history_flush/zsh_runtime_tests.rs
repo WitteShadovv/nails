@@ -627,14 +627,16 @@ fn a_hook_made_in_any_form_zsh_runs_one_is_read_as_one() {
         seed(&fs, "/home/alice/.zshrc", &format!("{body}{made}\n"));
         assert!(warns(&fs), "{made}");
     }
-    // A completion widget of another name runs only as completion does.
+    // A completion widget of another name runs as a key bound to it is
+    // pressed, which may be one a line is typed with (Space), as a `zle -N`
+    // widget's function does: its function is a hook too.
     let fs = MockFilesystem::new();
     seed(
         &fs,
         "/home/alice/.zshrc",
         &format!("{body}zle -C mycomp .complete-word myhook\n"),
     );
-    assert!(!warns(&fs));
+    assert!(warns(&fs));
     // Declared, or taken away, an array of hooks makes none.
     for rc in [
         "typeset -ga precmd_functions\n",
@@ -748,6 +750,201 @@ fn a_function_named_like_a_builtin_is_a_hook() {
             &rc.replace("zstyle() {", "mystyle() {")
                 .replace("zle() {", "myzle() {"),
         );
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_name_a_builtin_takes_attached_to_its_flag_or_after_others_counts() {
+    // zsh 5.9.2 sets TTY with each to the history file, which the hook then
+    // appends each command line to.
+    let hook = "preexec() { print -r -- \"$1\" >> $TTY }\n";
+    for set in [
+        "n=T; print -v${n}TY -- ~/.zsh_history",
+        "n=T; print -rv ${n}TY -- ~/.zsh_history",
+        "n=T; print -nrv ${n}TY -- ~/.zsh_history",
+        "n=T; print -v\"${n}TY\" -- ~/.zsh_history",
+        "zmodload zsh/datetime; n=T; strftime -s${n}TY ~/.zsh_history 0",
+        "zmodload zsh/attr; n=T; zgetattr ~/.t user.t ${n}TY",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{hook}{set}\n"));
+        assert!(!scan(&fs, UNKNOWN).doubts.is_empty(), "{set}");
+    }
+    // zsh 5.9.2 turns SHARE_HISTORY on with each.
+    let named = "n='options[share'; m='history]'; ";
+    for set in [
+        "print -v$n$m on",
+        "print -rv $n$m on",
+        "print -nrv $n$m on",
+        "print -Rv $n$m on",
+        "zmodload zsh/datetime; strftime -s$n$m on 0",
+        "zmodload zsh/datetime; strftime -rs$n$m %s 0",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{named}{set}\n"));
+        assert!(!scan(&fs, UNKNOWN).doubts.is_empty(), "{set}");
+    }
+    // These count too, as the check reads the names they may set.
+    for set in [
+        "zlistattr ~/.t ${n}TY",
+        "zmodload zsh/system; syserror -e ${n}TY",
+        "print -$flags $n x",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{hook}{set}\n"));
+        assert!(!scan(&fs, UNKNOWN).doubts.is_empty(), "{set}");
+    }
+    // A name as written is no doubt; `-f` takes the `v` after it as its
+    // format, and printf takes `-v` as a word of its own only.
+    for set in [
+        "print -rv out -- x",
+        "print -vout x",
+        "print -fv $x",
+        "printf -vx %s $y",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{set}\n"));
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{set}");
+    }
+}
+
+#[test]
+fn an_alias_given_by_the_parameters_that_hold_them_is_a_doubt() {
+    // zsh 5.9.2 runs `fc -W` from precmd with each, which writes the history
+    // file.
+    for (define, used) in [
+        ("alias h=f\naliases[h]+='c -W'", "h"),
+        ("alias h=f\naliases[h]+=c", "h -W"),
+        ("aliases[h]=f\naliases[h]+=c", "h -W"),
+        (": ${aliases[h]::=fc -l}", "h -W"),
+        (": ${aliases[h]:=fc -l}", "h -W"),
+        ("print -v 'aliases[h]' 'fc -l'", "h -W"),
+        ("print -rv 'aliases[h]' 'fc -l'", "h -W"),
+        ("printf -v 'aliases[h]' %s 'fc -l'", "h -W"),
+        ("read 'aliases[h]' <<< 'fc -l'", "h -W"),
+        ("set -A aliases h 'fc -l'", "h -W"),
+        ("zstyle :x y 'fc -l'; zstyle -s :x y 'aliases[h]'", "h -W"),
+        ("alias -g X=f\ngaliases[X]+='c -W'", "X"),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{define}\nprecmd() {{ {used} }}\n"),
+        );
+        assert!(warns(&fs), "{define}");
+    }
+    // The same for a function's body, and a disabled alias, which `enable`
+    // makes zsh expand.
+    for rc in [
+        "c=fc\nprint -v 'functions[precmd]' \"$c -AI\"\n",
+        "dis_aliases[h]='fc -W'\nenable -a h\nprecmd() { h }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // An alias given by its element as written is read as one, and reading
+    // the parameters, or a file named like them, gives none.
+    for rc in [
+        "aliases[h]='fc -l'\n",
+        "print -rl -- ${(k)aliases} ${(k)functions}\n",
+        "source ~/.zsh/aliases.zsh\nsource ~/.zsh/functions.zsh\n",
+        "zstyle ':completion:*:functions' ignored-patterns '_*'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_hook_s_write_to_a_file_that_may_be_the_history_file_is_a_doubt() {
+    // zsh 5.9.2 appends each command line to HISTFILE with each.
+    for rc in [
+        "preexec() { print -r -- \"$1\" >> ~/.zsh_h[i]story }\n",
+        "HISTFILE=~/.zlog\npreexec() { print -r -- \"$1\" >> ~/.zlog }\n",
+        "HISTFILE=~/.zlog\npreexec() { history -p -a ~/.zlog; print -sr -- \"$1\" }\n",
+        "preexec() { print -r -- \"$1\" >> ~/.zl }\n",
+        "zmodload zsh/system\nsysopen -a -w -u fd ~/.zl\npreexec() { print -u $fd -r -- \"$1\" }\n",
+        "exec 3>>~/.zl\npreexec() { print -u3 -r -- \"$1\" }\n",
+        "exec >>~/.zl\npreexec() { print -r -- \"$1\" }\n",
+        "preexec() { print -r -- \"$1\" | tee -a ~/.zl >/dev/null }\n",
+        "preexec() { tee -a ~/.zl <<< \"$1\" >/dev/null }\n",
+        "preexec() { LINE=$1 logger }\n",
+        "alias -g /dev/null=~/.zl\npreexec() { print -r -- \"$1\" > /dev/null }\n",
+        "alias -g T='| tee -a ~/.zl'\npreexec() { print -r -- \"$1\" T }\n",
+        "alias -g T='| tee zl'\npreexec() { print -r -- \"$1\" T }\n",
+        "alias -g S='| sort -o ~/.zl'\npreexec() { print -r -- \"$1\" S }\n",
+        "log() { print -r -- \"$1\" }\npreexec() { log \"$1\" | tee -a ~/.zl }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // A device, a descriptor the shell has open, and a command fed what
+    // writes nothing of the command line are none.
+    for rc in [
+        "preexec() { print -r -- \"$1\" >/dev/null 2>&1 }\n",
+        "precmd() { print -Pn '\\e]0;%~\\a' > /dev/tty }\n",
+        "precmd() { print -n x >&2 }\n",
+        "exec 2>/dev/null\n",
+        "precmd() { git branch 2>/dev/null | grep -q main }\n",
+        "alias -g G='| grep'\nalias -g L='| less'\nalias -g H='| head -n 20'\n",
+        "alias -g J='| jq .'\nalias -g C='| xclip -selection clipboard'\n",
+        "print -r -- start >> ~/.zl\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_widget_s_function_and_completion_a_hook_runs_are_read_as_a_hook_s() {
+    // zsh 5.9.2 writes each command line to HISTFILE with each.
+    let body = "f=$HISTFILE\nw() { print -r -- \"$BUFFER\" >> $f }\n";
+    for made in [
+        "zle -C myw .complete-word w\nautoload -Uz add-zle-hook-widget\nadd-zle-hook-widget line-finish myw",
+        "autoload -Uz add-zle-hook-widget\nnoop() { : }\nadd-zle-hook-widget line-finish noop\nzstyle zle-line-finish widgets 0:noop 1:myw\nzle -C myw .complete-word w",
+        "autoload -Uz add-zle-hook-widget\nnoop() { : }\nadd-zle-hook-widget line-finish noop\nazhw:zle-line-finish() { w }",
+        "zle -T tc w",
+        "lf() { zle myw }\nzle -N zle-line-finish lf\nzle -C myw .complete-word w",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{body}{made}\n"));
+        assert!(warns(&fs), "{made}");
+    }
+    // A hook that completes a word runs completion functions the check does
+    // not read, and so does a key typed in a line bound to completion.
+    for rc in [
+        "lf() { zle complete-word }\nzle -N zle-line-finish lf\n",
+        "lf() { zle -- complete-word }\nzle -N zle-line-finish lf\n",
+        "autoload -Uz add-zle-hook-widget\nadd-zle-hook-widget line-finish complete-word\n",
+        "zle -A complete-word accept-line\n",
+        "bindkey ' ' complete-word\n",
+        "bindkey '^m' expand-or-complete\n",
+        "bindkey -M main a _x\n",
+        "bindkey -s '^M' '^I^J'\n",
+        "bindkey -s ' ' ' \\t'\n",
+        "zstyle -e zle-line-init widgets 'reply=(1:x)'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // Tab and the keys of a prefix or an escape, and a widget that does not
+    // complete, are none.
+    for rc in [
+        "bindkey '^I' complete-word\n",
+        "bindkey '^X^Z' _my-widget\n",
+        "bindkey '^[x' menu-complete\n",
+        "precmd() { zle && zle reset-prompt }\n",
+        "bindkey -s '^o' 'lfcd^M'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
     }
 }

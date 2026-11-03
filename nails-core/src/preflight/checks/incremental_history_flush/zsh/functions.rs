@@ -47,6 +47,22 @@ impl<F: Filesystem> Reader<'_, F> {
         }
     }
 
+    /// Note each element given `fpath` that SH_WORD_SPLIT or KSH_ARRAYS
+    /// may change ([`Event::FpathSplits`]) as a directory the check cannot
+    /// follow, once a file read may turn either on.
+    fn split_fpath(&mut self) {
+        let Some(place) = self.word_split.clone() else {
+            return;
+        };
+        for (text, at) in std::mem::take(&mut self.fpath_splits) {
+            self.fpath.push(Err(format!(
+                "it cannot follow the directories that `{text}` gives fpath in {at}, as {place} \
+                 may turn SH_WORD_SPLIT or KSH_ARRAYS on, which split them or keep the first, \
+                 where zsh looks for the functions the files autoload"
+            )));
+        }
+    }
+
     /// Read the files of the functions the files read autoload by name in
     /// each directory they add to `fpath`, where zsh looks for them as they
     /// first run, and in those zsh's `fpath` starts with when the check
@@ -63,6 +79,7 @@ impl<F: Filesystem> Reader<'_, F> {
         let mut found: Vec<String> = Vec::new();
         loop {
             let before = (looked.len(), self.autoloads.len(), self.fpath.len());
+            self.split_fpath();
             self.profile_dirs();
             self.marked();
             self.audit();
