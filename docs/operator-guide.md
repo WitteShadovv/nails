@@ -1274,7 +1274,12 @@ sudo /mnt/data/nails rehearse reset   # remove the rehearsal when done
 it in the hidden root and in your home, a `recently-used.xbel` bookmark, a
 system-log line, a process command line and a desktop notification. Every file
 write is checked first to land in the upper on the hidden volume; nothing is
-written to the decoy. The token stays on the hidden volume
+written to the decoy. The notification, titled `Reminder` with `rehearse-` and
+the token as its text, has normal urgency, as an ordinary message has, so that
+the desktop shows it as it shows any other: a desktop may show one of low
+urgency without a banner. `plant` counts the channel as planted once the
+desktop's notification service has taken the notification, whether or not the
+desktop showed it. The token stays on the hidden volume
 (`rehearse/state.json`) and is never printed, only a six-character fingerprint.
 
 `scan` reads every mounted decoy block device (and active swap) raw and

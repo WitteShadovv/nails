@@ -143,6 +143,18 @@ fn a_write_is_redirected_only_onto_the_hidden_volume() {
     assert!(redirect_for(Path::new("/media/usb"), &mounts, hidden).is_none());
 }
 
+/// The notification canary is an ordinary notification under a neutral
+/// title: normal urgency, so a desktop shows it as it shows any other, never
+/// the low urgency a desktop may show without a banner.
+#[test]
+fn the_notification_canary_has_normal_urgency() {
+    let notification = super::plant::canary_notification("0123abcd");
+    assert_eq!(notification.urgency, "normal", "{notification:?}");
+    assert_eq!(notification.title, "Reminder", "{notification:?}");
+    assert_eq!(notification.body, "rehearse-0123abcd", "{notification:?}");
+    assert!(notification.icon.is_none(), "{notification:?}");
+}
+
 #[test]
 fn default_targets_are_the_writable_decoy_devices_and_swap() {
     let swaps = "Filename\tType\tSize\tUsed\tPriority\n/dev/sdc2 partition 1024 0 -2\n/swapfile file 10 0 -3\n";

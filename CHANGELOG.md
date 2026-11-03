@@ -723,6 +723,10 @@ of this changelog for that version becomes the release notes word for word, and
   `--json` cancel envelope and the window carry the same words. A Ctrl+C after the question, or
   under `-y`, starts the notice on a line of its own on a terminal, where it began right after the
   `^C` the terminal echoed.
+- `rehearse plant` sends its notification canary with normal urgency, as an ordinary message has,
+  where it used low urgency. A desktop may show a notification of low urgency without a banner, so
+  the channel was reported as planted while the operator saw nothing of it. The operator guide
+  says when `plant` counts the channel as planted.
 
 ### Fixed
 

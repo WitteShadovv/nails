@@ -322,19 +322,27 @@ fn plant_process(token: &str) -> ChannelRecord {
     }
 }
 
+/// The desktop notification that carries the token. Normal urgency, as an
+/// ordinary message has: a desktop may show one of low urgency without a
+/// banner, and a channel the operator never saw would still be reported as
+/// planted.
+pub(super) fn canary_notification(token: &str) -> crate::notification::Notification {
+    crate::notification::Notification {
+        title: "Reminder".to_string(),
+        body: format!("{FILE_PREFIX}{token}"),
+        urgency: "normal".to_string(),
+        icon: None,
+        created_at: super::now(),
+    }
+}
+
 /// Show a desktop notification whose body holds the token.
 fn plant_notification(token: &str, env: Option<&RuntimeEnv>) -> ChannelRecord {
     let kind = ChannelKind::Notification;
     let Some(env) = env else {
         return skipped(kind, "desktop", "no session environment");
     };
-    let notification = crate::notification::Notification {
-        title: "Reminder".to_string(),
-        body: format!("{FILE_PREFIX}{token}"),
-        urgency: "low".to_string(),
-        icon: None,
-        created_at: super::now(),
-    };
+    let notification = canary_notification(token);
     match crate::notification::send_immediate(&notification, env) {
         Ok(()) => ChannelRecord {
             kind,
