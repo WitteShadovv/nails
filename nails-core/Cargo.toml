@@ -73,6 +73,9 @@ nails-forensics = { path = "../nails-forensics" }
 # The whole-root session mechanics: the plan format, the mountinfo parser,
 # the transition and the emergency hot path.
 nails-teardown = { path = "../nails-teardown" }
+# The digests the incremental-history-flush check knows zsh's own stock
+# functions by.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # Workspace testing dependencies

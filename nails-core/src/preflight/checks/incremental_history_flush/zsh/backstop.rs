@@ -35,6 +35,8 @@ pub(super) struct Named {
     /// `fc` with a flag that writes the history file, or an expansion
     /// ([`fc_writes`]).
     pub(super) fcs: usize,
+    /// `NIX_PROFILES` where it is not read ([`nix_profiles_writes`]).
+    pub(super) nix_profiles: usize,
     /// A parameter assigned by the name another one holds
     /// ([`indirect_assignments`]).
     pub(super) indirects: usize,
@@ -56,6 +58,7 @@ pub(super) fn named(text: &str) -> Named {
         named.autoloads += whole_words(line, "autoload");
         named.fpaths += fpath_writes(line);
         named.fcs += fc_writes(line);
+        named.nix_profiles += nix_profiles_writes(line);
         named.indirects += indirect_assignments(line);
     }
     named
@@ -506,6 +509,43 @@ pub(super) fn qualifier_code(text: &str) -> bool {
     false
 }
 
+/// How often `text` names `ZDOTDIR` otherwise than to read it ([`writes`]).
+pub(super) fn zdotdir_writes(text: &str) -> usize {
+    writes(text, "ZDOTDIR")
+}
+
+/// How often `text` names `NIX_PROFILES` otherwise than to read it
+/// ([`writes`]).
+pub(super) fn nix_profiles_writes(text: &str) -> usize {
+    writes(text, "NIX_PROFILES")
+}
+
+/// Whether `text`, zsh code, may set `TTY`, outside a line that is a
+/// comment: it names it otherwise than to read it ([`writes`]), as in
+/// `TTY=...`, `local TTY`, `read TTY` or `${TTY::=...}`. zsh sets it to the
+/// name of its terminal as it starts, whatever its environment holds, and
+/// only code can make it name another file.
+pub(super) fn names_tty_write(text: &str) -> bool {
+    names_write(text, "TTY")
+}
+
+/// Whether `text`, zsh code, names the variable `name` otherwise than to
+/// read it ([`writes`]), outside a line that is a comment.
+pub(super) fn names_write(text: &str, name: &str) -> bool {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .any(|line| writes(line, name) > 0)
+}
+
+/// How often `name` stands in the lines of `text` as a word of its own
+/// ([`whole_words`]), outside a line that is a comment.
+pub(super) fn uses(text: &str, name: &str) -> usize {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .map(|line| whole_words(line, name))
+        .sum()
+}
+
 /// How often `text`, zsh code, assigns a parameter whose name another one's
 /// value gives: a `${(P)...}`, the `P` among other flags too, with an `=` in
 /// it (`${(P)name::=value}`, `${(P)name=value}`), which can set any
@@ -528,11 +568,6 @@ pub(super) fn indirect_assignments(text: &str) -> usize {
             inner.is_none_or(|inner| inner.contains('='))
         })
         .count()
-}
-
-/// How often `text` names `ZDOTDIR` otherwise than to read it ([`writes`]).
-pub(super) fn zdotdir_writes(text: &str) -> usize {
-    writes(text, "ZDOTDIR")
 }
 
 /// How often `text` names `fpath` or `FPATH` otherwise than to read it
