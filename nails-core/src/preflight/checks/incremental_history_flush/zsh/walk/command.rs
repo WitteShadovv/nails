@@ -14,7 +14,7 @@ use super::super::backstop::{
 };
 use super::super::lexer::{Word, is_name};
 use super::strings::PROMPTS;
-use super::{Event, Frame, Walker, mentioned, walk_text};
+use super::{Event, Frame, Walker, mentioned, walk_text_in};
 
 /// The precommand words that run the word after them as the command.
 const PRECOMMANDS: &[&str] = &[
@@ -374,7 +374,15 @@ impl Walker<'_> {
     /// sets counts as unconditional only when the command is and the walk
     /// followed the code's structure.
     pub(super) fn nested(&mut self, text: &str, unconditional: bool) {
-        let nested = walk_text(text, self.place);
+        let outer = self.function();
+        self.nested_in(text, unconditional, outer);
+    }
+
+    /// The events of zsh code `text` that a command of the file runs as the
+    /// function `outer` would, when in one ([`Walker::nested`]): a trap's
+    /// code runs as a `TRAP...` function does.
+    pub(super) fn nested_in(&mut self, text: &str, unconditional: bool, outer: Option<String>) {
+        let nested = walk_text_in(text, self.place, outer);
         self.sources += nested.sources;
         self.evals += nested.evals;
         self.zdotdirs += nested.zdotdirs;
@@ -599,7 +607,7 @@ impl Walker<'_> {
     /// file all the same.
     pub(super) fn substituted(&mut self, text: &str) {
         for code in substitutions(text) {
-            let nested = walk_text(&code, self.place);
+            let nested = walk_text_in(&code, self.place, self.function());
             self.events.extend(
                 nested
                     .events
@@ -670,9 +678,10 @@ impl Walker<'_> {
             self.qualifier(&arg.text);
             // A command in a function that names the history file may write
             // it, as `tee -a ~/.zsh_history` does, should the function be a
-            // hook.
+            // hook; the words of a `setopt` name options, no file.
             if let Some(function) = &function
                 && history_path(&arg.text)
+                && !matches!(command.text.as_str(), "setopt" | "unsetopt")
             {
                 self.events.push(Event::Names {
                     word: arg.text.clone(),
@@ -815,6 +824,7 @@ impl Walker<'_> {
                     self.events.push(Event::Call {
                         name: command.text.clone(),
                         args: args.clone(),
+                        function: function.clone(),
                     });
                 }
             }

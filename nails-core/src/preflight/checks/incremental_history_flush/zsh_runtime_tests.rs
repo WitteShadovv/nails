@@ -475,3 +475,54 @@ fn a_function_s_body_set_by_its_name_is_read_as_its_code() {
     seed(&fs, "/home/alice/.zshrc", "functions[greet]='print hi'\n");
     assert_eq!(scan(&fs, UNKNOWN), Scan::default());
 }
+
+#[test]
+fn a_function_a_hook_runs_counts_as_a_hook() {
+    // zsh 5.9.2 writes each command line to HISTFILE with each of these: the
+    // hook hands the line to a function that writes it to a file whose name
+    // an expansion makes.
+    let doubt = |function: &str, target: &str| {
+        format!(
+            "it cannot tell where the output that `{function}` in /home/alice/.zshrc redirects \
+             to `{target}` goes, which may be the history file"
+        )
+    };
+    for (rc, function) in [
+        (
+            "log=$HISTFILE\nw() { print -r -- \"$1\" >> $log }\npreexec() { w \"$1\" }\n",
+            "w",
+        ),
+        (
+            "w() { print -r -- \"$1\" >> $log }\nv() { w \"$1\" }\npreexec_functions+=(v)\n",
+            "w",
+        ),
+        (
+            "w() { print -r -- \"$ZSH_DEBUG_CMD\" >> $log }\ntrap 'w' DEBUG\n",
+            "w",
+        ),
+        (
+            "w() { print -r -- \"$1\" >> $log }\npreexec() { eval 'w \"$1\"' }\n",
+            "w",
+        ),
+        (
+            "w() { print -r -- \"$1\" >> $log }\npreexec() { : $(w \"$1\") }\n",
+            "w",
+        ),
+        (
+            "preexec() { eval 'print -r -- \"$1\" >> $log' }\n",
+            "preexec",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt(function, "$log")], "{rc}");
+    }
+    // One that no hook runs is no hook.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "w() { print -r -- \"$1\" >> $log }\nf() { w x }\nf\n",
+    );
+    assert_eq!(scan(&fs, UNKNOWN), Scan::default());
+}

@@ -352,6 +352,8 @@ struct Reader<'a, F: Filesystem> {
     texts: Vec<String>,
     /// The commands the files run by name ([`Event::Call`]), and where.
     calls: Vec<(String, Vec<Word>, String)>,
+    /// Each function the files define and a command it runs by name.
+    edges: Vec<(String, String)>,
     /// The stock functions of zsh's own the files autoload ([`Stock`]):
     /// `compinit`, `compaudit` and `promptinit`.
     compinit: bool,
@@ -589,7 +591,18 @@ impl<F: Filesystem> Reader<'_, F> {
             Event::FcAlias { name, text } => {
                 self.fc_aliases.push((name, text, place.to_string()));
             }
-            Event::Call { name, args } => self.calls.push((name, args, place.to_string())),
+            Event::Call {
+                name,
+                args,
+                function,
+            } => {
+                if let Some(function) = function
+                    && !self.edges.contains(&(function.clone(), name.clone()))
+                {
+                    self.edges.push((function, name.clone()));
+                }
+                self.calls.push((name, args, place.to_string()));
+            }
             Event::Assign {
                 name,
                 value,
@@ -897,6 +910,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fc_aliases: Vec::new(),
         texts: Vec::new(),
         calls: Vec::new(),
+        edges: Vec::new(),
         compinit: false,
         compaudit: false,
         promptinit: false,
@@ -976,11 +990,27 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         }
     }
     // What a function holds counts where zsh runs it as a hook: by its name
-    // (`preexec`, `TRAPDEBUG`) or as the files make it one.
-    for (function, found) in std::mem::take(&mut reader.in_functions) {
-        let hook = walk::HOOKS.contains(&function.as_str())
+    // (`preexec`, `TRAPDEBUG`), as the files make it one, or as a hook runs
+    // it.
+    let is_hook = |function: &str, hooked: &[String]| {
+        walk::HOOKS.contains(&function)
             || function.starts_with("TRAP")
-            || reader.hooks.contains(&function);
+            || hooked.iter().any(|hook| hook == function)
+    };
+    let mut hooked = reader.hooks.clone();
+    loop {
+        let before = hooked.len();
+        for (caller, callee) in &reader.edges {
+            if is_hook(caller, &hooked) && !is_hook(callee, &hooked) {
+                hooked.push(callee.clone());
+            }
+        }
+        if hooked.len() == before {
+            break;
+        }
+    }
+    for (function, found) in std::mem::take(&mut reader.in_functions) {
+        let hook = is_hook(&function, &hooked);
         match found {
             Ok(write) if hook && !reader.fc.contains(&write) => reader.fc.push(write),
             Err(doubt) if hook => reader.doubt(doubt),

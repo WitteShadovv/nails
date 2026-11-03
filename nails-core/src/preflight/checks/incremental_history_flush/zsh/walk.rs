@@ -116,8 +116,13 @@ pub(super) enum Event {
     /// the alias is used with, which may write the history file
     /// (`h -W`).
     FcAlias { name: String, text: String },
-    /// A command runs by the name `name`, as written, with the words `args`.
-    Call { name: String, args: Vec<Word> },
+    /// A command runs by the name `name`, as written, with the words `args`,
+    /// in the function `function` when in one.
+    Call {
+        name: String,
+        args: Vec<Word>,
+        function: Option<String>,
+    },
     /// A directory is added to `fpath` under each Nix profile that
     /// `NIX_PROFILES` names, as NixOS's `/etc/zshenv` adds them: written as
     /// `written`, `rest` past the profile (`/share/zsh/site-functions`).
@@ -250,6 +255,9 @@ struct Walker<'a> {
     /// How many assignments by a name another parameter holds it read
     /// ([`backstop::indirect_assignments`]).
     indirects: usize,
+    /// The function the code walked runs in, for code a command of a
+    /// function runs from a string (`eval`, a trap's).
+    outer: Option<String>,
     pending: Pending,
 }
 
@@ -568,6 +576,7 @@ impl Walker<'_> {
             .rev()
             .find(|open| open.frame == Frame::Function)
             .and_then(|open| open.name.clone())
+            .or_else(|| self.outer.clone())
     }
 
     /// Close the innermost frame with a `}`: a group, a function's body, a
@@ -922,6 +931,12 @@ pub(super) struct Read {
 /// Walk zsh code `text` from the file at `place`; what the lexer could not
 /// read is a doubt.
 fn walk_text(text: &str, place: &str) -> Walked {
+    walk_text_in(text, place, None)
+}
+
+/// Walk zsh code `text` from the file at `place` that runs in the function
+/// `outer`, when in one ([`walk_text`]).
+fn walk_text_in(text: &str, place: &str, outer: Option<String>) -> Walked {
     let (tokens, flaws) = lex(text);
     let walker = Walker {
         tokens: tokens.into_iter().peekable(),
@@ -939,6 +954,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         fcs: 0,
         nix_profiles: 0,
         indirects: 0,
+        outer,
         pending: Pending::default(),
     }
     .walk();

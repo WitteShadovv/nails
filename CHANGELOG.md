@@ -832,7 +832,9 @@ of this changelog for that version becomes the release notes word for word, and
   and warns that it cannot tell at a `functions=(...)` or `aliases=(...)` array, and at a parameter
   set by a name another one holds (`${(P)name::=on}`, with which `options[sharehistory]` was set
   unseen) or that an expansion makes in a `zstyle -s`, `getopts`, `strftime -s`, `vared` or
-  `zparseopts`.
+  `zparseopts`. A function that a hook or a trap runs by name, there or in an `eval` or a `$(...)`,
+  counts as a hook too, where a hook that handed each line to one that wrote it to a file whose
+  name an expansion makes passed.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

@@ -1323,8 +1323,10 @@ afterwards:
     expansion among its words is a doubt. So does a redirection to the history
     file, `$HISTFILE` or a path whose last part holds `hist`
     (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), and in a hook (one
-    by its name, a `TRAP...` function, or one that `add-zsh-hook`, a
-    `*_functions` array, `zle -N` or `add-zle-hook-widget` makes a hook) a
+    by its name, a `TRAP...` function or a trap's code, one that
+    `add-zsh-hook`, a `*_functions` array, `zle -N` or `add-zle-hook-widget`
+    makes a hook, or a function a hook runs by name, there or in an `eval` or a
+    `$(...)`) a
     word that names that file (`tee -a ~/.zsh_history`); a redirection there
     whose target an expansion makes is a doubt, but for one to `$TTY` alone
     (`$TTY`, `"$TTY"`, `${TTY}`), the terminal zsh sets it to as it starts,

@@ -202,7 +202,14 @@ impl Walker<'_> {
                     code.text, self.place
                 )));
             } else if code.text != "-" {
-                self.nested(&code.text, unconditional);
+                // zsh runs it as it would the TRAP... function of its signal.
+                let signal = args
+                    .peek()
+                    .map(|signal| signal.text.as_str())
+                    .filter(|signal| signal.chars().all(|c| c.is_ascii_alphanumeric()))
+                    .unwrap_or_default();
+                let outer = Some(format!("TRAP{signal}"));
+                self.nested_in(&code.text, unconditional, outer);
             }
         }
         for arg in args {
