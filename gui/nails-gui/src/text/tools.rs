@@ -472,10 +472,10 @@ pub const ALLOW_FOR_SET_UP_QUESTION: &str = "Allow for This Set Up?";
 pub const ALLOW_FOR_DISCARD: &str = "Allow for This Discard\u{2026}";
 /// Its question.
 pub const ALLOW_FOR_DISCARD_QUESTION: &str = "Allow for This Discard?";
-/// What either says after the refusal: what is written there, and that it
-/// holds once.
-pub const STORAGE_ONCE: &str = "Everything written there lands on this computer's storage, \
-     where an examination can find it. This is allowed for this one plan only.";
+/// What either says after the refusal: what is written there, wherever the
+/// refusal says that is, and that it holds once.
+pub const STORAGE_ONCE: &str = "Everything written there lands on that storage, where an \
+     examination can find it. This is allowed for this one plan only.";
 
 /// The tool of the options the checks and the activation take.
 pub const ACTIVATION_OPTIONS: &str = "Activation Options";

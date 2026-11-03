@@ -277,15 +277,17 @@ impl Rehearsal {
                 )));
             }
         }
-        // A session that runs on storage the decoy uses, because its activation
-        // accepted that, leaves the canary on the decoy's disk: the rehearsal
-        // cannot pass there, and no override changes that.
+        // A session whose activation accepted its root with the override runs
+        // on storage the gate did not judge a volume of its own: on the
+        // decoy's storage the canary lands on the decoy's disk, and on a disk
+        // a program serves nothing shows where it lands. A rehearsal needs a
+        // root the gate judged of its own, and no override changes that.
         if let Some(reason) = recorded_acceptance(&RealFilesystem) {
             return Err(PlantError::Fail(RehearseFailure::new(
                 ExitStatus::PreflightRefused,
                 refusal::NOT_SEPARATE_VOLUME,
                 format!(
-                    "a rehearsal on this storage cannot pass: {reason} (accepted with \
+                    "a rehearsal runs only on a volume of its own: {reason} (accepted with \
                      --allow-decoy-storage). Nothing was written."
                 ),
             )));
