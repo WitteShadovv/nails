@@ -268,17 +268,17 @@ of this changelog for that version becomes the release notes word for word, and
   the control does, and so does the control's description. The control powers off instead where the
   window cannot be sure the session ends so, and the page then says why: once the window cannot
   reach NAILS (on the page of a deactivation whose switch took NAILS with the session, only once the
-  session is still there a minute later); while Verify or a step of Rehearsal runs, since NAILS
-  reads the emergency only after it and the window does not wait that long; until the window has
-  read the setting, and where the settings cannot be read or hold a value the window does not know;
-  for a return or a restart while a deactivation powers off, and for a restart while one returns to
-  the decoy; and for a return in a session without a way back, or while the question of a
-  deactivation says the return powers off instead whatever happens before it runs. While a
-  deactivation returns to the decoy, the window also asks logind for a power-off of the control
-  right after the request, since NAILS takes the emergency only after it has started that return,
-  whose switch can end the window and NAILS first. A return logind already holds may still come
-  first. Once it fired, the page says how the session ends and that the computer powers off where it
-  does not end so.
+  session is still there a minute later); while Verify or Rehearsal waits for NAILS (a step, or the
+  read of where the rehearsal stands), since NAILS reads the emergency only after that and the
+  window does not wait that long; until the window has read the setting, and where the settings
+  cannot be read or hold a value the window does not know; for a return or a restart while a
+  deactivation powers off, and for a restart while one returns to the decoy; and for a return in a
+  session without a way back, or while the question of a deactivation says the return powers off
+  instead whatever happens before it runs. While a deactivation returns to the decoy, the window
+  also asks logind for a power-off of the control right after the request, since NAILS takes the
+  emergency only after it has started that return, whose switch can end the window and NAILS first.
+  A return logind already holds may still come first. Once it fired, the page says how the session
+  ends and that the computer powers off where it does not end so.
 - `nails check` and activation refuse an updatedb that would list the hidden volume in the
   decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
   `services.locate`) writes the name of every file it finds into a database on the decoy disk,

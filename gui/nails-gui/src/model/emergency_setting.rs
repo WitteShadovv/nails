@@ -15,9 +15,11 @@
 //!
 //! - once the window has no helper: it has no way back to the decoy of its
 //!   own ([`crate::emergency`]);
-//! - while the helper runs a verify or a step of the rehearsal, which can
-//!   take minutes: the helper reads the emergency only after it, and the
-//!   window does not wait that long before it powers off itself;
+//! - while the helper runs a request of Verify or of Rehearsal: a verify or
+//!   a step of the rehearsal can take minutes, and the read of where the
+//!   rehearsal stands counts too. The helper reads the emergency only after
+//!   the request, and the window does not wait that long before it powers
+//!   off itself;
 //! - until the window has read the setting;
 //! - where the settings could not be read, or the setting holds a value the
 //!   window does not know;
@@ -72,7 +74,8 @@ pub(super) enum Chosen {
 pub(super) enum Instead {
     /// The window has no helper.
     NoHelper,
-    /// The helper runs a verify or a step of the rehearsal.
+    /// The helper runs a request of Verify or of Rehearsal: a verify, a step
+    /// of the rehearsal, or the read of where the rehearsal stands.
     Busy,
     /// The setting has not been read.
     NotRead,
