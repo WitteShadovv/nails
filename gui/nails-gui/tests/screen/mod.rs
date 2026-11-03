@@ -7,11 +7,13 @@
 //!
 //! The text is laid out with the fonts the machine has, as the window's own
 //! is: the window opens fontconfig at run time, so a machine where it cannot
-//! (a build host without it) lays the text out with no font, and one where it
-//! can (the CI's Ubuntu, with DejaVu) wraps a long sentence over many lines.
-//! A page is then longer on one machine than on another, and the element
-//! queries skip what the page's scroll area clips: a test that looks below
-//! the first screen of a page makes the window tall first ([`Screen::tall`]).
+//! (a host without it, outside the dev shell) lays the text out with no font,
+//! and one where it can wraps a long sentence over many lines. The CI's
+//! Ubuntu lays it out with its fontconfig and DejaVu, the dev shell with
+//! nixpkgs' fontconfig and DejaVu alone (see flake.nix). A page is then
+//! longer on one machine than on another, and the element queries skip what
+//! the page's scroll area clips: a test that looks below the first screen of
+//! a page makes the window tall first ([`Screen::tall`]).
 
 #![allow(dead_code)]
 
