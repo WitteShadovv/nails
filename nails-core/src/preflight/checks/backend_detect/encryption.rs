@@ -14,7 +14,7 @@
 //! `slaves/`, into the device behind a loop device over a block node, from a
 //! partition into its disk where the disk keeps its data elsewhere, and from a
 //! loop device over a file into the devices of the filesystem the loop driver
-//! records for the file (see [`graph`]). Every way down to a device at the
+//! records for the file (see [`super::graph`]). Every way down to a device at the
 //! bottom must pass an encrypting layer that is not one of the decoy's: not a
 //! device the decoy claims as its own storage ([`separation::claimed_devices`]),
 //! or one below a claimed partition on a disk that keeps its data elsewhere
@@ -28,7 +28,7 @@
 //! error.
 
 use super::CryptType;
-use crate::blockdev::{DmKind, Layer, LoopBacking, MAX_STACK_DEVICES};
+use crate::blockdev::{DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::top_mount_at;
@@ -38,11 +38,10 @@ use crate::{Filesystem, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-mod graph;
 #[cfg(test)]
 mod tests;
 
-use graph::{Graph, MAX_DEVICES, filesystem_devices, leaf_kind, widen_claims};
+use super::graph::{Graph, MAX_DEVICES, filesystem_devices, leaf_kind, widen_claims};
 
 /// The cryptsetup types that encrypt, as the `<TYPE>` of a `CRYPT-<TYPE>-`
 /// device-mapper uuid. `INTEGRITY` and `VERITY` encrypt nothing.
@@ -155,7 +154,13 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEncryptionCheck {
         let crypttab_files = crypttab_files(fs, &collected.crypttab);
         let cover = filesystem_devices(fs, hidden)
             .and_then(|roots| {
-                let graph = Graph::read(fs, &table, &collected.devices, &roots);
+                let graph = Graph::read(
+                    fs,
+                    &table,
+                    &collected.devices,
+                    &roots,
+                    LoopFollow::BackingFiles,
+                );
                 let stack = Stack {
                     graph: &graph,
                     claimed: &claimed,
