@@ -186,37 +186,77 @@ pub(super) fn options(text: &str) -> Vec<(usize, bool)> {
 /// `emulate`, as `emulate -R` sets every option as zsh starts with it. A line
 /// that is a comment is left out.
 pub(super) fn names_rcs(text: &str) -> bool {
-    let rcs = |word: &str| {
+    names_any(text, &["rcs", "globalrcs"])
+        || text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .any(|line| {
+                let flags = ["set", "setopt", "unsetopt"]
+                    .iter()
+                    .any(|command| whole_words(line, command) > 0)
+                    && line.split_whitespace().any(|word| {
+                        let word = word.trim_matches(['\'', '"', '\\']);
+                        word.len() > 1
+                            && word.starts_with(['-', '+'])
+                            && word[1..].starts_with(|c: char| c.is_ascii_alphabetic())
+                            && word.contains(['f', 'd'])
+                    });
+                flags || whole_words(line, "emulate") > 0
+            })
+}
+
+/// Whether `text`, zsh code, names one of the options `wanted` (as zsh
+/// compares names: lower case, without `_`), in either form and as
+/// [`options`] reads words, outside a line that is a comment.
+pub(super) fn names_any(text: &str, wanted: &[&str]) -> bool {
+    let named = |word: &str| {
         let name: String = word
             .chars()
             .filter(|c| *c != '_')
             .collect::<String>()
             .to_lowercase();
         let name = name.strip_prefix("no").unwrap_or(&name);
-        matches!(name, "rcs" | "globalrcs").then_some(())
+        wanted.contains(&name).then_some(())
     };
     text.lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .any(|line| {
-            let named = line.split_whitespace().any(|chunk| match braces(chunk) {
+            line.split_whitespace().any(|chunk| match braces(chunk) {
                 Some(words) => words.iter().any(|word| {
                     let mut found = Vec::new();
-                    named_in(word, &rcs, &mut found);
+                    named_in(word, &named, &mut found);
                     !found.is_empty()
                 }),
                 None => true,
-            });
-            let flags = ["set", "setopt", "unsetopt"]
-                .iter()
-                .any(|command| whole_words(line, command) > 0)
-                && line.split_whitespace().any(|word| {
-                    let word = word.trim_matches(['\'', '"', '\\']);
-                    word.len() > 1
-                        && word.starts_with(['-', '+'])
-                        && word[1..].starts_with(|c: char| c.is_ascii_alphabetic())
-                        && word.contains(['f', 'd'])
-                });
-            named || flags || whole_words(line, "emulate") > 0
+            })
+        })
+}
+
+/// Whether `text`, zsh code, may turn `PROMPT_SUBST` on, which makes zsh run
+/// what a prompt holds as it shows it: it names the option, or runs an
+/// `emulate`, as sh's and ksh's emulation turn it on.
+pub(super) fn names_prompt_subst(text: &str) -> bool {
+    names_any(text, &["promptsubst"])
+        || text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .any(|line| whole_words(line, "emulate") > 0)
+}
+
+/// Whether `text`, a word of zsh code, expands a parameter's value again,
+/// which may run code or set a parameter (`${options[...]::=on}`): with the
+/// `(e)` flag, with `(%%)`, which expands it in full as a prompt, or as a
+/// pattern (`${~name}`, `$~name`), where a glob qualifier in the value runs
+/// code. One `%` only expands a prompt's escapes (`${(%):-%~}`).
+pub(super) fn reexpands(text: &str) -> bool {
+    text.contains("${~")
+        || text.contains("$~")
+        || text.match_indices("${(").any(|(at, found)| {
+            let flags = &text[at + found.len()..];
+            flags
+                .split(')')
+                .next()
+                .is_some_and(|flags| flags.contains('e') || flags.matches('%').count() > 1)
         })
 }
 

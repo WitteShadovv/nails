@@ -18,6 +18,10 @@ mod runtime;
 #[path = "zsh_start_tests.rs"]
 mod start;
 
+// The code zsh runs from a string the startup files hold.
+#[path = "zsh_strings_tests.rs"]
+mod strings;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
@@ -764,6 +768,12 @@ fn a_source_in_a_case_arm_a_short_form_or_after_a_descriptor_is_followed() {
 
 #[test]
 fn a_source_the_walk_cannot_follow_as_a_command_is_a_doubt() {
+    let reads = |what: &str| format!("it cannot tell what `{what}` in /home/alice/.zshrc reads");
+    let alias = |what: &str| {
+        format!(
+            "it cannot tell what the alias `{what}` in /home/alice/.zshrc runs where it is used"
+        )
+    };
     let source_doubt =
         "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run";
     let eval_doubt = "it cannot follow an `eval` that a line of /home/alice/.zshrc may run";
@@ -791,22 +801,23 @@ fn a_source_the_walk_cannot_follow_as_a_command_is_a_doubt() {
             "c=source; $c ~/.zsh/history.zsh",
             vec![command("$c"), source_doubt.to_string()],
         ),
-        // An alias that stands for a source.
+        // An alias that stands for a source: its value is read as code,
+        // and the words it is used with go to the source.
         (
             "alias src=source\nsrc ~/.zsh/history.zsh",
-            vec![source_doubt.to_string()],
+            vec![reads("source"), alias("src=source")],
         ),
         (
             "alias src='source ~/.zsh/history.zsh'\nsrc",
-            vec![source_doubt.to_string()],
+            vec![alias("src=source ~/.zsh/history.zsh")],
         ),
         (
             "alias src=.\nsrc ~/.zsh/history.zsh",
-            vec![source_doubt.to_string()],
+            vec![reads("."), alias("src=.")],
         ),
         (
             "alias src='. ~/.zsh/history.zsh'\nsrc",
-            vec![source_doubt.to_string()],
+            vec![alias("src=. ~/.zsh/history.zsh")],
         ),
         // An `eval` of what the walk cannot read.
         (
@@ -841,29 +852,33 @@ fn a_source_the_walk_cannot_follow_as_a_command_is_a_doubt() {
 
 #[test]
 fn a_dot_from_an_equals_expansion_an_alias_or_eval_is_followed_or_a_doubt() {
+    let reads = |what: &str| format!("it cannot tell what `{what}` in /home/alice/.zshrc reads");
+    let alias = |what: &str| {
+        format!(
+            "it cannot tell what the alias `{what}` in /home/alice/.zshrc runs where it is used"
+        )
+    };
     let command =
         |text: &str| format!("it cannot tell what command `{text}` in /home/alice/.zshrc runs");
-    let source_doubt =
-        "it cannot follow a `source` or `.` that a line of /home/alice/.zshrc may run".to_string();
     for (text, doubts) in [
         ("c=.\n${=c} ~/.zsh/history.zsh", vec![command("${=c}")]),
         ("c=.\n$=c ~/.zsh/history.zsh", vec![command("$=c")]),
         ("${=:-.} ~/.zsh/history.zsh", vec![command("${=:-.}")]),
         (
             "alias src='builtin .'\nsrc ~/.zsh/history.zsh",
-            vec![source_doubt.clone()],
+            vec![reads("."), alias("src=builtin .")],
         ),
         (
             "alias src='noglob .'\nsrc ~/.zsh/history.zsh",
-            vec![source_doubt.clone()],
+            vec![reads("."), alias("src=noglob .")],
         ),
         (
             "alias src=\\.\nsrc ~/.zsh/history.zsh",
-            vec![source_doubt.clone()],
+            vec![reads("."), alias("src=.")],
         ),
         (
             "aliases[src]=.\nsrc ~/.zsh/history.zsh",
-            vec![source_doubt.clone()],
+            vec![reads("."), alias("aliases[src]=.")],
         ),
     ] {
         let fs = MockFilesystem::new();

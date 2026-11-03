@@ -41,18 +41,23 @@
 //! of the files shows that it holds. A `setopt` with an expansion the check
 //! cannot list, an option whose name an expansion makes (`options[$o]=on`,
 //! `emulate -o $o`, `read -A options`, a `typeset` of a parameter whose name
-//! does), a glob qualifier that runs code (`*(e:...:)`, `*(+func)`), a `source`
-//! without a path or with one it cannot resolve (a process substitution among
-//! them), a `ZDOTDIR` it cannot follow, one set otherwise than by an assignment
-//! (`${ZDOTDIR:=...}`), a quote, an expansion or a here-document that runs to
-//! the end of the file without closing, and an expansion that holds what the
-//! check cannot read as zsh does (a `case` in a `$(...)`, a `${ command }`) are
-//! doubts. Beside the code, the lines of each file are counted for what they
-//! name ([`backstop`]): an option named beyond what the code names counts as
-//! on, an `fpath` setting beyond what the walk read adds a directory the check
-//! cannot follow, and a `source`, `.`, `eval`, `autoload`, `fc` or `ZDOTDIR`
-//! setting beyond that is a doubt. The structure of the code still decides
-//! which `ZDOTDIR` zsh reads its files in.
+//! does), a glob qualifier that runs code (`*(e:...:)`, `*(+func)`), an
+//! expansion that reads a parameter's value again (`${(e)x}`, `${~x}`,
+//! `GLOB_SUBST`), code in a string zsh runs that an expansion makes (an alias's
+//! value, a trap's, a `sched`'s, a `zstyle -e`'s, a prompt's where
+//! `PROMPT_SUBST` may be on), an alias that hands the words it is used with to
+//! a command that reads them as code, options, names or paths
+//! (`alias so=setopt`), a `source` without a path or with one it cannot resolve
+//! (a process substitution among them), a `ZDOTDIR` it cannot follow, one set
+//! otherwise than by an assignment (`${ZDOTDIR:=...}`), a quote, an expansion
+//! or a here-document that runs to the end of the file without closing, and an
+//! expansion that holds what the check cannot read as zsh does (a `case` in a
+//! `$(...)`, a `${ command }`) are doubts. Beside the code, the lines of each
+//! file are counted for what they name ([`backstop`]): an option named beyond
+//! what the code names counts as on, an `fpath` setting beyond what the walk
+//! read adds a directory the check cannot follow, and a `source`, `.`, `eval`,
+//! `autoload`, `fc` or `ZDOTDIR` setting beyond that is a doubt. The structure
+//! of the code still decides which `ZDOTDIR` zsh reads its files in.
 
 mod backstop;
 mod lexer;
@@ -118,6 +123,9 @@ pub(super) struct CommandLine {
     pub on: [Option<bool>; 3],
     /// What the check cannot tell of it, each as a clause of the warning.
     pub doubts: Vec<String>,
+    /// Whether it turns `PROMPT_SUBST` on, which makes zsh run what a prompt
+    /// holds as it shows it.
+    pub prompt_subst: bool,
 }
 
 impl CommandLine {
@@ -140,6 +148,7 @@ impl CommandLine {
             },
             on: [None; 3],
             doubts: Vec::new(),
+            prompt_subst: false,
         };
         if let Some(zero) = argv.first() {
             let name = Path::new(zero)
@@ -226,6 +235,12 @@ impl CommandLine {
             "login" => self.start.login = Some(on),
             "rcs" => self.start.rcs = on,
             "globalrcs" => self.start.global_rcs = on,
+            "promptsubst" => self.prompt_subst |= on,
+            "globsubst" if on => self.doubts.push(
+                "it cannot tell what code zsh runs from the values it expands as patterns, as its \
+                 command line turns GLOB_SUBST on, which makes a glob qualifier in a value run"
+                    .to_string(),
+            ),
             other => {
                 if let Some((at, true)) = walk::option(other) {
                     self.on[at] = Some(on);
@@ -281,6 +296,12 @@ struct Reader<'a, F: Filesystem> {
     /// Whether a file read may turn `RCS` or `GLOBAL_RCS` on again
     /// ([`backstop::names_rcs`]).
     rcs: bool,
+    /// Whether a file read may turn `PROMPT_SUBST` on
+    /// ([`backstop::names_prompt_subst`]).
+    prompt_subst: bool,
+    /// The doubts of the prompts that hold code zsh runs as it shows them
+    /// when `PROMPT_SUBST` is on ([`Event::Prompt`]).
+    prompts: Vec<String>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -399,7 +420,14 @@ impl<F: Filesystem> Reader<'_, F> {
             return;
         }
         self.rcs |= backstop::names_rcs(&text);
+        self.prompt_subst |= backstop::names_prompt_subst(&text);
         let place = path.to_string_lossy().into_owned();
+        if backstop::names_any(&text, &["globsubst"]) {
+            self.doubt(format!(
+                "it cannot tell what code zsh runs from the values it expands as patterns, as \
+                 {place} names GLOB_SUBST, which makes a glob qualifier in a value run"
+            ));
+        }
         let read = events(&text, &place);
         self.stack.push(path.to_path_buf());
         for event in read.events {
@@ -498,6 +526,11 @@ impl<F: Filesystem> Reader<'_, F> {
                 let what = format!("{place} names `{command}`");
                 if !self.fc.contains(&what) {
                     self.fc.push(what);
+                }
+            }
+            Event::Prompt(doubt) => {
+                if !self.prompts.contains(&doubt) {
+                    self.prompts.push(doubt);
                 }
             }
         }
@@ -628,6 +661,11 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
             }
         }
         scan.reopened |= one.reopened;
+        for prompt in one.prompts {
+            if !scan.prompts.contains(&prompt) {
+                scan.prompts.push(prompt);
+            }
+        }
     }
     scan
 }
@@ -647,6 +685,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         fc: Vec::new(),
         doubts: Vec::new(),
         rcs: false,
+        prompt_subst: false,
+        prompts: Vec::new(),
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
@@ -684,8 +724,18 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         }
     }
     reader.autoloaded();
+    // A prompt's code runs only when PROMPT_SUBST is on; whether a command
+    // line turns it on, the check reads beside the files.
+    let mut doubts = reader.doubts;
+    let mut prompts = Vec::new();
+    if reader.prompt_subst {
+        doubts.extend(reader.prompts);
+    } else {
+        prompts = reader.prompts;
+    }
     let mut scan = Scan {
-        doubts: reader.doubts,
+        doubts,
+        prompts,
         reopened: reader.rcs && !(start.rcs && start.global_rcs),
         ..Scan::default()
     };

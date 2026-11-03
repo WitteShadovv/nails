@@ -1448,10 +1448,16 @@ afterwards:
   makes the name of an option a file may set (`options[$o]=on`,
   `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a
   parameter whose name an expansion makes), when a glob qualifier runs code as
-  zsh expands a word (`*(e:'...':)`, `*(+func)`), when a sourced file's path
-  or a `ZDOTDIR` does not resolve (as for `source <(tool init zsh)`) or zsh
-  expands it into others (a glob, `{a,b}`), when a function they autoload may
-  be in a directory added to `fpath` that does not resolve (as for NixOS's
+  zsh expands a word (`*(e:'...':)`, `*(+func)`), when an expansion reads a
+  parameter's value again (`${(e)x}`, `${(%%)x}`, `${~x}`) or a file names
+  `GLOB_SUBST`, when an alias's value, a trap's code, a `sched`'s command or a
+  `zstyle -e`'s string holds an expansion, when an alias hands the words it is
+  used with to a command that reads them as code, options, names or paths
+  (`alias so=setopt`), when a prompt holds code (`$(...)`, `${...}`) and a
+  file or the command line may turn `PROMPT_SUBST` on, when a sourced file's
+  path or a `ZDOTDIR` does not resolve (as for `source <(tool init zsh)`) or
+  zsh expands it into others (a glob, `{a,b}`), when a function they autoload
+  may be in a directory added to `fpath` that does not resolve (as for NixOS's
   profiles, `$p/share/zsh/site-functions`), when zsh may run compiled code in
   place of a file (the `.zwc` that `zcompile` writes beside a file or for an
   `fpath` directory), when a `source` names no file, when `ZDOTDIR` is set
@@ -1465,8 +1471,9 @@ afterwards:
   (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
   keeps its own record of each command, such as atuin.
 
-  It reads an `eval` of words it can read as code, and warns that it cannot
-  tell what a command runs whose name an expansion makes (`$cmd`,
+  It reads an `eval` of words it can read as code, and so an alias's value, a
+  trap's code, a `sched`'s command and a `zstyle -e`'s strings, and warns that
+  it cannot tell what a command runs whose name an expansion makes (`$cmd`,
   `${:-source}`). Beside reading zsh's files as code, it counts in their
   lines, without reading the code and wherever they stand, the three options,
   `source`, a `.` with a word after it, `eval`, an alias that stands for `.`,
