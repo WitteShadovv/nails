@@ -1304,9 +1304,15 @@ afterwards:
   ending in a backslash going on in the next. zsh's it reads as zsh does and
   fails closed where it cannot follow them:
 
-  - in zsh's order, once for each home the shell can run with, `zprofile` and
-    `zlogin` only for a login shell, only `/etc/zshenv` and what it sources
-    for a zsh started with `-f` (`--no-rcs`, `-o norcs`), and none of `/etc`'s
+  - in zsh's order, once for each home the shell can run with (for the
+    shell you typed the command into, the one its environment names, and a
+    home there that is not its account's is a doubt), the user's files in
+    the `ZDOTDIR` its environment names when it names one, on NixOS
+    `/etc/zshenv.local` after `/etc/zshenv` and `/etc/set-environment` where
+    there is no `/etc/zshenv`, which the zshenv nixpkgs builds into zsh
+    reads, `zprofile` and `zlogin` only for a login shell, only `zshenv` in
+    `/etc` and what it sources for a zsh started with `-f` (`--no-rcs`,
+    `-o norcs`), and none of `/etc`'s
     other files for one started with `-d`, unless what it read so far names
     `RCS` or `GLOBAL_RCS` (`setopt rcs`, `set +f`, an `emulate`), which may
     turn them on again, sets options by flags or names an expansion makes
@@ -1316,23 +1322,40 @@ afterwards:
     read where it is sourced when its path resolves, so it follows Home
     Manager's `dotDir`, whose `.zshenv` the home's sources and which sets
     `ZDOTDIR`;
-  - an `fc` that writes the history file (`fc -A`, `fc -W` or `fc -P`, with
-    other flags too, as in `fc -AI`) counts as a write wherever it stands: a
-    hook (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs it after
-    every command, as bash's `history -a` from `PROMPT_COMMAND`. One with an
+  - an `fc` that writes the history file (`fc -A`, `fc -W`, `fc -P`, or
+    `fc -p`, whose list zsh writes to its file as it pops it, with other
+    flags too, as in `fc -AI`) counts as a write wherever it stands: a hook
+    (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs it after every
+    command, as bash's `history -a` from `PROMPT_COMMAND`. One with an
     expansion among its words is a doubt. So does a redirection to the history
     file, `$HISTFILE` or a path whose last part holds `hist`
-    (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), and in a hook (one
-    by its name, a `TRAP...` function or a trap's code, one that
-    `add-zsh-hook`, a `*_functions` array, `zle -N` or `add-zle-hook-widget`
-    makes a hook, or a function a hook runs by name, there or in an `eval` or a
-    `$(...)`) a
-    word that names that file (`tee -a ~/.zsh_history`); a redirection there
-    whose target an expansion makes is a doubt, but for one to `$TTY` alone
-    (`$TTY`, `"$TTY"`, `${TTY}`), the terminal zsh sets it to as it starts,
-    while no file it reads sets `TTY` (`TTY=...`, `local TTY`,
-    `read TTY`). A history tool that keeps its own record elsewhere, such
-    as atuin, it does not see;
+    (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), an element of
+    zsh/mapfile's `mapfile` that names it, and a global alias that stands for
+    it (`alias -g /dev/tty=~/.zsh_history`). A hook is a function zsh runs by
+    its name (`command_not_found_handler` among them), a `TRAP...` function or
+    a trap's code, one that `add-zsh-hook`, a `*_functions` array (an element
+    of it, `set -A` and `read -A` too) or `zle -N` makes a hook, the function
+    of a completion widget named for a hook (`zle -C zle-line-finish`), one
+    copied to a hook's name (`functions -c`), a function named like a builtin,
+    which zsh's own code runs as each line is entered (`add-zle-hook-widget`'s
+    hooks run `zstyle` and `zle`), the code `sched`, `zstyle -e` and
+    `bindkey -s` run, the code of a function's own file and of a file a hook
+    sources, and a function or an alias a hook runs by name, there or in an
+    `eval` or a `$(...)`. In a hook a word that names that file
+    (`tee -a ~/.zsh_history`) counts as a write too; a redirection there whose
+    target an expansion makes is a doubt, and so is a command there that is
+    no function or alias the files define or autoload nor a builtin that
+    writes no file when an expansion makes a word it is given (`tee -a $f`),
+    but for a
+    redirection to `$TTY` alone (`$TTY`, `"$TTY"`, `${TTY}`), the terminal
+    zsh sets it to as it starts, while no file it reads names `TTY`
+    otherwise than to read it, in any form zsh reads a name in (`TTY=...`,
+    `local TTY`, `read T''TY`, `print -vTTY`). An `exec` that keeps a
+    descriptor open on a path an expansion makes (`exec 3>>$f`), a
+    `coproc`, and a `zle -A` that makes a widget named for a hook run another
+    one are doubts. A history tool that keeps its own record elsewhere, such
+    as atuin, it does not see as one, though the command its hook runs with
+    the line you typed is such a doubt;
   - an `emulate -R ksh`, whose reset to ksh's defaults turns `SHARE_HISTORY`
     on, as `-R` sets every option to the mode's defaults (sh's, csh's and
     zsh's hold none of the three); an `emulate` whose mode an expansion makes
@@ -1340,36 +1363,50 @@ afterwards:
   - the file of each function they autoload (`autoload`, `functions -u`,
     `typeset -fu`), by its path or by its name in each directory they add
     to `fpath` and in those zsh's `fpath` starts with, where zsh looks for
-    it as it first runs it. Where it starts the check knows for the shell
-    you typed the command into, from the program it runs and the environment
-    it started with, when that is a zsh from the Nix store as nixpkgs builds
-    it: the one directory of zsh's own its program names, or the directories
+    it as it first runs it, and in the directory of a function loaded by its
+    path, which zsh puts in front of `fpath` for the functions that one
+    autoloads (and by its name with `autoload -d`). An element of `fpath`
+    that an expansion changes (`${(s:/:)fpath}`, `$FPATH[2,10]`) is a
+    directory it cannot follow. Where `fpath` starts the check knows for the
+    shell you typed the command into, from the program it runs and the
+    environment it started with, when that is a zsh from the Nix store as
+    nixpkgs builds it: the one directory of zsh's own its program names, when
+    it names no other path a nixpkgs build does not name, or the directories
     an `FPATH` in its environment names, which zsh takes instead. There a
     function that no directory holds is none zsh can run either. For any
     other zsh, or one it reads because it found no shell you typed into, a
     function that no directory the files put in front of `fpath` holds is a
     doubt: zsh then finds it in a directory it was built with, or in one
     that an `FPATH` from its environment names, which the check does not
-    read;
+    read. Of that environment it keeps `FPATH`, `NIX_PROFILES`, `USER`,
+    `XDG_STATE_HOME`, `_compdir`, `HOME` and `ZDOTDIR`; when one of them is
+    no UTF-8, it reads the shell as one whose environment it does not know;
   - zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`,
     `add-zsh-hook` and `add-zle-hook-widget` they run, it knows by their
     bytes as zsh 5.9, 5.9.1 and 5.9.2 ship them, and reads for what that code
     does, and a changed one as code. `compinit` sources the dump file
-    that `compdump` writes (`-d` names it, else `.zcompdump` in `ZDOTDIR`),
-    which the check reads as data when each of its lines is one `compdump`
-    writes, and as code otherwise. `compinit` also marks the completion
-    functions it finds in `fpath` to be autoloaded: zsh runs those as you
-    complete a word, with Tab or a key a completion binds, and the check
-    does not read them unless a file it reads runs one by name, makes one a
-    hook or runs one in a command substitution. `compaudit` may put the
-    directories under one that holds a `Base` directory at the end of
-    `fpath`, which the check reads too (a `_compdir` a file names, which picks
-    that directory, is a doubt). `promptinit` marks the prompt themes in
-    `fpath` the same way, and `prompt` runs the one it names: the check reads
-    that one (`prompt suse` reads `prompt_suse_setup`) and counts
-    `PROMPT_SUBST` as possibly on. A theme `prompt` picks itself (`prompt
-    random`, `prompt -p`) or whose name an expansion makes, and the code
-    `prompt_cleanup` keeps, are doubts;
+    that `compdump` writes (`-d` names it, else `.zcompdump` in `ZDOTDIR`,
+    which the check reads in each directory `ZDOTDIR` may name as the files
+    are read, the home among them; a `HOME` a file sets is a doubt), which
+    the check reads as data when each of its lines is one `compdump` writes,
+    and as code otherwise. `compinit` also marks the completion functions it
+    finds in `fpath` to be autoloaded, as the first line of each says: an
+    `#autoload` with a word other than `+X` (`-w`, which marks the functions
+    of a compiled file) is a doubt. zsh runs those functions as you complete
+    a word, with Tab or a key a completion binds, and the check does not read
+    them unless a file it reads runs one by name, makes one a hook or runs
+    one in a command substitution. `compaudit` may put the directories under
+    one that holds a `Base` directory at the end of `fpath`, which the check
+    reads too (a `_compdir` a file names or the shell's environment holds,
+    which picks that directory, is a doubt). `promptinit` marks the prompt
+    themes in `fpath` the same way, and `prompt` runs the one it names: the
+    check reads that one (`prompt suse` reads `prompt_suse_setup`), and
+    `prompt_default_setup`, which the code `prompt` keeps to restore the
+    prompt runs (`prompt restore`), and counts `PROMPT_SUBST` as possibly
+    on. A theme `prompt` picks itself (`prompt random`, `prompt -p`) or
+    whose name an expansion makes, the code `prompt_cleanup` keeps, and an
+    alias for `compinit`, `compdef` or `prompt`, which hands them the words
+    the check reads, are doubts;
   - the options on the command line of the shell you typed the command
     into: one of the three it turns on (`zsh -o sharehistory`,
     `zsh --share-history`, `zsh -fo share_history`) counts as on, and a zsh
@@ -1392,10 +1429,11 @@ afterwards:
   warns that it cannot tell when one of those files is there but cannot be
   read, when a `setopt` takes an expansion it cannot list, when an expansion
   makes the name of an option a file may set (`options[$o]=on`,
-  `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a
-  parameter whose name an expansion makes), when a parameter is set by a name
-  another one holds (`${(P)name::=on}`) or that an expansion makes in a
-  `zstyle -s`, `getopts`, `strftime -s`, `vared` or `zparseopts`, when a glob
+  `emulate zsh -o $o`, `read -A options`, a `typeset`, `print -v` or
+  `set -A` of a parameter whose name an expansion makes), when a parameter
+  is set by a name another one holds (`${(P)name::=on}`) or that an expansion
+  makes in a `zstyle -s`, `getopts`, `strftime -s`, `vared`, `zparseopts`,
+  `zformat -f`, `getln`, `zpty -r`, `syswrite -c` or `zstat -A`, when a glob
   qualifier runs code as zsh expands a word (`*(e:'...':)`, `*(+func)`), when
   a function's body or an alias's value is set in an array (`functions=(...)`,
   `aliases+=(...)`), when an expansion reads a
@@ -1406,8 +1444,10 @@ afterwards:
   (`alias so=setopt`, and an alias for an `fc` with no `-A`, `-W` or `-P`, as
   `alias h='fc -l'`, only when a file it reads uses its name, which hands that
   `fc` the words after it, as `h -W` would), when a prompt holds code
-  (`$(...)`, `${...}`) and a
-  file or the command line may turn `PROMPT_SUBST` on, when a sourced file's
+  (`$(...)`, `${...}`) or is set in a form it does not read (`print -v PS1`,
+  `${PS1::=...}`, `read PS1`; `prompt`, `SPROMPT` and `PROMPT_EOL_MARK`
+  count as prompts too) and a file or the command line may turn
+  `PROMPT_SUBST` on, when a sourced file's
   path or a `ZDOTDIR` does not resolve (as for `source <(tool init zsh)`) or
   zsh expands it into others (a glob, `{a,b}`), when a function they autoload
   may be in a directory added to `fpath` that does not resolve (as for NixOS's
@@ -1424,8 +1464,9 @@ afterwards:
   plugin manager's function, one you typed into the shell, what zsh runs only
   as you complete a word (the completion functions `compinit` marks), a file a
   bash startup file sources, or a shell started with other startup files
-  (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
-  keeps its own record of each command, such as atuin.
+  (`bash --rcfile`, or a `ZDOTDIR` from the environment of a shell it found
+  no command typed into), nor a history tool that keeps its own record of
+  each command, such as atuin, as one.
 
   It reads an `eval` of words it can read as code, and so an alias's value, a
   trap's code, a `sched`'s command, a `zstyle -e`'s strings and a function's
@@ -1434,11 +1475,18 @@ afterwards:
   `${:-source}`). Beside reading zsh's files as code, it counts in their
   lines, without reading the code and wherever they stand, the three options,
   `source`, a `.` with a word after it, `eval`, an alias that stands for `.`,
-  `autoload`, and the `ZDOTDIR` and `fpath` settings, leaving out only a line
-  that is a comment. What a line names beyond what it read as code it follows
-  makes it fail closed, in case it read the code otherwise than zsh does: such
-  an option counts as on, an `fpath` setting adds a directory it cannot
-  follow, and the rest makes it warn that it cannot tell. So a `source` or
+  `autoload`, the `ZDOTDIR`, `fpath` and `NIX_PROFILES` settings, the arrays
+  of hook functions and the prompts, leaving out only a line that is a
+  comment, and each in every form zsh may read a word in: as written, with
+  each backslash-newline joined, with quotes and backslashes taken off and
+  `$'...'` decoded, and in the words of the code as it reads them, in which a
+  line that starts with `#` inside a quote is code. The names of `TTY`, of
+  an `fc` alias and of `_compdir`, `HOME` and `ZSH_VERSION` it counts the
+  same way. What a line names beyond what it read as code it follows makes
+  it fail closed, in case it read the code otherwise than zsh does: such an
+  option counts as on, an `fpath` setting adds a directory it cannot follow,
+  a prompt holds code it cannot follow, and the rest makes it warn that it
+  cannot tell. So a `source` or
   `eval` anywhere but in a command it follows, in an `echo`, a string, an
   alias or a here-document, makes it warn, and so does an `eval` of what a
   command prints (`eval "$(tool init zsh)"`).
@@ -1454,26 +1502,34 @@ afterwards:
   options off in your `.zshrc`, the check still warns, as it cannot see that
   the turn-off holds. The fix it gives is one it can see: type the decoy
   commands in a zsh started as `zsh -f`, which reads no startup file but
-  `/etc/zshenv`, so the check reads only that, and passes when that names none
-  of the options and holds nothing it cannot follow. When `/etc/zshenv` names
-  one, or holds what the check cannot follow, the warning for such a zsh tells
-  you to take that out of it and of what it sources. On NixOS, `programs.zsh`
-  sets `SHARE_HISTORY` in `/etc/zshrc` by default. Take it out of
-  `programs.zsh.setOptions` and rebuild: then the zsh you type the command
-  into passes, when your own files hold nothing the check warns about. The check knows the lines NixOS generates there as they are written:
-  in `/etc/zshrc` the `eval` of what coreutils' `dircolors` prints, which sets
-  `LS_COLORS` alone (another `eval`, or that line written otherwise, is read
-  as before), and in `/etc/zshenv` the loop that puts three directories of
-  each Nix profile in front of `fpath`, which it reads for the profiles that
-  `NIX_PROFILES` names in the shell's environment and in the
-  `set-environment` that `/etc/zshenv` sources. A loop with anything else in
-  it, a `NIX_PROFILES` or `ZSH_VERSION` a file sets otherwise, or a shell
-  whose environment it cannot read leaves those directories ones it cannot
-  follow. `compinit` and `promptinit` it then finds in zsh's own directory
-  and in the profiles, and `prompt suse` runs `prompt_suse_setup`. Home
-  Manager's `programs.zsh` names the options in `.zshrc` whether it turns
-  them on or off (`history.share`), so with it `zsh -f` is the fix the check
-  can see.
+  `/etc/zshenv` (and on NixOS `/etc/zshenv.local`), so the check reads only
+  those, and passes when they name none of the options and hold nothing it
+  cannot follow. When they name one, or hold what the check cannot follow,
+  the warning for such a zsh tells you to take that out of them and of what
+  they source. On NixOS, `programs.zsh` sets `SHARE_HISTORY` in
+  `/etc/zshrc` by default. Take it out of `programs.zsh.setOptions` and
+  rebuild: then the zsh you type the command into passes with the files
+  `programs.zsh` generates by default, when your own files hold nothing the
+  check warns about. An option that adds lines to them
+  (`enableBashCompletion`, `autosuggestions`, `syntaxHighlighting`) can make
+  it warn again. The check knows the lines NixOS generates there as they are
+  written: in `/etc/zshrc` the `eval` of what coreutils' `dircolors` prints,
+  which sets `LS_COLORS` alone, when the store path it names holds
+  coreutils' program (its `bin/dircolors` links to the `coreutils` program
+  beside it, which holds what GNU dircolors prints; another `eval`, that
+  line written otherwise, or another program is read as before), and in
+  `/etc/zshenv` the loop that puts three directories of each Nix profile in
+  front of `fpath`, which it reads for the profiles that `NIX_PROFILES`
+  names in the shell's environment and in the `set-environment` that
+  `/etc/zshenv` sources, each a path of letters, digits and `/._+@-` that
+  spaces part. A loop with anything else in it, a profile written
+  otherwise, a `NIX_PROFILES`, `ZSH_VERSION`, `HOME`, `USER` or
+  `XDG_STATE_HOME` a file sets, or a shell whose environment it cannot read
+  leaves those directories ones it cannot follow. `compinit` and
+  `promptinit` it then finds in zsh's own directory and in the profiles, and
+  `prompt suse` runs `prompt_suse_setup`. Home Manager's `programs.zsh`
+  names the options in `.zshrc` whether it turns them on or off
+  (`history.share`), so with it `zsh -f` is the fix the check can see.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

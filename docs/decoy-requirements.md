@@ -526,7 +526,7 @@ hangs it up itself (see **Terminal multiplexers** below and
 **not** configure the decoy's own shells, and a shell that writes each command
 line to its history file as it runs has written it before any kill: zsh with
 `INC_APPEND_HISTORY`, `SHARE_HISTORY` or `INC_APPEND_HISTORY_TIME` or an
-`fc -A` or `fc -W` in a hook, bash with `history -a` or `history -w` in
+`fc -A`, `fc -W` or `fc -p` in a hook, bash with `history -a` or `history -w` in
 `PROMPT_COMMAND`, and fish outside private mode. The `incremental-history-flush` check warns about the settings it can
 see (see [Shell history](operator-guide.md#shell-history)). If you type on the decoy — and the
 pre-activation unlock and mount commands must be typed there — harden the decoy's
@@ -554,25 +554,28 @@ history yourself so an interactive shell has nowhere to write:
   `SHARE_HISTORY` and `INC_APPEND_HISTORY_TIME` (NixOS's `programs.zsh` sets
   `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, Home
   Manager's `programs.zsh` through `history.share`, which is on by default,
-  and so does Oh My Zsh), keep `fc -A` and `fc -W` out of zsh's hooks and
-  `history -a` and `history -w` out of bash's `PROMPT_COMMAND`, and type the
-  decoy commands in fish only as `fish --private`. For zsh, the check counts
+  and so does Oh My Zsh), keep `fc -A`, `fc -W` and `fc -p` out of zsh's
+  hooks and `history -a` and `history -w` out of bash's `PROMPT_COMMAND`, and
+  type the decoy commands in fish only as `fish --private`. For zsh, the check counts
   any mention of the three options in a file zsh reads as on, an `unsetopt`
   too, as no reading of the files can show that a turn-off holds: leave them
   out of every startup file (on NixOS, out of `programs.zsh.setOptions`), or
   type the decoy commands in a zsh started as `zsh -f`, which reads no startup
-  file but `/etc/zshenv`. With NixOS's `programs.zsh`, `SHARE_HISTORY` taken
-  out of `programs.zsh.setOptions`, the zsh you type `nails activate` into
-  passes: the check knows the lines NixOS generates as they are written, and
-  follows `compinit` and `promptinit` into zsh's own directory and the Nix
-  profiles. It does so for a `.zshrc` that autoloads `compinit` too, when that
-  zsh is one from the Nix store. For any other zsh, and when the check finds
-  no shell you typed into, it cannot tell where zsh finds `compinit`, and
-  `zsh -f` is the one that passes. With Home Manager's `programs.zsh`, only
-  `zsh -f` passes the check, as it names the options in `.zshrc` whether it
-  turns them on or off. A history tool that records each command itself,
-  such as atuin, writes as the command runs too. No kill takes back what such
-  a shell has written.
+  file but `/etc/zshenv` (and on NixOS `/etc/zshenv.local`). With NixOS's
+  `programs.zsh`, `SHARE_HISTORY` taken out of `programs.zsh.setOptions`, the
+  zsh you type `nails activate` into passes with the files `programs.zsh`
+  generates by default: the check knows the lines NixOS generates there as
+  they are written, and follows `compinit` and `promptinit` into zsh's own
+  directory and the Nix profiles. An option that adds lines to those files
+  (`enableBashCompletion`, `autosuggestions`, `syntaxHighlighting`) can make
+  it warn again. It follows `compinit` for a `.zshrc` that autoloads it too,
+  when that zsh is one from the Nix store. For any other zsh, and when the
+  check finds no shell you typed into, it cannot tell where zsh finds
+  `compinit`, and `zsh -f` is the one that passes. With Home Manager's
+  `programs.zsh`, only `zsh -f` passes the check, as it names the options in
+  `.zshrc` whether it turns them on or off. A history tool that records each
+  command itself, such as atuin, writes as the command runs too. No kill
+  takes back what such a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation

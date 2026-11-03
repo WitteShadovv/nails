@@ -806,35 +806,61 @@ of this changelog for that version becomes the release notes word for word, and
   before activation starts, so a refusal would take none of them back, and for a shell that writes a
   line once its command ends, a refused activation would add its own.
 - The `incremental-history-flush` check no longer warns that it cannot tell for what most zsh
-  setups hold, each by a rule that takes the exact form it knows and reads any other as before. A
-  hook's output to `$TTY` (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`) goes to the terminal zsh sets
-  it to as it starts, while no file it reads sets `TTY`. An alias for an `fc` with no `-A`, `-W` or
-  `-P` (`alias h='fc -l'`) is no doubt until a file uses its name, which would hand that `fc` the
-  words after it (`h -W`). Of the shell the command was typed into, the check now reads from `/proc`
-  the program it runs and the variables of its environment that tell where zsh finds the functions
-  it autoloads (`FPATH`, and the `NIX_PROFILES`, `USER` and `XDG_STATE_HOME` that NixOS's
-  `/etc/zshenv` reads the Nix profiles with). For a zsh from the Nix store as nixpkgs builds it,
-  whose program names one directory of zsh's own and no other, `fpath` starts there, or in the
-  directories an `FPATH` in its environment names, so a function that no directory holds is none
-  zsh can run, and zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`,
-  `add-zsh-hook` and `add-zle-hook-widget` they run, are known by their bytes as zsh 5.9, 5.9.1 and
-  5.9.2 ship them. `compinit` is read for the dump file it sources, as data when each of its lines
-  is one `compdump` writes, and for the completion functions it marks, which zsh runs as you
-  complete a word and which the check reads when a file runs one by name, makes one a hook or runs
-  one in a command substitution. `promptinit` is read for the themes it marks and the one `prompt`
-  runs (`prompt suse`), and may turn `PROMPT_SUBST` on. On NixOS the `eval` of what coreutils'
-  `dircolors` prints in the generated `/etc/zshrc`, and the loop in `/etc/zshenv` that puts three
-  directories of each Nix profile in front of `fpath`, are known as NixOS writes them, so with
-  `SHARE_HISTORY` taken out of `programs.zsh.setOptions` a typed zsh passes. A zsh from elsewhere,
-  or one the check reads without a typed shell, warns that it cannot tell where `compinit` is, as
-  before. On the way the check reads a function's body set by its name (`functions[preexec]='...'`)
-  as that function's code, where it passed one that wrote each command line to the history file,
-  and warns that it cannot tell at a `functions=(...)` or `aliases=(...)` array, and at a parameter
-  set by a name another one holds (`${(P)name::=on}`, with which `options[sharehistory]` was set
-  unseen) or that an expansion makes in a `zstyle -s`, `getopts`, `strftime -s`, `vared` or
-  `zparseopts`. A function that a hook or a trap runs by name, there or in an `eval` or a `$(...)`,
-  counts as a hook too, where a hook that handed each line to one that wrote it to a file whose
-  name an expansion makes passed.
+  setups hold, each by a rule for the form it knows; a form the rule does not take is read as before
+  or is a doubt. A hook's output to `$TTY` (`precmd() { print -Pn '\e]0;%~\a' > $TTY }`) goes to the
+  terminal zsh sets it to as it starts, while no file it reads names `TTY` otherwise than to read
+  it, in any form zsh reads a name in. An alias for an `fc` with no `-A`, `-W`, `-P` or `-p`
+  (`alias h='fc -l'`) is no doubt until a file uses its name, in any form zsh reads it in, which
+  would hand that `fc` the words after it (`h -W`). Of the shell the command was typed into, the
+  check now reads from `/proc` the program it runs and the variables of its environment that tell
+  where zsh finds the functions it autoloads and the user's startup files (`FPATH`, `_compdir`,
+  `HOME`, `ZDOTDIR`, and the `NIX_PROFILES`, `USER` and `XDG_STATE_HOME` that NixOS's `/etc/zshenv`
+  reads the Nix profiles with); an environment that holds one of them as no UTF-8 is one it cannot
+  read. For a zsh from the Nix store as nixpkgs builds it, whose program names one directory of
+  zsh's own and no path a nixpkgs build does not name, `fpath` starts there, or in the directories
+  an `FPATH` in its environment names, so a function that no directory holds is none zsh can run,
+  and zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`, `add-zsh-hook` and
+  `add-zle-hook-widget` they run, are known by their bytes as zsh 5.9, 5.9.1 and 5.9.2 ship them.
+  `compinit` is read for the dump file it sources in each `ZDOTDIR` the files may set, as data when
+  each of its lines is one `compdump` writes, for the first lines of the completion functions it
+  marks (an `#autoload` with a word other than `+X` is a doubt), and for the completion functions,
+  which zsh runs as you complete a word and which the check reads when a file runs one by name,
+  makes one a hook or runs one in a command substitution. `promptinit` is read for the themes it
+  marks, the one `prompt` runs (`prompt suse`) and the `prompt_default_setup` that `prompt restore`
+  runs, and may turn `PROMPT_SUBST` on. On NixOS the `eval` of what coreutils' `dircolors` prints in
+  the generated `/etc/zshrc`, when the store path it names holds coreutils' program, and the loop in
+  `/etc/zshenv` that puts three directories of each Nix profile in front of `fpath`, are known as
+  NixOS writes them, so with `SHARE_HISTORY` taken out of `programs.zsh.setOptions` a typed zsh
+  passes with the files `programs.zsh` generates by default. On NixOS the check reads the
+  `/etc/zshenv.local` that the zshenv nixpkgs builds into zsh reads, and `/etc/set-environment`
+  where there is no `/etc/zshenv`, and the fix `zsh -f` names it. A zsh from elsewhere, or one the
+  check reads without a typed shell, warns that it cannot tell where `compinit` is, as before.
+- The `incremental-history-flush` check no longer passes these zsh setups, with each of which zsh
+  5.9.2 wrote each command line to the history file. It reads a function's body set by its name
+  (`functions[preexec]='...'`) as that function's code, a function's own file and a file a hook
+  sources as the hook's code, and the names a line holds in every form zsh may read a word in:
+  with quotes and backslashes taken off (`print -v T\TY`), `$'...'` decoded, a line that ends in a
+  backslash joined with the next, in the words of the code where a line that starts with `#` is
+  inside a quote, and as an option's argument after its letters (`print -vTTY`). A function that a
+  hook or a trap runs by name, there or in an `eval` or a `$(...)`, counts as a hook, and so do one
+  copied to a hook's name (`functions -c`), one an element, `set -A` or `read -A` of a
+  `*_functions` array names, the function of a completion widget named for a hook
+  (`zle -C zle-line-finish`), a function named like a builtin, which the hooks of zsh's own
+  `add-zle-hook-widget` run, `command_not_found_handler`, and the code `sched`, `zstyle -e` and
+  `bindkey -s` run. An `fc -p` counts as a write, and so do a global alias for the history file
+  (`alias -g /dev/tty=~/.zsh_history`) and an element of zsh/mapfile's `mapfile` that names it. A
+  prompt set in a form the walk does not read (`print -v PS1`, `${PS1::=...}`, `read PS1`, `prompt`,
+  `PROMPT_EOL_MARK`) holds code the check cannot follow where `PROMPT_SUBST` may be on,
+  and a function loaded by its path puts its directory in front of `fpath`. It warns that it cannot
+  tell at a parameter set by a name another one holds (`${(P)name::=on}`) or that an expansion makes
+  in a `zstyle -s`, `getopts`, `strftime -s`, `vared`, `zparseopts`, `zformat -f`, `getln`,
+  `zpty -r`, `set -A` or the like, at a `functions=(...)` or `aliases=(...)` array, at a command a
+  hook runs with a word an expansion makes that is no function, alias or builtin that writes no
+  file (`tee -a $f`), at an `exec` that keeps a descriptor open on such a path, a `coproc`, a
+  `zle -A` to a widget named for a hook, an `fpath` element that an expansion changes
+  (`${(s:/:)fpath}`), an alias for `compinit`, `compdef`, `prompt` or `add-zsh-hook`, a `HOME` a
+  file sets, which moves the user's files and compinit's dump file, a `_compdir` in the
+  environment, and a `NIX_PROFILES` that holds what zsh splits otherwise (`;`, `&`).
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's
