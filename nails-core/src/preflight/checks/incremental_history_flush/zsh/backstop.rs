@@ -197,18 +197,20 @@ impl Forms {
         Self { texts, words }
     }
 
-    /// The most that `count` finds in the lines of a form that are no
-    /// comment, or in the words of the code.
+    /// The most that `count` finds in the pieces of a form ([`Forms::each`]).
     pub(super) fn most(&self, count: impl Fn(&str) -> usize) -> usize {
-        let lines = self
-            .texts
-            .iter()
-            .map(|form| code_lines(form).map(&count).sum::<usize>());
-        let words = self.words.iter().map(|word| count(word)).sum::<usize>();
-        lines
-            .chain(std::iter::once(words))
-            .max()
-            .unwrap_or_default()
+        let mut most = 0;
+        self.each(|pieces| most = most.max(pieces.map(&count).sum::<usize>()));
+        most
+    }
+
+    /// Hand `form` the pieces of each form in turn: the lines of a form of
+    /// the text that are no comment, then the words of the code.
+    pub(super) fn each(&self, mut form: impl FnMut(&mut dyn Iterator<Item = &str>)) {
+        for text in &self.texts {
+            form(&mut code_lines(text));
+        }
+        form(&mut self.words.iter().map(String::as_str));
     }
 
     /// How often the forms name the variable `name` otherwise than to read

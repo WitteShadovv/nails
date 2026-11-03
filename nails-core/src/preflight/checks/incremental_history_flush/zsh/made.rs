@@ -16,6 +16,8 @@
 
 use super::{Forms, Reader, builtins};
 use crate::Filesystem;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// The most names brace expansion is followed into for one word; a word
@@ -151,18 +153,52 @@ fn any_expansion(text: &str) -> String {
 /// `base`: as written, or as brace expansion makes it ([`expansions`]), and,
 /// where `expanded`, with each expansion standing for any characters
 /// ([`any_expansion`]). A glob makes no name of a file that is not there.
+#[cfg(test)]
 fn may_name(text: &str, base: &str, expanded: bool) -> bool {
-    let text = if expanded {
-        any_expansion(text)
+    if expanded {
+        names_of(&any_expansion(text), base)
     } else {
-        text.to_string()
-    };
+        names_of(text, base)
+    }
+}
+
+/// Whether `text`, a name where [`ANY`] stands for any characters, may name
+/// the file `base` as written or as brace expansion makes it
+/// ([`expansions`]).
+fn names_of(text: &str, base: &str) -> bool {
     let name: Vec<char> = base.chars().collect();
-    expansions(&text, base).is_none_or(|names| {
+    expansions(text, base).is_none_or(|names| {
         names
             .iter()
             .any(|candidate| matches(&candidate.chars().collect::<Vec<_>>(), &name))
     })
+}
+
+/// Which of `bases`, each a file's name by its place, `text`, a name as
+/// written, may name ([`names_of`]), with brace expansion followed once for
+/// each length of name rather than for each name where it may: for a name
+/// that holds no brace or comma, how many names it makes depends on how many
+/// characters the name has alone, and each of them starts with what stands
+/// before the first brace, where the text holds no [`ANY`].
+fn names_among<'a>(text: &str, bases: impl Iterator<Item = (usize, &'a str)>) -> Vec<usize> {
+    let exact = !text.contains(ANY);
+    let start = text.split('{').next().unwrap_or_default();
+    // By the length of a name, whether brace expansion makes more names of
+    // the text than it follows.
+    let mut beyond: HashMap<usize, bool> = HashMap::new();
+    bases
+        .filter(|(_, base)| {
+            if !exact || base.contains(['{', '}', ',', ANY]) {
+                return names_of(text, base);
+            }
+            let length = base.chars().count();
+            let beyond = *beyond
+                .entry(length)
+                .or_insert_with(|| expansions(text, &"a".repeat(length)).is_none());
+            beyond || (base.starts_with(start) && names_of(text, base))
+        })
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// The last part of the path `text` names: past its last `/`, or its last
@@ -174,20 +210,108 @@ pub(super) fn last_part(text: &str) -> &str {
     }
 }
 
-/// How often `line`, a line of zsh code or a word of it, names the file
-/// `base`: as the last part of a word's path ([`last_part`]), its quotes
-/// taken off, or as what a brace expansion may make of it ([`may_name`]);
-/// past a `/` alone where `by_path` (a function's file, whose name the code
-/// uses alone too).
-fn names_file(line: &str, base: &str, by_path: bool) -> usize {
+/// The words of `line`, a line of zsh code or a word of it, as [`named`]
+/// reads them for the names of files.
+fn file_words(line: &str) -> impl Iterator<Item = &str> {
     line.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>'))
+}
+
+/// `word` with its quotes and backslashes taken off.
+fn bare(word: &str) -> Cow<'_, str> {
+    if word.contains(['\'', '"', '\\']) {
+        Cow::Owned(word.replace(['\'', '"', '\\'], ""))
+    } else {
+        Cow::Borrowed(word)
+    }
+}
+
+/// How often `line`, a line of zsh code or a word of it, names the file
+/// `base`, by a path alone where `by_path`, as [`named`] counts it for each
+/// name at once.
+#[cfg(test)]
+fn names_file(line: &str, base: &str, by_path: bool) -> usize {
+    file_words(line)
         .filter(|word| {
-            let word = word.replace(['\'', '"', '\\'], "");
+            let word = bare(word);
             let last = last_part(&word);
             (!by_path || word.contains('/'))
                 && (last == base || (last.contains('{') && may_name(last, base, false)))
         })
         .count()
+}
+
+/// How often the files the check reads name each of `bases`, a file's name
+/// and whether a word names it only past a `/` (a function's file, whose
+/// name the code uses alone too): as the last part of a word's path
+/// ([`last_part`]), its quotes taken off, or as what a brace expansion may
+/// make of it ([`names_of`]), in the form of each file that names it most
+/// ([`Forms::most`]), summed over the files. One pass over the forms counts
+/// every name.
+fn named(texts: &[Forms], bases: &[(&str, bool)]) -> Vec<usize> {
+    let mut total = vec![0; bases.len()];
+    if bases.is_empty() {
+        return total;
+    }
+    let index: HashMap<&str, usize> = bases
+        .iter()
+        .enumerate()
+        .map(|(at, (base, _))| (*base, at))
+        .collect();
+    // The names a word without a `/` may name: those of no function's file.
+    let unpathed: Vec<usize> = bases
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, by_path))| !by_path)
+        .map(|(at, _)| at)
+        .collect();
+    // The names other than its own that a last part with a brace may make,
+    // by that part, of a word without a `/` and of one with one.
+    let mut braced: [HashMap<String, Vec<usize>>; 2] = Default::default();
+    for forms in texts {
+        let mut most: HashMap<usize, usize> = HashMap::new();
+        forms.each(|pieces| {
+            let mut counts: HashMap<usize, usize> = HashMap::new();
+            for word in pieces.flat_map(file_words) {
+                let path = word.contains('/');
+                if !path && unpathed.is_empty() {
+                    continue;
+                }
+                let word = bare(word);
+                let last = last_part(&word);
+                if path {
+                    if let Some(at) = index.get(last) {
+                        *counts.entry(*at).or_default() += 1;
+                    }
+                } else {
+                    for at in unpathed.iter().filter(|at| bases[**at].0 == last) {
+                        *counts.entry(*at).or_default() += 1;
+                    }
+                }
+                if last.contains('{') {
+                    let braced = &mut braced[usize::from(path)];
+                    if !braced.contains_key(last) {
+                        let wanted = bases
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, (base, by_path))| (path || !by_path) && *base != last)
+                            .map(|(at, (base, _))| (at, *base));
+                        braced.insert(last.to_string(), names_among(last, wanted));
+                    }
+                    for at in &braced[last] {
+                        *counts.entry(*at).or_default() += 1;
+                    }
+                }
+            }
+            for (at, count) in counts {
+                let best = most.entry(at).or_default();
+                *best = (*best).max(count);
+            }
+        });
+        for (at, count) in most {
+            total[at] += count;
+        }
+    }
+    total
 }
 
 /// The commands that make or write the files their words name.
@@ -222,75 +346,106 @@ impl<F: Filesystem> Reader<'_, F> {
             .collect();
         files.sort();
         files.dedup_by(|a, b| a.0 == b.0 && a.2 == b.2);
-        for (path, at, missing) in files {
+        let autoloads: HashSet<&str> = self.autoloads.iter().map(String::as_str).collect();
+        let mut bases: Vec<(&str, bool)> = files
+            .iter()
+            .filter(|(.., missing)| *missing)
+            .filter_map(|(path, ..)| path.file_name()?.to_str())
+            .map(|base| (base, autoloads.contains(base)))
+            .collect();
+        bases.sort_unstable();
+        bases.dedup();
+        let named: HashMap<&str, usize> = bases
+            .iter()
+            .map(|(base, _)| *base)
+            .zip(named(&self.texts, &bases))
+            .collect();
+        let mut known: HashMap<&str, usize> = HashMap::new();
+        for file in &self.known_files {
+            *known.entry(last_part(file)).or_default() += 1;
+        }
+        let first_calls = self.first_calls();
+        // Each write's last part with each expansion as any characters, and
+        // whether it holds none and no brace, so that it names one file.
+        let writes: Vec<(String, bool, &String, usize, Option<&str>)> = self
+            .writes
+            .iter()
+            .map(|(last, what, order, function)| {
+                let expanded = any_expansion(last);
+                let plain = !expanded.contains([ANY, '{']);
+                (expanded, plain, what, *order, function.as_deref())
+            })
+            .collect();
+        let mut doubts = Vec::new();
+        for (path, at, missing) in &files {
             let Some(base) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let by_path = self.autoloads.iter().any(|name| name == base);
-            let named = || -> usize {
-                self.texts
-                    .iter()
-                    .map(|forms| forms.most(|line| names_file(line, base, by_path)))
-                    .sum()
-            };
-            let known = || {
-                self.known_files
-                    .iter()
-                    .filter(|known| last_part(known) == base)
-                    .count()
-            };
             // zsh runs the compiled form beside a file in its place.
             let compiled = format!("{base}.zwc");
-            let why = if missing && named() > known() {
+            let count = named.get(base).copied().unwrap_or_default();
+            let why = if *missing && count > known.get(base).copied().unwrap_or_default() {
                 Some("a file the check reads names it".to_string())
             } else {
-                self.writes
+                writes
                     .iter()
-                    .find(|(last, _, order, function)| {
+                    .find(|(expanded, plain, _, order, function)| {
                         let before = match function {
-                            None => *order < at,
-                            Some(function) => self
-                                .top_calls
-                                .iter()
-                                .any(|(name, call)| *call < at && self.reaches(name, function)),
+                            None => order < at,
+                            Some(function) => {
+                                first_calls.get(function).is_some_and(|call| call < at)
+                            }
                         };
-                        before && (may_name(last, base, true) || may_name(last, &compiled, true))
+                        before
+                            && if *plain {
+                                expanded == base || *expanded == compiled
+                            } else {
+                                names_of(expanded, base) || names_of(expanded, &compiled)
+                            }
                     })
-                    .map(|(_, what, ..)| format!("{what} before zsh reads it"))
+                    .map(|(_, _, what, ..)| format!("{what} before zsh reads it"))
             };
             if let Some(why) = why {
-                let now = if missing {
+                let now = if *missing {
                     "which is not there now, "
                 } else {
                     ""
                 };
-                self.doubt(format!(
+                doubts.push(format!(
                     "it cannot tell what {}, {now}holds as zsh reads it, as {why}, which may \
                      write it",
                     path.display()
                 ));
             }
         }
+        for doubt in doubts {
+            self.doubt(doubt);
+        }
     }
 
-    /// Whether running the function or command `name` may run `function`:
-    /// it is that one, or one it runs or autoloads runs it, as far as they
-    /// go.
-    fn reaches(&self, name: &str, function: &str) -> bool {
-        let mut run = vec![name.to_string()];
-        let mut at = 0;
-        while let Some(caller) = run.get(at).cloned() {
-            if caller == function {
-                return true;
-            }
-            for (from, to) in self.edges.iter().chain(&self.autoloaded_by) {
-                if *from == caller && !run.contains(to) {
-                    run.push(to.clone());
+    /// For each function, the order of the first command at the top that may
+    /// run it: one that runs it, or runs a function that runs it or that
+    /// autoloads it, as far as the calls go.
+    fn first_calls(&self) -> HashMap<&str, usize> {
+        let mut callees: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (from, to) in self.edges.iter().chain(&self.autoloaded_by) {
+            callees.entry(from).or_default().push(to);
+        }
+        let mut first: HashMap<&str, usize> = HashMap::new();
+        for (name, call) in &self.top_calls {
+            let mut run = vec![name.as_str()];
+            let mut seen: HashSet<&str> = HashSet::from([name.as_str()]);
+            while let Some(caller) = run.pop() {
+                let at = first.entry(caller).or_insert(*call);
+                *at = (*at).min(*call);
+                for callee in callees.get(caller).into_iter().flatten() {
+                    if seen.insert(callee) {
+                        run.push(callee);
+                    }
                 }
             }
-            at += 1;
         }
-        false
+        first
     }
 
     /// Note that the file at `path`, which the check would read, is not
@@ -350,7 +505,7 @@ impl<F: Filesystem> Reader<'_, F> {
 
 #[cfg(test)]
 mod tests {
-    use super::{may_name, names_file};
+    use super::{Forms, may_name, named, names_among, names_file, names_of};
 
     #[test]
     fn a_word_names_a_file_by_its_last_part_or_braces_that_make_it() {
@@ -379,5 +534,88 @@ mod tests {
         assert!(may_name("$log", ".zlogin", true));
         assert!(!may_name("agent-env", ".zlogin", true));
         assert!(!may_name("${f}x", ".gen", true));
+    }
+
+    #[test]
+    fn the_names_counted_at_once_are_those_each_name_counts_alone() {
+        let texts = [
+            "cp ~/.src ~/.gen; . \"$HOME/.gen\"\n# . ~/.gen\n",
+            "tee ~/{.gen,.x} ~/.g{e}n ~/.g?n * {\nprint 'a' > ~/zfn/compinit\n",
+            "x=~/.gen cat > .gen \\\n  ~/.gen\n",
+            "autoload -Uz compinit; compinit\ncp x ~/zfn/compinit ~/zfn/c{o,x}mpinit\n",
+            "f() { : > $'\\x2e'gen; print ~/.ge{n} ~/{a}{b}{c}{d} }\n",
+            "print \"~/.gen\n# ~/.gen\"\n",
+            "",
+        ];
+        let forms: Vec<Forms> = texts.iter().map(|text| Forms::of(text)).collect();
+        let alone = |base: &str, by_path: bool| -> usize {
+            forms
+                .iter()
+                .map(|forms| forms.most(|line| names_file(line, base, by_path)))
+                .sum()
+        };
+        for bases in [
+            &[
+                (".gen", false),
+                (".x", false),
+                ("compinit", true),
+                ("cxmpinit", true),
+                ("{", false),
+                (".g?n", false),
+                ("abcd", false),
+                ("missing", false),
+            ][..],
+            &[("compinit", false), (".gen", true)],
+            &[],
+        ] {
+            let counted = named(&forms, bases);
+            assert_eq!(counted.len(), bases.len());
+            for (at, (base, by_path)) in bases.iter().enumerate() {
+                assert_eq!(counted[at], alone(base, *by_path), "{base} {by_path}");
+            }
+        }
+        assert_eq!(named(&forms, &[(".gen", false)]), [12]);
+    }
+
+    #[test]
+    fn the_names_a_word_may_name_are_found_once_for_each_length() {
+        let bases = [
+            ".gen",
+            "gen",
+            ".zlogin",
+            "compinit",
+            "_git",
+            "a,b",
+            "x{y}",
+            "{",
+            "ab",
+            "abcd",
+            "abcdefghijklmnop",
+            ".g",
+        ];
+        for text in [
+            "${match[1]}:${match[3]:+$match[2]}:${match[3]:-$match[2]}:$match[4]}",
+            "${tpre}${tsuf}",
+            ".ge{n}",
+            "{a,b}cd",
+            "{a}{b}{c}{d}",
+            "{a}{b}{c}",
+            "x{a,{b,c}}",
+            "{,}",
+            "{",
+            "}{a,b}",
+            "\u{0}{a}",
+            "_g{i}t",
+            "comp{i,x}nit",
+        ] {
+            let alone: Vec<usize> = bases
+                .iter()
+                .enumerate()
+                .filter(|(_, base)| names_of(text, base))
+                .map(|(at, _)| at)
+                .collect();
+            let among = names_among(text, bases.iter().enumerate().map(|(at, base)| (at, *base)));
+            assert_eq!(among, alone, "{text:?}");
+        }
     }
 }
