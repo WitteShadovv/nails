@@ -15,22 +15,31 @@
 #   - activates, and in the hidden session installs Nix and uses the daemon
 #     the installer starts: it adds a file holding a run-unique nonce to the
 #     store, evaluates a `builtins.toFile` of it and builds a derivation that
-#     writes it, as a build user in the build sandbox. Each store path, the
-#     installer's files in `/etc` and the build users and group it adds must
-#     lie in the root overlay's upper on the hidden volume. `check` skips the
-#     row there;
-#   - deactivates. On the decoy none of the installer's files is left, no
-#     build user or group, no daemon unit, and the row names `/nix` alone again;
-#   - images the decoy: its `/nix` holds what the baseline's held, and the
-#     image lists no other path the check looks for, deleted entries included.
-#     Its bytes hold no nonce, no name of a store path the session wrote and,
-#     beyond what the baseline holds, no name of a store path the installer
-#     copies and no line it writes;
+#     writes it, as a build user in the build sandbox. These must lie in the
+#     root overlay's upper on the hidden volume: the store paths the installer
+#     copies and the three the session writes, each path the check looks for
+#     that the install made, the shell startup files it adds its hook to, the
+#     32 build users in `/etc/passwd` and `/etc/shadow`, the group in
+#     `/etc/group`, and the copies shadow-utils keeps of the account files,
+#     each naming them. `check` skips the row there;
+#   - deactivates. On the decoy none of the paths the check looks for is left
+#     but the test driver's `/nix`, no account file or copy of one names a
+#     build user or the group, no system shell startup file holds a hook, no
+#     daemon unit is known, and the row names `/nix` alone again;
+#   - images the decoy and looks for the marks of the install: its `/nix`
+#     holds what the baseline's held, and the image lists none of the
+#     installer's files beyond the baseline's, deleted entries included. Its
+#     bytes hold neither the nonce nor the name of a store path the session
+#     wrote and, beyond what the baseline holds, neither the name of a store
+#     path the installer copies nor three of the lines it writes (a build
+#     user's line in `/etc/passwd`, its `build-users-group` setting and its
+#     shell hook);
 #   - as the positive control, boots the decoy again, installs and uses Nix on
 #     the decoy itself, and asserts that the row names every path the check
-#     looks for that the install left, and that the decoy's image lists the
-#     store paths and holds the nonce, the installed Nix's name and a line of
-#     the build users: so the scans that find nothing above can see a trace.
+#     looks for that the install left, and the group and the build users in
+#     the account files and in their copies, and that the decoy's image lists
+#     the store paths and holds the nonce, the installed Nix's name and those
+#     three lines: so the scans that find nothing above can see a trace.
 #
 # The test driver needs the host's Nix store in the guest: the shell it runs
 # commands in starts from a script there. nix-vm-test's mount-store.service
@@ -197,6 +206,9 @@ distroVm.buildVmTest {
         "/etc/profile.d/nix.sh",
         "/etc/profile.d/nix-daemon.sh",
         "/etc/fish/conf.d/nix.fish",
+        "/usr/local/etc/fish/conf.d/nix.fish",
+        "/opt/homebrew/etc/fish/conf.d/nix.fish",
+        "/opt/local/etc/fish/conf.d/nix.fish",
         "/etc/bashrc.backup-before-nix",
         "/etc/profile.d/nix.sh.backup-before-nix",
         "/etc/zshrc.backup-before-nix",
@@ -206,9 +218,24 @@ distroVm.buildVmTest {
         "/root/.nix-defexpr",
         "/root/.nix-channels",
         "/root/.local/state/nix",
+        "/root/.local/share/nix",
         "/root/.cache/nix",
         "/root/.config/nix",
+        "/root/.config/fish/conf.d/nix.fish",
     ]
+
+    # The account files the installer's groupadd and useradd change, and the
+    # copy of each that shadow-utils keeps as it was before its last change.
+    ACCOUNT_FILES = [
+        f"/etc/{name}{copy}"
+        for copy in ("", "-")
+        for name in ("passwd", "shadow", "group", "gshadow")
+    ]
+
+    # The shell startup files the installer adds its hook to on this decoy,
+    # where it makes /etc/bashrc and /etc/zshrc, and /etc/profile, which the
+    # check reads as well.
+    STARTUP_FILES = ["/etc/bashrc", "/etc/bash.bashrc", "/etc/zshrc", "/etc/profile"]
 
     # The files the installer writes on this decoy, as fls names them on its
     # image, the stubs it makes for the shell startup files included.
@@ -489,10 +516,16 @@ distroVm.buildVmTest {
         install_nix("session")
         token, paths = use_nix(nonce_id, "/mnt/data")
         upper = "/mnt/data/root/upper"
-        for path in paths:
+        # The store paths the session wrote and those the installer copied.
+        for path in paths + [f"/nix/store/{name}" for name in installed_names]:
             vm.succeed(f"test -e {upper}{path}")
+        # Each path the check looks for that the install made, the links that
+        # enable the daemon among them, and the startup files it changed.
+        made = candidates()
+        print(f"the paths the check looks for in the session: {made}")
         for path in (
-            "/etc/nix/nix.conf",
+            "/nix",
+            "/etc/nix",
             "/etc/systemd/system/nix-daemon.service",
             "/etc/systemd/system/nix-daemon.socket",
             "/etc/systemd/system/sockets.target.wants/nix-daemon.socket",
@@ -500,9 +533,21 @@ distroVm.buildVmTest {
             "/etc/profile.d/nix.sh",
             "/etc/bash.bashrc.backup-before-nix",
         ):
+            assert path in made, f"the install made no {path}: {made}"
+        for path in made:
             vm.succeed(f"test -e {upper}{path} || test -L {upper}{path}")
-        vm.succeed(f"grep -q '^nixbld1:' {upper}/etc/passwd")
-        vm.succeed(f"grep -q '^nixbld:' {upper}/etc/group")
+        for path in ("/etc/bashrc", "/etc/bash.bashrc", "/etc/zshrc"):
+            vm.succeed(f"grep -q /nix/var/nix/profiles/ {upper}{path}")
+        # The 32 build users and the group, in the account files and their
+        # copies.
+        vm.succeed(
+            "for n in $(seq 1 32); do "
+            + f"grep -q \"^nixbld$n:\" {upper}/etc/passwd && "
+            + f"grep -q \"^nixbld$n:\" {upper}/etc/shadow || exit 1; done"
+        )
+        for path in ACCOUNT_FILES:
+            vm.succeed(f"grep -q '^nixbld' {upper}{path}")
+        vm.succeed(f"grep -q '^nixbld:x:30000:' {upper}/etc/group")
         vm.succeed("sync")
 
     with subtest("deactivate: no trace of the installer is left on the decoy"):
@@ -514,7 +559,11 @@ distroVm.buildVmTest {
         assert on_decoy == ["/nix/.ro-store", "/nix/.rw-store", "/nix/store"], on_decoy
         vm.fail("getent group nixbld")
         vm.fail("getent passwd nixbld1")
-        vm.fail("grep -q -e nixbld -e '/nix/var/nix/profiles' /etc/passwd /etc/group /etc/bash.bashrc")
+        # grep -q exits 0 on a match even where another file is missing.
+        vm.fail(
+            "grep -q -e nixbld -e /nix/var/nix/profiles/ "
+            + " ".join(ACCOUNT_FILES + STARTUP_FILES)
+        )
         for unit in ("nix-daemon.service", "nix-daemon.socket"):
             state = vm.succeed(f"systemctl show -P LoadState {unit}").strip()
             assert state == "not-found", f"{unit} on the decoy: {state}"
@@ -569,6 +618,11 @@ distroVm.buildVmTest {
             "/etc/bash.bashrc.backup-before-nix",
         ):
             assert trace in named, f"the row does not name {trace}: {named}"
+        # The copies of the account files name them too: shadow-utils keeps
+        # each as it was before the last useradd, which held the group and 31
+        # of the build users.
+        for copy in ("/etc/group-", "/etc/passwd-"):
+            assert copy in named, f"the row does not name {copy}: {named}"
         # The store's database keeps its last writes in its write-ahead log
         # until the last connection to it closes, and the store scan reads the
         # database alone: stop the daemon, then let a query of root's on the
@@ -582,7 +636,7 @@ distroVm.buildVmTest {
         for path in decoy_paths:
             assert path.lstrip("/") in names, f"fls does not list {path}"
         assert "etc/nix/nix.conf" in names, sorted(below_nix(names))[:20]
-        wanted = {decoy_token, nix_name, INSTALLER_LINES[0]}
+        wanted = {decoy_token, nix_name, *INSTALLER_LINES}
         found = disk_forensics.run_strings_scan(positive, sorted(wanted))
         assert found == wanted, f"the scan missed {sorted(wanted - found)}"
         store_hits = disk_forensics.run_store_scan(positive, [decoy_nonce], offset=offset)

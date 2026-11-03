@@ -666,29 +666,39 @@ mounts the 9p share again after every switch.
 
 On every distribution but NixOS, Nix belongs inside the hidden session.
 `tests/nix-trace.nix` (`debian-13-nix-trace`) installs it there the way a
-person does, with the multi-user installer of Nix's release tarball, built
-from this flake's Nix with the recipe of Nix's own packaging and shared into
-the guest. It runs as root with `--daemon`, offline: without a channel and
-with no substituter. The scenario then uses the daemon the installer started:
-it adds a file holding a run-unique nonce to the store, evaluates a
-`builtins.toFile` of it and builds a derivation that writes it, as a build
-user in the build sandbox. It asserts that:
+person does, with Nix's multi-user installer from the contents of its release
+tarball, which the scenario builds from this flake's Nix with the recipe of
+Nix's own packaging and shares into the guest. It runs as root with `--daemon`,
+offline: without a channel and with no substituter. The scenario then uses the
+daemon the installer started: it adds a file holding a run-unique nonce to the
+store, evaluates a `builtins.toFile` of it and builds a derivation that writes
+it, as a build user in the build sandbox. It asserts that:
 
-- each store path, the installer's files in `/etc` and the build users and
-  group it adds lie in the root overlay's upper on the hidden volume, and
-  `check` skips its `decoy-nix-trace` row in the session;
-- after `deactivate`, the decoy has none of the installer's files, no build
-  user or group and no daemon unit, and the row says what it said before the
-  session;
+- the store paths the installer copies and the three the session writes, each
+  path the check looks for that the install made, the shell startup files it
+  adds its hook to, the 32 build users in `/etc/passwd` and `/etc/shadow`, the
+  group in `/etc/group`, and the copies shadow-utils keeps of the account
+  files, each naming them, lie in the root overlay's upper on the hidden
+  volume, and `check` skips its `decoy-nix-trace` row in the session;
+- after `deactivate`, the decoy has none of the paths the check looks for but
+  the test driver's `/nix`, no account file or copy of one names a build user
+  or the group, no system shell startup file holds a hook, no daemon unit is
+  known, and the row says what it said before the session;
 - the decoy's image, taken after the way back, lists below `/nix` what the
-  baseline image listed and no other path the check looks for, deleted entries
-  included, and its bytes hold neither the nonce nor the name of a store path
-  the session wrote, nor, beyond what the baseline holds, the name of a store
-  path the installer copies or a line it writes;
+  baseline image listed and, beyond what the baseline lists, none of the
+  installer's files, deleted entries included, and its bytes hold neither the
+  nonce nor the name of a store path the session wrote, nor, beyond what the
+  baseline holds, the name of a store path the installer copies or one of
+  three lines it writes: a build user's line in `/etc/passwd`, its
+  `build-users-group` setting and its shell hook;
 - installed and used on the decoy itself, the positive control, Nix is named
   by the row, each path the check looks for that the install left included,
-  and the decoy's image lists the store paths and holds the nonce, the
-  installed Nix's name and a line of the build users.
+  and so are the group and the build users in the account files and in their
+  copies; the decoy's image lists the store paths and holds the nonce, the
+  installed Nix's name and those three lines.
+
+It is one of Debian 13's smoke scenarios, so it runs with the smoke suite and
+is informational like the others.
 
 The test driver mounts the host's Nix store below `/nix` at every boot
 (nix-vm-test's `mount-store.service`), so the decoy disk holds three empty
