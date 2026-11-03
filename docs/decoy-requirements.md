@@ -1175,6 +1175,22 @@ disk space with random data when the disk is set up so the encrypted region does
 not stand out, and prefer a partition or whole device over a container file on
 the decoy.
 
+### Partition types the decoy's systemd acts on
+
+systemd-gpt-auto-generator acts on the partitions of the disk the decoy's root
+file system is on by their GPT type alone, at every boot: it mounts a `/home`,
+`/srv`, `/var` or `/var/tmp` partition at that folder when no fstab line mounts
+the folder and the folder is empty, uses a swap partition as swap, and asks for
+the passphrase first when such a partition is a LUKS volume. A hidden volume on
+a partition of one of these types shows itself at the decoy's next boot, and an
+examiner who reads the partition table sees a partition typed for a use the
+decoy does not have. The `backend-partition-type` pre-flight check refuses such
+a partition on a disk the decoy boots from and gives the command that changes
+its type to the generic Linux type, to run from a live system or where setup
+happens (see [Partition type in
+preflight](backends.md#partition-type-in-preflight)). A hidden volume on a
+disk of its own, such as an external drive, is not affected.
+
 ### Backend tooling and history
 
 VeraCrypt installed on a decoy, or a `cryptsetup` binary whose access time is
@@ -1249,6 +1265,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [udisks2 state](#udisks2-state) (`udisks2-state`) | `/var/lib/udisks2` | all | path probe (warn) | path probe (warn) | Unlock and mount the backend with cryptsetup and mount from a shell, not through the desktop. | `examiner-audit` |
 | [crypttab and fstab entries](#crypttab-and-fstab) (`crypttab-fstab`) | `/etc/crypttab`, `/etc/fstab` | all | `backend-entries` (refuses) | `examiner-config` | Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. Activation refuses an entry that opens or mounts the hidden volume; the decoy's own entries are reviewed with verify --examiner. | `preflight-decoy-filesystem` |
 | [LUKS headers on partitions](#encryption-headers-high-entropy-space-and-containers) (`luks-headers`) | LUKS1/LUKS2 signatures at partition starts, in gaps and in LUKS2 secondary-header slots | all | `backend-detect` | `examiner-disk` | Prefer a deniable backend (a VeraCrypt hidden volume) over a bare LUKS volume next to the decoy. | `examiner-audit` |
+| [Partition types the decoy's systemd acts on](#partition-types-the-decoys-systemd-acts-on) (`auto-discovered-partition-type`) | the GPT type of the hidden volume's partition on a disk the decoy boots from | all | `backend-partition-type` (refuses) | none: verify reads no partition type; the pre-flight check reads the table of the disk the hidden volume is on | Give the hidden volume's partition the generic Linux type from a live system or where setup happens, or keep the hidden volume on a disk of its own. | none: the check is unit tested on GPT images; no VM test boots a decoy from a disk with such a partition yet |
 | [High-entropy unpartitioned space](#encryption-headers-high-entropy-space-and-containers) (`high-entropy-space`) | partition gaps, space after the last partition, partitions with no known signature | all | none: needs the raw disk, which verify --offline --examiner --disk reads | `examiner-disk` | Fill free space with random data when the disk is set up, so the hidden region does not stand out; explain it as wiped space. | `examiner-audit` |
 | [Encrypted container candidates](#encryption-headers-high-entropy-space-and-containers) (`container-candidates`) | large files whose size is a multiple of 512, with no known header and high entropy | all | `backend-detect` | `examiner-containers` | Put the hidden volume on a whole device or partition rather than in a file on the decoy. | `examiner-audit` |
 | [Encryption tooling and its access times](#backend-tooling-and-history) (`backend-tooling`) | `/usr/bin/veracrypt`, `/usr/sbin/cryptsetup`, `/sbin/cryptsetup` | all | none: the tools are part of the decoy install; their access times are what an examiner reads | `examiner-tooling` | Mount the decoy root noatime; run the backend tools from the separate machine or a live medium when you can. | `examiner-audit` |

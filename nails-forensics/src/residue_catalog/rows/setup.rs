@@ -87,6 +87,28 @@ pub(super) const ROWS: &[ResidueClass] = &[
         conclusion: Some("Encrypted volumes exist on this disk"),
     },
     ResidueClass {
+        id: "auto-discovered-partition-type",
+        title: "Partition types the decoy's systemd acts on",
+        kind: ResidueKind::Setup,
+        channel: Channel::Mechanism(
+            "the GPT type of the hidden volume's partition on a disk the decoy boots from",
+        ),
+        platforms: Platforms::ALL,
+        risk: "systemd-gpt-auto-generator mounts a /home, /srv, /var or /var/tmp partition and uses a swap partition of the root's disk at every boot of the decoy, asking first for the passphrase of one that is a LUKS volume, so a hidden volume of such a type shows a failed mount, a failed swap or a passphrase prompt; anyone who reads the partition table sees the type.",
+        preflight: Probe::Check("backend-partition-type"),
+        preflight_blocks: true,
+        verify: Probe::None(
+            "verify reads no partition type; the pre-flight check reads the table of the disk the hidden volume is on",
+        ),
+        mitigation: "Give the hidden volume's partition the generic Linux type from a live system or where setup happens, or keep the hidden volume on a disk of its own.",
+        doc_anchor: "decoy-requirements.md#partition-types-the-decoys-systemd-acts-on",
+        e2e: E2e::None(
+            "the check is unit tested on GPT images; no VM test boots a decoy from a disk with such a partition yet",
+        ),
+        residual: false,
+        conclusion: Some("A partition of this disk is typed for a use the decoy does not have"),
+    },
+    ResidueClass {
         id: "high-entropy-space",
         title: "High-entropy unpartitioned space",
         kind: ResidueKind::Setup,

@@ -167,6 +167,11 @@ What the operator must do for the in-scope case to hold:
 
 - Use a deniable backend, and keep the decoy credentials separate from the
   hidden volume's, so disclosing one never opens the other.
+- Keep the hidden volume off a partition whose type the decoy's systemd mounts
+  or uses as swap at boot, and its outer volume closed or read-only while the
+  hidden one is in use: `backend-partition-type` refuses the first,
+  `outer-volume` warns about the second
+  ([backends.md](backends.md#partition-type-in-preflight)).
 - Run an amnesic decoy ([decoy-requirements.md](decoy-requirements.md)),
   deactivate cleanly and power off before the machine can be taken.
 - Before relying on the setup, run `nails rehearse` on the real machine and
