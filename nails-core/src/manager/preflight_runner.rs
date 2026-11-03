@@ -146,13 +146,13 @@ pub fn build_registry<F: Filesystem>(
     config_layer: Option<&dyn crate::platform::ConfigLayer<F>>,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
-        BackendDetectCheck, BackendEncryptionCheck, BackendEntriesCheck, BinaryLocationCheck,
-        DecoyNixTraceCheck, DecoyPersistenceCheck, DmaProtectionCheck, HiddenVolumeCheck,
-        HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, InspectedShell,
-        LocateDatabaseCheck, MemoryWipeCheck, MountNamespaceCheck, NetworkToolsCheck,
-        NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck,
-        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck,
+        BackendDetectCheck, BackendEncryptionCheck, BackendEntriesCheck, BackendPartitionTypeCheck,
+        BinaryLocationCheck, DecoyNixTraceCheck, DecoyPersistenceCheck, DmaProtectionCheck,
+        HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
+        InspectedShell, LocateDatabaseCheck, MemoryWipeCheck, MountNamespaceCheck,
+        NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck,
+        ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
@@ -255,6 +255,15 @@ pub fn build_registry<F: Filesystem>(
     // its own: nothing encrypts it, only the decoy's own encryption does, the
     // stack cannot be judged, or the root is in RAM. Read-only.
     registry.add_check(Box::new(BackendEncryptionCheck::new(hidden_root.clone())));
+
+    // Refuses a hidden root stored on a partition of a disk the decoy boots
+    // from whose GPT type systemd mounts or uses as swap at every later boot
+    // of the decoy (/home, /srv, /var, /var/tmp, swap); the no-auto flag, and
+    // the root and boot types systemd rarely acts on, only warn. Reads the
+    // disk's partition table, or udev's record of the partition. Read-only.
+    registry.add_check(Box::new(BackendPartitionTypeCheck::new(
+        hidden_root.clone(),
+    )));
 
     // Check-time advice, keyed on the installed cryptsetup version: it cannot
     // open a VeraCrypt volume made with Argon2id, so one must use PBKDF2. The

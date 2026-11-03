@@ -219,6 +219,9 @@ Keep all of it `root`-owned on the hidden volume.
    requirements](decoy-requirements.md#nixos) list each form), `backend-detect`,
    `backend-encryption` (the hidden volume has encryption of its own; it only
    warns, see [the backends](backends.md#encryption-in-preflight)),
+   `backend-partition-type` (on a disk the decoy boots from, the hidden
+   volume's partition has no type the decoy's systemd mounts or uses as swap,
+   see [the backends](backends.md#partition-type-in-preflight)),
    `storage-readiness`, `swap`,
    `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks
@@ -1088,6 +1091,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
 [ ] backend-detect preflight warnings resolved or accepted (see backends.md)
 [ ] backend-encryption passes: encryption of the hidden volume's own, not only
     the decoy's
+[ ] backend-partition-type passes: on the decoy's disk, the hidden volume's
+    partition has the generic Linux type
 [ ] nails binary exists ONLY on the hidden volume; no copies on the decoy
 [ ] Reviewed inherited decoy state in `nails check` (autostart, user services,
     lingering, autologin)

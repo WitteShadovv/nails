@@ -69,7 +69,11 @@ Whatever the backend, the filesystem at the hidden root must:
   every userspace process stops, so a FUSE mount backed by a process dies at the
   switch. A kernel mount survives it: the decoy's shutdown unmounts the hidden
   volume's own mount unit, but the bind NAILS places inside the next root keeps
-  it alive, and it appears at the same path in the hidden session.
+  it alive, and it appears at the same path in the hidden session;
+- **lie on a partition whose type the decoy's systemd leaves alone**, when it
+  is on a disk the decoy boots from (`backend-partition-type`): the generic
+  Linux type, never that of a `/home`, `/srv`, `/var`, `/var/tmp` or swap
+  partition (see [Partition type in preflight](#partition-type-in-preflight)).
 
 `sudo /mnt/data/nails check` (or `activate --dry-run`) prints every preflight
 result, including the backend detection below.
@@ -147,6 +151,48 @@ encrypted volume exists, and whether a VeraCrypt hidden volume can be told
 from the free space of its outer volume depends on how it is used (see
 [Deniability hazards](#deniability-hazards)).
 
+## Partition type in preflight
+
+systemd-gpt-auto-generator runs at every boot and looks at the partitions of
+the disk the root file system is on. By a partition's GPT type alone it mounts
+the first partition of the `/home`, `/srv`, `/var` or `/var/tmp` type at that
+folder, when no fstab line mounts the folder and the folder is empty (`/var`
+only when the partition's uuid is the one the machine ID gives it); it uses
+every partition of the swap type as swap, unless an fstab line names a swap;
+and it asks for the passphrase first when such a partition is a LUKS volume. A
+hidden volume on a partition of one of these types shows itself at the decoy's
+next boot: a failed mount, a failed swap or a passphrase prompt for a
+partition the decoy knows nothing of. Nothing of this happens in the hidden
+session, whose root is an overlay, which the generator does not act on, but
+the type stays in the partition table for anyone who reads it.
+
+The `backend-partition-type` check follows the hidden root's own storage
+(through device-mapper layers and loops over block devices, never into the
+filesystem that holds a container file) and judges each of its partitions on a
+disk the decoy boots from: a disk below its root file system, or below the
+filesystem mounted at `/boot`, `/boot/efi` or `/efi`. It reads the disk's
+partition table read-only and without changing an access time, and finds the
+partition's entry by its number and its start. Without root, where the disk
+cannot be read, it takes the entry from udev's record of the partition. A
+partition the decoy uses itself is left to the `hidden-volume` check.
+
+| Result | When |
+|---|---|
+| Refuses | The partition has the GPT type of a `/home`, `/srv`, `/var`, `/var/tmp` or swap partition. The no-auto flag does not help a swap partition. |
+| Warns | The partition has one of the first four types with the no-auto flag (bit 63 of its attributes), which systemd honours; or the type of a root, EFI system or extended boot loader partition, which systemd acts on only under conditions a decoy rarely meets; or the table does not list the partition where the kernel has it, or does not match the checksum it keeps of its entries; or neither the disk nor udev's record of the partition could be read. |
+| Passes | Any other type, an MBR, or no partition of a disk the decoy boots from: a disk of its own such as an external drive, a container file, a RAM filesystem. |
+
+The fix is the generic Linux type, given from a live system or where setup
+happens, never on the decoy:
+`sgdisk --typecode=<number>:0FC63DAF-8483-4772-8E79-3D69D8477DE4 <disk>`, with
+the number and the disk the check names, by its `/dev/disk/by-id` link where
+there is one. Retyping changes the partition table, not the data on the
+partition. The check does not predict the generator in every detail: it does
+not ask whether the partition is the first of its type on the disk, whether the
+folder is empty, whether the root lies on several disks, where the generator
+does nothing, or whether the kernel command line turns the generator off
+(`systemd.gpt_auto=0`), and it refuses in each of those cases too.
+
 ## Per-backend summary
 
 | | VeraCrypt file container | VeraCrypt device | LUKS2 |
@@ -214,7 +260,9 @@ sudo mount /dev/mapper/data /mnt/data
 
 A partition or a whole disk created by VeraCrypt holds the outer and hidden
 volumes directly. There is no loop device and no container file whose
-timestamps change.
+timestamps change. A partition on a disk the decoy boots from needs the
+generic Linux type, which `backend-partition-type` checks (see
+[Partition type in preflight](#partition-type-in-preflight)).
 
 - **Discard policy:** never pass `--allow-discards`, neither for the hidden
   volume nor for the outer volume. See [Discards](#discards-trim).

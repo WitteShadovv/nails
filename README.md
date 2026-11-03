@@ -185,6 +185,10 @@ Also refused by the pre-flight checks:
   cannot be judged (`hidden-volume`);
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
   volume (`backend-entries`);
+- a hidden volume on a partition of a disk the decoy boots from whose GPT
+  type the decoy's systemd mounts or uses as swap at every later boot, a
+  `/home`, `/srv`, `/var`, `/var/tmp` or swap partition
+  (`backend-partition-type`);
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's
