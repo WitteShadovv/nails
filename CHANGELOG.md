@@ -319,12 +319,18 @@ of this changelog for that version becomes the release notes word for word, and
   `/nix`, whatever it is; `nix-daemon.service` and `nix-daemon.socket` in the unit directories on
   the disk, a link that enables one in a dependency directory of `/etc/systemd/system` and a
   drop-in directory for one there, and `/etc/tmpfiles.d/nix-daemon.conf`; `/etc/nix` and a `nix`
-  command in `/usr/bin` or `/usr/local/bin`; the `nixbld` group and the build users; the shell
-  hooks (`/etc/profile.d/nix.sh` and `nix-daemon.sh`, `/etc/fish/conf.d/nix.fish`, the hook lines
-  in `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/zshrc` and `/etc/zsh/zshrc`, and the installer's
-  `.backup-before-nix` copies); and what Nix keeps in `/root` and the homes `/etc/passwd` names.
-  It names each one it finds, and what it cannot look up or read, and never refuses. It passes on
-  NixOS and is skipped inside a hidden session, whose `/` shows the session's own files.
+  command in `/usr/bin` or `/usr/local/bin`; the `nixbld` group and the build users in
+  `/etc/group`, `/etc/gshadow`, `/etc/passwd` and `/etc/shadow` and in the copies shadow-utils
+  keeps of them (`/etc/passwd-` and the others), which still name the group and a build user after
+  Nix's uninstall steps; the shell hooks (`/etc/profile.d/nix.sh` and `nix-daemon.sh`,
+  `conf.d/nix.fish` in each Fish prefix the installer writes to, the hook lines in `/etc/bashrc`,
+  `/etc/bash.bashrc`, `/etc/profile`, `/etc/zshrc` and `/etc/zsh/zshrc`, and the installer's
+  `.backup-before-nix` copies); and what Nix keeps in `/root` and in each home `/etc/passwd` names,
+  the single-user installer's hook lines in its shell startup files among it, except a home on the
+  hidden volume. A home behind an automount point that nothing is mounted on yet is named instead
+  of looked into, since the lookup would mount it. It names each one it finds, and what it cannot
+  look up or read, and never refuses. It passes on NixOS and is skipped inside a hidden session,
+  whose `/` shows the session's own files.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay
