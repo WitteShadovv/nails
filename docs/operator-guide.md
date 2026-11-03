@@ -1159,12 +1159,16 @@ says which of the two mounts above it needs, by whether `findmnt` shows its
 device mounted, with the command. A file the decoy mounts, such as a disk
 image in a home, is attached to a loop device first with
 `losetup --read-only`, and a `/dev/mapper` device that is not open is opened
-first with `cryptsetup open --readonly`, from the source the decoy's
-`/etc/crypttab` gives where it names one: the kernel keeps such a device
-read-only, so it needs no `blockdev --setro`, only the option that skips the
-replay. A bind entry is left out, since its source lies in the image and was
-scanned. Below `--root`, what the scan and the
-examiner's view read is looked up inside the root, as the decoy sees it: a
+first with `cryptsetup open --readonly`, as the decoy's `/etc/crypttab` opens
+it where it names the mapping: from its source, as its kind of volume, a
+plain one with its cipher, key size and hash (systemd's defaults where the
+line gives none), and with its detached header, VeraCrypt PIM and TrueCrypt
+key files. A key file or a token the line opens it with is named instead, as
+it needs parameters of its own. The kernel keeps such a device read-only, so
+it needs no `blockdev --setro`, only the option that skips the replay. A bind
+entry is left out, since its source lies in the image and was scanned. Below
+`--root`, what the scan and the examiner's view read is looked up inside the
+root, as the decoy sees it: a
 link is followed there, an absolute one included, so NixOS's `/etc/fstab` and
 `/etc/crypttab` are read from the image's store, and no link leads to the
 folders of the machine running verify. The one exception is the probe for the
