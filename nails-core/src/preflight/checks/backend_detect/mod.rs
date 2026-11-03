@@ -20,6 +20,7 @@ mod encryption;
 mod graph;
 mod hazards;
 mod luks2;
+mod partition_type;
 pub use argon2::{
     CryptsetupArgon2idCheck, CryptsetupVersion, installed_cryptsetup_version,
     parse_cryptsetup_version,
@@ -27,6 +28,7 @@ pub use argon2::{
 pub use encryption::BackendEncryptionCheck;
 use hazards::hazards;
 use luks2::{Luks2Metadata, read_luks2_header};
+pub use partition_type::BackendPartitionTypeCheck;
 
 /// Where the device nodes the LUKS2 header is read from live.
 const DEV_DIR: &str = "/dev";

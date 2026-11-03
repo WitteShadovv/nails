@@ -35,6 +35,7 @@ pub mod upper_fs_probe;
 // Re-exports for convenient access
 pub use backend_detect::BackendDetectCheck;
 pub use backend_detect::BackendEncryptionCheck;
+pub use backend_detect::BackendPartitionTypeCheck;
 pub use backend_detect::CryptsetupArgon2idCheck;
 pub use backend_entries::BackendEntriesCheck;
 pub use binary_location::BinaryLocationCheck;

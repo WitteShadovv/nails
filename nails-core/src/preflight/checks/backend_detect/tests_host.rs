@@ -84,6 +84,11 @@ impl Host {
             .unwrap();
     }
 
+    /// The sysfs directory of the device `name`.
+    pub(super) fn dir(&self, name: &str) -> &str {
+        &self.dirs[name]
+    }
+
     /// A device `name`, numbered `dev`, in `dir`, built on `slaves`.
     pub(super) fn device(mut self, dir: &str, name: &str, dev: &str, slaves: &[&str]) -> Self {
         self.attr(dir, "dev", dev);

@@ -754,6 +754,20 @@ fn backend_encryption_runs_right_after_backend_detect() {
     assert_eq!(names[detect + 1], "backend-encryption", "{names:?}");
 }
 
+#[test]
+fn backend_partition_type_runs_right_after_backend_encryption() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    let encryption = names
+        .iter()
+        .position(|name| *name == "backend-encryption")
+        .expect("backend-encryption is registered");
+    assert_eq!(names[encryption + 1], "backend-partition-type", "{names:?}");
+}
+
 /// Register one block device under `dir` in the mock sysfs, as the
 /// backend-detect fixtures do: a `dev`/`uevent` pair, an optional dm uuid and
 /// loop backing file, and the runtime discard policy.
