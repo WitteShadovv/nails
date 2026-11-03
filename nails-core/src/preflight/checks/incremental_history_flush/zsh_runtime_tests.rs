@@ -279,6 +279,73 @@ fn a_hook_that_writes_the_line_itself_counts_as_a_write() {
 }
 
 #[test]
+fn a_hook_s_output_to_the_terminal_through_tty_is_no_doubt_until_a_file_sets_tty() {
+    // zsh 5.9.2 sets TTY to its terminal's name as it starts, whatever its
+    // environment holds, and writes nothing to HISTFILE for these.
+    for rc in [
+        "precmd() { print -Pn '\\e]0;%~\\a' > $TTY }\n",
+        "precmd() { print -Pn x >\"$TTY\" }\n",
+        "precmd() { print -Pn x >> ${TTY} }\n",
+        "preexec() { print -rn -- $1 &> $TTY }\n",
+        "precmd() { print -n x 2>$TTY }\nexport GPG_TTY=$TTY\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+    // A file that may set TTY, any of them, makes it the doubt it is for any
+    // other target an expansion makes: zsh 5.9.2 writes each command line to
+    // HISTFILE with the first one.
+    let doubt = |set: &str| {
+        format!(
+            "it cannot tell where the output that `preexec` in /home/alice/.zshrc redirects to \
+             `$TTY` goes, as {set} may set TTY to name the history file"
+        )
+    };
+    let hook = "preexec() { print -r -- $1 >> $TTY }\n";
+    for set in [
+        "TTY=~/.zsh_history",
+        "typeset -g TTY=~/.zsh_history",
+        "f() { local TTY }",
+        "read -r TTY < ~/.ttyname",
+        ": ${TTY::=~/.zsh_history}",
+        "TTY+=x",
+        "for TTY in ~/.zsh_history; do :; done",
+        "print -v TTY ~/.zsh_history",
+        "zstyle -s :x y TTY",
+        "unset TTY",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("{hook}{set}\n"));
+        assert_eq!(
+            scan(&fs, UNKNOWN).doubts,
+            [doubt("/home/alice/.zshrc")],
+            "{set}"
+        );
+    }
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", hook);
+    seed(&fs, "/home/alice/.zshenv", "TTY=~/.zsh_history\n");
+    assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt("/home/alice/.zshenv")]);
+    // Any other target is read as before.
+    let elsewhere = |target: &str| {
+        format!(
+            "it cannot tell where the output that `preexec` in /home/alice/.zshrc redirects to \
+             `{target}` goes, which may be the history file"
+        )
+    };
+    for target in ["$TTY/x", "${TTY:-/dev/tty}", "$TTYx", "${TTY}x", "$TTY$x"] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("preexec() {{ print -r -- $1 >> {target} }}\n"),
+        );
+        assert_eq!(scan(&fs, UNKNOWN).doubts, [elsewhere(target)], "{target}");
+    }
+}
+
+#[test]
 fn a_parameter_set_by_a_name_an_expansion_makes_is_a_doubt() {
     // zsh 5.9.2 runs each with SHARE_HISTORY on, or with TTY or ZDOTDIR set
     // to what a part of the name holds.

@@ -56,7 +56,6 @@ fn an_alias_s_value_is_read_as_code_or_a_doubt() {
         ("alias x=\"$cmd -AI\"\n", "x=$cmd -AI"),
         ("alias so=setopt\nso $o\n", "so=setopt"),
         ("alias s='setopt share_history'\n", "s=setopt share_history"),
-        ("alias h='fc -l 1'\n", "h=fc -l 1"),
         ("alias b='builtin '\n", "b=builtin "),
         ("aliases[x]='$a $b'\n", "aliases[x]=$a $b"),
     ] {
@@ -65,6 +64,82 @@ fn an_alias_s_value_is_read_as_code_or_a_doubt() {
     }
     // An alias of a plain command is neither.
     assert_eq!(read("alias ll='ls -l'\nalias g=git\n"), Scan::default());
+}
+
+/// What a doubt about the alias `text` in `.zshrc` for an `fc` that writes
+/// nothing, which the files use, says.
+fn fc_alias(text: &str) -> String {
+    format!(
+        "it cannot tell what the alias `{text}` in /home/alice/.zshrc runs where it is used, as \
+         zsh hands the fc it stands for the words after it"
+    )
+}
+
+#[test]
+fn an_alias_for_an_fc_that_writes_nothing_is_no_doubt_until_it_is_used() {
+    // zsh 5.9.2 writes nothing to HISTFILE for these, typed or not.
+    for rc in [
+        "alias h='fc -l'\n",
+        "alias h='fc -l 1'\n",
+        "alias -- hist='fc -lnr -20'\n",
+        "alias -r h='fc -li'\n",
+        "alias r='fc -e -'\n",
+        "alias h='builtin fc -l'\n",
+        "aliases[h]='fc -l'\n",
+        "alias ll='ls -l' h='fc -l'\n",
+    ] {
+        assert_eq!(read(rc), Scan::default(), "{rc}");
+    }
+    // Used in the files, it hands the fc the words after it: zsh 5.9.2 runs
+    // `fc -l -W` from the first two after each command, which writes HISTFILE.
+    for (rc, text) in [
+        ("alias h='fc -l'\nprecmd() { h -W }\n", "h=fc -l"),
+        ("alias h='fc -l'\nfunctions[precmd]='h -AI'\n", "h=fc -l"),
+        ("alias h='fc -l'\neval 'precmd() { h -W }'\n", "h=fc -l"),
+        ("alias h='fc -l'\nh\n", "h=fc -l"),
+        ("alias h='fc -l' hh=h\n", "h=fc -l"),
+        (
+            "aliases[h]='fc -l'\nprecmd() { h -W }\n",
+            "aliases[h]=fc -l",
+        ),
+        // A name that stands in a line for anything else counts too.
+        (
+            "alias h='fc -l'\nbindkey '^h' backward-delete-char\n",
+            "h=fc -l",
+        ),
+    ] {
+        let found = read(rc);
+        assert!(found.doubts.contains(&fc_alias(text)), "{rc}: {found:?}");
+    }
+    // Used in another file it reads, too.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "alias h='fc -l'\nsource ~/.zsh/hooks.zsh\n",
+    );
+    seed(&fs, "/home/alice/.zsh/hooks.zsh", "precmd() { h -W }\n");
+    assert_eq!(scan(&fs, UNKNOWN).doubts, [fc_alias("h=fc -l")]);
+    // Any other value is read as before: a flag that writes, a word an
+    // expansion makes, a blank at its end, a global or suffix alias.
+    for (rc, text) in [
+        ("alias h='fc -W'\n", "h=fc -W"),
+        ("alias h='fc -lA'\n", "h=fc -lA"),
+        ("alias h='fc -l -I -P'\n", "h=fc -l -I -P"),
+        ("alias h=\"fc '-W'\"\n", "h=fc '-W'"),
+        ("alias h='fc -l '\n", "h=fc -l "),
+        ("alias -g h='fc -l'\n", "h=fc -l"),
+        ("alias -s h='fc -l'\n", "h=fc -l"),
+        ("galiases[h]='fc -l'\n", "galiases[h]=fc -l"),
+        ("alias h='fc -l > ~/out'\n", "h=fc -l > ~/out"),
+    ] {
+        let found = read(rc);
+        assert!(
+            found.doubts.contains(&alias(text)) || !found.writes.is_empty(),
+            "{rc}: {found:?}"
+        );
+    }
+    assert!(!read("alias h=\"fc -l $n\"\n").doubts.is_empty());
 }
 
 #[test]

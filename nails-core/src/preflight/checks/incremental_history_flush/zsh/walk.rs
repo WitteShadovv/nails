@@ -111,6 +111,26 @@ pub(super) enum Event {
     /// The function `name` is made a hook, which zsh runs as each command
     /// is entered or ends (`add-zsh-hook precmd name`, `zle -N name`).
     Hook(String),
+    /// An alias stands for an `fc` that writes nothing, as written
+    /// (`h=fc -l`), whose name is `name`: zsh hands such an `fc` the words
+    /// the alias is used with, which may write the history file
+    /// (`h -W`).
+    FcAlias { name: String, text: String },
+    /// A command runs by the name `name`, as written, with the words `args`.
+    Call { name: String, args: Vec<Word> },
+    /// A directory is added to `fpath` under each Nix profile that
+    /// `NIX_PROFILES` names, as NixOS's `/etc/zshenv` adds them: written as
+    /// `written`, `rest` past the profile (`/share/zsh/site-functions`).
+    ProfileFpath {
+        written: String,
+        rest: String,
+        first: bool,
+    },
+    /// `NIX_PROFILES` is set otherwise than by an assignment the walk read.
+    ProfilesUnknown,
+    /// The function `name` is autoloaded without `-U`, so zsh expands the
+    /// aliases the files define in its code as it loads it.
+    Expanding(String),
 }
 
 /// How a loop's body ends.
@@ -130,11 +150,13 @@ enum Frame {
     If,
     Case,
     /// A loop, with the items the check can list when it runs over a list it
-    /// knows, and how its body ends.
+    /// knows, and how its body ends; `profiles` when it runs over the words
+    /// of `NIX_PROFILES`, as NixOS's `/etc/zshenv` does.
     Loop {
         var: Option<String>,
         items: Option<Vec<String>>,
         closer: Closer,
+        profiles: bool,
     },
     Group,
     Subshell,
@@ -174,6 +196,10 @@ struct Open {
     short: bool,
     /// A `case` that reads a pattern next.
     pattern: bool,
+    /// How many commands its body holds that no inner frame holds.
+    commands: usize,
+    /// Whether a frame was opened inside it.
+    nested: bool,
 }
 
 /// What the walk keeps of the command it is reading.
@@ -218,6 +244,9 @@ struct Walker<'a> {
     /// How many `fc` commands it read that write the history file or whose
     /// words it cannot read.
     fcs: usize,
+    /// How often it read `NIX_PROFILES` set
+    /// ([`backstop::nix_profiles_writes`]).
+    nix_profiles: usize,
     /// How many assignments by a name another parameter holds it read
     /// ([`backstop::indirect_assignments`]).
     indirects: usize,
@@ -247,6 +276,9 @@ impl Walker<'_> {
         } else {
             None
         };
+        if let Some(outer) = self.frames.last_mut() {
+            outer.nested = true;
+        }
         self.frames.push(Open {
             name,
             frame,
@@ -256,6 +288,8 @@ impl Walker<'_> {
             head,
             short: false,
             pattern,
+            commands: 0,
+            nested: false,
         });
     }
 
@@ -290,6 +324,37 @@ impl Walker<'_> {
         }
     }
 
+    /// Count a command of the innermost frame's body.
+    pub(super) fn counted(&mut self) {
+        if let Some(open) = self.frames.last_mut() {
+            open.commands += 1;
+        }
+    }
+
+    /// When `open`, the frame just closed, is NixOS's loop over the
+    /// profiles, keep the directories it adds under each profile only when
+    /// its body is the one `fpath` assignment NixOS writes there: any other
+    /// body may change what `$p` holds, so the directories count as
+    /// written, which the check cannot follow.
+    fn profiles_closed(&mut self, open: &Open) {
+        if !matches!(open.frame, Frame::Loop { profiles: true, .. })
+            || (open.commands == 1 && !open.nested)
+        {
+            return;
+        }
+        for event in &mut self.events[open.start..] {
+            if let Event::ProfileFpath { written, first, .. } = event {
+                *event = Event::Fpath {
+                    dir: Some(Word {
+                        text: std::mem::take(written),
+                        expands: true,
+                    }),
+                    first: *first,
+                };
+            }
+        }
+    }
+
     /// Pop the innermost frame if `close` closes it, and, when it may run
     /// elsewhere than in this shell, count none of what it held as certain
     /// and forget the arrays it assigned; note confusion if `close` does not
@@ -300,6 +365,7 @@ impl Walker<'_> {
             return;
         }
         let open = self.frames.pop().expect("the frame closed");
+        self.profiles_closed(&open);
         if self.runs_elsewhere() {
             self.arrays = open.arrays;
             for event in &mut self.events[open.start..] {
@@ -328,6 +394,7 @@ impl Walker<'_> {
                     var: None,
                     items: None,
                     closer,
+                    profiles: false,
                 };
                 return (frame, short);
             }
@@ -375,7 +442,22 @@ impl Walker<'_> {
         }
         let items = if listed { self.list(&list) } else { None };
         let (closer, short) = self.body_closer(foreach);
-        (Frame::Loop { var, items, closer }, short)
+        // NixOS's loop over the profiles, `for p in ${(z)NIX_PROFILES}; do`,
+        // as its `/etc/zshenv` writes it.
+        let profiles = !foreach
+            && !short
+            && closer == Closer::Done
+            && var.as_deref() == Some("p")
+            && matches!(list.as_slice(), [word] if word.text == "${(z)NIX_PROFILES}");
+        (
+            Frame::Loop {
+                var,
+                items,
+                closer,
+                profiles,
+            },
+            short,
+        )
     }
 
     /// How the body of a loop whose header was read ends: `do ... done`,
@@ -415,6 +497,7 @@ impl Walker<'_> {
                 var: None,
                 items: None,
                 closer: closer.unwrap_or(Closer::Done),
+                profiles: false,
             },
             false,
         );
@@ -531,6 +614,7 @@ impl Walker<'_> {
             var: None,
             items: None,
             closer,
+            profiles: false,
         };
         match word.text.as_str() {
             "if" => self.open(Frame::If, true),
@@ -538,7 +622,10 @@ impl Walker<'_> {
             "while" | "until" => self.open(loop_frame(Closer::Done), true),
             "repeat" => self.repeat(),
             "for" | "foreach" | "select" => {
-                let (frame, short) = self.for_header(word.text == "foreach");
+                let (mut frame, short) = self.for_header(word.text == "foreach");
+                if let Frame::Loop { profiles, .. } = &mut frame {
+                    *profiles &= word.text == "for";
+                }
                 self.open(frame, false);
                 if short {
                     self.short_body();
@@ -657,9 +744,12 @@ impl Walker<'_> {
                 item.text, self.place
             )));
         }
+        self.counted();
         if matches!(name.as_str(), "fpath" | "FPATH") {
             self.fpaths += 1;
-            self.fpath_items(&items, append);
+            if append || name != "fpath" || !self.profiles_fpath(&items) {
+                self.fpath_items(&items, append);
+            }
         }
         let literal: Option<Vec<String>> = items
             .iter()
@@ -773,11 +863,17 @@ impl Walker<'_> {
                         }
                     }
                 }
-                Token::Text(text) => self.mention_options(&text),
+                Token::Text(text) => {
+                    self.mention_options(&text);
+                    // A here-document's body is expanded as the command reads
+                    // it, unless its delimiter is quoted.
+                    self.substituted(&text);
+                }
                 Token::Arithmetic(text) => {
                     // A command of its own, which sets no option; in a
                     // condition, its end (`if (( ... )) cmd`).
                     self.pending.function_next = false;
+                    self.counted();
                     self.mention_arithmetic(&text);
                     if self.pending.words.is_empty() && self.in_head() && self.next_starts_body() {
                         self.short_body();
@@ -811,6 +907,7 @@ struct Walked {
     autoloads: usize,
     fpaths: usize,
     fcs: usize,
+    nix_profiles: usize,
     indirects: usize,
     may_stop: bool,
 }
@@ -840,6 +937,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         autoloads: 0,
         fpaths: 0,
         fcs: 0,
+        nix_profiles: 0,
         indirects: 0,
         pending: Pending::default(),
     }
@@ -868,6 +966,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         autoloads: walker.autoloads,
         fpaths: walker.fpaths,
         fcs: walker.fcs,
+        nix_profiles: walker.nix_profiles,
         indirects: walker.indirects,
         may_stop: walker.may_stop,
     }
@@ -934,6 +1033,9 @@ pub(super) fn events(text: &str, place: &str) -> Read {
             "it cannot follow an `fc` that a line of {place} may run, which can write the \
              history file"
         )));
+    }
+    if named.nix_profiles > walked.nix_profiles {
+        events.push(Event::ProfilesUnknown);
     }
     if named.indirects > walked.indirects {
         events.push(Event::Doubt(format!(

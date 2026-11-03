@@ -19,12 +19,17 @@
 //! each.
 //!
 //! A function the files autoload is read from its file: the one they name by
-//! its path, or the one of its name in each directory they add to `fpath`,
+//! its path, or the one of its name in each directory they add to `fpath`
+//! and in those `fpath` starts with when the check knows them ([`Install`]),
 //! where zsh looks for it as it first runs it. Once one is autoloaded, a
-//! directory added that the check cannot follow is a doubt, and so is a
-//! function that no directory put in front of `fpath` holds, which zsh then
-//! finds in a directory it was built with or one `FPATH` names, which the check
-//! does not read. zsh runs compiled code in place of a file, or of a
+//! directory added that the check cannot follow is a doubt, and, where it does
+//! not know where `fpath` starts, so is a function that no directory put in
+//! front of `fpath` holds, which zsh then finds in a directory it was built
+//! with or one `FPATH` names. A stock function of zsh's own is read for what
+//! its code does ([`stock`]): `compinit` and `promptinit` mark functions that
+//! zsh runs only when they are run by name, as hooks or, for completion
+//! functions, as a word is completed, which the check reads where the files
+//! run them. zsh runs compiled code in place of a file, or of a
 //! directory's functions, when a `.zwc` is beside it, and the check cannot read
 //! that code, so such a `.zwc` is a doubt, and so is a path zsh expands into
 //! others (a glob, `{a,b}`).
@@ -63,11 +68,16 @@
 //! of the code still decides which `ZDOTDIR` zsh reads its files in.
 
 mod backstop;
+mod dump;
+mod install;
 mod lexer;
+mod stock;
 mod walk;
 
 use super::startup::{Scan, Write, read};
 use crate::Filesystem;
+pub(super) use install::{ENVIRONMENT, Install};
+use install::{known_lines, plain_profile};
 use lexer::Word;
 #[cfg(test)]
 use lexer::{End, Token, tokens};
@@ -310,6 +320,49 @@ struct Reader<'a, F: Filesystem> {
     /// The doubts of the prompts that hold code zsh runs as it shows them
     /// when `PROMPT_SUBST` is on ([`Event::Prompt`]).
     prompts: Vec<String>,
+    /// What the check knows of the zsh program and its environment.
+    install: &'a Install,
+    /// The Nix profiles `NIX_PROFILES` may name, as the environment and the
+    /// files read set it; `None` when the check cannot tell.
+    profiles: Option<Vec<String>>,
+    /// The directories added under each Nix profile
+    /// ([`Event::ProfileFpath`]): as written, past the profile, whether in
+    /// front, and where.
+    profile_fpath: Vec<(String, String, bool, String)>,
+    /// Where a file read may set `TTY` ([`backstop::names_tty_write`]).
+    tty_set: Option<String>,
+    /// Where a file read as code names `_compdir`, which picks the
+    /// directory whose own the stock `compaudit` may put in `fpath`.
+    compdir: Option<String>,
+    /// Whether a file read may set `ZSH_VERSION`.
+    version_set: bool,
+    /// Whether a file read may set `HOME`, `USER` or `XDG_STATE_HOME`,
+    /// with which NixOS's `set-environment` writes `NIX_PROFILES`.
+    profile_vars_set: bool,
+    /// The functions the files autoload without `-U`
+    /// ([`Event::Expanding`]).
+    expanding: Vec<String>,
+    /// The functions that redirect output to `$TTY`, and where: the
+    /// terminal, while no file sets `TTY`.
+    terminals: Vec<(String, String)>,
+    /// The aliases that stand for an `fc` that writes nothing
+    /// ([`Event::FcAlias`]): their names, as written, and where.
+    fc_aliases: Vec<(String, String, String)>,
+    /// The text of each file read, for the names its lines use.
+    texts: Vec<String>,
+    /// The commands the files run by name ([`Event::Call`]), and where.
+    calls: Vec<(String, Vec<Word>, String)>,
+    /// The stock functions of zsh's own the files autoload ([`Stock`]):
+    /// `compinit`, `compaudit` and `promptinit`.
+    compinit: bool,
+    compaudit: bool,
+    promptinit: bool,
+    /// The completion functions a dump file marks to be autoloaded.
+    dump_marks: Vec<String>,
+    /// The dump files read, and the directories `compaudit` was looked at
+    /// for.
+    dumps: Vec<PathBuf>,
+    audited: Vec<PathBuf>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -405,19 +458,20 @@ impl<F: Filesystem> Reader<'_, F> {
         (plain && path.is_absolute()).then_some(path)
     }
 
-    /// Read the startup file at `path` and follow what it sets; `certain`
-    /// when zsh certainly runs it whole.
-    fn file(&mut self, path: &Path, certain: bool) {
+    /// The text of the file at `path`, unless it is being followed already,
+    /// nothing is there, or the check cannot read it, which is a doubt; zsh
+    /// may run compiled code in its place, which is a doubt too.
+    fn text(&mut self, path: &Path) -> Option<String> {
         if self.stack.iter().any(|open| open == path) {
-            return;
+            return None;
         }
         self.compiled(&zwc(path));
         let text = match read(self.fs, path) {
             Ok(Some(text)) => text,
-            Ok(None) => return,
+            Ok(None) => return None,
             Err(why) => {
                 self.doubt(format!("it could not read {why}"));
-                return;
+                return None;
             }
         };
         if self.stack.len() >= SOURCE_DEPTH {
@@ -425,23 +479,65 @@ impl<F: Filesystem> Reader<'_, F> {
                 "it follows sourced files {SOURCE_DEPTH} deep, not on to {}",
                 path.display()
             ));
-            return;
+            return None;
         }
-        self.rcs |= backstop::names_rcs(&text);
-        self.prompt_subst |= backstop::names_prompt_subst(&text);
+        Some(text)
+    }
+
+    /// Note what the lines of `text`, the file at `place`, may set that the
+    /// check reads beside its code: `TTY`, `ZSH_VERSION`, the names the
+    /// files use.
+    fn lines(&mut self, text: &str, place: &str) {
+        if self.tty_set.is_none() && backstop::names_tty_write(text) {
+            self.tty_set = Some(place.to_string());
+        }
+        self.version_set |= backstop::names_write(text, "ZSH_VERSION");
+        // What NixOS's set-environment writes NIX_PROFILES with.
+        self.profile_vars_set |= ["HOME", "USER", "XDG_STATE_HOME"]
+            .iter()
+            .any(|name| backstop::names_write(text, name));
+        self.texts.push(text.to_string());
+    }
+
+    /// Read the startup file at `path` and follow what it sets; `certain`
+    /// when zsh certainly runs it whole.
+    fn file(&mut self, path: &Path, certain: bool) {
+        if let Some(text) = self.text(path) {
+            self.code(path, &text, certain);
+        }
+    }
+
+    /// Follow what `text`, the code of the file at `path`, sets; `certain`
+    /// when zsh certainly runs it whole.
+    fn code(&mut self, path: &Path, text: &str, certain: bool) {
+        let text = known_lines(path, text);
+        let text = text.as_ref();
+        self.rcs |= backstop::names_rcs(text);
+        self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
-        if backstop::names_any(&text, &["globsubst"]) {
+        self.lines(text, &place);
+        if self.compdir.is_none() && backstop::uses(text, "_compdir") > 0 {
+            self.compdir = Some(place.clone());
+        }
+        if backstop::names_any(text, &["globsubst"]) {
             self.doubt(format!(
                 "it cannot tell what code zsh runs from the values it expands as patterns, as \
                  {place} names GLOB_SUBST, which makes a glob qualifier in a value run"
             ));
         }
-        let read = events(&text, &place);
+        let read = events(text, &place);
         self.stack.push(path.to_path_buf());
         for event in read.events {
             self.apply(event, &place, certain && !read.confused);
         }
         self.stack.pop();
+    }
+
+    /// Mark the function `name` to be read as one the files autoload.
+    fn autoload_name(&mut self, name: &str) {
+        if !self.autoloads.iter().any(|known| known == name) {
+            self.autoloads.push(name.to_string());
+        }
     }
 
     /// Apply one event of the file at `place`; `certain` when zsh certainly
@@ -472,6 +568,28 @@ impl<F: Filesystem> Reader<'_, F> {
                     path.text
                 )),
             },
+            Event::Assign {
+                name: "NIX_PROFILES",
+                value,
+                ..
+            } => self.nix_profiles(&value),
+            Event::ProfilesUnknown => self.profiles = None,
+            Event::Expanding(name) => {
+                if !self.expanding.contains(&name) {
+                    self.expanding.push(name);
+                }
+            }
+            Event::ProfileFpath {
+                written,
+                rest,
+                first,
+            } => self
+                .profile_fpath
+                .push((written, rest, first, place.to_string())),
+            Event::FcAlias { name, text } => {
+                self.fc_aliases.push((name, text, place.to_string()));
+            }
+            Event::Call { name, args } => self.calls.push((name, args, place.to_string())),
             Event::Assign {
                 name,
                 value,
@@ -553,6 +671,11 @@ impl<F: Filesystem> Reader<'_, F> {
                         self.fc.push(what);
                     }
                 } else if computed && let Some(function) = function {
+                    if matches!(target.as_str(), "$TTY" | "${TTY}") {
+                        // The terminal zsh runs on, unless code sets TTY.
+                        self.terminals.push((function, place.to_string()));
+                        return;
+                    }
                     let doubt = format!(
                         "it cannot tell where the output that `{function}` in {place} \
                          redirects to `{target}` goes, which may be the history file"
@@ -600,17 +723,23 @@ impl<F: Filesystem> Reader<'_, F> {
 
     /// Read the files of the functions the files read autoload by name in
     /// each directory they add to `fpath`, where zsh looks for them as they
-    /// first run, until those files add no more. Once a function is
-    /// autoloaded, a directory the check cannot follow is a doubt, and so is
-    /// a function that no directory zsh looks in first holds: zsh then finds
-    /// it in a directory the files do not add, one it was built with or one
-    /// `FPATH` names in its environment, which the check does not read.
+    /// first run, and in those zsh's `fpath` starts with when the check
+    /// knows them ([`Install::fpath`]), until those files add no more, and
+    /// what the stock functions among them read and mark
+    /// ([`Reader::marked`]). Once a function is autoloaded, a directory the
+    /// check cannot follow is a doubt. When the check does not know where
+    /// zsh's `fpath` starts, so is a function that no directory zsh looks in
+    /// first holds: zsh then finds it in a directory the files do not add,
+    /// one it was built with or one `FPATH` names in its environment.
     fn autoloaded(&mut self) {
         let mut looked: Vec<PathBuf> = Vec::new();
         let mut digests: Vec<PathBuf> = Vec::new();
         let mut found: Vec<String> = Vec::new();
         loop {
-            let before = looked.len();
+            let before = (looked.len(), self.autoloads.len(), self.fpath.len());
+            self.profile_dirs();
+            self.marked();
+            self.audit();
             for entry in self.fpath.clone() {
                 let (dir, first) = match entry {
                     Ok(entry) => entry,
@@ -637,12 +766,17 @@ impl<F: Filesystem> Reader<'_, F> {
                         digests.push(dir.clone());
                         self.compiled(&zwc(&dir));
                     }
-                    self.file(&path, false);
+                    self.function(&path, &name);
                 }
             }
-            if looked.len() == before {
+            if (looked.len(), self.autoloads.len(), self.fpath.len()) == before {
                 break;
             }
+        }
+        if self.install.fpath.is_some() {
+            // zsh looks in no directory the check does not read: a function
+            // none holds is one zsh cannot load either.
+            return;
         }
         let unfound: Vec<String> = self
             .autoloads
@@ -677,7 +811,12 @@ fn zwc(path: &Path) -> PathBuf {
 /// where it reads the user's files and which `~` and `$HOME` name, so the
 /// files are read for each of `homes` the shell may run with, and an option
 /// counts as on when it is on with any of them.
-pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Scan {
+pub(super) fn zsh<F: Filesystem>(
+    fs: &F,
+    homes: &[PathBuf],
+    start: Start,
+    install: &Install,
+) -> Scan {
     let homes: Vec<Option<&Path>> = if homes.is_empty() {
         vec![None]
     } else {
@@ -685,7 +824,7 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
     };
     let mut scan = Scan::default();
     for home in homes {
-        let one = in_home(fs, home, start);
+        let one = in_home(fs, home, start, install);
         for write in one.writes {
             if !scan.writes.contains(&write) {
                 scan.writes.push(write);
@@ -708,7 +847,23 @@ pub(super) fn zsh<F: Filesystem>(fs: &F, homes: &[PathBuf], start: Start) -> Sca
 
 /// What zsh's startup files below `/etc` and in `home` turn on, for a zsh
 /// that runs with `home`.
-fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
+fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &Install) -> Scan {
+    // The profiles the environment names, as `${(z)NIX_PROFILES}` splits
+    // them; none the check can tell when the environment holds what zsh
+    // splits otherwise.
+    let profiles = install.env.as_ref().and_then(|env| {
+        let words: Vec<String> = env
+            .nix_profiles
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        words
+            .iter()
+            .all(|word| plain_profile(word))
+            .then_some(words)
+    });
     let mut reader = Reader {
         fs,
         home,
@@ -716,7 +871,12 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         zdotdirs: home.map(Path::to_path_buf).into_iter().collect(),
         xdg_config_homes: vec![None],
         stack: Vec::new(),
-        fpath: Vec::new(),
+        fpath: install
+            .fpath
+            .iter()
+            .flatten()
+            .map(|dir| Ok((dir.clone(), false)))
+            .collect(),
         autoloads: Vec::new(),
         fc: Vec::new(),
         hooks: Vec::new(),
@@ -725,6 +885,24 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         rcs: false,
         prompt_subst: false,
         prompts: Vec::new(),
+        install,
+        profiles,
+        profile_fpath: Vec::new(),
+        tty_set: None,
+        compdir: None,
+        version_set: false,
+        profile_vars_set: false,
+        expanding: Vec::new(),
+        terminals: Vec::new(),
+        fc_aliases: Vec::new(),
+        texts: Vec::new(),
+        calls: Vec::new(),
+        compinit: false,
+        compaudit: false,
+        promptinit: false,
+        dump_marks: Vec::new(),
+        dumps: Vec::new(),
+        audited: Vec::new(),
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
@@ -762,6 +940,41 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         }
     }
     reader.autoloaded();
+    // A redirection to $TTY writes to the terminal, unless a file sets TTY.
+    if let Some(set) = reader.tty_set.clone() {
+        for (function, place) in std::mem::take(&mut reader.terminals) {
+            let doubt = format!(
+                "it cannot tell where the output that `{function}` in {place} redirects to \
+                 `$TTY` goes, as {set} may set TTY to name the history file"
+            );
+            reader.in_functions.push((function, Err(doubt)));
+        }
+    }
+    // An alias for an fc that writes nothing hands it the words it is used
+    // with: harmless while no file uses its name but where it is defined.
+    let mut aliases = std::mem::take(&mut reader.fc_aliases);
+    aliases.sort();
+    aliases.dedup();
+    for (name, text, place) in &aliases {
+        // Each definition names it as often as its own words do; one
+        // written twice alike counts once, so the second is a use.
+        let defined: usize = aliases
+            .iter()
+            .filter(|(other, ..)| other == name)
+            .map(|(_, text, _)| backstop::uses(text, name))
+            .sum();
+        let named: usize = reader
+            .texts
+            .iter()
+            .map(|file| backstop::uses(file, name))
+            .sum::<usize>();
+        if named > defined {
+            reader.doubt(format!(
+                "it cannot tell what the alias `{text}` in {place} runs where it is used, as zsh \
+                 hands the fc it stands for the words after it"
+            ));
+        }
+    }
     // What a function holds counts where zsh runs it as a hook: by its name
     // (`preexec`, `TRAPDEBUG`) or as the files make it one.
     for (function, found) in std::mem::take(&mut reader.in_functions) {

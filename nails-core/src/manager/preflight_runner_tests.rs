@@ -1139,6 +1139,8 @@ fn the_history_check_reads_the_typed_shell_before_the_login_shell() {
         argv: vec!["fish".to_string()],
         origin: ShellOrigin::Typed,
         login: None,
+        exe: None,
+        environment: None,
     };
 
     let typed = history_row(operator(), Some(fish));

@@ -15,6 +15,8 @@ fn typed(program: &str, argv: &[&str]) -> InspectedShell {
         argv: argv.iter().map(|word| word.to_string()).collect(),
         origin: ShellOrigin::Typed,
         login: None,
+        exe: None,
+        environment: None,
     }
 }
 
@@ -530,6 +532,8 @@ fn a_login_shell_is_named_as_one_and_judged_by_its_program() {
             argv: Vec::new(),
             origin: ShellOrigin::Login,
             login: None,
+            exe: None,
+            environment: None,
         }
     );
     let fs = MockFilesystem::new();
@@ -599,6 +603,8 @@ fn a_shell_of_another_account_is_read_in_both_homes() {
         argv: vec!["bash".to_string()],
         origin: ShellOrigin::Typed,
         login: None,
+        exe: None,
+        environment: None,
     };
     assert!(warning(run(&fs, shell)).contains("/home/alice/.bashrc runs `history -a`"));
 }
@@ -616,6 +622,8 @@ fn a_turn_off_in_one_of_two_homes_does_not_hide_an_option() {
         argv: vec!["-zsh".to_string()],
         origin: ShellOrigin::Typed,
         login: None,
+        exe: None,
+        environment: None,
     };
     let message = warning(run(&fs, shell.clone()));
     assert!(
@@ -641,6 +649,8 @@ fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
         argv: vec!["-zsh".to_string()],
         origin: ShellOrigin::Likely,
         login: Some(login.to_string()),
+        exe: None,
+        environment: None,
     };
     let fs = MockFilesystem::new();
     match run(&fs, likely("zsh")) {
@@ -1045,8 +1055,10 @@ fn a_warning_gives_the_fix_the_check_can_see() {
         "{message}"
     );
     // NixOS's defaults turn SHARE_HISTORY on in /etc/zshrc. Taken out of
-    // programs.zsh.setOptions, it is named no more, but the generated files
-    // still hold what the check cannot follow, so the fix is zsh -f there too.
+    // programs.zsh.setOptions, it is named no more, and the `eval` of what
+    // dircolors prints is one the check knows; where it cannot read the
+    // shell's program and environment, it cannot follow the directories
+    // /etc/zshenv adds to fpath, so the fix is zsh -f there.
     let fs = MockFilesystem::new();
     seed(&fs, "/etc/zshenv", NIXOS_ZSHENV);
     seed(
@@ -1077,11 +1089,10 @@ fn a_warning_gives_the_fix_the_check_can_see() {
         message,
         format!(
             "The check cannot tell whether zsh, the shell this command was typed into, writes \
-             each command line to its history file as it runs: it cannot follow an `eval` that \
-             a line of /etc/zshrc may run; {}; {}; {}; it cannot read the functions the files \
-             autoload that no directory they put in front of fpath holds (`compinit` and \
-             `promptinit`), which zsh then finds in one it was built with or one FPATH names. \
-             If it does, {ON_DISK}. {fix}",
+             each command line to its history file as it runs: {}; {}; {}; it cannot read the \
+             functions the files autoload that no directory they put in front of fpath holds \
+             (`compinit` and `promptinit`), which zsh then finds in one it was built with or one \
+             FPATH names. If it does, {ON_DISK}. {fix}",
             dir("$p/share/zsh/site-functions"),
             dir("$p/share/zsh/$ZSH_VERSION/functions"),
             dir("$p/share/zsh/vendor-completions"),
@@ -1187,4 +1198,68 @@ fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
         message.contains("/etc/zshrc names SHARE_HISTORY"),
         "{message}"
     );
+}
+
+#[test]
+fn a_typed_zsh_is_read_with_its_program_and_environment() {
+    use crate::filesystem::PathKind;
+    // A zsh 5.9.2 from the Nix store, whose own directory holds compinit as
+    // a test takes the stock one, and a .zshrc that runs it.
+    let zsh = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-zsh-5.9.2";
+    let own = format!("{zsh}/share/zsh/5.9.2/functions");
+    let fs = MockFilesystem::new();
+    seed(&fs, &format!("{zsh}/bin/zsh"), &format!("\0{own}\0"));
+    fs.mock_set_path_type(&own, PathKind::Dir);
+    for name in ["compinit", "compaudit", "compdump"] {
+        seed(
+            &fs,
+            &format!("{own}/{name}"),
+            &format!("# The stock {name} of a test.\ntypeset -A _i_test\n"),
+        );
+    }
+    fs.mock_set_directory_contents(
+        std::path::Path::new(&own),
+        ["compinit", "compaudit", "compdump"]
+            .map(|name| PathBuf::from(format!("{own}/{name}")))
+            .to_vec(),
+    );
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "autoload -Uz compinit && compinit\n",
+    );
+    let shell = |environment: Option<Vec<(String, String)>>| InspectedShell {
+        exe: Some(PathBuf::from(format!("{zsh}/bin/zsh"))),
+        environment,
+        ..typed("zsh", &["-zsh"])
+    };
+    assert!(
+        matches!(run(&fs, shell(Some(Vec::new()))), CheckResult::Pass(_)),
+        "{:?}",
+        run(&fs, shell(Some(Vec::new())))
+    );
+    // Without its environment, where zsh may find compinit is a doubt.
+    assert!(warning(run(&fs, shell(None))).contains("(`compinit`)"));
+    // An FPATH there names where zsh finds it.
+    let fpath = vec![("FPATH".to_string(), "/home/alice/.zfunc".to_string())];
+    seed(&fs, "/home/alice/.zfunc/compinit", "setopt share_history\n");
+    assert!(
+        warning(run(&fs, shell(Some(fpath))))
+            .contains("/home/alice/.zfunc/compinit names SHARE_HISTORY")
+    );
+}
+
+#[test]
+fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
+    assert_eq!(
+        environment(
+            b"HOME=/home/alice\0FPATH=/a:/b\0USER=alice\0FPATH=/c\0TOKEN=x\0=y\0NIX_PROFILES=/p q\0"
+        ),
+        [
+            ("FPATH".to_string(), "/a:/b".to_string()),
+            ("USER".to_string(), "alice".to_string()),
+            ("NIX_PROFILES".to_string(), "/p q".to_string()),
+        ]
+    );
+    assert_eq!(environment(b""), Vec::<(String, String)>::new());
 }

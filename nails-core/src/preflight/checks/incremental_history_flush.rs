@@ -28,8 +28,11 @@
 //! as, and in the operator's home when that is another ([`startup`], [`zsh`]),
 //! through the [`Filesystem`] seam: as root a read changes no file's access
 //! time, but a link on the way to one is followed and its access time can
-//! change. It never reads a history file. What it cannot read or follow makes
-//! it warn that it cannot tell. Of zsh, any mention of an option counts as on,
+//! change. It never reads a history file. Of the shell the command was typed
+//! into it also reads, from `/proc`, the program it runs and the few
+//! variables of its environment that tell where zsh finds the functions it
+//! autoloads ([`zsh::Install`]). What it cannot read or follow makes it warn
+//! that it cannot tell. Of zsh, any mention of an option counts as on,
 //! a turn-off too, as no reading of the files shows that one holds, so the fix
 //! it gives is one it can see: a zsh started as `zsh -f`, which reads
 //! `/etc/zshenv` alone, or for such a zsh, what the check names taken out of
@@ -79,6 +82,13 @@ pub struct InspectedShell {
     /// The program of the operator's login shell, read beside a shell the
     /// command was only likely typed into.
     pub login: Option<String>,
+    /// The file its process runs, as `/proc/<pid>/exe` names it; `None` for
+    /// a login shell, which may not run now, or when it cannot be read.
+    pub exe: Option<PathBuf>,
+    /// The variables of its environment that the check reads, those of
+    /// [`zsh::ENVIRONMENT`] it holds, as `/proc/<pid>/environ` gives them;
+    /// `None` for a login shell, or when it cannot be read.
+    pub environment: Option<Vec<(String, String)>>,
 }
 
 impl InspectedShell {
@@ -90,6 +100,8 @@ impl InspectedShell {
             argv: Vec::new(),
             origin: ShellOrigin::Login,
             login: None,
+            exe: None,
+            environment: None,
         }
     }
 
@@ -124,6 +136,9 @@ impl InspectedShell {
             }
         };
         let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+        let environment = std::fs::read(format!("/proc/{pid}/environ"))
+            .ok()
+            .map(|bytes| environment(&bytes));
         Some(Self {
             program: program_name(exe.as_deref(), proc::comm(pid))?,
             homes,
@@ -132,8 +147,27 @@ impl InspectedShell {
             login: operator
                 .filter(|_| origin == ShellOrigin::Likely)
                 .map(|operator| file_name(&operator.shell)),
+            exe,
+            environment,
         })
     }
+}
+
+/// The variables of [`zsh::ENVIRONMENT`] that `bytes`, a process's
+/// `/proc/<pid>/environ`, holds, each once, as the first that names it sets
+/// it, as zsh takes it; no other is kept.
+fn environment(bytes: &[u8]) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for entry in bytes.split(|byte| *byte == 0) {
+        let entry = String::from_utf8_lossy(entry);
+        let Some((name, value)) = entry.split_once('=') else {
+            continue;
+        };
+        if zsh::ENVIRONMENT.contains(&name) && !found.iter().any(|(known, _)| known == name) {
+            found.push((name.to_string(), value.to_string()));
+        }
+    }
+    found
 }
 
 /// The name a shell's process is known by: the file name of the program its
@@ -240,6 +274,10 @@ struct Judged<'a> {
     argv: &'a [String],
     zsh: zsh::Start,
     part: &'a str,
+    /// The file its process runs and the variables of its environment the
+    /// check reads, when it runs now.
+    exe: Option<&'a Path>,
+    environment: Option<&'a [(String, String)]>,
 }
 
 /// The result for one shell, whose startup files `fs` holds.
@@ -248,7 +286,8 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
     let part = shell.part;
     match kind(program) {
         Kind::Zsh => {
-            let mut scan = zsh::zsh(fs, shell.homes, shell.zsh);
+            let install = zsh::Install::of(fs, shell.exe, shell.environment);
+            let mut scan = zsh::zsh(fs, shell.homes, shell.zsh, &install);
             let line = zsh::CommandLine::of(shell.argv);
             let writes = line.writes();
             let fix = if !writes.is_empty() || !line.doubts.is_empty() {
@@ -374,6 +413,8 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 argv: &shell.argv,
                 zsh: zsh::Start::of(&shell.argv),
                 part: "the shell this command was typed into",
+                exe: shell.exe.as_deref(),
+                environment: shell.environment.as_deref(),
             },
         ),
         ShellOrigin::Likely => {
@@ -381,6 +422,8 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
             // is taken to read every startup file it may read.
             let mut first = vec![Judged {
                 argv: &shell.argv,
+                exe: shell.exe.as_deref(),
+                environment: shell.environment.as_deref(),
                 ..unsure(
                     &shell.program,
                     &shell.homes,
@@ -431,6 +474,8 @@ fn unsure<'a>(program: &'a str, homes: &'a [PathBuf], part: &'a str) -> Judged<'
             global_rcs: true,
         },
         part,
+        exe: None,
+        environment: None,
     }
 }
 

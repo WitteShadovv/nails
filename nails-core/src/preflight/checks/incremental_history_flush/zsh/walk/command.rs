@@ -100,6 +100,56 @@ fn computed_target(text: &str) -> bool {
             .contains(['$', '`'])
 }
 
+/// The code of each command substitution in `text` as written, a word of
+/// zsh code: what `$(...)`, a backquote pair or a process substitution
+/// (`<(...)`, `>(...)`, `=(...)`) holds, past the quotes and parentheses in
+/// it, to the end of `text` when it does not close. Arithmetic (`$((`) holds
+/// none of its own.
+fn substitutions(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let opens = match chars[at] {
+            '`' => Some(at + 1),
+            '$' | '<' | '>' | '=' if chars.get(at + 1) == Some(&'(') => {
+                (chars.get(at + 2) != Some(&'(')).then_some(at + 2)
+            }
+            _ => None,
+        };
+        let Some(start) = opens else {
+            at += 1;
+            continue;
+        };
+        let mut end = start;
+        let mut depth = 0usize;
+        let mut quote: Option<char> = None;
+        while end < chars.len() {
+            let c = chars[end];
+            match (quote, c) {
+                (_, '\\') => end += 1,
+                (Some(open), c) if c == open => quote = None,
+                (Some(_), _) => {}
+                (None, '\'' | '"') => quote = Some(c),
+                (None, '`') if chars[at] == '`' => break,
+                (None, '(') if chars[at] != '`' => depth += 1,
+                (None, ')') if chars[at] != '`' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+            end += 1;
+        }
+        let end = end.min(chars.len());
+        found.push(chars[start..end].iter().collect());
+        at = end + 1;
+    }
+    found
+}
+
 /// Where among `args`, the words after the builtin `command`, an expansion
 /// makes the name of a parameter it sets: `getopts`'s second word, the
 /// parameter `zstyle -s`, `-a`, `-b` or `-g` sets, a `strftime -s`'s, and any
@@ -233,6 +283,44 @@ impl Walker<'_> {
         }
     }
 
+    /// The events of the `fpath` assignment NixOS's `/etc/zshenv` makes in
+    /// its loop over the profiles, `fpath=($p/share/zsh/site-functions
+    /// $p/share/zsh/$ZSH_VERSION/functions $p/share/zsh/vendor-completions
+    /// $fpath)`, when `items` are those and the loop is that one: each of
+    /// the three directories under every profile, in front of the others
+    /// ([`Event::ProfileFpath`]). Whether they are.
+    pub(super) fn profiles_fpath(&mut self, items: &[Word]) -> bool {
+        const RESTS: [&str; 3] = [
+            "/share/zsh/site-functions",
+            "/share/zsh/$ZSH_VERSION/functions",
+            "/share/zsh/vendor-completions",
+        ];
+        let in_loop = self
+            .frames
+            .last()
+            .is_some_and(|open| matches!(open.frame, Frame::Loop { profiles: true, .. }));
+        let texts: Vec<&str> = items.iter().map(|item| item.text.as_str()).collect();
+        let written: Vec<String> = RESTS.iter().map(|rest| format!("$p{rest}")).collect();
+        let exact = texts.len() == 4
+            && texts[..3]
+                .iter()
+                .zip(&written)
+                .all(|(text, written)| text == written)
+            && texts[3] == "$fpath"
+            && items[..3].iter().all(|item| item.expands);
+        if !in_loop || !exact || !self.pending.words.is_empty() {
+            return false;
+        }
+        for (rest, written) in RESTS.iter().zip(written) {
+            self.events.push(Event::ProfileFpath {
+                written,
+                rest: (*rest).to_string(),
+                first: true,
+            });
+        }
+        true
+    }
+
     /// The events of an `autoload`, or of the like (`command`), of `args`:
     /// each function it marks, by name or by the path of its file. Which
     /// functions it marks is a doubt with `-m` (patterns), `-w` (compiled
@@ -265,6 +353,19 @@ impl Walker<'_> {
             )));
             return;
         }
+        // Without `-U` zsh expands aliases in the function's code as it
+        // loads it.
+        let unaliased = args
+            .iter()
+            .any(|arg| !arg.expands && arg.text.starts_with('-') && arg.text.contains('U'));
+        if !unaliased {
+            self.events.extend(
+                names
+                    .iter()
+                    .filter(|name| !name.expands)
+                    .map(|name| Event::Expanding(name.text.clone())),
+            );
+        }
         self.events.extend(names.into_iter().map(Event::Autoload));
     }
 
@@ -280,6 +381,7 @@ impl Walker<'_> {
         self.autoloads += nested.autoloads;
         self.fpaths += nested.fpaths;
         self.fcs += nested.fcs;
+        self.nix_profiles += nested.nix_profiles;
         self.indirects += nested.indirects;
         self.may_stop |= nested.may_stop;
         let uncertain = !unconditional || nested.confused;
@@ -371,8 +473,8 @@ impl Walker<'_> {
             .filter(|arg| !arg.text.starts_with('-'))
             .collect();
         let function = match command {
-            // `add-zsh-hook hook function`.
-            "add-zsh-hook" => words.get(1),
+            // `add-zsh-hook hook function`, `add-zle-hook-widget hook widget`.
+            "add-zsh-hook" | "add-zle-hook-widget" => words.get(1),
             // `zle -N widget [function]`.
             _ if args.first().is_some_and(|flag| flag.text == "-N") => {
                 words.get(1).or(words.first())
@@ -384,7 +486,18 @@ impl Walker<'_> {
                 "it cannot tell which function `{command} ... {}` in {} makes a hook",
                 function.text, self.place
             ))),
-            Some(function) => self.events.push(Event::Hook(function.text.clone())),
+            Some(function) => {
+                self.events.push(Event::Hook(function.text.clone()));
+                // `add-zsh-hook` and `add-zle-hook-widget` autoload the
+                // function they add, which zsh then loads from `fpath`
+                // unless the files define it.
+                let adds = !args
+                    .iter()
+                    .any(|arg| arg.text.starts_with('-') && arg.text.contains(['d', 'D', 'L']));
+                if command != "zle" && adds {
+                    self.events.push(Event::Autoload((*function).clone()));
+                }
+            }
             None => {}
         }
     }
@@ -480,6 +593,22 @@ impl Walker<'_> {
         self.mention_arithmetic(text);
     }
 
+    /// The commands that the command substitutions in `text`, a word of the
+    /// file's code or a here-document's body, run by name ([`Event::Call`]):
+    /// in a subshell, but a function they run there can write the history
+    /// file all the same.
+    pub(super) fn substituted(&mut self, text: &str) {
+        for code in substitutions(text) {
+            let nested = walk_text(&code, self.place);
+            self.events.extend(
+                nested
+                    .events
+                    .into_iter()
+                    .filter(|event| matches!(event, Event::Call { .. })),
+            );
+        }
+    }
+
     /// Note a doubt for each assignment in `text`, a word of the file's
     /// code, to a parameter whose name another one holds
     /// ([`backstop::indirect_assignments`]): it can set any parameter.
@@ -501,6 +630,7 @@ impl Walker<'_> {
         self.mention_options(text);
         self.reexpansion(text);
         self.indirect(text);
+        self.substituted(text);
         if ["ZDOTDIR=", "ZDOTDIR:=", "ZDOTDIR::=", "ZDOTDIR+="]
             .iter()
             .any(|form| text.contains(form))
@@ -518,6 +648,9 @@ impl Walker<'_> {
     /// not.
     pub(super) fn command(&mut self, words: Vec<Word>, after_condition: bool, piped: bool) {
         let unconditional = self.certain(after_condition, piped);
+        if !words.is_empty() {
+            self.counted();
+        }
         let mut words = words.into_iter().peekable();
         // Assignments before the command word.
         while let Some(word) = words.next_if(|word| is_assignment(&word.text)) {
@@ -646,7 +779,7 @@ impl Walker<'_> {
             }
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
-            "add-zsh-hook" | "zle" => self.hook(&command.text, &args),
+            "add-zsh-hook" | "add-zle-hook-widget" | "zle" => self.hook(&command.text, &args),
             "trap" => self.trap(&args, unconditional),
             "sched" => self.sched(&args, unconditional),
             "zstyle" => self.zstyle(&args, unconditional),
@@ -677,6 +810,12 @@ impl Walker<'_> {
                 self.mention(&command.text);
                 for arg in &args {
                     self.mention(&arg.text);
+                }
+                if !command.expands {
+                    self.events.push(Event::Call {
+                        name: command.text.clone(),
+                        args: args.clone(),
+                    });
                 }
             }
         }
@@ -721,7 +860,8 @@ impl Walker<'_> {
             if matches!(name, "aliases" | "galiases" | "saliases") && target.contains('[') {
                 // An alias, by the parameter that holds them.
                 self.mention(&word.text);
-                self.alias_value(&word.text, value, word, unconditional);
+                let regular = name == "aliases";
+                self.alias_value(&word.text, value, word, unconditional, regular);
                 return;
             }
             if matches!(name, "functions" | "dis_functions") && target.contains('[') {
@@ -742,6 +882,10 @@ impl Walker<'_> {
         let name = match word.text.split_once('=') {
             Some(("ZDOTDIR", _)) => "ZDOTDIR",
             Some(("XDG_CONFIG_HOME", _)) => "XDG_CONFIG_HOME",
+            Some(("NIX_PROFILES", _)) => {
+                self.nix_profiles += 1;
+                "NIX_PROFILES"
+            }
             _ => {
                 if word.text == "ZDOTDIR" {
                     // Exported or declared as it is.

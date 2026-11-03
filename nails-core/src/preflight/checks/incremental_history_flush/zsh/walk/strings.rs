@@ -7,7 +7,8 @@
 //! read as an `eval`'s words are; one with an expansion in it, which may make
 //! any code, is a doubt.
 
-use super::super::lexer::Word;
+use super::super::backstop::{FC_WRITES, is_fc_flag};
+use super::super::lexer::{Token, Word, lex};
 use super::{Event, Walker};
 
 /// The commands that take the words after them as options, code, names or
@@ -49,6 +50,21 @@ const OPEN: &[&str] = &[
     "time",
 ];
 
+/// The name of the alias that `text` defines: `name` of `name=value`, or of
+/// `aliases[name]=value`; `None` for a suffix or global alias, which zsh
+/// expands elsewhere than as a command's name, and for a name that holds
+/// what zsh may expand.
+fn alias_name(text: &str) -> Option<&str> {
+    let (target, _) = text.split_once('=')?;
+    let name = match target.strip_prefix("aliases[") {
+        Some(rest) => rest.strip_suffix(']')?,
+        None if target.contains('[') => return None,
+        None => target,
+    };
+    (!name.is_empty() && !name.contains(['$', '`', '\\', '\'', '"', '[', ']', '*', '?']))
+        .then_some(name)
+}
+
 /// The parameters whose value zsh shows as a prompt, which `PROMPT_SUBST`
 /// makes it expand, a command substitution and an assignment in an
 /// expansion among it, as it shows them.
@@ -75,30 +91,65 @@ fn computed(word: &Word) -> bool {
         )
 }
 
+/// Whether `command`, the last command of an alias's value as written, is
+/// an `fc` that writes nothing: `fc`, past the precommands that run it, with
+/// words that hold no expansion and no flag that writes the history file
+/// ([`FC_WRITES`]: `-A`, `-W`, `-P`), as `fc -l` or `fc -lnr -20` lists it.
+fn listing_fc(command: &str) -> bool {
+    let (tokens, flaws) = lex(command);
+    let mut words = Vec::new();
+    for token in tokens {
+        match token {
+            Token::Word(word) if !word.expands => words.push(word.text),
+            _ => return false,
+        }
+    }
+    let mut words = words
+        .iter()
+        .skip_while(|word| matches!(word.as_str(), "builtin" | "noglob" | "nocorrect" | "-"));
+    flaws.is_empty()
+        && words.next().is_some_and(|word| word == "fc")
+        && words.all(|word| !is_fc_flag(word) || !word.contains(FC_WRITES))
+}
+
 impl Walker<'_> {
     /// The events of an `alias` of `args`: what each value runs, read as an
     /// `eval`'s words, where the walk can read it whole. One with an
     /// expansion is a doubt, and so is one that ends with a command that
     /// takes the words the alias is used with as code, options, names or
     /// paths ([`OPEN`]), or with a blank, after which zsh expands the next
-    /// word as an alias too.
+    /// word as an alias too. An `fc` that writes nothing is no doubt in the
+    /// value of an alias zsh expands only as a command's name
+    /// ([`Event::FcAlias`]).
     pub(super) fn alias(&mut self, args: &[Word], unconditional: bool) {
+        // `-g` and `-s` make an alias zsh expands elsewhere than as a
+        // command's name; `-r` is the default, and `--` ends the flags.
+        let mut regular = true;
+        let mut flags = true;
         for arg in args {
             self.mention(&arg.text);
+            if flags && arg.text.starts_with(['-', '+']) && !arg.text.contains('=') {
+                flags = arg.text != "--";
+                regular &= matches!(arg.text.as_str(), "--" | "-r");
+                continue;
+            }
+            flags = false;
             if let Some((_, value)) = arg.text.split_once('=') {
-                self.alias_value(&arg.text, value, arg, unconditional);
+                self.alias_value(&arg.text, value, arg, unconditional, regular);
             }
         }
     }
 
     /// The events of the value `value` an alias is given by the word `word`,
-    /// as [`Walker::alias`] reads it.
+    /// as [`Walker::alias`] reads it; `regular` when zsh expands the alias
+    /// only as a command's name.
     pub(super) fn alias_value(
         &mut self,
         text: &str,
         value: &str,
         word: &Word,
         unconditional: bool,
+        regular: bool,
     ) {
         let doubt = |place: &str| {
             Event::Doubt(format!(
@@ -123,9 +174,17 @@ impl Walker<'_> {
                     "builtin" | "command" | "noglob" | "nocorrect" | "exec" | "-" | "time"
                 )
         });
-        if command.is_none_or(|command| OPEN.contains(&command))
-            || value.ends_with(char::is_whitespace)
-        {
+        let name = alias_name(text);
+        if value.ends_with(char::is_whitespace) {
+            self.events.push(doubt(self.place));
+        } else if let Some(name) = name.filter(|_| regular && listing_fc(last)) {
+            // It hands its words to an `fc` that writes nothing as written,
+            // but may write once used with more (`h -W`).
+            self.events.push(Event::FcAlias {
+                name: name.to_string(),
+                text: text.to_string(),
+            });
+        } else if command.is_none_or(|command| OPEN.contains(&command)) {
             self.events.push(doubt(self.place));
         }
     }
