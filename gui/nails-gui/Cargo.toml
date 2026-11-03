@@ -84,9 +84,9 @@ path = "src/main.rs"
 slint-build = "=1.18.1"
 
 [dev-dependencies]
-# Slint's headless platform: no display, fixed font metrics, and the element
-# queries the UI tests make. It does not follow semver, so it is pinned with
-# the toolkit.
+# Slint's headless platform: no display, and the element queries the UI tests
+# make. It lays their text out with the fonts fontconfig finds, as the window
+# does. It does not follow semver, so it is pinned with the toolkit.
 i-slint-backend-testing = "=1.18.1"
 # The golden images of tests/golden.rs, already in the toolkit's graph.
 png = "=0.18.1"

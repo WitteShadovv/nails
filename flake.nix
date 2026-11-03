@@ -426,6 +426,28 @@
           cargo-fuzz # `just fuzz-run`: the fuzz targets in fuzz/
         ];
 
+        # The window lays its text out with the fonts fontconfig finds, and
+        # its toolkit opens fontconfig at run time, through the loader's
+        # search path. A program built in this shell has nixpkgs' loader,
+        # which searches no library folder of the host, so without these the
+        # gui/ tests lay their text out with no font at all, and a page that
+        # the CI's Ubuntu wraps over many lines with DejaVu fits its window
+        # here. They put nixpkgs' fontconfig on the loader's path and name a
+        # fonts.conf with fontconfig's own rules and DejaVu's fonts alone: it
+        # drops every font folder the host's or the user's configuration
+        # adds. The golden test hands its child a fonts.conf of its own.
+        LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.fontconfig ];
+        FONTCONFIG_FILE = pkgs.writeText "fonts.conf" ''
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+          <fontconfig>
+            <include>${pkgs.fontconfig.out}/etc/fonts/conf.d</include>
+            <reset-dirs />
+            <dir>${pkgs.dejavu_fonts}/share/fonts</dir>
+            <cachedir prefix="xdg">fontconfig</cachedir>
+          </fontconfig>
+        '';
+
         # A fresh clone has no git hooks. Install them on first shell entry so
         # the pre-commit, pre-push and commit-msg checks run without a manual
         # step. This is the only place that installs them.
