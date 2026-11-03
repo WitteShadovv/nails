@@ -19,18 +19,21 @@
 //!    login screen, a power-off or a full reboot. The helper takes it as
 //!    soon as it reads its next request and runs the engine's hot path,
 //!    which ends the session so.
-//! 2. **A power-off of the operator's own**, whatever the finish, only when
-//!    the helper never ran the engine's emergency: there is no helper, the
+//! 2. **A power-off of the operator's own**, whatever the finish, where the
+//!    helper did not end the session in time: there is no helper, the
 //!    request could not be written within the [grace](Fallback::grace) of
 //!    the press, or the window still runs a grace after the request was
-//!    written. The last happens only when the helper did not act on it: the
-//!    engine's hot path ends every process of the hidden session, the window
-//!    included, the helper's parent through pkexec as much as the
-//!    launcher's, whichever way it ends the session. It is `systemctl
-//!    poweroff`, which asks logind as a desktop's own Power Off does: the
-//!    orderly power-off, slower than the engine's, but it needs neither root
-//!    nor the helper. Without the helper the window has no way back to the
-//!    decoy, so this is always a power-off.
+//!    written. The engine's hot path ends every process of the hidden
+//!    session, the window included, the helper's parent through pkexec as
+//!    much as the launcher's, whichever way it ends the session, so a window
+//!    still running then means the helper did not act on the request within
+//!    the grace: it was still on another request (a verify or a scan can
+//!    take minutes, and the window fires with the power-off then), or the
+//!    steps of a return or a restart before the kill took longer. It is
+//!    `systemctl poweroff`, which asks logind as a desktop's own Power Off
+//!    does: the orderly power-off, slower than the engine's, but it needs
+//!    neither root nor the helper. Without the helper the window has no way
+//!    back to the decoy, so this is always a power-off.
 //! 3. **The power button**, which the page names from the start: holding it
 //!    switches the computer off, as on any computer.
 //!
@@ -293,7 +296,8 @@ fn run(shared: &Shared, fallback: &Fallback, report: &dyn Fn(Outcome)) {
         // and ends every program of the session, this window included,
         // whether the launcher started it or it started its helper through
         // pkexec. A window still here a grace after the request means the
-        // helper never ran it: the window asks for the power-off itself.
+        // helper did not run it within the grace: the window asks for the
+        // power-off itself.
         std::thread::sleep(fallback.grace);
     }
     report(if power_off(fallback) {

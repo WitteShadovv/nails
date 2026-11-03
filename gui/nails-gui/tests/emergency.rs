@@ -377,11 +377,16 @@ fn the_page_of_a_deactivation_that_ends_keeps_it_working() {
 #[test]
 fn a_hidden_session_window_without_its_helper_still_has_it() {
     let screen = Screen::in_hidden_session();
+    screen.tall();
     assert_eq!(label(&screen), text::EMERGENCY, "before the helper answers");
     screen.update(Update::Ended(Failure::NotStarted(
         "pkexec could not be started".to_string(),
     )));
     assert!(screen.shows(text::NOT_STARTED));
+    // The page says it powers off, and why, before it is used.
+    let row = screen.find_with(text::FACT_EMERGENCY, AccessibleRole::ListItem);
+    let said = format!("Power off, {}", text::EMERGENCY_NO_HELPER);
+    assert_eq!(row.accessible_description().as_deref(), Some(said.as_str()));
     hold(&screen, 1100, None);
     assert_ended(&screen);
 }

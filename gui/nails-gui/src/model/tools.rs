@@ -31,7 +31,8 @@
 //! The helper serves one request at a time, and a verify or a scan can run
 //! for minutes. Meanwhile a tool's page takes nothing but the window's Close
 //! and, in a hidden session, the Emergency control, whose way out does not
-//! wait for the helper ([`crate::emergency`]).
+//! wait for the helper ([`crate::emergency`]): it powers off then, and the
+//! page says so (`emergency_setting`).
 
 use std::path::{Path, PathBuf};
 

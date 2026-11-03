@@ -182,7 +182,7 @@ pub fn setting(key: &str) -> (&'static str, &'static str) {
         "window.emergency" => (
             super::FACT_EMERGENCY,
             "How the Emergency control ends a hidden session. Where the window cannot reach \
-             NAILS, it powers off instead.",
+             NAILS in time or read this setting, it powers off instead.",
         ),
         _ => ("Setting", ""),
     }
@@ -223,7 +223,9 @@ pub fn choice(key: &str, value: &str) -> (&'static str, &'static str) {
         ),
         ("window.emergency", "return") => (
             "Return to the decoy",
-            "The decoy's login screen comes back, as after Return to Decoy. Memory stays powered.",
+            "The decoy's login screen comes back, as after Return to Decoy, and memory stays \
+             powered. Where the way back cannot undo what the session changed in the network, \
+             the computer powers off instead.",
         ),
         ("window.emergency", "poweroff") => (
             "Power off",

@@ -158,7 +158,7 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `session_mounts.alert` | boolean | `true` | Alert when a disk outside the hidden volume is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `session_mounts.read_only` | boolean | `false` | Opt-in: make every disk the hidden session does not use read-only at the block layer for the session, the disks present at entry and every disk attached during it, so a mount comes up read-only and writes fail. The way back makes them writable again. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds sleep and idle block inhibitors for the life of the session so the host cannot suspend, and takes the lid switch from logind when a closed lid would sleep. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `lock`. See [Sleep policy](#sleep-policy). |
-| `window.emergency` | `"return"`, `"poweroff"` or `"reboot"` | `"return"` | How the window's Emergency control ends a hidden session, chosen in advance since its gesture asks nothing: `return` goes back to the decoy's login screen as `nails emergency` does, `poweroff` powers off as `nails emergency --poweroff` does, and `reboot` reboots fully as `nails emergency --reboot` does. Only the window reads it; `nails emergency` reads no configuration. Until the window has read the setting, where it cannot read it or reach NAILS, and for a return in a session without a way back, the control powers off. See [The window's Emergency control](#the-windows-emergency-control). |
+| `window.emergency` | `"return"`, `"poweroff"` or `"reboot"` | `"return"` | How the window's Emergency control ends a hidden session, chosen in advance since its gesture asks nothing: `return` goes back to the decoy's login screen as `nails emergency` does, or powers off where its way back does, `poweroff` powers off as `nails emergency --poweroff` does, and `reboot` reboots fully as `nails emergency --reboot` does. Only the window reads it; `nails emergency` reads no configuration. Where the window cannot be sure the session ends so, as while Verify runs or where it cannot read the setting or reach NAILS, the control powers off. See [The window's Emergency control](#the-windows-emergency-control). |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -682,6 +682,9 @@ with `nails config set window.emergency poweroff`:
   `nails emergency` does. To an observer this looks like a logout, but the
   memory the session used stays powered (see
   [Cold-boot and running-memory attacks](operator-guide.md#cold-boot-and-running-memory-attacks)).
+  Where the way back cannot undo what the session changed in the network, it
+  powers off instead, as after a deactivate and a plain `nails emergency`
+  ([How it works](operator-guide.md#how-it-works)).
 - `poweroff`: power off, as `nails emergency --poweroff` does. RAM decays,
   the strongest answer to a seizure, though a machine that goes dark is seen.
 - `reboot`: a full reboot through the firmware, as `nails emergency --reboot`
@@ -696,13 +699,27 @@ when its Settings page opens. The hidden session's page names what the
 control does ("What Emergency does"), and the control's description, which a
 screen reader reads, says it on every page.
 
-The control powers off instead, and the page says why, until the window has
-read the setting, where the settings cannot be read, and where the setting
-asks for a return in a session without a way back. The window's own way out
-is a power-off too: where there is no helper, the request cannot be written
-within 3 seconds, or the window still runs 3 seconds after it, it asks
-logind for the power-off itself (`systemctl poweroff`), since it has no way
-back to the decoy of its own. Holding the power button always powers off.
+The control powers off instead where the window cannot be sure the session
+ends as the setting says, and the page then names that and why:
+
+- once the window cannot reach NAILS;
+- while Verify or a step of Rehearsal runs: NAILS reads the emergency only
+  after it, and the window does not wait that long (below);
+- until the window has read the setting, and where the settings cannot be
+  read or hold a value the window does not know;
+- for a return or a restart while a deactivation powers the computer off;
+- for a return in a session without a way back, and for a return while the
+  question of a deactivation says that the return powers off instead,
+  whatever happens before it runs.
+
+The window's own way out is a power-off too: where there is no helper, the
+request cannot be written within 3 seconds, or the window still runs 3
+seconds after it, it asks logind for the power-off itself (`systemctl
+poweroff`), since it has no way back to the decoy of its own. The engine's
+emergency ends the window with the session's other programs, so the window
+still runs then only where NAILS did not act on the request in time: it was
+busy with another request, or the steps of a return or a restart had not
+ended the session yet. Holding the power button always powers off.
 
 `nails emergency` reads no configuration, this setting included: it runs
 before the configuration is read, so neither a failed hidden volume nor a

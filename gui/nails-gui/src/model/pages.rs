@@ -401,7 +401,7 @@ fn report_rows(report: &Readiness, allowed: &BTreeSet<Risk>) -> Vec<CheckView> {
 pub(super) fn ending_now_page(finish: Finish) -> Page {
     let (description, fix) = match finish {
         Finish::PowerOff => (text::EMERGENCY_NOW, text::POWER_BUTTON_IF_STILL_ON),
-        Finish::Return => (text::EMERGENCY_RETURNING_NOW, text::POWER_OFF_IF_STILL_HERE),
+        Finish::Return => (text::EMERGENCY_RETURNING_NOW, text::POWER_OFF_IF_NOT_BACK),
         Finish::Reboot => (
             text::EMERGENCY_RESTARTING_NOW,
             text::POWER_OFF_IF_STILL_HERE,

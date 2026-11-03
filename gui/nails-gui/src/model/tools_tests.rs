@@ -22,6 +22,7 @@ use crate::worker::{Ask, Kind, Rehearse, Update};
 
 fn fixture(name: &str) -> Value {
     let text = match name {
+        "config-show" => include_str!("../../tests/fixtures/config-show.json"),
         "verify-findings" => include_str!("../../tests/fixtures/verify-findings.json"),
         "verify-clean" => include_str!("../../tests/fixtures/verify-clean.json"),
         "verify-live" => include_str!("../../tests/fixtures/verify-live.json"),
@@ -106,6 +107,12 @@ fn hidden() -> Model {
     assert_eq!(
         model.apply(status("hidden", Value::Null)),
         [Ask::ConfigShow]
+    );
+    // The settings, which the window reads before a tool can open.
+    assert!(
+        model
+            .apply(answered(Kind::Config, 0, fixture("config-show")))
+            .is_empty()
     );
     model
 }
