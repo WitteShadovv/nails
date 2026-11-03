@@ -88,13 +88,15 @@ with a second filesystem mounted over it is refused with `root_covered`, and
 one whose storage cannot be judged with `storage_unjudged`: on an unprivileged
 run on a distribution whose `/etc/crypttab` only root can read, or on a root in
 a file container (only root can read the loop device's record of where the file
-lives), run the command with sudo; a filesystem that shows no disk it stores its data on (an overlay,
-FUSE, a network filesystem, ZFS) or that lies on a ZFS volume is never accepted. A decoy `/etc/crypttab` or
+lives), run the command with sudo. A filesystem that shows no disk it stores its data on (an overlay,
+FUSE, a network filesystem, a ZFS dataset) is never accepted as storage of its own, and a root whose
+data reaches a ZFS volume is never accepted, not even on a filesystem of the decoy's. A decoy `/etc/crypttab` or
 `/etc/fstab` line that opens or mounts the hidden volume fails the
 `backend-entries` check: remove it long
 before the next use and open the volume by hand each time. If the boot mounts
 the volume through such a line, the gate refuses it as the decoy's own
-filesystem and says to remove the line. A line the decoy's own boot needs, one
+filesystem and says to remove the line, unless it is a ZFS volume, which the
+gate refuses as one. A line the decoy's own boot needs, one
 that mounts its root or another of its filesystems or its swap or that opens a
 device below one of them, cannot go: the hidden root then lies on the decoy's
 own storage, and the check says to put it on storage of its own instead. The
@@ -103,7 +105,9 @@ the check says both.
 
 An encrypted container file on a decoy filesystem only warns: the filesystem's
 journal and copy-on-write snapshots (btrfs, snapper) can keep old copies of the
-parts of the container that changed. `--allow-decoy-storage` (on `init`,
+parts of the container that changed. Where that filesystem lies on an `nbd` or
+`ublk` device, the container is refused as one on that device, and where it lies
+on a ZFS volume, as one on that volume. `--allow-decoy-storage` (on `init`,
 `activate`, `check` and `discard`) turns the refusal of the decoy's own storage
 into a warning; use it only for storage the gate takes for the decoy's that you
 know the decoy does not use (for example a disk its fstab lists but never
@@ -111,7 +115,8 @@ mounts), since everything written there lands on it. It turns the refusal of an
 `nbd` or `ublk` device into a warning too: use it there only when you know the
 program that serves the device keeps the data on storage this computer does not
 use, such as another computer. It never covers a folder, a covered root, storage
-that cannot be judged (a ZFS volume among it) or a decoy entry for the volume.
+that cannot be judged (a ZFS volume among it, wherever the root's data reaches
+one) or a decoy entry for the volume.
 See [the attach gate](threat-model.md#the-attach-gate).
 
 Read this guide on another device, not on the decoy: opening it there leaves

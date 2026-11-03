@@ -434,3 +434,116 @@ fn iscsi_nvme_and_zram_disks_attach_as_before() {
     );
     assert_eq!(zram.assess(), Assessment::Attached);
 }
+
+#[test]
+fn a_zfs_volume_is_refused_whatever_the_decoy_makes_of_it() {
+    // The decoy's fstab mounts the volume at the root, by its node or by a
+    // link under /dev/zvol, or mounts an encrypted mapping on it there; or
+    // the root is a bind of a folder of a filesystem the decoy mounts from
+    // the volume. Each is the decoy's own filesystem, which the override
+    // lifts elsewhere; on a ZFS volume nothing does.
+    let fstab = |line: &str| format!("/dev/nvme0n1p3 / ext4 defaults 0 1\n{line}");
+    let itself = decoy("5 1 230:0 / /mnt rw - ext4 /dev/zd0 rw\n")
+        .device(ZD0, "zd0", "230:0", &[])
+        .file("/etc/fstab", &fstab("/dev/zd0 /mnt ext4 defaults 0 2\n"));
+    assert_untraced("the volume the fstab mounts", &itself, Untraced::ZfsVolume);
+    let linked = decoy("5 1 230:0 / /mnt rw - ext4 /dev/zd0 rw\n")
+        .device(ZD0, "zd0", "230:0", &[])
+        .file(
+            "/etc/fstab",
+            &fstab("/dev/zvol/tank/hidden /mnt ext4 defaults 0 2\n"),
+        );
+    linked.link("/dev/zvol/tank/hidden", "/dev/zd0");
+    assert_untraced("its link the fstab names", &linked, Untraced::ZfsVolume);
+    let mapping = decoy("5 1 254:5 / /mnt rw - ext4 /dev/mapper/data rw\n")
+        .device(ZD0, "zd0", "230:0", &[])
+        .mapping(
+            "/sys/devices/virtual/block/dm-5",
+            "dm-5",
+            "254:5",
+            ("data", "CRYPT-LUKS2-0c-data"),
+            &[("zd0", ZD0)],
+        )
+        .file(
+            "/etc/fstab",
+            &fstab("/dev/mapper/data /mnt ext4 defaults 0 2\n"),
+        );
+    assert_untraced(
+        "a mapping on it the fstab mounts",
+        &mapping,
+        Untraced::ZfsVolume,
+    );
+    let bind = decoy(
+        "4 1 230:0 / /srv rw - ext4 /dev/zd0 rw\n\
+         5 1 230:0 /x /mnt rw - ext4 /dev/zd0 rw\n",
+    )
+    .device(ZD0, "zd0", "230:0", &[])
+    .file("/etc/fstab", &fstab("/dev/zd0 /srv ext4 defaults 0 2\n"));
+    assert_untraced(
+        "a bind of the decoy's /srv on it",
+        &bind,
+        Untraced::ZfsVolume,
+    );
+
+    // On an ordinary disk the fstab's volume is a refusal the override lifts.
+    let plain = decoy("5 1 8:16 / /mnt rw - ext4 /dev/sdb rw\n")
+        .device(SDB, "sdb", "8:16", &[])
+        .file("/etc/fstab", &fstab("/dev/sdb /mnt ext4 defaults 0 2\n"));
+    assert!(matches!(
+        assess(&plain, Allow::DecoyStorage),
+        Assessment::Warned(_)
+    ));
+}
+
+#[test]
+fn an_image_file_on_a_decoy_filesystem_on_a_served_disk_is_refused_as_the_image_file() {
+    // The decoy's /home is on a network block device. Wherever the server
+    // keeps that, the root's data lands in a file on /home: the refusal and
+    // the override's warning name that file.
+    let loop_dir = "/sys/devices/virtual/block/loop0";
+    let image = decoy(
+        "4 1 43:0 / /home rw - ext4 /dev/nbd0 rw\n\
+         5 1 7:0 / /mnt rw - ext4 /dev/loop0 rw\n",
+    )
+    .device(NBD0, "nbd0", "43:0", &[])
+    .device(loop_dir, "loop0", "7:0", &[])
+    .file(
+        "/etc/fstab",
+        "/dev/nvme0n1p3 / ext4 defaults 0 1\n/dev/nbd0 /home ext4 defaults 0 2\n",
+    );
+    image.attr(loop_dir, "loop/backing_file", "/home/op/x.img");
+    image
+        .fs
+        .mock_set_loop_backing_device(Path::new("/dev/loop0"), rustix::fs::makedev(43, 0));
+    let verdict = Verdict::ImageFileOnDecoy {
+        file: PathBuf::from("/home/op/x.img"),
+        at: PathBuf::from("/home"),
+    };
+    let Assessment::Refused(refusal) = assess(&image, Allow::Nothing) else {
+        panic!("it attached");
+    };
+    assert_eq!(
+        refusal.kind,
+        RefusalKind::DecoyStorage {
+            verdict: verdict.clone()
+        }
+    );
+    assert_eq!(
+        refusal.message(),
+        "/mnt is not a volume of its own: it is an unencrypted image file (/home/op/x.img) on \
+         /home. Nothing was written."
+    );
+    assert!(
+        refusal.hint(None)[0].starts_with("Setting up here would leave files"),
+        "{:?}",
+        refusal.hint(None)
+    );
+    let Assessment::Warned(warned) = assess(&image, Allow::DecoyStorage) else {
+        panic!("the override did not attach it");
+    };
+    assert_eq!(
+        warned.warning(),
+        "--allow-decoy-storage: using /mnt although it is an unencrypted image file \
+         (/home/op/x.img) on /home; everything written there lands on that storage"
+    );
+}

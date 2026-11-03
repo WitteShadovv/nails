@@ -33,35 +33,42 @@
 //! would break the decoy.
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read; the
-//! root is on a claimed filesystem (a bind, a subvolume, the filesystem
-//! itself); no block device of the root can be found, so its storage cannot
-//! be followed (an overlay, FUSE, a network filesystem), or the disk of its
-//! partition is not found; its data reaches a disk whose kind cannot be read,
-//! a ZFS volume or a disk of a driver the kernel does not name; it shares a
-//! device with a claim the decoy's boot uses; it is an image file on a
-//! filesystem whose device cannot be found or on none mounted here; its data
-//! reaches a disk that a program serves (a network or userspace block
-//! device); it is an image file, or an encrypted container file, on a claimed
-//! filesystem; it shares a device only with entries the decoy never mounts at
-//! boot; else it is separate. A served disk comes after every verdict no
-//! override lifts and before every one that only warns, so accepting it hides
-//! none of the first and none of the second hides it. A tmpfs or ramfs root
-//! is always separate. A partition of a loop device lies in the loop device's
-//! file and is judged with it, and a root on a partition of an md array, or of
-//! a disk that sysfs shows nothing below, is judged with that disk, though a
-//! partition of the disk that the decoy uses shares nothing with it. The
-//! filesystem that holds an image file is the one on the device the loop
-//! driver recorded for the file ([`FileHolder`]), not the one its path leads
-//! to today.
+//! root's data reaches, wherever it goes, the decoy's own storage included,
+//! something that cannot be followed to the disks that hold it: a device
+//! sysfs does not list, a disk whose kind cannot be read, a ZFS volume, a
+//! disk of a driver the kernel does not name, a partition whose disk is not
+//! found, or an image file whose filesystem cannot be told (its loop record
+//! cannot be read, no filesystem mounted here holds it, or that filesystem
+//! shows no device and is not the decoy's); the root is on a claimed
+//! filesystem (a bind, a subvolume, the filesystem itself); no block device
+//! of the root can be found, so its storage cannot be followed (an overlay,
+//! FUSE, a network filesystem); it shares a device with a claim the decoy's
+//! boot uses; its data reaches an unencrypted image file on a claimed
+//! filesystem; it reaches a disk that a program serves (a network or
+//! userspace block device); it reaches an encrypted container file on a
+//! claimed filesystem; it shares a device only with entries the decoy never
+//! mounts at boot; else it is separate. The override lifts none of the
+//! second verdict, even for a root on the decoy's own filesystem. A served
+//! disk comes after every verdict no override lifts and before every one
+//! that only warns, so accepting it hides none of the first and none of the
+//! second hides it. A tmpfs or ramfs root is always separate. A partition of
+//! a loop device lies in the loop device's file and is judged with it, and a
+//! root on a partition of an md array, or of a disk that sysfs shows nothing
+//! below, is judged with that disk, though a partition of the disk that the
+//! decoy uses shares nothing with it. The filesystem that holds an image file
+//! is the one on the device the loop driver recorded for the file
+//! ([`FileHolder`]), not the one its path leads to today.
 //!
 //! Where the root's data reaches is its stack, every other device of a btrfs
 //! filesystem in it, and below an image file the devices of the filesystem
-//! that holds the file, the decoy's own included, as far down as these go. A
-//! whole disk that sysfs shows nothing below is known by the driver
-//! `/proc/devices` lists for its major number, or, as for a userspace block
-//! device, by the name its driver gives it ([`Served`], [`Untraced`]); one
-//! whose kind cannot be read is [`NodeKind::Unidentified`], and refused only
-//! when the root's data reaches it.
+//! that holds the file, the decoy's own included, as far down as these go.
+//! An image file on a claimed filesystem counts where the data reaches it
+//! before the decoy's own storage: below that, the image files are the
+//! decoy's. A whole disk that sysfs shows nothing below is known by the
+//! driver `/proc/devices` lists for its major number, or, as for a userspace
+//! block device, by the name its driver gives it ([`Served`], [`Untraced`]);
+//! one whose kind cannot be read is [`NodeKind::Unidentified`], and refused
+//! only when the root's data reaches it.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
@@ -110,9 +117,6 @@ pub const FSTAB: &str = "/etc/fstab";
 pub const CRYPTTAB: &str = "/etc/crypttab";
 /// Where the kernel lists every block device.
 pub const SYS_CLASS_BLOCK: &str = "/sys/class/block";
-
-/// Upper bound on the devices visited below one device.
-const MAX_WALK: usize = 32;
 
 /// What a block device is, as far as the judge needs to know.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,22 +290,24 @@ impl DeviceMap {
         self.walk(name, true)
     }
 
-    /// `name` and every device below it, into the arrays of partitions when
-    /// `into_arrays`.
+    /// `name` and every device below it, each once, into the arrays of
+    /// partitions when `into_arrays`. The walk needs no bound: the map holds
+    /// the devices sysfs lists, and each is gone into once.
     fn walk(&self, name: &str, into_arrays: bool) -> Vec<String> {
-        let mut seen = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut walked = Vec::new();
         let mut pending = vec![name.to_string()];
         while let Some(next) = pending.pop() {
-            if seen.len() >= MAX_WALK || seen.contains(&next) {
+            if !seen.insert(next.clone()) {
                 continue;
             }
             if let Some(node) = self.nodes.get(&next) {
                 pending.extend(node.below.iter().rev().cloned());
                 pending.extend(self.disk_below(node, into_arrays).map(str::to_string));
             }
-            seen.push(next);
+            walked.push(next);
         }
-        seen
+        walked
     }
 
     /// The devices right below `name`, as [`Self::walk`] goes on from it.

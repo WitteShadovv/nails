@@ -758,12 +758,23 @@ of this changelog for that version becomes the release notes word for word, and
   filesystem on it. An `nbd` or `ublk` device is refused as not storage of its own
   (`not_separate_volume`), and `--allow-decoy-storage` turns that into a warning for a device you
   know is served from storage the decoy does not use, so the window offers "Allow for This
-  Activation…" for it. A ZFS volume is refused as storage whose disks cannot be told
-  (`storage_unjudged`), as a ZFS dataset is, and no flag lifts that. A disk whose driver the
-  kernel does not name is refused the same way, and so is a root on any disk where `/proc/devices`
-  cannot be read. A root that shares a device only with entries the decoy never mounts at boot,
-  which only warns, no longer hides such a refusal, nor that of an image file whose filesystem
-  cannot be told. Ordinary disks, iSCSI disks and `zram` devices are judged as before.
+  Activation…" for it. An image file on a decoy filesystem that lies on such a device is refused
+  as an image file on that filesystem, and an encrypted container there, which would only warn on
+  another disk, as on the device. A ZFS volume is refused as storage whose disks cannot be told
+  (`storage_unjudged`), as a ZFS dataset is, and no flag lifts that, not even for a root on a
+  filesystem of the decoy's on the volume or one the decoy's fstab mounts from it. A disk whose
+  driver the kernel does not name is refused the same way, and so is a root on any disk where
+  `/proc/devices` cannot be read. A root that shares a device only with entries the decoy never
+  mounts at boot, which only warns, no longer hides such a refusal, nor that of an image file whose
+  filesystem cannot be told. Ordinary disks, iSCSI disks and `zram` devices are judged as before.
+- The attach gate judges an image file that holds the filesystem the root's image file is on as
+  it judges the root's own image file, as deep as such files go. On a decoy filesystem it is
+  refused, and where no filesystem mounted here holds it, its loop device's record cannot be read
+  or its filesystem shows no device, the root's storage cannot be judged (`storage_unjudged`).
+  Before, such a root attached. The gate also follows a stack of any width: a device the root
+  shares with the decoy counts however many devices an array or volume group spans (the walk
+  stopped after 32 before), and a device that sysfs does not list below another refuses the root
+  as storage that cannot be judged.
 - `backend-entries` no longer says to remove a line the decoy's own boot needs. Where a flagged
   fstab line mounts the decoy's root, another of its filesystems or its swap, or a flagged crypttab
   line opens a device below one of them (the LUKS devices of the md array the decoy's root is on,

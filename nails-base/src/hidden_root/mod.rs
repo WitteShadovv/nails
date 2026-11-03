@@ -167,8 +167,10 @@ pub enum Allow {
     /// that a program serves (a network or userspace block device), for an
     /// operator who knows the program keeps the data elsewhere. Everything
     /// else still refuses: a missing root, a folder that is no mount point, a
-    /// covered one, storage that cannot be judged or followed (a ZFS volume
-    /// among it), and a root on `/`'s own device the judge does not place.
+    /// covered one, storage that cannot be judged or followed, and a root on
+    /// `/`'s own device the judge does not place. A root whose data reaches a
+    /// ZFS volume, or anything else the judge cannot follow to its disks, is
+    /// refused so even when it is one of the decoy's own filesystems.
     DecoyStorage,
 }
 
