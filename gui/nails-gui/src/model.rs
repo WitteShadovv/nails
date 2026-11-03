@@ -327,7 +327,8 @@ pub struct Model {
     activation: Option<Activation>,
     deactivation: Option<Deactivation>,
     /// Why the return the open question offers powers off instead, as its
-    /// plan said, for the page that follows Return to Decoy.
+    /// plan said, for the page that follows Return to Decoy, and for the
+    /// Emergency control, whose return ends through the same way back.
     return_instead: Option<PowerOffInstead>,
     /// The options the checks and the activation take, from Activation
     /// Options.
@@ -985,7 +986,18 @@ impl Model {
         page.question.clone_from(&self.question);
         page.emergency = self.shows_emergency();
         if page.emergency {
-            page.emergency_how = text::emergency_how(self.emergency_finish().0).to_string();
+            let (finish, instead) = self.emergency_finish();
+            page.emergency_how = text::emergency_how(finish).to_string();
+            // The page of a hidden session's status names what the control
+            // does; any other page names it where it powers off instead of
+            // ending as the setting says.
+            let named = page
+                .facts
+                .iter()
+                .any(|(title, _)| title == text::FACT_EMERGENCY);
+            if instead.is_some() && !named {
+                page.facts.push(self.emergency_fact());
+            }
         }
         page
     }

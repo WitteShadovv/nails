@@ -230,8 +230,9 @@ pub fn emergency_how(finish: Finish) -> &'static str {
     }
 }
 
-/// The fact on a hidden session's page that says what the Emergency control
-/// does; the label of its setting too.
+/// The fact that says what the Emergency control does, on a hidden session's
+/// page and on any page where it powers off instead of what its setting
+/// says; the label of its setting too.
 pub const FACT_EMERGENCY: &str = "What Emergency does";
 /// Why the Emergency control powers off instead of what its setting says,
 /// after the name of the power-off: the window has not read the setting yet.
@@ -243,6 +244,15 @@ pub const EMERGENCY_UNREADABLE: &str = "as the window could not read its setting
 pub const EMERGENCY_NO_WAY_BACK: &str = "as this session has no way back to the decoy";
 /// The window has no helper to ask for anything else.
 pub const EMERGENCY_NO_HELPER: &str = "as the window cannot reach NAILS";
+/// The helper runs a verify or a step of the rehearsal, and reads the
+/// emergency only after it.
+pub const EMERGENCY_BUSY: &str = "while NAILS is busy";
+/// A deactivation powers the computer off: a return or a restart would be
+/// the weaker ending.
+pub const EMERGENCY_POWERING_OFF: &str = "as the computer is powering off";
+/// The plan of a return says the way back powers off instead, whatever
+/// happens before it runs.
+pub const EMERGENCY_WAY_BACK_POWERS_OFF: &str = "as this session's way back powers off instead";
 /// While the pointer holds it and the bar fills.
 pub const EMERGENCY_KEEP_HOLDING: &str = "Keep Holding";
 /// Once the bar is full.
@@ -260,10 +270,16 @@ pub const EMERGENCY_RESTARTING_NOW: &str = "The computer restarts now.";
 /// The way out that needs nothing of the window or of NAILS.
 pub const POWER_BUTTON_IF_STILL_ON: &str =
     "If the computer does not turn off, hold the power button until it is off.";
-/// What follows a return or a restart that does not come: the window's own
-/// power-off, then the power button.
+/// What follows a restart that does not come: the window's own power-off,
+/// then the power button.
 pub const POWER_OFF_IF_STILL_HERE: &str = "If the hidden session does not end, the computer \
      powers off instead. If it stays on, hold the power button until it is off.";
+/// What follows a return that does not come: the way back's own power-off
+/// where it cannot undo what the session changed in the network, the
+/// window's where the session does not end, then the power button.
+pub const POWER_OFF_IF_NOT_BACK: &str = "If the way back cannot undo what the session changed \
+     in the network, or the hidden session does not end, the computer powers off instead. If it \
+     stays on, hold the power button until it is off.";
 
 /// A hidden session runs.
 pub const HIDDEN_SESSION: &str = "Hidden Session";
