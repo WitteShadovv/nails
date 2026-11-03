@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: the lines udev writes of a partition's entry in its
+# table.
+"E:"
+"S:"
+"ID_PART_ENTRY_SCHEME=gpt"
+"ID_PART_ENTRY_SCHEME=dos"
+"ID_PART_ENTRY_TYPE="
+"ID_PART_ENTRY_FLAGS=0x"
+"ID_PART_ENTRY_NUMBER="
+"ID_PART_ENTRY_OFFSET="
+"ID_PART_TABLE_TYPE="
+"3b8f8425-20e0-4f3b-907f-1a25a76f98e8"
+"0x8000000000000000"
+"\x0a"
