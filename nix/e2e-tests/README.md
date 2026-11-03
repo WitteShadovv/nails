@@ -475,8 +475,10 @@ soft-reboots with `py/nails_e2e/session.py`:
   residue and with the volatile decoy journal reset (a line the decoy logged
   before activation is gone, and the journal starts at the deactivation, with
   no kernel record the kernel logged earlier), the upper persisting into the
-  next session, an emergency and its timed log, and `recover`/`emergency` on
-  the plain decoy changing nothing;
+  next session, an emergency and its timed log, `recover`/`emergency` on
+  the plain decoy changing nothing, and eth1 keeping the static addresses
+  NixOS gave it (`networking.interfaces`) in both hidden sessions and after
+  both ways back;
 - `session-emergency`: the activation command typed on a decoy tty never reaches
   its history, emergency from a hidden login shell, the decoy's avahi-daemon
   and a service with a PID file in `/run` starting again after the emergency
