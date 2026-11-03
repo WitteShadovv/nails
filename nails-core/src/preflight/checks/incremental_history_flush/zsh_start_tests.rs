@@ -40,6 +40,12 @@ fn a_zshenv_that_may_turn_rcs_on_again_makes_a_zsh_f_read_on() {
         "emulate -R zsh",
         "setopt {r,x}cs",
         "source /etc/zshenv.local",
+        // Another zsh without -f, or a flag or a name an expansion makes.
+        "[[ -z $INNER ]] && INNER=1 exec zsh -i",
+        "x=f; set +$x",
+        "set +${:-f}",
+        "set +$(print f)",
+        "setopt $o",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/etc/zshenv", &format!("{zshenv}\n"));

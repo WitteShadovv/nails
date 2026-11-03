@@ -1309,16 +1309,29 @@ afterwards:
     for a zsh started with `-f` (`--no-rcs`, `-o norcs`), and none of `/etc`'s
     other files for one started with `-d`, unless what it read so far names
     `RCS` or `GLOBAL_RCS` (`setopt rcs`, `set +f`, an `emulate`), which may
-    turn them on again, a line ending in a backslash going on in the next, the
-    body of a here-document as text, not code, in a `$(...)` too, and a file
-    they source read where it is sourced when its path resolves, so it follows
-    Home Manager's `dotDir`, whose `.zshenv` the home's sources and which sets
+    turn them on again, sets options by flags or names an expansion makes
+    (`set +$x`), or runs an `exec`, which may start another zsh without `-f`,
+    a line ending in a backslash going on in the next, the body of a
+    here-document as text, not code, in a `$(...)` too, and a file they source
+    read where it is sourced when its path resolves, so it follows Home
+    Manager's `dotDir`, whose `.zshenv` the home's sources and which sets
     `ZDOTDIR`;
-  - an `fc` that writes the history file (`fc -A`, `fc -W` or `fc -P`,
-    with other flags too, as in `fc -AI`) counts as a write wherever it
-    stands: a hook (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs
-    it after every command, as bash's `history -a` from `PROMPT_COMMAND`.
-    One with an expansion among its words is a doubt;
+  - an `fc` that writes the history file (`fc -A`, `fc -W` or `fc -P`, with
+    other flags too, as in `fc -AI`) counts as a write wherever it stands: a
+    hook (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs it after
+    every command, as bash's `history -a` from `PROMPT_COMMAND`. One with an
+    expansion among its words is a doubt. So does a redirection to the history
+    file, `$HISTFILE` or a path whose last part holds `hist`
+    (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), and in a hook (one
+    by its name, a `TRAP...` function, or one that `add-zsh-hook`, a
+    `*_functions` array or `zle -N` makes a hook) a word that names that file
+    (`tee -a ~/.zsh_history`); a redirection there whose target an expansion
+    makes is a doubt. A history tool that keeps its own record elsewhere, such
+    as atuin, it does not see;
+  - an `emulate -R ksh`, whose reset to ksh's defaults turns `SHARE_HISTORY`
+    on, as `-R` sets every option to the mode's defaults (sh's, csh's and
+    zsh's hold none of the three); an `emulate` whose mode an expansion makes
+    is a doubt;
   - the file of each function they autoload (`autoload`, `functions -u`,
     `typeset -fu`), by its path or by its name in each directory they add
     to `fpath`, where zsh looks for it as it first runs it. One that no

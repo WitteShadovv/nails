@@ -201,8 +201,28 @@ pub(super) fn names_rcs(text: &str) -> bool {
                             && word[1..].starts_with(|c: char| c.is_ascii_alphabetic())
                             && word.contains(['f', 'd'])
                     });
-                flags || whole_words(line, "emulate") > 0
+                // A computed flag or name (`set +$x`), and an `exec`, which
+                // may start another zsh without `-f`.
+                let computed = ["set", "setopt", "unsetopt"].iter().any(|command| {
+                    line.match_indices(command).any(|(at, _)| {
+                        whole_words(&line[at..], command) > 0 && line[at..].contains(['$', '`'])
+                    })
+                });
+                flags
+                    || computed
+                    || whole_words(line, "emulate") > 0
+                    || whole_words(line, "exec") > 0
             })
+}
+
+/// Whether `text`, a word of zsh code, names a history file: `$HISTFILE` or
+/// an expansion of it, or a path whose last part holds `hist` in any case
+/// (`~/.zsh_history`, `~/.histfile`, `of=$HOME/.zhistory`).
+pub(super) fn history_path(text: &str) -> bool {
+    let last = text.rsplit(['/', '=']).next().unwrap_or(text);
+    text.contains("$HISTFILE")
+        || text.contains("${HISTFILE")
+        || last.to_lowercase().contains("hist")
 }
 
 /// Whether `text`, zsh code, names one of the options `wanted` (as zsh
