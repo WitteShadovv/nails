@@ -25,7 +25,10 @@
       "sleep_policy": {
         "mode": "warn"
       },
-      "state_file_path": "/mnt/data/state.json"
+      "state_file_path": "/mnt/data/state.json",
+      "window": {
+        "emergency": "return"
+      }
     },
     "exists": true,
     "path": "/mnt/data/config/nails.toml",
@@ -49,7 +52,9 @@
       "show_opsec_reminders": "default",
       "sleep_policy": "default",
       "sleep_policy.mode": "default",
-      "state_file_path": "derived"
+      "state_file_path": "derived",
+      "window": "default",
+      "window.emergency": "default"
     }
   },
   "ok": true,

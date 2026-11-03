@@ -155,6 +155,7 @@ impl Default for Config {
             session_mounts: super::session_mounts::SessionMountsConfig::default(),
             nixos_flake: None,
             sleep_policy: super::types::SleepPolicyConfig::default(),
+            window: super::window::WindowConfig::default(),
         }
     }
 }

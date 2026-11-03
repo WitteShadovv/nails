@@ -131,6 +131,8 @@ export component AppWindow inherits Window {
     in property <bool> follow-system-scheme: true;
     // The Emergency control shows, and acts.
     in property <bool> emergency-shown;
+    // How to use the Emergency control and how it ends the session.
+    in property <string> emergency-how;
 
     callback close-window();
     callback emergency-fired();
@@ -524,6 +526,7 @@ export component AppWindow inherits Window {
     if root.emergency-shown: EmergencyButton {
         x: 6px;
         y: 1px;
+        how: root.emergency-how;
         width: min(self.preferred-width, root.width - 92px);
         height: 44px;
         // The header bar's title gives way to a label that reaches it.

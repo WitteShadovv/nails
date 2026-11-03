@@ -104,6 +104,10 @@ pub const SETTINGS: &[Setting] = &[
         key: "sleep_policy.mode",
         kind: Kind::Choice(&["warn", "block", "teardown"]),
     },
+    Setting {
+        key: "window.emergency",
+        kind: Kind::Choice(&["return", "poweroff", "reboot"]),
+    },
 ];
 
 /// The keys a hidden session's own record names: while a session runs, is

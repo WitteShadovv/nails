@@ -28,6 +28,7 @@ pub mod backend_watch;
 pub mod edit;
 pub mod persona;
 pub mod session_mounts;
+pub mod window;
 
 // Sub-modules for config implementation
 mod builder;
@@ -48,6 +49,7 @@ mod testing;
 pub use backend_watch::BackendWatchConfig;
 pub use persona::{PersonaConfig, PersonaMode};
 pub use session_mounts::SessionMountsConfig;
+pub use window::{WindowConfig, WindowEmergency};
 
 // Re-exports for public API - core types
 pub use types::{

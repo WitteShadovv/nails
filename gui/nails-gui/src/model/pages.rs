@@ -4,7 +4,8 @@
 //! The pages of the model's states: the decoy's check, a hidden session's
 //! status, the record that cannot be read and each way a session can end.
 //! What the window shows in each comes from the engine's last answers, which
-//! the [`Model`] keeps.
+//! the [`Model`] keeps. A hidden session's status names what its Emergency
+//! control does, as a fact.
 
 use std::collections::BTreeSet;
 
@@ -12,6 +13,7 @@ use nails_api::CheckOutcome;
 
 use super::activation::Risk;
 use super::{Check, CheckView, Model, Page};
+use crate::emergency::Finish;
 use crate::envelope::{
     self, Attention, CheckStatus, ErrorBody, Place, Readiness, RecoverData, StatusData,
 };
@@ -169,6 +171,9 @@ impl Model {
     pub(super) fn hidden_page(&self, status: &StatusData) -> Page {
         let fix = status.remediation.as_deref().map(text::engine_fix);
         let root = status.hidden_root.clone().unwrap_or_default();
+        // What the Emergency control does, after the hidden volume.
+        let mut facts = self.volume_fact(status);
+        facts.push(self.emergency_fact());
         match status.attention {
             Some(Attention::NoWayBack) => Page {
                 heading: text::NO_WAY_BACK.to_string(),
@@ -179,13 +184,14 @@ impl Model {
                     .map(text::no_way_back_reason)
                     .unwrap_or_default(),
                 urgent: true,
+                facts: vec![self.emergency_fact()],
                 fix: text::HOLD_POWER_BUTTON.to_string(),
                 ..Page::default()
             },
             Some(Attention::VolumeCovered) => Page {
                 heading: text::HIDDEN_SESSION.to_string(),
                 description: text::hidden_volume_covered(status.uptime_seconds, &root),
-                facts: self.volume_fact(status),
+                facts,
                 fix: fix.unwrap_or_default(),
                 action: Some(text::DEACTIVATE),
                 links: self.links(Place::Hidden),
@@ -202,7 +208,7 @@ impl Model {
                         .map(text::sentence)
                         .unwrap_or_default(),
                 },
-                facts: self.volume_fact(status),
+                facts,
                 fix: fix.unwrap_or_default(),
                 // Without the hidden volume the way back has nothing to
                 // return with: the session ends with an emergency. Nor can a
@@ -389,14 +395,23 @@ fn report_rows(report: &Readiness, allowed: &BTreeSet<Risk>) -> Vec<CheckView> {
         .collect()
 }
 
-/// The page once the emergency fired: the session ends, and nothing is to
-/// read or answer but the way out that needs neither the window nor NAILS.
-pub(super) fn ending_now_page() -> Page {
+/// The page once the emergency fired to end the session with `finish`:
+/// nothing is to read or answer but what follows where the session does not
+/// end so, down to the way out that needs neither the window nor NAILS.
+pub(super) fn ending_now_page(finish: Finish) -> Page {
+    let (description, fix) = match finish {
+        Finish::PowerOff => (text::EMERGENCY_NOW, text::POWER_BUTTON_IF_STILL_ON),
+        Finish::Return => (text::EMERGENCY_RETURNING_NOW, text::POWER_OFF_IF_STILL_HERE),
+        Finish::Reboot => (
+            text::EMERGENCY_RESTARTING_NOW,
+            text::POWER_OFF_IF_STILL_HERE,
+        ),
+    };
     Page {
         heading: text::ENDING.to_string(),
-        description: text::EMERGENCY_NOW.to_string(),
+        description: description.to_string(),
         urgent: true,
-        fix: text::POWER_BUTTON_IF_STILL_ON.to_string(),
+        fix: fix.to_string(),
         no_input: true,
         ..Page::default()
     }

@@ -27,13 +27,15 @@ use wired::{Wired, helper, next_request};
 
 /// A hidden session's window on a helper that answers its status, the
 /// settings with `shows` one after the other, and each change as `respond`
-/// says; shown once the session's page settled.
+/// says; shown once the session's page settled. The settings the session
+/// reads first for its Emergency control are the first of `shows`, as the
+/// Settings page reads them next.
 fn window(
     shows: &'static [&'static str],
     mut respond: impl FnMut(&Op) -> Option<(u8, Value)> + Send + 'static,
 ) -> (Wired, Receiver<Request>, FakePowerOff) {
     let (seen, requests) = channel();
-    let mut reads = shows.iter();
+    let mut reads = shows[..1].iter().chain(shows);
     let (stream, _helper) = helper(seen, move |request| {
         let (exit, envelope) = match &request.op {
             Op::Status => (
@@ -48,7 +50,7 @@ fn window(
     });
     let power_off = FakePowerOff::new("exit 0");
     let wired = Wired::new(Connect::Stream(stream), &power_off, true);
-    wired.pump_until(|update| matches!(update, Update::Answered(Kind::Status, _)));
+    wired.pump_until(|update| matches!(update, Update::Answered(Kind::Config, _)));
     wired.screen.tall();
     (wired, requests, power_off)
 }
@@ -146,9 +148,10 @@ fn a_change_is_planned_asked_and_applied_with_its_token_then_read_back() {
         Some("Empty home. The settings file")
     );
     assert_eq!(
-        ops(&requests, 5),
+        ops(&requests, 6),
         [
             Op::Status,
+            show(),
             show(),
             set("persona.mode", SettingValue::Text("fresh-home".to_string())),
             apply('a'),
@@ -176,9 +179,10 @@ fn a_change_answered_no_is_withdrawn_and_never_applied() {
         "the setting's page stays"
     );
     assert_eq!(
-        ops(&requests, 4),
+        ops(&requests, 5),
         [
             Op::Status,
+            show(),
             show(),
             set("persona.mode", SettingValue::Text("fresh-home".to_string())),
             // Any other request withdraws the plan on the helper's side.
@@ -211,9 +215,10 @@ fn a_file_changed_before_save_writes_nothing_and_is_read_again() {
         "what was typed stays, to save again"
     );
     assert_eq!(
-        ops(&requests, 5),
+        ops(&requests, 6),
         [
             Op::Status,
+            show(),
             show(),
             set("minimum_space_mb", SettingValue::Integer(3000)),
             apply('c'),
@@ -239,9 +244,10 @@ fn a_change_the_engine_refuses_is_said_in_its_words_and_nothing_is_asked() {
          inside the hidden volume root /mnt/data. Nothing was written."
     ));
     assert_eq!(
-        ops(&requests, 3),
+        ops(&requests, 4),
         [
             Op::Status,
+            show(),
             show(),
             set(
                 "log_path",
@@ -286,9 +292,10 @@ fn use_the_default_removes_a_key_the_file_sets_through_its_plan() {
     press(&wired, "Home in the session");
     assert!(!wired.screen.shows(text::USE_DEFAULT));
     assert_eq!(
-        ops(&requests, 5),
+        ops(&requests, 6),
         [
             Op::Status,
+            show(),
             show(),
             Op::ConfigEditPlan(ConfigEditArgs {
                 set: Vec::new(),

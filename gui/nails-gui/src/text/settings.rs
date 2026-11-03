@@ -179,6 +179,11 @@ pub fn setting(key: &str) -> (&'static str, &'static str) {
             "When the computer would sleep",
             "Sleep keeps the whole session in memory, its key included.",
         ),
+        "window.emergency" => (
+            super::FACT_EMERGENCY,
+            "How the Emergency control ends a hidden session. Where the window cannot reach \
+             NAILS, it powers off instead.",
+        ),
         _ => ("Setting", ""),
     }
 }
@@ -215,6 +220,18 @@ pub fn choice(key: &str, value: &str) -> (&'static str, &'static str) {
         ("sleep_policy.mode", "teardown") => (
             "Power off",
             "The computer powers off when it is about to sleep.",
+        ),
+        ("window.emergency", "return") => (
+            "Return to the decoy",
+            "The decoy's login screen comes back, as after Return to Decoy. Memory stays powered.",
+        ),
+        ("window.emergency", "poweroff") => (
+            "Power off",
+            "The computer powers off. Memory fades once it has been off for a few minutes.",
+        ),
+        ("window.emergency", "reboot") => (
+            "Restart",
+            "The computer restarts fully, through its firmware. Memory stays powered.",
         ),
         _ => ("", ""),
     }

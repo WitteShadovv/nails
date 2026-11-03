@@ -9,7 +9,7 @@
 //! answered. The window does not wait for that: once its grace has passed
 //! (the real one, [`HELPER_GRACE`]), it asks for the power-off of its own,
 //! here through a stand-in for `systemctl` (no test reaches a real power
-//! action). Each test holds the helper on a verify or a scan for longer than
+//! action), though its settings, the recorded ones, return to the decoy. Each test holds the helper on a verify or a scan for longer than
 //! that and shows the power-off asked for while the helper is still busy,
 //! and the engine's emergency read only after it. Run with `--no-capture`,
 //! each prints how long each step took.
@@ -23,8 +23,8 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::AccessibleRole;
-use nails_api::protocol::{EmergencyArgs, Op, Request};
-use nails_gui::emergency::{EMERGENCY_ID, Emergency, HELPER_GRACE, Outcome};
+use nails_api::protocol::{Op, Request};
+use nails_gui::emergency::{EMERGENCY_ID, Emergency, Finish, HELPER_GRACE, Outcome};
 use nails_gui::model::Model;
 use nails_gui::text;
 use nails_gui::worker::{Connect, Kind, Update, Worker, spawn};
@@ -40,8 +40,9 @@ const LONG: Duration = Duration::from_secs(8);
 /// When the helper read each request, after it started.
 type Seen = Receiver<(Request, Instant)>;
 
-/// A hidden session's helper that answers the status, a rehearsal's status
-/// and the emergency at once, and `long` only after [`LONG`].
+/// A hidden session's helper that answers the status, the settings, a
+/// rehearsal's status and the emergency at once, and `long` only after
+/// [`LONG`].
 fn busy_helper(
     long: fn(&Op) -> bool,
     answer: Value,
@@ -58,6 +59,7 @@ fn busy_helper(
                 json!({"schema_version": 2, "command": "status", "ok": true, "data": {
                     "place": "hidden", "attention": null, "hidden_root": "/mnt/data"}}),
             )],
+            Op::ConfigShow(_) => vec![result(id, 0, fixture("config-show"))],
             Op::RehearseStatus => vec![result(id, 0, fixture("rehearse-status-planted"))],
             Op::Emergency(_) => vec![result(
                 EMERGENCY_ID,
@@ -165,7 +167,7 @@ fn fire_while_busy(window: &Window, seen: &Seen, what: &str) {
     );
     let fired = Instant::now();
     hold(&window.screen);
-    assert!(window.screen.shows(text::EMERGENCY_NOW));
+    assert!(window.screen.shows(text::EMERGENCY_RETURNING_NOW));
     let (outcome, written) = window.outcome();
     assert_eq!(outcome, Outcome::HelperAsked, "the request is on the pipe");
     let (outcome, powered_off) = window.outcome();
@@ -173,10 +175,8 @@ fn fire_while_busy(window: &Window, seen: &Seen, what: &str) {
     let (op, read) = next(seen);
     assert_eq!(
         op,
-        Op::Emergency(EmergencyArgs {
-            poweroff: true,
-            reboot: false
-        })
+        Op::Emergency(Finish::Return.args()),
+        "as the settings say"
     );
     let to_written = written.duration_since(fired);
     let to_power_off = powered_off.duration_since(fired);
@@ -211,12 +211,13 @@ fn an_emergency_during_a_long_scan_powers_off_without_waiting_for_it() {
     );
     let power_off = FakePowerOff::new("exit 0");
     let window = Window::new(Connect::Stream(stream), &power_off);
-    window.pump_until(|update| matches!(update, Update::Answered(Kind::Status, _)));
+    window.pump_until(|update| matches!(update, Update::Answered(Kind::Config, _)));
     window.press(text::REHEARSAL);
     window.pump_until(|update| matches!(update, Update::Answered(Kind::Rehearse, _)));
     window.press(text::SCAN);
     window.pump_until(|update| *update == Update::Running(Kind::Rehearse));
     assert_eq!(next(&seen).0, Op::Status);
+    assert!(matches!(next(&seen).0, Op::ConfigShow(_)));
     assert_eq!(next(&seen).0, Op::RehearseStatus);
     fire_while_busy(&window, &seen, "scan");
     assert_eq!(power_off.calls(), ["poweroff --no-ask-password"]);
@@ -228,11 +229,12 @@ fn an_emergency_during_a_long_verify_powers_off_without_waiting_for_it() {
         busy_helper(|op| matches!(op, Op::Verify(_)), fixture("verify-clean"));
     let power_off = FakePowerOff::new("exit 0");
     let window = Window::new(Connect::Stream(stream), &power_off);
-    window.pump_until(|update| matches!(update, Update::Answered(Kind::Status, _)));
+    window.pump_until(|update| matches!(update, Update::Answered(Kind::Config, _)));
     window.press(text::VERIFY);
     window.press(text::DEEP_SCAN);
     window.pump_until(|update| *update == Update::Running(Kind::Verify));
     assert_eq!(next(&seen).0, Op::Status);
+    assert!(matches!(next(&seen).0, Op::ConfigShow(_)));
     fire_while_busy(&window, &seen, "deep verify");
     assert_eq!(power_off.calls(), ["poweroff --no-ask-password"]);
 }

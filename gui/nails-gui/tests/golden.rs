@@ -281,11 +281,13 @@ fn decoy(check: Value, exit: u8) -> Win {
     win
 }
 
-/// A hidden session's page.
+/// A hidden session's page, with the recorded settings its Emergency
+/// control reads.
 fn hidden() -> Win {
     let win = open(true);
     win.update(Update::Connected(ours()));
     win.answered(Kind::Status, 0, status("hidden"));
+    win.answered(Kind::Config, 0, fixture("config-show"));
     win
 }
 

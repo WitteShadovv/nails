@@ -5,8 +5,9 @@
 //! hold whose bar fills in about a second and ends the session on release,
 //! the short press that only says to hold, the pointer moving off, the
 //! keyboard's two presses with Escape and Tab cancelling, a screen reader's
-//! two actions, and the control above an open question and on the page of
-//! a deactivation that ends.
+//! two actions, the control above an open question and on the page of a
+//! deactivation that ends, and what it does as its page and its description
+//! say before it is used.
 
 mod screen;
 mod support;
@@ -14,6 +15,7 @@ mod support;
 use i_slint_backend_testing::{AccessibleLiveness, AccessibleRole, ElementHandle};
 use nails_api::protocol::DeactivatePlanData;
 use nails_gui::client::{Answer, PlanData, ours};
+use nails_gui::emergency::Finish;
 use nails_gui::text;
 use nails_gui::worker::{Failure, Kind, Update};
 use screen::Screen;
@@ -104,9 +106,10 @@ fn it_sits_at_the_start_of_a_hidden_sessions_header_bar_and_says_how() {
     let screen = hidden();
     let button = control(&screen);
     assert_eq!(label(&screen), text::EMERGENCY);
+    // The settings are not read yet: it powers off, and says so.
     assert_eq!(
         button.accessible_description().as_deref(),
-        Some(text::EMERGENCY_HOW)
+        Some(text::emergency_how(Finish::PowerOff))
     );
     assert_eq!(
         button.accessible_live_region(),
@@ -254,11 +257,12 @@ fn a_press_beside_it_let_go_on_it_does_nothing() {
 #[test]
 fn the_keyboard_takes_two_presses_and_escape_or_tab_cancels() {
     let screen = hidden();
-    let walk = screen.walk(Key::Tab, 6);
+    let walk = screen.walk(Key::Tab, 7);
     assert_eq!(
         walk,
         [
             "Hidden volume",
+            text::FACT_EMERGENCY,
             text::VERIFY,
             text::REHEARSAL,
             text::SETTINGS,
@@ -291,7 +295,7 @@ fn the_keyboard_takes_two_presses_and_escape_or_tab_cancels() {
 #[test]
 fn a_key_held_down_is_one_press_however_long_it_repeats() {
     let screen = hidden();
-    let walk = screen.walk(Key::Tab, 6);
+    let walk = screen.walk(Key::Tab, 7);
     assert_eq!(walk.last().map(String::as_str), Some(text::EMERGENCY));
     for (key, name) in [(Key::Return, "Return"), (Key::Space, "Space")] {
         // Past a keyboard's repeat delay and well past the pointer's hold.
@@ -379,5 +383,66 @@ fn a_hidden_session_window_without_its_helper_still_has_it() {
     )));
     assert!(screen.shows(text::NOT_STARTED));
     hold(&screen, 1100, None);
+    assert_ended(&screen);
+}
+
+/// The recorded settings with `window.emergency` set to `spelling`.
+fn settings_with(spelling: &str) -> Update {
+    let mut shown = support::fixture("config-show");
+    shown["data"]["config"]["window"]["emergency"] = json!(spelling);
+    answered(Kind::Config, shown)
+}
+
+#[test]
+fn before_it_is_used_the_page_and_the_control_say_how_it_ends_the_session() {
+    for (spelling, finish, name, now) in [
+        (
+            "return",
+            Finish::Return,
+            "Return to the decoy",
+            text::EMERGENCY_RETURNING_NOW,
+        ),
+        (
+            "poweroff",
+            Finish::PowerOff,
+            "Power off",
+            text::EMERGENCY_NOW,
+        ),
+        (
+            "reboot",
+            Finish::Reboot,
+            "Restart",
+            text::EMERGENCY_RESTARTING_NOW,
+        ),
+    ] {
+        let screen = hidden();
+        screen.tall();
+        screen.update(settings_with(spelling));
+        let row = screen.find_with(text::FACT_EMERGENCY, AccessibleRole::ListItem);
+        assert_eq!(row.accessible_description().as_deref(), Some(name));
+        assert_eq!(
+            control(&screen).accessible_description().as_deref(),
+            Some(text::emergency_how(finish)),
+            "{spelling}"
+        );
+        hold(&screen, 1100, None);
+        assert_eq!(screen.finishes(), [finish], "{spelling}");
+        assert!(screen.shows(now), "{spelling}");
+    }
+}
+
+#[test]
+fn settings_that_cannot_be_read_power_off_and_the_page_says_why() {
+    let screen = hidden();
+    screen.tall();
+    screen.update(answered(
+        Kind::Config,
+        support::fixture("config-show-invalid"),
+    ));
+    let row = screen.find_with(text::FACT_EMERGENCY, AccessibleRole::ListItem);
+    let said = format!("Power off, {}", text::EMERGENCY_UNREADABLE);
+    assert_eq!(row.accessible_description().as_deref(), Some(said.as_str()));
+    hold(&screen, 1100, None);
+    assert_eq!(screen.finishes(), [Finish::PowerOff]);
     assert_ended(&screen);
 }
