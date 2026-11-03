@@ -6,14 +6,16 @@
 //! keys, and reads what the window shows and what it asked the worker for.
 //!
 //! The text is laid out with the fonts the machine has, as the window's own
-//! is: the window opens fontconfig at run time, so a machine where it cannot
-//! (a host without it, outside the dev shell) lays the text out with no font,
-//! and one where it can wraps a long sentence over many lines. The CI's
-//! Ubuntu lays it out with its fontconfig and DejaVu, the dev shell with
-//! nixpkgs' fontconfig and DejaVu alone (see flake.nix). A page is then
-//! longer on one machine than on another, and the element queries skip what
-//! the page's scroll area clips: a test that looks below the first screen of
-//! a page makes the window tall first ([`Screen::tall`]).
+//! is: the window opens fontconfig at run time, so where it cannot (on a host
+//! without fontconfig, or in the dev shell without the justfile's
+//! `gui_fonts`) the text is laid out with no font, and where it can a long
+//! sentence wraps over many lines. CI's runner lays it out with its image's
+//! fontconfig and fonts, DejaVu for sans-serif, which come with the image and
+//! can change with it, and the justfile's runs of these tests in the dev
+//! shell with nixpkgs' fontconfig and DejaVu alone (see flake.nix). A page is
+//! then longer on one machine than on another, and the element queries skip
+//! what the page's scroll area clips: a test that looks below the first
+//! screen of a page makes the window tall first ([`Screen::tall`]).
 
 #![allow(dead_code)]
 
