@@ -51,7 +51,9 @@ On an invalid file, `activate`, `check`, `status`, `verify`, `rehearse`,
 `discard` and `nails config` exit with status 3. `deactivate` and `recover`
 never refuse: they log one warning and carry on with defaults derived from the
 binary location (`recover` uses the RAM copy under `/run/overlay-runtime` when
-it can). `emergency` reads no configuration at all.
+it can). `emergency` acts before it reads any configuration. It reads one
+only afterwards, to record the session as inactive, from the file, the RAM
+copy or the defaults, and never refuses on it.
 
 `nails init` writes the file readable by root only. A command run without root
 that cannot read it exits with status 3 too, and names the full line to run
@@ -158,7 +160,7 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `session_mounts.alert` | boolean | `true` | Alert when a disk outside the hidden volume is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `session_mounts.read_only` | boolean | `false` | Opt-in: make every disk the hidden session does not use read-only at the block layer for the session, the disks present at entry and every disk attached during it, so a mount comes up read-only and writes fail. The way back makes them writable again. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds sleep and idle block inhibitors for the life of the session so the host cannot suspend, and takes the lid switch from logind when a closed lid would sleep. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `lock`. See [Sleep policy](#sleep-policy). |
-| `window.emergency` | `"return"`, `"poweroff"` or `"reboot"` | `"return"` | How the window's Emergency control ends a hidden session, chosen in advance since its gesture asks nothing: `return` goes back to the decoy's login screen as `nails emergency` does, or powers off where its way back does, `poweroff` powers off as `nails emergency --poweroff` does, and `reboot` reboots fully as `nails emergency --reboot` does. Only the window reads it; `nails emergency` reads no configuration. Where the window cannot be sure the session ends so, as while Verify runs or where it cannot read the setting or reach NAILS, the control powers off. See [The window's Emergency control](#the-windows-emergency-control). |
+| `window.emergency` | `"return"`, `"poweroff"` or `"reboot"` | `"return"` | How the window's Emergency control ends a hidden session, chosen in advance since its gesture asks nothing: `return` goes back to the decoy's login screen as `nails emergency` does, or powers off where its way back does, `poweroff` powers off as `nails emergency --poweroff` does, and `reboot` reboots fully as `nails emergency --reboot` does. Only the window reads it: the hot path of `nails emergency` acts before any configuration is read. Where the window cannot be sure the session ends so, as while Verify runs or where it cannot read the setting or reach NAILS, the control powers off. See [The window's Emergency control](#the-windows-emergency-control). |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -674,7 +676,7 @@ non-product names, and nothing is written to the decoy disk.
 ## The window's Emergency control
 
 The window's Emergency control ends a hidden session with one gesture (a
-hold, or Return twice) and asks nothing at that moment, so how it ends is
+hold, or Enter twice) and asks nothing at that moment, so how it ends is
 chosen in advance with `window.emergency`, on the window's Settings page or
 with `nails config set window.emergency poweroff`:
 
@@ -721,10 +723,10 @@ still runs then only where NAILS did not act on the request in time: it was
 busy with another request, or the steps of a return or a restart had not
 ended the session yet. Holding the power button always powers off.
 
-`nails emergency` reads no configuration, this setting included: it runs
-before the configuration is read, so neither a failed hidden volume nor a
-file it cannot read can hold it up. Its flags choose how each run ends, and
-a panic unit or a key binding fixes them in advance
+`nails emergency` does not read this setting: its hot path acts before any
+configuration is read, so neither a failed hidden volume nor a file it
+cannot read can hold it up. Its flags choose how each run ends, and a panic
+unit or a key binding fixes them in advance
 ([Panic switch](operator-guide.md#panic-switch)).
 
 ## Closing the backend
