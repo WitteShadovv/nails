@@ -21,7 +21,7 @@ Options:
       --allow-decoy-storage
           Initialize a volume that this computer's own storage seems to hold
 
-          By default `init` refuses a target that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it), because writing the NAILS layout there leaves an identifying tree on this computer's disk. Use this flag only for storage you know this computer does not use; it turns those refusals into a warning. A folder that is no mount point, a target with a second filesystem mounted over it, and one whose storage cannot be judged are still refused.
+          By default `init` refuses a target that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it), because writing the NAILS layout there leaves an identifying tree on this computer's disk, and one on a network or userspace block device (nbd, ublk), whose server can keep the data there. Use this flag only for storage you know this computer does not use, or a device you know is served from such storage; it turns those refusals into a warning. A folder that is no mount point, a target with a second filesystem mounted over it, and one whose storage cannot be judged (a ZFS volume among it) are still refused.
 
   -c, --config <PATH>
           Path to the configuration file (overrides binary-relative discovery)

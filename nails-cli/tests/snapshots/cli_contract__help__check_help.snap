@@ -37,7 +37,7 @@ Options:
       --allow-decoy-storage
           Report a hidden root on this computer's own storage as a warning
 
-          Mirrors `activate --allow-decoy-storage`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
+          Mirrors `activate --allow-decoy-storage`: a root this computer's own storage seems to hold, or one on a network or userspace block device (nbd, ublk), then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged (a ZFS volume among it) still fail.
 
       --color <WHEN>
           When to use colour
