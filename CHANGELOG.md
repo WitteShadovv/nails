@@ -1459,6 +1459,23 @@ of this changelog for that version becomes the release notes word for word, and
   with a `.` or `..` component, and does not know the units systemd names after the storage's
   devices.
 
+### Known issues
+
+- A switch into or out of a hidden session can stop halfway: the programs have closed, but the
+  screen stays dark or still and no login screen comes. Once the old system's units have stopped,
+  PID 1 can go to sleep with work still queued and wait until something wakes it. This matches a
+  fault in systemd ([systemd issue #44107](https://github.com/systemd/systemd/issues/44107)). In
+  NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way, all on the way in, and one
+  on the way back in a test run set up to provoke it. Pressing Alt+Up with the left Alt key on the
+  computer's keyboard woke PID 1 in the tests, and the switch went on. If that does nothing, power
+  off rather than wait: after 30 minutes systemd switches by force and skips NAILS's last step
+  before the switch, so the hidden session would start without the masks that keep its systemd
+  from swapping onto a decoy disk or mounting one read-write, or the decoy with the hidden
+  session's files in `/run`. systemd fixed the issue in 259.10, 260.6, 261.4 and 262.1. On
+  3 November 2026 no release of 254 to 258 had the fix, and no supported decoy had it, neither in
+  its systemd release nor as a patch of its package: Debian 13 had systemd 257.13, Ubuntu 24.04
+  255.4, Ubuntu 26.04 259.9, NixOS 26.05 260.5 and NixOS unstable 262. See docs/operator-guide.md.
+
 ## [0.3.0-rc.3] - 2026-10-20
 
 ### Changed
