@@ -269,8 +269,9 @@ Keep all of it `root`-owned on the hidden volume.
    `systemd-soft-reboot.service`) and prints its result. While a program
    holds a shutdown block inhibitor (a package or firmware update in the
    middle of its work), or logind does not answer whether one does, it stops
-   here: activation fails with the reason and removes everything it built,
-   with the decoy's shells and every other program left as they were.
+   here: activation fails with the reason, takes down the next root and
+   removes what it set up in `/run`, as a cancel does (below), with the
+   decoy's shells and every other program left as they were.
    Otherwise it kills the decoy's interactive shells and soft-reboots the way
    `systemctl soft-reboot` does, through logind. logind first tells the
    programs that wait for its shutdown signal that the system is going down
@@ -291,10 +292,11 @@ Keep all of it `root`-owned on the hidden volume.
    time closes again as soon as its shell is killed. When logind refuses
    the soft-reboot, or
    drops it (`shutdown -c`), or PID 1 refuses it when logind's delay ends,
-   nothing is queued: activation fails with the reason and removes everything
-   it built. A soft-reboot dropped or refused that late was refused after
-   logind's signal, so it is not free of traces: every program that waited
-   for the signal has acted on it. unattended-upgrades' helper has sent an
+   nothing is queued: activation fails with the reason, takes down the next
+   root and removes what it set up in `/run`. A soft-reboot dropped or refused
+   that late was refused after logind's signal, so it is not free of traces:
+   every program that waited for the signal has acted on it.
+   unattended-upgrades' helper has sent an
    upgrade it found running SIGTERM and logged `Unattended-upgrade in progress
    during shutdown` on the decoy disk, and has exited until the next boot. When
    logind still holds the soft-reboot past its delay, activation drops it and
@@ -1135,7 +1137,7 @@ In offline mode every path is read under `--root`, and the live-only checks
 drift) are skipped. So is the state file on the hidden volume: it records this
 computer's own session, active when you scan from a hidden session, and says
 nothing about the image, so the report shows no state-file line (under `--json`,
-`state_file_status` is `not_checked`).
+`state_file_status` has the kind `not_checked`).
 
 Mount the decoy so that nothing can write to its disk. A plain `mount -o ro` is
 not enough: on a filesystem that was not cleanly unmounted, ext4 replays its
