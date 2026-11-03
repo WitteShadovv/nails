@@ -19,17 +19,30 @@ let
       "gui"
     ];
   });
-  helperStart = ''
-    coproc HELPER { exec /mnt/data/nails --config /mnt/data/config/nails.toml helper --stdio 2>/dev/null; }
-    IFS= read -r -t 60 hello <&"''${HELPER[0]}" || { say "no hello"; exit 1; }
+  # The helper as the window starts it, its requests through a fifo and its
+  # frames into a file on the hidden volume, so that what it answers stays
+  # readable after the client that stands in for the window is gone.
+  helperStart = name: ''
+    out=/mnt/data/probe-out-${name}.txt
+    fifo=/mnt/data/probe-in-${name}
+    rm -f "$out" "$fifo"
+    mkfifo "$fifo"
+    /mnt/data/nails --config /mnt/data/config/nails.toml helper --stdio <"$fifo" >"$out" 2>/dev/null &
+    exec 8>"$fifo"
+    wait_for() {
+      local i
+      for i in $(seq 1 600); do
+        grep -q -- "$1" "$out" && return 0
+        sleep 0.1
+      done
+      return 1
+    }
+    wait_for '"hello"' || { say "no hello"; exit 1; }
+    hello=$(head -n 1 "$out")
     theirs=''${hello#'{"hello":'}
     theirs=''${theirs%'}'}
-    printf '{"v":1,"id":1,"op":{"hello":%s}}\n' "$theirs" >&"''${HELPER[1]}"
-    IFS= read -r -t 60 answer <&"''${HELPER[0]}"
-    case "$answer" in
-      *'"id":1'*'"ok":true'*) ;;
-      *) say "the helper did not take the hello: $answer"; exit 1 ;;
-    esac
+    printf '{"v":1,"id":1,"op":{"hello":%s}}\n' "$theirs" >&8
+    wait_for '"id":1,' || { say "no answer to the hello"; exit 1; }
   '';
   # The window's stand-in after its request: the beats, then the window's
   # own power-off once it outlives the grace.
@@ -49,8 +62,8 @@ let
     pkgs.writeShellScript "window-alone-${name}" ''
       set -u
       say() { echo "window-alone-${name}: $*" >/dev/ttyS0; }
-      ${helperStart}
-      printf '%s\n' '${request}' >&"''${HELPER[1]}"
+      ${helperStart "alone-${name}"}
+      printf '%s\n' '${request}' >&8
       say "request written"
       ${standIn}
     '';
@@ -62,27 +75,13 @@ let
     pkgs.writeShellScript "window-overlap-${name}" ''
       set -u
       say() { echo "window-overlap-${name}: $*" >/dev/ttyS0; }
-      ${helperStart}
-      printf '%s\n' '{"v":1,"id":2,"op":{"deactivate_plan":{"poweroff":false}}}' >&"''${HELPER[1]}"
-      token=
-      while IFS= read -r -t 60 line <&"''${HELPER[0]}"; do
-        case "$line" in
-          *'"result"'*'"id":2'*)
-            token=$(printf '%s' "$line" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-            break
-            ;;
-          *'"error"'*) say "plan refused: ''${line:0:400}"; exit 1 ;;
-        esac
-      done
-      [ -n "$token" ] || { say "no token"; exit 1; }
-      printf '{"v":1,"id":3,"op":{"deactivate_apply":{"token":"%s"}}}\n%s\n' "$token" '${request}' >&"''${HELPER[1]}"
+      ${helperStart "overlap-${name}"}
+      printf '%s\n' '{"v":1,"id":2,"op":{"deactivate_plan":{"poweroff":false}}}' >&8
+      wait_for '"id":2,' || { say "no answer to the plan"; exit 1; }
+      token=$(grep '"id":2,' "$out" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' | head -n 1)
+      [ -n "$token" ] || { say "no token: $(grep '"id":2,' "$out" | head -c 400)"; exit 1; }
+      printf '{"v":1,"id":3,"op":{"deactivate_apply":{"token":"%s"}}}\n%s\n' "$token" '${request}' >&8
       say "request written"
-      exec 7<&"''${HELPER[0]}"
-      (
-        while IFS= read -r -t 120 line <&7; do
-          say "frame ''${line:0:700}"
-        done
-      ) &
       ${standIn}
     '';
   returnLine = ''{"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":false}}}'';
@@ -93,6 +92,7 @@ let
   aloneRebootNoPlan = alone "reboot-no-plan" rebootLine;
   overlapReturn = overlap "return" returnLine;
   overlapPowerOff = overlap "poweroff" powerOffLine;
+  overlapPowerOffAgain = overlap "poweroff-again" powerOffLine;
 in
 {
   name = "session-window-emergency";
@@ -112,10 +112,13 @@ in
         aloneRebootNoPlan
         overlapReturn
         overlapPowerOff
+        overlapPowerOffAgain
       ];
     };
 
   testScript = _: ''
+    import json
+
     from nails_e2e import session
 
     CONFIG = "/mnt/data/config/nails.toml"
@@ -157,16 +160,42 @@ in
         )
         session.assert_hidden_root(machine, UPPER)
 
-    def logged(label):
-        # What the engine logged on the hidden volume about it.
+    def frames(name):
+        # What the helper answered, from its frames on the hidden volume.
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        out = machine.succeed(
-            "grep -rh -e 'emergency hot path finished' -e 'the way back is enqueued' "
-            "/mnt/data/logs 2>/dev/null | tail -n 6 || true"
-        )
-        results.append(f"-- engine log after {label}:")
-        results.extend(line[:900] for line in out.splitlines())
+        text = machine.succeed(f"cat /mnt/data/probe-out-{name}.txt 2>/dev/null || true")
         machine.succeed("""${hiddenVolume.unmountHiddenVolumeStrict}""")
+        results.append(f"-- helper frames of {name}:")
+        for line in text.splitlines():
+            try:
+                frame = json.loads(line)
+            except ValueError:
+                results.append(f"   unreadable: {line[:300]}")
+                continue
+            result = frame.get("result")
+            if result is None:
+                results.append(f"   {line[:300]}")
+                continue
+            data = (result.get("envelope") or {}).get("data") or {}
+            keep = {
+                k: data.get(k)
+                for k in (
+                    "status",
+                    "side",
+                    "requested",
+                    "dispatched",
+                    "fallback",
+                    "kernel_power_off",
+                    "elapsed_ms",
+                    "phases",
+                    "backend_left_open",
+                )
+                if k in data
+            }
+            results.append(
+                f"   result id={result.get('id')} exit={result.get('exit')} "
+                f"ok={(result.get('envelope') or {}).get('ok')} {json.dumps(keep)[:900]}"
+            )
 
     def soft_reboot_or_off(label, trigger, name):
         since = len(machine.full_console_log)
@@ -222,31 +251,35 @@ in
 
     with subtest("A: the emergency's return alone"):
         soft_reboot_or_off("A return alone", "${aloneReturn}", "window-alone-return")
-        logged("A")
+        frames("alone-return")
 
     with subtest("B: the emergency's return right behind a deactivation's return"):
         activate("B")
         soft_reboot_or_off("B overlap return", "${overlapReturn}", "window-overlap-return")
-        logged("B")
+        frames("overlap-return")
 
     with subtest("C: the emergency's power-off right behind a deactivation's return"):
         activate("C")
         soft_reboot_or_off("C overlap poweroff", "${overlapPowerOff}", "window-overlap-poweroff")
-        logged("C")
+        frames("overlap-poweroff")
+
+    with subtest("C again"):
+        activate("C-again")
+        soft_reboot_or_off(
+            "C again overlap poweroff", "${overlapPowerOffAgain}", "window-overlap-poweroff-again"
+        )
+        frames("overlap-poweroff-again")
 
     with subtest("D: the emergency's restart alone"):
         activate("D")
         until_qemu_exits("D reboot alone", "${aloneReboot}", "window-alone-reboot")
-        logged("D")
+        frames("alone-reboot")
 
     with subtest("E: the emergency's restart in a session without a plan"):
         activate("E")
         machine.succeed("rm -f /run/overlay-runtime/plan.json")
-        status = machine.succeed(
-            f"/mnt/data/nails --config {CONFIG} --no-log-file status --json || true"
-        )
-        results.append(f"-- E status before: {status.strip()[:600]}")
         until_qemu_exits("E reboot without a plan", "${aloneRebootNoPlan}", "window-alone-reboot-no-plan")
+        frames("alone-reboot-no-plan")
 
     write_results()
     machine.log("PROBE RESULTS:\n" + "\n".join(results))
