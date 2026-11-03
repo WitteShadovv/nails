@@ -577,6 +577,7 @@ fn discards_over_a_ram_only_zram_device_are_excepted() {
                 crypt: Some(CryptType::Luks),
                 discard_max_bytes: 4096,
                 slaves: vec![leaf.into()],
+                below: vec![leaf.into()],
                 ..Layer::default()
             },
             Layer {
@@ -602,6 +603,7 @@ fn a_zram_device_beside_a_disk_in_the_stack_excepts_nothing() {
         name: name.into(),
         is_dm: name.starts_with("dm-"),
         slaves: slaves.iter().map(|s| (*s).into()).collect(),
+        below: slaves.iter().map(|s| (*s).into()).collect(),
         ..Layer::default()
     };
     let layers = [
@@ -876,26 +878,122 @@ fn luks2_persistent_discards_refuse_and_the_tpm_token_warns_when_allowed() {
 }
 
 #[test]
-fn luks2_header_without_flags_or_tokens_passes() {
+fn the_mappings_own_luks_header_is_named_in_the_pass_line() {
     let fs = luks_on_partition_fixture();
     let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":[]}}"#);
     let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
-    assert!(result.is_pass(), "{result:?}");
-    assert!(
-        result.message().contains("LUKS mapping dm-2"),
-        "{}",
-        result.message()
+    assert_eq!(
+        result,
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on LUKS mapping dm-2 on block device sdb2; no \
+             backend-specific hazards detected. The LUKS2 header at the start of sdb2 shows \
+             anyone who reads the disk that an encrypted volume is there (cryptsetup isLuks, \
+             blkid), though not what it holds."
+                .into()
+        )
     );
 }
 
 #[test]
-fn a_detached_luks2_header_is_skipped() {
-    // The device below the mapping starts with ciphertext, not a LUKS header.
+fn an_attached_luks1_header_is_named_by_its_version() {
     let fs = luks_on_partition_fixture();
     let dev = tempfile::tempdir().unwrap();
-    std::fs::write(dev.path().join("sdb2"), vec![0x5Au8; 32768]).unwrap();
+    let mut image = luks2::header_image("{}", 16384);
+    image[6..8].copy_from_slice(&1u16.to_be_bytes());
+    std::fs::write(dev.path().join("sdb2"), image).unwrap();
     let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
     assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("The LUKS1 header at the start of sdb2 shows anyone"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn ciphertext_at_the_start_is_described_as_a_detached_header() {
+    let fs = luks_on_partition_fixture();
+    let dev = tempfile::tempdir().unwrap();
+    std::fs::write(dev.path().join("sdb2"), vec![0x5Au8; 65536]).unwrap();
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert_eq!(
+        result,
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on LUKS mapping dm-2 (detached header) on block device \
+             sdb2; no backend-specific hazards detected. The flags and tokens of the detached \
+             LUKS header of dm-2 are in its file, which `cryptsetup luksDump <file>` shows."
+                .into()
+        )
+    );
+}
+
+#[test]
+fn discards_over_a_detached_header_mapping_fail_closed() {
+    let fs = luks_on_partition_fixture();
+    fs.mock_set_file_content("/sys/dev/block/253:2/queue/discard_max_bytes", "4096\n");
+    let dev = tempfile::tempdir().unwrap();
+    std::fs::write(dev.path().join("sdb2"), vec![0x5Au8; 65536]).unwrap();
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert!(result.is_fail(), "{result:?}");
+}
+
+#[test]
+fn a_surviving_luks2_secondary_header_warns() {
+    let fs = luks_on_partition_fixture();
+    let dev = tempfile::tempdir().unwrap();
+    let mut image = vec![0x5Au8; 65536];
+    image[0x4000..0x4006].copy_from_slice(b"SKUL\xba\xbe");
+    std::fs::write(dev.path().join("sdb2"), image).unwrap();
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "The device below LUKS mapping dm-2, sdb2, opened with a header kept apart from it, \
+             still holds a LUKS2 secondary header 16 KiB in, which blkid and an examiner \
+             identify as LUKS2. docs/backends.md says how to clear it."
+        ),
+        "{result:?}"
+    );
+    assert!(result.message().contains("(detached header)"), "{result:?}");
+}
+
+#[test]
+fn a_header_of_another_volume_warns_and_its_flags_are_not_the_mappings() {
+    // The mapping was opened with a header kept elsewhere; the device still
+    // starts with the header of a volume made on it before, which stores
+    // allow-discards.
+    let fs = luks_on_partition_fixture();
+    fs.mock_set_file_content(
+        "/sys/dev/block/253:2/dm/uuid",
+        "CRYPT-LUKS2-ffffffffffffffffffffffffffffffff-data\n",
+    );
+    let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":["allow-discards"]}}"#);
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(&format!(
+            "The device below LUKS mapping dm-2, sdb2, starts with a LUKS2 header of another \
+             volume (uuid {}) than the one the mapping was opened with: a leftover that blkid \
+             and an examiner identify as LUKS. docs/backends.md says how to clear it.",
+            luks2::TEST_UUID
+        )),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_unreadable_device_leaves_the_description_as_it_is() {
+    let fs = luks_on_partition_fixture();
+    let result = assess_offline(&fs, Path::new(ROOT));
+    assert_eq!(
+        result,
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on LUKS mapping dm-2 on block device sdb2; no \
+             backend-specific hazards detected"
+                .into()
+        )
+    );
 }
 
 #[test]
@@ -958,4 +1056,149 @@ fn shufflecake_naming_is_strict() {
     assert!(!named("sflc_x_3").is_shufflecake());
     assert!(!named("sflc_1").is_shufflecake());
     assert!(!named("data").is_shufflecake());
+}
+
+// ------------------------------------------------------------------------
+// Loops over block devices, VeraCrypt's own mappings, the decoy's storage
+// ------------------------------------------------------------------------
+
+/// backend-detect of the hidden root of the mock host `host`, with no LUKS
+/// header to read.
+fn detect_on(host: &super::tests_host::Host) -> CheckResult {
+    let dev = tempfile::tempdir().unwrap();
+    assess_with_dev_dir(
+        &host.fs,
+        Path::new(super::tests_host::ROOT),
+        dev.path(),
+        false,
+    )
+}
+
+/// A mock host with the hidden root on the LUKS mapping `dm-9` of a loop
+/// device over `sdb2`, bound with autoclear or not.
+fn luks_on_a_loop_over_a_partition(autoclear: bool) -> super::tests_host::Host {
+    let host = super::tests_host::Host::new("254:9", "ext4", "/dev/mapper/data")
+        .disk("sdb", "8:16")
+        .partition_at("sdb2", "8:18", "sdb", 2, 2048)
+        .loop_device("loop0", "7:0", "/dev/sdb2")
+        .luks("dm-9", "254:9", "data", &["loop0"]);
+    if autoclear {
+        host.fs
+            .mock_set_file_content("/sys/devices/virtual/block/loop0/loop/autoclear", "1\n");
+    }
+    host
+}
+
+#[test]
+fn a_loop_over_a_block_device_is_followed_and_is_no_file_container() {
+    let result = detect_on(&luks_on_a_loop_over_a_partition(true));
+    assert_eq!(
+        result,
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on LUKS mapping dm-9 on loop device loop0 on block device \
+             sdb2; no backend-specific hazards detected"
+                .into()
+        )
+    );
+}
+
+#[test]
+fn a_loop_over_a_block_device_without_autoclear_warns() {
+    let result = detect_on(&luks_on_a_loop_over_a_partition(false));
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result.message().contains(
+            "Loop device loop0 over sdb2 was attached without autoclear, so it stays bound after \
+             the hidden volume is closed, after a session too, until losetup -d detaches it."
+        ),
+        "{result:?}"
+    );
+    assert!(!result.message().contains("mtime and ctime"), "{result:?}");
+}
+
+#[test]
+fn discards_over_a_loop_over_zram_alone_are_excepted() {
+    let host = super::tests_host::Host::new("254:9", "ext4", "/dev/mapper/data")
+        .disk("zram0", "252:0")
+        .loop_device("loop0", "7:0", "/dev/zram0")
+        .luks("dm-9", "254:9", "data", &["loop0"]);
+    host.fs.mock_set_file_content(
+        "/sys/devices/virtual/block/dm-9/queue/discard_max_bytes",
+        "4096\n",
+    );
+    // TRIM reaches no persistent storage: only the loop's missing autoclear
+    // warns.
+    let result = detect_on(&host);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        !result.message().contains("Discards are enabled"),
+        "{result:?}"
+    );
+    assert!(
+        result.message().contains("Loop device loop0 over zram0"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_mapping_the_veracrypt_application_made_is_named_and_its_discards_refused() {
+    let host = super::tests_host::Host::new("254:9", "ext4", "/dev/mapper/veracrypt1")
+        .disk("sdb", "8:16")
+        .mapping("dm-9", "254:9", "veracrypt1", "", &["sdb"]);
+    assert_eq!(
+        detect_on(&host),
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on VeraCrypt application mapping dm-9 on block device sdb; \
+             no backend-specific hazards detected"
+                .into()
+        )
+    );
+    host.fs.mock_set_file_content(
+        "/sys/devices/virtual/block/dm-9/queue/discard_max_bytes",
+        "4096\n",
+    );
+    assert!(detect_on(&host).is_fail());
+}
+
+#[test]
+fn cascade_integrity_and_verity_layers_are_named_for_what_they_are() {
+    let layer = |name: &str, kind: &str| Layer {
+        name: name.into(),
+        is_dm: true,
+        crypt: Some(CryptType::Other(kind.into())),
+        ..Layer::default()
+    };
+    assert_eq!(
+        describe(
+            "ext4",
+            &[
+                layer("dm-8", "SUBDEV"),
+                layer("dm-7", "INTEGRITY"),
+                layer("dm-6", "VERITY")
+            ]
+        ),
+        "ext4 on dm-crypt cascade layer dm-8 (SUBDEV) on dm-integrity mapping dm-7 (encrypts \
+         nothing) on dm-verity mapping dm-6 (encrypts nothing)"
+    );
+}
+
+#[test]
+fn a_root_on_a_filesystem_the_decoy_uses_is_left_to_the_hidden_volume_check() {
+    // A bind of a folder of the decoy's /home, which the attach gate refuses
+    // unless the run accepts the decoy's storage.
+    let host = super::tests_host::Host::with_mounts(
+        "40 1 254:1 /alice /mnt/data rw,relatime - ext4 /dev/mapper/home rw\n",
+    )
+    .file(
+        "/proc/devices",
+        "Block devices:\n  7 loop\n  8 sd\n254 device-mapper\n259 blkext\n",
+    );
+    assert_eq!(
+        detect_on(&host),
+        CheckResult::Pass(
+            "Backend detection skipped: the hidden root is on a filesystem the decoy uses, which \
+             the hidden-volume check reports"
+                .into()
+        )
+    );
 }

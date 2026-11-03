@@ -4,7 +4,7 @@
 //! The backend-specific hazards in a device stack, each as the warning text
 //! `docs/backends.md` explains.
 
-use super::luks2::Luks2Metadata;
+use super::luks2::{HeaderProbe, Luks2Metadata, same_volume};
 use super::{Layer, mount_containing};
 use crate::filesystem::mountinfo::MountEntry;
 
@@ -23,8 +23,19 @@ pub(super) fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
     for layer in layers {
         // Discards over the hidden volume are judged as a fail-closed finding
         // in `assess`, not here, so this function reports only the warnings.
+        if let Some(header) = &layer.header {
+            found.extend(header_hazard(layer, header));
+        }
         if let Some(meta) = &layer.luks2 {
             found.extend(luks2_hazards(layer, meta));
+        }
+        if let (Some(device), false) = (&layer.loop_over, layer.autoclear) {
+            found.push(format!(
+                "Loop device {} over {device} was attached without autoclear, so it stays bound \
+                 after the hidden volume is closed, after a session too, until losetup -d \
+                 detaches it.",
+                layer.name
+            ));
         }
 
         let Some(backing_file) = &layer.backing_file else {
@@ -59,6 +70,67 @@ pub(super) fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
     }
 
     found
+}
+
+/// Pure seam: what the device stack shows that is no hazard to warn about,
+/// one sentence each: the LUKS header a mapping was opened with, which
+/// shows that an encrypted volume is there, as the backend chosen means it
+/// to, and where the flags of a detached header are.
+pub(super) fn notes(layers: &[Layer]) -> Vec<String> {
+    layers
+        .iter()
+        .filter_map(|layer| {
+            let device = layer.slaves.first()?;
+            match layer.header.as_ref()? {
+                HeaderProbe::Attached { version, uuid, .. }
+                    if same_volume(uuid, layer.dm_uuid.as_deref().unwrap_or_default()) =>
+                {
+                    Some(format!(
+                        "The LUKS{version} header at the start of {device} shows anyone who reads \
+                         the disk that an encrypted volume is there (cryptsetup isLuks, blkid), \
+                         though not what it holds."
+                    ))
+                }
+                HeaderProbe::Detached { .. } => Some(format!(
+                    "The flags and tokens of the detached LUKS header of {} are in its file, \
+                     which `cryptsetup luksDump <file>` shows.",
+                    layer.name
+                )),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// What the start of the device below a LUKS mapping shows anyone who reads
+/// the disk that the mapping was not opened with: a header of another volume
+/// left behind, or the LUKS2 secondary header a device opened with a
+/// detached header kept. `None` for a device that shows neither, or could
+/// not be read.
+fn header_hazard(layer: &Layer, header: &HeaderProbe) -> Option<String> {
+    let device = layer.slaves.first()?;
+    let name = &layer.name;
+    match header {
+        HeaderProbe::Attached { uuid, .. }
+            if same_volume(uuid, layer.dm_uuid.as_deref().unwrap_or_default()) =>
+        {
+            None
+        }
+        HeaderProbe::Attached { version, uuid, .. } => Some(format!(
+            "The device below LUKS mapping {name}, {device}, starts with a LUKS{version} header \
+             of another volume (uuid {uuid}) than the one the mapping was opened with: a leftover \
+             that blkid and an examiner identify as LUKS. docs/backends.md says how to clear it."
+        )),
+        HeaderProbe::Detached {
+            secondary_at: Some(at),
+        } => Some(format!(
+            "The device below LUKS mapping {name}, {device}, opened with a header kept apart \
+             from it, still holds a LUKS2 secondary header {} KiB in, which blkid and an \
+             examiner identify as LUKS2. docs/backends.md says how to clear it.",
+            at / 1024
+        )),
+        HeaderProbe::Detached { secondary_at: None } | HeaderProbe::Unreadable => None,
+    }
 }
 
 /// Hazards recorded in a LUKS2 header: the checks `docs/backends.md` otherwise

@@ -4,13 +4,15 @@
 //! Storage-backend detection pre-flight check
 //!
 //! Identifies the block-device stack under the hidden root (dm-crypt type,
-//! loop-backed file container, discard policy) and warns about the hazards
-//! that are specific to that backend. `docs/backends.md` explains each one.
+//! loop-backed file container, discard policy, what the device below a LUKS
+//! mapping starts with) and warns about the hazards that are specific to that
+//! backend. `docs/backends.md` explains each one.
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::blockdev::{self, DmKind, LoopFollow};
+use crate::blockdev::{self, DmKind, LoopBacking, LoopFollow};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::{MountEntry, parse_mountinfo};
+use crate::hidden_root::separation::{self, Verdict};
 use crate::{Filesystem, Result};
 use nails_api::Allowable;
 use std::path::{Path, PathBuf};
@@ -28,7 +30,7 @@ pub use argon2::{
 };
 pub use encryption::BackendEncryptionCheck;
 use hazards::hazards;
-use luks2::{Luks2Metadata, read_luks2_header};
+use luks2::{HeaderProbe, Luks2Metadata, probe_header, same_volume};
 pub use outer_volume::OuterVolumeCheck;
 pub use partition_type::BackendPartitionTypeCheck;
 
@@ -50,14 +52,18 @@ enum CryptType {
     Luks,
     /// Headerless plain dm-crypt.
     Plain,
+    /// A mapping the VeraCrypt application made through the kernel
+    /// (`veracrypt<N>`, with no uuid).
+    VeraCrypt,
     /// Any other cryptsetup type (BITLK, FVAULT2, an integrity sub-device, ...).
     Other(String),
 }
 
 impl CryptType {
-    /// The cryptsetup type of a device-mapper device, `None` for a mapping
-    /// cryptsetup did not make. The inner layers of a cipher chain and the
-    /// integrity and verity mappings keep their own type names here.
+    /// The cryptsetup type of a device-mapper device, or the VeraCrypt
+    /// application's own mapping; `None` for a mapping neither made. The
+    /// inner layers of a cipher chain and the integrity and verity mappings
+    /// keep their own type names here.
     fn of(kind: &DmKind) -> Option<Self> {
         match kind {
             DmKind::Crypt(kind) => Some(match kind.as_str() {
@@ -69,7 +75,8 @@ impl CryptType {
             DmKind::CryptSubdev => Some(CryptType::Other("SUBDEV".into())),
             DmKind::Integrity => Some(CryptType::Other("INTEGRITY".into())),
             DmKind::Verity => Some(CryptType::Other("VERITY".into())),
-            DmKind::VeraCrypt | DmKind::Lvm | DmKind::Other => None,
+            DmKind::VeraCrypt => Some(CryptType::VeraCrypt),
+            DmKind::Lvm | DmKind::Other => None,
         }
     }
 
@@ -78,6 +85,7 @@ impl CryptType {
             CryptType::Tcrypt => "VeraCrypt/TrueCrypt (tcrypt)".into(),
             CryptType::Luks => "LUKS".into(),
             CryptType::Plain => "plain dm-crypt".into(),
+            CryptType::VeraCrypt => "VeraCrypt application".into(),
             CryptType::Other(kind) => format!("dm-crypt ({kind})"),
         }
     }
@@ -93,17 +101,29 @@ struct Layer {
     is_dm: bool,
     /// The dm-crypt type, when this is a cryptsetup mapping.
     crypt: Option<CryptType>,
-    /// The file behind a loop device.
+    /// The regular file behind a loop device: a file container.
     backing_file: Option<PathBuf>,
+    /// The block device behind a loop device, by kernel name.
+    loop_over: Option<String>,
+    /// Whether a loop device detaches when its last user closes it.
+    autoclear: bool,
     /// `queue/discard_max_bytes`; non-zero means discards reach this device.
     discard_max_bytes: u64,
     /// The device-mapper name (`dm/name`), for a device-mapper device.
     dm_name: Option<String>,
+    /// The device-mapper uuid (`dm/uuid`), for a device-mapper device.
+    dm_uuid: Option<String>,
     /// Kernel names of the devices below this one (`slaves/`).
     slaves: Vec<String>,
-    /// The LUKS2 header metadata, for a LUKS mapping whose header is on the
-    /// device below it (absent for a detached header or an unreadable device).
+    /// Kernel names of the devices the walk went on into below this one: its
+    /// `slaves`, or the device behind a loop over a block device.
+    below: Vec<String>,
+    /// The LUKS2 header metadata, for a LUKS mapping whose own header is on
+    /// the device below it (absent for a detached header, an unreadable
+    /// device, and a header of another volume).
     luks2: Option<Luks2Metadata>,
+    /// What the start of the device below a LUKS mapping holds, once read.
+    header: Option<HeaderProbe>,
 }
 
 impl Layer {
@@ -114,14 +134,29 @@ impl Layer {
             name: device.name.clone(),
             is_dm: device.dm.is_some(),
             crypt: device.dm.as_ref().and_then(|dm| CryptType::of(&dm.kind)),
-            backing_file: device
+            backing_file: device.loop_device.as_ref().and_then(|loop_device| {
+                match &loop_device.backing {
+                    LoopBacking::File(path) => Some(path.clone()),
+                    LoopBacking::Block { .. } => None,
+                }
+            }),
+            loop_over: device.loop_device.as_ref().and_then(|loop_device| {
+                match &loop_device.backing {
+                    LoopBacking::Block { name, .. } => Some(name.clone()),
+                    LoopBacking::File(_) => None,
+                }
+            }),
+            autoclear: device
                 .loop_device
                 .as_ref()
-                .map(|loop_device| loop_device.backing.path().to_path_buf()),
+                .is_some_and(|loop_device| loop_device.autoclear),
             discard_max_bytes: device.discard_max_bytes,
             dm_name: device.dm.as_ref().map(|dm| dm.name.clone()),
+            dm_uuid: device.dm.as_ref().map(|dm| dm.uuid.clone()),
             slaves: device.slaves.clone(),
+            below: device.below.clone(),
             luks2: None,
+            header: None,
         }
     }
 
@@ -134,9 +169,9 @@ impl Layer {
             .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
     }
 
-    /// Whether this cryptsetup mapping forwards TRIM to the device below it,
-    /// either at runtime (`discard_max_bytes`) or through a stored LUKS2
-    /// `allow-discards` flag. A non-cryptsetup device is never counted.
+    /// Whether this cryptsetup or VeraCrypt mapping forwards TRIM to the
+    /// device below it, either at runtime (`discard_max_bytes`) or through a
+    /// stored LUKS2 `allow-discards` flag. Any other device is never counted.
     fn forwards_discards(&self) -> bool {
         self.crypt.is_some() && (self.discard_max_bytes > 0 || self.has_persistent_discards())
     }
@@ -188,6 +223,12 @@ impl Layer {
 ///   which can keep old container blocks in free space or snapshots.
 /// - **Loop devices backed by a FUSE file**, whose mount depends on a
 ///   userspace process the session kill can terminate.
+/// - **A LUKS header the mapping was not opened with**: a header of another
+///   volume at the start of the device below it, or a LUKS2 secondary header
+///   a device opened with a detached header kept, which blkid and an
+///   examiner identify. The mapping's own header is named in the pass line.
+/// - **A loop device over a block device without autoclear**, which stays
+///   bound after the volume is closed.
 ///
 /// # Pass, warn or fail
 ///
@@ -205,8 +246,12 @@ impl Layer {
 /// resolves to `/sys/dev/block/<major:minor>`; btrfs reports an anonymous
 /// device there, so the mount source (`/dev/mapper/<name>`, `/dev/dm-N`,
 /// `/dev/loopN`) is the fallback. From that device the walk of
-/// `nails_base::blockdev` follows `slaves/` and reads `dm/uuid`,
-/// `loop/backing_file` and `queue/discard_max_bytes` on every layer.
+/// `nails_base::blockdev` follows `slaves/` and a loop over a block device,
+/// and reads `dm/uuid`, `loop/backing_file` and `queue/discard_max_bytes` on
+/// every layer. The start of the device below a LUKS mapping is read
+/// read-only, without changing its access time. A root on a filesystem the
+/// decoy uses is skipped: its stack is the decoy's, which the attach gate
+/// reports.
 #[derive(Debug, Clone)]
 pub struct BackendDetectCheck {
     hidden_volume_root: PathBuf,
@@ -296,6 +341,20 @@ fn assess_with_dev_dir<F: Filesystem>(
         );
     };
 
+    // A root on a filesystem the decoy uses (a bind, a subvolume, the
+    // filesystem itself), which the attach gate refuses unless the run
+    // accepts the decoy's storage: its stack is the decoy's own, and
+    // describing it as the hidden root's backend would only mislead.
+    if let Verdict::OnDecoyFilesystem { .. } =
+        separation::judge_storage(fs, &entries, mount, Path::new("/")).verdict
+    {
+        return CheckResult::Pass(
+            "Backend detection skipped: the hidden root is on a filesystem the decoy uses, which \
+             the hidden-volume check reports"
+                .into(),
+        );
+    }
+
     let mut layers = blockdev::device_of_mount(fs, mount)
         .map(|top| device_layers(fs, &top))
         .unwrap_or_default();
@@ -303,10 +362,16 @@ fn assess_with_dev_dir<F: Filesystem>(
         .iter_mut()
         .filter(|layer| layer.crypt == Some(CryptType::Luks))
     {
-        layer.luks2 = layer
-            .slaves
-            .first()
-            .and_then(|slave| read_luks2_header(&dev_dir.join(slave)));
+        let Some(below) = layer.slaves.first() else {
+            continue;
+        };
+        let probe = probe_header(&dev_dir.join(below));
+        if let HeaderProbe::Attached { uuid, meta, .. } = &probe
+            && same_volume(uuid, layer.dm_uuid.as_deref().unwrap_or_default())
+        {
+            layer.luks2 = meta.clone();
+        }
+        layer.header = Some(probe);
     }
     let summary = describe(&mount.fstype, &layers);
     let discards = discards_over_hidden(&layers);
@@ -325,14 +390,23 @@ fn assess_with_dev_dir<F: Filesystem>(
     if discards {
         found.insert(0, DISCARD_ACCEPTED.to_string());
     }
+    let notes: String = hazards::notes(&layers)
+        .iter()
+        .map(|note| format!(" {note}"))
+        .collect();
 
     if found.is_empty() {
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!(".{notes}")
+        };
         CheckResult::Pass(format!(
-            "Hidden root backend: {summary}; no backend-specific hazards detected"
+            "Hidden root backend: {summary}; no backend-specific hazards detected{notes}"
         ))
     } else {
         CheckResult::Warn(format!(
-            "Hidden root backend: {summary}. {} See {BACKENDS_DOC}.",
+            "Hidden root backend: {summary}. {}{notes} See {BACKENDS_DOC}.",
             found.join(" ")
         ))
     }
@@ -361,8 +435,9 @@ fn discards_over_hidden(layers: &[Layer]) -> bool {
 }
 
 /// Whether every device at the bottom of the stack (one without devices below
-/// it) is a RAM-only zram device, so TRIM reaches no persistent storage. A
-/// zram device anywhere in a stack that also rests on a disk (the cache of a
+/// it, a loop over a block device counting that device as below it) is a
+/// RAM-only zram device, so TRIM reaches no persistent storage. A zram
+/// device anywhere in a stack that also rests on a disk (the cache of a
 /// cached logical volume, say) excepts nothing, and neither does a layer whose
 /// devices below could not be read, nor a walk that did not read every device
 /// a layer names below it: the walk stops after
@@ -370,10 +445,10 @@ fn discards_over_hidden(layers: &[Layer]) -> bool {
 /// it did not reach would take the discards.
 fn rests_on_ram_only(layers: &[Layer]) -> bool {
     let walked = |name: &String| layers.iter().any(|layer| layer.name == *name);
-    let complete = layers.iter().all(|layer| layer.slaves.iter().all(walked));
+    let complete = layers.iter().all(|layer| layer.below.iter().all(walked));
     let mut bottom = layers
         .iter()
-        .filter(|layer| layer.slaves.is_empty())
+        .filter(|layer| layer.below.is_empty())
         .peekable();
     complete && bottom.peek().is_some() && bottom.all(Layer::is_ram_backed)
 }
@@ -383,10 +458,12 @@ fn rests_on_ram_only(layers: &[Layer]) -> bool {
 // ============================================================================
 
 /// The stack below the device whose sysfs directory is `top`, as the check
-/// sees it. The check describes a loop device as a file container, so the
-/// walk stops at every loop device ([`LoopFollow::Never`]).
+/// sees it: into the device behind a loop over a block device, which holds
+/// the hidden volume's data, and no further than a loop over a file, a file
+/// container, whose filesystem is not the hidden volume's
+/// ([`LoopFollow::BlockDevices`]).
 fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> Vec<Layer> {
-    blockdev::stack(fs, top, LoopFollow::Never)
+    blockdev::stack(fs, top, LoopFollow::BlockDevices)
         .iter()
         .map(Layer::from_device)
         .collect()
@@ -414,8 +491,24 @@ fn describe(fstype: &str, layers: &[Layer]) -> String {
     let stack: Vec<String> = layers
         .iter()
         .map(|layer| match (&layer.crypt, &layer.backing_file) {
+            (Some(CryptType::Luks), _)
+                if matches!(layer.header, Some(HeaderProbe::Detached { .. })) =>
+            {
+                format!("LUKS mapping {} (detached header)", layer.name)
+            }
+            (Some(CryptType::Other(kind)), _) if kind == "SUBDEV" => {
+                format!("dm-crypt cascade layer {} (SUBDEV)", layer.name)
+            }
+            (Some(CryptType::Other(kind)), _) if kind == "INTEGRITY" || kind == "VERITY" => {
+                format!(
+                    "dm-{} mapping {} (encrypts nothing)",
+                    kind.to_lowercase(),
+                    layer.name
+                )
+            }
             (Some(crypt), _) => format!("{} mapping {}", crypt.label(), layer.name),
             (None, Some(_)) => format!("loop device {} (file container)", layer.name),
+            (None, None) if layer.loop_over.is_some() => format!("loop device {}", layer.name),
             (None, None) if layer.is_shufflecake() => format!(
                 "Shufflecake volume {} ({})",
                 layer.dm_name.as_deref().unwrap_or_default(),
