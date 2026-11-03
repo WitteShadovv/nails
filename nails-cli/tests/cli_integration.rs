@@ -641,6 +641,77 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     assert_eq!(state_file_status["state"], "inactive", "{parsed}");
 }
 
+/// `verify --offline` reports on a decoy image: the state file on the hidden
+/// volume, the record of this computer's own session, is no part of it, so
+/// neither the report nor the envelope shows it, even while it says active.
+#[test]
+fn test_verify_offline_leaves_the_hidden_volume_state_file_out() {
+    use std::io::Write;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+    let image_root = temp_dir.path().join("decoy");
+    std::fs::create_dir_all(image_root.join("etc")).unwrap();
+
+    let state_path = hidden_root.join("state.json");
+    std::fs::write(
+        &state_path,
+        r#"{
+  "version": "0.2.0",
+  "state": {"Active": {"activated_at": "2026-01-01T00:00:00Z"}},
+  "config_fingerprint": null,
+  "last_modified": "2026-01-01T00:00:00Z"
+}"#,
+    )
+    .unwrap();
+    let config_path = temp_dir.path().join("nails.toml");
+    let mut config_file = std::fs::File::create(&config_path).unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"",
+        hidden_root.display(),
+        state_path.display(),
+    )
+    .unwrap();
+
+    let run = |json: bool| {
+        let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+        command.args(["--config", config_path.to_str().unwrap()]);
+        if json {
+            command.arg("--json");
+        }
+        let output = command
+            .args([
+                "verify",
+                "--offline",
+                "--root",
+                image_root.to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run verify command");
+        let code = output.status.code();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(
+            code == Some(0) || code == Some(10) || code == Some(11),
+            "unexpected exit code: {code:?}\nstdout={stdout}\nstderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        stdout
+    };
+
+    let human = run(false);
+    assert!(!human.contains("State file status"), "{human}");
+    assert!(!human.contains(state_path.to_str().unwrap()), "{human}");
+
+    let parsed: serde_json::Value = serde_json::from_str(run(true).trim()).unwrap();
+    assert_eq!(
+        parsed["data"]["state_file_status"],
+        serde_json::json!({"kind": "not_checked"}),
+        "{parsed}"
+    );
+}
+
 #[test]
 fn test_activate_off_tty_without_yes_refuses_before_real_ops() {
     use std::io::Write;

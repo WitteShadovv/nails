@@ -98,6 +98,7 @@
           }
         },
         "state_file_status": {
+          "description": "The state file on the hidden volume, as a live scan reads it. An offline scan reports on a decoy image, which the state file says nothing about, so it does not read it and gives not_checked.",
           "oneOf": [
             {
               "type": "object",
