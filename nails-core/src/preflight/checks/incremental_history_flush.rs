@@ -31,18 +31,19 @@
 //! change. It never reads a history file. Of the shell the command was typed
 //! into it also reads, from `/proc`, the program it runs and the few
 //! variables of its environment that tell where zsh finds the functions it
-//! autoloads ([`zsh::Install`]). What it cannot read or follow makes it warn
-//! that it cannot tell. Of zsh, any mention of an option counts as on,
-//! a turn-off too, as no reading of the files shows that one holds, so the fix
-//! it gives is one it can see: a zsh started as `zsh -f`, which reads
-//! `/etc/zshenv` alone, or for such a zsh, what the check names taken out of
-//! `/etc/zshenv`. It knows the settings of bash, zsh and fish, and that dash
-//! keeps no history file; of any other shell it warns that it cannot tell. It
-//! reads the options a zsh's command line turns on too. It does not see a
-//! setting typed into the shell, one a plugin manager's function makes, one an
-//! `eval` in bash's files makes (zsh's it reads, or warns of), or one in the
-//! files of a shell started with others (`--rcfile`, a `ZDOTDIR` from its
-//! environment).
+//! autoloads and the user's startup files ([`zsh::Install`]). What it cannot
+//! read or follow makes it warn that it cannot tell. Of zsh, any mention of an
+//! option counts as on, a turn-off too, as no reading of the files shows that
+//! one holds, so the fix it gives is one it can see: a zsh started as
+//! `zsh -f`, which reads `/etc/zshenv` alone (and `/etc/zshenv.local` on
+//! NixOS), or for such a zsh, what the check names taken out of those. It
+//! knows the settings of bash, zsh and fish, and that dash keeps no history
+//! file; of any other shell it warns that it cannot tell. It reads the
+//! options a zsh's command line turns on too. It does not see a setting typed
+//! into the shell, one a plugin manager's function makes, one an `eval` in
+//! bash's files makes (zsh's it reads, or warns of), or one in the files of a
+//! shell started with others (`--rcfile`, or a `ZDOTDIR` from the environment
+//! of a shell that does not run yet).
 
 mod startup;
 mod zsh;
@@ -138,7 +139,7 @@ impl InspectedShell {
         let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
         let environment = std::fs::read(format!("/proc/{pid}/environ"))
             .ok()
-            .map(|bytes| environment(&bytes));
+            .and_then(|bytes| environment(&bytes));
         Some(Self {
             program: program_name(exe.as_deref(), proc::comm(pid))?,
             homes,
@@ -155,19 +156,27 @@ impl InspectedShell {
 
 /// The variables of [`zsh::ENVIRONMENT`] that `bytes`, a process's
 /// `/proc/<pid>/environ`, holds, each once, as the first that names it sets
-/// it, as zsh takes it; no other is kept.
-fn environment(bytes: &[u8]) -> Vec<(String, String)> {
+/// it, as zsh takes it; no other is kept. `None` when one of them holds what
+/// is no UTF-8, a path the check cannot name as zsh reads it.
+fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
     let mut found: Vec<(String, String)> = Vec::new();
     for entry in bytes.split(|byte| *byte == 0) {
-        let entry = String::from_utf8_lossy(entry);
-        let Some((name, value)) = entry.split_once('=') else {
+        let Some(at) = entry.iter().position(|byte| *byte == b'=') else {
             continue;
         };
-        if zsh::ENVIRONMENT.contains(&name) && !found.iter().any(|(known, _)| known == name) {
-            found.push((name.to_string(), value.to_string()));
+        let (name, value) = (&entry[..at], &entry[at + 1..]);
+        let Some(name) = zsh::ENVIRONMENT
+            .iter()
+            .find(|known| known.as_bytes() == name)
+        else {
+            continue;
+        };
+        if found.iter().any(|(known, _)| known == name) {
+            continue;
         }
+        found.push((name.to_string(), String::from_utf8(value.to_vec()).ok()?));
     }
-    found
+    Some(found)
 }
 
 /// The name a shell's process is known by: the file name of the program its
@@ -214,30 +223,33 @@ fn kind(program: &str) -> Kind {
 }
 
 /// The fix for a zsh that may write each command line as it runs, one the
-/// check can see: such a zsh reads only `/etc/zshenv`. A fix in the startup
+/// check can see: such a zsh reads only `/etc/zshenv`, and the zsh of
+/// nixpkgs `/etc/zshenv.local` too on NixOS. A fix in the startup
 /// files is none it could see on NixOS or with Home Manager, whose generated
 /// files name the options whether they turn them on or off, or hold what the
 /// check cannot follow (an `eval` of `dircolors`'s output, a `compinit` from
 /// directories added to `fpath` it cannot resolve).
 const ZSH_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, which reads no \
-                       startup file but /etc/zshenv.";
+                       startup file but /etc/zshenv and, on NixOS, /etc/zshenv.local.";
 
 /// The fix for a zsh started with `-f` that may write each command line as
-/// it runs: what it reads is in `/etc/zshenv`.
-const BARE_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv and what it \
-                            sources, so take what the check names out of them.";
+/// it runs: what it reads is in `/etc/zshenv`, or `/etc/zshenv.local`.
+const BARE_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv, on NixOS \
+                            /etc/zshenv.local too, and what they source, so take what the \
+                            check names out of them.";
 
 /// The fix for a zsh started with `-f` whose `/etc/zshenv` may turn `RCS`
 /// on again, so that it reads every other startup file too.
-const REOPENED_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv and what it \
-                                sources, and as they name RCS or GLOBAL_RCS, it may read the \
-                                other startup files too: take that out of them.";
+const REOPENED_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv, on NixOS \
+                                /etc/zshenv.local too, and what they source, and as they name \
+                                RCS or GLOBAL_RCS, it may read the other startup files too: \
+                                take that out of them.";
 
 /// The fix for a zsh whose command line turns an option on, or makes it
 /// read other startup files.
 const COMMAND_LINE_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, with \
                                 nothing else on its command line, which reads no startup file \
-                                but /etc/zshenv.";
+                                but /etc/zshenv and, on NixOS, /etc/zshenv.local.";
 
 /// What a write after every command means for the decoy commands.
 const ON_DISK: &str = "the commands typed in it are on the decoy disk once it writes them, and \

@@ -14,8 +14,16 @@
 //! so an option a comment at the end of a line names counts as on too, and a
 //! `source` or `eval` anywhere else than in a command the walk follows, as in
 //! a string, an `echo`, an alias or a here-document, is a doubt.
+//!
+//! The lines are read in each form zsh may read their words in ([`Forms`]):
+//! as written, with each backslash-newline joined, and each of those with the
+//! quotes and backslashes taken off and `$'...'` decoded, as zsh takes them
+//! off a word before it uses it as a name (`print -v T\TY`), and the words
+//! of the code as the lexer reads them, which a line that starts with `#`
+//! inside a quote does not hide. What the most of them name counts.
 
-use super::walk::option;
+use super::lexer::{Token, lex};
+use super::walk::{HOOKS, PROMPTS, option};
 
 /// What the lines of a file name, outside the lines that are a comment.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -40,33 +48,243 @@ pub(super) struct Named {
     /// A parameter assigned by the name another one holds
     /// ([`indirect_assignments`]).
     pub(super) indirects: usize,
+    /// An array of hook functions (`precmd_functions`) where it is not read
+    /// ([`hook_writes`]).
+    pub(super) hooks: usize,
+    /// A prompt (`PS1`, `PROMPT`, ...) where it is not read
+    /// ([`prompt_writes`]).
+    pub(super) prompts: usize,
 }
 
-/// What the lines of zsh code `text` name.
+impl Named {
+    /// The most of `self` and `other`, field by field.
+    fn most(self, other: Self) -> Self {
+        let mut options = self.options;
+        for (at, count) in other.options.iter().enumerate() {
+            options[at] = options[at].max(*count);
+        }
+        Self {
+            options,
+            sources: self.sources.max(other.sources),
+            evals: self.evals.max(other.evals),
+            zdotdirs: self.zdotdirs.max(other.zdotdirs),
+            autoloads: self.autoloads.max(other.autoloads),
+            fpaths: self.fpaths.max(other.fpaths),
+            fcs: self.fcs.max(other.fcs),
+            nix_profiles: self.nix_profiles.max(other.nix_profiles),
+            indirects: self.indirects.max(other.indirects),
+            hooks: self.hooks.max(other.hooks),
+            prompts: self.prompts.max(other.prompts),
+        }
+    }
+
+    /// What `piece`, a line of code or a word of it, names.
+    fn add(&mut self, piece: &str) {
+        for (at, _) in options(piece) {
+            self.options[at] += 1;
+        }
+        self.sources += whole_words(piece, "source") + dot_words(piece) + alias_dots(piece);
+        self.evals += whole_words(piece, "eval");
+        self.zdotdirs += zdotdir_writes(piece);
+        self.autoloads += whole_words(piece, "autoload");
+        self.fpaths += fpath_writes(piece);
+        self.fcs += fc_writes(piece);
+        self.nix_profiles += nix_profiles_writes(piece);
+        self.indirects += indirect_assignments(piece);
+        self.hooks += hook_writes(piece);
+        self.prompts += prompt_writes(piece);
+    }
+}
+
+/// What the lines of zsh code `text` name, in the form of them that names
+/// the most of each ([`Forms`]).
 pub(super) fn named(text: &str) -> Named {
+    let forms = Forms::of(text);
+    let mut most = Named::default();
+    for form in &forms.texts {
+        let mut named = Named::default();
+        for line in code_lines(form) {
+            named.add(line);
+        }
+        most = most.most(named);
+    }
     let mut named = Named::default();
-    for line in text.lines() {
-        if line.trim_start().starts_with('#') {
+    for word in &forms.words {
+        named.add(word);
+    }
+    most.most(named)
+}
+
+/// The lines of `text` that are no comment: whose first character that is
+/// not a blank is not `#`.
+fn code_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+}
+
+/// The forms of a file's text in which the check looks for the names its
+/// lines hold, as zsh may read them: the text as written; with each
+/// backslash-newline joined, as zsh joins the lines; each of those with each
+/// `$'...'` decoded and every quote and backslash taken off, as zsh takes
+/// them off a word before it uses it as a name (`print -v T\TY`); and the
+/// words of its code as the lexer reads them, quotes taken off and lines
+/// joined, which a line that starts with `#` inside a quote does not hide.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Forms {
+    texts: Vec<String>,
+    words: Vec<String>,
+}
+
+impl Forms {
+    /// The forms of `text`.
+    pub(super) fn of(text: &str) -> Self {
+        let mut texts = vec![text.to_string()];
+        // Joined, a line may run on into what was a comment line, which a
+        // `#` that starts a word then starts.
+        let joined = without_comments(&text.replace("\\\n", ""));
+        if joined != text {
+            texts.push(joined);
+        }
+        for form in texts.clone() {
+            let bare = unquoted(&form);
+            if !texts.contains(&bare) {
+                texts.push(bare);
+            }
+        }
+        let words = lex(text)
+            .0
+            .into_iter()
+            .flat_map(|token| match token {
+                Token::Word(word) => vec![word.text],
+                Token::Array(name, items) => {
+                    let mut words = vec![format!("{name}=(")];
+                    words.extend(items.into_iter().map(|item| item.text));
+                    words
+                }
+                Token::Text(text) | Token::Arithmetic(text) => vec![text],
+                _ => Vec::new(),
+            })
+            .map(|word| unquoted(&word))
+            .collect();
+        Self { texts, words }
+    }
+
+    /// The most that `count` finds in the lines of a form that are no
+    /// comment, or in the words of the code.
+    fn most(&self, count: impl Fn(&str) -> usize) -> usize {
+        let lines = self
+            .texts
+            .iter()
+            .map(|form| code_lines(form).map(&count).sum::<usize>());
+        let words = self.words.iter().map(|word| count(word)).sum::<usize>();
+        lines
+            .chain(std::iter::once(words))
+            .max()
+            .unwrap_or_default()
+    }
+
+    /// How often the forms name the variable `name` otherwise than to read
+    /// it, at the most ([`writes`]).
+    pub(super) fn writes(&self, name: &str) -> usize {
+        self.most(|line| writes(line, name))
+    }
+
+    /// How often `name` stands in the forms as a word of its own
+    /// ([`whole_words`]), at the most.
+    pub(super) fn uses(&self, name: &str) -> usize {
+        self.most(|line| whole_words(line, name))
+    }
+}
+
+/// `text` with what each of its lines holds from a `#` that starts a word
+/// on taken out, as zsh reads a comment.
+fn without_comments(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| {
+            let mut previous: Option<char> = None;
+            for (at, c) in line.char_indices() {
+                if c == '#'
+                    && previous.is_none_or(|p| {
+                        p.is_whitespace() || matches!(p, ';' | '&' | '|' | '(' | ')')
+                    })
+                {
+                    let end = if line.ends_with('\n') { "\n" } else { "" };
+                    return format!("{}{end}", &line[..at]);
+                }
+                previous = Some(c);
+            }
+            line.to_string()
+        })
+        .collect()
+}
+
+/// `text` with each `$'...'` decoded, its escapes as zsh reads them
+/// (`$'\x54'` is `T`), and then every quote and backslash taken off.
+fn unquoted(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' && chars.peek() == Some(&'\'') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\'' => break,
+                    '\\' => out.extend(ansi_escape(&mut chars)),
+                    c => out.push(c),
+                }
+            }
             continue;
         }
-        for (at, _) in options(line) {
-            named.options[at] += 1;
+        if !matches!(c, '\'' | '"' | '\\') {
+            out.push(c);
         }
-        named.sources += whole_words(line, "source") + dot_words(line) + alias_dots(line);
-        named.evals += whole_words(line, "eval");
-        named.zdotdirs += zdotdir_writes(line);
-        named.autoloads += whole_words(line, "autoload");
-        named.fpaths += fpath_writes(line);
-        named.fcs += fc_writes(line);
-        named.nix_profiles += nix_profiles_writes(line);
-        named.indirects += indirect_assignments(line);
     }
-    named
+    out
+}
+
+/// The character the escape after a backslash in `$'...'` stands for, read
+/// from `chars`: a number in hex after `x`, `u` or `U`, or in octal; the
+/// character itself for any other, as zsh reads them (`\T` is `T`); `None`
+/// at the end of the text.
+fn ansi_escape(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<char> {
+    let c = chars.next()?;
+    let number = |chars: &mut std::iter::Peekable<std::str::Chars>, radix: u32, most: usize| {
+        let mut digits = String::new();
+        while digits.len() < most
+            && let Some(digit) = chars.next_if(|digit| digit.is_digit(radix))
+        {
+            digits.push(digit);
+        }
+        u32::from_str_radix(&digits, radix)
+            .ok()
+            .and_then(char::from_u32)
+    };
+    match c {
+        'x' => number(chars, 16, 2).or(Some('x')),
+        'u' => number(chars, 16, 4).or(Some('u')),
+        'U' => number(chars, 16, 8).or(Some('U')),
+        '0'..='7' => {
+            let mut digits = c.to_string();
+            while digits.len() < 3
+                && let Some(digit) = chars.next_if(|digit| digit.is_digit(8))
+            {
+                digits.push(digit);
+            }
+            u32::from_str_radix(&digits, 8)
+                .ok()
+                .and_then(char::from_u32)
+        }
+        'n' => Some('\n'),
+        't' => Some('\t'),
+        other => Some(other),
+    }
 }
 
 /// The flags of `fc` that write the history file: `-A` appends to it, `-W`
-/// writes it, and `-P` writes the list it pops.
-pub(super) const FC_WRITES: [char; 3] = ['A', 'W', 'P'];
+/// writes it, `-P` writes the list it pops, and `-p` pushes a list that zsh
+/// writes to its file as it pops it, which `-a` makes it do as the function
+/// it runs in returns.
+pub(super) const FC_WRITES: [char; 4] = ['A', 'W', 'P', 'p'];
 
 /// Whether `word`, a word of an `fc` command with its quotes taken off, is
 /// one of its flags: a `-` and a letter (`-AI`), not a number (`-10`).
@@ -520,30 +738,34 @@ pub(super) fn nix_profiles_writes(text: &str) -> usize {
     writes(text, "NIX_PROFILES")
 }
 
-/// Whether `text`, zsh code, may set `TTY`, outside a line that is a
-/// comment: it names it otherwise than to read it ([`writes`]), as in
-/// `TTY=...`, `local TTY`, `read TTY` or `${TTY::=...}`. zsh sets it to the
-/// name of its terminal as it starts, whatever its environment holds, and
-/// only code can make it name another file.
-pub(super) fn names_tty_write(text: &str) -> bool {
-    names_write(text, "TTY")
-}
-
-/// Whether `text`, zsh code, names the variable `name` otherwise than to
-/// read it ([`writes`]), outside a line that is a comment.
-pub(super) fn names_write(text: &str, name: &str) -> bool {
-    text.lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .any(|line| writes(line, name) > 0)
-}
-
-/// How often `name` stands in the lines of `text` as a word of its own
-/// ([`whole_words`]), outside a line that is a comment.
-pub(super) fn uses(text: &str, name: &str) -> usize {
-    text.lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .map(|line| whole_words(line, name))
+/// How often `text` names one of the arrays of the functions zsh runs as
+/// hooks (`precmd_functions`) otherwise than to read it ([`writes`]).
+pub(super) fn hook_writes(text: &str) -> usize {
+    HOOKS
+        .iter()
+        .map(|hook| writes(text, &format!("{hook}_functions")))
         .sum()
+}
+
+/// How often `text` names a parameter whose value zsh shows as a prompt
+/// otherwise than to read it ([`writes`]); `prompt`, which also names the
+/// function `promptinit` defines (`prompt suse`), only where no word of its
+/// own names it, as in `prompt=...` or `${prompt::=...}`.
+pub(super) fn prompt_writes(text: &str) -> usize {
+    let word_end = |c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')');
+    let bare = |at: usize, len: usize| {
+        text[..at].chars().next_back().is_none_or(word_end)
+            && text[at + len..].chars().next().is_none_or(word_end)
+    };
+    PROMPTS
+        .iter()
+        .filter(|name| **name != "prompt")
+        .map(|name| writes(text, name))
+        .sum::<usize>()
+        + text
+            .match_indices("prompt")
+            .filter(|&(at, found)| is_write(text, at, found.len()) && !bare(at, found.len()))
+            .count()
 }
 
 /// How often `text`, zsh code, assigns a parameter whose name another one's
@@ -576,36 +798,93 @@ pub(super) fn fpath_writes(text: &str) -> usize {
     writes(text, "fpath") + writes(text, "FPATH")
 }
 
-/// How often `text` names the variable `name` otherwise than to read it:
-/// anywhere but after `$` or `${` (with flags, as in `${(@)name}`, or a `#`,
-/// `+`, `=`, `~` or `^` between), and in `${name=...}`, `${name:=...}` or
-/// `${name::=...}`.
+/// How often `text` names the variable `name` otherwise than to read it
+/// ([`is_write`]).
 fn writes(text: &str, name: &str) -> usize {
+    text.match_indices(name)
+        .filter(|&(at, found)| is_write(text, at, found.len()))
+        .count()
+}
+
+/// Whether `text` names a variable otherwise than to read it where the
+/// `len` bytes at `at` name it: anywhere but after `$` or `${` (with flags,
+/// as in `${(@)name}`, or a `#`, `+`, `=`, `~` or `^` between), and in
+/// `${name=...}`, `${name:=...}` or `${name::=...}`, an element's too
+/// (`${name[1]::=...}`); also as the argument of an option, after its letters
+/// (`print -vTTY`).
+fn is_write(text: &str, at: usize, len: usize) -> bool {
     let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let modifiers = ['#', '+', '=', '~', '^'];
+    let before = &text[..at];
+    let after = &text[at + len..];
+    if after.chars().next().is_some_and(part) {
+        return false;
+    }
+    if before.chars().next_back().is_some_and(part) {
+        // An option's letters and their argument in one word.
+        let flags = before.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+        return flags.len() < before.len()
+            && flags.strip_suffix(['-', '+']).is_some_and(|start| {
+                !start
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| part(c) || c == '-' || c == '+')
+            });
+    }
+    let mut before = before.trim_end_matches(modifiers);
+    if let Some(flagged) = before.strip_suffix(')')
+        && let Some(open) = flagged.rfind("${(")
+        && !flagged[open + 3..].contains(['}', '$', '\n'])
+    {
+        before = flagged[..open + 2].trim_end_matches(modifiers);
+    }
+    let braced = before.ends_with("${");
+    let read = braced || before.ends_with('$');
+    // Past an element's subscript, nested brackets counted.
+    let mut after = after;
+    if braced && after.starts_with('[') {
+        let mut depth = 0usize;
+        for (at, c) in after.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        after = &after[at + 1..];
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    !read
+        || (braced
+            && (after.starts_with('=') || after.starts_with(":=") || after.starts_with("::=")))
+}
+
+/// The keys of the elements of `name` that `text` sets
+/// (`mapfile[~/.zsh_history]=...`, `${mapfile[$f]::=...}`,
+/// `print -v 'mapfile[f]'`), as written.
+pub(super) fn set_elements(text: &str, name: &str) -> Vec<String> {
     text.match_indices(name)
-        .filter(|&(at, found)| {
-            let before = &text[..at];
-            let after = &text[at + found.len()..];
-            if before.chars().next_back().is_some_and(part)
-                || after.chars().next().is_some_and(part)
-            {
-                return false;
+        .filter(|&(at, found)| is_write(text, at, found.len()))
+        .filter_map(|(at, found)| {
+            let key = text[at + found.len()..].strip_prefix('[')?;
+            let mut depth = 1usize;
+            for (end, c) in key.char_indices() {
+                match c {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(key[..end].to_string());
+                        }
+                    }
+                    _ => {}
+                }
             }
-            let mut before = before.trim_end_matches(modifiers);
-            if let Some(flagged) = before.strip_suffix(')')
-                && let Some(open) = flagged.rfind("${(")
-                && !flagged[open + 3..].contains(['}', '$', '\n'])
-            {
-                before = flagged[..open + 2].trim_end_matches(modifiers);
-            }
-            let braced = before.ends_with("${");
-            let read = braced || before.ends_with('$');
-            !read
-                || (braced
-                    && (after.starts_with('=')
-                        || after.starts_with(":=")
-                        || after.starts_with("::=")))
+            Some(key.to_string())
         })
-        .count()
+        .collect()
 }

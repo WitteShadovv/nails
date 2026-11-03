@@ -13,10 +13,12 @@
 //!   writes (`-d` names it, else `${ZDOTDIR:-$HOME}/.zcompdump`), runs
 //!   `compaudit` and `compdump`, autoloads `compinstall` without running it,
 //!   and marks the completion functions it finds in `fpath`, the files whose
-//!   names start with `_`, to be autoloaded. zsh runs those only as completion
-//!   runs, when a key bound to a completion widget is pressed (Tab), or when
-//!   code runs them by name. It names none of the three options and holds no
-//!   `fc` that writes the history file.
+//!   names start with `_`, to be autoloaded, as the first line of each says
+//!   (`#compdef`, `#autoload` and their words), when it finds no dump file it
+//!   can use. zsh runs those only as completion runs, when a key bound to a
+//!   completion widget is pressed (Tab), or when code runs them by name. It
+//!   names none of the three options and holds no `fc` that writes the
+//!   history file.
 //! - `compaudit` checks the owners and modes of the `fpath` directories and
 //!   may put the directories under one that holds a `Base` directory at the
 //!   end of `fpath`; `compdump` writes the dump file.
@@ -24,13 +26,14 @@
 //!   marks the prompt themes it finds in `fpath`, the `prompt_*_setup` files,
 //!   to be autoloaded. It defines `prompt`, which runs the theme it names
 //!   (`prompt suse` runs `prompt_suse_setup`), may turn `PROMPT_SUBST` on as
-//!   the theme asks, and keeps code a theme gives it to run as the theme
-//!   changes (`prompt_cleanup`).
+//!   the theme asks, keeps code a theme gives it to run as the theme changes
+//!   (`prompt_cleanup`), and keeps code to restore the prompt, which runs
+//!   `prompt_default_setup` (`prompt restore`).
 //! - `add-zsh-hook` and `add-zle-hook-widget` make the function they are
 //!   given a hook, which the walk reads where they are run
 //!   ([`super::walk::Event::Hook`]), or take one away.
 
-use super::{Reader, Word, backstop, dump};
+use super::{Forms, Reader, Word, backstop, dump};
 use crate::Filesystem;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -138,7 +141,8 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
                 self.stock(stock);
             }
-            None => self.code(path, &text, false),
+            // The file is the function's code.
+            None => self.code_in(path, &text, false, Some(name.to_string())),
         }
     }
 
@@ -178,7 +182,9 @@ impl<F: Filesystem> Reader<'_, F> {
         match dump::marks(&text) {
             Some(marks) => {
                 let place = path.to_string_lossy().into_owned();
-                self.lines(&text, &place);
+                // Its quoted words are data; an alias zsh may expand is one
+                // named like a command of its lines (`zle`, `autoload`).
+                self.texts.push(Forms::of(&dump::commands(&text)));
                 for (at, &count) in backstop::named(&text).options.iter().enumerate() {
                     if count > 0 {
                         self.options[at] = Some(format!("{place} names"));
@@ -190,7 +196,8 @@ impl<F: Filesystem> Reader<'_, F> {
                     }
                 }
             }
-            None => self.code(path, &text, false),
+            // compinit sources it in its own code.
+            None => self.code_in(path, &text, false, Some("compinit".to_string())),
         }
     }
 
@@ -211,9 +218,13 @@ impl<F: Filesystem> Reader<'_, F> {
     pub(super) fn marked(&mut self) {
         if self.compinit {
             self.dumps_of_compinit();
+            self.first_lines();
         }
         for (name, args, place) in self.calls.clone() {
             if self.promptinit && name == "prompt" {
+                // The code `prompt` keeps to restore the prompt, which a
+                // theme runs (`prompt restore`), runs prompt_default_setup.
+                self.autoload_name("prompt_default_setup");
                 self.prompt(&args, &place);
             } else if self.promptinit
                 && matches!(
@@ -272,15 +283,16 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Read the dump files the stock `compinit` sources: the one each call
-    /// of it names with `-d`, and `.zcompdump` in each directory the user's
-    /// startup files may be in, which it sources without one.
+    /// of it names with `-d`, and `.zcompdump` in each directory `ZDOTDIR`
+    /// may have named as the files were read, the home among them, which it
+    /// sources without one.
     fn dumps_of_compinit(&mut self) {
         let mut paths: Vec<PathBuf> = self
-            .zdotdirs
+            .zdotdirs_seen
             .iter()
             .map(|dir| dir.join(".zcompdump"))
             .collect();
-        if self.zdotdirs.is_empty() {
+        if self.zdotdir_lost {
             self.doubt(
                 "it cannot tell where the dump file that compinit sources is, as it cannot \
                  follow ZDOTDIR"
@@ -376,6 +388,48 @@ impl<F: Filesystem> Reader<'_, F> {
         }
     }
 
+    /// Read the first line of each completion function in the `fpath`
+    /// directories, which the stock `compinit` reads to mark them when it
+    /// finds no dump file it can use: an `#autoload` with a word but `+X`
+    /// (`-w`, which marks the functions of a compiled file, or the name of
+    /// another function) marks what the check cannot follow, a doubt.
+    fn first_lines(&mut self) {
+        let dirs: Vec<PathBuf> = self
+            .fpath
+            .iter()
+            .filter_map(|entry| entry.as_ref().ok().map(|(dir, _)| dir.clone()))
+            .filter(|dir| !self.first_lines_read.contains(dir))
+            .collect();
+        for dir in dirs {
+            self.first_lines_read.push(dir.clone());
+            let Ok(entries) = self.fs.list_directory(&dir) else {
+                continue;
+            };
+            for entry in entries {
+                let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !name.starts_with('_') || name.ends_with('~') || name.ends_with(".zwc") {
+                    continue;
+                }
+                let line = match first_line(self.fs, &entry) {
+                    Ok(Some(line)) => line,
+                    Ok(None) => continue,
+                    Err(why) => {
+                        self.doubt(format!("it could not read {} ({why})", entry.display()));
+                        continue;
+                    }
+                };
+                if !known_first_line(&line) {
+                    self.doubt(format!(
+                        "it cannot tell what the first line of {} makes compinit mark (`{line}`)",
+                        entry.display()
+                    ));
+                }
+            }
+        }
+    }
+
     /// Add to `fpath` what the stock `compaudit`, which `compinit` runs, may
     /// put at its end: the directories under each directory of it that holds
     /// a `Base` directory (two deep with `Base/Core`), as zsh's own completion
@@ -434,6 +488,37 @@ impl<F: Filesystem> Reader<'_, F> {
             }
         }
     }
+}
+
+/// The first line of the file at `path`, as `read -r` reads it, when it is
+/// a regular file; `None` for anything else; `Err` when the check cannot
+/// read it or the line runs past the bytes it reads.
+fn first_line<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>, String> {
+    const LINE_LIMIT: usize = 4096;
+    let path = fs.canonicalize(path).map_err(|error| error.to_string())?;
+    if !matches!(fs.is_regular_file(&path), Ok(true)) {
+        return Ok(None);
+    }
+    let bytes = fs
+        .read_file_range(&path, 0, LINE_LIMIT)
+        .map_err(|error| error.to_string())?;
+    match bytes.iter().position(|byte| *byte == b'\n') {
+        Some(end) => Ok(Some(String::from_utf8_lossy(&bytes[..end]).into_owned())),
+        None if bytes.len() < LINE_LIMIT => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        None => Err(format!("its first line is longer than {LINE_LIMIT} bytes")),
+    }
+}
+
+/// Whether `line`, the first line of a completion function, is one whose
+/// marks the check knows, as the stock `compinit` reads it (its words split
+/// at blanks): any but an `#autoload` with a word other than `+X`, which
+/// loads the function at once without running it. compinit runs
+/// `autoload -rUz` with the words of an `#autoload` line and the function's
+/// name; a `#compdef` line names the commands and keys whose completion runs
+/// the function.
+fn known_first_line(line: &str) -> bool {
+    let mut words = line.split([' ', '\t']).filter(|word| !word.is_empty());
+    words.next() != Some("#autoload") || words.all(|word| word == "+X")
 }
 
 #[cfg(test)]

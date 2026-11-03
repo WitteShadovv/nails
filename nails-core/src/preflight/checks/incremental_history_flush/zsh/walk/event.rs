@@ -22,8 +22,13 @@ pub(in super::super) enum Event {
     Unread(usize),
     /// Something the check cannot follow, as the warning names it.
     Doubt(String),
-    /// `source` or `.` of `path`.
-    Source { path: Word, unconditional: bool },
+    /// `source` or `.` of `path`, in the function `function` when in one,
+    /// which runs the file's code as its own.
+    Source {
+        path: Word,
+        unconditional: bool,
+        function: Option<String>,
+    },
     /// Oh My Zsh is loaded.
     OhMyZsh,
     /// `ZDOTDIR` or `XDG_CONFIG_HOME` is set.
@@ -50,12 +55,17 @@ pub(in super::super) enum Event {
     /// (`... runs \`emulate -R ksh\`, which turns on`).
     Turns { option: usize, what: String },
     /// Output is redirected to `target`, as written, in the function
-    /// `function` when in one; `computed` when an expansion makes it.
+    /// `function` when in one; `computed` when an expansion makes it, and
+    /// `kept` when an `exec` keeps it open for the commands after it
+    /// (`exec 3>>$f`), which a hook may write to.
     Redirect {
         target: String,
         function: Option<String>,
         computed: bool,
+        kept: bool,
     },
+    /// The files define a function, or a regular alias, named `name`.
+    Define(String),
     /// A word in the function `function` names the history file, as a
     /// command that writes it by its name may (`tee -a ~/.zsh_history`).
     Names { word: String, function: String },

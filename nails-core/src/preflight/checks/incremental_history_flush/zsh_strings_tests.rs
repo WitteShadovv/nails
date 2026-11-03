@@ -265,3 +265,100 @@ fn what_expands_a_parameter_s_value_again_is_a_doubt() {
         Scan::default()
     );
 }
+
+#[test]
+fn an_fc_alias_used_where_a_line_that_starts_with_a_hash_or_a_backslash_hides_it_is_a_doubt() {
+    // zsh 5.9.2 expands the alias in each and runs `fc -l -W`, which writes
+    // HISTFILE after each command.
+    for (rc, text) in [
+        ("alias h='fc -l'\nprecmd() { x='\n#'; h -W }\n", "h=fc -l"),
+        ("alias hh='fc -l'\nprecmd() { h\\\nh -W }\n", "hh=fc -l"),
+    ] {
+        assert_eq!(read(rc).doubts, [fc_alias(text)], "{rc}");
+    }
+}
+
+#[test]
+fn a_prompt_set_in_any_form_holds_code_where_prompt_subst_may_be_on() {
+    // zsh 5.9.2 runs the code each sets at each prompt with PROMPT_SUBST on,
+    // which writes the line before to HISTFILE.
+    let code = "'$(print -r -- ${history[$((HISTCMD-1))]} >> $f)%# '";
+    for set in [
+        format!("print -v PS1 {code}"),
+        format!(": ${{PS1::={code}}}"),
+        format!("prompt={code}"),
+        format!("PROMPT_EOL_MARK={code}"),
+        format!("read -r PS1 <<< {code}"),
+        format!("print -vPS1 {code}"),
+    ] {
+        let rc = format!("setopt prompt_subst\nf=$HISTFILE\n{set}\n");
+        let found = read(&rc);
+        assert!(!found.doubts.is_empty(), "{set}: {found:?}");
+        // Without PROMPT_SUBST, the doubt holds only where a command line
+        // turns it on.
+        let found = read(&format!("f=$HISTFILE\n{set}\n"));
+        assert!(
+            found.doubts.is_empty() && !found.prompts.is_empty(),
+            "{set}"
+        );
+    }
+    // promptinit's `prompt`, a prompt taken away or declared, and a read of
+    // one, are none.
+    for rc in [
+        "prompt suse\n",
+        "unset RPS1 RPROMPT\n",
+        "typeset PS1\n",
+        "print -r -- $PS1 ${prompt}\n",
+    ] {
+        assert_eq!(read(rc), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn an_alias_for_a_command_whose_words_the_check_reads_is_a_doubt() {
+    // compinit's dump file, prompt's theme and the hooks of add-zsh-hook
+    // are in the words they are given, which an alias hands on.
+    for (rc, text) in [
+        ("alias ci=compinit\n", "ci=compinit"),
+        ("alias p=prompt\n", "p=prompt"),
+        ("alias azh=add-zsh-hook\n", "azh=add-zsh-hook"),
+        ("alias z=zle\n", "z=zle"),
+        ("alias bk=bindkey\n", "bk=bindkey"),
+        ("alias fmt=zformat\n", "fmt=zformat"),
+    ] {
+        assert_eq!(read(rc).doubts, [alias(text)], "{rc}");
+    }
+}
+
+#[test]
+fn what_a_sched_a_zstyle_e_or_a_bindkey_s_runs_is_a_hook_s() {
+    // zsh 5.9.2 writes each command line to HISTFILE with each: what sched
+    // runs at its time, a style's code as vcs_info looks it up at each
+    // prompt, and the line a key types.
+    for rc in [
+        "zmodload zsh/sched\nf=$HISTFILE\nw() { print -r -- ${history[$((HISTCMD-1))]} >> $f; \
+         sched +1 w }\nsched +1 w\n",
+        "f=$HISTFILE\nautoload -Uz vcs_info\nzstyle -e ':vcs_info:*' enable \
+         'print -r -- ${history[$((HISTCMD-1))]} >> $f; reply=(git)'\nprecmd() { vcs_info }\n",
+        "bindkey -s '^M' '^Jfc -AI^J'\n",
+        "f=$HISTFILE\nw() { print -r -- ${history[$((HISTCMD-1))]} >> $f }\nbindkey -s '^M' '^J w^J'\n",
+    ] {
+        assert_ne!(read(rc), Scan::default(), "{rc}");
+    }
+    // Keys that type a line the check reads whole, and a binding of a key
+    // to a widget, are none.
+    for rc in [
+        "bindkey -s '^o' 'lfcd\\n'\nlfcd() { cd ~/x }\n",
+        "bindkey '^[[A' up-line-or-search\n",
+    ] {
+        assert_eq!(read(rc), Scan::default(), "{rc}");
+    }
+    // A string with an escape key or a number, or an expansion, is a doubt.
+    for rc in [
+        "bindkey -s '^o' '^[xaccept-line^M'\n",
+        "bindkey -s '^o' '\\033[A'\n",
+        "bindkey -s '^o' \"$cmd\"\n",
+    ] {
+        assert!(!read(rc).doubts.is_empty(), "{rc}");
+    }
+}

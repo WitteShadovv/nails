@@ -68,6 +68,7 @@
 //! of the code still decides which `ZDOTDIR` zsh reads its files in.
 
 mod backstop;
+mod builtins;
 mod dump;
 mod install;
 mod lexer;
@@ -77,8 +78,11 @@ mod walk;
 
 use super::startup::{Scan, Write, read};
 use crate::Filesystem;
+use backstop::Forms;
+#[cfg(test)]
+pub(super) use install::tests::seed_coreutils;
 pub(super) use install::{ENVIRONMENT, Install};
-use install::{known_lines, plain_profile};
+use install::{known_lines, profile_words};
 use lexer::Word;
 #[cfg(test)]
 use lexer::{End, Token, tokens};
@@ -290,6 +294,11 @@ struct Reader<'a, F: Filesystem> {
     /// The directories the user's own startup files may be in; empty once a
     /// file set `ZDOTDIR` to something the check cannot follow.
     zdotdirs: Vec<PathBuf>,
+    /// Every directory `ZDOTDIR` may have named as the files were read, and
+    /// whether it named one the check cannot follow: `compinit` reads its
+    /// dump file in the one in force as it runs.
+    zdotdirs_seen: Vec<PathBuf>,
+    zdotdir_lost: bool,
     /// What `XDG_CONFIG_HOME` may be as the files read so far set it: each
     /// value as written, `None` while unset.
     xdg_config_homes: Vec<Option<String>>,
@@ -349,8 +358,16 @@ struct Reader<'a, F: Filesystem> {
     /// The aliases that stand for an `fc` that writes nothing
     /// ([`Event::FcAlias`]): their names, as written, and where.
     fc_aliases: Vec<(String, String, String)>,
-    /// The text of each file read, for the names its lines use.
-    texts: Vec<String>,
+    /// The forms of the text of each file read, for the names its lines use
+    /// ([`Forms`]).
+    texts: Vec<Forms>,
+    /// The functions and regular aliases the files define
+    /// ([`Event::Define`]).
+    defined: Vec<String>,
+    /// The commands a function runs with a word an expansion makes, and
+    /// where: in a hook, one that is no function may write a file the word
+    /// names (`tee -a $f`).
+    computed_calls: Vec<(String, String, String)>,
     /// The commands the files run by name ([`Event::Call`]), and where.
     calls: Vec<(String, Vec<Word>, String)>,
     /// Each function the files define and a command it runs by name.
@@ -362,10 +379,11 @@ struct Reader<'a, F: Filesystem> {
     promptinit: bool,
     /// The completion functions a dump file marks to be autoloaded.
     dump_marks: Vec<String>,
-    /// The dump files read, and the directories `compaudit` was looked at
-    /// for.
+    /// The dump files read, the directories `compaudit` was looked at for,
+    /// and those whose completion functions' first lines were read.
     dumps: Vec<PathBuf>,
     audited: Vec<PathBuf>,
+    first_lines_read: Vec<PathBuf>,
 }
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -488,52 +506,76 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Note what the lines of `text`, the file at `place`, may set that the
-    /// check reads beside its code: `TTY`, `ZSH_VERSION`, the names the
+    /// check reads beside its code, in any form zsh may read their words in
+    /// ([`Forms`]): `TTY`, `ZSH_VERSION`, `HOME`, `_compdir`, the names the
     /// files use.
     fn lines(&mut self, text: &str, place: &str) {
-        if self.tty_set.is_none() && backstop::names_tty_write(text) {
+        let forms = Forms::of(text);
+        if self.tty_set.is_none() && forms.writes("TTY") > 0 {
             self.tty_set = Some(place.to_string());
         }
-        self.version_set |= backstop::names_write(text, "ZSH_VERSION");
+        self.version_set |= forms.writes("ZSH_VERSION") > 0;
         // What NixOS's set-environment writes NIX_PROFILES with.
         self.profile_vars_set |= ["HOME", "USER", "XDG_STATE_HOME"]
             .iter()
-            .any(|name| backstop::names_write(text, name));
-        self.texts.push(text.to_string());
+            .any(|name| forms.writes(name) > 0);
+        if forms.writes("HOME") > 0 {
+            self.doubt(format!(
+                "it cannot follow the HOME that {place} may set, which changes where zsh reads \
+                 the user's startup files and the dump file compinit sources"
+            ));
+        }
+        if self.compdir.is_none() && forms.uses("_compdir") > 0 {
+            self.compdir = Some(place.to_string());
+        }
+        self.texts.push(forms);
     }
 
     /// Read the startup file at `path` and follow what it sets; `certain`
     /// when zsh certainly runs it whole.
     fn file(&mut self, path: &Path, certain: bool) {
+        self.file_in(path, certain, None);
+    }
+
+    /// Read the file at `path` that runs as the code of the function `outer`
+    /// when in one, and follow what it sets ([`Reader::file`]).
+    fn file_in(&mut self, path: &Path, certain: bool, outer: Option<String>) {
         if let Some(text) = self.text(path) {
-            self.code(path, &text, certain);
+            self.code_in(path, &text, certain, outer);
         }
     }
 
-    /// Follow what `text`, the code of the file at `path`, sets; `certain`
-    /// when zsh certainly runs it whole.
-    fn code(&mut self, path: &Path, text: &str, certain: bool) {
-        let text = known_lines(path, text);
+    /// Follow what `text`, the code of the file at `path` that runs as the
+    /// code of the function `outer` when in one, sets; `certain` when zsh
+    /// certainly runs it whole.
+    fn code_in(&mut self, path: &Path, text: &str, certain: bool, outer: Option<String>) {
+        let text = known_lines(self.fs, path, text);
         let text = text.as_ref();
         self.rcs |= backstop::names_rcs(text);
         self.prompt_subst |= backstop::names_prompt_subst(text);
         let place = path.to_string_lossy().into_owned();
         self.lines(text, &place);
-        if self.compdir.is_none() && backstop::uses(text, "_compdir") > 0 {
-            self.compdir = Some(place.clone());
-        }
         if backstop::names_any(text, &["globsubst"]) {
             self.doubt(format!(
                 "it cannot tell what code zsh runs from the values it expands as patterns, as \
                  {place} names GLOB_SUBST, which makes a glob qualifier in a value run"
             ));
         }
-        let read = events(text, &place);
+        let read = events(text, &place, outer);
         self.stack.push(path.to_path_buf());
         for event in read.events {
             self.apply(event, &place, certain && !read.confused);
         }
         self.stack.pop();
+    }
+
+    /// Note `dirs` among the directories `ZDOTDIR` may have named.
+    fn seen(&mut self, dirs: &[PathBuf]) {
+        for dir in dirs {
+            if !self.zdotdirs_seen.contains(dir) {
+                self.zdotdirs_seen.push(dir.clone());
+            }
+        }
     }
 
     /// Mark the function `name` to be read as one the files autoload.
@@ -559,11 +601,13 @@ impl<F: Filesystem> Reader<'_, F> {
             Event::Source {
                 path,
                 unconditional,
+                function,
             } => match self.resolve(&path) {
                 Some(files) => {
                     let one = files.len() == 1;
                     for file in files {
-                        self.file(&file, certain && unconditional && one);
+                        // Sourced in a function, its code runs as that one's.
+                        self.file_in(&file, certain && unconditional && one, function.clone());
                     }
                 }
                 None => self.doubt(format!(
@@ -597,48 +641,30 @@ impl<F: Filesystem> Reader<'_, F> {
                 args,
                 function,
             } => {
-                if let Some(function) = function
-                    && !self.edges.contains(&(function.clone(), name.clone()))
-                {
-                    self.edges.push((function, name.clone()));
+                if let Some(function) = function {
+                    if args.iter().any(|arg| arg.expands) {
+                        self.computed_calls.push((
+                            function.clone(),
+                            name.clone(),
+                            place.to_string(),
+                        ));
+                    }
+                    if !self.edges.contains(&(function.clone(), name.clone())) {
+                        self.edges.push((function, name.clone()));
+                    }
                 }
                 self.calls.push((name, args, place.to_string()));
+            }
+            Event::Define(name) => {
+                if !self.defined.contains(&name) {
+                    self.defined.push(name);
+                }
             }
             Event::Assign {
                 name,
                 value,
                 unconditional,
-            } => {
-                if name == "XDG_CONFIG_HOME" {
-                    let config = Some(value.text);
-                    if certain && unconditional {
-                        self.xdg_config_homes = vec![config];
-                    } else if !self.xdg_config_homes.contains(&config) {
-                        self.xdg_config_homes.push(config);
-                    }
-                    return;
-                }
-                match self.resolve(&value) {
-                    Some(dirs) if certain && unconditional => self.zdotdirs = dirs,
-                    Some(dirs) => {
-                        for dir in dirs {
-                            if !self.zdotdirs.contains(&dir) {
-                                self.zdotdirs.push(dir);
-                            }
-                        }
-                    }
-                    None => {
-                        if certain && unconditional {
-                            // zsh reads the user's files somewhere else now.
-                            self.zdotdirs.clear();
-                        }
-                        self.doubt(format!(
-                            "it cannot follow the ZDOTDIR that {place} sets (`{}`)",
-                            value.text
-                        ));
-                    }
-                }
-            }
+            } => self.assign(name, value, certain && unconditional, place),
             Event::Fpath {
                 dir: Some(dir),
                 first,
@@ -678,25 +704,8 @@ impl<F: Filesystem> Reader<'_, F> {
                 target,
                 function,
                 computed,
-            } => {
-                if backstop::history_path(&target) {
-                    let what = format!("{place} redirects output to `{target}`");
-                    if !self.fc.contains(&what) {
-                        self.fc.push(what);
-                    }
-                } else if computed && let Some(function) = function {
-                    if matches!(target.as_str(), "$TTY" | "${TTY}") {
-                        // The terminal zsh runs on, unless code sets TTY.
-                        self.terminals.push((function, place.to_string()));
-                        return;
-                    }
-                    let doubt = format!(
-                        "it cannot tell where the output that `{function}` in {place} \
-                         redirects to `{target}` goes, which may be the history file"
-                    );
-                    self.in_functions.push((function, Err(doubt)));
-                }
-            }
+                kept,
+            } => self.redirect(&target, function, computed, kept, place),
             Event::Names { word, function } => {
                 let what = format!("{place} names `{word}` in `{function}`");
                 self.in_functions.push((function, Ok(what)));
@@ -709,6 +718,83 @@ impl<F: Filesystem> Reader<'_, F> {
         }
     }
 
+    /// Note the value `value` a file at `place` gives `ZDOTDIR` or
+    /// `XDG_CONFIG_HOME` (`name`); `certain` when the assignment certainly
+    /// runs.
+    fn assign(&mut self, name: &str, value: Word, certain: bool, place: &str) {
+        if name == "XDG_CONFIG_HOME" {
+            let config = Some(value.text);
+            if certain {
+                self.xdg_config_homes = vec![config];
+            } else if !self.xdg_config_homes.contains(&config) {
+                self.xdg_config_homes.push(config);
+            }
+            return;
+        }
+        match self.resolve(&value) {
+            Some(dirs) if certain => {
+                self.seen(&dirs);
+                self.zdotdirs = dirs;
+            }
+            Some(dirs) => {
+                self.seen(&dirs);
+                for dir in dirs {
+                    if !self.zdotdirs.contains(&dir) {
+                        self.zdotdirs.push(dir);
+                    }
+                }
+            }
+            None => {
+                self.zdotdir_lost = true;
+                if certain {
+                    // zsh reads the user's files somewhere else now.
+                    self.zdotdirs.clear();
+                }
+                self.doubt(format!(
+                    "it cannot follow the ZDOTDIR that {place} sets (`{}`)",
+                    value.text
+                ));
+            }
+        }
+    }
+
+    /// Note a redirection to `target`, as written, in the function `function`
+    /// when in one, by the file at `place`: one to the history file writes it,
+    /// and one whose target an expansion makes (`computed`) is a doubt where
+    /// an `exec` keeps it open (`kept`) or a hook makes it, but for `$TTY`,
+    /// the terminal, while no file sets `TTY`.
+    fn redirect(
+        &mut self,
+        target: &str,
+        function: Option<String>,
+        computed: bool,
+        kept: bool,
+        place: &str,
+    ) {
+        if backstop::history_path(target) {
+            let what = format!("{place} redirects output to `{target}`");
+            if !self.fc.contains(&what) {
+                self.fc.push(what);
+            }
+        } else if computed && kept {
+            self.doubt(format!(
+                "it cannot tell where the descriptor that `exec` in {place} opens to \
+                 `{target}` goes, which a hook may write each command line to"
+            ));
+        } else if computed && let Some(function) = function {
+            if matches!(target, "$TTY" | "${TTY}") {
+                // The terminal zsh runs on, unless code sets TTY.
+                self.terminals.push((function, place.to_string()));
+                return;
+            }
+            let doubt = format!(
+                "it cannot tell where the output that `{function}` in {place} \
+                 redirects to `{target}` goes, which may be the history file"
+            );
+            self.in_functions.push((function, Err(doubt)));
+        }
+    }
+
     /// Note the function `function` that the file at `place` autoloads: by
     /// name, to be looked for where the files add to `fpath`, or by the path
     /// of its file, which is read at once.
@@ -717,7 +803,18 @@ impl<F: Filesystem> Reader<'_, F> {
             match self.resolve(&function) {
                 Some(files) => {
                     for file in files {
-                        self.file(&file, false);
+                        // zsh puts the file's directory in front of fpath for
+                        // the functions its code autoloads by name.
+                        if let Some(dir) = file.parent() {
+                            let entry = Ok((dir.to_path_buf(), true));
+                            if !self.fpath.contains(&entry) {
+                                self.fpath.push(entry);
+                            }
+                        }
+                        let name = file
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned());
+                        self.file_in(&file, false, name);
                     }
                 }
                 None => self.doubt(format!(
@@ -831,12 +928,27 @@ pub(super) fn zsh<F: Filesystem>(
     start: Start,
     install: &Install,
 ) -> Scan {
+    let mut scan = Scan::default();
+    // A zsh runs with the home its environment names, when the check reads
+    // it; one that is not its account's is a home it does not read.
+    let homes: Vec<PathBuf> = match install.env.as_ref().and_then(|env| env.home.as_deref()) {
+        Some(home) if homes.iter().any(|known| known == Path::new(home)) => {
+            vec![PathBuf::from(home)]
+        }
+        Some(home) => {
+            scan.doubts.push(format!(
+                "it cannot tell what the user's startup files hold, as the shell's environment \
+                 sets HOME to `{home}`, a home the check does not read"
+            ));
+            homes.to_vec()
+        }
+        None => homes.to_vec(),
+    };
     let homes: Vec<Option<&Path>> = if homes.is_empty() {
         vec![None]
     } else {
         homes.iter().map(|home| Some(home.as_path())).collect()
     };
-    let mut scan = Scan::default();
     for home in homes {
         let one = in_home(fs, home, start, install);
         for write in one.writes {
@@ -862,27 +974,32 @@ pub(super) fn zsh<F: Filesystem>(
 /// What zsh's startup files below `/etc` and in `home` turn on, for a zsh
 /// that runs with `home`.
 fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &Install) -> Scan {
+    let env = install.env.as_ref();
     // The profiles the environment names, as `${(z)NIX_PROFILES}` splits
     // them; none the check can tell when the environment holds what zsh
     // splits otherwise.
-    let profiles = install.env.as_ref().and_then(|env| {
-        let words: Vec<String> = env
-            .nix_profiles
-            .as_deref()
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        words
-            .iter()
-            .all(|word| plain_profile(word))
-            .then_some(words)
-    });
+    let profiles =
+        env.and_then(|env| profile_words(env.nix_profiles.as_deref().unwrap_or_default()));
+    // Where the user's files are: the ZDOTDIR the environment holds, when it
+    // holds one, else the home.
+    let mut doubts = Vec::new();
+    let zdotdirs: Vec<PathBuf> = match env.and_then(|env| env.zdotdir.as_deref()) {
+        Some(dir) if Path::new(dir).is_absolute() => vec![PathBuf::from(dir)],
+        Some(dir) => {
+            doubts.push(format!(
+                "it cannot follow the ZDOTDIR that the shell's environment holds (`{dir}`)"
+            ));
+            Vec::new()
+        }
+        None => home.map(Path::to_path_buf).into_iter().collect(),
+    };
     let mut reader = Reader {
         fs,
         home,
         options: Default::default(),
-        zdotdirs: home.map(Path::to_path_buf).into_iter().collect(),
+        zdotdir_lost: zdotdirs.is_empty(),
+        zdotdirs_seen: zdotdirs.clone(),
+        zdotdirs,
         xdg_config_homes: vec![None],
         stack: Vec::new(),
         fpath: install
@@ -895,7 +1012,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         fc: Vec::new(),
         hooks: Vec::new(),
         in_functions: Vec::new(),
-        doubts: Vec::new(),
+        doubts,
         rcs: false,
         prompt_subst: false,
         prompts: Vec::new(),
@@ -903,13 +1020,17 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         profiles,
         profile_fpath: Vec::new(),
         tty_set: None,
-        compdir: None,
+        compdir: env
+            .and_then(|env| env.compdir.as_ref())
+            .map(|_| "the shell's environment".to_string()),
         version_set: false,
         profile_vars_set: false,
         expanding: Vec::new(),
         terminals: Vec::new(),
         fc_aliases: Vec::new(),
         texts: Vec::new(),
+        defined: Vec::new(),
+        computed_calls: Vec::new(),
         calls: Vec::new(),
         edges: Vec::new(),
         compinit: false,
@@ -918,6 +1039,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         dump_marks: Vec::new(),
         dumps: Vec::new(),
         audited: Vec::new(),
+        first_lines_read: Vec::new(),
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
         let login_stage = matches!(stage, "zprofile" | "zlogin");
@@ -943,6 +1065,15 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
                 .count();
             for path in &system {
                 reader.file(path, certain && present == 1);
+            }
+            if stage == "zshenv" && !matches!(fs.inode(Path::new("/etc/NIXOS")), Ok(None)) {
+                // The zshenv nixpkgs builds into zsh reads, on NixOS,
+                // /etc/set-environment when /etc/zshenv is missing, and
+                // /etc/zshenv.local after either.
+                if matches!(fs.inode(Path::new("/etc/zshenv")), Ok(None)) {
+                    reader.file(Path::new("/etc/set-environment"), false);
+                }
+                reader.file(Path::new("/etc/zshenv.local"), false);
             }
         }
         if !(start.rcs || reader.rcs) {

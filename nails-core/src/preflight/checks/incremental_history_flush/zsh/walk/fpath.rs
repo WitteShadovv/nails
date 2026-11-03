@@ -9,9 +9,13 @@ use super::super::lexer::Word;
 use super::command::assigned;
 use super::{Event, Frame, Walker};
 
-/// Whether `text` stands for what `fpath` or `FPATH` holds, or some of it:
-/// `$fpath`, `${fpath[@]}`, `${(@)fpath}`, `${fpath[1]}`, `${fpath:#pat}`;
-/// not a directory made from it (`${fpath[1]}/sub`, `${fpath/a/b}`).
+/// Whether `text` stands for what `fpath` or `FPATH` holds, or some of it,
+/// each element as it is: `$fpath`, `${fpath[@]}`, `${(@)fpath}`,
+/// `${(u)fpath}`, `${fpath[1]}`, `${fpath[2,-1]}`, `${fpath:#pat}`, and
+/// `$FPATH` and `${FPATH}` whole; not a directory made from it
+/// (`${fpath[1]}/sub`, `${fpath/a/b}`), one that flags change
+/// (`${(s:/:)fpath}`), an element a subscript flag finds (`${fpath[(I)x]}`,
+/// an index), or a slice of `FPATH`'s characters (`$FPATH[2,10]`).
 fn holds_fpath(text: &str) -> bool {
     let Some(rest) = text.strip_prefix('$') else {
         return false;
@@ -25,8 +29,12 @@ fn holds_fpath(text: &str) -> bool {
     };
     let inner = match inner.strip_prefix('(') {
         Some(flagged) if braced => match flagged.split_once(')') {
-            Some((_, name)) => name,
-            None => return false,
+            Some((flags, name))
+                if !flags.is_empty() && flags.chars().all(|c| matches!(c, '@' | 'u')) =>
+            {
+                name
+            }
+            _ => return false,
         },
         _ => inner,
     };
@@ -34,10 +42,21 @@ fn holds_fpath(text: &str) -> bool {
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .unwrap_or(inner.len());
     let (name, after) = inner.split_at(end);
-    let subscript =
-        after.starts_with('[') && after.ends_with(']') && !after[1..after.len() - 1].contains(']');
-    matches!(name, "fpath" | "FPATH")
-        && (after.is_empty() || subscript || (braced && after.starts_with(":#")))
+    let number = |n: &str| {
+        let n = n.strip_prefix('-').unwrap_or(n);
+        !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
+    };
+    let subscript = after
+        .strip_prefix('[')
+        .and_then(|key| key.strip_suffix(']'))
+        .is_some_and(|key| {
+            matches!(key, "@" | "*") || (key.split(',').count() <= 2 && key.split(',').all(number))
+        });
+    match name {
+        "fpath" => after.is_empty() || subscript || (braced && after.starts_with(":#")),
+        "FPATH" => after.is_empty(),
+        _ => false,
+    }
 }
 
 impl Walker<'_> {

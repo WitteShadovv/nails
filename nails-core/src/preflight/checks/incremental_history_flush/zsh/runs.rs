@@ -5,7 +5,7 @@
 //! read: what the functions zsh runs as hooks write, and where the aliases
 //! the files define are used.
 
-use super::{Reader, backstop, walk};
+use super::{Forms, Reader, builtins, walk};
 use crate::Filesystem;
 
 impl<F: Filesystem> Reader<'_, F> {
@@ -34,12 +34,12 @@ impl<F: Filesystem> Reader<'_, F> {
             let defined: usize = aliases
                 .iter()
                 .filter(|(other, ..)| other == name)
-                .map(|(_, text, _)| backstop::uses(text, name))
+                .map(|(_, text, _)| Forms::of(text).uses(name))
                 .sum();
             let named: usize = self
                 .texts
                 .iter()
-                .map(|file| backstop::uses(file, name))
+                .map(|forms| forms.uses(name))
                 .sum::<usize>();
             if named > defined {
                 self.doubt(format!(
@@ -49,10 +49,12 @@ impl<F: Filesystem> Reader<'_, F> {
             }
         }
         // What a function holds counts where zsh runs it as a hook: by its name
-        // (`preexec`, `TRAPDEBUG`), as the files make it one, or as a hook runs
-        // it.
+        // (`preexec`, `TRAPDEBUG`), as the files make it one, as a hook runs it,
+        // or as it is named like a builtin, which zsh's own code runs as each
+        // line is entered (`zstyle`, `zle`).
         let is_hook = |function: &str, hooked: &[String]| {
             walk::HOOKS.contains(&function)
+                || builtins::builtin(function)
                 || function.starts_with("TRAP")
                 || hooked.iter().any(|hook| hook == function)
         };
@@ -74,6 +76,21 @@ impl<F: Filesystem> Reader<'_, F> {
                 Ok(write) if hook && !self.fc.contains(&write) => self.fc.push(write),
                 Err(doubt) if hook => self.doubt(doubt),
                 _ => {}
+            }
+        }
+        // A command a hook runs with a word an expansion makes may write the
+        // file that word names (`tee -a $f`), unless it is a function or an
+        // alias the check reads, or a builtin that writes no file.
+        for (function, command, place) in std::mem::take(&mut self.computed_calls) {
+            if is_hook(&function, &hooked)
+                && !self.defined.contains(&command)
+                && !self.autoloads.contains(&command)
+                && !builtins::quiet(&command)
+            {
+                self.doubt(format!(
+                    "it cannot tell what `{command}` in `{function}` in {place} writes, as an \
+                     expansion makes a word it is given, which may name the history file"
+                ));
             }
         }
     }

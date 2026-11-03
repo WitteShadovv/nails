@@ -130,6 +130,17 @@ fn header(line: &str) -> bool {
         })
 }
 
+/// The words of the dump file `text` that zsh runs as commands, one on each
+/// line: the first word of each of its lines that starts with a letter
+/// (`zle`, `bindkey`, `autoload`, `zmodload`, `typeset`).
+pub(super) fn commands(text: &str) -> String {
+    text.lines()
+        .filter_map(|line| line.split(' ').next())
+        .filter(|word| word.starts_with(|c: char| c.is_ascii_alphabetic()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The completion functions the dump file `text` marks to be autoloaded,
 /// when each of its lines is one the stock `compdump` writes; `None` when a
 /// line is any other.
@@ -175,13 +186,11 @@ pub(super) fn marks(text: &str) -> Option<Vec<String>> {
                     if !words.is_empty() && !words.starts_with(' ') {
                         return None;
                     }
-                    // The options `#autoload` gives a function come before
-                    // its name (`autoload -Uz +X _call_program`).
-                    let words = words.split_whitespace().skip_while(|word| {
-                        word.len() > 1
-                            && word.starts_with(['-', '+'])
-                            && word[1..].chars().all(|c| c.is_ascii_alphabetic())
-                    });
+                    // The option `#autoload` gives a function comes before
+                    // its name (`autoload -Uz +X _call_program`): `+X`, which
+                    // loads it at once without running it, and no other
+                    // (`-w` marks the functions of a compiled file).
+                    let words = words.split_whitespace().skip_while(|word| *word == "+X");
                     marks.extend(names(words)?);
                     if more { State::Names } else { State::Top }
                 }
@@ -292,6 +301,9 @@ _comp_assocs=( '' )
                 "autoload -Uz +X _call_program; source ~/x",
             ),
             ("autoload -Uz +X", "autoload -X"),
+            ("autoload -Uz +X", "autoload -Uz -w"),
+            ("autoload -Uz +X", "autoload -Uz +X -m"),
+            ("autoload -Uz +X _call_program", "autoload -Uz +X precmd"),
             ("_comp_assocs=( '' )", "_comp_assocs=( $x )"),
             ("typeset -gUa _comp_assocs", "typeset -gUa _comp_assocs x"),
             ("zmodload -i zsh/complist", "zmodload zsh/complist"),

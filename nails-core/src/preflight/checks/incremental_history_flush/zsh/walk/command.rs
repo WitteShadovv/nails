@@ -13,6 +13,7 @@ use super::super::backstop::{
     self, FC_WRITES, history_path, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
 };
 use super::super::lexer::{Word, is_name};
+use super::hooks::{hook_array, targets};
 use super::strings::PROMPTS;
 use super::{Event, Frame, Walker, mentioned, walk_text_in};
 
@@ -121,12 +122,21 @@ fn substitutions(text: &str) -> Vec<String> {
 
 /// Where among `args`, the words after the builtin `command`, an expansion
 /// makes the name of a parameter it sets: `getopts`'s second word, the
-/// parameter `zstyle -s`, `-a`, `-b` or `-g` sets, a `strftime -s`'s, and any
-/// word of `vared`, `zparseopts`, `sysread`, `zstat`, `zselect`,
-/// `pcre_match`, `zregexparse` and `zsystem`, which take such names among
-/// their options. `None` when none does.
+/// parameter `zstyle -s`, `-a`, `-b` or `-g` sets, `zformat -f`'s and
+/// `-a`'s, a `strftime -s`'s, a `syswrite -c`'s, a `stat` or `zstat -A`'s or
+/// `-H`'s, the one `zpty -r` reads into, and any word of `vared`,
+/// `zparseopts`, `sysread`, `sysopen`, `zselect`, `pcre_match`,
+/// `zregexparse`, `zsystem`, `getln`, `ztie` and `zcurses`, which take such
+/// names among their words. `None` when none does.
 fn names_parameter(command: &str, args: &[Word]) -> Option<usize> {
     let computed = |word: &Word| word.expands || word.text.contains(['$', '`']);
+    // The word after the first of `flags` among the words.
+    let after = |flags: &[&str]| {
+        args.iter()
+            .position(|word| flags.contains(&word.text.as_str()))
+            .map(|at| at + 1)
+            .filter(|&at| args.get(at).is_some_and(computed))
+    };
     match command {
         "getopts" => args.get(1).filter(|word| computed(word)).map(|_| 1),
         "zstyle" => {
@@ -138,13 +148,29 @@ fn names_parameter(command: &str, args: &[Word]) -> Option<usize> {
             };
             args.get(at).filter(|word| computed(word)).map(|_| at)
         }
-        "strftime" => args
-            .iter()
-            .position(|word| word.text == "-s")
-            .map(|at| at + 1)
-            .filter(|&at| args.get(at).is_some_and(computed)),
-        "vared" | "zparseopts" | "sysread" | "zstat" | "zselect" | "pcre_match" | "zregexparse"
-        | "zsystem" => args.iter().position(computed),
+        "zformat" => match args.first()?.text.as_str() {
+            "-f" | "-a" => args.get(1).filter(|word| computed(word)).map(|_| 1),
+            _ => None,
+        },
+        "strftime" => after(&["-s"]),
+        "syswrite" => after(&["-c"]),
+        "stat" | "zstat" => after(&["-A", "-H"]),
+        "zpty" => {
+            // `zpty -r [-mt] name [param]`.
+            let read = args
+                .iter()
+                .position(|word| word.text.starts_with('-') && word.text.contains('r'))?;
+            let words = args[read + 1..]
+                .iter()
+                .position(|word| !word.text.starts_with('-'))
+                .map(|at| read + 1 + at)?;
+            let at = words + 1;
+            args.get(at).filter(|word| computed(word)).map(|_| at)
+        }
+        "vared" | "zparseopts" | "sysread" | "sysopen" | "zselect" | "pcre_match"
+        | "zregexparse" | "zsystem" | "getln" | "ztie" | "zcurses" => {
+            args.iter().position(computed)
+        }
         _ => None,
     }
 }
@@ -245,6 +271,21 @@ impl Walker<'_> {
                 self.place
             )));
             return;
+        }
+        // With `-d`, zsh looks for a function it cannot find at the path
+        // given in fpath, by its name.
+        if flags.contains('d') {
+            let bases: Vec<Word> = names
+                .iter()
+                .filter_map(|name| {
+                    let (_, base) = name.text.rsplit_once('/')?;
+                    Some(Word {
+                        text: base.to_string(),
+                        expands: name.expands,
+                    })
+                })
+                .collect();
+            names.extend(bases);
         }
         // Without `-U` zsh expands aliases in the function's code as it
         // loads it.
@@ -444,6 +485,10 @@ impl Walker<'_> {
     /// all but the options are doubts.
     pub(super) fn mention(&mut self, text: &str) {
         self.qualifier(text);
+        if text.contains("${") {
+            // `${mapfile[file]::=...}`.
+            self.mapfile(text);
+        }
         if computed_options(text) {
             self.events.push(Event::Doubt(format!(
                 "it cannot tell which options `{text}` in {} sets",
@@ -526,21 +571,7 @@ impl Walker<'_> {
         let args: Vec<Word> = words.collect();
         self.qualifier(&command.text);
         let function = self.function();
-        for arg in &args {
-            self.qualifier(&arg.text);
-            // A command in a function that names the history file may write
-            // it, as `tee -a ~/.zsh_history` does, should the function be a
-            // hook; the words of a `setopt` name options, no file.
-            if let Some(function) = &function
-                && history_path(&arg.text)
-                && !matches!(command.text.as_str(), "setopt" | "unsetopt")
-            {
-                self.events.push(Event::Names {
-                    word: arg.text.clone(),
-                    function: function.clone(),
-                });
-            }
-        }
+        self.words(&command, &args, function.as_ref());
         if command.expands && command.text.starts_with(['$', '`']) {
             // `$c`, `${:-source}`, `$(print source)`: any command, a
             // `source` among them.
@@ -553,83 +584,11 @@ impl Walker<'_> {
             }
             return;
         }
-        if let Some(at) = names_parameter(&command.text, &args) {
-            self.events.push(Event::Doubt(format!(
-                "it cannot tell which parameter `{} {}` in {} sets",
-                command.text, args[at].text, self.place
-            )));
-        }
+        self.parameters(&command, &args);
         match command.text.as_str() {
-            "setopt" | "unsetopt" => {
-                let on = command.text == "setopt";
-                for arg in &args {
-                    if let Some(items) = Self::variable(arg).and_then(|var| self.loop_items(var)) {
-                        let items = items.to_vec();
-                        for item in items {
-                            self.set(&item, on, unconditional);
-                        }
-                    } else if arg.expands || arg.text.starts_with(['-', '+']) {
-                        self.events.push(Event::Doubt(format!(
-                            "it cannot tell which options `{} {}` in {} turns on",
-                            command.text, arg.text, self.place
-                        )));
-                    } else {
-                        self.set(&arg.text, on, unconditional);
-                    }
-                }
-            }
-            "set" => {
-                let mut args = args.iter();
-                // The values `-A` assigns an array, and the positional
-                // parameters after `--`, set no option.
-                let mut values = false;
-                while let Some(arg) = args.next() {
-                    if arg.expands && !values {
-                        self.events.push(Event::Doubt(format!(
-                            "it cannot tell which options `set {}` in {} turns on",
-                            arg.text, self.place
-                        )));
-                    }
-                    values |= matches!(arg.text.as_str(), "--" | "-A" | "+A");
-                    if matches!(arg.text.as_str(), "-o" | "+o")
-                        && let Some(name) = args.next()
-                    {
-                        if name.expands {
-                            self.events.push(Event::Doubt(format!(
-                                "it cannot tell which options `set {} {}` in {} turns on",
-                                arg.text, name.text, self.place
-                            )));
-                        } else {
-                            self.set(&name.text, arg.text == "-o", unconditional);
-                        }
-                    } else {
-                        self.mention(&arg.text);
-                    }
-                }
-            }
-            "source" | "." => {
-                self.sources += 1;
-                let mut args = args.into_iter();
-                match args.next() {
-                    Some(path) if path.text.ends_with(OH_MY_ZSH) => {
-                        self.events.push(Event::OhMyZsh);
-                    }
-                    Some(path) => {
-                        self.mention(&path.text);
-                        self.events.push(Event::Source {
-                            path,
-                            unconditional,
-                        });
-                    }
-                    None => self.events.push(Event::Doubt(format!(
-                        "it cannot tell what `{}` in {} reads",
-                        command.text, self.place
-                    ))),
-                }
-                for arg in args {
-                    self.mention(&arg.text);
-                }
-            }
+            "setopt" | "unsetopt" => self.setopt(&command.text, &args, unconditional),
+            "set" => self.set_builtin(&args, unconditional),
+            "source" | "." => self.source(&command.text, args, unconditional, function),
             "eval" if args.iter().all(|arg| !arg.expands) => {
                 // Its words are code the walk reads as zsh would run them,
                 // past the `--` that may end its options.
@@ -637,6 +596,31 @@ impl Walker<'_> {
                 let text: Vec<&str> = args[skip..].iter().map(|arg| arg.text.as_str()).collect();
                 self.evals += 1;
                 self.nested(&text.join(" "), unconditional);
+            }
+            "coproc" => {
+                let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell what the coprocess that `coproc {}` in {} starts writes, which \
+                     a hook may feed each command line",
+                    words.join(" "),
+                    self.place
+                )));
+            }
+            "functions"
+                if args
+                    .iter()
+                    .any(|arg| arg.text.starts_with('-') && arg.text.contains('c')) =>
+            {
+                self.copy_function(&args);
+            }
+            "bindkey" => self.bindkey(&args, unconditional),
+            "unset" => {
+                // What it takes away holds no code: a prompt, a hook's array.
+                for arg in &args {
+                    self.prompts += usize::from(PROMPTS.contains(&arg.text.as_str()));
+                    self.hooks += usize::from(hook_array(&arg.text));
+                    self.mention(&arg.text);
+                }
             }
             "emulate" => self.emulate(&args, unconditional),
             "alias" => self.alias(&args, unconditional),
@@ -656,17 +640,8 @@ impl Walker<'_> {
             {
                 self.autoload(&command.text, &args);
             }
-            "export" | "typeset" | "declare" | "local" | "readonly" | "integer" | "float" => {
-                for arg in &args {
-                    if computed_target(&arg.text) {
-                        self.events.push(Event::Doubt(format!(
-                            "it cannot tell which parameter `{} {}` in {} sets",
-                            command.text, arg.text, self.place
-                        )));
-                    }
-                    self.assignment(arg, unconditional);
-                }
-            }
+            "export" | "typeset" | "declare" | "local" | "readonly" | "integer" | "float"
+            | "private" => self.declare(&command.text, &args, unconditional),
             _ => {
                 self.mention(&command.text);
                 for arg in &args {
@@ -680,6 +655,186 @@ impl Walker<'_> {
                     });
                 }
             }
+        }
+    }
+
+    /// Note what the words `args` of `command`, in the function `function`
+    /// when in one, name: code a glob qualifier runs, the elements of
+    /// `mapfile` they set, and, in a function, the history file, which a
+    /// command that writes it by its name (`tee -a ~/.zsh_history`) writes
+    /// should the function be a hook; the words of a `setopt` name options,
+    /// no file.
+    fn words(&mut self, command: &Word, args: &[Word], function: Option<&String>) {
+        for arg in args {
+            self.qualifier(&arg.text);
+            self.mapfile(&arg.text);
+            if let Some(function) = function
+                && history_path(&arg.text)
+                && !matches!(command.text.as_str(), "setopt" | "unsetopt")
+            {
+                self.events.push(Event::Names {
+                    word: arg.text.clone(),
+                    function: function.clone(),
+                });
+            }
+        }
+    }
+
+    /// Note the parameters `command` sets by a name among `args`: a doubt
+    /// when an expansion makes the name ([`names_parameter`]), and a prompt
+    /// or an array of hook functions set to a value the check cannot read
+    /// ([`targets`]).
+    fn parameters(&mut self, command: &Word, args: &[Word]) {
+        if let Some(at) = names_parameter(&command.text, args) {
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which parameter `{} {}` in {} sets",
+                command.text, args[at].text, self.place
+            )));
+        }
+        // A prompt or an array of hook functions that a builtin sets by its
+        // name, to a value the check cannot read.
+        for target in targets(&command.text, args) {
+            if PROMPTS.contains(&target.text.as_str()) {
+                self.events.push(Event::Prompt(format!(
+                    "it cannot follow the code that `{} {}` in {} gives the prompt, which zsh \
+                     runs as it shows it, as PROMPT_SUBST may be on",
+                    command.text, target.text, self.place
+                )));
+            }
+            if hook_array(&target.text) {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which functions `{} {}` in {} makes hooks",
+                    command.text, target.text, self.place
+                )));
+            }
+        }
+    }
+
+    /// The events of a `setopt` or an `unsetopt` (`command`) of `args`.
+    fn setopt(&mut self, command: &str, args: &[Word], unconditional: bool) {
+        let on = command == "setopt";
+        for arg in args {
+            if let Some(items) = Self::variable(arg).and_then(|var| self.loop_items(var)) {
+                let items = items.to_vec();
+                for item in items {
+                    self.set(&item, on, unconditional);
+                }
+            } else if arg.expands || arg.text.starts_with(['-', '+']) {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which options `{command} {}` in {} turns on",
+                    arg.text, self.place
+                )));
+            } else {
+                self.set(&arg.text, on, unconditional);
+            }
+        }
+    }
+
+    /// The events of a `set` of `args`: the options `-o` and `+o` set, and
+    /// the array `-A` and `+A` set, a hook's among them.
+    fn set_builtin(&mut self, args: &[Word], unconditional: bool) {
+        let mut args = args.iter();
+        // The values `-A` assigns an array, and the positional
+        // parameters after `--`, set no option.
+        let mut values = false;
+        // The values are the functions of a hook.
+        let mut hooks = false;
+        while let Some(arg) = args.next() {
+            if hooks {
+                self.hook_value(arg);
+            } else if arg.expands && !values {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which options `set {}` in {} turns on",
+                    arg.text, self.place
+                )));
+            }
+            if matches!(arg.text.as_str(), "-A" | "+A") && !values {
+                values = true;
+                // The array it sets, by a name an expansion may make.
+                if let Some(name) = args.next() {
+                    if name.expands || name.text.contains(['$', '`']) {
+                        self.events.push(Event::Doubt(format!(
+                            "it cannot tell which parameter `set {} {}` in {} sets",
+                            arg.text, name.text, self.place
+                        )));
+                    } else if hook_array(&name.text) {
+                        self.hooks += 1;
+                        hooks = true;
+                    }
+                    self.mention(&name.text);
+                }
+                continue;
+            }
+            values |= arg.text == "--";
+            if matches!(arg.text.as_str(), "-o" | "+o")
+                && let Some(name) = args.next()
+            {
+                if name.expands {
+                    self.events.push(Event::Doubt(format!(
+                        "it cannot tell which options `set {} {}` in {} turns on",
+                        arg.text, name.text, self.place
+                    )));
+                } else {
+                    self.set(&name.text, arg.text == "-o", unconditional);
+                }
+            } else {
+                self.mention(&arg.text);
+            }
+        }
+    }
+
+    /// The events of a `source` or a `.` (`command`) of `args`, in the
+    /// function `function` when in one.
+    fn source(
+        &mut self,
+        command: &str,
+        args: Vec<Word>,
+        unconditional: bool,
+        function: Option<String>,
+    ) {
+        self.sources += 1;
+        let mut args = args.into_iter();
+        match args.next() {
+            Some(path) if path.text.ends_with(OH_MY_ZSH) => {
+                self.events.push(Event::OhMyZsh);
+            }
+            Some(path) => {
+                self.mention(&path.text);
+                self.events.push(Event::Source {
+                    path,
+                    unconditional,
+                    function,
+                });
+            }
+            None => self.events.push(Event::Doubt(format!(
+                "it cannot tell what `{command}` in {} reads",
+                self.place
+            ))),
+        }
+        for arg in args {
+            self.mention(&arg.text);
+        }
+    }
+
+    /// The events of a `typeset` or the like (`command`) of `args`: a
+    /// parameter whose name an expansion makes is a doubt, and each word
+    /// is an assignment or a declaration.
+    fn declare(&mut self, command: &str, args: &[Word], unconditional: bool) {
+        for arg in args {
+            if computed_target(&arg.text) {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which parameter `{command} {}` in {} sets",
+                    arg.text, self.place
+                )));
+            }
+            // A hook's array or a prompt declared as it is.
+            if hook_array(&arg.text) {
+                self.hooks += 1;
+            }
+            if PROMPTS.contains(&arg.text.as_str()) {
+                self.prompts += 1;
+            }
+            self.assignment(arg, unconditional);
         }
     }
 
@@ -717,8 +872,18 @@ impl Walker<'_> {
         if self.fpath_assignment(word) {
             return;
         }
+        self.mapfile(&word.text);
         if let Some((target, value)) = word.text.split_once('=') {
             let name = assigned(target);
+            if hook_array(name) {
+                // `precmd_functions[1]=name`, `precmd_functions+=name`.
+                self.hooks += 1;
+                let value = Word {
+                    text: value.to_string(),
+                    expands: word.expands,
+                };
+                self.hook_value(&value);
+            }
             if matches!(name, "aliases" | "galiases" | "saliases") && target.contains('[') {
                 // An alias, by the parameter that holds them.
                 self.mention(&word.text);
@@ -734,6 +899,7 @@ impl Walker<'_> {
                 return;
             }
             if PROMPTS.contains(&name) {
+                self.prompts += 1;
                 let value = Word {
                     text: value.to_string(),
                     expands: word.expands,
@@ -790,6 +956,20 @@ impl Walker<'_> {
                 "it cannot tell what code `{}` in {} gives a function",
                 word.text, self.place
             ))),
+        }
+    }
+
+    /// Note each element of `mapfile` that `text`, a word of the file's code,
+    /// sets, which writes the file its key names (zsh/mapfile), as a
+    /// redirection to it ([`Event::Redirect`]).
+    fn mapfile(&mut self, text: &str) {
+        for key in backstop::set_elements(text, "mapfile") {
+            self.events.push(Event::Redirect {
+                computed: key.contains(['$', '`']),
+                function: self.function(),
+                target: key,
+                kept: false,
+            });
         }
     }
 }
