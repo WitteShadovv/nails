@@ -123,7 +123,18 @@ struct Layer {
     /// device, and a header of another volume).
     luks2: Option<Luks2Metadata>,
     /// What the start of the device below a LUKS mapping holds, once read.
-    header: Option<HeaderProbe>,
+    header: Option<Header>,
+}
+
+/// The start of the device a LUKS mapping's header is on, as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Header {
+    /// The device read, by kernel name: the one below the mapping, or the
+    /// one below the integrity layer of a LUKS2 volume with authenticated
+    /// encryption.
+    device: String,
+    /// What its start holds.
+    probe: HeaderProbe,
 }
 
 impl Layer {
@@ -182,6 +193,21 @@ impl Layer {
         self.luks2
             .as_ref()
             .is_some_and(|meta| meta.flags.iter().any(|flag| flag == "allow-discards"))
+    }
+
+    /// Whether this is a dm-integrity mapping: one integritysetup made, or
+    /// the integrity layer cryptsetup puts below a LUKS2 volume with
+    /// authenticated encryption, which cryptsetup 2.8 and later name
+    /// `SUBDEV` (as they do the further cipher layers of a cascade), with
+    /// the volume's uuid.
+    fn is_integrity_layer(&self) -> bool {
+        match &self.crypt {
+            Some(CryptType::Other(kind)) if kind == "INTEGRITY" => true,
+            Some(CryptType::Other(kind)) if kind == "SUBDEV" => {
+                luks2::names_a_volume(self.dm_uuid.as_deref().unwrap_or_default())
+            }
+            _ => false,
+        }
     }
 
     /// Whether this is a Shufflecake (`dm-sflc`) volume, which the tool names
@@ -358,20 +384,21 @@ fn assess_with_dev_dir<F: Filesystem>(
     let mut layers = blockdev::device_of_mount(fs, mount)
         .map(|top| device_layers(fs, &top))
         .unwrap_or_default();
-    for layer in layers
-        .iter_mut()
-        .filter(|layer| layer.crypt == Some(CryptType::Luks))
-    {
-        let Some(below) = layer.slaves.first() else {
+    let header_devices: Vec<Option<String>> = layers
+        .iter()
+        .map(|layer| header_device(&layers, layer).map(str::to_string))
+        .collect();
+    for (layer, device) in layers.iter_mut().zip(header_devices) {
+        let Some(device) = device else {
             continue;
         };
-        let probe = probe_header(&dev_dir.join(below));
+        let probe = probe_header(&dev_dir.join(&device));
         if let HeaderProbe::Attached { uuid, meta, .. } = &probe
             && same_volume(uuid, layer.dm_uuid.as_deref().unwrap_or_default())
         {
             layer.luks2 = meta.clone();
         }
-        layer.header = Some(probe);
+        layer.header = Some(Header { device, probe });
     }
     let summary = describe(&mount.fstype, &layers);
     let discards = discards_over_hidden(&layers);
@@ -453,6 +480,31 @@ fn rests_on_ram_only(layers: &[Layer]) -> bool {
     complete && bottom.peek().is_some() && bottom.all(Layer::is_ram_backed)
 }
 
+/// The device whose start holds the header of `layer`, a LUKS mapping of the
+/// stack `layers`: the device below it, or, where that is the volume's own
+/// integrity layer (a LUKS2 volume with authenticated encryption, which
+/// cryptsetup builds on the device the header is on), the device below
+/// that. `None` for any other layer, and for a LUKS mapping whose device
+/// below is not known.
+fn header_device<'a>(layers: &'a [Layer], layer: &'a Layer) -> Option<&'a str> {
+    if layer.crypt != Some(CryptType::Luks) {
+        return None;
+    }
+    let below = layer.slaves.first()?;
+    let volume = luks2::volume_uuid_of(layer.dm_uuid.as_deref().unwrap_or_default());
+    match layers.iter().find(|other| other.name == *below) {
+        Some(integrity)
+            if integrity.is_integrity_layer()
+                && volume.is_some()
+                && luks2::volume_uuid_of(integrity.dm_uuid.as_deref().unwrap_or_default())
+                    == volume =>
+        {
+            integrity.slaves.first().map(String::as_str)
+        }
+        _ => Some(below),
+    }
+}
+
 // ============================================================================
 // Device-stack discovery and pure assessment seams
 // ============================================================================
@@ -492,19 +544,21 @@ fn describe(fstype: &str, layers: &[Layer]) -> String {
         .iter()
         .map(|layer| match (&layer.crypt, &layer.backing_file) {
             (Some(CryptType::Luks), _)
-                if matches!(layer.header, Some(HeaderProbe::Detached { .. })) =>
+                if matches!(
+                    layer.header.as_ref().map(|header| &header.probe),
+                    Some(HeaderProbe::Detached { .. })
+                ) =>
             {
                 format!("LUKS mapping {} (detached header)", layer.name)
+            }
+            (Some(_), _) if layer.is_integrity_layer() => {
+                format!("dm-integrity mapping {} (encrypts nothing)", layer.name)
             }
             (Some(CryptType::Other(kind)), _) if kind == "SUBDEV" => {
                 format!("dm-crypt cascade layer {} (SUBDEV)", layer.name)
             }
-            (Some(CryptType::Other(kind)), _) if kind == "INTEGRITY" || kind == "VERITY" => {
-                format!(
-                    "dm-{} mapping {} (encrypts nothing)",
-                    kind.to_lowercase(),
-                    layer.name
-                )
+            (Some(CryptType::Other(kind)), _) if kind == "VERITY" => {
+                format!("dm-verity mapping {} (encrypts nothing)", layer.name)
             }
             (Some(crypt), _) => format!("{} mapping {}", crypt.label(), layer.name),
             (None, Some(_)) => format!("loop device {} (file container)", layer.name),

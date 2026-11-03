@@ -5,7 +5,7 @@
 //! `docs/backends.md` explains.
 
 use super::luks2::{HeaderProbe, Luks2Metadata, same_volume};
-use super::{Layer, mount_containing};
+use super::{Header, Layer, mount_containing};
 use crate::filesystem::mountinfo::MountEntry;
 
 /// LUKS2 token types that name the unlock method and tie it to hardware.
@@ -80,8 +80,8 @@ pub(super) fn notes(layers: &[Layer]) -> Vec<String> {
     layers
         .iter()
         .filter_map(|layer| {
-            let device = layer.slaves.first()?;
-            match layer.header.as_ref()? {
+            let Header { device, probe } = layer.header.as_ref()?;
+            match probe {
                 HeaderProbe::Attached { version, uuid, .. }
                     if same_volume(uuid, layer.dm_uuid.as_deref().unwrap_or_default()) =>
                 {
@@ -107,10 +107,10 @@ pub(super) fn notes(layers: &[Layer]) -> Vec<String> {
 /// left behind, or the LUKS2 secondary header a device opened with a
 /// detached header kept. `None` for a device that shows neither, or could
 /// not be read.
-fn header_hazard(layer: &Layer, header: &HeaderProbe) -> Option<String> {
-    let device = layer.slaves.first()?;
+fn header_hazard(layer: &Layer, header: &Header) -> Option<String> {
+    let Header { device, probe } = header;
     let name = &layer.name;
-    match header {
+    match probe {
         HeaderProbe::Attached { uuid, .. }
             if same_volume(uuid, layer.dm_uuid.as_deref().unwrap_or_default()) =>
         {
