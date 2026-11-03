@@ -1,0 +1,93 @@
+name: Font probe
+
+# A one-off look at the fonts the runner of ci.yml's side-tests job gives the
+# gui/ tests: the font packages, fontconfig's sans-serif order, every family
+# fontconfig lists, and the families it sorts first for the names the window
+# asks for, asked the way the toolkit's font library (fontique 0.11) asks:
+# FcConfigSubstitute without FcDefaultSubstitute, then a trimmed FcFontSort.
+
+on:
+  push:
+    branches: [test/gui-font-ci-probe]
+
+permissions: {}
+
+jobs:
+  probe:
+    name: probe
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Show the runner's fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== font packages"
+          dpkg-query -W -f '${Package} ${Version}\n' 'fonts-*' 'fontconfig*' 'libfontconfig*' 2>/dev/null || true
+          echo "== sans-serif in 60-latin.conf"
+          sed -n '/<family>sans-serif<\/family>/,/<\/alias>/p' /etc/fonts/conf.d/60-latin.conf || true
+          echo "== fc-match"
+          for name in sans-serif system-ui 'Adwaita Sans'; do
+            fc-match "$name" || true
+          done
+          echo "== fontique's view"
+          python3 -I - <<'EOF'
+          import ctypes
+
+          lib = ctypes.CDLL("libfontconfig.so.1")
+          c_void_p, c_int, c_char_p = ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p
+
+
+          class FcFontSet(ctypes.Structure):
+              _fields_ = [("nfont", c_int), ("sfont", c_int), ("fonts", ctypes.POINTER(c_void_p))]
+
+
+          lib.FcGetVersion.restype = c_int
+          lib.FcInitLoadConfig.restype = c_void_p
+          lib.FcConfigBuildFonts.argtypes = [c_void_p]
+          lib.FcConfigGetFonts.restype = ctypes.POINTER(FcFontSet)
+          lib.FcConfigGetFonts.argtypes = [c_void_p, c_int]
+          lib.FcPatternCreate.restype = c_void_p
+          lib.FcPatternAddString.argtypes = [c_void_p, c_char_p, c_char_p]
+          lib.FcConfigSubstitute.argtypes = [c_void_p, c_void_p, c_int]
+          lib.FcFontSort.restype = ctypes.POINTER(FcFontSet)
+          lib.FcFontSort.argtypes = [c_void_p, c_void_p, c_int, c_void_p, ctypes.POINTER(c_int)]
+          lib.FcFontRenderPrepare.restype = c_void_p
+          lib.FcFontRenderPrepare.argtypes = [c_void_p, c_void_p, c_void_p]
+          lib.FcPatternGetString.argtypes = [c_void_p, c_char_p, c_int, ctypes.POINTER(c_char_p)]
+
+
+          def get(pattern, key):
+              value = c_char_p()
+              if pattern and lib.FcPatternGetString(pattern, key, 0, ctypes.byref(value)) == 0:
+                  return value.value.decode()
+              return None
+
+
+          print("fontconfig", lib.FcGetVersion())
+          config = lib.FcInitLoadConfig()
+          lib.FcConfigBuildFonts(config)
+          system = lib.FcConfigGetFonts(config, 0)
+          fonts = system.contents if system else FcFontSet(0, 0, None)
+          families = sorted({get(fonts.fonts[i], b"family") for i in range(fonts.nfont)} - {None})
+          print(fonts.nfont, "fonts in", len(families), "families")
+          for family in families:
+              print("  family:", family)
+          print("Adwaita Sans installed:", "Adwaita Sans" in families)
+          for name in ("sans-serif", "system-ui", "Adwaita Sans"):
+              pattern = lib.FcPatternCreate()
+              lib.FcPatternAddString(pattern, b"family", name.encode())
+              lib.FcConfigSubstitute(config, pattern, 0)
+              result = c_int(0)
+              found = lib.FcFontSort(config, pattern, 1, None, ctypes.byref(result))
+              order, first = [], None
+              for i in range(found.contents.nfont if found else 0):
+                  font = lib.FcFontRenderPrepare(config, pattern, found.contents.fonts[i])
+                  family = get(font, b"family")
+                  if family and family not in order:
+                      order.append(family)
+                  if first is None:
+                      first = get(font, b"file")
+              print(f"{name}: {order[:5]} (first file {first})")
+          EOF
