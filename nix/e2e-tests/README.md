@@ -802,7 +802,9 @@ suites: `smoke`, `records` and `refusal`, which run together as `all`, and
 shards are kept at or below eight parallel jobs (distributions times their
 shards), and each records scenario, refusal and probe is a job of its own that
 builds its driver and runs `bin/test-driver` on the runner. The nightly runs
-run `all`, and so does a pull request when it gets the `distro-e2e` label. A
+run `all`. On a pull request, a push runs the records and refusal suites when
+the change touches what the tier is built from, and `all` when the pull request
+carries the `distro-e2e` label, and adding the label runs `all` at once. A
 dispatch takes the suite and the runner as inputs. The records and refusal jobs
 gate: the workflow's `distro-result` fails when one of them fails. The smoke
 scenarios and the probes are informational

@@ -1,7 +1,8 @@
-"""Tests for distro-e2e.yml: its choice of suites and its result.
+"""Tests for distro-e2e.yml: its path filter, its choice of suites and its result.
 
 The scripts of the workflow's steps run here as the runner runs them, with bash
-(and python3 for the runner the choice of suites normalises).
+(and git and python3 for the choice of suites, jq for nothing: the result step
+reads plain values).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import re
 import subprocess
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -18,6 +20,17 @@ from ci.e2e import distro
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "distro-e2e.yml"
+DISTRO_TESTS = REPO_ROOT / "nix" / "distro-tests"
+# The crates of the root workspace that the nails binary never links: flake.nix
+# builds it from their manifests alone, so their sources cannot change a
+# scenario.
+NOT_IN_THE_BINARY = frozenset({"nails-oracle"})
+
+# A relative path literal in a Nix file: ./x or ../x, in code or in an
+# interpolation such as "${../e2e-tests/py}".
+NIX_PATH = re.compile(r"(?<![\w./+-])(\.\.?/[\w./+-]+)")
+# A comment: from a # at the start of a line or after a blank to its end.
+NIX_COMMENT = re.compile(r"(^|\s)#.*$", re.M)
 
 
 def workflow_text() -> str:
@@ -51,16 +64,204 @@ def script(step_text: str) -> str:
     return textwrap.dedent(found[1])
 
 
-class SelectTest(unittest.TestCase):
-    """The select step picks the suites by event and checks the inputs."""
+def distro_filter() -> re.Pattern[str]:
+    """The path filter of the plan job's select step."""
+    found = re.search(
+        r"^\s*relevant='([^']+)'$", step(job("plan"), "select"), re.MULTILINE
+    )
+    if found is None:
+        raise AssertionError("distro-e2e.yml has no relevant='...' path filter")
+    return re.compile(found[1])
+
+
+def workspace_members() -> list[str]:
+    with (REPO_ROOT / "Cargo.toml").open("rb") as handle:
+        members: list[str] = tomllib.load(handle)["workspace"]["members"]
+    return members
+
+
+def nix_inputs() -> dict[str, Path]:
+    """What the Nix files of the tier read, by repository path.
+
+    Every relative path literal of every Nix file under nix/distro-tests, and of
+    every Nix file outside it that one of them imports, resolved against its
+    file. Comments are left out.
+    """
+    found: dict[str, Path] = {}
+    queue = sorted(DISTRO_TESTS.rglob("*.nix"))
+    scanned: set[Path] = set()
+    while queue:
+        nix = queue.pop()
+        if nix in scanned:
+            continue
+        scanned.add(nix)
+        code = NIX_COMMENT.sub("", nix.read_text(encoding="utf-8"))
+        for literal in NIX_PATH.findall(code):
+            target = (nix.parent / literal).resolve()
+            path = target.relative_to(REPO_ROOT).as_posix()
+            found[path] = nix
+            if target.suffix == ".nix":
+                if not target.is_file():
+                    raise AssertionError(
+                        f"{nix.relative_to(REPO_ROOT)} imports {path}, which is "
+                        "missing here (outside the ci-python check's files?)"
+                    )
+                queue.append(target)
+    return found
+
+
+class DistroFilterTest(unittest.TestCase):
+    """The path filter covers everything the scenarios and drivers are built from."""
 
     def setUp(self) -> None:
+        self.relevant = distro_filter()
+
+    def covers(self, path: str) -> bool:
+        """Whether the filter matches the path, or anything below it."""
+        return bool(self.relevant.search(path) or self.relevant.search(f"{path}/x"))
+
+    def test_every_workspace_crate_of_the_binary_runs_the_tier(self) -> None:
+        members = workspace_members()
+        self.assertLessEqual(NOT_IN_THE_BINARY, set(members))
+        for member in members:
+            with self.subTest(member=member):
+                self.assertTrue(self.relevant.search(f"{member}/Cargo.toml"))
+                source = self.relevant.search(f"{member}/src/lib.rs")
+                if member in NOT_IN_THE_BINARY:
+                    self.assertIsNone(source)
+                else:
+                    self.assertTrue(source)
+
+    def test_what_the_binary_and_the_vms_are_built_from_runs_the_tier(self) -> None:
+        for path in (
+            "nails-api/src/exit.rs",
+            "nails-oracle/Cargo.toml",
+            ".cargo/config.toml",
+            "Cargo.toml",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "flake.nix",
+            "flake.lock",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(self.relevant.search(path))
+
+    def test_the_scan_finds_what_the_tier_reads_outside_it(self) -> None:
+        # A scan that found nothing would pass the test below on nothing.
+        outside = {
+            path for path in nix_inputs() if not path.startswith("nix/distro-tests/")
+        }
+        self.assertLessEqual(
+            {
+                "flake.lock",
+                "nix/e2e-tests/py",
+                "nix/e2e-tests/lib/records.py",
+                "nix/e2e-tests/lib/disk-forensics.nix",
+                "nix/e2e-tests/lib/disk_forensics.py",
+                "nix/e2e-tests/fixtures/indicators.json",
+            },
+            outside,
+        )
+
+    def test_every_file_the_tier_reads_runs_the_tier(self) -> None:
+        for path, reader in nix_inputs().items():
+            with self.subTest(path=path, reader=reader.name):
+                self.assertTrue(self.covers(path))
+
+    def test_the_tier_and_its_wiring_run_the_tier(self) -> None:
+        for path in (
+            "nix/distro-tests/images.json",
+            "nix/distro-tests/py/distro_checks.py",
+            "nix/distro-tests/tests/session-records.nix",
+            "nix/e2e-tests/py/nails_e2e/session.py",
+            "ci/e2e/distro.py",
+            ".github/actions/setup-nix/action.yml",
+            ".github/workflows/distro-e2e.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(self.relevant.search(path))
+
+    def test_other_changes_leave_the_tier_alone(self) -> None:
+        for path in (
+            "nails-oracle/src/verdict.rs",
+            "setup/nails-setup/src/wordlist.rs",
+            "gui/nails-gui/src/main.rs",
+            "fuzz/Cargo.toml",
+            "docs/ci.md",
+            "README.md",
+            "nix/checks.nix",
+            "nix/e2e-tests/tests/session/session-lifecycle.nix",
+            "nix/e2e-tests/lib/vm-config.nix",
+            "nix/e2e-tests/fixtures/indicators.json.orig",
+            ".github/workflows/e2e.yml",
+            "docs/nix/distro-tests/notes.md",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(self.relevant.search(path))
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CI Test",
+            "-c",
+            "user.email=ci-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def write(repo: Path, path: str, text: str = "x\n") -> None:
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
+
+class SelectTest(unittest.TestCase):
+    """The select step picks the suites by event, and filters pull requests.
+
+    It runs in a scratch repository whose HEAD^1 is the base, as the first
+    parent of a pull request's merge commit is.
+    """
+
+    def setUp(self) -> None:
+        scrubbed = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        self.environ = scrubbed
         tmp = self.enterContext(tempfile.TemporaryDirectory())
-        self.workdir = Path(tmp)
-        self.output = self.workdir / "output"
+        self.repo = Path(tmp) / "repo"
+        self.repo.mkdir()
+        self.output = Path(tmp) / "output"
+        git(self.repo, "init", "--quiet")
+        write(self.repo, "nails-core/src/lib.rs", "pub fn old() {}\n")
+        write(self.repo, "nix/distro-tests/records.nix", "{ }\n")
+        write(self.repo, "docs/ci.md")
+        git(self.repo, "add", "--all")
+        git(self.repo, "commit", "--quiet", "-m", "base")
+
+    def change(self, *paths: str) -> None:
+        for path in paths:
+            write(self.repo, path, "changed\n")
+        git(self.repo, "add", "--all")
+        git(self.repo, "commit", "--quiet", "-m", "change")
 
     def select(self, **env: str) -> tuple[int, dict[str, str], str]:
         defaults = {
+            "EVENT_NAME": "pull_request",
+            "EVENT_ACTION": "synchronize",
+            "EVENT_LABEL": "",
+            "LABELLED": "false",
             "SUITE_INPUT": "",
             "RUNNER_INPUT": "",
             "MAX_JOBS_INPUT": "",
@@ -76,8 +277,13 @@ class SelectTest(unittest.TestCase):
                 "-c",
                 script(step(job("plan"), "select")),
             ],
-            cwd=self.workdir,
-            env={**os.environ, **defaults, **env, "GITHUB_OUTPUT": str(self.output)},
+            cwd=self.repo,
+            env={
+                **self.environ,
+                **defaults,
+                **env,
+                "GITHUB_OUTPUT": str(self.output),
+            },
             capture_output=True,
             text=True,
             check=False,
@@ -89,19 +295,64 @@ class SelectTest(unittest.TestCase):
             outputs[key] = value
         return result.returncode, outputs, result.stdout + result.stderr
 
-    def assert_selects(self, suites: str, **env: str) -> None:
+    def assert_selects(self, suites: str, unchanged: str = "false", **env: str) -> None:
         code, outputs, log = self.select(**env)
         self.assertEqual(code, 0, log)
         self.assertEqual(outputs.get("suites"), suites, log)
+        self.assertEqual(outputs.get("unchanged"), unchanged, log)
 
-    def test_a_run_without_an_input_runs_every_suite_but_the_probes(self) -> None:
-        # A schedule, or the 'distro-e2e' label on a pull request.
-        self.assert_selects("all")
+    def test_a_push_that_changes_the_binary_runs_records_and_refusal(self) -> None:
+        self.change("nails-core/src/lib.rs")
+        self.assert_selects("records refusal")
 
-    def test_an_input_names_the_suite(self) -> None:
+    def test_a_push_that_changes_the_tier_runs_records_and_refusal(self) -> None:
+        self.change("nix/distro-tests/records.nix")
+        self.assert_selects("records refusal", EVENT_ACTION="opened")
+
+    def test_a_push_outside_the_paths_tests_nothing(self) -> None:
+        self.change("docs/ci.md")
+        self.assert_selects("", unchanged="true")
+        self.assert_selects("", unchanged="true", LABELLED="true")
+
+    def test_a_labelled_pull_request_runs_every_suite_on_a_push(self) -> None:
+        self.change("nails-core/src/lib.rs")
+        self.assert_selects("all", LABELLED="true", EVENT_ACTION="reopened")
+
+    def test_adding_the_label_runs_every_suite_whatever_changed(self) -> None:
+        self.change("docs/ci.md")
+        self.assert_selects(
+            "all", EVENT_ACTION="labeled", EVENT_LABEL="distro-e2e", LABELLED="true"
+        )
+
+    def test_a_file_moved_out_of_the_paths_counts_as_a_change(self) -> None:
+        git(self.repo, "mv", "nix/distro-tests/records.nix", "docs/records.nix")
+        git(self.repo, "commit", "--quiet", "-m", "move")
+        self.assert_selects("records refusal")
+
+    def test_a_long_list_of_changes_is_read_in_full(self) -> None:
+        # Enough names to fill a pipe, the one that matters sorted first.
+        paths = [f"docs/notes/{index:05}-{'x' * 60}.md" for index in range(1500)]
+        self.change(".cargo/config.toml", *paths)
+        self.assert_selects("records refusal")
+
+    def test_an_unknown_base_runs_the_suites(self) -> None:
+        # The base commit has no parent: HEAD^1 does not resolve.
+        self.assert_selects("records refusal")
+
+    def test_a_run_that_is_no_pull_request_runs_every_suite(self) -> None:
+        self.change("docs/ci.md")
+        for event in ("schedule", "workflow_dispatch", "push"):
+            with self.subTest(event=event):
+                self.assert_selects("all", EVENT_NAME=event)
+
+    def test_an_input_names_the_suite_and_is_not_filtered(self) -> None:
+        self.change("docs/ci.md")
         for suite in ("all", "smoke", "records", "refusal", "probe"):
             with self.subTest(suite=suite):
                 self.assert_selects(suite, SUITE_INPUT=suite)
+                self.assert_selects(
+                    suite, SUITE_INPUT=suite, EVENT_NAME="workflow_dispatch"
+                )
 
     def test_an_unknown_suite_fails(self) -> None:
         code, _, log = self.select(SUITE_INPUT="oracle")
@@ -109,6 +360,7 @@ class SelectTest(unittest.TestCase):
         self.assertIn("::error::suite must be", log)
 
     def test_the_runner_and_the_ceiling_are_checked(self) -> None:
+        self.change("nails-core/src/lib.rs")
         code, outputs, log = self.select(RUNNER_INPUT='["self-hosted", "kvm"]')
         self.assertEqual(code, 0, log)
         self.assertEqual(outputs["runner"], '["self-hosted","kvm"]')
@@ -133,6 +385,7 @@ class ResultTest(unittest.TestCase):
     def report(self, **env: str) -> subprocess.CompletedProcess[str]:
         defaults = {
             "SUITES": "all",
+            "UNCHANGED": "false",
             "DISTRO_JOBS": "3",
             "GATING_JOBS": "4",
             "PLAN_RESULT": "success",
@@ -185,10 +438,23 @@ class ResultTest(unittest.TestCase):
         result = self.report(SUITES="smoke", GATING_JOBS="0", GATING_RESULT="skipped")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_passes_a_pull_request_the_path_filter_skipped(self) -> None:
+        result = self.report(
+            SUITES="",
+            UNCHANGED="true",
+            DISTRO_JOBS="0",
+            GATING_JOBS="0",
+            DISTRO_RESULT="skipped",
+            GATING_RESULT="skipped",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("No change under the distro paths", result.stdout)
+
     def test_passes_a_run_for_another_label(self) -> None:
         result = self.report(
             PLAN_RESULT="skipped",
             SUITES="",
+            UNCHANGED="",
             DISTRO_JOBS="",
             GATING_JOBS="",
             DISTRO_RESULT="skipped",
@@ -204,6 +470,7 @@ class ResultTest(unittest.TestCase):
     def test_fails_closed_on_a_plan_that_set_no_suites_or_counts(self) -> None:
         for env in (
             {"SUITES": ""},
+            {"SUITES": "", "UNCHANGED": ""},
             {"GATING_JOBS": ""},
             {"DISTRO_JOBS": ""},
         ):

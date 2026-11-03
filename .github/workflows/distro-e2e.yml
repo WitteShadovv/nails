@@ -18,8 +18,11 @@ name: Distro E2E
 # fails. The smoke scenarios and the probes are informational, and their
 # failure only warns.
 #
-#   pull request to main  smoke, records and refusal, when the 'distro-e2e'
-#   or next               label is added
+#   pull request to main  the records and refusal suites, when the change
+#   or next               touches what they are built from (the path filter
+#                         in Plan); with the 'distro-e2e' label, the smoke
+#                         suite too, and adding the label runs all three at
+#                         once, whatever the change
 #   nightly schedule      smoke, records and refusal; the nightly run of next
 #                         is a dispatch from next-nightly.yml
 #   dispatch or call      the `suite` input: all (smoke, records and refusal,
@@ -45,9 +48,11 @@ on:
     - cron: "41 3 * * *"
   pull_request:
     branches: [main, next]
-    # The suites run only when the 'distro-e2e' label is added; the Plan
-    # condition enforces that.
-    types: [labeled]
+    # A push to the pull request runs the path filter in Plan. 'labeled' lets
+    # the 'distro-e2e' label take effect without a new push; a run for any
+    # other label tests nothing (the Plan condition). A draft that becomes
+    # ready runs nothing again: its pushes have run already.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       suite:
@@ -99,17 +104,16 @@ permissions:
   contents: read
 
 concurrency:
-  # Every label added to a pull request to main or next starts a run, but
-  # only a run for an added 'distro-e2e' label tests anything (the Plan
-  # condition; the first suffix below is its exact complement). Every other
-  # pull request run gets its run ID in the group, so it can neither cancel
-  # the suites nor be cancelled. Adding 'distro-e2e' again cancels the pull
-  # request's run in progress. A scheduled or dispatched run waits for an
-  # earlier run of the same event and ref instead; GitHub keeps one waiting
-  # run per group, so a newer run replaces one that has not started. A call
-  # counts as its caller's event. A dispatch of one suite waits in a group of
-  # its own, so it neither waits for a run of all of them on the same ref nor
-  # replaces one.
+  # The runs of a pull request share one group, so a new push, or adding the
+  # 'distro-e2e' label, cancels the run in progress. A run for any other label
+  # tests nothing (the Plan condition) and gets its run ID in the group, so it
+  # can neither cancel a run that tests nor be cancelled; the first suffix
+  # below is the exact complement of that condition. A scheduled or dispatched
+  # run waits for an earlier run of the same event and ref instead; GitHub
+  # keeps one waiting run per group, so a newer run replaces one that has not
+  # started. A call counts as its caller's event. A dispatch of one suite waits
+  # in a group of its own, so it neither waits for a run of all of them on the
+  # same ref nor replaces one.
   group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'distro-e2e' && format('-{0}', github.run_id) || '' }}${{ inputs.suite && inputs.suite != 'all' && format('-{0}', inputs.suite) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -127,6 +131,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       suites: ${{ steps.select.outputs.suites }}
+      unchanged: ${{ steps.select.outputs.unchanged }}
       runner: ${{ steps.select.outputs.runner }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       distro-jobs: ${{ steps.matrix.outputs.distro-jobs }}
@@ -137,20 +142,47 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 2 # the merge commit and both of its parents
           persist-credentials: false
 
-      # Without an input (a dispatch or a call sets one), a run is scheduled
-      # or started by the 'distro-e2e' label, and runs every suite but the
-      # probes.
+      # The single path filter of the tier. It filters this workflow's own pull
+      # request runs, all but the one that adding the 'distro-e2e' label
+      # starts: that run, like a dispatch or a call (which sets SUITE_INPUT),
+      # asked for its suites. A change outside these paths cannot alter a
+      # scenario or a driver, so the run tests nothing and distro-result
+      # passes. The Rust paths are what flake.nix builds the binary from, as
+      # in e2e.yml's filter; the Nix paths are the tier and the files of
+      # nix/e2e-tests it reads. ci/tests checks both against the tree. A pull
+      # request is compared with the first parent of its merge commit; an
+      # unknown base counts as a change.
       - name: Select suites, runner and job ceiling
         id: select
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'distro-e2e') }}
           SUITE_INPUT: ${{ inputs.suite }}
           RUNNER_INPUT: ${{ inputs.runner }}
           MAX_JOBS_INPUT: ${{ inputs.max-jobs }}
         run: |
           set -euo pipefail
-          suites=${SUITE_INPUT:-all}
+          suites=${SUITE_INPUT:-}
+          filtered=false
+          if [ -z "$suites" ]; then
+            if [ "$EVENT_NAME" != pull_request ]; then
+              suites=all
+            elif [ "$EVENT_ACTION" = labeled ] && [ "$EVENT_LABEL" = distro-e2e ]; then
+              suites=all
+            else
+              filtered=true
+              if [ "$LABELLED" = true ]; then
+                suites=all
+              else
+                suites="records refusal"
+              fi
+            fi
+          fi
           read -ra selected <<< "$suites"
           for suite in "${selected[@]}"; do
             case "$suite" in
@@ -161,6 +193,27 @@ jobs:
                 ;;
             esac
           done
+
+          unchanged=false
+          if [ "$filtered" = true ]; then
+            relevant='^(nails-api/|nails-base/|nails-core/|nails-cli/|nails-forensics/|nails-oracle/Cargo\.toml$|nails-platform/|nails-session/|nails-teardown/|\.cargo/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|flake\.(nix|lock)$|nix/distro-tests/|nix/e2e-tests/py/|nix/e2e-tests/lib/(records\.py|disk-forensics\.nix|disk_forensics\.py)$|nix/e2e-tests/fixtures/indicators\.json$|ci/e2e/|\.github/actions/setup-nix/|\.github/workflows/distro-e2e\.yml$)'
+            base=HEAD^1
+            if ! git rev-parse -q --verify "$base^{commit}" > /dev/null; then
+              echo "Unknown base $base: every selected suite runs."
+            else
+              # --no-renames lists a moved file under its old path too. The
+              # list is read in full before grep looks at it: grep -q in a
+              # pipe would stop the writer early, and with pipefail that reads
+              # as no match.
+              changed=$(git diff --name-only --no-renames "$base" HEAD)
+              if ! grep -qE "$relevant" <<< "$changed"; then
+                echo "No change under the distro paths since $base; nothing to test."
+                suites=
+                unchanged=true
+              fi
+            fi
+          fi
+
           runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-26.04\"}")
           max_jobs=${MAX_JOBS_INPUT:-8}
           if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
@@ -169,12 +222,14 @@ jobs:
           fi
           {
             echo "suites=$suites"
+            echo "unchanged=$unchanged"
             echo "runner=$runner"
             echo "max-jobs=$max_jobs"
           } >> "$GITHUB_OUTPUT"
-          echo "Suites: $suites, runner: $runner, max jobs: $max_jobs"
+          echo "Suites: ${suites:-none}, runner: $runner, max jobs: $max_jobs"
 
       - name: Set up Nix
+        if: steps.select.outputs.suites != ''
         uses: ./.github/actions/setup-nix
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
@@ -183,7 +238,7 @@ jobs:
       # of each compiling the static binary (when a cache is configured). A
       # probe boots no nails.
       - name: Build nails
-        if: steps.select.outputs.suites != 'probe'
+        if: steps.select.outputs.suites != '' && steps.select.outputs.suites != 'probe'
         run: nix build -L --no-link .#nails
 
       # The records and refusal jobs run as the gating job, apart from the
@@ -197,6 +252,21 @@ jobs:
           MAX_JOBS: ${{ steps.select.outputs.max-jobs }}
         run: |
           set -euo pipefail
+          if [ -z "$SUITES" ]; then
+            empty='{"include":[]}'
+            {
+              echo "matrix=$empty"
+              echo "distro-jobs=0"
+              echo "gating=$empty"
+              echo "gating-jobs=0"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "## Distro E2E plan"
+              echo
+              echo "No change under the distro paths; nothing to test."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           read -ra distros <<< "$DISTROS"
           read -ra suites <<< "$SUITES"
           suite_args=()
@@ -391,11 +461,11 @@ jobs:
   distro-result:
     name: distro-result
     needs: [plan, distro, gating]
-    # !cancelled(), not always(): a run cancelled by a newer 'distro-e2e'
-    # label reports nothing, rather than a plan or scenario failure it never
-    # had. A skipped check counts as passed, and a run for another label
-    # passes without testing anything, under this same name, so revisit this
-    # before the lane becomes a required check.
+    # !cancelled(), not always(): a run cancelled by a newer push or label
+    # reports nothing, rather than a plan or scenario failure it never had.
+    # A skipped check counts as passed, and a run for another label passes
+    # without testing anything, under this same name, so revisit this before
+    # the lane becomes a required check.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -405,6 +475,7 @@ jobs:
         id: report
         env:
           SUITES: ${{ needs.plan.outputs.suites }}
+          UNCHANGED: ${{ needs.plan.outputs.unchanged }}
           DISTRO_JOBS: ${{ needs.plan.outputs.distro-jobs }}
           GATING_JOBS: ${{ needs.plan.outputs.gating-jobs }}
           PLAN_RESULT: ${{ needs.plan.result }}
@@ -419,6 +490,10 @@ jobs:
           if [ "$PLAN_RESULT" != success ]; then
             echo "::error::Planning the distro run failed."
             exit 1
+          fi
+          if [ "$UNCHANGED" = true ] && [ -z "$SUITES" ]; then
+            echo "No change under the distro paths; nothing ran."
+            exit 0
           fi
           # Fail closed: a plan that left no suite or no job count behind
           # would let every job be skipped and pass.
