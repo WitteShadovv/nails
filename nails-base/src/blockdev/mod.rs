@@ -80,6 +80,9 @@ pub struct Layer {
     pub below: Vec<String>,
     /// Kernel names of the devices built on this one (`holders/`), sorted.
     pub holders: Vec<String>,
+    /// Whether `holders/` is there but could not be listed, so `holders` may
+    /// miss devices built on this one.
+    pub holders_unread: bool,
     /// Partition data, for a partition.
     pub partition: Option<Partition>,
     /// Loop data, for a loop device that is bound to a backing file.

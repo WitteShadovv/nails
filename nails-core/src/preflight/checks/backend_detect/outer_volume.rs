@@ -55,9 +55,12 @@ const FIX: &str = "Unmount it and close it before activating (cryptsetup close <
 /// It warns, naming the other mapping, the device it is opened from and
 /// where it is mounted, read-write or read-only, when the kernel holds it
 /// writable; a mapping the VeraCrypt application made is writable even for
-/// a volume it mounted read-only. It passes when every such mapping is
-/// read-only, when there is none, and when the hidden root's stack holds no
-/// VeraCrypt or TrueCrypt mapping. It never fails.
+/// a volume it mounted read-only. It warns as well when it cannot look:
+/// when the hidden root's filesystem shows no block device, or sysfs does
+/// not let it list the devices below the hidden root or built on its
+/// storage. It passes when every such mapping is read-only, when there is
+/// none, and when the hidden root's stack holds no VeraCrypt or TrueCrypt
+/// mapping. It never fails.
 #[derive(Debug, Clone)]
 pub struct OuterVolumeCheck {
     hidden_volume_root: PathBuf,
@@ -126,6 +129,9 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
             &roots,
             LoopFollow::BlockDevices,
         );
+        if !graph.complete() {
+            return Ok(unchecked(root, "the devices below it cannot all be listed"));
+        }
         let below: BTreeSet<String> = graph
             .layers
             .values()
@@ -145,10 +151,18 @@ impl<F: Filesystem> PreFlightCheck<F> for OuterVolumeCheck {
             )));
         }
 
-        let devices = Devices::read(fs);
+        let Some(devices) = Devices::read(fs) else {
+            return Ok(unchecked(root, "the block devices cannot be listed"));
+        };
         let mut others: BTreeMap<String, Other> = BTreeMap::new();
         for device in &below {
-            for (holder, on) in devices.holders_of_data(device, &graph) {
+            let Some(holders) = devices.holders_of_data(device, &graph) else {
+                return Ok(unchecked(
+                    root,
+                    "the devices built on its storage cannot all be listed",
+                ));
+            };
+            for (holder, on) in holders {
                 if graph.layers.contains_key(&holder) || others.contains_key(&holder) {
                     continue;
                 }
@@ -222,11 +236,10 @@ struct Devices<'a, F: Filesystem> {
 }
 
 impl<'a, F: Filesystem> Devices<'a, F> {
-    /// Read the bound loop devices.
-    fn read(fs: &'a F) -> Self {
-        let mut entries = fs
-            .list_directory(Path::new(SYS_CLASS_BLOCK))
-            .unwrap_or_default();
+    /// Read the bound loop devices; `None` when the block devices cannot be
+    /// listed.
+    fn read(fs: &'a F) -> Option<Self> {
+        let mut entries = fs.list_directory(Path::new(SYS_CLASS_BLOCK)).ok()?;
         entries.sort();
         let loops = entries
             .iter()
@@ -242,7 +255,7 @@ impl<'a, F: Filesystem> Devices<'a, F> {
             .filter_map(|entry| one(fs, entry))
             .filter(|layer| layer.loop_device.is_some())
             .collect();
-        Self { fs, loops }
+        Some(Self { fs, loops })
     }
 
     /// The device `name`, read alone.
@@ -255,8 +268,9 @@ impl<'a, F: Filesystem> Devices<'a, F> {
     /// data: a loop device over it, and where it is a loop device, the
     /// device below it and the loop devices over that, or the other loop
     /// devices over its file from the same offset. Each with the device it
-    /// is built on.
-    fn holders_of_data(&self, device: &str, graph: &Graph) -> BTreeSet<(String, String)> {
+    /// is built on; `None` when one of these devices cannot be read, or its
+    /// `holders/` cannot be listed.
+    fn holders_of_data(&self, device: &str, graph: &Graph) -> Option<BTreeSet<(String, String)>> {
         let read = graph
             .layers
             .get(device)
@@ -285,16 +299,23 @@ impl<'a, F: Filesystem> Devices<'a, F> {
                 }
             }
         }
-        same.iter()
-            .filter_map(|name| {
-                let holders = match graph.layers.get(name) {
-                    Some(layer) => layer.holders.clone(),
-                    None => self.layer(name)?.holders,
-                };
-                Some(holders.into_iter().map(|holder| (holder, name.clone())))
-            })
-            .flatten()
-            .collect()
+        let mut holders = BTreeSet::new();
+        for name in &same {
+            let layer = match graph.layers.get(name) {
+                Some(layer) => layer.clone(),
+                None => self.layer(name)?,
+            };
+            if layer.holders_unread {
+                return None;
+            }
+            holders.extend(
+                layer
+                    .holders
+                    .into_iter()
+                    .map(|holder| (holder, name.clone())),
+            );
+        }
+        Some(holders)
     }
 
     /// The loop devices bound to the block device `name`.

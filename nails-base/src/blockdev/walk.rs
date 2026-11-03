@@ -192,6 +192,16 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
     let read = |attribute: &str| fs.read_file_content(&dir.join(attribute)).ok();
 
     let uevent = read("uevent").unwrap_or_default();
+    let (holders, holders_unread) = match fs.list_directory(&dir.join("holders")) {
+        Ok(mut holders) => {
+            holders.sort();
+            (names(&holders), false)
+        }
+        Err(error) => (
+            Vec::new(),
+            error.io_kind() != Some(std::io::ErrorKind::NotFound),
+        ),
+    };
     let dm_name = read("dm/name").map(|name| name.trim().to_string());
     let dm_uuid = read("dm/uuid").map(|uuid| uuid.trim().to_string());
     let dm = (dm_name.is_some() || dm_uuid.is_some()).then(|| {
@@ -220,7 +230,8 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
         slaves: Vec::new(),
         slaves_unread: false,
         below: Vec::new(),
-        holders: names(&sorted_listing(fs, &dir.join("holders"))),
+        holders,
+        holders_unread,
         partition: read_partition(fs, dir, &uevent),
         loop_device: read_loop(fs, dir),
     }

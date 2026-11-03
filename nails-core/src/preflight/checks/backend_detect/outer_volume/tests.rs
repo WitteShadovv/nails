@@ -328,6 +328,37 @@ fn what_the_check_cannot_follow_warns() {
 }
 
 #[test]
+fn devices_sysfs_does_not_let_the_check_list_warn() {
+    let cannot = |why: &str| {
+        format!("Could not check for an outer volume open beside the hidden root at {ROOT}: {why}.")
+    };
+    // The devices built on the partition, a writable outer volume among
+    // them.
+    let host = hidden("").mapping("dm-4", "254:4", "outer", "CRYPT-TCRYPT-outer", &["sdb2"]);
+    host.fs
+        .mock_set_unreadable_dir(&format!("{}/holders", host.dir("sdb2")));
+    assert_eq!(
+        warning(&run(&host)),
+        cannot("the devices built on its storage cannot all be listed")
+    );
+    // The devices below the hidden volume's mapping.
+    let host = hidden("");
+    host.fs
+        .mock_set_unreadable_dir(&format!("{}/slaves", host.dir("dm-9")));
+    assert_eq!(
+        warning(&run(&host)),
+        cannot("the devices below it cannot all be listed")
+    );
+    // The block devices, among them the loop devices over the partition.
+    let host = hidden("");
+    host.fs.mock_set_unreadable_dir("/sys/class/block");
+    assert_eq!(
+        warning(&run(&host)),
+        cannot("the block devices cannot be listed")
+    );
+}
+
+#[test]
 fn the_check_names_itself_and_needs_the_hidden_volume() {
     let check = OuterVolumeCheck::default();
     assert_eq!(

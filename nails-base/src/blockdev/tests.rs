@@ -441,6 +441,23 @@ fn holders_and_the_read_only_flag_are_read() {
     assert_eq!(layer.size_sectors, Some(409_600));
     assert_eq!(layer.discard_max_bytes, 2_147_450_880);
     assert_eq!(layer.holders, vec!["dm-2", "dm-3"], "sorted");
+    assert!(!layer.holders_unread);
+
+    // A holders/ that cannot be listed may hide devices built on this one;
+    // one that is not there hides none.
+    sysfs.0.mock_set_unreadable_dir(&format!("{dm1}/holders"));
+    let layer = &sysfs.stack(dm1, LoopFollow::default())[0];
+    assert!(
+        layer.holders.is_empty() && layer.holders_unread,
+        "{layer:?}"
+    );
+    let dm2 = "/sys/devices/virtual/block/dm-2";
+    sysfs.device(dm2, "dm-2", "254:2");
+    let layer = &sysfs.stack(dm2, LoopFollow::default())[0];
+    assert!(
+        layer.holders.is_empty() && !layer.holders_unread,
+        "{layer:?}"
+    );
 }
 
 #[test]

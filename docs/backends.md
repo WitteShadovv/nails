@@ -211,6 +211,7 @@ neither.
 | Result | When |
 |---|---|
 | Warns | Such a mapping is writable: the kernel does not hold it read-only (`ro` is `0`). The warning names its topmost mapping (`outer (dm-4)`), the device it is opened from and where it is mounted, read-write or read-only. A mapping the VeraCrypt application made stays writable even when the application mounted the volume read-only. |
+| Warns: cannot check | The mount table cannot be read, the hidden root's filesystem shows no block device, or sysfs does not let the check list the devices below the hidden root, or those built on its storage (`slaves/`, `holders/`, `/sys/class/block`). |
 | Passes | Every such mapping is read-only, as `cryptsetup open --readonly` makes it; there is none; or the hidden root is in no VeraCrypt or TrueCrypt volume. |
 
 Close the outer volume before activating, or open it with
