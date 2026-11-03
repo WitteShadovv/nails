@@ -40,7 +40,7 @@ pub enum Allowable {
     /// session.
     PersistentDecoy,
     /// `--allow-decoy-storage`: the hidden root lives on storage the decoy
-    /// uses.
+    /// uses, or on a disk that a program serves (nbd, ublk).
     DecoyStorage,
     /// `--allow-discards`: discards are enabled over the hidden volume.
     Discards,

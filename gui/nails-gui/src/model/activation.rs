@@ -57,7 +57,8 @@ pub enum Risk {
     /// The decoy keeps a persistent record of the session
     /// (`--allow-persistent-decoy`).
     PersistentDecoy,
-    /// The hidden volume lies on storage this computer uses
+    /// The hidden volume lies on storage this computer uses, or on a disk
+    /// that a program serves, which may keep it there
     /// (`--allow-decoy-storage`).
     DecoyStorage,
     /// Discards are enabled over the hidden volume (`--allow-discards`).
