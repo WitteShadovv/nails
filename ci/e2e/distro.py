@@ -67,8 +67,9 @@ _DRIVER_NOUNS = {
     REFUSAL: "refusal",
     PROBE: "probe",
 }
-# Why a driver suite can have nothing to run.
+# Why a suite can have nothing to run.
 _NOTHING_TO_RUN = {
+    SMOKE: "no smoke scenario can run: the metadata lists none",
     RECORDS: "no records scenario can run: the metadata lists none",
     REFUSAL: (
         "no refusal can run: no image of a family the family table refuses is pinned"
@@ -373,11 +374,14 @@ def plan_matrix(
     :func:`plan_driver_matrix` do. With several, each runs what it has of the
     named entries (every one when none is named): ``debian-13`` names that
     distribution's smoke and records scenarios, ``fedora-44`` the refusal of
-    that image. A name that no selected suite has is an error, and so is a plan
-    that holds no job, so that a gate cannot pass having run nothing. Every
-    entry carries its ``suite``, and in ``gating`` whether its failure fails
-    the run. ``max_jobs`` bounds the smoke shards; each driver is a job of its
-    own.
+    that image. No suite may drop out of a run unseen, so that a gate cannot
+    pass having run nothing: a name that no selected suite has is an error,
+    and so are a suite with nothing to run when no name is given and a plan
+    that holds no job. The change that empties a suite, such as admitting the
+    last refused family, therefore takes the suite out of the run as well.
+    Every entry carries its ``suite``, and in ``gating`` whether its failure
+    fails the run. ``max_jobs`` bounds the smoke shards; each driver is a job
+    of its own.
     """
     if max_jobs < 1:
         raise ValueError("max_jobs must be at least 1")
@@ -385,8 +389,14 @@ def plan_matrix(
     if len(selected) == 1:
         (suite,) = selected
         if suite == SMOKE:
-            return plan_distro_matrix(metadata, requested, max_jobs=max_jobs)
-        return plan_driver_matrix(metadata, suite, requested)
+            matrix = plan_distro_matrix(metadata, requested, max_jobs=max_jobs)
+        else:
+            matrix = plan_driver_matrix(metadata, suite, requested)
+        if not matrix["include"]:
+            if not requested:
+                raise DistroError(_NOTHING_TO_RUN[suite])
+            raise DistroError(f"the plan holds no job: no {suite} entry can run")
+        return matrix
     names = {suite: metadata.names(suite) for suite in selected}
     wanted: list[str] = []
     for name in requested:
@@ -403,12 +413,14 @@ def plan_matrix(
             if wanted
             else names[suite]
         )
-        if not chosen:
-            continue
         if suite == SMOKE:
-            include.extend(_smoke_jobs(metadata, chosen, max_jobs))
+            jobs = _smoke_jobs(metadata, chosen, max_jobs)
         else:
-            include.extend(_driver_jobs(metadata, suite, chosen))
+            jobs = _driver_jobs(metadata, suite, chosen)
+        # Only the names asked for may leave a suite out.
+        if not jobs and not wanted:
+            raise DistroError(_NOTHING_TO_RUN[suite])
+        include.extend(jobs)
     if not include:
         raise DistroError(
             f"the plan holds no job: no {', '.join(selected)} entry can run"
