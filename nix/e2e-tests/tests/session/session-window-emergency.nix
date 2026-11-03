@@ -21,15 +21,21 @@
 # Where no helper takes the request in time, the window asks logind for the
 # power-off itself, as the operator: `systemctl poweroff --no-ask-password`
 # from its fixed path, with no terminal (the window's streams are
-# /dev/null) and, here, no environment at all. The second session runs that
-# command line from the operator's login on tty1, in a scope of the user's
-# service manager, where a desktop or a terminal runs the window. The test
-# shows:
+# /dev/null) and, here, no environment at all. It does so once it still
+# runs 3 seconds after the request (`emergency::HELPER_GRACE`): the engine's
+# emergency ends the window with the session's other programs, and the
+# client stands in for the window there. It marks each quarter of a second
+# it lives on the serial console, and says so once it outlives the grace,
+# which fails the test: a window still running then would power off a
+# return. The second session runs the window's power-off command line from
+# the operator's login on tty1, in a scope of the user's service manager,
+# where a desktop or a terminal runs the window. The test shows:
 #
 #   - the helper takes the request for the way back, and the engine's
-#     emergency returns to the plain decoy, with the hidden volume closed;
+#     emergency returns to the plain decoy, with the hidden volume closed,
+#     ending the client within the window's grace;
 #   - the helper takes the request for a power-off, and the engine's
-#     emergency powers the machine off;
+#     emergency powers the machine off, ending the client within the grace;
 #   - polkit and logind let the operator's power-off through without a
 #     password, and the machine powers off;
 #   - each cold boot after is the plain decoy, with the hidden volume closed.
@@ -69,7 +75,15 @@ let
         *) echo "the helper did not take the hello: $answer" >&2; exit 1 ;;
       esac
       printf '%s\n' '${request}' >&"''${HELPER[1]}"
-      # The engine's emergency ends the session: nothing here returns.
+      # The engine's emergency ends the session, this client with it, as it
+      # ends the window: each quarter of a second the client still lives is
+      # on the console, and the window's grace running out too.
+      for beat in 1 2 3 4 5 6 7 8 9 10 11; do
+        sleep 0.25
+        echo "window-emergency-${name}: alive $((beat * 250)) ms after the request" >/dev/ttyS0
+      done
+      sleep 0.25
+      echo "window-emergency-${name}: still running after the window's grace" >/dev/ttyS0
       sleep 600
     '';
   # The Emergency control with `window.emergency` at its default, and set to
@@ -98,10 +112,29 @@ in
     };
 
   testScript = _: ''
+    import re
+
     from nails_e2e import session
 
     CONFIG = "/mnt/data/config/nails.toml"
     UPPER = "/mnt/data/root/upper"
+    # The window's grace before its own power-off, `emergency::HELPER_GRACE`.
+    GRACE_MS = 3000
+
+    def ended_within_the_grace(since, name):
+        """The client `name` that stood in for the window, by the beats it
+        left on the console after line `since`: it did not outlive the
+        window's grace. Logs how long it lived."""
+        lines = machine.full_console_log[since:]
+        late = [line for line in lines if f"window-emergency-{name}: still running" in line]
+        assert not late, f"the stand-in for the window outlived its grace: {late}"
+        beat = re.compile(rf"window-emergency-{name}: alive (\d+) ms after the request")
+        lived = max((int(m.group(1)) for m in map(beat.search, lines) if m), default=0)
+        machine.log(
+            f"window emergency {name}: the stand-in for the window ended "
+            f"{lived} to {lived + 250} ms after its request, within the "
+            f"window's grace of {GRACE_MS} ms"
+        )
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -129,11 +162,13 @@ in
     with subtest("the window's emergency request for the way back returns to the decoy"):
         # A client that fails on the hello ends at once, which fails the wait:
         # nothing soft-reboots.
+        since = len(machine.full_console_log)
         session.follow_soft_reboot(
             machine,
             "${returnClient} 2>/mnt/data/client-return.err",
             "window emergency return",
         )
+        ended_within_the_grace(since, "return")
         session.assert_decoy_root(machine)
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
 
@@ -150,12 +185,14 @@ in
     with subtest("the window's emergency request through the helper powers off"):
         # The helper answers the hello before anything else: a client that
         # fails on it ends at once, and the machine stays on.
+        since = len(machine.full_console_log)
         machine.execute(
             "(${powerOffClient}) </dev/null >/dev/null 2>/mnt/data/client.err &",
             check_return=False,
             check_output=False,
         )
         session.wait_for_real_power_off(machine, 300)
+        ended_within_the_grace(since, "poweroff")
 
     with subtest("the next cold boot is the plain decoy with the hidden volume closed"):
         machine.start()
