@@ -284,6 +284,43 @@ fn the_integrity_layer_of_a_luks2_volume_is_no_veracrypt_or_truecrypt_mapping() 
 }
 
 #[test]
+fn the_devices_of_an_online_reencryption_are_no_veracrypt_or_truecrypt_mappings() {
+    // While cryptsetup reencrypt runs on an open LUKS2 volume, the volume's
+    // mapping maps to an overlay on the partition and on a hotzone, a
+    // linear map of the partition: both SUBDEV, with the volume's uuid.
+    let hex = super::super::luks2::TEST_UUID.replace('-', "");
+    let host = drive(Host::new("254:4", "ext4", "/dev/mapper/data"))
+        .mapping(
+            "dm-5",
+            "254:5",
+            "data-hotzone-forward",
+            &format!("CRYPT-SUBDEV-{hex}-data-hotzone-forward"),
+            &["sdb2"],
+        )
+        .mapping(
+            "dm-6",
+            "254:6",
+            "data-overlay",
+            &format!("CRYPT-SUBDEV-{hex}-data-overlay"),
+            &["dm-5", "sdb2"],
+        )
+        .mapping(
+            "dm-4",
+            "254:4",
+            "data",
+            &format!("CRYPT-LUKS2-{hex}-data"),
+            &["dm-6"],
+        );
+    assert_eq!(
+        run(&host),
+        CheckResult::Pass(format!(
+            "The hidden root at {ROOT} is in no VeraCrypt or TrueCrypt volume, so no outer \
+             volume of it can be open."
+        ))
+    );
+}
+
+#[test]
 fn a_mapping_that_is_no_veracrypt_or_truecrypt_one_is_left_alone() {
     // A linear mapping over the partition, such as one that fences the
     // hidden volume off while the outer one is filled.
