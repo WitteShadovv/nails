@@ -97,8 +97,8 @@ impl Window {
             Model::new(Some(PathBuf::from("/mnt/data/nails")), false).in_hidden_session(true);
         let screen = Screen::with_emergency(
             model,
-            Box::new(move || {
-                emergency.fire();
+            Box::new(move |finish| {
+                emergency.fire(finish);
             }),
         );
         screen.tall();

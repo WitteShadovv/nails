@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
+use nails_gui::emergency::Finish;
 use nails_gui::model::Model;
 use nails_gui::ui::{Controller, Hooks};
 use nails_gui::worker::{Ask, Update};
@@ -34,7 +35,8 @@ pub struct Screen {
     asks: Rc<RefCell<Vec<Ask>>>,
     hang_ups: Rc<Cell<u32>>,
     closed: Rc<Cell<bool>>,
-    emergencies: Rc<Cell<u32>>,
+    /// The finish of each emergency the window fired.
+    emergencies: Rc<RefCell<Vec<Finish>>>,
 }
 
 impl Screen {
@@ -57,12 +59,12 @@ impl Screen {
 
     /// A window with `model`, shown on the headless platform.
     pub fn with(model: Model) -> Self {
-        Self::with_emergency(model, Box::new(|| {}))
+        Self::with_emergency(model, Box::new(|_| {}))
     }
 
     /// As [`Screen::with`], and the emergency, once counted, also fires
     /// through `emergency`.
-    pub fn with_emergency(model: Model, emergency: Box<dyn Fn()>) -> Self {
+    pub fn with_emergency(model: Model, emergency: Box<dyn Fn(Finish)>) -> Self {
         thread_local! {
             static PLATFORM: Cell<bool> = const { Cell::new(false) };
         }
@@ -76,7 +78,7 @@ impl Screen {
         let asks = Rc::new(RefCell::new(Vec::new()));
         let hang_ups = Rc::new(Cell::new(0));
         let closed = Rc::new(Cell::new(false));
-        let emergencies = Rc::new(Cell::new(0));
+        let emergencies = Rc::new(RefCell::new(Vec::new()));
         let controller = {
             let asks = Rc::clone(&asks);
             let hang_ups = Rc::clone(&hang_ups);
@@ -89,9 +91,9 @@ impl Screen {
                     ask: Box::new(move |ask| asks.borrow_mut().push(ask)),
                     hang_up: Box::new(move || hang_ups.set(hang_ups.get() + 1)),
                     close: Box::new(move || closed.set(true)),
-                    emergency: Box::new(move || {
-                        emergencies.set(emergencies.get() + 1);
-                        emergency();
+                    emergency: Box::new(move |finish| {
+                        emergencies.borrow_mut().push(finish);
+                        emergency(finish);
                     }),
                 },
             )
@@ -109,7 +111,12 @@ impl Screen {
 
     /// How many times the window fired the emergency.
     pub fn emergencies(&self) -> u32 {
-        self.emergencies.get()
+        u32::try_from(self.emergencies.borrow().len()).unwrap_or(u32::MAX)
+    }
+
+    /// The finish of each emergency the window fired, in order.
+    pub fn finishes(&self) -> Vec<Finish> {
+        self.emergencies.borrow().clone()
     }
 
     /// Let `ms` milliseconds of Slint's mocked time pass: animations,

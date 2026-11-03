@@ -104,24 +104,43 @@ fn read_request(helper: &UnixStream) -> Request {
     decode_request(line.trim_end().as_bytes()).expect("a request the helper takes")
 }
 
-#[test]
-fn the_request_is_one_the_helper_takes_and_asks_for_a_power_off() {
-    let line = request_line();
+/// The request of each finish: the engine's emergency with the flags of
+/// `nails emergency` for it.
+const FINISHES: [(Finish, &str); 3] = [
+    (
+        Finish::Return,
+        "{\"v\":1,\"id\":0,\"op\":{\"emergency\":{\"poweroff\":false,\"reboot\":false}}}\n",
+    ),
     // The bytes the VM test `session-window-emergency` sends the real helper.
+    (
+        Finish::PowerOff,
+        "{\"v\":1,\"id\":0,\"op\":{\"emergency\":{\"poweroff\":true,\"reboot\":false}}}\n",
+    ),
+    (
+        Finish::Reboot,
+        "{\"v\":1,\"id\":0,\"op\":{\"emergency\":{\"poweroff\":false,\"reboot\":true}}}\n",
+    ),
+];
+
+#[test]
+fn the_request_of_each_finish_is_one_the_helper_takes_with_the_clis_flags() {
+    for (finish, bytes) in FINISHES {
+        let line = request_line(finish);
+        assert_eq!(
+            String::from_utf8(line.clone()).unwrap(),
+            bytes,
+            "{finish:?}"
+        );
+        assert_eq!(line.last(), Some(&b'\n'));
+        let request = decode_request(&line[..line.len() - 1]).unwrap();
+        assert_eq!(request.v, PROTOCOL_VERSION);
+        assert_eq!(request.id, EMERGENCY_ID);
+        assert_eq!(request.op, Op::Emergency(finish.args()), "{finish:?}");
+    }
     assert_eq!(
-        String::from_utf8(line.clone()).unwrap(),
-        "{\"v\":1,\"id\":0,\"op\":{\"emergency\":{\"poweroff\":true,\"reboot\":false}}}\n"
-    );
-    assert_eq!(line.last(), Some(&b'\n'));
-    let request = decode_request(&line[..line.len() - 1]).unwrap();
-    assert_eq!(request.v, PROTOCOL_VERSION);
-    assert_eq!(request.id, EMERGENCY_ID);
-    assert_eq!(
-        request.op,
-        Op::Emergency(EmergencyArgs {
-            poweroff: true,
-            reboot: false
-        })
+        Finish::Return.args(),
+        EmergencyArgs::default(),
+        "the way back is `nails emergency` without a flag"
     );
 }
 
@@ -132,29 +151,65 @@ fn firing_waits_for_nothing_and_fires_once() {
     let fake = FakePowerOff::new("sleep 2");
     let (emergency, heard) = started(fake.fallback());
     let start = Instant::now();
-    assert!(emergency.fire());
+    assert!(emergency.fire(Finish::PowerOff));
     assert!(
         start.elapsed() < Duration::from_millis(100),
         "it only signals"
     );
     assert!(emergency.fired());
-    assert!(!emergency.fire(), "once");
-    assert!(!emergency.clone().fire(), "a clone shares it");
+    assert!(!emergency.fire(Finish::PowerOff), "once");
+    assert!(!emergency.clone().fire(Finish::Return), "a clone shares it");
     assert_eq!(next(&heard), Outcome::PowerOffAsked);
 }
 
 #[test]
 fn the_helper_gets_the_request_and_a_window_still_here_after_the_grace_powers_off() {
+    for (finish, _) in FINISHES {
+        let fake = FakePowerOff::new("exit 0");
+        let (emergency, heard) = started(fake.fallback());
+        let (line, helper) = pipe();
+        emergency.open(line);
+        emergency.fire(finish);
+        let request = read_request(&helper);
+        assert_eq!(
+            (request.id, request.op),
+            (EMERGENCY_ID, Op::Emergency(finish.args())),
+            "{finish:?}"
+        );
+        assert_eq!(next(&heard), Outcome::HelperAsked);
+        // The engine's emergency would have ended this window by now. The
+        // window has no way back of its own: whatever the finish, it powers
+        // off.
+        assert_eq!(next(&heard), Outcome::PowerOffAsked, "{finish:?}");
+        assert_eq!(fake.calls(), ["poweroff --no-ask-password"], "{finish:?}");
+    }
+}
+
+#[test]
+fn only_the_first_firings_finish_is_asked_for() {
     let fake = FakePowerOff::new("exit 0");
     let (emergency, heard) = started(fake.fallback());
     let (line, helper) = pipe();
     emergency.open(line);
-    emergency.fire();
-    assert_eq!(read_request(&helper).id, EMERGENCY_ID);
+    assert!(emergency.fire(Finish::Return));
+    assert!(!emergency.fire(Finish::Reboot));
+    assert_eq!(
+        read_request(&helper).op,
+        Op::Emergency(Finish::Return.args())
+    );
     assert_eq!(next(&heard), Outcome::HelperAsked);
-    // The engine's emergency would have ended this window by now.
-    assert_eq!(next(&heard), Outcome::PowerOffAsked);
-    assert_eq!(fake.calls(), ["poweroff --no-ask-password"]);
+}
+
+#[test]
+fn without_a_helper_every_finish_is_the_windows_own_power_off() {
+    for (finish, _) in FINISHES {
+        let fake = FakePowerOff::new("exit 0");
+        let (emergency, heard) = started(fake.fallback());
+        emergency.close();
+        emergency.fire(finish);
+        assert_eq!(next(&heard), Outcome::PowerOffAsked, "{finish:?}");
+        assert_eq!(fake.calls(), ["poweroff --no-ask-password"], "{finish:?}");
+    }
 }
 
 #[test]
@@ -163,7 +218,7 @@ fn an_emergency_while_the_session_opens_waits_for_it_within_the_grace() {
     let mut fallback = fake.fallback();
     fallback.grace = Duration::from_secs(5);
     let (emergency, heard) = started(fallback);
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     std::thread::sleep(Duration::from_millis(100));
     let (line, helper) = pipe();
     emergency.open(line);
@@ -179,7 +234,7 @@ fn without_a_session_it_powers_off_at_once() {
     let (emergency, heard) = started(fallback);
     emergency.close();
     let start = Instant::now();
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     assert_eq!(next(&heard), Outcome::PowerOffAsked);
     assert!(
         start.elapsed() < Duration::from_secs(5),
@@ -198,7 +253,7 @@ fn a_session_that_never_opens_is_waited_for_only_the_grace() {
     let fake = FakePowerOff::new("exit 0");
     let (emergency, heard) = started(fake.fallback());
     let start = Instant::now();
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     assert_eq!(next(&heard), Outcome::PowerOffAsked);
     assert!(start.elapsed() >= GRACE);
 }
@@ -212,7 +267,7 @@ fn a_client_that_holds_the_pipe_past_the_grace_leaves_it_to_the_power_off() {
     emergency.open(line);
     // The client is inside a write that does not end.
     let held = writes.lock().unwrap();
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     assert_eq!(next(&heard), Outcome::PowerOffAsked);
     drop(held);
     helper.set_nonblocking(true).unwrap();
@@ -235,7 +290,7 @@ fn a_pipe_the_helper_does_not_read_is_not_waited_on() {
     while std::io::Write::write(&mut &filler, &chunk).is_ok() {}
     emergency.open(line);
     let start = Instant::now();
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     assert_eq!(next(&heard), Outcome::PowerOffAsked);
     assert!(start.elapsed() < PATIENCE);
 }
@@ -247,7 +302,7 @@ fn a_power_off_that_hangs_is_given_up_on_and_none_found_is_no_power_off() {
     fallback.limit = Duration::from_millis(300);
     let (emergency, heard) = started(fallback);
     emergency.close();
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     assert_eq!(next(&heard), Outcome::PowerOffFailed);
 
     let (emergency, heard) = started(Fallback {
@@ -255,13 +310,13 @@ fn a_power_off_that_hangs_is_given_up_on_and_none_found_is_no_power_off() {
         ..fake.fallback()
     });
     emergency.close();
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     assert_eq!(next(&heard), Outcome::PowerOffFailed);
 
     let refused = FakePowerOff::new("exit 1");
     let (emergency, heard) = started(refused.fallback());
     emergency.close();
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     assert_eq!(next(&heard), Outcome::PowerOffFailed);
 }
 
@@ -288,7 +343,7 @@ fn the_grace_after_a_late_request_counts_from_the_request() {
     let emergency = Emergency::start(fallback, move |outcome| {
         let _ = tell.send((outcome, Instant::now()));
     });
-    emergency.fire();
+    emergency.fire(Finish::PowerOff);
     // The session opens late, shortly before the grace of the press runs
     // out, as one does once pkexec's password was typed.
     std::thread::sleep(Duration::from_millis(300));
