@@ -5,8 +5,8 @@ tests on the NixOS test driver. The distro tier instead boots several Linux
 distributions through ``numtide/nix-vm-test``, so a regression on a non-NixOS
 host is caught instead of passing unseen. It has four suites:
 
-- ``smoke``: the smoke scenarios of the admitted distributions, each built with
-  ``nix build``, so an unchanged scenario's pass comes from the binary cache;
+- ``smoke``: the smoke scenarios of the admitted distributions, each a
+  derivation that ``nix build`` runs in the Nix build sandbox;
 - ``records``: the login- and boot-record scenarios, one per distribution that
   has one;
 - ``refusal``: the refusal of each pinned image of a family the family table
@@ -15,11 +15,11 @@ host is caught instead of passing unseen. It has four suites:
   pinned.
 
 A records scenario, a refusal and a probe are each a host driver, one job of
-its own that builds the driver and runs it on the runner, so every run boots
-its image. ``all`` plans the smoke, records and refusal suites together, the
-default run; the probes boot no NAILS and run only when asked for. The records
-and refusal jobs gate (:data:`GATING_SUITES`): the workflow fails its result on
-them, while a smoke scenario or a probe that fails only warns.
+its own that builds the driver and runs it on the runner, outside the sandbox.
+``all`` plans the smoke, records and refusal suites together, the default run;
+the probes boot no NAILS and run only when asked for. The records and refusal
+jobs gate (:data:`GATING_SUITES`): the workflow fails its result on them, while
+a smoke scenario or a probe that fails only warns.
 
 The distro list is plain data the flake exposes as
 ``legacyPackages.<system>.e2e-distro-metadata``. Each distribution names its
