@@ -249,6 +249,41 @@ mod tests {
     }
 
     #[test]
+    fn the_uuid_is_read_where_cryptsetup_writes_it() {
+        // The start of two images cryptsetup formatted: the LUKS2 one above,
+        // and the first 4 KiB of a 20 MiB image formatted with `cryptsetup
+        // luksFormat --type luks1 --uuid <uuid> --pbkdf-force-iterations
+        // 1000` (dummy passphrase). Each uuid is the one `cryptsetup
+        // luksDump` prints for the image.
+        let dir = tempfile::tempdir().unwrap();
+        for (image, version, uuid) in [
+            (
+                &include_bytes!("fixtures/luks2-tpm2-token.hdr")[..],
+                2,
+                "c163aa97-37dc-45ab-a296-f1ed26db0fb0",
+            ),
+            (
+                &include_bytes!("fixtures/luks1-pbkdf2.hdr")[..],
+                1,
+                "6e1d3a2b-5c4f-4e8d-9a7b-0c1d2e3f4a5b",
+            ),
+        ] {
+            let device = dir.path().join(format!("luks{version}"));
+            std::fs::write(&device, image).unwrap();
+            let probe = probe_header(&device);
+            let HeaderProbe::Attached {
+                version: read,
+                uuid: named,
+                ..
+            } = &probe
+            else {
+                panic!("{probe:?}");
+            };
+            assert_eq!((*read, named.as_str()), (version, uuid));
+        }
+    }
+
+    #[test]
     fn probes_an_attached_luks2_header_from_a_real_file() {
         let dir = tempfile::tempdir().unwrap();
         let device = dir.path().join("sdb2");

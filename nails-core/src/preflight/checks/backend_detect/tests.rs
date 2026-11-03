@@ -895,6 +895,37 @@ fn the_mappings_own_luks_header_is_named_in_the_pass_line() {
 }
 
 #[test]
+fn a_header_cryptsetup_wrote_is_the_mappings_own_by_the_uuid_the_mapping_names() {
+    // The start of an image cryptsetup formatted and gave a systemd-tpm2
+    // token, below a mapping whose device-mapper uuid names that image's
+    // uuid, as cryptsetup names it: its token is the mapping's, and warns.
+    let uuid = "c163aa97-37dc-45ab-a296-f1ed26db0fb0";
+    let fs = luks_on_partition_fixture();
+    fs.mock_set_file_content(
+        "/sys/dev/block/253:2/dm/uuid",
+        &format!("CRYPT-LUKS2-{}-data\n", uuid.replace('-', "")),
+    );
+    let dev = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dev.path().join("sdb2"),
+        include_bytes!("fixtures/luks2-tpm2-token.hdr"),
+    )
+    .unwrap();
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("The LUKS2 header of mapping dm-2 carries a systemd-tpm2 token"),
+        "{result:?}"
+    );
+    assert!(
+        !result.message().contains("of another volume"),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn an_attached_luks1_header_is_named_by_its_version() {
     let fs = luks_on_partition_fixture();
     let dev = tempfile::tempdir().unwrap();
