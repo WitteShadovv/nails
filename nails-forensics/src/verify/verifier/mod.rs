@@ -472,6 +472,9 @@ impl<F: Filesystem> Verifier<F> {
 mod catalog;
 pub use catalog::VERIFY_CHECK_IDS;
 mod config_state;
+mod crypt_open;
+#[cfg(test)]
+mod crypt_open_tests;
 mod deep_scan;
 mod journal_scan;
 #[cfg(test)]

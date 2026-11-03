@@ -704,9 +704,13 @@ of this changelog for that version becomes the release notes word for word, and
   read-only when its device is mounted on the machine already, read-only and without a journal
   replay when it is not. A file the decoy mounts, such as a disk image in a home, is attached to a
   read-only loop device first, and a `/dev/mapper` device that is not open is opened read-only
-  first, from the source the decoy's `/etc/crypttab` gives where it names one and as the kind of
-  volume it names. Only mounts from a disk count, not `/` itself, swap, filesystems in RAM,
-  host shares, network filesystems or binds, whose source lies in the image and was scanned. The
+  first, as systemd-cryptsetup opens the line of the decoy's `/etc/crypttab` that names it: from
+  its source, as its kind of volume, a plain one with its cipher, key size, hash, offset, skip and
+  sector size (systemd's defaults where the line gives none), and with its detached header,
+  VeraCrypt PIM and TrueCrypt key files. A key file, where the key lies in it and a token, which
+  no option there carries over, are named as needing parameters of their own. Only mounts from a
+  disk count, not `/` itself, swap, filesystems in RAM, host shares, network filesystems or binds,
+  whose source lies in the image and was scanned. The
   decoy's files are read inside the root with `openat2` and `RESOLVE_IN_ROOT`, so NixOS's
   `/etc/fstab`, a link into the store, is read from the image's store, and one that cannot be read
   there is listed as not read. The examiner's view says when the decoy's `/nix/store` is missing

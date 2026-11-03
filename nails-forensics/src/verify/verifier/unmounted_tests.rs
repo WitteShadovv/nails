@@ -234,10 +234,12 @@ fn each_mount_point_says_how_to_mount_it_by_how_its_device_is_mounted_now() {
 fn a_file_or_a_mapping_that_is_not_open_is_opened_read_only_before_its_mount() {
     // A disk image the decoy mounts is attached to a loop device read-only,
     // as its fstab line sets the loop device up. A mapping that is not open
-    // here is opened read-only first, from the source and as the kind of
-    // volume the decoy's crypttab names. The kernel keeps either device
-    // read-only, so neither needs blockdev --setro. A mapping that is open
-    // here is mounted as any other device is.
+    // here is opened read-only first, from the source and as the decoy's
+    // crypttab opens it, a plain volume with its parameters and a detached
+    // header from inside the root, and what has no option here is named.
+    // The kernel keeps either device read-only, so neither needs blockdev
+    // --setro. A mapping that is open here is mounted as any other device
+    // is.
     let fs = MockFilesystem::new();
     fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
     fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
@@ -250,7 +252,9 @@ fn a_file_or_a_mapping_that_is_not_open_is_opened_read_only_before_its_mount() {
          /dev/mapper/sys /media/sys ext4 defaults 0 2\n\
          /dev/mapper/stick /media/stick vfat defaults 0 2\n\
          /dev/mapper/gone /media/gone xfs defaults 0 2\n\
-         /dev/mapper/open /media/open ext4 defaults 0 2\n",
+         /dev/mapper/open /media/open ext4 defaults 0 2\n\
+         /dev/mapper/pl /media/pl ext4 defaults 0 2\n\
+         /dev/mapper/hd /media/hd ext4 defaults 0 2\n",
     );
     fs.mock_add_file(
         "/mnt/decoy/etc/crypttab",
@@ -258,7 +262,9 @@ fn a_file_or_a_mapping_that_is_not_open_is_opened_read_only_before_its_mount() {
          secret /home/alice/vault.hc none tcrypt-veracrypt,tcrypt-hidden\n\
          sys /dev/sdc none tcrypt-system\n\
          stick PARTUUID=cd none bitlk\n\
-         open /dev/sdd none luks\n",
+         open /dev/sdd none luks\n\
+         pl /dev/sdb3 none plain,cipher=aes-xts-plain64,size=512,hash=sha512\n\
+         hd UUID=ef /etc/keys/hd.key luks,header=/etc/hd.hdr,tpm2-device=auto\n",
     );
     fs.mock_set_path_type("/dev/mapper/open", PathKind::File);
 
@@ -304,10 +310,29 @@ fn a_file_or_a_mapping_that_is_not_open_is_opened_read_only_before_its_mount() {
                  holds it"
             ),
             why(
+                "/media/hd",
+                &format!(
+                    "{}. It needs parameters of its own for what its line there also opens it \
+                     with, which the command leaves out: the key file /etc/keys/hd.key, \
+                     tpm2-device=auto",
+                    named(
+                        "--header /mnt/decoy/etc/hd.hdr /dev/disk/by-uuid/ef hd",
+                        "-o ro,noload /dev/mapper/hd /mnt/decoy/media/hd"
+                    )
+                )
+            ),
+            why(
                 "/media/open",
                 "Its device is not mounted here: make it read-only and mount it there without a \
                  journal replay before the scan, with `sudo blockdev --setro /dev/mapper/open && \
                  sudo mount -o ro,noload /dev/mapper/open /mnt/decoy/media/open`"
+            ),
+            why(
+                "/media/pl",
+                &named(
+                    "--type plain --cipher aes-xts-plain64 --key-size 512 --hash sha512 /dev/sdb3 pl",
+                    "-o ro,noload /dev/mapper/pl /mnt/decoy/media/pl"
+                )
             ),
             why(
                 "/media/stick",

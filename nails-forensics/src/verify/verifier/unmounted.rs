@@ -6,11 +6,12 @@
 //! accounts that hold nothing there, and how to mount each without writing
 //! to the decoy's disk.
 
+use super::crypt_open::opening;
 use super::deep_scan::is_login_shell;
 use super::*;
 use crate::filesystem::MountEntry;
-use nails_base::crypttab::{CrypttabEntry, parse_crypttab};
-use nails_base::fstab::{FstabEntry, parse_fstab};
+use nails_base::crypttab::parse_crypttab;
+use nails_base::fstab::{FstabEntry, parse_fstab, spec_device};
 use nails_base::next_step::shell_word;
 use std::ffi::OsStr;
 
@@ -261,8 +262,10 @@ impl<F: Filesystem> Verifier<F> {
     }
 
     /// How to open the mapping `name` read-only, from the source and as the
-    /// kind of volume the decoy's `/etc/crypttab` names, and then run
-    /// `mount` with `mounting` (its options, the device and the mount point).
+    /// decoy's `/etc/crypttab` opens it ([`opening`]), and then run `mount`
+    /// with `mounting` (its options, the device and the mount point). What
+    /// the line opens it with that no option carries over is named after the
+    /// command.
     fn how_to_open(&self, name: &str, mounting: &str) -> String {
         let volume = self
             .read_in_image(Path::new(CRYPTTAB_FILE))
@@ -272,33 +275,34 @@ impl<F: Filesystem> Verifier<F> {
                     .into_iter()
                     .find(|volume| volume.name == name)
             });
-        let (kind, source) = match &volume {
-            Some(volume) => (cryptsetup_type(volume), self.volume_source(volume)),
-            None => (String::new(), "<source>".to_string()),
+        let Some(volume) = volume else {
+            return format!(
+                "Its device is a mapping that is not open here: {}, where <source> is the \
+                 encrypted device or file that holds it",
+                open_and_mount("", "<source>", name, mounting)
+            );
         };
-        let how = format!(
-            "open it read-only and mount it there without a journal replay before the scan, with \
-             `sudo cryptsetup open --readonly {kind}{source} {} && sudo mount {mounting}`",
-            shell_word(OsStr::new(name))
+        let opening = opening(&volume, |path| self.here(path));
+        let mut how = format!(
+            "Its device is a mapping of the decoy's /etc/crypttab that is not open here: {}",
+            open_and_mount(&opening.options, &self.here(&volume.source), name, mounting)
         );
-        match volume {
-            Some(_) => format!(
-                "Its device is a mapping of the decoy's /etc/crypttab that is not open here: {how}"
-            ),
-            None => format!(
-                "Its device is a mapping that is not open here: {how}, where <source> is the \
-                 encrypted device or file that holds it"
-            ),
+        if !opening.left_out.is_empty() {
+            how.push_str(&format!(
+                ". It needs parameters of its own for what its line there also opens it with, \
+                 which the command leaves out: {}",
+                opening.left_out.join(", ")
+            ));
         }
+        how
     }
 
-    /// Where the encrypted volume `volume` lies: its device node (a `UUID=`
-    /// and its like by udev's link), or its file, resolved inside the root.
-    fn volume_source(&self, volume: &CrypttabEntry) -> String {
-        let source = volume
-            .device()
-            .unwrap_or_else(|| self.place(Path::new(&volume.source)));
-        shell_word(source.as_os_str())
+    /// Where a device or file that the decoy's `/etc/crypttab` names lies
+    /// here, shell-quoted: a device node (a `UUID=` and its like by udev's
+    /// link) as it is, a file of the image resolved inside the root.
+    fn here(&self, path: &str) -> String {
+        let here = spec_device(path).unwrap_or_else(|| self.place(Path::new(path)));
+        shell_word(here.as_os_str())
     }
 
     /// How the device `entry` names is mounted here now: the device node of
@@ -341,24 +345,14 @@ fn loop_options(entry: &FstabEntry) -> String {
         .collect()
 }
 
-/// The `cryptsetup open` options for the kind of volume `volume` is, by its
-/// crypttab options: a TrueCrypt or VeraCrypt volume (its hidden volume or a
-/// system drive among them) or a BitLocker drive. LUKS, cryptsetup's
-/// default, needs none, and cryptsetup finds a VeraCrypt volume by itself.
-fn cryptsetup_type(volume: &CrypttabEntry) -> String {
-    let mut options = Vec::new();
-    if volume.is_tcrypt() {
-        options.push("--type tcrypt");
-        if volume.is_tcrypt_hidden() {
-            options.push("--tcrypt-hidden");
-        }
-        if volume.has_option("tcrypt-system") {
-            options.push("--tcrypt-system");
-        }
-    } else if volume.has_option("bitlk") {
-        options.push("--type bitlk");
-    }
-    options.iter().map(|option| format!("{option} ")).collect()
+/// The command that opens the mapping `name` read-only from `source` with
+/// `options` and mounts it with `mounting`, and what it does.
+fn open_and_mount(options: &str, source: &str, name: &str, mounting: &str) -> String {
+    format!(
+        "open it read-only and mount it there without a journal replay before the scan, with \
+         `sudo cryptsetup open --readonly {options}{source} {} && sudo mount {mounting}`",
+        shell_word(OsStr::new(name))
+    )
 }
 
 /// The options that mount a filesystem of type `fstype` read-only without
