@@ -1324,58 +1324,78 @@ afterwards:
     `ZDOTDIR`;
   - an `fc` that writes the history file (`fc -A`, `fc -W`, `fc -P`, or
     `fc -p`, whose list zsh writes to its file as it pops it, with other flags
-    too, as in `fc -AI`, and `history`, which takes the same flags) counts as
-    a write wherever it stands: a hook (`precmd`, `preexec`, `zshaddhistory`,
+    too, as in `fc -AI`, and `history`, which takes the same flags) counts as a
+    write wherever it stands: a hook (`precmd`, `preexec`, `zshaddhistory`,
     `TRAPDEBUG`) runs it after every command, as bash's `history -a` from
-    `PROMPT_COMMAND`. One with an expansion among its words is a doubt. So
-    does a redirection to the history file, `$HISTFILE` or a path whose last
-    part holds `hist` (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), an
+    `PROMPT_COMMAND`. One with an expansion among its words is a doubt. So does
+    a redirection to the history file, `$HISTFILE` or a path whose last part
+    holds `hist` (`preexec() { print -r -- "$1" >> ~/.zsh_history }`), an
     element of zsh/mapfile's `mapfile` that names it, and a global alias that
     stands for it (`alias -g /dev/tty=~/.zsh_history`). A hook is a function
-    zsh runs by its name (`command_not_found_handler` among them), a `TRAP...`
-    function or a trap's code, one that `add-zsh-hook` or a `*_functions`
-    array (an element of it, `set -A` and `read -A` too) makes a hook, the
-    function of every widget (`zle -N`, `zle -C`, `zle -F`, a `zle -T`
-    transformation's), which a key bound to it may run as a line is typed, a
-    completion function `compdef -k` or `-K` binds to keys, one copied to a
-    hook's name (`functions -c`), a function named like a builtin or like the
-    dispatcher of `add-zle-hook-widget` (`azhw:...`), which zsh's own code
-    runs as each line is entered (`add-zle-hook-widget`'s hooks run `zstyle`
-    and `zle`), the code `sched`, `zstyle -e` and `bindkey -s` run, the code
-    of a function's own file and of a file a hook sources, a prompt theme that
-    `prompt` runs from a hook, and a function or an alias a hook runs by name,
-    there or in an `eval` or a `$(...)`. In a hook a word that names that file
-    (`tee -a ~/.zsh_history`) counts as a write too, and a redirection there
-    to any other file is a doubt, as it may be the one `HISTFILE` names or a
-    link to it (`>> ~/.zlog`, a glob), but for a device (`/dev/null`,
-    `/dev/tty`, `/dev/stderr`, `/dev/fd/2`) or a descriptor (`>&2`) while no
-    global alias stands for it, and for a redirection to `$TTY` alone (`$TTY`,
-    `"$TTY"`, `${TTY}`), the terminal zsh sets it to as it starts, while no
-    file it reads names `TTY` otherwise than to read it, in any form zsh reads
-    a name in (`TTY=...`, `local TTY`, `read T''TY`, `print -vTTY`). A command
-    a hook runs that is no function or alias the files define or autoload nor
-    a builtin that writes no file is a doubt when an expansion makes a word it
-    is given (`tee -a $f`), or when it reads what the shell's code may make
-    the command line: a here-string, a here-document or a file an expansion
-    makes, a value an expansion makes in its environment (`LINE=$1 logger`),
-    or a pipe from a command given an expansion, an `fc`, a `history`, a
-    group, or a function or an alias the files define
-    (`print -r -- "$1" | tee -a ~/.zlog`); in a global alias's value
-    (`alias -g T='| tee -a ~/.zlog'`), only when a word of it may name a file.
-    An `exec` that keeps a descriptor open on any file but a device
-    (`exec 3>>~/.zlog`, `exec >~/.zlog`), a `sysopen` that opens one to write,
-    a `coproc`, and a `zle -A` that makes a widget named for a hook run
-    another one are doubts. A widget that completes a word, which runs
-    completion functions the check does not read, is a doubt where it runs as
-    each line is entered or a hook runs (`zle complete-word` in a hook,
+    zsh runs by its name (`command_not_found_handler` among them), by any of
+    the names a definition gives it (`function a b`, `a b ()`), a `TRAP...`
+    function or a trap's code, one whose name zsh may expand into another's
+    (`function $n`, `function {preexec,x}`, a glob, `=cmd`), one that
+    `add-zsh-hook` or a `*_functions` array (an element of it, `set -A` and
+    `read -A` too) makes a hook, where a word zsh expands into others there
+    (`add-zsh-hook {preexec,w}`) is a doubt, the function of every widget
+    (`zle -N`, `zle -C`, `zle -F`, a `zle -T` transformation's), which a key
+    bound to it may run as a line is typed, a completion function `compdef -k`
+    or `-K` binds to keys, one copied to a hook's name (`functions -c`), a
+    function named like a builtin or like the dispatcher of
+    `add-zle-hook-widget` (`azhw:...`), which zsh's own code runs as each line
+    is entered (`add-zle-hook-widget`'s hooks run `zstyle` and `zle`), the code
+    `sched`, `zstyle -e` and `bindkey -s` run and the line `zle -U` and
+    `print -z` type, the code of a function's own file and of a file a hook
+    sources, a prompt theme that `prompt` runs from a hook, and a function or
+    an alias a hook runs by name, there or in an `eval` or a `$(...)`. In a
+    hook a word that names that file (`tee -a ~/.zsh_history`) counts as a
+    write too, and a redirection there to any other file is a doubt, as it may
+    be the one `HISTFILE` names or a link to it (`>> ~/.zlog`, a glob), but for
+    a device (`/dev/null`, `/dev/tty`, `/dev/stderr`, `/dev/fd/2`) or standard
+    output or error (`>&2`) while no global alias stands for it, and for a
+    redirection to `$TTY` alone (`$TTY`, `"$TTY"`, `${TTY}`), the terminal zsh
+    sets it to as it starts, while no file it reads names `TTY` otherwise than
+    to read it, in any form zsh reads a name in (`TTY=...`, `local TTY`,
+    `read T''TY`, `print -vTTY`), and no arithmetic it reads may set a
+    parameter by a name it cannot read (see below). A write to a descriptor
+    above 2 (`>&7`, `print -u 7`, `/dev/fd/7`) is a doubt there, as it may be
+    any file the shell has open. A command a hook runs that is no function or
+    alias the files define or autoload nor a builtin that writes no file is a
+    doubt when an expansion makes a word it is given (`tee -a $f`), or when it
+    reads what the shell's code may make the command line: a here-string, a
+    here-document or a file an expansion makes, a value an expansion makes in
+    its environment (`LINE=$1 logger`), or a pipe from a command given an
+    expansion, an `fc`, a `history`, a group, or a function or an alias the
+    files define (`print -r -- "$1" | tee -a ~/.zlog`), and so is any program a
+    hook runs where a hook sets a parameter that is not the function's own to
+    what an expansion makes (`preexec() { LINE=$1; logger }`), which zsh gives
+    the program in its environment once it is exported. A global alias is a
+    doubt where a word of the code the check reads holds its name beyond its
+    definition, as zsh puts its value in place of that word (`function X`,
+    `set -A X w`, `read X`, `print -r -- "$1" G`). An `exec` that keeps a
+    descriptor open on any file but a device (`exec 3>>~/.zlog`,
+    `exec >~/.zlog`, `exec >&3`), a `sysopen` that opens one to write, a
+    `zsystem flock`, a `zsocket` or `ztcp` connection, a `coproc`, and a
+    `zle -A` that makes a widget named for a hook run another one are doubts. A
+    widget that completes a word, which runs completion functions the check
+    does not read, is a doubt where it runs as each line is entered or a hook
+    runs (`zle complete-word` in a hook,
     `add-zle-hook-widget line-finish complete-word`, a `zstyle` of the
     `widgets` style that dispatcher reads, `zle -A complete-word accept-line`)
     and where a key a line is typed with is bound to it
     (`bindkey ' ' complete-word`: any key but Tab, `^D` and a sequence after
-    `^X` or an escape), and so is a `bindkey -s` string or a `zle -U` that
-    types Tab, `^D` or `^X`. A history tool that keeps its own record
-    elsewhere, such as atuin, it does not see as one, though the command its
-    hook runs with the line you typed is such a doubt;
+    `^X` or an escape). A `bindkey -s` string is read as the keys it types when
+    it holds printable characters and line ends alone; one with any other key
+    (`^A`, `^H`, Tab, an escape), one bound in a keymap where keys are commands
+    (`bindkey -a -s`, `-M vicmd`), and a `print -z` with an escape `print`
+    decodes are doubts, and so is any such string, and a `zle -U`, where a file
+    binds a key a line is typed with, unbinds one, makes a widget or changes a
+    keymap, which may change what its keys type. What they type counts for the
+    names the check counts (an `fc` alias, `TTY` and the rest, see below). A
+    history tool that keeps its own record elsewhere, such as atuin, it does
+    not see as one, though the command its hook runs with the line you typed is
+    such a doubt;
   - an `emulate -R ksh`, whose reset to ksh's defaults turns `SHARE_HISTORY`
     on, as `-R` sets every option to the mode's defaults (sh's, csh's and
     zsh's hold none of the three); an `emulate` whose mode an expansion makes
@@ -1386,14 +1406,17 @@ afterwards:
     it first runs it, and in the directory of a function loaded by its path,
     which zsh puts in front of `fpath` for the functions that one autoloads
     (and by its name with `autoload -d`). An element of `fpath` that an
-    expansion changes (`${(s:/:)fpath}`, `$FPATH[2,10]`) is a directory it
-    cannot follow, and so is an empty one (`fpath+=`, `FPATH=:$FPATH`), which
+    expansion changes (`${(s:/:)fpath}`, `$FPATH[2,10]`) or joins into one
+    (`"$fpath"`, `fpath=($FPATH)`, `fpath+=$fpath`, where only `"${fpath[@]}"`
+    and `"${(@)fpath}"` keep the elements apart in quotes) is a directory it
+    cannot follow, and so is one that names `$fpath` as written (`'$fpath'`),
+    one that holds a `:`, and an empty one (`fpath+=`, `FPATH=:$FPATH`), which
     zsh reads as the directory it runs in, and, where a file it reads may turn
     `SH_WORD_SPLIT` or `KSH_ARRAYS` on (by their names in either form,
-    `set -y`, an `emulate` of another mode than zsh's), an element an
-    expansion gives an array (`fpath=($fpath)`, the `$p` of NixOS's loop over
-    the profiles), which they may split at the characters of `IFS` or cut to
-    its first, and `$fpath[1]`, which `KSH_ARRAYS` makes a path of the first
+    `set -y`, an `emulate` of another mode than zsh's), an element an expansion
+    gives an array (`fpath=($fpath)`, the `$p` of NixOS's loop over the
+    profiles), which they may split at the characters of `IFS` or cut to its
+    first, and `$fpath[1]`, which `KSH_ARRAYS` makes a path of the first
     element and `[1]`. Where `fpath` starts the check knows for the shell you
     typed the command into, from the program it runs and the environment it
     started with, when that is a zsh from the Nix store as nixpkgs builds it:
@@ -1404,43 +1427,50 @@ afterwards:
     cannot follow is a doubt of its own. For any other zsh, or one it reads
     because it found no shell you typed into, a function that no directory the
     files put in front of `fpath` holds is a doubt: zsh then finds it in a
-    directory it was built with, or in one that an `FPATH` from its
-    environment names, which the check does not read. Of that environment it
-    keeps `FPATH`, `NIX_PROFILES`, `USER`, `XDG_STATE_HOME`, `_compdir`,
-    `HOME` and `ZDOTDIR`; when one of them is no UTF-8, it reads the shell as
-    one whose environment it does not know;
+    directory it was built with, or in one that an `FPATH` from its environment
+    names, which the check does not read. Of that environment it keeps `FPATH`,
+    `NIX_PROFILES`, `USER`, `XDG_STATE_HOME`, `_compdir`, `HOME`, `ZDOTDIR`,
+    `ARGV0` and `MAILPATH`, and whether a variable of the dynamic loader
+    (`LD_...`) is set, without its value; when one of them is no UTF-8, it
+    reads the shell as one whose environment it does not know, and a `MAILPATH`
+    there, whose messages zsh expands before a prompt, is a doubt;
   - zsh's own `compinit` and `promptinit`, and the `compaudit`, `compdump`,
     `add-zsh-hook` and `add-zle-hook-widget` they run, it knows by their bytes
     as zsh 5.9, 5.9.1 and 5.9.2 ship them, and reads for what that code does,
-    and a changed one as code. `compinit` sources the dump file that
-    `compdump` writes (`-d` names it, else `.zcompdump` in `ZDOTDIR`, which
-    the check reads in each directory `ZDOTDIR` may name as the files are
-    read, the home among them; a `HOME` a file sets is a doubt), which the
-    check reads as data when each of its lines is one `compdump` writes and
-    each key it binds is bound as zsh's own completion functions bind theirs
-    (one of their 15 sequences after `^X` or an escape, each to its widget:
-    Space, a letter or Enter bound there runs the widget as a line is typed),
-    and as code otherwise. `compinit` also marks the completion functions it
-    finds in `fpath` to be autoloaded, as the first line of each says: an
-    `#autoload` with a word other than `+X` (`-w`, which marks the functions
-    of a compiled file) is a doubt, and so is a `#compdef -k` or `-K`, which
-    binds keys, other than zsh's own in its own function. zsh runs those
-    functions as you complete a word, with Tab, `^D` or a key a completion
-    binds, and the check does not read them unless a file it reads runs one by
-    name, makes one a hook (a widget's function, one that `compdef -k` binds)
-    or runs one in a command substitution; a completion that runs as a line is
-    typed or entered is a doubt, as above. `compaudit` may put the directories
-    under one that holds a `Base` directory at the end of `fpath`, which the
-    check reads too (a `_compdir` a file names or the shell's environment
-    holds, which picks that directory, is a doubt). `promptinit` marks the
-    prompt themes in `fpath` the same way, and `prompt` runs the one it names:
-    the check reads that one (`prompt suse` reads `prompt_suse_setup`), and
-    `prompt_default_setup`, which the code `prompt` keeps to restore the
-    prompt runs (`prompt restore`), and counts `PROMPT_SUBST` as possibly on.
-    A theme `prompt` picks itself (`prompt random`, `prompt -p`) or whose name
-    an expansion makes, the code `prompt_cleanup` keeps, and an alias for
-    `compinit`, `compdef` or `prompt`, which hands them the words the check
-    reads, are doubts;
+    and a changed one as code. `compinit` sources the dump file that `compdump`
+    writes (`-d` names it, else `.zcompdump` in `ZDOTDIR`, which the check
+    reads in each directory `ZDOTDIR` may name as the files are read, the home
+    among them; a `HOME` a file sets is a doubt), which the check reads as data
+    when each of its lines is one `compdump` writes, it holds no control
+    character but tabs and line ends (zsh keeps a carriage return in a line, so
+    a backslash before one joins no lines) and each key it binds is bound as
+    zsh's own completion functions bind theirs (one of their 15 sequences after
+    `^X` or an escape, each to its widget: Space, a letter or Enter bound there
+    runs the widget as a line is typed), and as code otherwise. `compinit`
+    reads the second word of its first line as arithmetic, so one that is no
+    number is a doubt. `compinit` also marks the completion functions it finds
+    in `fpath` to be autoloaded, as the first line of each says: an `#autoload`
+    with a word other than `+X` (`-w`, which marks the functions of a compiled
+    file) is a doubt, and so is a `#compdef` whose first word binds keys as
+    compinit reads it (`-k`, `-kn`, `-K`, `-Kn`, and any other that starts so)
+    other than zsh's own in its own function, a first line with a control
+    character but a tab, and a file there that is no regular file or directory.
+    zsh runs those functions as you complete a word, with Tab, `^D` or a key a
+    completion binds, and the check does not read them unless a file it reads
+    runs one by name, makes one a hook (a widget's function, one that
+    `compdef -k` binds) or runs one in a command substitution; a completion
+    that runs as a line is typed or entered is a doubt, as above. `compaudit`
+    may put the directories under one that holds a `Base` directory at the end
+    of `fpath`, which the check reads too (a `_compdir` a file names or the
+    shell's environment holds, which picks that directory, is a doubt).
+    `promptinit` marks the prompt themes in `fpath` the same way, and `prompt`
+    runs the one it names: the check reads that one (`prompt suse` reads
+    `prompt_suse_setup`), and `prompt_default_setup`, which the code `prompt`
+    keeps to restore the prompt runs (`prompt restore`), and counts
+    `PROMPT_SUBST` as possibly on. A theme `prompt` picks itself
+    (`prompt random`, `prompt -p`) or whose name an expansion makes, the code
+    `prompt_cleanup` keeps, and an alias for `compinit`, `compdef` or `prompt`,
+    which hands them the words the check reads, are doubts;
   - the options on the command line of the shell you typed the command into:
     one of the three it turns on (`zsh -o sharehistory`,
     `zsh --share-history`, `zsh -fo share_history`) counts as on, a zsh that
@@ -1448,6 +1478,31 @@ afterwards:
     reads their startup files, which is a doubt, and so is `SH_WORD_SPLIT`
     (`-y`) or `KSH_ARRAYS` turned on there, which may change the directories
     an expansion gives `fpath`;
+  - arithmetic: zsh evaluates it in `(( ))`, `$(( ))`, `let`, an array's
+    subscript (`a[n]=x`, `${a[n]}`, `a=([n]=x)`), an offset or a length
+    (`${s:n}`), a flag's number (`${(l:n:)s}`), the operands of
+    `[[ a -eq b ]]`, the numbers `printf` and `print -f` format, the counts of
+    `shift`, `return`, `exit`, `break`, `continue` and `repeat`, the value of
+    an assignment to a parameter that holds a number, a glob qualifier's
+    subscript and more, and reads what an expansion gives there and the value
+    of each parameter it names as arithmetic again, so an assignment in them
+    may set a parameter whose name no file writes (`n='TTY=5'; (( n ))`). An
+    expression that holds an expansion other than a count or a test of a
+    parameter (`$#x`, `${+x}`), or names a parameter other than one zsh keeps a
+    number in (`EUID`, `HISTSIZE`, `SECONDS`) or one a part of the expression
+    before assigns (`for (( i = 0; i < 3; i++ ))`), is a doubt, but for a
+    subscript of an array whose keys are strings (`commands`, `terminfo`, one a
+    file declares with `typeset -A`). A parameter declared to hold numbers
+    where no function makes it its own (`integer n`) is evaluated as it is
+    declared, which is a doubt too;
+  - a file the check would read that is not there now is a doubt where a file
+    it reads names it beyond the commands that source it and the tests that ask
+    about it (`cp ~/.src ~/.gen; . ~/.gen`), and so is any file it reads where
+    a command that runs before zsh reads it, at the top or in a function the
+    top runs, writes to a path whose last part is its name, or one an expansion
+    or a brace expansion may make its name (`>> ~/.zshrc.local`, `>> $log`,
+    `cp ~/.src ${f}en`). A program that writes a file it is not given the name
+    of it does not see;
   - an option counts as on wherever a file zsh reads names it, outside a line
     that is a comment: a `setopt`, an `unsetopt`, Home Manager's
     `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a comment
@@ -1466,41 +1521,44 @@ afterwards:
   read, when a `setopt` takes an expansion it cannot list, when an expansion
   makes the name of an option a file may set (`options[$o]=on`,
   `emulate zsh -o $o`, `read -A options`, a `typeset`, `print -v` or `set -A`
-  of a parameter whose name an expansion makes, and a `print -v` that holds
-  the name in its word or takes it after other flags, as `-v$name` and
+  of a parameter whose name an expansion makes, and a `print -v` that holds the
+  name in its word or takes it after other flags, as `-v$name` and
   `-rv $name`), when a parameter is set by a name another one holds
   (`${(P)name::=on}`) or that an expansion makes in a `zstyle -s`, `getopts`,
   `strftime -s` (`-s$name` too), `vared`, `zparseopts`, `zformat -f`, `getln`,
   `zpty -r`, `syswrite -c`, `syserror -e`, `zgetattr`, `zlistattr` or
   `zstat -A`, when a glob qualifier runs code as zsh expands a word
   (`*(e:'...':)`, `*(+func)`), when a function's body or an alias's value is
-  set in an array (`functions=(...)`, `aliases+=(...)`) or otherwise than by
-  an element as written (`aliases[h]+=...`, `${aliases[h]::=...}`,
+  set in an array (`functions=(...)`, `aliases+=(...)`) or otherwise than by an
+  element as written (`aliases[h]+=...`, `${aliases[h]::=...}`,
   `print -v 'aliases[h]'`, `read`, `set -A aliases`, a disabled one in
-  `dis_aliases`), when an expansion reads a parameter's value again
-  (`${(e)x}`, `${(%%)x}`, `${~x}`) or a file names `GLOB_SUBST`, when an
-  alias's value, a trap's code, a `sched`'s command or a `zstyle -e`'s string
-  holds an expansion, when an alias hands the words it is used with to a
-  command that reads them as code, options, names or paths (`alias so=setopt`,
-  and an alias for an `fc` with no `-A`, `-W` or `-P`, as `alias h='fc -l'`,
-  only when a file it reads uses its name, which hands that `fc` the words
-  after it, as `h -W` would, and so only where the check reads how the alias
-  is given), when a prompt holds code (`$(...)`, `${...}`) or is set in a form
-  it does not read (`print -v PS1`, `${PS1::=...}`, `read PS1`; `prompt`,
-  `SPROMPT` and `PROMPT_EOL_MARK` count as prompts too) and a file or the
-  command line may turn `PROMPT_SUBST` on, when a sourced file's path or a
-  `ZDOTDIR` does not resolve (as for `source <(tool init zsh)`) or zsh expands
-  it into others (a glob, `{a,b}`), when a function they autoload may be in a
-  directory added to `fpath` that does not resolve (as for NixOS's profiles,
+  `dis_aliases`), when an expansion reads a parameter's value again (`${(e)x}`,
+  `${(%%)x}`, `${~x}`) or a file names `GLOB_SUBST`, when an alias's value, a
+  trap's code, a `sched`'s command or a `zstyle -e`'s string holds an
+  expansion, when an alias hands the words it is used with to a command that
+  reads them as code, options, names or paths (`alias so=setopt`, and an alias
+  for an `fc` with no `-A`, `-W` or `-P`, as `alias h='fc -l'`, only when a
+  file it reads uses its name, which hands that `fc` the words after it, as
+  `h -W` would, and so only where the check reads how the alias is given), when
+  a prompt holds code (`$(...)`, `${...}`) or is set in a form it does not read
+  (`print -v PS1`, `${PS1::=...}`, `read PS1`; `prompt`, `SPROMPT` and
+  `PROMPT_EOL_MARK` count as prompts too) and a file or the command line may
+  turn `PROMPT_SUBST` on, when a sourced file's path or a `ZDOTDIR` does not
+  resolve (as for `source <(tool init zsh)`) or zsh expands it into others (a
+  glob, `{a,b}`), when a function they autoload may be in a directory added to
+  `fpath` that does not resolve (as for NixOS's profiles,
   `$p/share/zsh/site-functions`, where it cannot tell the profiles
   `NIX_PROFILES` names), when the dump file a `compinit -d` names does not
   resolve, when zsh may run compiled code in place of a file (the `.zwc` that
-  `zcompile` writes beside a file or for an `fpath` directory), when a
-  `source` names no file, when `ZDOTDIR` is set otherwise than by an
-  assignment (`: ${ZDOTDIR:=...}`), when a quote, an expansion or a
-  here-document runs to the end of the file without closing, when an expansion
-  holds what it cannot read as zsh does (a `case` in a `$(...)`, a
-  `${ command }`), or when the shell is not bash, zsh, fish or dash (dash
+  `zcompile` writes beside a file or for an `fpath` directory), when a `source`
+  names no file, when `ZDOTDIR` is set otherwise than by an assignment
+  (`: ${ZDOTDIR:=...}`), when a quote, an expansion or a here-document runs to
+  the end of the file without closing, when an expansion holds what it cannot
+  read as zsh does (a `case` in a `$(...)`, a `${ command }`), when a file sets
+  `MAILPATH` or `mailpath`, whose messages zsh expands before a prompt,
+  `NULLCMD` or `READNULLCMD`, which name the command zsh runs for a redirection
+  with none, or `module_path`, from which zsh may load a module whose code the
+  check cannot read, or when the shell is not bash, zsh, fish or dash (dash
   keeps no history file). It does not see a setting made by a plugin manager's
   function, one you typed into the shell, what zsh runs only as you complete a
   word (the completion functions `compinit` marks, with Tab, `^D` or a key
@@ -1513,72 +1571,76 @@ afterwards:
   trap's code, a `sched`'s command, a `zstyle -e`'s strings and a function's
   body set by its name (`functions[precmd]='...'`), and warns that it cannot
   tell what a command runs whose name an expansion makes (`$cmd`,
-  `${:-source}`). Beside reading zsh's files as code, it counts in their
-  lines, without reading the code and wherever they stand, the three options,
+  `${:-source}`). Beside reading zsh's files as code, it counts in their lines,
+  without reading the code and wherever they stand, the three options,
   `source`, a `.` with a word after it, `eval`, an alias that stands for `.`,
-  `autoload`, the `ZDOTDIR`, `fpath` and `NIX_PROFILES` settings, the arrays
-  of hook functions, the prompts, and the parameters that hold the aliases and
-  the functions' bodies (`aliases`, `galiases`, `saliases`, `functions`),
-  leaving out only a line that is a comment, and each in every form zsh may
-  read a word in: as written, with each backslash-newline joined, with quotes
-  and backslashes taken off and `$'...'` decoded, and in the words of the code
-  as it reads them, in which a line that starts with `#` inside a quote is
-  code. The names of `TTY`, of an `fc` alias and of `_compdir`, `HOME` and
-  `ZSH_VERSION` it counts the same way. What a line names beyond what it read
-  as code it follows makes it fail closed, in case it read the code otherwise
-  than zsh does: such an option counts as on, an `fpath` setting adds a
-  directory it cannot follow, a prompt holds code it cannot follow, and the
-  rest makes it warn that it cannot tell. So a `source` or `eval` anywhere but
-  in a command it follows, in an `echo`, a string, an alias or a
-  here-document, makes it warn, and so does an `eval` of what a command prints
-  (`eval "$(tool init zsh)"`).
+  `autoload`, the `ZDOTDIR`, `fpath` and `NIX_PROFILES` settings, the arrays of
+  hook functions, the prompts, and the parameters that hold the aliases and the
+  functions' bodies (`aliases`, `galiases`, `saliases`, `functions`), leaving
+  out only a line that is a comment, and each in every form zsh may read a word
+  in: as written, with each backslash-newline joined, with quotes and
+  backslashes taken off and `$'...'` decoded, and in the words of the code as
+  it reads them, in which a line that starts with `#` inside a quote is code.
+  The names of `TTY`, of an `fc` alias, of a global alias and of `_compdir`,
+  `HOME`, `ZSH_VERSION`, `ARGV0`, `MAILPATH`, `NULLCMD` and `module_path` it
+  counts the same way. What a line names beyond what it read as code it follows
+  makes it fail closed, in case it read the code otherwise than zsh does: such
+  an option counts as on, an `fpath` setting adds a directory it cannot follow,
+  a prompt holds code it cannot follow, and the rest makes it warn that it
+  cannot tell. So a `source` or `eval` anywhere but in a command it follows, in
+  an `echo`, a string, an alias or a here-document, makes it warn, and so does
+  an `eval` of what a command prints (`eval "$(tool init zsh)"`).
 
   So zsh passes only when no file it reads names the three options and nothing
   is left the check cannot tell: zsh's default, under which a zsh writes its
   history only as it exits, which the kill at activation keeps it from doing.
   Nearly every `.zshrc` autoloads `compinit`. The check follows it into zsh's
-  own directory when the shell you typed the command into is a zsh from the
-  Nix store; for any other zsh, and for one it reads because it found no shell
-  you typed into, it cannot tell where zsh finds `compinit`, so there a zsh
-  started as `zsh -f` is in practice the one that passes. If you turn the
-  options off in your `.zshrc`, the check still warns, as it cannot see that
-  the turn-off holds. The fix it gives is one it can see: type the decoy
-  commands in a zsh started as `zsh -f`, which reads no startup file but
-  `/etc/zshenv` (and on NixOS `/etc/zshenv.local`), so the check reads only
-  those, and passes when they name none of the options and hold nothing it
-  cannot follow. When they name one, or hold what the check cannot follow, the
-  warning for such a zsh tells you to take that out of them and of what they
-  source. On NixOS, `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by
-  default. Take it out of `programs.zsh.setOptions` and rebuild: then the zsh
-  you type the command into passes with the files `programs.zsh` generates by
-  default, when your own files hold nothing the check warns about. An option
-  that adds lines to them (`enableBashCompletion`, `autosuggestions`,
-  `syntaxHighlighting`) can make it warn again. The check knows the lines
-  NixOS generates there as they are written: in `/etc/zshrc` the `eval` of
-  what coreutils' `dircolors` prints, which sets `LS_COLORS` alone, when the
-  store path it names holds coreutils' program (its `bin/dircolors` links to
-  the `coreutils` program beside it, which holds what GNU dircolors prints;
-  another `eval`, that line written otherwise or inside a structure, or
-  another program is read as before) and nothing that runs before it may
-  change what it runs: no file read before it (your `.zshenv`,
-  `programs.zsh.shellInit` and `interactiveShellInit`), and no function
-  autoloaded and run before it, defines an alias of any kind, a function named
-  `eval`, `export` or like its program, a `TRAP...` function (a DEBUG trap
-  prints into the line's command substitution) or one whose name an expansion
-  makes, or names `trap` or `disable`, or sets a variable of the dynamic
-  loader (`LD_...`); what comes after it, NixOS's aliases among it, does not
-  count. It knows too, in `/etc/zshenv`, the loop that puts three directories
-  of each Nix profile in front of `fpath`, which it reads for the profiles
-  that `NIX_PROFILES` names in the shell's environment and in the
-  `set-environment` that `/etc/zshenv` sources, each a path of letters, digits
-  and `/._+@-` that spaces part. A loop with anything else in it, a profile
-  written otherwise, a `NIX_PROFILES`, `ZSH_VERSION`, `HOME`, `USER` or
-  `XDG_STATE_HOME` a file sets, or a shell whose environment it cannot read
-  leaves those directories ones it cannot follow. `compinit` and `promptinit`
-  it then finds in zsh's own directory and in the profiles, and `prompt suse`
-  runs `prompt_suse_setup`. Home Manager's `programs.zsh` names the options in
-  `.zshrc` whether it turns them on or off (`history.share`), so with it
-  `zsh -f` is the fix the check can see.
+  own directory when the shell you typed the command into is a zsh from the Nix
+  store; for any other zsh, and for one it reads because it found no shell you
+  typed into, it cannot tell where zsh finds `compinit`, so there a zsh started
+  as `zsh -f` is in practice the one that passes. If you turn the options off
+  in your `.zshrc`, the check still warns, as it cannot see that the turn-off
+  holds. The fix it gives is one it can see: type the decoy commands in a zsh
+  started as `zsh -f`, which reads no startup file but `/etc/zshenv` (and on
+  NixOS `/etc/zshenv.local`), so the check reads only those, and passes when
+  they name none of the options and hold nothing it cannot follow. When they
+  name one, or hold what the check cannot follow, the warning for such a zsh
+  tells you to take that out of them and of what they source. On NixOS,
+  `programs.zsh` sets `SHARE_HISTORY` in `/etc/zshrc` by default. Take it out
+  of `programs.zsh.setOptions` and rebuild: then the zsh you type the command
+  into passes with the files `programs.zsh` generates by default, when your own
+  files hold nothing the check warns about. An option that adds lines to them
+  (`enableBashCompletion`, `autosuggestions`, `syntaxHighlighting`) can make it
+  warn again. The check knows the lines NixOS generates there as they are
+  written: in `/etc/zshrc` the `eval` of what coreutils' `dircolors` prints,
+  which then sets `LS_COLORS` alone, when the store path it names holds
+  coreutils' program (its `bin/dircolors` links to the `coreutils` program
+  beside it, which holds what GNU dircolors prints; another `eval`, that line
+  written otherwise or inside a structure, or another program is read as
+  before) and nothing that runs before it may change what it runs: no file read
+  before it (your `.zshenv`, `programs.zsh.shellInit` and
+  `interactiveShellInit`), and no function autoloaded and run before it,
+  defines an alias of any kind, a function named `eval`, `export` or like its
+  program, a `TRAP...` function (a DEBUG trap prints into the line's command
+  substitution) or one whose name zsh may expand into another (by any of a
+  definition's names, `function x NAME`, and `$n`, braces, a glob or `=cmd`),
+  or names `trap` or `disable`, or sets a variable of the dynamic loader
+  (`LD_...`) or `ARGV0`, the name zsh gives every program it runs, which picks
+  the program a multi-call coreutils runs; and the shell's environment, which
+  the check must know, holds no `ARGV0` and no variable of the dynamic loader.
+  What comes after the line, NixOS's aliases among it, does not count. It knows
+  too, in `/etc/zshenv`, the loop that puts three directories of each Nix
+  profile in front of `fpath`, which it reads for the profiles that
+  `NIX_PROFILES` names in the shell's environment and in the `set-environment`
+  that `/etc/zshenv` sources, each a path of letters, digits and `/._+@-` that
+  spaces part. A loop with anything else in it, a profile written otherwise, a
+  `NIX_PROFILES`, `ZSH_VERSION`, `HOME`, `USER` or `XDG_STATE_HOME` a file
+  sets, or a shell whose environment it cannot read leaves those directories
+  ones it cannot follow. `compinit` and `promptinit` it then finds in zsh's own
+  directory and in the profiles, and `prompt suse` runs `prompt_suse_setup`.
+  Home Manager's `programs.zsh` names the options in `.zshrc` whether it turns
+  them on or off (`history.share`), so with it `zsh -f` is the fix the check
+  can see.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history

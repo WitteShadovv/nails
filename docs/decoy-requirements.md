@@ -569,9 +569,13 @@ history yourself so an interactive shell has nowhere to write:
   `compinit` and `promptinit` into zsh's own directory and the Nix profiles.
   An option that adds lines to those files (`enableBashCompletion`,
   `autosuggestions`, `syntaxHighlighting`) can make it warn again, and so can
-  an alias, a `TRAP...` function or a `trap` in your `.zshenv` or in
+  an alias, a `TRAP...` function, a `trap` or `ARGV0` in your `.zshenv` or in
   `programs.zsh.shellInit` or `interactiveShellInit`, which run before the
-  line of `/etc/zshrc` that runs `dircolors` and may change what it runs. It
+  line of `/etc/zshrc` that runs `dircolors` and may change what it runs, an
+  `ARGV0` or a variable of the dynamic loader (`LD_...`) in the environment you
+  start the shell from, arithmetic in your files that names a parameter that
+  holds no number (`(( i++ ))` before `i` is set in it), a global alias your
+  files use, and a file your startup files write before zsh reads it. It
   follows `compinit` for a `.zshrc` that autoloads it too, when that zsh is
   one from the Nix store. For any other zsh, and when the check finds no shell
   you typed into, it cannot tell where zsh finds `compinit`, and `zsh -f` is
