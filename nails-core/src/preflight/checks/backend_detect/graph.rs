@@ -1,22 +1,26 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The devices under the hidden root, read walk by walk, and where the check
-//! goes on below each.
+//! The devices under a filesystem, read walk by walk, and where a check goes
+//! on below each: the stack the backend checks judge the hidden root by.
 //!
 //! One walk ([`blockdev::walk()`]) follows `slaves/`, a loop device over a
-//! block node, and a loop device over a file by the file's path. The graph
-//! goes further where the walk stops short of where the data lies:
+//! block node, and, as far as the graph's [`LoopFollow`] lets it, a loop
+//! device over a file by the file's path. The graph goes further where the
+//! walk stops short of where the data lies:
 //!
 //! - every device of a btrfs or bcachefs filesystem, not only the one the
 //!   mount names;
 //! - from a partition into its disk, where that disk keeps its data elsewhere
 //!   (a loop or device-mapper device, a disk built on others such as an md
 //!   array, a disk whose storage sysfs does not show);
-//! - from a loop device over a file into every device of the filesystem the
-//!   loop driver records for the file. Its path counts only where the record
-//!   cannot be read, and a path that leads to another filesystem than the
-//!   record ends the way in doubt.
+//! - with [`LoopFollow::BackingFiles`], from a loop device over a file into
+//!   every device of the filesystem the loop driver records for the file. Its
+//!   path counts only where the record cannot be read, and a path that leads
+//!   to another filesystem than the record ends the way in doubt. With
+//!   [`LoopFollow::BlockDevices`] the way ends at a loop device over a file:
+//!   the file's filesystem holds the hidden root's data, but none of its own
+//!   storage is the hidden root's.
 
 use crate::Filesystem;
 use crate::blockdev::{self, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
@@ -27,12 +31,14 @@ use crate::hidden_root::separation::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The most devices the check reads in all its walks together.
+/// The most devices a graph reads in all its walks together.
 pub(super) const MAX_DEVICES: usize = 4 * MAX_STACK_DEVICES;
 
 /// The devices read, and where the check goes on from each.
 #[derive(Debug, Default)]
 pub(super) struct Graph {
+    /// How far the walks go below a loop device.
+    follow: LoopFollow,
     /// Every device read, by the name of its sysfs directory, as `slaves/`
     /// and the decoy's claims name it.
     pub(super) layers: BTreeMap<String, Layer>,
@@ -48,22 +54,27 @@ pub(super) struct Graph {
 
 impl Graph {
     /// Read the devices below `roots`, the sysfs directories of the devices
-    /// of the hidden root's filesystem. `recorded` holds the loop driver's
-    /// record of each loop device's file, as the attach gate read it.
+    /// of a filesystem, going below a loop device as far as `follow` lets
+    /// the walks go. `recorded` holds the loop driver's record of each loop
+    /// device's file, as the attach gate read it.
     pub(super) fn read<F: Filesystem>(
         fs: &F,
         mounts: &[MountEntry],
         recorded: &DeviceMap,
         roots: &[PathBuf],
+        follow: LoopFollow,
     ) -> Self {
-        let mut graph = Self::default();
+        let mut graph = Self {
+            follow,
+            ..Self::default()
+        };
         let mut pending = roots.to_vec();
         while let Some(dir) = pending.pop() {
             let dir = fs.canonicalize(&dir).unwrap_or(dir);
             if graph.layers.len() >= MAX_DEVICES || graph.layers.contains_key(&dir_name(&dir)) {
                 continue;
             }
-            let walk = blockdev::walk(fs, &dir, LoopFollow::BackingFiles, MAX_STACK_DEVICES);
+            let walk = blockdev::walk(fs, &dir, follow, MAX_STACK_DEVICES);
             graph.unplaced.extend(walk.unplaced_loops);
             for layer in walk.layers {
                 let name = key(&layer);
@@ -96,7 +107,7 @@ impl Graph {
             return self.partition_disk(fs, name, layer);
         }
         match layer.loop_device.as_ref().map(|bound| &bound.backing) {
-            Some(LoopBacking::File(file)) => {
+            Some(LoopBacking::File(file)) if self.follow >= LoopFollow::BackingFiles => {
                 self.file_devices(fs, mounts, recorded, name, layer, file)
             }
             _ => Vec::new(),
@@ -229,7 +240,7 @@ pub(super) fn widen_claims<F: Filesystem>(
         else {
             continue;
         };
-        for below in Graph::read(fs, mounts, recorded, &[disk])
+        for below in Graph::read(fs, mounts, recorded, &[disk], LoopFollow::BackingFiles)
             .layers
             .into_keys()
         {

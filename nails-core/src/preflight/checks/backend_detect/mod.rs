@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 mod argon2;
 mod encryption;
+mod graph;
 mod hazards;
 mod luks2;
 pub use argon2::{
@@ -425,3 +426,5 @@ fn describe(fstype: &str, layers: &[Layer]) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_host;
