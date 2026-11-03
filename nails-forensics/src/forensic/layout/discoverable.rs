@@ -14,15 +14,15 @@
 //! volume; it uses the first partition of the swap type as swap, unless an
 //! fstab line names a swap; it mounts the first extended boot loader
 //! partition at `/boot` and the first EFI system partition at `/boot` or
-//! `/efi` on first access, when no fstab line mounts anything at or below
-//! those folders and the folder is empty or missing, on a UEFI boot only
-//! when the boot loader says it started from that disk; and at boot, when
-//! the kernel command line names no root, it takes a root partition of the
-//! machine's architecture from the disk of the EFI system partition the boot
-//! loader started from. The no-auto attribute flag ([`NO_AUTO`]) keeps
-//! it from using a partition of any of these types but the EFI system
-//! partition, and a partition it leaves alone for the flag is not the first
-//! of its type.
+//! `/efi` on first access, when no fstab line mounts that folder (from
+//! systemd 256 on, no line mounts anything at or below either folder) and
+//! the folder is empty or missing, on a UEFI boot only when the boot loader
+//! says it started from that disk; and at boot, when the kernel command line
+//! names no root, it takes a root partition of the machine's architecture
+//! from the disk of the EFI system partition the boot loader started from.
+//! The no-auto attribute flag ([`NO_AUTO`]) keeps it from using a partition
+//! of any of these types but the EFI system partition, and a partition it
+//! leaves alone for the flag is not the first of its type.
 
 use serde::Serialize;
 

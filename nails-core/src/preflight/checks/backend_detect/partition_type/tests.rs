@@ -217,16 +217,17 @@ fn the_boot_and_root_types_only_warn() {
             ESP,
             "an EFI system partition",
             "mounts the first EFI system partition of that disk at /boot or /efi when no fstab \
-             line mounts anything at or below either and one of them is empty or missing, on a \
-             UEFI boot only when the boot loader says it started from that disk, on a BIOS boot \
-             without that condition",
+             line mounts that folder (from systemd 256 on, anything at or below either) and it \
+             is empty or missing, on a UEFI boot only when the boot loader says it started from \
+             that disk, on a BIOS boot without that condition",
         ),
         (
             XBOOTLDR,
             "an extended boot loader partition",
             "mounts the first extended boot loader partition of that disk at /boot when no \
-             fstab line mounts anything at or below /boot or /efi and /boot is empty or missing, \
-             on a UEFI boot only when the boot loader says it started from that disk",
+             fstab line mounts /boot (from systemd 256 on, anything at or below /boot or /efi) \
+             and /boot is empty or missing, on a UEFI boot only when the boot loader says it \
+             started from that disk",
         ),
         (
             ROOT_X86_64,
