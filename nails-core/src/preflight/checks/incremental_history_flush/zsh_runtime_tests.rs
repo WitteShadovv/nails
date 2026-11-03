@@ -22,7 +22,7 @@ fn an_fc_that_writes_the_history_file_counts_as_a_write() {
         ("periodic() { \\fc -P }\n", "fc -P"),
         ("eval 'precmd() { fc -AI }'\n", "fc -AI"),
         (
-            "if true; then precmd() { 'fc' -AI ~/.zsh_history; }; fi\n",
+            "if true; then precmd() { 'fc' -AI ~/.zsh_lines; }; fi\n",
             "fc -AI",
         ),
     ] {
@@ -165,4 +165,115 @@ fn a_glob_qualifier_that_runs_code_is_a_doubt() {
         seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{line}");
     }
+}
+
+#[test]
+fn emulate_r_ksh_turns_share_history_on() {
+    // zsh 5.9.1: `-R` resets every option to the mode's defaults, and ksh's
+    // hold SHARE_HISTORY; sh's, csh's and zsh's hold none of the three, and a
+    // plain `emulate ksh` changes no history option.
+    let turned = "/home/alice/.zshrc runs `emulate -R ksh`, whose reset to ksh's defaults turns \
+                  on SHARE_HISTORY";
+    for rc in [
+        "emulate -R ksh\n",
+        "emulate -LR ksh\n",
+        "emulate -R -L ksh\n",
+        "emulate -R ksh -c :\n",
+        "f() { emulate -LR ksh }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(on(&fs, UNKNOWN), [turned], "{rc}");
+    }
+    for rc in [
+        "emulate ksh\n",
+        "emulate -R sh\n",
+        "emulate -R csh\n",
+        "emulate -LR zsh\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+    // One whose mode an expansion makes is a doubt.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "emulate -R $mode\n");
+    assert_eq!(
+        scan(&fs, UNKNOWN).doubts,
+        ["it cannot tell what `emulate $mode` in /home/alice/.zshrc turns on"]
+    );
+}
+
+#[test]
+fn a_hook_that_writes_the_line_itself_counts_as_a_write() {
+    // zsh 5.9.1 writes each command line to ~/.zsh_history from the first
+    // two, with no fc and none of the three options.
+    let redirects = |target: &str| format!("/home/alice/.zshrc redirects output to `{target}`");
+    for (rc, what) in [
+        (
+            "preexec() { print -r -- \"$1\" >> ~/.zsh_history }\n",
+            redirects("~/.zsh_history"),
+        ),
+        (
+            "zshaddhistory() { print -r -- ${1%%$'\\n'} >>| ~/.zsh_history }\n",
+            redirects("~/.zsh_history"),
+        ),
+        (
+            "h() { print -r -- $1 >> $HISTFILE }\nadd-zsh-hook preexec h\n",
+            redirects("$HISTFILE"),
+        ),
+        (
+            "print -r -- x >> ${HISTFILE:-~/.zsh_history}\n",
+            redirects("${HISTFILE:-~/.zsh_history}"),
+        ),
+        (
+            "TRAPDEBUG() { print -r -- $ZSH_DEBUG_CMD >> ~/.histfile }\n",
+            redirects("~/.histfile"),
+        ),
+        (
+            "preexec() { print -r -- $1 | tee -a ~/.zsh_history }\n",
+            "/home/alice/.zshrc names `~/.zsh_history` in `preexec`".to_string(),
+        ),
+        (
+            "log() { print -r -- $1 | tee -a ~/.zsh_history }\npreexec_functions+=(log)\n",
+            "/home/alice/.zshrc names `~/.zsh_history` in `log`".to_string(),
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(
+            on(&fs, UNKNOWN).contains(&what),
+            "{rc}: {:?}",
+            scan(&fs, UNKNOWN)
+        );
+    }
+    // A target an expansion makes, in a hook, is a doubt.
+    let elsewhere = |function: &str, target: &str| {
+        format!(
+            "it cannot tell where the output that `{function}` in /home/alice/.zshrc redirects \
+             to `{target}` goes, which may be the history file"
+        )
+    };
+    for (rc, doubt) in [
+        (
+            "preexec() { print -r -- $1 >> $log }\n",
+            elsewhere("preexec", "$log"),
+        ),
+        (
+            "w() { print -r -- $BUFFER >> \"$file\" }\nzle -N accept-line w\n",
+            elsewhere("w", "$file"),
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN).doubts, [doubt], "{rc}");
+    }
+    // Outside a hook, to another file, or read, it is neither.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "f() { print x >> $log }\nprint x >> ~/.cache/log\ncat < ~/.zsh_history\n",
+    );
+    assert_eq!(scan(&fs, UNKNOWN), Scan::default());
 }

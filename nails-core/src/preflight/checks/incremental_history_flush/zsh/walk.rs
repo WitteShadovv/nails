@@ -17,6 +17,21 @@ use std::collections::BTreeMap;
 mod command;
 mod strings;
 
+/// The functions zsh runs as hooks by their name, as commands are entered or
+/// end (`preexec`, `precmd`), as a line goes into the history
+/// (`zshaddhistory`), or as the directory changes, time passes or the shell
+/// ends. A `TRAP...` function is run as its signal comes, `TRAPDEBUG` before
+/// each command.
+pub(super) const HOOKS: &[&str] = &[
+    "precmd",
+    "preexec",
+    "zshaddhistory",
+    "chpwd",
+    "periodic",
+    "zshexit",
+    "zsh_directory_name",
+];
+
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the
 /// name turns it on (`false` for its `no` form); `None` for any other word.
 pub(super) fn option(word: &str) -> Option<(usize, bool)> {
@@ -80,6 +95,22 @@ pub(super) enum Event {
     /// A prompt that holds code zsh runs as it shows it when
     /// `PROMPT_SUBST` is on: the doubt it is then.
     Prompt(String),
+    /// An option is turned on without being named, by what `what` says
+    /// (`... runs \`emulate -R ksh\`, which turns on`).
+    Turns { option: usize, what: String },
+    /// Output is redirected to `target`, as written, in the function
+    /// `function` when in one; `computed` when an expansion makes it.
+    Redirect {
+        target: String,
+        function: Option<String>,
+        computed: bool,
+    },
+    /// A word in the function `function` names the history file, as a
+    /// command that writes it by its name may (`tee -a ~/.zsh_history`).
+    Names { word: String, function: String },
+    /// The function `name` is made a hook, which zsh runs as each command
+    /// is entered or ends (`add-zsh-hook precmd name`, `zle -N name`).
+    Hook(String),
 }
 
 /// How a loop's body ends.
@@ -125,6 +156,8 @@ impl Frame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Open {
     frame: Frame,
+    /// The name of the function whose body it is, for a function's.
+    name: Option<String>,
     /// Whether the frame itself certainly runs where it stands: not after
     /// `&&` or `||` and not in a pipeline. One followed by `&` or `|` turns
     /// out not to when it closes.
@@ -155,6 +188,8 @@ struct Pending {
     function_next: bool,
     /// It is a function's whole body, which does not run where it stands.
     body: bool,
+    /// The name of the function whose body comes next.
+    function_name: Option<String>,
 }
 
 /// The walk over one file's tokens, which finds its [`Event`]s.
@@ -204,7 +239,13 @@ impl Walker<'_> {
     /// (`head`) or not.
     fn open(&mut self, frame: Frame, head: bool) {
         let pattern = frame == Frame::Case;
+        let name = if frame == Frame::Function {
+            self.pending.function_name.take()
+        } else {
+            None
+        };
         self.frames.push(Open {
+            name,
             frame,
             certain: !self.pending.after_condition && !self.pending.piped,
             start: self.events.len(),
@@ -223,13 +264,13 @@ impl Walker<'_> {
         let mut ahead = self.tokens.clone();
         loop {
             match ahead.next() {
-                Some(Token::Redirect) => {
+                Some(Token::Redirect { .. }) => {
                     ahead.next_if(|token| matches!(token, Token::Word(_)));
                 }
                 // The number of the descriptor a redirection takes (`2>&1`).
                 Some(Token::Word(word))
                     if word.text.chars().all(|c| c.is_ascii_digit())
-                        && ahead.peek() == Some(&Token::Redirect) => {}
+                        && matches!(ahead.peek(), Some(Token::Redirect { .. })) => {}
                 Some(Token::Word(word))
                     if matches!(
                         word.text.as_str(),
@@ -423,7 +464,24 @@ impl Walker<'_> {
         let after = self.pending.after_condition || self.pending.body;
         let piped = self.pending.piped || piped_after;
         self.command(words, after, piped);
-        self.pending.body = false;
+        if std::mem::take(&mut self.pending.body) {
+            self.pending.function_name = None;
+        }
+    }
+
+    /// The name of the function whose body the walk is in, when it is in
+    /// one with a name.
+    fn function(&self) -> Option<String> {
+        if self.pending.body
+            && let Some(name) = &self.pending.function_name
+        {
+            return Some(name.clone());
+        }
+        self.frames
+            .iter()
+            .rev()
+            .find(|open| open.frame == Frame::Function)
+            .and_then(|open| open.name.clone())
     }
 
     /// Close the innermost frame with a `}`: a group, a function's body, a
@@ -536,6 +594,7 @@ impl Walker<'_> {
             "function" => {
                 if let Some(Token::Word(name)) = self.tokens.next() {
                     self.mention(&name.text);
+                    self.pending.function_name = Some(name.text);
                 }
                 if self.tokens.next_if_eq(&Token::Open).is_some() {
                     self.tokens.next_if_eq(&Token::Close);
@@ -561,6 +620,21 @@ impl Walker<'_> {
             Some(name) => (name.to_string(), true),
             None => (name, false),
         };
+        // The functions zsh runs as hooks (`precmd_functions+=(name)`).
+        if let Some(hook) = name.strip_suffix("_functions")
+            && HOOKS.contains(&hook)
+        {
+            for item in &items {
+                if item.expands {
+                    self.events.push(Event::Doubt(format!(
+                        "it cannot tell which function `{}` in {} makes a hook",
+                        item.text, self.place
+                    )));
+                } else {
+                    self.events.push(Event::Hook(item.text.clone()));
+                }
+            }
+        }
         if name == "options"
             && let Some(item) = items.iter().find(|item| item.expands)
         {
@@ -616,7 +690,7 @@ impl Walker<'_> {
                     self.mention(&item.text);
                 }
             }
-            Token::Open | Token::End(_) | Token::Redirect => {}
+            Token::Open | Token::End(_) | Token::Redirect { .. } => {}
         }
     }
 
@@ -650,6 +724,7 @@ impl Walker<'_> {
             self.tokens.next();
             if let Some(name) = self.pending.words.pop() {
                 self.mention(&name.text);
+                self.pending.function_name = Some(name.text);
             }
             self.pending.function_next = true;
             return;
@@ -668,7 +743,7 @@ impl Walker<'_> {
             match token {
                 Token::Word(word) => self.word(word),
                 Token::Array(name, items) => self.array(name, items),
-                Token::Redirect => {
+                Token::Redirect { writes } => {
                     // The redirection's target is no word of the command, but
                     // what a here-string or a file name says still counts.
                     if let Some(Token::Word(target)) =
@@ -676,6 +751,13 @@ impl Walker<'_> {
                     {
                         self.mention_options(&target.text);
                         self.qualifier(&target.text);
+                        if writes {
+                            self.events.push(Event::Redirect {
+                                computed: target.expands || target.text.contains(['$', '`']),
+                                function: self.function(),
+                                target: target.text,
+                            });
+                        }
                     }
                 }
                 Token::Text(text) => self.mention_options(&text),
