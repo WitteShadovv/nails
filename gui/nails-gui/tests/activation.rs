@@ -23,9 +23,11 @@ fn answered(kind: Kind, envelope: Value) -> Update {
     Update::Answered(kind, Answer { exit: 0, envelope })
 }
 
-/// A decoy whose check gave `checks`, `failed` of them failed.
+/// A decoy whose check gave `checks`, `failed` of them failed, in a window
+/// tall enough for all its rows, however long the fonts at hand make them.
 fn decoy(checks: Value, failed: usize) -> Screen {
     let screen = Screen::new(false);
+    screen.tall();
     screen.update(Update::Connected(ours()));
     screen.update(answered(
         Kind::Status,
@@ -375,9 +377,11 @@ fn the_question_opens_with_the_advisories_of_the_plan() {
     assert_eq!(screen.focused(), "Cancel", "the focus starts on Cancel");
 }
 
-/// A decoy whose check gave the envelope recorded as `name`.
+/// A decoy whose check gave the envelope recorded as `name`, in a window
+/// tall enough for all its rows, however long the fonts at hand make them.
 fn decoy_recorded(name: &str) -> Screen {
     let screen = Screen::new(false);
+    screen.tall();
     screen.update(Update::Connected(ours()));
     screen.update(answered(Kind::Status, support::fixture("status-decoy")));
     screen.update(Update::Running(Kind::Check));
