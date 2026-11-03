@@ -231,6 +231,10 @@ The `residue-catalog` pre-flight check adds the channels the catalog probes by
 path: a populated LVM metadata archive, udisks2 state, and the session-time
 stamps described below. It warns or notes them and never blocks.
 
+The `decoy-nix-trace` check warns when a decoy that is not NixOS holds what a
+Nix install leaves behind, and never blocks either (see
+[Nix on the decoy](#nix-on-the-decoy)).
+
 ## Package updates
 
 Update the system on the decoy. Hidden sessions run the decoy's programs and
@@ -469,6 +473,8 @@ logind.
 - Keep `nftables` installed, and `iw` on a machine with Wi-Fi
   (`apt install nftables iw`), so the way back can delete the firewall tables
   and Wi-Fi interfaces a session adds (`network-tools`).
+- Install Nix inside a hidden session, not on the decoy (`decoy-nix-trace`;
+  see [Nix on the decoy](#nix-on-the-decoy)).
 
 ### Debian
 
@@ -495,6 +501,8 @@ logind.
 - `nftables`, and `iw` on a machine with Wi-Fi (`apt install nftables iw`), so
   the way back can delete the firewall tables and Wi-Fi interfaces a session
   adds (`network-tools`).
+- Nix, if you use it, installed inside a hidden session, not on the decoy
+  (`decoy-nix-trace`; see [Nix on the decoy](#nix-on-the-decoy)).
 
 ## The sudo-log exposure and its mitigation
 
@@ -978,6 +986,65 @@ the volume locked until then:
 The check cannot see a run that already happened. A database written while the
 volume was mounted lists the volume's files until updatedb runs again with the
 volume locked.
+
+## Nix on the decoy
+
+On every distribution but NixOS, install Nix inside a hidden session, never on
+the decoy. Inside a session everything the installer and Nix write lands on the
+hidden volume: the store under `/nix`, the installer's files in `/etc`, the
+build users in the session's copy of `/etc/passwd`. A Nix installed on the
+decoy writes to the decoy disk instead, and so does everything it installs or
+builds there: each store path is named after its package and recorded in the
+store's database, and the installer adds a daemon, build users and shell hooks
+to the decoy's own files. On NixOS, Nix is the system's package manager, and
+none of this applies.
+
+The `decoy-nix-trace` check warns when a decoy that is not NixOS holds what a
+Nix install leaves behind. It looks for:
+
+- `/nix`, whatever it is: a directory, even an empty one, a file, or a link,
+  even one to nothing;
+- `nix-daemon.service` and `nix-daemon.socket` in `/etc/systemd/system`,
+  `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system` and
+  `/lib/systemd/system`, a link to one in a `.wants`, `.requires` or
+  `.upholds` directory of `/etc/systemd/system`, a drop-in directory for one
+  there, and `/etc/tmpfiles.d/nix-daemon.conf`;
+- `/etc/nix`, and a `nix` command in `/usr/bin` or `/usr/local/bin`, where a
+  distribution's package puts it;
+- the `nixbld` group in `/etc/group`, and the build users in `/etc/passwd`:
+  `nixbld` or `_nixbld` followed by a number, and any user whose group is
+  `nixbld`;
+- the shell hooks: `/etc/profile.d/nix.sh` and `nix-daemon.sh`,
+  `/etc/fish/conf.d/nix.fish`, a line naming `/nix/var/nix/profiles/` in
+  `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/zshrc` or `/etc/zsh/zshrc`, and the
+  copy the installer keeps of each of these files and of
+  `/etc/profile.d/nix.sh`, with `.backup-before-nix` added to its name;
+- `.nix-profile`, `.nix-defexpr`, `.nix-channels`, `.local/state/nix`,
+  `.cache/nix` and `.config/nix` in `/root` and in each home `/etc/passwd`
+  names, unless the home lies on the hidden volume.
+
+It names each one it finds and never refuses, since the decoy may need Nix for
+itself. Where it cannot look up a path or read a file, the warning says so, so
+a decoy it could not see never passes: run `check` with sudo. On NixOS it
+passes. Inside a hidden session it is skipped, because `/` shows the session's
+own files there, its own Nix among them.
+
+The check writes nothing. It opens each file it reads with `O_NOATIME`, so run
+as root it changes none of their access times (an unprivileged `nails check`
+cannot ask for that, and the links a lookup follows still get theirs), and it
+reads no file that a link leads onto the hidden volume.
+
+When it warns, use the decoy's Nix only for what the decoy itself needs, and
+install the hidden session's software inside a hidden session. If the decoy
+does not need Nix, remove it and the traces the check lists long before the
+next session, as the uninstall steps of the installer you used describe. What
+Nix wrote to the decoy disk while it was there can stay readable after it is
+removed, in the filesystem's journal and in unallocated blocks, as any deleted
+file can.
+
+The check reads neither the store's database nor what the store holds, and it
+does not look for a Nix installed anywhere else, such as a store at another
+path or a `nix` binary in a user's own directories.
 
 ## Session-time records
 
