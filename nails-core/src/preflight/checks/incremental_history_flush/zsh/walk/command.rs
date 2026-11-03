@@ -9,9 +9,9 @@
 //! other word names.
 
 use super::super::OH_MY_ZSH;
-use super::super::backstop::{FC_WRITES, is_fc_flag, zdotdir_writes};
+use super::super::backstop::{self, FC_WRITES, is_fc_flag, qualifier_code, zdotdir_writes};
 use super::super::lexer::{Word, is_name};
-use super::{Event, Frame, Walker, mentioned, option, walk_text};
+use super::{Event, Frame, Walker, mentioned, walk_text};
 
 /// The precommand words that run the word after them as the command.
 const PRECOMMANDS: &[&str] = &[
@@ -68,6 +68,33 @@ fn holds_fpath(text: &str) -> bool {
         after.starts_with('[') && after.ends_with(']') && !after[1..after.len() - 1].contains(']');
     matches!(name, "fpath" | "FPATH")
         && (after.is_empty() || subscript || (braced && after.starts_with(":#")))
+}
+
+/// Whether `text`, a word of zsh code, may set an option by a name the check
+/// cannot read: the `options` parameter as a whole, which a `read -A`, a
+/// `set -A` or a `zparseopts` can fill, or an element of it whose key an
+/// expansion makes (`options[$o]`, `options[${o}y]`).
+fn computed_options(text: &str) -> bool {
+    if text == "options" {
+        return true;
+    }
+    text.match_indices("options[").any(|(at, found)| {
+        let before = text[..at].chars().next_back();
+        let key = &text[at + found.len()..];
+        let key = key.split(']').next().unwrap_or(key);
+        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') && key.contains(['$', '`'])
+    })
+}
+
+/// Whether `text`, a word after `typeset` or the like, `print -v`, `printf -v`
+/// or `read`, names the parameter it sets by an expansion (`"$name=on"`,
+/// `${prefix}x`), which may be one of the `options` parameter.
+fn computed_target(text: &str) -> bool {
+    !text.starts_with(['-', '+'])
+        && text
+            .split_once('=')
+            .map_or(text, |(target, _)| target)
+            .contains(['$', '`'])
 }
 
 /// Whether `args`, the words after `functions`, `typeset` or the like
@@ -193,6 +220,70 @@ impl Walker<'_> {
         self.events.extend(names.into_iter().map(Event::Autoload));
     }
 
+    /// The events of zsh code `text` that a command of the file runs, read as
+    /// the file's own: an `eval`'s words, an `emulate -c`'s code. What it
+    /// sets counts as unconditional only when the command is and the walk
+    /// followed the code's structure.
+    pub(super) fn nested(&mut self, text: &str, unconditional: bool) {
+        let nested = walk_text(text, self.place);
+        self.sources += nested.sources;
+        self.evals += nested.evals;
+        self.zdotdirs += nested.zdotdirs;
+        self.autoloads += nested.autoloads;
+        self.fpaths += nested.fpaths;
+        self.fcs += nested.fcs;
+        self.may_stop |= nested.may_stop;
+        let uncertain = !unconditional || nested.confused;
+        for mut event in nested.events {
+            if uncertain
+                && let Event::Set { unconditional, .. }
+                | Event::Source { unconditional, .. }
+                | Event::Assign { unconditional, .. } = &mut event
+            {
+                *unconditional = false;
+            }
+            self.events.push(event);
+        }
+    }
+
+    /// The events of an `emulate` of `args`: the options its `-o` and `+o`
+    /// set, and the code its `-c` runs. An expansion among its words, which
+    /// may be such an option or code, is a doubt.
+    pub(super) fn emulate(&mut self, args: &[Word], unconditional: bool) {
+        let place = self.place;
+        let doubt = |what: &str| {
+            Event::Doubt(format!(
+                "it cannot tell what `emulate {what}` in {place} turns on"
+            ))
+        };
+        let mut args = args.iter();
+        while let Some(arg) = args.next() {
+            if arg.expands {
+                self.events.push(doubt(&arg.text));
+                continue;
+            }
+            match arg.text.as_str() {
+                "-o" | "+o" => match args.next() {
+                    Some(name) if name.expands => {
+                        let what = format!("{} {}", arg.text, name.text);
+                        self.events.push(doubt(&what));
+                    }
+                    Some(name) => self.set(&name.text, arg.text == "-o", unconditional),
+                    None => {}
+                },
+                "-c" => match args.next() {
+                    Some(code) if code.expands => {
+                        let what = format!("-c {}", code.text);
+                        self.events.push(doubt(&what));
+                    }
+                    Some(code) => self.nested(&code.text, unconditional),
+                    None => {}
+                },
+                _ => self.mention(&arg.text),
+            }
+        }
+    }
+
     /// The events of an `fc` of `args`. One that writes the history file, by
     /// a flag ([`FC_WRITES`]: `fc -AI`, `fc -W`), does so whenever it runs,
     /// as it does after every command from a hook (`precmd`, `preexec`,
@@ -224,10 +315,11 @@ impl Walker<'_> {
         }
     }
 
-    /// The event of a `setopt`-like command turning the option `word` names
-    /// on (`on`), or of none when it names another.
+    /// The events of a `setopt`-like command turning the options `word`
+    /// names on (`on`), as brace expansion may make the word
+    /// ([`backstop::options`]); none when it names others.
     pub(super) fn set(&mut self, word: &str, on: bool, unconditional: bool) {
-        if let Some((option, named_on)) = option(word) {
+        for (option, named_on) in backstop::options(word) {
             self.events.push(Event::Set {
                 option,
                 on: on == named_on,
@@ -238,15 +330,35 @@ impl Walker<'_> {
 
     /// Note every option `text` names as a mention.
     pub(super) fn mention_options(&mut self, text: &str) {
-        let found: Vec<usize> = mentioned(text).collect();
+        let found = mentioned(text);
         self.events.extend(found.into_iter().map(Event::Mention));
     }
 
-    /// Note what a word of the file's code names: its options, and a
-    /// `ZDOTDIR` it may set otherwise than by an assignment the walk reads
-    /// (`${ZDOTDIR:=...}`, `ZDOTDIR+=...`), which is a doubt.
+    /// Note a doubt when `text`, a word of the file's code, holds a glob
+    /// qualifier that runs code ([`qualifier_code`]).
+    pub(super) fn qualifier(&mut self, text: &str) {
+        if qualifier_code(text) {
+            self.events.push(Event::Doubt(format!(
+                "it cannot follow the code that a glob qualifier in `{text}` in {} runs",
+                self.place
+            )));
+        }
+    }
+
+    /// Note what a word of the file's code names: its options, an option it
+    /// may set by a name the check cannot read ([`computed_options`]), code a
+    /// glob qualifier in it runs, and a `ZDOTDIR` it may set otherwise than
+    /// by an assignment the walk reads (`${ZDOTDIR:=...}`, `ZDOTDIR+=...`);
+    /// all but the options are doubts.
     pub(super) fn mention(&mut self, text: &str) {
         self.mention_options(text);
+        self.qualifier(text);
+        if computed_options(text) {
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which options `{text}` in {} sets",
+                self.place
+            )));
+        }
         if ["ZDOTDIR=", "ZDOTDIR:=", "ZDOTDIR::=", "ZDOTDIR+="]
             .iter()
             .any(|form| text.contains(form))
@@ -277,6 +389,10 @@ impl Walker<'_> {
             return;
         };
         let args: Vec<Word> = words.collect();
+        self.qualifier(&command.text);
+        for arg in &args {
+            self.qualifier(&arg.text);
+        }
         if command.expands && command.text.starts_with(['$', '`']) {
             // `$c`, `${:-source}`, `$(print source)`: any command, a
             // `source` among them.
@@ -355,24 +471,22 @@ impl Walker<'_> {
                 // past the `--` that may end its options.
                 let skip = usize::from(args.first().is_some_and(|arg| arg.text == "--"));
                 let text: Vec<&str> = args[skip..].iter().map(|arg| arg.text.as_str()).collect();
-                let nested = walk_text(&text.join(" "), self.place);
-                self.sources += nested.sources;
-                self.evals += 1 + nested.evals;
-                self.zdotdirs += nested.zdotdirs;
-                self.autoloads += nested.autoloads;
-                self.fpaths += nested.fpaths;
-                self.fcs += nested.fcs;
-                self.may_stop |= nested.may_stop;
-                let uncertain = !unconditional || nested.confused;
-                for mut event in nested.events {
-                    if uncertain
-                        && let Event::Set { unconditional, .. }
-                        | Event::Source { unconditional, .. }
-                        | Event::Assign { unconditional, .. } = &mut event
-                    {
-                        *unconditional = false;
+                self.evals += 1;
+                self.nested(&text.join(" "), unconditional);
+            }
+            "emulate" => self.emulate(&args, unconditional),
+            "print" | "printf" | "read" => {
+                let mut target = command.text == "read";
+                for arg in &args {
+                    if target && arg.expands && computed_target(&arg.text) {
+                        self.events.push(Event::Doubt(format!(
+                            "it cannot tell which parameter `{} {}` in {} sets",
+                            command.text, arg.text, self.place
+                        )));
                     }
-                    self.events.push(event);
+                    // `-v` names the parameter `print` and `printf` set.
+                    target = command.text == "read" || arg.text == "-v";
+                    self.mention(&arg.text);
                 }
             }
             "return" | "exit" => self.may_stop = true,
@@ -386,8 +500,14 @@ impl Walker<'_> {
             {
                 self.autoload(&command.text, &args);
             }
-            "export" | "typeset" | "declare" | "local" | "readonly" | "integer" => {
+            "export" | "typeset" | "declare" | "local" | "readonly" | "integer" | "float" => {
                 for arg in &args {
+                    if computed_target(&arg.text) {
+                        self.events.push(Event::Doubt(format!(
+                            "it cannot tell which parameter `{} {}` in {} sets",
+                            command.text, arg.text, self.place
+                        )));
+                    }
                     self.assignment(arg, unconditional);
                 }
             }

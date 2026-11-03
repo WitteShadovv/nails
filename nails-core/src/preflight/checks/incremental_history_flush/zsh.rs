@@ -27,23 +27,27 @@
 //! An option counts as on wherever a file zsh reads names it, outside a line
 //! that is a comment, in either form: a `setopt` or an `unsetopt`, an array, a
 //! string, an alias, a test, a here-document's body or a comment at the end of
-//! a line. An `fc` with a flag that writes the history file (`-A`, `-W`, `-P`)
-//! counts as such a write wherever it stands, as a hook may run it after every
-//! command. No turn-off counts: zsh can end with the option on after one,
-//! through a redefined `unsetopt`, a trap or a hook, a plugin loaded later or
-//! an error that stops the file before the line, and no reading of the files
-//! shows that it holds. A `setopt` with an expansion the check cannot list, a
-//! `source` without a path or with one it cannot resolve (a process
-//! substitution among them), a `ZDOTDIR` it cannot follow, one set otherwise
-//! than by an assignment (`${ZDOTDIR:=...}`), a quote, an expansion or a
-//! here-document that runs to the end of the file without closing, and an
-//! expansion that holds what the check cannot read as zsh does (a `case` in a
-//! `$(...)`, a `${ command }`) are doubts. Beside the code, the lines of each
-//! file are counted for what they name ([`backstop`]): an option named beyond
-//! what the code names counts as on, an `fpath` setting beyond what the walk
-//! read adds a directory the check cannot follow, and a `source`, `.`, `eval`,
-//! `autoload`, `fc` or `ZDOTDIR` setting beyond that is a doubt. The structure of the
-//! code still decides which `ZDOTDIR` zsh reads its files in.
+//! a line, as brace expansion may make the word, and after an `o` among flags
+//! (`set -oshare_history`). An `fc` with a flag that writes the history file
+//! (`-A`, `-W`, `-P`) counts as such a write wherever it stands, as a hook may
+//! run it after every command. No turn-off counts: zsh can end with the option
+//! on after one, through a redefined `unsetopt`, a trap or a hook, a plugin
+//! loaded later or an error that stops the file before the line, and no reading
+//! of the files shows that it holds. A `setopt` with an expansion the check
+//! cannot list, an option whose name an expansion makes (`options[$o]=on`,
+//! `emulate -o $o`, `read -A options`, a `typeset` of a parameter whose name
+//! does), a glob qualifier that runs code (`*(e:...:)`, `*(+func)`), a `source`
+//! without a path or with one it cannot resolve (a process substitution among
+//! them), a `ZDOTDIR` it cannot follow, one set otherwise than by an assignment
+//! (`${ZDOTDIR:=...}`), a quote, an expansion or a here-document that runs to
+//! the end of the file without closing, and an expansion that holds what the
+//! check cannot read as zsh does (a `case` in a `$(...)`, a `${ command }`) are
+//! doubts. Beside the code, the lines of each file are counted for what they
+//! name ([`backstop`]): an option named beyond what the code names counts as
+//! on, an `fpath` setting beyond what the walk read adds a directory the check
+//! cannot follow, and a `source`, `.`, `eval`, `autoload`, `fc` or `ZDOTDIR`
+//! setting beyond that is a doubt. The structure of the code still decides
+//! which `ZDOTDIR` zsh reads its files in.
 
 mod backstop;
 mod lexer;

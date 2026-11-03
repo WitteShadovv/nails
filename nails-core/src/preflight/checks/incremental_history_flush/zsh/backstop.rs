@@ -158,10 +158,245 @@ fn alias_dots(line: &str) -> usize {
 }
 
 /// The options that `text` names, by their place in [`super::OPTIONS`], in
-/// any word of it and either form.
-pub(super) fn options(text: &str) -> impl Iterator<Item = (usize, bool)> + '_ {
-    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter_map(option)
+/// either form: in each word of it as brace expansion may make it
+/// ([`braces`]), each part between characters that are no letter, digit or
+/// `_`, and, after a `-` or `+`, what follows an `o` in the part, as
+/// `set -oshare_history` takes it. A word that brace expansion makes too
+/// much of names every option.
+pub(super) fn options(text: &str) -> Vec<(usize, bool)> {
+    let mut found = Vec::new();
+    for chunk in text.split_whitespace() {
+        match braces(chunk) {
+            Some(words) => {
+                for word in words {
+                    named_in(&word, &mut found);
+                }
+            }
+            None => found.extend((0..super::OPTIONS.len()).map(|at| (at, true))),
+        }
+    }
+    found
+}
+
+/// Add the options that the parts of `word` name to `found` ([`options`]).
+fn named_in(word: &str, found: &mut Vec<(usize, bool)>) {
+    let mut start = None;
+    for (at, c) in word
+        .char_indices()
+        .chain(std::iter::once((word.len(), ' ')))
+    {
+        let part = c.is_ascii_alphanumeric() || c == '_';
+        match start {
+            None if part => start = Some(at),
+            Some(from) if !part => {
+                let piece = &word[from..at];
+                if let Some(hit) = option(piece) {
+                    found.push(hit);
+                } else if word[..from].ends_with(['-', '+']) {
+                    // Flags, an `o` among them, and the option's name after it.
+                    found.extend(
+                        piece
+                            .match_indices('o')
+                            .find_map(|(o, _)| option(&piece[o + 1..])),
+                    );
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The most words that brace expansion is followed into for one word of
+/// code; one that makes more names every option ([`options`]).
+const BRACE_LIMIT: usize = 1024;
+
+/// What stands for the `{` and the `}` of a group that brace expansion
+/// leaves as written, so that it is not expanded again.
+const KEPT: (char, char) = ('\u{1}', '\u{2}');
+
+/// The words that brace expansion may make of `word`, a word of zsh code as
+/// written, as far as they may name an option, and more: each alternative of
+/// a `{a,b}` list, and of a `{x..y}` range and, as `BRACE_CCL` makes it, of
+/// a `{abc}` group (its ranges too, as in `{a-z}`) each character that an
+/// option's name may hold ([`NAME_CHARS`]), beside the group as written.
+/// `None` when that makes more than [`BRACE_LIMIT`].
+pub(super) fn braces(word: &str) -> Option<Vec<String>> {
+    let mut done = Vec::new();
+    let mut todo = vec![word.to_string()];
+    while let Some(word) = todo.pop() {
+        match group(&word) {
+            None => done.push(word),
+            Some((open, close)) => {
+                for alternative in alternatives(&word[open + 1..close]) {
+                    todo.push(format!(
+                        "{}{alternative}{}",
+                        &word[..open],
+                        &word[close + 1..]
+                    ));
+                }
+            }
+        }
+        if done.len() + todo.len() > BRACE_LIMIT {
+            return None;
+        }
+    }
+    Some(done)
+}
+
+/// Where the first group that brace expansion expands in `word` opens and
+/// closes: a `{` with its `}`, past a parameter's expansion (`${...}`).
+fn group(word: &str) -> Option<(usize, usize)> {
+    let bytes = word.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'$' && bytes.get(at + 1) == Some(&b'{') {
+            at = closing(bytes, at + 1).map_or(at + 2, |close| close + 1);
+        } else if bytes[at] == b'{' {
+            match closing(bytes, at) {
+                Some(close) => return Some((at, close)),
+                None => at += 1,
+            }
+        } else {
+            at += 1;
+        }
+    }
+    None
+}
+
+/// The `}` that closes the `{` at `open` in `bytes`, nested ones counted.
+fn closing(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, &byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The characters of the names of [`super::OPTIONS`] and of their `no`
+/// form, in either case, and the `_` that zsh skips in a name: no other
+/// character a group of brace expansion stands for can make a word name one.
+const NAME_CHARS: &str = "incapedhstorymINCAPEDHSTORYM_";
+
+/// What a group of brace expansion, `content` between its braces, may stand
+/// for ([`braces`]).
+fn alternatives(content: &str) -> Vec<String> {
+    let mut parts = vec![String::new()];
+    let mut depth = 0usize;
+    for c in content.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        parts.last_mut().expect("a part").push(c);
+    }
+    if parts.len() > 1 {
+        return parts;
+    }
+    let mut alternatives = vec![format!("{}{content}{}", KEPT.0, KEPT.1)];
+    let mut add = |from: char, to: char| {
+        for c in from.min(to)..=from.max(to) {
+            if NAME_CHARS.contains(c) && !alternatives.iter().any(|known| *known == c.to_string()) {
+                alternatives.push(c.to_string());
+            }
+        }
+    };
+    // A range, `{a..e}` or `{1..9..2}`; one of numbers makes digits, which
+    // no option's name holds.
+    if let Some((from, to)) = content.split_once("..") {
+        let to = to.split("..").next().unwrap_or_default();
+        let one = |text: &str| {
+            let mut chars = text.chars();
+            chars.next().filter(|_| chars.next().is_none())
+        };
+        if let (Some(from), Some(to)) = (one(from), one(to)) {
+            add(from, to);
+            return alternatives;
+        }
+        if from.parse::<i64>().is_ok() && to.parse::<i64>().is_ok() {
+            alternatives.push("0".to_string());
+            return alternatives;
+        }
+    }
+    let chars: Vec<char> = content.chars().collect();
+    let mut at = 0;
+    while at < chars.len() {
+        if at + 2 < chars.len() && chars[at + 1] == '-' {
+            add(chars[at], chars[at + 2]);
+            at += 3;
+        } else {
+            add(chars[at], chars[at]);
+            at += 1;
+        }
+    }
+    alternatives
+}
+
+/// Whether `text`, a word of zsh code as written, holds a glob qualifier
+/// that runs code as zsh expands the word: `e` and a delimiter around the
+/// code (`*(e:'...':)`, `*(#qe'...')`), or `+` and a command (`*(+func)`).
+/// What `$(( ))` holds is arithmetic, not a glob.
+pub(super) fn qualifier_code(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at] == '$' && chars.get(at + 1) == Some(&'(') && chars.get(at + 2) == Some(&'(') {
+            // Arithmetic: past its `))`.
+            let mut depth = 0usize;
+            at += 1;
+            while at < chars.len() {
+                match chars[at] {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                at += 1;
+            }
+        } else if chars[at] == '(' && (at == 0 || chars[at - 1] != '$') {
+            let rest = &chars[at + 1..];
+            for (i, &c) in rest.iter().enumerate() {
+                let next = rest.get(i + 1).copied();
+                let code = match (c, next) {
+                    ('e', Some(open)) if open.is_ascii_punctuation() && open != ')' => {
+                        let close = match open {
+                            '(' => ')',
+                            '[' => ']',
+                            '{' => '}',
+                            '<' => '>',
+                            other => other,
+                        };
+                        rest[i + 2..].contains(&close)
+                    }
+                    ('+', Some(name)) => name.is_ascii_alphabetic() || matches!(name, '_' | '{'),
+                    _ => false,
+                };
+                if code {
+                    return true;
+                }
+            }
+        }
+        at += 1;
+    }
+    false
 }
 
 /// How often `text` names `ZDOTDIR` otherwise than to read it ([`writes`]).
