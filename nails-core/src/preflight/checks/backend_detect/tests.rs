@@ -1330,4 +1330,28 @@ fn a_root_on_a_filesystem_the_decoy_uses_is_left_to_the_hidden_volume_check() {
                 .into()
         )
     );
+
+    // Discards over the decoy's stack, which keeps the root's data, are
+    // refused all the same, and accepted for a run they warn.
+    host.fs.mock_set_file_content(
+        "/sys/devices/virtual/block/dm-1/queue/discard_max_bytes",
+        "4096\n",
+    );
+    let refused = detect_on(&host);
+    assert!(refused.is_fail(), "{refused:?}");
+    assert!(
+        refused
+            .message()
+            .starts_with("Discards are enabled over the hidden volume."),
+        "{refused:?}"
+    );
+    let dev = tempfile::tempdir().unwrap();
+    let root = Path::new(super::tests_host::ROOT);
+    assert_eq!(
+        assess_with_dev_dir(&host.fs, root, dev.path(), true),
+        CheckResult::Warn(format!(
+            "Backend detection skipped: the hidden root is on a filesystem the decoy uses, which \
+             the hidden-volume check reports. {DISCARD_ACCEPTED} See docs/backends.md."
+        ))
+    );
 }

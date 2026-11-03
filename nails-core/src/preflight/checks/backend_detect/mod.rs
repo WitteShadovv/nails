@@ -277,7 +277,8 @@ impl Layer {
 /// every layer. The start of the device below a LUKS mapping is read
 /// read-only, without changing its access time. A root on a filesystem the
 /// decoy uses is skipped: its stack is the decoy's, which the attach gate
-/// reports.
+/// reports. Discards over that stack, which keeps the root's data, are
+/// still refused.
 #[derive(Debug, Clone)]
 pub struct BackendDetectCheck {
     hidden_volume_root: PathBuf,
@@ -367,20 +368,6 @@ fn assess_with_dev_dir<F: Filesystem>(
         );
     };
 
-    // A root on a filesystem the decoy uses (a bind, a subvolume, the
-    // filesystem itself), which the attach gate refuses unless the run
-    // accepts the decoy's storage: its stack is the decoy's own, and
-    // describing it as the hidden root's backend would only mislead.
-    if let Verdict::OnDecoyFilesystem { .. } =
-        separation::judge_storage(fs, &entries, mount, Path::new("/")).verdict
-    {
-        return CheckResult::Pass(
-            "Backend detection skipped: the hidden root is on a filesystem the decoy uses, which \
-             the hidden-volume check reports"
-                .into(),
-        );
-    }
-
     let mut layers = blockdev::device_of_mount(fs, mount)
         .map(|top| device_layers(fs, &top))
         .unwrap_or_default();
@@ -400,19 +387,36 @@ fn assess_with_dev_dir<F: Filesystem>(
         }
         layer.header = Some(Header { device, probe });
     }
-    let summary = describe(&mount.fstype, &layers);
     let discards = discards_over_hidden(&layers);
 
     // Discards over the hidden volume fail closed: forwarding TRIM makes the
     // used/free block map readable on the physical device, where a deniable
     // volume should look like uniform random data. Accepted for the run with
     // `--allow-discards`, they become a warning instead. The refusal names no
-    // device-mapper node.
+    // device-mapper node. It holds for a root on a filesystem the decoy uses
+    // too, whose data that stack keeps.
     if discards && !allow_discards {
         return CheckResult::fail_with(DISCARD_REFUSAL, DISCARD_REMEDIATION)
             .accepted_by(Allowable::Discards);
     }
 
+    // A root on a filesystem the decoy uses (a bind, a subvolume, the
+    // filesystem itself), which the attach gate refuses unless the run
+    // accepts the decoy's storage: its stack is the decoy's own, and
+    // describing it as the hidden root's backend would only mislead.
+    if let Verdict::OnDecoyFilesystem { .. } =
+        separation::judge_storage(fs, &entries, mount, Path::new("/")).verdict
+    {
+        return if discards {
+            CheckResult::Warn(format!(
+                "{ON_DECOY_FILESYSTEM}. {DISCARD_ACCEPTED} See {BACKENDS_DOC}."
+            ))
+        } else {
+            CheckResult::Pass(ON_DECOY_FILESYSTEM.into())
+        };
+    }
+
+    let summary = describe(&mount.fstype, &layers);
     let mut found = hazards(&layers, &entries);
     if discards {
         found.insert(0, DISCARD_ACCEPTED.to_string());
@@ -438,6 +442,10 @@ fn assess_with_dev_dir<F: Filesystem>(
         ))
     }
 }
+
+/// What the check says of a root on a filesystem the decoy uses.
+const ON_DECOY_FILESYSTEM: &str = "Backend detection skipped: the hidden root is on a filesystem \
+     the decoy uses, which the hidden-volume check reports";
 
 /// The deniability concerns of discards over the hidden volume, as the refusal
 /// states them and `docs/backends.md` explains them. The refusal and its

@@ -119,7 +119,8 @@ check cannot identify, passes with a one-line description of the stack. A
 hidden root that is not a mount point is skipped, and so is one on a
 filesystem the decoy uses (a bind of one of its folders, a btrfs subvolume of
 it, or the filesystem itself), whose stack is the decoy's: the `hidden-volume`
-check reports either.
+check reports either. Discards over the stack of such a filesystem, which
+keeps the hidden root's data, are refused all the same.
 
 ### Leftover LUKS headers
 
