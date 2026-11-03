@@ -726,8 +726,8 @@ of this changelog for that version becomes the release notes word for word, and
   of its own on a terminal, where it began right after the `^C` the terminal echoed.
 - `rehearse plant` sends its notification canary with normal urgency, as an ordinary message has,
   where it used low urgency. A desktop may show a notification of low urgency without a banner, so
-  the channel was reported as planted while the operator saw nothing of it. The operator guide
-  says when `plant` counts the channel as planted.
+  the channel could be reported as planted while the desktop showed no banner for it. The operator
+  guide says when `plant` counts the channel as planted.
 
 ### Fixed
 
@@ -1325,8 +1325,8 @@ of this changelog for that version becomes the release notes word for word, and
   session, as the operator guide suggests for a scan of the decoy, it printed
   `State file status: present at /mnt/data/state.json (active)` in a report about the decoy
   image: the record of the live session, which says nothing about the image. An offline scan now
-  leaves the file unread, and `state_file_status` is `not_checked` under `--json`; a live scan
-  reports it as before.
+  leaves the file unread, and under `--json` `state_file_status` has the kind `not_checked`; a
+  live scan reports it as before.
 - At the question of `activate`, `deactivate` and `discard`, the end of the input (Ctrl+D) cancels
   as a "no" does, and its notice now starts on a line of its own. It began on the question's row,
   as the terminal echoes no newline for Ctrl+D.
