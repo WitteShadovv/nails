@@ -37,7 +37,7 @@ const ANY_WORD: &[&str] = &[
 /// argument takes the rest of its word, or the word after it when nothing
 /// follows it in its word. A word of options that an expansion makes may
 /// hold any, so its rest and the word after it count too.
-fn option_arguments(args: &[Word], takes: &str, wanted: &str) -> Vec<Word> {
+pub(super) fn option_arguments(args: &[Word], takes: &str, wanted: &str) -> Vec<Word> {
     let mut found = Vec::new();
     let mut words = args.iter().peekable();
     while let Some(word) = words.next() {
@@ -51,6 +51,7 @@ fn option_arguments(args: &[Word], takes: &str, wanted: &str) -> Vec<Word> {
             found.push(Word {
                 text: flags.to_string(),
                 expands: true,
+                quoted: false,
             });
             found.extend(words.peek().map(|next| (*next).clone()));
             continue;
@@ -66,6 +67,7 @@ fn option_arguments(args: &[Word], takes: &str, wanted: &str) -> Vec<Word> {
                 Some(Word {
                     text: rest.to_string(),
                     expands: false,
+                    quoted: false,
                 })
             };
             if wanted.contains(letter) {
@@ -91,6 +93,7 @@ fn every_name(args: &[Word]) -> Vec<Word> {
                         found.push(Word {
                             text: rest.to_string(),
                             expands: computed(word),
+                            quoted: false,
                         });
                     }
                 }

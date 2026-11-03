@@ -157,7 +157,7 @@ fn a_glob_qualifier_that_runs_code_is_a_doubt() {
         "HISTSIZE=$((SAVEHIST+1000))",
         "(( ${+commands[git]} )) && print git",
         "for (( i = 0; i < ${+x}; i++ )) { : }",
-        "x=$(( (a+b) * 2 ))",
+        "x=$(( (EUID+UID) * 2 ))",
         "for f in ~/.zsh/(aliases|functions).zsh; do :; done",
         "print -l ~/.z*(N.om[1,3])",
     ] {
@@ -946,5 +946,352 @@ fn a_widget_s_function_and_completion_a_hook_runs_are_read_as_a_hook_s() {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_hook_s_write_to_a_descriptor_the_shell_keeps_open_is_a_doubt() {
+    // zsh 5.9.2 writes each command line to the history file with each:
+    // `zsystem flock -f` keeps a descriptor open on it, and a socket or a
+    // descriptor above 2 goes to whatever the shell has open there.
+    for rc in [
+        "zmodload zsh/system\nzsystem flock -f fd ~/.zsh_history\npreexec() { print -u $fd -r -- \"$1\" }\n",
+        "zmodload zsh/system\nzsystem flock -t 1 -f fd ~/.zl\n",
+        "zmodload zsh/net/socket\nzsocket -d 6 ~/s\npreexec() { print -u 6 -r -- \"$1\" }\n",
+        "zmodload zsh/net/tcp\nztcp localhost 7000\n",
+        "preexec() { print -u 7 -r -- \"$1\" }\n",
+        "preexec() { print -ru7 -- \"$1\" }\n",
+        "preexec() { print -r -u $fd -- \"$1\" }\n",
+        "preexec() { print -r -- \"$1\" >&7 }\n",
+        "preexec() { print -r -- \"$1\" 1>&11 }\n",
+        "preexec() { print -r -- \"$1\" >> /dev/fd/11 }\n",
+        "preexec() { print -r -- \"$1\" > /proc/self/fd/9 }\n",
+        "exec >&3\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // Standard output and error, and an unlock, are none.
+    for rc in [
+        "preexec() { print -u2 -r -- \"$1\" }\n",
+        "preexec() { print -r -u 1 -- \"$1\" }\n",
+        "preexec() { print -r -- \"$1\" >&2 }\n",
+        "preexec() { print -r -- \"$1\" > /dev/fd/2 }\n",
+        "exec 2>&1\n",
+        "zmodload zsh/system\nzsystem flock -u 5\n",
+        "print -u 7 start\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_parameter_zsh_runs_or_loads_code_from_is_a_doubt() {
+    // zsh 5.9.2 expands the message after `?` in each element of MAILPATH
+    // before a prompt, a command substitution in it too, and loads a module
+    // of a directory module_path names, whose code it then runs.
+    for rc in [
+        "MAILPATH=~/mbox'?$(fc -l -1 >> $f)'\n",
+        "mailpath=(~/mbox'?$(x)')\n",
+        "export MAILPATH\n",
+        "NULLCMD=w\n",
+        "READNULLCMD=w\n",
+        "module_path=(~/zm $module_path)\nzmodload evil\n",
+        "MODULE_PATH=~/zm\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // Reading them, and MAIL, which names a file alone, are none.
+    for rc in [
+        "print -r -- $MAILPATH $module_path\n",
+        "MAIL=/var/mail/alice\nMAILCHECK=60\n",
+        "zmodload zsh/complist\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_function_defined_by_each_of_its_names_or_one_zsh_expands_is_read_by_each() {
+    // zsh 5.9.2 defines `preexec` with each, by a second name, by brace
+    // expansion, by a name an expansion makes and by a glob that a file in
+    // the directory it runs in matches, so each command line goes to the
+    // history file.
+    let write = "{ print -r -- \"$1\" >> $f }";
+    for definition in [
+        format!("function x preexec {write}"),
+        format!("x preexec () {write}"),
+        format!("function x preexec () {write}"),
+        format!("function x preexec\n{write}"),
+        format!("function {{preexec,x}} {write}"),
+        format!("n=preexec\nfunction $n {write}"),
+        format!("n=preexec\n$n() {write}"),
+        format!("function ${{:-preexec}} {write}"),
+        format!("function preexe[c] {write}"),
+        format!("x() {write}\nfunctions -c x preexe[c]"),
+        "function ${:-TRAPDEBUG} { print -r -- \"$ZSH_DEBUG_CMD\" >> $f }".to_string(),
+        "function x precmd { fc -AI }".to_string(),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("f=$HISTFILE\n{definition}\n"),
+        );
+        assert!(warns(&fs), "{definition}");
+    }
+    // Names that are no hook's, and an expanded name whose code writes
+    // nothing, are none.
+    for definition in [
+        format!("function x y {write}"),
+        format!("x y () {write}"),
+        "n=preexec\nfunction $n { print -Pn '%~' }".to_string(),
+        "function { setopt localoptions; : }".to_string(),
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("f=$HISTFILE\n{definition}\n"),
+        );
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{definition}");
+    }
+}
+
+#[test]
+fn a_hook_made_by_a_word_zsh_expands_into_others_is_a_doubt() {
+    // zsh 5.9.2 makes `w` a hook with each, by brace expansion.
+    for made in [
+        "autoload -Uz add-zsh-hook\nadd-zsh-hook {preexec,w}",
+        "preexec_functions=({w,w})",
+        "precmd_functions+=(w{,})",
+        "set -A preexec_functions {w,w}",
+        "zle -N {zle-line-finish,w}",
+        "zle -N zle-line-finish w{,}",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("f=$HISTFILE\nw() {{ print -r -- \"$1$BUFFER\" >> $f }}\n{made}\n"),
+        );
+        assert!(warns(&fs), "{made}");
+    }
+}
+
+#[test]
+fn a_global_alias_the_code_uses_is_a_doubt() {
+    // zsh 5.9.2 puts a global alias's value in place of each word that is its
+    // name as it reads the code: each of these makes `preexec` a function or a
+    // hook, sets TTY or writes each command line to the history file.
+    for rc in [
+        "alias -g X=preexec\nfunction X { print -r -- \"$1\" >> $f }\n",
+        "alias -g X=preexec\nfunction x X { print -r -- \"$1\" >> $f }\n",
+        "alias -g X=preexec_functions\nw() { print -r -- \"$1\" >> $f }\nset -A X w\n",
+        "alias -g X=TTY\nread X <<< ~/.zsh_history\npreexec() { print -r -- \"$1\" >> $TTY }\n",
+        "alias -g S='| sort -o .zl .zl -'\npreexec() { print -r -- \"$1\" S }\n",
+        "alias -g S='| sort --output=.zl -'\npreexec() { print -r -- \"$1\" S }\n",
+        "galiases[S]='| sort -o .zl'\npreexec() { print -r -- \"$1\" S }\n",
+        "alias -g G='| grep'\npreexec() { print -r -- \"$1\" G -q x }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", &format!("f=$HISTFILE\n{rc}"));
+        assert!(warns(&fs), "{rc}");
+    }
+    // One the files define but do not use, as for typing, is none; one
+    // written twice alike counts once, so the second is a use.
+    let fs = MockFilesystem::new();
+    seed(
+        &fs,
+        "/home/alice/.zshrc",
+        "alias -g G='| grep'\nalias -g G='| grep'\n",
+    );
+    assert!(warns(&fs));
+    for rc in [
+        "alias -g G='| grep'\n",
+        "alias -g ...='../..'\nalias -g NUL='> /dev/null 2>&1'\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn arithmetic_that_may_set_a_name_the_check_cannot_read_is_a_doubt() {
+    // zsh 5.9.2 sets TTY to `5` with each, as it reads `${n}TY` in arithmetic
+    // after it expands `${n}`, and the value of a parameter that holds no
+    // number as arithmetic too; the hook's output to $TTY then goes to
+    // `./5`, a link to the history file. FPATH, _compdir, ZDOTDIR and HOME
+    // set so make it load a compinit, read startup files elsewhere.
+    for set in [
+        "n=T\n(( ${n}TY = 5 ))",
+        "n=T\nlet ${n}TY=5",
+        "n=T\n: $(( ${n}TY = 5 ))",
+        "n=T\na=(1)\n: ${a[${n}TY=5]}",
+        "n=T\nprintf '%d' ${n}TY=5 >/dev/null",
+        "n=T\n[[ ${n}TY=5 -eq 5 ]]",
+        "n=T\nfor (( ${n}TY = 5; 0; )) { : }",
+        "n=T\nrepeat $(( ${n}TY = 5, 0 )) :",
+        "n=T\ninteger v\nv=${n}TY=5",
+        "m=$(printf '%s%s=5' T TY)\n(( m ))",
+        "m=$(printf '%s%s=5' T TY)\nSAVEHIST=m",
+        "m=$x\nprint -r -- ${s: m}",
+        "m=$x\nprint -r -- ${(l:m:)s}",
+        "m=$x\nprint -r -- *([m])",
+        "m=$x\na=(1)\na[m]=2",
+        "m=$x\nshift m",
+        "m=$x\ninteger m",
+        "m=$x\ntypeset -i m",
+        "m=$x\n(( a ? (m = 1) : m ))",
+        "m=$x\n(( m++ ))",
+        "m=$x\nunset 'a[m]'",
+        "unset SAVEHIST\n(( SAVEHIST ))",
+        "m=$x\na=([m]=1)",
+        "m=$x\na+=([m]=1)",
+        "m=$x\nprint -r -- ${${(z)s}[m]}",
+        "m=$x\nprint -r -- ${s/(#b)(a)/${match[m]}}",
+        "m=$x\ncase 1 in ($((m))) ;; esac",
+        "m=$x\n(( sin(m) ))",
+        "f() { local -h SECONDS=$1; (( SECONDS )) }",
+        "m=$x\nf() { local -A k }\nk=(1)\nk[m]=2",
+        "m=$x\ntypeset -A k\nunset k\nk[m]=2",
+        "f() { local -i n=$1; }",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(
+            &fs,
+            "/home/alice/.zshrc",
+            &format!("{set}\npreexec() {{ print -r -- \"$1\" >> $TTY }}\n"),
+        );
+        assert!(warns(&fs), "{set}");
+    }
+    for zshenv in ["n=Z\n(( ${n}DOTDIR = 5 ))\n", "n=H\n(( ${n}OME = 5 ))\n"] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshenv", zshenv);
+        assert!(warns(&fs), "{zshenv}");
+    }
+    // Numbers, counts and tests, the parameters zsh keeps a number in, one an
+    // expression assigns before it reads it, an array whose keys are strings,
+    // and a function's own integer are none.
+    for rc in [
+        "(( $+commands[fzf] )) && print fzf\n",
+        "HISTSIZE=10000\nSAVEHIST=$HISTSIZE\nKEYTIMEOUT=1\n",
+        "for (( i = 0; i < 3; i++ )) { : }\n",
+        "(( EUID == 0 )) && print root\n",
+        "[[ $#x -gt 0 ]] && [[ $SHLVL -eq 1 ]]\n",
+        "typeset -A key\nkey[Home]=${terminfo[khome]}\n[[ -n ${key[Home]} ]]\n",
+        "f() { local -i n; }\n",
+        "printf '%s\\n' \"$x\"\n",
+        "print -r -- ${history[$((HISTCMD-1))]}\n",
+        "(( ${precmd_functions[(I)x]} )) && print hooked\n",
+        "(( bits = 1 << 2 ))\n",
+        "print -r -- ${s:-n} ${s:h}\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_file_the_code_may_make_before_zsh_reads_it_is_a_doubt() {
+    // zsh 5.9.2 sources a file that its startup code makes first, which is
+    // not there as the check reads the files, and turns SHARE_HISTORY on.
+    for rc in [
+        "cp ~/.src ~/.gen\n. ~/.gen\n",
+        "ln -sf ~/.src ~/.gen\n[[ -f ~/.gen ]] && . ~/.gen\n",
+        "cat ~/.src > ~/.gen\nsource ~/.gen\n",
+        "tee ~/{.gen,.x} < ~/.src >/dev/null\n. ~/.gen\n",
+        "f=~/.g\ncp ~/.src ${f}en\n. ~/.gen\n",
+        "f=~/.gen\nmk() { print -r -- 'setopt share_history' > $f }\nmk\n. ~/.gen\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, "/home/alice/.src", "setopt share_history\n");
+        assert!(warns(&fs), "{rc}");
+    }
+    // One of the files zsh reads itself, made by one before it.
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshenv", "cp ~/.src ~/.zshrc\n");
+    seed(&fs, "/home/alice/.src", "setopt share_history\n");
+    assert!(warns(&fs));
+    // A file a test asks about before it is sourced, which nothing makes, a
+    // write after zsh reads the file and one to a path that cannot be it
+    // are none.
+    for rc in [
+        "[[ -f ~/.zshrc.local ]] && source ~/.zshrc.local\n",
+        "if test -r ~/.fzf.zsh; then . ~/.fzf.zsh; fi\n",
+        "[ -f ~/.p10k.zsh ] && . ~/.p10k.zsh\nprint x >> $HOME/.log\n",
+        "ssh-agent -s > $HOME/.ssh/agent-env\n[[ -f ~/.x ]] && . ~/.x\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_hook_that_may_hand_the_command_line_to_a_program_in_its_environment_is_a_doubt() {
+    // zsh 5.9.2 gives `logit` the exported LINE, which it appends to the
+    // history file, with each.
+    for rc in [
+        "export LINE\npreexec() { LINE=$1; ~/bin/logit }\n",
+        "preexec() { export LINE=$1; ~/bin/logit }\n",
+        "preexec() { typeset -gx LINE=$1; ~/bin/logit }\n",
+        "preexec() { read LINE <<< $1; logit }\n",
+        "setopt allexport\npreexec() { local LINE=$1; logit }\n",
+        "preexec() { LINE=$1 }\nprecmd() { logit }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert!(warns(&fs), "{rc}");
+    }
+    // One local to the hook, or a hook that runs no program but builtins
+    // and functions the files define, is none.
+    for rc in [
+        "preexec() { local LINE=$1; logit }\n",
+        "preexec() { LINE=$1; print -Pn '\\e]0;%~\\a' }\n",
+        "w() { : }\npreexec() { LINE=$1; w }\n",
+        "preexec() { start=$SECONDS }\nprecmd() { notify-send done }\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
+    // zsh 5.9.2 sources the line the code appends to the file first, which
+    // the check does not see in the file as it reads it.
+    for rc in [
+        "cat ~/.src >> ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "cp ~/.src ~/.zshrc.local\n. ~/.zshrc.local\n",
+        "f=~/.zshrc.local\nprint -r -- \"$(<~/.src)\" >> $f\n. ~/.zshrc.local\n",
+        "f=~/.zshrc.local\nlog() { cat ~/.src >> $f }\nlog\n. ~/.zshrc.local\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, "/home/alice/.zshrc.local", ":\n");
+        seed(&fs, "/home/alice/.src", "setopt share_history\n");
+        assert!(warns(&fs), "{rc}");
+    }
+    // A write after zsh reads it, or to another file, is none.
+    for rc in [
+        ". ~/.zshrc.local\nprint x >> ~/.zshrc.local\n",
+        "print x >> ~/.cache/log\n. ~/.zshrc.local\n",
+    ] {
+        let fs = MockFilesystem::new();
+        seed(&fs, "/home/alice/.zshrc", rc);
+        seed(&fs, "/home/alice/.zshrc.local", ":\n");
+        assert_eq!(scan(&fs, NOT_LOGIN), Scan::default(), "{rc}");
     }
 }

@@ -160,9 +160,18 @@ pub(super) fn commands(text: &str) -> String {
 
 /// The completion functions the dump file `text` marks to be autoloaded,
 /// when each of its lines is one the stock `compdump` writes; `None` when a
-/// line is any other.
+/// line is any other, and when the text holds a control character but a tab
+/// or a newline, which compdump never writes and zsh may read otherwise
+/// than the check does (a backslash before a carriage return quotes it, so
+/// the newline after it ends the line).
 pub(super) fn marks(text: &str) -> Option<Vec<String>> {
-    let mut lines = text.lines();
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\t' | '\n'))
+    {
+        return None;
+    }
+    let mut lines = text.split('\n');
     if !lines.next().is_some_and(header) {
         return None;
     }
@@ -344,6 +353,22 @@ _comp_assocs=( '' )
             };
             assert_eq!(marks(&text), None, "{to}");
         }
+        // A carriage return before a newline, which zsh keeps in a line (a
+        // backslash before it quotes it, so the newline ends the line), and
+        // any other control character but a tab, make it code.
+        for text in [
+            "#files: 1\tversion: 5.9.2\n\nautoload -Uz _a \\\r\n           _evil\n",
+            "#files: 1\tversion: 5.9.2\n\nautoload -Uz _a _b \\\r\n           _evil _f\n",
+            "#files: 1\tversion: 5.9.2\r\n\nautoload -Uz _a\n",
+            "#files: 1\tversion: 5.9.2\n\nautoload -Uz _a\x0b_b\n",
+            "#files: 1\tversion: 5.9.2\n\nautoload -Uz _a\0\n",
+        ] {
+            assert_eq!(marks(text), None, "{text:?}");
+        }
+        assert_eq!(
+            marks("#files: 1\tversion: 5.9.2\n\nautoload -Uz _a \\\n           _b\n"),
+            Some(vec!["_a".to_string(), "_b".to_string()])
+        );
         // The line that may open a part closes it too, at the end.
         assert_eq!(
             marks(&DUMP.replacen(")\n\n_services", "\n\n_services", 1)),

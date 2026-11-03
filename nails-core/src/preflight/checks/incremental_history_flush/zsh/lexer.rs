@@ -14,6 +14,9 @@ pub(super) struct Word {
     pub(super) text: String,
     /// Whether it holds an expansion: `$`, `${...}`, `$(...)` or a backquote.
     pub(super) expands: bool,
+    /// Whether quotes are in it (`"$fpath"`, `'x'`, `$'x'`), which keep what
+    /// an expansion gives in one word.
+    pub(super) quoted: bool,
 }
 
 /// Where a command ends, and how.
@@ -236,7 +239,7 @@ impl Lexer<'_> {
                 Some(escaped) => self.word().text.push(escaped),
             },
             '\'' => {
-                self.word();
+                self.word().quoted = true;
                 let mut closed = false;
                 for c in self.chars.by_ref() {
                     if c == '\'' {
@@ -250,7 +253,7 @@ impl Lexer<'_> {
                 }
             }
             '"' => {
-                self.word();
+                self.word().quoted = true;
                 let mut closed = false;
                 while let Some(c) = self.chars.next() {
                     match c {
@@ -308,6 +311,7 @@ impl Lexer<'_> {
             return;
         }
         if !quoted && self.chars.next_if_eq(&'\'').is_some() {
+            self.word().quoted = true;
             self.word().text.push('\'');
             if !self.balanced(&[Nest::Ansi], "`$'`") {
                 self.unclosed("`$'`");
@@ -697,6 +701,7 @@ impl Lexer<'_> {
         self.word = Some(Word {
             text: "((".to_string(),
             expands: true,
+            quoted: false,
         });
         if self.balanced(&[Nest::Arith], "`((`") && self.chars.next_if_eq(&')').is_some() {
             let mut text = self.word.take().expect("the arithmetic command").text;
@@ -813,6 +818,7 @@ pub(super) fn lex(text: &str) -> (Vec<Token>, Vec<Flaw>) {
                 lexer.tokens.push(Token::Word(Word {
                     text: c.to_string(),
                     expands: false,
+                    quoted: false,
                 }));
             }
             '<' | '>' if lexer.chars.peek() == Some(&'(') => {

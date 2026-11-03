@@ -1093,7 +1093,9 @@ fn a_warning_gives_the_fix_the_check_can_see() {
              each command line to its history file as it runs: {}; {}; {}; it cannot read the \
              functions the files autoload that no directory they put in front of fpath holds \
              (`compinit` and `promptinit`), which zsh then finds in one it was built with or one \
-             FPATH names. If it does, {ON_DISK}. {fix}",
+             FPATH names; it cannot tell what the `eval` of what dircolors prints in /etc/zshrc \
+             runs, as the check does not know the shell's environment, which may set ARGV0. If \
+             it does, {ON_DISK}. {fix}",
             dir("$p/share/zsh/site-functions"),
             dir("$p/share/zsh/$ZSH_VERSION/functions"),
             dir("$p/share/zsh/vendor-completions"),
@@ -1273,6 +1275,17 @@ fn a_shell_s_environment_keeps_the_variables_the_check_reads() {
         )
     );
     assert_eq!(environment(b""), Some(Vec::new()));
+    // ARGV0 and MAILPATH are kept, and any variable of the dynamic loader as
+    // `LD_` alone, without its value.
+    assert_eq!(
+        environment(b"LD_PRELOAD=/x.so\0ARGV0=ls\0LD_LIBRARY_PATH=\xff\0MAILPATH=/m?$(x)\0"),
+        Some(
+            [("LD_", ""), ("ARGV0", "ls"), ("MAILPATH", "/m?$(x)")]
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .to_vec()
+        )
+    );
+    assert_eq!(environment(b"OLD_PATH=/x\0").map(|env| env.len()), Some(0));
     // A value that is no UTF-8 names a path the check cannot name, so the
     // environment counts as unknown; one of a variable it does not keep
     // does not count.
