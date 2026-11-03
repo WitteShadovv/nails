@@ -231,15 +231,27 @@ pub fn signature_at(source: &RawSource, start: u64) -> io::Result<Signature> {
     if let Some(name) = first_match(&head, FORMATS) {
         return Ok(Signature::Format(name));
     }
+    Ok(luks2_secondary_at(source, start)?.map_or(Signature::Unknown, Signature::Luks2Secondary))
+}
+
+/// Where a LUKS2 secondary header lies in the region starting at `start`,
+/// as an offset into it, if one does at any of the offsets cryptsetup puts
+/// one at: it survives a primary header written over, or a volume opened
+/// with a detached header whose device kept the header it was made with.
+///
+/// # Errors
+///
+/// Propagates a read error.
+pub fn luks2_secondary_at(source: &RawSource, start: u64) -> io::Result<Option<u64>> {
     let mut magic = [0u8; 6];
     for offset in LUKS2_SECONDARY_OFFSETS {
         if source.read_at(&mut magic, start + offset)? == magic.len()
             && magic == LUKS2_SECONDARY_MAGIC
         {
-            return Ok(Signature::Luks2Secondary(*offset));
+            return Ok(Some(*offset));
         }
     }
-    Ok(Signature::Unknown)
+    Ok(None)
 }
 
 /// The filesystem that can store file contents compressed (btrfs, f2fs,

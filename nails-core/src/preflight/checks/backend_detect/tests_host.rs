@@ -35,13 +35,16 @@ impl Host {
         ))
     }
 
-    /// The decoy, with `mounts` added to its mount table.
+    /// The decoy, with `mounts` added to its mount table, which
+    /// `/proc/self/mountinfo` holds as well.
     pub(super) fn with_mounts(mounts: &str) -> Self {
         let fs = MockFilesystem::new();
-        fs.mock_set_mount_table(&format!(
+        let table = format!(
             "1 0 254:0 / / rw,relatime - ext4 /dev/mapper/root rw\n\
              2 1 254:1 / /home rw,relatime - ext4 /dev/mapper/home rw\n{mounts}"
-        ));
+        );
+        fs.mock_set_mount_table(&table);
+        fs.mock_set_file_content("/proc/self/mountinfo", &table);
         fs.mock_set_path_exists("/sys/class/block", true);
         let host = Self {
             fs,

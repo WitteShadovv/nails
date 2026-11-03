@@ -577,6 +577,20 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- `backend-detect` reads the start of the device below a LUKS mapping read-only and without
+  changing its access time, as before only as root, and tells what it holds. A LUKS1 header is
+  read as well as a LUKS2 one, and the mapping's own header is named in the pass line as showing
+  that an encrypted volume is there. A device that starts with no LUKS header is described as one
+  opened with a detached header, whose flags and tokens are in its file. A header of another
+  volume left at the start, or a LUKS2 secondary header that a detached-header device kept, warns,
+  as blkid and an examiner identify the device as LUKS; the flags and tokens of a header of
+  another volume no longer count for the mapping. A loop device over a block device is followed
+  into that device, and is no longer called a file container or warned about as one; one attached
+  without autoclear warns that it stays bound after the volume is closed. A mapping the VeraCrypt
+  application made is named as such, and refused like a cryptsetup mapping when it forwards
+  discards; cascade layers, dm-integrity and dm-verity are named for what they are. A hidden root
+  on a filesystem the decoy uses is no longer described as if the decoy's stack were its backend:
+  the check skips it and leaves it to `hidden-volume`. See docs/backends.md.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an

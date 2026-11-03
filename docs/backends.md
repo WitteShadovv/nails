@@ -26,7 +26,7 @@ generated mount unit names and the journal. Give the filesystem no label at all
 | **Expected to work** | Any local Linux filesystem that passes the preflight probes (ext4, xfs, btrfs, f2fs) on any other kernel block device, including iSCSI devices | Untested. The preflight probes decide. Network traffic to a remote block device is outside the host-side threat model, and the connection must survive the soft-reboots, which stop every userspace daemon (an iSCSI client among them). |
 | **Unsupported** | NFS, CIFS/SMB, sshfs, 9p, overlays, FUSE filesystems, ZFS datasets and ZFS volumes as the hidden root; FAT, exFAT, NTFS | The attach gate refuses a filesystem that shows no disk it stores its data on (`storage_unjudged`), since where its writes land cannot be told. A ZFS dataset is one: its mount names only its pool, and the gate does not read which disks the pool is on. An image file on such a filesystem is refused the same way, unless the decoy mounts that filesystem at `/` or one of its system folders (`/home`, `/var` and the like) or lists it in its fstab; there an encrypted container only warns, as on a decoy filesystem on an ordinary disk. A ZFS volume (a zvol, `/dev/zd*`) keeps its data in its pool too, so a hidden root on one is refused the same way, whether its filesystem is on the volume itself, on a partition of it or on anything stacked on it, and so is one whose data reaches such a volume any other way: in an image file on a filesystem on it, through a log, journal or other device its filesystem keeps on it, or on a filesystem of the decoy's on it, a bind of a folder of one or the one its fstab mounts at the root included. `--allow-decoy-storage` lifts none of these. A ZFS dataset the decoy mounts elsewhere, or a bind of a folder of one, is refused as the decoy's filesystem instead (see above), which the flag does lift. One its fstab mounts at the root is refused as storage that cannot be judged. FAT, exFAT and NTFS cannot host an overlayfs upper layer and are refused by the `upper-fs-capability` preflight check. |
 | **Unsupported** | A VeraCrypt volume made with Argon2id ("Argon2" in the KDF list of VeraCrypt 1.26.29 and newer) | No cryptsetup release can open it yet, so cryptsetup on the decoy cannot unlock it. See [VeraCrypt volumes made with Argon2id](#veracrypt-volumes-made-with-argon2id). |
-| **Not evaluated** | Shufflecake; volumes mounted by the VeraCrypt application itself | No claims. `backend-detect` names a Shufflecake (`sflc_<dev>_<vol>`) volume in its summary, but no Shufflecake-specific hazards are checked. A cross-backend E2E matrix is not part of the suite yet. |
+| **Not evaluated** | Shufflecake; volumes mounted by the VeraCrypt application itself | No claims. `backend-detect` names a Shufflecake (`sflc_<dev>_<vol>`) volume and a mapping the VeraCrypt application made (`veracrypt<N>`) in its summary, but no Shufflecake-specific hazards are checked. A cross-backend E2E matrix is not part of the suite yet. |
 
 ## Requirements for the hidden root
 
@@ -84,22 +84,52 @@ The `backend-detect` check identifies the device stack under the hidden root.
 Discards over the hidden volume fail activation closed (a stack that rests on
 RAM-only `zram` devices alone is excepted); the other findings only warn. It
 reads `/proc/self/mountinfo` to find the hidden root's device, follows the
-device-mapper and loop layers in `/sys` and reports:
+device-mapper layers in `/sys`, and the device behind a loop over a block
+device (a loop over a file is a file container, whose filesystem it does not
+follow), and reports:
 
 | Finding | Detected from | What to do |
 |---|---|---|
-| **Refuses:** discards are enabled over the hidden volume | a cryptsetup mapping (`dm/uuid` starts with `CRYPT-`) has a non-zero `queue/discard_max_bytes`, or its LUKS2 header `config.flags` holds `allow-discards`; a stack whose bottom devices are all RAM-only `zram` devices is excepted, but not one that also rests on a disk (a logical volume cached on `zram`, say), nor one whose devices the check could not all read (it reads at most 16) | Re-open the hidden volume without discards. For a stored LUKS2 flag, run `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. To accept the risk for one run instead, pass `nails activate --allow-discards`, a NAILS flag distinct from cryptsetup's that only the long help (`--help`) lists. See [Discards](#discards-trim). |
-| The hidden root lives in a file container | A loop device in the stack has a `loop/backing_file` | Accept the [timestamp exposure](#timestamps) or move to a whole-device hidden volume. |
+| **Refuses:** discards are enabled over the hidden volume | a cryptsetup mapping (`dm/uuid` starts with `CRYPT-`) or a mapping the VeraCrypt application made has a non-zero `queue/discard_max_bytes`, or its LUKS2 header `config.flags` holds `allow-discards`; a stack whose bottom devices are all RAM-only `zram` devices is excepted, but not one that also rests on a disk (a logical volume cached on `zram`, say), nor one whose devices the check could not all read (it reads at most 16) | Re-open the hidden volume without discards. For a stored LUKS2 flag, run `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. To accept the risk for one run instead, pass `nails activate --allow-discards`, a NAILS flag distinct from cryptsetup's that only the long help (`--help`) lists. See [Discards](#discards-trim). |
+| The hidden root lives in a file container | A loop device in the stack has a `loop/backing_file` that is a regular file | Accept the [timestamp exposure](#timestamps) or move to a whole-device hidden volume. |
 | The container sits on a copy-on-write filesystem | The container file's filesystem is btrfs, zfs or bcachefs | Prefer a whole-device hidden volume; at least disable automatic snapshots of that filesystem. |
 | The loop device is backed by a file on a FUSE mount | The backing file's filesystem is `fuse.*` (for example the VeraCrypt application without kernel crypto) | The attach gate already refuses such a root (`storage_unjudged`) before the check runs. Open the volume with cryptsetup so the kernel manages the mapping. |
 | The LUKS2 header carries a `systemd-tpm2`, `systemd-fido2` or `systemd-pkcs11` token | `tokens.*.type` in the LUKS2 JSON header | The token names the unlock method in plain text, and a TPM2 token seals the key to this machine's TPM, binding the volume to the host. Remove it with `systemd-cryptenroll --wipe-slot` or `cryptsetup token remove` if the volume must not point at this machine. |
+| The device below a LUKS mapping keeps a LUKS header the mapping was not opened with | The device starts with a LUKS header whose uuid is not the one the mapping names (cryptsetup writes the volume's uuid into `dm/uuid`); or, for a mapping opened with a detached header, the device holds a LUKS2 secondary header at one of the offsets cryptsetup puts one at, 16 KiB to 4 MiB in | blkid and an examiner identify the device as LUKS. See [Leftover LUKS headers](#leftover-luks-headers). |
+| A loop device over a block device was attached without autoclear | `loop/autoclear` is `0` for a loop device whose `loop/backing_file` is a block device | It stays bound after the volume is closed, after a session too, so `losetup -a` on the decoy names it. Detach it with `losetup -d` once the volume is closed. |
 
-The LUKS2 header is read directly from the device node below the mapping (the
-same fields `cryptsetup luksDump` prints), which needs root; a detached header
-or an unreadable device is skipped. A LUKS mapping on a whole device with a
-clean header, a Shufflecake volume, or anything the check cannot identify,
-passes with a one-line description of the stack. A hidden root that is not a
-mount point is skipped; the `hidden-volume` check fails it.
+The check reads the start of the device below each LUKS mapping read-only and
+without changing its access time, which needs root: a LUKS1 or LUKS2 header,
+its uuid, and for LUKS2 the flags and tokens `cryptsetup luksDump` prints. The
+mapping's own header, the one whose uuid the mapping names, shows anyone who
+reads the disk that an encrypted volume is there, and the pass line says so. A
+device that starts with no LUKS header belongs to a mapping opened with a
+detached header, which the description names; the flags and tokens of such a
+header are in its file. An unreadable device leaves the description as it is.
+A mapping the VeraCrypt application made (`veracrypt<N>`, with no uuid) is
+named as such, the further cipher layers of a cascade cryptsetup opened
+(`SUBDEV`) as cascade layers, and dm-integrity and dm-verity mappings as
+mappings that encrypt nothing. A LUKS mapping on a whole device, a Shufflecake
+volume, or anything the check cannot identify, passes with a one-line
+description of the stack. A hidden root that is not a mount point is skipped,
+and so is one on a filesystem the decoy uses (a bind of one of its folders, a
+btrfs subvolume of it, or the filesystem itself), whose stack is the decoy's:
+the `hidden-volume` check reports either.
+
+### Leftover LUKS headers
+
+A volume opened with a detached header (`cryptsetup luksFormat --header
+<file>`) leaves its device without a LUKS signature only when nothing of an
+earlier header is there. If the device held a LUKS volume before, that
+volume's primary header, at the start, or its LUKS2 secondary header, 16 KiB to
+4 MiB in, can be left over, and `backend-detect` warns. What may be
+overwritten depends on where the current volume keeps its data:
+`cryptsetup luksDump <header file>` lists its data segment and the offset it
+starts at. Only the bytes before that offset hold nothing of the volume, so a
+leftover there can be overwritten with random data, from where setup happens.
+A leftover past that offset lies inside the volume's data, and only making the
+volume again, its files copied off and back, removes it. NAILS never writes to
+the device.
 
 ## Encryption in preflight
 
@@ -407,7 +437,8 @@ This is the backend the E2E suite runs on.
   (`cryptsetup luksFormat --header <file>`, kept on separate media and passed
   to `open` with `--header`) leaves the device without a signature; fill the
   device with random data before formatting so that used and unused areas
-  look alike.
+  look alike, which also overwrites any header an earlier volume left there
+  (see [Leftover LUKS headers](#leftover-luks-headers)).
 - **Lock sequence:** `sudo umount /mnt/data`, then
   `sudo cryptsetup close data`.
 
