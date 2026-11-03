@@ -30,7 +30,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
-pub use driver::{PROC_DEVICES, block_majors, major_of, parse_block_majors};
+pub use driver::{PROC_DEVICES, SHARED_RANGE, block_majors, major_of, parse_block_majors};
 pub use spec::{btrfs_filesystems, btrfs_members, resolve_spec};
 pub use walk::{classify_dm, device_numbered, device_of_mount, stack, walk};
 

@@ -748,35 +748,36 @@ of this changelog for that version becomes the release notes word for word, and
   nothing, as two partitions of one disk share nothing.
 - The attach gate refuses a hidden root on a network block device (`nbd`) or a userspace block
   device (`ublk`) unless `--allow-decoy-storage` is given, and one on a ZFS volume (`zvol`)
-  outright. sysfs shows nothing below such a disk, so a root that `qemu-nbd` or a ublk server
-  served from an image file on the decoy's disk, or a ZFS volume in the decoy's own pool,
-  attached, and every write of a session landed on the decoy's disk. The gate now tells these
-  disks by the driver `/proc/devices` lists for their device number, and a `ublk` disk, whose
-  number comes from the range the kernel shares between drivers, by the name its driver gives it.
-  It refuses a root whose data reaches one anywhere on the way down: the disk itself, a partition
-  of it, an encrypted mapping, a logical volume or an md array on it, an image file on a
-  filesystem on it, or a device the root's filesystem keeps data on besides the one it is mounted
-  from. That is an XFS log or realtime device, which the mount options name, an ext3 or ext4
-  journal on a device of its own, which jbd2 lists and the filesystem's journal thread names, and
-  the other devices of a bcachefs filesystem, which its source names. The gate weighs those
-  devices for a filesystem that holds an image file on the root's way and for the decoy's mounted
-  filesystems too, and refuses a root as storage that cannot be judged (`storage_unjudged`) when
-  one of them cannot be read or found. An `nbd` or `ublk` device is refused as not storage of its own
-  (`not_separate_volume`), and `--allow-decoy-storage` turns that into a warning for a device you
-  know is served from storage the decoy does not use, so the window offers "Allow for This
-  Activation…" for it. An image file on a decoy filesystem that lies on such a device is refused
-  as an image file on that filesystem, and an encrypted container there, which would only warn on
-  another disk, as on the device. A ZFS volume is refused as storage whose disks cannot be told
-  (`storage_unjudged`), as a ZFS dataset is, and no flag lifts that, not even for a root on a
-  filesystem of the decoy's on the volume or one the decoy's fstab mounts from it. A disk whose
-  driver the kernel does not name is refused the same way, and so is a root on any disk where
-  `/proc/devices` cannot be read, on a loop device that shows no file (its path is longer than the
-  kernel shows), or below a device whose devices sysfs cannot list. A loop device over the node of
-  a device outside `/dev` is judged as that device, by the loop driver's record, and a `zram`
-  device with the device it writes pages back to. A root that shares a device only with entries
-  the decoy never mounts at boot, which only warns, no longer hides such a refusal, nor that of an
-  image file whose filesystem cannot be told. Ordinary disks, iSCSI disks and `zram` devices that
-  write nothing back are judged as before.
+  outright. sysfs shows nothing below such a disk, so a root that `qemu-nbd` or a ublk server served
+  from an image file on the decoy's disk, or a ZFS volume in the decoy's own pool, attached, and
+  every write of a session landed on the decoy's disk. The gate now tells these disks by the driver
+  `/proc/devices` lists for their device number, and a `ublk` disk, whose number comes from the
+  range the kernel shares between drivers, by the name its driver gives it. It refuses a root whose
+  data reaches one anywhere on the way down: the disk itself, a partition of it, an encrypted
+  mapping, a logical volume or an md array on it, an image file on a filesystem on it, or a device
+  the root's filesystem keeps data on besides the one it is mounted from. That is an XFS log or
+  realtime device, which the mount options name, an ext3 or ext4 journal on a device of its own,
+  which jbd2 lists and the filesystem's journal thread names, and the other devices of a bcachefs
+  filesystem, which its source names. The gate weighs those devices for a filesystem that holds an
+  image file on the root's way and for the decoy's mounted filesystems too, and refuses a root as
+  storage that cannot be judged (`storage_unjudged`) when one of them cannot be read or found. An
+  `nbd` or `ublk` device is refused as not storage of its own (`not_separate_volume`), and
+  `--allow-decoy-storage` turns that into a warning for a device you know is served from storage the
+  decoy does not use, so the window offers "Allow for This Activation…" for it. An image file on a
+  decoy filesystem that lies on such a device is refused as an image file on that filesystem, and an
+  encrypted container there, which would only warn on another disk, as on the device. A ZFS volume
+  is refused as storage whose disks cannot be told (`storage_unjudged`), as a ZFS dataset is, and no
+  flag lifts that, not even for a root on a filesystem of the decoy's on the volume or one the
+  decoy's fstab mounts from it. A disk whose driver the kernel does not name is refused the same
+  way, as is a disk on the range of numbers the kernel shares between drivers that sits below no
+  other device and is no `ublk` disk (a zoned loop device, which keeps its zones in files), and so
+  is a root on any disk where `/proc/devices` cannot be read, on a loop device that shows no file
+  (its path is longer than the kernel shows), or below a device whose devices sysfs cannot list. A
+  loop device over the node of a device outside `/dev` is judged as that device, by the loop
+  driver's record, and a `zram` device with the device it writes pages back to. A root that shares a
+  device only with entries the decoy never mounts at boot, which only warns, no longer hides such a
+  refusal, nor that of an image file whose filesystem cannot be told. Ordinary disks, iSCSI disks
+  and `zram` devices that write nothing back are judged as before.
 - The attach gate judges an image file that holds the filesystem the root's image file is on as
   it judges the root's own image file, as deep as such files go. On a decoy filesystem it is
   refused, and where no filesystem mounted here holds it, its loop device's record cannot be read

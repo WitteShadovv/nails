@@ -37,8 +37,11 @@
 //! block device takes its number from the range the kernel shares between
 //! drivers, so only the name its driver gives it, `ublkb<N>`, tells it; the
 //! names `nbd<N>` and `zd<N>` count as well. A disk whose major number no
-//! driver is listed for is untraced, and one whose number or list cannot be
-//! read is unidentified: like an unread loop record, that only counts when
+//! driver is listed for is untraced, and so is one on the shared range that
+//! sits below no other device (in `/sys/devices/virtual/block`) and is no
+//! ublk disk, as a zoned loop device (`zloop<N>`), which keeps its zones in
+//! files, is. One whose number or list cannot be read is unidentified: like
+//! an unread loop record, that only counts when
 //! the hidden root's data reaches the disk. So is a loop device that shows no
 //! file (one bound to none, which nothing reaches, or one whose file's path
 //! the kernel cannot show), and a device whose `slaves/` is there but cannot
@@ -207,6 +210,9 @@ fn read_optional<F: Filesystem>(
     }
 }
 
+/// Where sysfs keeps the block devices that sit below no other device.
+const VIRTUAL_BLOCK: &str = "/sys/devices/virtual/block";
+
 /// Record one device of a walked stack. `majors` are the drivers
 /// `/proc/devices` lists, `None` when it cannot be read.
 fn add_layer<F: Filesystem>(
@@ -319,6 +325,12 @@ fn leaf_kind<F: Filesystem>(
         NodeKind::Served(Served::Network)
     } else if named("ublkb") {
         NodeKind::Served(Served::Userspace)
+    } else if driver == blockdev::SHARED_RANGE && layer.sysfs.starts_with(VIRTUAL_BLOCK) {
+        // The shared range names no driver, and a disk on it that sits below
+        // no other device is whatever a driver made of it: a zoned loop
+        // device keeps its zones in files that sysfs does not show. An NVMe
+        // disk sits below its controller, or below its multipath subsystem.
+        NodeKind::Untraced(Untraced::UnnamedDriver)
     } else if driver == "loop" || named("loop") {
         // A loop device that shows no file was bound to none when it was
         // read, which nothing can reach, or the kernel could not show its

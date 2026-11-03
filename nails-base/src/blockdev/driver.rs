@@ -16,6 +16,10 @@ use std::path::Path;
 /// Where the kernel lists the major numbers its drivers registered.
 pub const PROC_DEVICES: &str = "/proc/devices";
 
+/// What [`PROC_DEVICES`] lists for the range of numbers the kernel shares
+/// between drivers.
+pub const SHARED_RANGE: &str = "blkext";
+
 /// The block drivers the kernel lists in [`PROC_DEVICES`], by major number.
 /// `None` when the file cannot be read.
 pub fn block_majors<F: Filesystem>(fs: &F) -> Option<BTreeMap<u32, String>> {
