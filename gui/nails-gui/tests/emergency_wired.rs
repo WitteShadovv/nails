@@ -8,7 +8,8 @@
 //! worker stuck on a request the helper never answers, an open question
 //! whose plan waits, a flood of updates the window draws a turn at a time
 //! through its mailbox, as its event loop does, and a window with no helper
-//! at all.
+//! at all. The request asks for the ending the settings name once the window
+//! read them, and for a power-off before.
 
 mod screen;
 mod support;
@@ -20,18 +21,19 @@ use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::AccessibleRole;
 use nails_api::Event;
-use nails_api::protocol::{DeactivateArgs, EmergencyArgs, Op};
-use nails_gui::emergency::{EMERGENCY_ID, Emergency, Outcome};
+use nails_api::protocol::{ConfigShowArgs, DeactivateArgs, EmergencyArgs, Op};
+use nails_gui::emergency::{EMERGENCY_ID, Emergency, Finish, Outcome};
 use nails_gui::mailbox::{Mailbox, TURN};
 use nails_gui::model::Model;
 use nails_gui::text;
 use nails_gui::worker::{Connect, Kind, Update, spawn};
 use screen::Screen;
 use serde_json::json;
-use support::{FakePowerOff, event, result};
+use support::{FakePowerOff, event, fixture, result};
 use wired::{GRACE, PATIENCE, Wired, helper, next_request};
 
-/// The emergency's own request, as the helper reads it.
+/// The emergency's own request before the window read the settings, as the
+/// helper reads it.
 fn emergency_op() -> Op {
     Op::Emergency(EmergencyArgs {
         poweroff: true,
@@ -73,6 +75,8 @@ fn an_open_question_does_not_hold_the_emergency_up_nor_answer_itself() {
             json!({"schema_version": 2, "command": "status", "ok": true, "data": {
                 "place": "hidden", "attention": null, "hidden_root": "/mnt/data"}}),
         )],
+        // The recorded settings, which return to the decoy.
+        Op::ConfigShow(_) => vec![result(request.id, 0, fixture("config-show"))],
         Op::DeactivatePlan(_) => vec![result(
             request.id,
             0,
@@ -83,7 +87,7 @@ fn an_open_question_does_not_hold_the_emergency_up_nor_answer_itself() {
     });
     let power_off = FakePowerOff::new("exit 0");
     let wired = Wired::new(Connect::Stream(stream), &power_off, true);
-    wired.pump_until(|update| matches!(update, Update::Answered(Kind::Status, _)));
+    wired.pump_until(|update| matches!(update, Update::Answered(Kind::Config, _)));
     wired
         .screen
         .find_with(text::DEACTIVATE, AccessibleRole::Button)
@@ -93,17 +97,25 @@ fn an_open_question_does_not_hold_the_emergency_up_nor_answer_itself() {
 
     wired.hold();
     assert!(!wired.screen.window.get_question_open());
-    let ops: Vec<Op> = (0..3).map(|_| next_request(&requests).op).collect();
+    assert!(wired.screen.shows(text::EMERGENCY_RETURNING_NOW));
+    let ops: Vec<Op> = (0..4).map(|_| next_request(&requests).op).collect();
     assert_eq!(
         ops,
         [
             Op::Status,
+            Op::ConfigShow(ConfigShowArgs::default()),
             Op::DeactivatePlan(DeactivateArgs { poweroff: false }),
-            emergency_op()
+            // The way back, as the settings say: `nails emergency` without a
+            // flag.
+            Op::Emergency(Finish::Return.args())
         ],
         "the plan was neither applied nor withdrawn first"
     );
     assert_eq!(wired.outcome(), Outcome::HelperAsked);
+    // Still here after the grace: whatever the settings say, the window's
+    // own way out is the power-off.
+    assert_eq!(wired.outcome(), Outcome::PowerOffAsked);
+    assert_eq!(power_off.calls(), ["poweroff --no-ask-password"]);
 }
 
 #[test]

@@ -49,7 +49,11 @@ fn hidden() -> Model {
         model.apply(Update::Connected(crate::client::ours())),
         vec![Ask::Status]
     );
-    assert!(model.apply(status(Value::Null)).is_empty(), "no check here");
+    assert_eq!(
+        model.apply(status(Value::Null)),
+        [Ask::ConfigShow],
+        "no check here: the settings, for the Emergency control"
+    );
     model
 }
 

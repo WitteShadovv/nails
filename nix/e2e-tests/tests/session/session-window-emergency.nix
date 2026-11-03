@@ -3,15 +3,17 @@
 #
 # The window's Emergency control does not ask the person anything and does
 # not go through the window's worker: it writes the engine's emergency onto
-# the helper's pipe itself, as the request
+# the helper's pipe itself, ending as `window.emergency` chose in advance; a
+# power-off, the window's ending before it read the setting, is the request
 #
 #   {"v":1,"id":0,"op":{"emergency":{"poweroff":true,"reboot":false}}}
 #
-# (the window's `emergency::request_line`, which a unit test of the window
-# pins to these bytes). Here the static engine with the `gui` cargo feature
-# serves that request in a hidden NixOS session: a shell client speaks the
-# window's half of the protocol to `nails helper --stdio`, run as root as the
-# launcher and pkexec run it, the hello the helper names and then that line.
+# (the window's `emergency::request_line` for a power-off, which a unit test
+# of the window pins to these bytes). Here the static engine with the `gui`
+# cargo feature serves that request in a hidden NixOS session: a shell client
+# speaks the window's half of the protocol to `nails helper --stdio`, run as
+# root as the launcher and pkexec run it, the hello the helper names and then
+# that line.
 # Where no helper takes the request in time, the window asks logind for the
 # power-off itself, as the operator: `systemctl poweroff --no-ask-password`
 # from its fixed path, with no terminal (the window's streams are

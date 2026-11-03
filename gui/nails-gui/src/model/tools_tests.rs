@@ -97,12 +97,16 @@ fn decoy() -> Model {
     model
 }
 
-/// A hidden session's window.
+/// A hidden session's window, which reads the settings for its Emergency
+/// control first.
 fn hidden() -> Model {
     let mut model =
         Model::new(Some(PathBuf::from("/mnt/data/nails")), false).in_hidden_session(true);
     model.apply(Update::Connected(crate::client::ours()));
-    assert!(model.apply(status("hidden", Value::Null)).is_empty());
+    assert_eq!(
+        model.apply(status("hidden", Value::Null)),
+        [Ask::ConfigShow]
+    );
     model
 }
 

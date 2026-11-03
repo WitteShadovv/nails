@@ -540,7 +540,10 @@ impl Model {
     /// Whether the answer of a `kind` request is the open tool's.
     pub(super) fn answers_tool(&self, kind: Kind) -> bool {
         match kind {
-            Kind::Verify | Kind::Rehearse | Kind::Config => self.tool.is_some(),
+            Kind::Verify | Kind::Rehearse => self.tool.is_some(),
+            // The settings the session reads for its Emergency control are
+            // no answer of another tool's.
+            Kind::Config => matches!(self.tool, Some(Tool::Settings(_))),
             Kind::Plan | Kind::Apply => matches!(self.plan_for, Some(PlanFor::Tool)),
             Kind::Status | Kind::Check | Kind::Recover => false,
         }

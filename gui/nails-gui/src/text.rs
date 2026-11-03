@@ -12,6 +12,7 @@
 
 use std::path::Path;
 
+use crate::emergency::Finish;
 use crate::launch;
 
 mod settings;
@@ -215,8 +216,33 @@ pub const BACKEND_LEFT_OPEN: &str = "A device of the hidden volume could not be 
 /// The Emergency control at rest. Its labels are its markup's own
 /// (`ui/adw/emergency.slint`); the tests read them back against these.
 pub const EMERGENCY: &str = "Emergency";
-/// What the Emergency control's tooltip and description say.
-pub const EMERGENCY_HOW: &str = "Press and hold to end the hidden session now";
+
+/// What the Emergency control's description says: how to use it, and how it
+/// ends the session.
+#[must_use]
+pub fn emergency_how(finish: Finish) -> &'static str {
+    match finish {
+        Finish::Return => {
+            "Press and hold to end the hidden session now and return to the decoy's login screen"
+        }
+        Finish::PowerOff => "Press and hold to end the hidden session now and power off",
+        Finish::Reboot => "Press and hold to end the hidden session now and restart the computer",
+    }
+}
+
+/// The fact on a hidden session's page that says what the Emergency control
+/// does; the label of its setting too.
+pub const FACT_EMERGENCY: &str = "What Emergency does";
+/// Why the Emergency control powers off instead of what its setting says,
+/// after the name of the power-off: the window has not read the setting yet.
+pub const EMERGENCY_NOT_READ: &str = "until the window has read its setting";
+/// The settings could not be read, or the setting holds a value the window
+/// does not know.
+pub const EMERGENCY_UNREADABLE: &str = "as the window could not read its setting";
+/// A return in a hidden session without a way back.
+pub const EMERGENCY_NO_WAY_BACK: &str = "as this session has no way back to the decoy";
+/// The window has no helper to ask for anything else.
+pub const EMERGENCY_NO_HELPER: &str = "as the window cannot reach NAILS";
 /// While the pointer holds it and the bar fills.
 pub const EMERGENCY_KEEP_HOLDING: &str = "Keep Holding";
 /// Once the bar is full.
@@ -225,11 +251,19 @@ pub const EMERGENCY_RELEASE: &str = "Release to End";
 pub const EMERGENCY_HOLD_HINT: &str = "Hold to End the Session";
 /// After the keyboard's first press.
 pub const EMERGENCY_AGAIN: &str = "Press Enter Again to End Now";
-/// Once the emergency fired.
+/// Once the emergency fired to power off.
 pub const EMERGENCY_NOW: &str = "The computer powers off now.";
+/// Once the emergency fired to return to the decoy.
+pub const EMERGENCY_RETURNING_NOW: &str = "Returning to the decoy's login screen now.";
+/// Once the emergency fired to restart.
+pub const EMERGENCY_RESTARTING_NOW: &str = "The computer restarts now.";
 /// The way out that needs nothing of the window or of NAILS.
 pub const POWER_BUTTON_IF_STILL_ON: &str =
     "If the computer does not turn off, hold the power button until it is off.";
+/// What follows a return or a restart that does not come: the window's own
+/// power-off, then the power button.
+pub const POWER_OFF_IF_STILL_HERE: &str = "If the hidden session does not end, the computer \
+     powers off instead. If it stays on, hold the power button until it is off.";
 
 /// A hidden session runs.
 pub const HIDDEN_SESSION: &str = "Hidden Session";

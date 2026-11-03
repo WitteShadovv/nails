@@ -318,6 +318,16 @@ fn render_template(root: &Path, title: &str) -> String {
 # docs/decoy-requirements.md.
 # [sleep_policy]
 # mode = "warn"
+
+# How the window's Emergency control ends a hidden session. It acts on one
+# gesture and asks nothing then, so its ending is chosen here, in advance.
+#   "return" (default): back to the decoy's login screen, as `nails emergency`.
+#   "poweroff": power off, as `nails emergency --poweroff`; RAM decays.
+#   "reboot": a full reboot, as `nails emergency --reboot`; RAM is not cleared.
+# Where the window cannot reach NAILS or read this setting, it powers off.
+# `nails emergency` reads no configuration: its flags choose its ending.
+# [window]
+# emergency = "return"
 "##
     )
 }

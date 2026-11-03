@@ -150,9 +150,10 @@ fn a_hidden_session_page_shows_its_time_and_the_way_out() {
             "place": "hidden", "attention": null, "uptime_seconds": 7800,
             "hidden_root": "/mnt/data", "hidden_root_mounted": true}}),
     ));
-    assert!(
-        screen.asks().iter().all(|ask| *ask == Ask::Status),
-        "no check in a hidden session"
+    assert_eq!(
+        screen.asks(),
+        [Ask::Status, Ask::ConfigShow],
+        "no check in a hidden session: the settings, for the Emergency control"
     );
     assert!(screen.shows("Hidden Session"));
     assert!(screen.shows("Hidden session active for 2 h 10 min."));

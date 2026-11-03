@@ -108,7 +108,7 @@ fn each_kind_fits_the_default_of_its_key() {
 
 #[test]
 fn every_choice_is_a_spelling_the_loader_takes_and_no_other_is() {
-    use crate::config::{PersonaMode, SleepPolicyMode};
+    use crate::config::{PersonaMode, SleepPolicyMode, WindowEmergency};
     let spellings = |values: Vec<serde_json::Value>| -> Vec<String> {
         values
             .into_iter()
@@ -124,7 +124,16 @@ fn every_choice_is_a_spelling_the_loader_takes_and_no_other_is() {
         serde_json::to_value(SleepPolicyMode::Block).unwrap(),
         serde_json::to_value(SleepPolicyMode::Teardown).unwrap(),
     ]);
-    for (name, all) in [("persona.mode", persona), ("sleep_policy.mode", sleep)] {
+    let window = spellings(vec![
+        serde_json::to_value(WindowEmergency::Return).unwrap(),
+        serde_json::to_value(WindowEmergency::Poweroff).unwrap(),
+        serde_json::to_value(WindowEmergency::Reboot).unwrap(),
+    ]);
+    for (name, all) in [
+        ("persona.mode", persona),
+        ("sleep_policy.mode", sleep),
+        ("window.emergency", window),
+    ] {
         let Kind::Choice(choices) = key(name).kind else {
             panic!("{name} is a choice");
         };
@@ -250,6 +259,7 @@ fn every_kind_is_written_as_the_loader_reads_it() {
         set("session_mounts.alert", Value::Bool(false)),
         set("session_mounts.read_only", Value::Bool(true)),
         set("sleep_policy.mode", string("teardown")),
+        set("window.emergency", string("poweroff")),
     ];
     assert_eq!(edits.len(), SETTINGS.len());
     let text = edited("", &edits);
@@ -273,6 +283,10 @@ fn every_kind_is_written_as_the_loader_reads_it() {
     assert_eq!(
         config.sleep_policy.mode,
         crate::config::SleepPolicyMode::Teardown
+    );
+    assert_eq!(
+        config.window.emergency,
+        crate::config::WindowEmergency::Poweroff
     );
     // Each table once, after the keys at the top.
     assert_eq!(text.matches("[persona]").count(), 1, "{text}");
