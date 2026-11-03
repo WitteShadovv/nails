@@ -41,6 +41,9 @@ pub struct OutputSettings {
     /// Animate progress (a redrawn spinner line) on stderr. Only for human
     /// output on an interactive terminal that understands cursor control.
     pub progress_animation: bool,
+    /// stderr is a terminal, so a Ctrl+C's `^C`, which the terminal echoes
+    /// where the cursor stands, stands before the next line written there.
+    pub stderr_tty: bool,
 }
 
 impl Default for OutputSettings {
@@ -53,6 +56,7 @@ impl Default for OutputSettings {
             color_stderr: false,
             ascii: false,
             progress_animation: false,
+            stderr_tty: false,
         }
     }
 }
@@ -178,6 +182,7 @@ impl OutputSettings {
             color_stderr,
             ascii,
             progress_animation,
+            stderr_tty: env.stderr_tty,
         }
     }
 
@@ -269,6 +274,31 @@ mod tests {
         let settings = resolve(GlobalArgs::default(), &piped_stderr);
         assert!(settings.color_stdout);
         assert!(!settings.color_stderr);
+        assert!(!settings.stderr_tty);
+    }
+
+    /// Whether stderr is a terminal is kept as the probe found it, whatever
+    /// the colour, the mode or `TERM` say: a `^C` echo lands there all the
+    /// same.
+    #[test]
+    fn stderr_is_a_terminal_as_the_probe_found_it() {
+        for json in [false, true] {
+            let args = GlobalArgs {
+                json,
+                color: ColorChoice::Never,
+                ..GlobalArgs::default()
+            };
+            let dumb = Environment {
+                term: Some("dumb".to_string()),
+                ..terminal()
+            };
+            assert!(resolve(args.clone(), &dumb).stderr_tty, "json: {json}");
+            let piped = Environment {
+                stderr_tty: false,
+                ..terminal()
+            };
+            assert!(!resolve(args, &piped).stderr_tty, "json: {json}");
+        }
     }
 
     #[test]

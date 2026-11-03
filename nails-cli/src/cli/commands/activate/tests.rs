@@ -558,3 +558,96 @@ fn the_answer_decides_how_the_activation_ends() {
         Some(130)
     );
 }
+
+/// The activations that need the attach gate to accept the hidden root: each
+/// runs in an unprivileged user + mount namespace with a tmpfs as the root.
+mod kernel_tests {
+    use super::super::{begin, cancel_facts, finish};
+    use crate::cli::args::ActivateArgs;
+    use crate::cli::output::activate::CancelFacts;
+    use crate::cli::output::{ExitStatus, OutputSettings};
+    use nails_core::app::activate::RootStorage;
+    use nails_core::test_path;
+    use nails_core::test_support::{CHILD_ENV, Outcome, Rerun, ScratchTmpfs};
+    use std::io::Read;
+
+    /// An activation on a tmpfs volume of its own, cancelled once its
+    /// question is answered (here skipped with `-y`), first with stderr a
+    /// terminal as the settings found it, then without one. What the cancel
+    /// may say is read from the activation and the settings, and the notice
+    /// says nothing was written to this computer's disk. On the terminal it
+    /// starts on a line of its own, below the `^C` the terminal echoed; off
+    /// one it does not.
+    #[test]
+    fn a_cancel_after_the_question_starts_below_the_echo_on_a_terminal() {
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        let rerun = Rerun::new(test_path!(
+            a_cancel_after_the_question_starts_below_the_echo_on_a_terminal
+        ))
+        .in_user_mount_ns()
+        .stderr(writer.into());
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rerun.run(|| {
+                let volume = ScratchTmpfs::new("");
+                let dir = tempfile::tempdir().unwrap();
+                let config = dir.path().join("nails.toml");
+                std::fs::write(
+                    &config,
+                    format!(
+                        "hidden_volume_root = {:?}\nstate_file_path = {:?}\n\
+                         show_opsec_reminders = false\n",
+                        volume.path().display().to_string(),
+                        volume.path().join("state.json").display().to_string()
+                    ),
+                )
+                .unwrap();
+                let env = nails_core::RuntimeEnv::default();
+                let args = ActivateArgs {
+                    yes: true,
+                    overlay_only: true,
+                    ..ActivateArgs::default()
+                };
+                // A Ctrl+C before the activation goes on past its question.
+                nails_core::cancel::testing::request();
+                for stderr_tty in [true, false] {
+                    let settings = OutputSettings {
+                        stderr_tty,
+                        ..OutputSettings::default()
+                    };
+                    let Ok(begun) = begin(&settings, &env, &args, Some(&config)) else {
+                        panic!("the activation ended before its question");
+                    };
+                    assert_eq!(
+                        cancel_facts(&settings, &begun.locked),
+                        CancelFacts {
+                            storage: RootStorage::OwnVolume,
+                            builds: false,
+                            on_terminal: stderr_tty,
+                        }
+                    );
+                    let status = finish(&settings, begun.locked, || {
+                        panic!("a cancelled activation reached its point of no return")
+                    });
+                    assert_eq!(status, ExitStatus::Cancelled);
+                }
+            })
+        }));
+        if std::env::var_os(CHILD_ENV).is_some() {
+            // The child ran the body, and fails as it did; its output is the
+            // parent's to judge.
+            if let Err(panic) = outcome {
+                std::panic::resume_unwind(panic);
+            }
+            return;
+        }
+        let mut stderr = String::new();
+        reader.read_to_string(&mut stderr).unwrap();
+        match outcome {
+            Ok(Outcome::Ran) => {}
+            Ok(Outcome::Skipped(_)) => return,
+            Err(_) => panic!("the activation in the namespace failed; its stderr:\n{stderr}"),
+        }
+        let notice = "\u{25cb} Activation cancelled. It wrote nothing to this computer's disk.";
+        assert_eq!(stderr, format!("\n{notice}\n{notice}\n"));
+    }
+}

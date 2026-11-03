@@ -192,12 +192,13 @@ pub fn execute(
 /// What a cancel of `locked` may say, read in this one place for the prompt
 /// and for every step after it: where the attach gate found the hidden
 /// volume, whether the activation builds a hidden NixOS system, and whether
-/// its notice goes to a terminal.
+/// stderr, where a person reads the notice, is a terminal (under `--json` the
+/// envelope goes to stdout and the line break does not apply).
 fn cancel_facts(settings: &OutputSettings, locked: &LockedActivation) -> CancelFacts {
     CancelFacts {
         storage: locked.root_storage(),
         builds: locked.builds_hidden_system(),
-        on_terminal: !settings.is_json() && std::io::stderr().is_terminal(),
+        on_terminal: settings.stderr_tty,
     }
 }
 
