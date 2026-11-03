@@ -100,6 +100,36 @@ fn computed_target(text: &str) -> bool {
             .contains(['$', '`'])
 }
 
+/// Where among `args`, the words after the builtin `command`, an expansion
+/// makes the name of a parameter it sets: `getopts`'s second word, the
+/// parameter `zstyle -s`, `-a`, `-b` or `-g` sets, a `strftime -s`'s, and any
+/// word of `vared`, `zparseopts`, `sysread`, `zstat`, `zselect`,
+/// `pcre_match`, `zregexparse` and `zsystem`, which take such names among
+/// their options. `None` when none does.
+fn names_parameter(command: &str, args: &[Word]) -> Option<usize> {
+    let computed = |word: &Word| word.expands || word.text.contains(['$', '`']);
+    match command {
+        "getopts" => args.get(1).filter(|word| computed(word)).map(|_| 1),
+        "zstyle" => {
+            let flag = args.first()?.text.as_str();
+            let at = match flag {
+                "-s" | "-a" | "-b" => 3,
+                "-g" => 1,
+                _ => return None,
+            };
+            args.get(at).filter(|word| computed(word)).map(|_| at)
+        }
+        "strftime" => args
+            .iter()
+            .position(|word| word.text == "-s")
+            .map(|at| at + 1)
+            .filter(|&at| args.get(at).is_some_and(computed)),
+        "vared" | "zparseopts" | "sysread" | "zstat" | "zselect" | "pcre_match" | "zregexparse"
+        | "zsystem" => args.iter().position(computed),
+        _ => None,
+    }
+}
+
 /// Whether `args`, the words after `functions`, `typeset` or the like
 /// (`command`), mark the functions they name to be autoloaded: `functions`
 /// with `-u` or `-U`, `typeset` with `-f` and one of those.
@@ -250,6 +280,7 @@ impl Walker<'_> {
         self.autoloads += nested.autoloads;
         self.fpaths += nested.fpaths;
         self.fcs += nested.fcs;
+        self.indirects += nested.indirects;
         self.may_stop |= nested.may_stop;
         let uncertain = !unconditional || nested.confused;
         for mut event in nested.events {
@@ -449,12 +480,27 @@ impl Walker<'_> {
         self.mention_arithmetic(text);
     }
 
+    /// Note a doubt for each assignment in `text`, a word of the file's
+    /// code, to a parameter whose name another one holds
+    /// ([`backstop::indirect_assignments`]): it can set any parameter.
+    pub(super) fn indirect(&mut self, text: &str) {
+        let found = backstop::indirect_assignments(text);
+        if found > 0 {
+            self.indirects += found;
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which parameter `{text}` in {} sets",
+                self.place
+            )));
+        }
+    }
+
     /// Note what an arithmetic command, `text`, names: its options, and a
     /// `ZDOTDIR` it may set ([`Walker::mention`]); no glob is expanded in
     /// it, and what `${+name}` tests sets nothing.
     pub(super) fn mention_arithmetic(&mut self, text: &str) {
         self.mention_options(text);
         self.reexpansion(text);
+        self.indirect(text);
         if ["ZDOTDIR=", "ZDOTDIR:=", "ZDOTDIR::=", "ZDOTDIR+="]
             .iter()
             .any(|form| text.contains(form))
@@ -512,6 +558,12 @@ impl Walker<'_> {
                 self.mention(&arg.text);
             }
             return;
+        }
+        if let Some(at) = names_parameter(&command.text, &args) {
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which parameter `{} {}` in {} sets",
+                command.text, args[at].text, self.place
+            )));
         }
         match command.text.as_str() {
             "setopt" | "unsetopt" => {
@@ -598,30 +650,7 @@ impl Walker<'_> {
             "trap" => self.trap(&args, unconditional),
             "sched" => self.sched(&args, unconditional),
             "zstyle" => self.zstyle(&args, unconditional),
-            "print" | "printf" | "read" => {
-                let mut target = command.text == "read";
-                // `print -P` expands its words as a prompt.
-                let mut prompt = false;
-                let mut options = true;
-                for arg in &args {
-                    if target && arg.expands && computed_target(&arg.text) {
-                        self.events.push(Event::Doubt(format!(
-                            "it cannot tell which parameter `{} {}` in {} sets",
-                            command.text, arg.text, self.place
-                        )));
-                    }
-                    let flag = options && arg.text.starts_with('-') && arg.text.len() > 1;
-                    options &= flag && arg.text != "--";
-                    prompt |= flag && command.text == "print" && arg.text.contains('P');
-                    if prompt && !flag {
-                        let text = format!("print -P {}", arg.text);
-                        self.prompt(&text, arg);
-                    }
-                    // `-v` names the parameter `print` and `printf` set.
-                    target = command.text == "read" || arg.text == "-v";
-                    self.mention(&arg.text);
-                }
-            }
+            "print" | "printf" | "read" => self.print(&command.text, &args),
             "return" | "exit" => self.may_stop = true,
             "fc" => self.fc(&args),
             "autoload" => {
@@ -653,6 +682,34 @@ impl Walker<'_> {
         }
     }
 
+    /// The events of a `print`, `printf` or `read` (`command`) of `args`:
+    /// the parameter `read` and `-v` set, when an expansion makes its name, is
+    /// a doubt, and what `print -P` expands as a prompt counts as a prompt.
+    fn print(&mut self, command: &str, args: &[Word]) {
+        let mut target = command == "read";
+        // `print -P` expands its words as a prompt.
+        let mut prompt = false;
+        let mut options = true;
+        for arg in args {
+            if target && arg.expands && computed_target(&arg.text) {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell which parameter `{command} {}` in {} sets",
+                    arg.text, self.place
+                )));
+            }
+            let flag = options && arg.text.starts_with('-') && arg.text.len() > 1;
+            options &= flag && arg.text != "--";
+            prompt |= flag && command == "print" && arg.text.contains('P');
+            if prompt && !flag {
+                let text = format!("print -P {}", arg.text);
+                self.prompt(&text, arg);
+            }
+            // `-v` names the parameter `print` and `printf` set.
+            target = command == "read" || arg.text == "-v";
+            self.mention(&arg.text);
+        }
+    }
+
     /// The events of `word` when it assigns `ZDOTDIR`, `XDG_CONFIG_HOME`,
     /// `fpath` or `FPATH`, and its mentions.
     pub(super) fn assignment(&mut self, word: &Word, unconditional: bool) {
@@ -665,6 +722,13 @@ impl Walker<'_> {
                 // An alias, by the parameter that holds them.
                 self.mention(&word.text);
                 self.alias_value(&word.text, value, word, unconditional);
+                return;
+            }
+            if matches!(name, "functions" | "dis_functions") && target.contains('[') {
+                // A function, by the parameter that holds them, whose body
+                // is the value.
+                self.mention(&word.text);
+                self.function_value(target, value, word);
                 return;
             }
             if PROMPTS.contains(&name) {
@@ -698,6 +762,29 @@ impl Walker<'_> {
             },
             unconditional,
         });
+    }
+
+    /// The events of the body `value` that the word `word` gives the
+    /// function its `target` names (`functions[precmd]=...`), read as that
+    /// function's body where the walk can read it whole; with an expansion,
+    /// or for a name an expansion makes, a doubt.
+    fn function_value(&mut self, target: &str, value: &str, word: &Word) {
+        let name = target
+            .split_once('[')
+            .and_then(|(_, key)| key.strip_suffix(']'))
+            .filter(|name| is_name(&name.replace(['-', '.', ':'], "_")));
+        match name {
+            // Its `$` stands in the body, as in any function's, unless the
+            // word expands it as it assigns it.
+            Some(name) if !word.expands => {
+                let code = format!("{name}() {{\n{value}\n}}");
+                self.nested(&code, false);
+            }
+            _ => self.events.push(Event::Doubt(format!(
+                "it cannot tell what code `{}` in {} gives a function",
+                word.text, self.place
+            ))),
+        }
     }
 
     /// The events of `word` when it sets `fpath` (`fpath+=dir`,

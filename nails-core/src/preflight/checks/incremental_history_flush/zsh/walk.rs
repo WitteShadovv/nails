@@ -218,6 +218,9 @@ struct Walker<'a> {
     /// How many `fc` commands it read that write the history file or whose
     /// words it cannot read.
     fcs: usize,
+    /// How many assignments by a name another parameter holds it read
+    /// ([`backstop::indirect_assignments`]).
+    indirects: usize,
     pending: Pending,
 }
 
@@ -635,6 +638,16 @@ impl Walker<'_> {
                 }
             }
         }
+        if matches!(
+            name.as_str(),
+            "functions" | "dis_functions" | "aliases" | "galiases" | "saliases"
+        ) {
+            // Function bodies or alias values, each beside its name.
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what code `{name}=(...)` in {} gives",
+                self.place
+            )));
+        }
         if name == "options"
             && let Some(item) = items.iter().find(|item| item.expands)
         {
@@ -798,6 +811,7 @@ struct Walked {
     autoloads: usize,
     fpaths: usize,
     fcs: usize,
+    indirects: usize,
     may_stop: bool,
 }
 
@@ -826,6 +840,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         autoloads: 0,
         fpaths: 0,
         fcs: 0,
+        indirects: 0,
         pending: Pending::default(),
     }
     .walk();
@@ -853,6 +868,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         autoloads: walker.autoloads,
         fpaths: walker.fpaths,
         fcs: walker.fcs,
+        indirects: walker.indirects,
         may_stop: walker.may_stop,
     }
 }
@@ -917,6 +933,12 @@ pub(super) fn events(text: &str, place: &str) -> Read {
         events.push(Event::Doubt(format!(
             "it cannot follow an `fc` that a line of {place} may run, which can write the \
              history file"
+        )));
+    }
+    if named.indirects > walked.indirects {
+        events.push(Event::Doubt(format!(
+            "it cannot tell which parameter a line of {place} may set by the name another one \
+             holds"
         )));
     }
     Read {
