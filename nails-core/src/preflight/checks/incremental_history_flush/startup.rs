@@ -28,6 +28,9 @@ pub(super) struct Write {
     /// Whether the shell writes a command line as it is entered, rather than
     /// once the command ends.
     pub entered: bool,
+    /// Whether it is one of zsh's options, which the check counts as on
+    /// wherever a file names it, a turn-off too.
+    pub option: bool,
 }
 
 /// What the check read of a shell's startup files.
@@ -158,6 +161,7 @@ pub(super) fn bash<F: Filesystem>(fs: &F, homes: &[PathBuf]) -> Scan {
                     scan.writes.push(Write {
                         what: format!("{} runs `{command}` from PROMPT_COMMAND", path.display()),
                         entered: false,
+                        option: false,
                     });
                 }
             }

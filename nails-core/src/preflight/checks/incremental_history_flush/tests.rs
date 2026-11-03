@@ -458,7 +458,8 @@ fn passes_on_clean_config() {
         CheckResult::Pass(message) => assert_eq!(
             message,
             "zsh (the shell this command was typed into): no startup file the check reads names \
-             INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
+             INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY, or holds an `fc` that \
+             writes the history file"
         ),
         other => panic!("{other:?}"),
     }
@@ -556,7 +557,8 @@ fn without_a_typed_shell_every_shell_the_check_knows_is_read() {
                 "{NOT_TYPED}: bash (the operator's login shell): no startup file the check reads \
                  runs `history -a` or `history -w` from PROMPT_COMMAND; zsh (a shell the \
                  operator may use): no startup file the check reads names \
-                 INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
+                 INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY, or holds an `fc` \
+                 that writes the history file"
             )
         ),
         other => panic!("{other:?}"),
@@ -647,8 +649,9 @@ fn a_shell_the_command_was_likely_typed_into_is_read_beside_every_shell() {
             format!(
                 "{LIKELY}: zsh (the shell this command was likely typed into): no startup file \
                  the check reads names INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or \
-                 SHARE_HISTORY; bash (a shell the operator may use): no startup file the check \
-                 reads runs `history -a` or `history -w` from PROMPT_COMMAND"
+                 SHARE_HISTORY, or holds an `fc` that writes the history file; bash (a shell the \
+                 operator may use): no startup file the check reads runs `history -a` or \
+                 `history -w` from PROMPT_COMMAND"
             )
         ),
         other => panic!("{other:?}"),
@@ -1103,6 +1106,21 @@ fn a_warning_gives_the_fix_the_check_can_see() {
             )
             && !message.contains(fix),
         "{message}"
+    );
+}
+
+#[test]
+fn an_fc_that_writes_the_history_file_is_named_in_the_warning() {
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "precmd() { fc -AI }\n");
+    assert_eq!(
+        warning(zsh(&fs)),
+        format!(
+            "zsh, the shell this command was typed into, may write each command line to its \
+             history file as you enter it: /home/alice/.zshrc names `fc -AI`. So {ON_DISK}. Type \
+             the decoy commands in a zsh started as `zsh -f`, which reads no startup file but \
+             /etc/zshenv."
+        )
     );
 }
 

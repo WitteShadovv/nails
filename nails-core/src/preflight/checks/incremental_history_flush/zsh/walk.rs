@@ -70,6 +70,8 @@ pub(super) enum Event {
     /// A function is marked to be autoloaded: its name, or the path of its
     /// file.
     Autoload(Word),
+    /// An `fc` that writes the history file, as written (`fc -AI`).
+    Fc(String),
 }
 
 /// How a loop's body ends.
@@ -170,6 +172,9 @@ struct Walker<'a> {
     autoloads: usize,
     /// How often it read `fpath` or `FPATH` set ([`backstop::fpath_writes`]).
     fpaths: usize,
+    /// How many `fc` commands it read that write the history file or whose
+    /// words it cannot read.
+    fcs: usize,
     pending: Pending,
 }
 
@@ -694,6 +699,7 @@ struct Walked {
     zdotdirs: usize,
     autoloads: usize,
     fpaths: usize,
+    fcs: usize,
     may_stop: bool,
 }
 
@@ -721,6 +727,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         zdotdirs: 0,
         autoloads: 0,
         fpaths: 0,
+        fcs: 0,
         pending: Pending::default(),
     }
     .walk();
@@ -747,6 +754,7 @@ fn walk_text(text: &str, place: &str) -> Walked {
         zdotdirs: walker.zdotdirs,
         autoloads: walker.autoloads,
         fpaths: walker.fpaths,
+        fcs: walker.fcs,
         may_stop: walker.may_stop,
     }
 }
@@ -803,6 +811,12 @@ pub(super) fn events(text: &str, place: &str) -> Read {
     }
     if named.fpaths > walked.fpaths {
         events.push(Event::Fpath(None));
+    }
+    if named.fcs > walked.fcs {
+        events.push(Event::Doubt(format!(
+            "it cannot follow an `fc` that a line of {place} may run, which can write the \
+             history file"
+        )));
     }
     Read {
         events,

@@ -4,11 +4,11 @@
 //! What a startup file's lines name, counted without the lexer and
 //! wherever it stands: the options that write each command line to the
 //! history file, `source`, a `.` with a word after it, `eval`, an alias that
-//! stands for `.`, `autoload`, and the `ZDOTDIR` and `fpath` settings. The
-//! walk counts the same as it reads them as code it follows, and what the
-//! lines name beyond that is what it did not follow: an option named there
-//! counts as on, an `fpath` setting adds a directory the check cannot follow,
-//! and the rest is a doubt.
+//! stands for `.`, `autoload`, an `fc` that may write the history file, and
+//! the `ZDOTDIR` and `fpath` settings. The walk counts the same as it reads
+//! them as code it follows, and what the lines name beyond that is what it
+//! did not follow: an option named there counts as on, an `fpath` setting
+//! adds a directory the check cannot follow, and the rest is a doubt.
 //!
 //! Only a line whose first character that is not a blank is `#` is left out,
 //! so an option a comment at the end of a line names counts as on too, and a
@@ -32,6 +32,9 @@ pub(super) struct Named {
     pub(super) autoloads: usize,
     /// `fpath` and `FPATH` where they are not read ([`fpath_writes`]).
     pub(super) fpaths: usize,
+    /// `fc` with a flag that writes the history file, or an expansion
+    /// ([`fc_writes`]).
+    pub(super) fcs: usize,
 }
 
 /// What the lines of zsh code `text` name.
@@ -49,8 +52,54 @@ pub(super) fn named(text: &str) -> Named {
         named.zdotdirs += zdotdir_writes(line);
         named.autoloads += whole_words(line, "autoload");
         named.fpaths += fpath_writes(line);
+        named.fcs += fc_writes(line);
     }
     named
+}
+
+/// The flags of `fc` that write the history file: `-A` appends to it, `-W`
+/// writes it, and `-P` writes the list it pops.
+pub(super) const FC_WRITES: [char; 3] = ['A', 'W', 'P'];
+
+/// Whether `word`, a word of an `fc` command with its quotes taken off, is
+/// one of its flags: a `-` and a letter (`-AI`), not a number (`-10`).
+pub(super) fn is_fc_flag(word: &str) -> bool {
+    word.strip_prefix('-')
+        .is_some_and(|flags| flags.starts_with(|c: char| c.is_ascii_alphabetic()))
+}
+
+/// How often an `fc` stands in `line` as a word of its own with a flag
+/// after it that writes the history file ([`FC_WRITES`]), or an expansion
+/// that may be one, before its options end or the command does.
+fn fc_writes(line: &str) -> usize {
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
+    line.match_indices("fc")
+        .filter(|&(at, found)| {
+            let rest = &line[at + found.len()..];
+            if line[..at].chars().next_back().is_some_and(part)
+                || rest.chars().next().is_some_and(part)
+            {
+                return false;
+            }
+            let command = rest
+                .split([';', '&', '|', '(', ')', '`', '}'])
+                .next()
+                .unwrap_or_default();
+            for word in command.split_whitespace() {
+                let word = word.replace(['\'', '"', '\\'], "");
+                if word.contains('$') {
+                    return true;
+                }
+                if !is_fc_flag(&word) {
+                    return false;
+                }
+                if word.contains(FC_WRITES) {
+                    return true;
+                }
+            }
+            false
+        })
+        .count()
 }
 
 /// How often `word` stands in `line` as a word of its own: with no letter,
