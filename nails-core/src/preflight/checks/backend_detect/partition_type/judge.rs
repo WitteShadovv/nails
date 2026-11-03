@@ -250,19 +250,22 @@ fn capitalized(text: &str) -> String {
 }
 
 /// When systemd acts on a partition of `role`, one of the types it uses
-/// only under some conditions.
+/// only under some conditions. systemd 254 and 255 look for fstab lines
+/// that mount `/boot` or `/efi` themselves; from systemd 256 on, a line that
+/// mounts anything at or below either, such as `/boot/efi`, stops it too.
 fn rare_use(role: AutoRole) -> &'static str {
     match role {
         AutoRole::Esp => {
             "mounts the first EFI system partition of that disk at /boot or /efi when no fstab \
-             line mounts anything at or below either and one of them is empty or missing, on a \
-             UEFI boot only when the boot loader says it started from that disk, on a BIOS boot \
-             without that condition"
+             line mounts that folder (from systemd 256 on, anything at or below either) and it \
+             is empty or missing, on a UEFI boot only when the boot loader says it started from \
+             that disk, on a BIOS boot without that condition"
         }
         AutoRole::Xbootldr => {
             "mounts the first extended boot loader partition of that disk at /boot when no \
-             fstab line mounts anything at or below /boot or /efi and /boot is empty or missing, \
-             on a UEFI boot only when the boot loader says it started from that disk"
+             fstab line mounts /boot (from systemd 256 on, anything at or below /boot or /efi) \
+             and /boot is empty or missing, on a UEFI boot only when the boot loader says it \
+             started from that disk"
         }
         _ => {
             "takes a root partition from that disk at boot only when the kernel command line \
