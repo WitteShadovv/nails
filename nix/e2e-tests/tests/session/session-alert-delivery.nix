@@ -24,7 +24,8 @@
 #
 #   1. `sudo nails rehearse plant`, run by testuser, shows its notification
 #      canary: the server receives it from testuser's uid, through the
-#      expected program, and plant records the channel as planted;
+#      expected program, with normal urgency, and plant records the channel
+#      as planted;
 #   2. a disk mounted read-write makes the session watcher, a root system
 #      unit, alert the owner of seat0's active session: the server receives
 #      the critical "Disk mounted with write access" from testuser's uid.
@@ -151,7 +152,8 @@ in
             [reminder] = desktop.wait_for(machine, uid, "Reminder")
             assert_from_the_operator(reminder, uid, program)
             assert reminder["body"].startswith("rehearse-"), reminder
-            assert reminder["hints"]["urgency"] == 0, reminder
+            # Normal urgency, so the desktop shows it as any other message.
+            assert reminder["hints"]["urgency"] == 1, reminder
 
         with subtest(f"{program}: the watcher's alert reaches the owner of seat0's session"):
             machine.succeed(f"mkdir -p /mnt/extra && mount {EXTRA} /mnt/extra")
