@@ -1009,38 +1009,58 @@ Nix install leaves behind. It looks for:
   `/lib/systemd/system`, a link to one in a `.wants`, `.requires` or
   `.upholds` directory of `/etc/systemd/system`, a drop-in directory for one
   there, and `/etc/tmpfiles.d/nix-daemon.conf`;
-- `/etc/nix`, and a `nix` command in `/usr/bin` or `/usr/local/bin`, where a
-  distribution's package puts it;
-- the `nixbld` group in `/etc/group`, and the build users in `/etc/passwd`:
-  `nixbld` or `_nixbld` followed by a number, and any user whose group is
-  `nixbld`;
+- `/etc/nix`, and a `nix` command in `/usr/bin`, where a distribution's
+  package puts it, or in `/usr/local/bin`;
+- the `nixbld` group in `/etc/group` and `/etc/gshadow`, and the build users
+  in `/etc/passwd` and `/etc/shadow`: `nixbld` or `_nixbld` followed by a
+  number, and in `/etc/passwd` any user whose group is `nixbld`. It looks in
+  `/etc/group-`, `/etc/gshadow-`, `/etc/passwd-` and `/etc/shadow-` as well,
+  the copy of each file that shadow-utils keeps as it was before its last
+  change: after `userdel` and `groupdel` remove the build users and the group,
+  these copies still name the group and the last user removed;
 - the shell hooks: `/etc/profile.d/nix.sh` and `nix-daemon.sh`,
-  `/etc/fish/conf.d/nix.fish`, a line naming `/nix/var/nix/profiles/` in
-  `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/zshrc` or `/etc/zsh/zshrc`, and the
-  copy the installer keeps of each of these files and of
+  `conf.d/nix.fish` in `/etc/fish`, `/usr/local/etc/fish`,
+  `/opt/homebrew/etc/fish` and `/opt/local/etc/fish`, a line naming
+  `/nix/var/nix/profiles/` or `.nix-profile/etc/profile.d/` in `/etc/bashrc`,
+  `/etc/bash.bashrc`, `/etc/profile`, `/etc/zshrc` or `/etc/zsh/zshrc`, and the
+  copy the installer keeps of each of these files but `/etc/profile`, and of
   `/etc/profile.d/nix.sh`, with `.backup-before-nix` added to its name;
-- `.nix-profile`, `.nix-defexpr`, `.nix-channels`, `.local/state/nix`,
-  `.cache/nix` and `.config/nix` in `/root` and in each home `/etc/passwd`
-  names, unless the home lies on the hidden volume.
+- in `/root` and in each home `/etc/passwd` names: `.nix-profile`,
+  `.nix-defexpr`, `.nix-channels`, `.local/state/nix`, `.local/share/nix`,
+  `.cache/nix`, `.config/nix` and `.config/fish/conf.d/nix.fish`, and such a
+  line in `.bash_profile`, `.bash_login`, `.profile`, `.bashrc`, `.zshenv` or
+  `.zshrc`, where the single-user installer adds its hook.
 
 It names each one it finds and never refuses, since the decoy may need Nix for
 itself. Where it cannot look up a path or read a file, the warning says so, so
-a decoy it could not see never passes: run `check` with sudo. On NixOS it
-passes. Inside a hidden session it is skipped, because `/` shows the session's
-own files there, its own Nix among them.
+a decoy it could not see never passes: run `check` with sudo, which the shadow
+files and their copies need in any case. On NixOS it passes. Inside a hidden
+session it is skipped, because `/` shows the session's own files there, its own
+Nix among them.
+
+It does not look into a home that lies on the hidden volume, as `/etc/passwd`
+names it or where its links lead. Nor does it look into a home behind an
+automount point that nothing is mounted on yet, as the mount table shows it,
+since the lookup would mount it: the warning names that home instead, and once
+something is mounted there, the check looks into it.
 
 The check writes nothing. It opens each file it reads with `O_NOATIME`, so run
 as root it changes none of their access times (an unprivileged `nails check`
 cannot ask for that, and the links a lookup follows still get theirs), and it
-reads no file that a link leads onto the hidden volume.
+reads no file that a link leads onto the hidden volume. A link onto an
+automount point that nothing is mounted on yet is followed all the same, on
+the way to a home or to a file, and the lookup mounts it.
 
 When it warns, use the decoy's Nix only for what the decoy itself needs, and
 install the hidden session's software inside a hidden session. If the decoy
 does not need Nix, remove it and the traces the check lists long before the
-next session, as the uninstall steps of the installer you used describe. What
-Nix wrote to the decoy disk while it was there can stay readable after it is
-removed, in the filesystem's journal and in unallocated blocks, as any deleted
-file can.
+next session, as the uninstall steps of the installer you used describe. Nix's
+own steps remove the build users and the group with `userdel` and `groupdel`,
+which leave them in the copies `/etc/passwd-`, `/etc/shadow-`, `/etc/group-`
+and `/etc/gshadow-`: the check names each copy until a later change to its file
+replaces it, or you copy the file over it. What Nix wrote to the decoy disk
+while it was there can stay readable after it is removed, in the filesystem's
+journal and in unallocated blocks, as any deleted file can.
 
 The check reads neither the store's database nor what the store holds, and it
 does not look for a Nix installed anywhere else, such as a store at another

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The check on decoy trees laid out in a temporary directory: a stock
-//! Debian, the same with what Nix's multi-user installer writes, with what
-//! an incomplete removal leaves, and with a distribution's Nix package.
+//! Debian, the same with what Nix's multi-user or single-user installer
+//! writes, with what an incomplete removal or Nix's own uninstall steps
+//! leave, and with a distribution's Nix package.
 
 use super::*;
 use crate::RealFilesystem;
@@ -15,8 +16,23 @@ use std::os::unix::fs::PermissionsExt;
 const HOOK: &str = "\n# Nix\nif [ -e '/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh' ]; then\n  \
                     . '/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh'\nfi\n# End Nix\n\n";
 
-/// Where the installer's links into the default profile lead.
-const PROFILE: &str = "/nix/var/nix/profiles/default";
+/// The default profile, relative to the root: the installer's links lead
+/// into it.
+const PROFILE: &str = "nix/var/nix/profiles/default";
+
+/// The hook the single-user installer adds to a home's shell startup files
+/// (install-nix-from-tarball.sh), for the home `/home/alice`.
+const USER_HOOK: &str = "\nif [ -e /home/alice/.nix-profile/etc/profile.d/nix.sh ]; then . \
+                         /home/alice/.nix-profile/etc/profile.d/nix.sh; fi # added by Nix installer\n";
+
+/// The stock accounts: root and one user.
+const STOCK_PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
+                            daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+                            alice:x:1000:1000:Alice:/home/alice:/bin/bash\n";
+const STOCK_SHADOW: &str = "root:*:20000:0:99999:7:::\ndaemon:*:20000:0:99999:7:::\n\
+                            alice:$y$j9T$salt$hash:20000:0:99999:7:::\n";
+const STOCK_GROUP: &str = "root:x:0:\nsudo:x:27:alice\nalice:x:1000:\n";
+const STOCK_GSHADOW: &str = "root:*::\nsudo:*::alice\nalice:!::\n";
 
 /// A decoy tree in a temporary directory.
 struct Decoy {
@@ -26,22 +42,30 @@ struct Decoy {
 
 impl Decoy {
     /// What a stock Debian 13 holds of what the check reads: root and one
-    /// user, a bash.bashrc without Nix, a unit enabled the usual way, and a
-    /// merged `/usr`.
+    /// user, with the account files, their shadow files and the copies
+    /// shadow-utils keeps of them, a bash.bashrc and /etc/profile without Nix,
+    /// the shell startup files of each home, a unit enabled the usual way,
+    /// and a merged `/usr`.
     fn stock() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let decoy = Self { _dir: dir, root };
-        decoy.file(
-            "etc/passwd",
-            "root:x:0:0:root:/root:/bin/bash\n\
-             daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
-             alice:x:1000:1000:Alice:/home/alice:/bin/bash\n",
-        );
-        decoy.file("etc/group", "root:x:0:\nsudo:x:27:alice\nalice:x:1000:\n");
+        for (file, text) in [
+            ("etc/passwd", STOCK_PASSWD),
+            ("etc/shadow", STOCK_SHADOW),
+            ("etc/group", STOCK_GROUP),
+            ("etc/gshadow", STOCK_GSHADOW),
+        ] {
+            decoy.file(file, text);
+            decoy.file(&format!("{file}-"), text);
+        }
         decoy.file(
             "etc/bash.bashrc",
             "# System-wide .bashrc file for interactive bash(1) shells.\nPS1='\\u@\\h:\\w\\$ '\n",
+        );
+        decoy.file(
+            "etc/profile",
+            "PATH=\"/usr/local/bin:/usr/bin:/bin\"\nfor i in /etc/profile.d/*.sh; do . \"$i\"; done\n",
         );
         decoy.dir("etc/profile.d");
         decoy.file("usr/lib/systemd/system/ssh.service", "[Service]\n");
@@ -50,8 +74,13 @@ impl Decoy {
             "/usr/lib/systemd/system/ssh.service",
         );
         decoy.link("lib", "usr/lib");
-        decoy.dir("root");
-        decoy.dir("home/alice");
+        for home in ["root", "home/alice"] {
+            decoy.file(
+                &format!("{home}/.profile"),
+                "[ -f ~/.bashrc ] && . ~/.bashrc\n",
+            );
+            decoy.file(&format!("{home}/.bashrc"), "HISTCONTROL=ignoreboth\n");
+        }
         decoy
     }
 
@@ -80,6 +109,14 @@ impl Decoy {
         std::os::unix::fs::symlink(target, path).unwrap();
     }
 
+    /// A link at `rel` to `target`, both relative to the root: the link
+    /// names the target's path under the root, as the decoy's own absolute
+    /// link names it below `/`, so that it leads to nothing once the target
+    /// is gone, on every host.
+    fn link_in_root(&self, rel: &str, target: &str) {
+        self.link(rel, &self.path(target).display().to_string());
+    }
+
     fn remove(&self, rel: &str) {
         let path = self.path(rel);
         if path.is_dir() && !path.is_symlink() {
@@ -93,6 +130,47 @@ impl Decoy {
         std::fs::set_permissions(self.path(rel), std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    /// The account files as `groupadd` and then a `useradd` per build user
+    /// leave them, the users `nixbld1` to `nixbld<last>`: each user is a
+    /// member of the group, and the copy of each file is what it held before
+    /// the last `useradd`.
+    fn build_accounts(&self, last: u32) {
+        let users = |count: u32, line: &dyn Fn(u32) -> String| -> String {
+            (1..=count).map(line).collect()
+        };
+        let passwd = |n: u32| {
+            format!(
+                "nixbld{n}:x:{}:30000:Nix build user {n}:/var/empty:/sbin/nologin\n",
+                30000 + n
+            )
+        };
+        let shadow = |n: u32| format!("nixbld{n}:!:20000::::::\n");
+        let members = |count: u32| -> String {
+            (1..=count)
+                .map(|n| format!("nixbld{n}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        for (copy, count) in [("", last), ("-", last - 1)] {
+            self.file(
+                &format!("etc/passwd{copy}"),
+                &format!("{STOCK_PASSWD}{}", users(count, &passwd)),
+            );
+            self.file(
+                &format!("etc/shadow{copy}"),
+                &format!("{STOCK_SHADOW}{}", users(count, &shadow)),
+            );
+            self.file(
+                &format!("etc/group{copy}"),
+                &format!("{STOCK_GROUP}nixbld:x:30000:{}\n", members(count)),
+            );
+            self.file(
+                &format!("etc/gshadow{copy}"),
+                &format!("{STOCK_GSHADOW}nixbld:!::{}\n", members(count)),
+            );
+        }
+    }
+
     /// What Nix's multi-user installer writes on a systemd host, run as
     /// root with `--daemon --no-channel-add`: the store, its settings, the
     /// build group and 32 build users, the daemon linked from the default
@@ -104,31 +182,18 @@ impl Decoy {
         self.dir("nix/var/nix/profiles/per-user");
         self.link("nix/var/nix/profiles/default", "default-1-link");
         self.file("etc/nix/nix.conf", "\nbuild-users-group = nixbld\n");
-        let members: Vec<String> = (1..=32).map(|n| format!("nixbld{n}")).collect();
-        self.append(
-            "etc/group",
-            &format!("nixbld:x:30000:{}\n", members.join(",")),
-        );
-        for n in 1..=32 {
-            self.append(
-                "etc/passwd",
-                &format!(
-                    "nixbld{n}:x:{}:30000:Nix build user {n}:/var/empty:/sbin/nologin\n",
-                    30000 + n
-                ),
-            );
-        }
+        self.build_accounts(32);
         for unit in ["nix-daemon.service", "nix-daemon.socket"] {
-            self.link(
+            self.link_in_root(
                 &format!("etc/systemd/system/{unit}"),
                 &format!("{PROFILE}/lib/systemd/system/{unit}"),
             );
         }
-        self.link(
+        self.link_in_root(
             "etc/systemd/system/sockets.target.wants/nix-daemon.socket",
             &format!("{PROFILE}/lib/systemd/system/nix-daemon.socket"),
         );
-        self.link(
+        self.link_in_root(
             "etc/tmpfiles.d/nix-daemon.conf",
             &format!("{PROFILE}/lib/tmpfiles.d/nix-daemon.conf"),
         );
@@ -138,10 +203,83 @@ impl Decoy {
         for stub in ["etc/bashrc", "etc/zshrc", "etc/profile.d/nix.sh"] {
             self.file(stub, HOOK);
         }
-        self.link("root/.nix-profile", PROFILE);
-        self.link(
+        self.link_in_root("root/.nix-profile", PROFILE);
+        self.link_in_root(
             "root/.nix-defexpr/channels",
-            "/nix/var/nix/profiles/per-user/root/channels",
+            "nix/var/nix/profiles/per-user/root/channels",
+        );
+    }
+
+    /// Nix's uninstall steps for a multi-user install on Linux with systemd:
+    /// the units disabled, the files removed, `userdel` for each build user
+    /// and then `groupdel`, and the references to Nix taken out of the shell
+    /// startup files, `/etc/bash.bashrc` by moving its backup back and the
+    /// stubs the installer made by removing them. Each `userdel` changes all
+    /// four account files, so their copies keep the last build user, and the
+    /// `groupdel` the group and its shadow file, whose copies keep the group.
+    fn uninstall_nix(&self) {
+        for unit in [
+            "etc/systemd/system/nix-daemon.service",
+            "etc/systemd/system/nix-daemon.socket",
+            "etc/systemd/system/sockets.target.wants/nix-daemon.socket",
+        ] {
+            self.remove(unit);
+        }
+        for path in [
+            "etc/nix",
+            "etc/profile.d/nix.sh",
+            "etc/tmpfiles.d/nix-daemon.conf",
+            "nix",
+            "root/.nix-defexpr",
+            "root/.nix-profile",
+        ] {
+            self.remove(path);
+        }
+        let last = "nixbld32:x:30032:30000:Nix build user 32:/var/empty:/sbin/nologin\n";
+        self.file("etc/passwd", STOCK_PASSWD);
+        self.file("etc/passwd-", &format!("{STOCK_PASSWD}{last}"));
+        self.file("etc/shadow", STOCK_SHADOW);
+        self.file(
+            "etc/shadow-",
+            &format!("{STOCK_SHADOW}nixbld32:!:20000::::::\n"),
+        );
+        self.file("etc/group", STOCK_GROUP);
+        self.file("etc/group-", &format!("{STOCK_GROUP}nixbld:x:30000:\n"));
+        self.file("etc/gshadow", STOCK_GSHADOW);
+        self.file("etc/gshadow-", &format!("{STOCK_GSHADOW}nixbld:!::\n"));
+        std::fs::rename(
+            self.path("etc/bash.bashrc.backup-before-nix"),
+            self.path("etc/bash.bashrc"),
+        )
+        .unwrap();
+        for stub in ["etc/bashrc", "etc/zshrc"] {
+            self.remove(stub);
+        }
+    }
+
+    /// What Nix's single-user installer writes for alice, run as her with
+    /// `--no-daemon`: the store, owned by her, her profile and channel links,
+    /// the hook in the first of `.bash_profile`, `.bash_login` and `.profile`
+    /// and in the first of `.zshenv` and `.zshrc` that she can write, and the
+    /// Fish hook, as her `~/.config/fish` exists.
+    fn install_nix_for_alice(&self) {
+        self.dir("nix/store");
+        self.dir("nix/var/nix/profiles/per-user/alice");
+        self.link_in_root(
+            "home/alice/.nix-profile",
+            "nix/var/nix/profiles/per-user/alice/profile",
+        );
+        self.dir("home/alice/.nix-defexpr");
+        self.file(
+            "home/alice/.nix-channels",
+            "https://nixos.org/channels/nixpkgs-unstable nixpkgs\n",
+        );
+        self.append("home/alice/.profile", USER_HOOK);
+        self.file("home/alice/.zshrc", USER_HOOK);
+        self.file(
+            "home/alice/.config/fish/conf.d/nix.fish",
+            "\nif test -e /home/alice/.nix-profile/etc/profile.d/nix.fish; . \
+             /home/alice/.nix-profile/etc/profile.d/nix.fish; end # added by Nix installer\n",
         );
     }
 
@@ -189,11 +327,12 @@ fn what_the_installer_writes_is_named_in_its_order() {
         "Nix is installed on the decoy, or was: it holds /nix, \
          /etc/systemd/system/nix-daemon.service, /etc/systemd/system/nix-daemon.socket, \
          /etc/systemd/system/sockets.target.wants/nix-daemon.socket, \
-         /etc/tmpfiles.d/nix-daemon.conf, /etc/nix, the nixbld group in /etc/group, 32 Nix \
-         build users in /etc/passwd (nixbld1, nixbld2 and 30 more), /etc/profile.d/nix.sh, \
-         the Nix lines in /etc/bashrc, the Nix lines in /etc/bash.bashrc, the Nix lines in \
-         /etc/zshrc, /etc/bash.bashrc.backup-before-nix, /root/.nix-profile and \
-         /root/.nix-defexpr."
+         /etc/tmpfiles.d/nix-daemon.conf, /etc/nix, the nixbld group (in /etc/group, \
+         /etc/gshadow, /etc/group- and /etc/gshadow-), 32 Nix build users (nixbld1, nixbld2 \
+         and 30 more, in /etc/passwd, /etc/shadow, /etc/passwd- and /etc/shadow-), \
+         /etc/profile.d/nix.sh, the Nix lines in /etc/bashrc, the Nix lines in \
+         /etc/bash.bashrc, the Nix lines in /etc/zshrc, /etc/bash.bashrc.backup-before-nix, \
+         /root/.nix-profile and /root/.nix-defexpr."
     );
     assert_eq!(
         fix,
@@ -213,6 +352,16 @@ fn what_a_partial_removal_leaves_is_named() {
     decoy.install_nix();
     decoy.remove("nix");
     decoy.remove("etc/nix");
+    // Every link the installer made leads to nothing now.
+    for link in [
+        "etc/systemd/system/nix-daemon.socket",
+        "etc/systemd/system/sockets.target.wants/nix-daemon.socket",
+        "etc/tmpfiles.d/nix-daemon.conf",
+        "root/.nix-profile",
+    ] {
+        assert!(decoy.path(link).is_symlink(), "{link}");
+        assert!(!decoy.path(link).exists(), "{link} leads somewhere");
+    }
     let warning = decoy.warning();
     assert!(!warning.contains("/nix,"), "{warning}");
     assert!(!warning.contains("/etc/nix,"), "{warning}");
@@ -220,7 +369,7 @@ fn what_a_partial_removal_leaves_is_named() {
         "/etc/systemd/system/nix-daemon.socket",
         "/etc/systemd/system/sockets.target.wants/nix-daemon.socket",
         "/etc/tmpfiles.d/nix-daemon.conf",
-        "the nixbld group in /etc/group",
+        "the nixbld group (in /etc/group,",
         "/etc/bash.bashrc.backup-before-nix",
         "/root/.nix-profile",
     ] {
@@ -266,6 +415,52 @@ fn a_packaged_nix_is_named_once_through_a_merged_usr() {
         ),
         "{}",
         decoy.warning()
+    );
+}
+
+/// A Nix built from source and installed below /usr/local is named: its
+/// command, its units in the administrator's unit directory below
+/// /usr/local, and its Fish hook below the Fish prefix there.
+#[test]
+fn a_nix_installed_below_usr_local_is_named() {
+    let decoy = Decoy::stock();
+    decoy.file("usr/local/bin/nix", "\x7fELF");
+    decoy.file(
+        "usr/local/lib/systemd/system/nix-daemon.service",
+        "[Service]\n",
+    );
+    decoy.file(
+        "usr/local/lib/systemd/system/nix-daemon.socket",
+        "[Socket]\n",
+    );
+    decoy.file("usr/local/etc/fish/conf.d/nix.fish", "# Nix\n");
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds \
+         /usr/local/lib/systemd/system/nix-daemon.service, \
+         /usr/local/lib/systemd/system/nix-daemon.socket, /usr/local/bin/nix and \
+         /usr/local/etc/fish/conf.d/nix.fish."
+    );
+}
+
+/// The multi-user installer's Fish hook is named below each Fish prefix it
+/// writes to.
+#[test]
+fn the_fish_hook_is_named_below_each_prefix() {
+    let decoy = Decoy::stock();
+    for prefix in [
+        "etc/fish",
+        "usr/local/etc/fish",
+        "opt/homebrew/etc/fish",
+        "opt/local/etc/fish",
+    ] {
+        decoy.file(&format!("{prefix}/conf.d/nix.fish"), "# Nix\n");
+    }
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds /etc/fish/conf.d/nix.fish, \
+         /usr/local/etc/fish/conf.d/nix.fish, /opt/homebrew/etc/fish/conf.d/nix.fish and \
+         /opt/local/etc/fish/conf.d/nix.fish."
     );
 }
 
@@ -321,8 +516,50 @@ fn build_users_are_named_by_their_name_or_their_group() {
     );
     assert_eq!(
         decoy.warning(),
-        "Nix is installed on the decoy, or was: it holds the nixbld group in /etc/group and 2 \
-         Nix build users in /etc/passwd (_nixbld1 and builder)."
+        "Nix is installed on the decoy, or was: it holds the nixbld group (in /etc/group) and 2 \
+         Nix build users (_nixbld1 and builder, in /etc/passwd)."
+    );
+
+    // A shadow file names no group, so its users count by name alone; the
+    // copy of /etc/passwd counts by group as /etc/passwd does.
+    decoy.append(
+        "etc/shadow",
+        "builder:!:20000::::::\nnixbld9:!:20000::::::\n",
+    );
+    decoy.append(
+        "etc/passwd-",
+        "builder2:x:30004:30000::/var/empty:/sbin/nologin\n",
+    );
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds the nixbld group (in /etc/group) and 4 \
+         Nix build users (_nixbld1, builder and 2 more, in /etc/passwd, /etc/shadow and \
+         /etc/passwd-)."
+    );
+}
+
+/// Nix's own uninstall steps delete the build users and the group with
+/// `userdel` and `groupdel`, and the copies shadow-utils keeps of the account
+/// files still name the group and the last user deleted: so the check names
+/// them after the uninstall, and passes once the copies are clean.
+#[test]
+fn what_the_documented_uninstall_leaves_is_named() {
+    let decoy = Decoy::stock();
+    decoy.install_nix();
+    decoy.uninstall_nix();
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds the nixbld group (in /etc/group- and \
+         /etc/gshadow-) and the Nix build user nixbld32 (in /etc/passwd- and /etc/shadow-)."
+    );
+
+    for file in ["passwd", "shadow", "group", "gshadow"] {
+        let text = std::fs::read_to_string(decoy.path(&format!("etc/{file}"))).unwrap();
+        decoy.file(&format!("etc/{file}-"), &text);
+    }
+    assert_eq!(
+        decoy.check(false),
+        CheckResult::Pass("no trace of a Nix install on the decoy".to_string())
     );
 }
 
@@ -334,7 +571,7 @@ fn a_group_without_an_id_has_no_members_by_group() {
     decoy.append("etc/passwd", "odd:x:5000::/var/empty:/usr/bin/false\n");
     assert_eq!(
         decoy.warning(),
-        "Nix is installed on the decoy, or was: it holds the nixbld group in /etc/group."
+        "Nix is installed on the decoy, or was: it holds the nixbld group (in /etc/group)."
     );
 }
 
@@ -342,31 +579,38 @@ fn a_group_without_an_id_has_no_members_by_group() {
 fn build_users_are_counted_past_three() {
     let names =
         |count: usize| -> Vec<String> { (1..=count).map(|n| format!("nixbld{n}")).collect() };
-    assert_eq!(build_users(&[]), "");
+    let passwd = ["/etc/passwd".to_string()];
+    assert_eq!(build_users(&[], &passwd), "");
     assert_eq!(
-        build_users(&names(1)),
-        "the Nix build user nixbld1 in /etc/passwd"
+        build_users(&names(1), &passwd),
+        "the Nix build user nixbld1 (in /etc/passwd)"
     );
     assert_eq!(
-        build_users(&names(2)),
-        "2 Nix build users in /etc/passwd (nixbld1 and nixbld2)"
+        build_users(&names(2), &passwd),
+        "2 Nix build users (nixbld1 and nixbld2, in /etc/passwd)"
     );
     assert_eq!(
-        build_users(&names(3)),
-        "3 Nix build users in /etc/passwd (nixbld1, nixbld2 and nixbld3)"
+        build_users(&names(3), &passwd),
+        "3 Nix build users (nixbld1, nixbld2 and nixbld3, in /etc/passwd)"
     );
     assert_eq!(
-        build_users(&names(4)),
-        "4 Nix build users in /etc/passwd (nixbld1, nixbld2 and 2 more)"
+        build_users(
+            &names(4),
+            &["/etc/passwd".to_string(), "/etc/shadow".to_string()]
+        ),
+        "4 Nix build users (nixbld1, nixbld2 and 2 more, in /etc/passwd and /etc/shadow)"
     );
 }
 
-/// A shell startup file counts only where it names a script of the default
-/// profile, as the installer's hook does; other mentions of Nix do not.
+/// A shell startup file counts only where it names a script of a Nix
+/// profile, the default one as the multi-user installer's hook does or a
+/// user's own as the single-user installer's does; other mentions of Nix do
+/// not.
 #[test]
 fn a_startup_file_counts_only_with_the_profile_hook() {
     let decoy = Decoy::stock();
     decoy.file("etc/zsh/zshrc", "alias nb='nix build'\n# nix is fun\n");
+    decoy.append("home/alice/.bashrc", "alias ns='nix-shell'\n");
     decoy.append(
         "etc/bash.bashrc",
         "[ -e /nix/var/nix/profiles/default/etc/profile.d/nix.sh ] && . /nix/var/nix/profiles/default/etc/profile.d/nix.sh\n",
@@ -374,6 +618,64 @@ fn a_startup_file_counts_only_with_the_profile_hook() {
     assert_eq!(
         decoy.warning(),
         "Nix is installed on the decoy, or was: it holds the Nix lines in /etc/bash.bashrc."
+    );
+
+    // Each system startup file is read, /etc/profile among them, and either
+    // hook counts in it.
+    decoy.append("etc/zsh/zshrc", HOOK);
+    decoy.append(
+        "etc/profile",
+        ". \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n",
+    );
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds the Nix lines in /etc/bash.bashrc, the \
+         Nix lines in /etc/profile and the Nix lines in /etc/zsh/zshrc."
+    );
+}
+
+/// What the single-user installer writes in a home is named, and what a
+/// removal of the store and the profile links leaves there: the hooks in the
+/// shell startup files and the Fish hook.
+#[test]
+fn what_the_single_user_installer_writes_in_a_home_is_named() {
+    let decoy = Decoy::stock();
+    decoy.install_nix_for_alice();
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds /nix, /home/alice/.nix-profile, \
+         /home/alice/.nix-defexpr, /home/alice/.nix-channels, \
+         /home/alice/.config/fish/conf.d/nix.fish, the Nix lines in /home/alice/.profile and \
+         the Nix lines in /home/alice/.zshrc."
+    );
+
+    for path in [
+        "nix",
+        "home/alice/.nix-profile",
+        "home/alice/.nix-defexpr",
+        "home/alice/.nix-channels",
+    ] {
+        decoy.remove(path);
+    }
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds \
+         /home/alice/.config/fish/conf.d/nix.fish, the Nix lines in /home/alice/.profile and \
+         the Nix lines in /home/alice/.zshrc."
+    );
+
+    // Each startup file of a home is read, and a hook in it counts.
+    decoy.remove("home/alice/.config");
+    decoy.remove("home/alice/.zshrc");
+    decoy.file("home/alice/.profile", "");
+    for file in [".bash_profile", ".bash_login", ".bashrc", ".zshenv"] {
+        decoy.file(&format!("home/alice/{file}"), USER_HOOK);
+    }
+    assert_eq!(
+        decoy.warning(),
+        "Nix is installed on the decoy, or was: it holds the Nix lines in \
+         /home/alice/.bash_profile, the Nix lines in /home/alice/.bash_login, the Nix lines in \
+         /home/alice/.bashrc and the Nix lines in /home/alice/.zshenv."
     );
 }
 
@@ -412,13 +714,22 @@ fn what_nix_keeps_in_a_home_is_named_for_each_home() {
          nobody:x:65534:65534::/:/usr/sbin/nologin\n",
     );
     decoy.dir("root/.config/nix");
+    decoy.file("root/.local/share/nix/trusted-settings.json", "{}\n");
     decoy.dir("home/alice/.cache/nix");
     decoy.dir("home/alice/.local/state/nix");
+    decoy.file("home/alice/.local/share/nix/repl-history", "1 + 1\n");
     decoy.file("home/bob/.nix-channels", "");
     decoy.dir(".nix-profile");
-    // The hidden volume's own files are not the decoy's.
-    decoy.append("etc/passwd", "dave:x:1003:1003::/mnt/data/dave:/bin/bash\n");
+    // The hidden volume's own files are not the decoy's, whether the home
+    // lies there as named or a link leads there.
+    decoy.append(
+        "etc/passwd",
+        "dave:x:1003:1003::/mnt/data/dave:/bin/bash\neve:x:1004:1004::/home/eve:/bin/bash\n",
+    );
     decoy.dir("mnt/data/dave/.nix-profile");
+    decoy.dir("mnt/data/eve/.nix-profile");
+    decoy.file("mnt/data/eve/.profile", USER_HOOK);
+    decoy.link("home/eve", "../mnt/data/eve");
     let result = DecoyNixTraceCheck::new(decoy.path("mnt/data"), false)
         .with_root(&decoy.root)
         .run(&RealFilesystem)
@@ -427,8 +738,56 @@ fn what_nix_keeps_in_a_home_is_named_for_each_home() {
     let warning = result.message().lines().next().unwrap().to_string();
     assert_eq!(
         warning,
-        "Nix is installed on the decoy, or was: it holds /root/.config/nix, \
-         /home/alice/.local/state/nix, /home/alice/.cache/nix and /home/bob/.nix-channels."
+        "Nix is installed on the decoy, or was: it holds /root/.local/share/nix, \
+         /root/.config/nix, /home/alice/.local/state/nix, /home/alice/.local/share/nix, \
+         /home/alice/.cache/nix and /home/bob/.nix-channels."
+    );
+}
+
+/// A home that is a file holds nothing of Nix and is no reason to doubt.
+#[test]
+fn a_home_that_is_a_file_holds_nothing() {
+    let decoy = Decoy::stock();
+    decoy.file("var/odd", "");
+    decoy.append(
+        "etc/passwd",
+        "odd:x:1005:1005::/var/odd:/usr/sbin/nologin\n",
+    );
+    assert_eq!(
+        decoy.check(false),
+        CheckResult::Pass("no trace of a Nix install on the decoy".to_string())
+    );
+}
+
+/// A home behind an automount point that nothing is mounted on yet is not
+/// looked into, since the lookup would mount it, and the warning names it;
+/// once the automount is mounted, the home is looked into.
+#[test]
+fn a_home_behind_an_automount_point_is_named_and_not_looked_into() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/passwd", STOCK_PASSWD);
+    fs.mock_set_path_type("/home/alice/.nix-profile", PathKind::Symlink);
+    let root_mount = "1 0 8:1 / / rw,relatime - ext4 /dev/sda1 rw\n";
+    fs.mock_set_mount_table(&format!(
+        "{root_mount}30 1 0:50 / /home rw,relatime - autofs systemd-1 rw,fd=50\n"
+    ));
+    let check = DecoyNixTraceCheck::new(PathBuf::from("/mnt/data"), false);
+    let result = check.run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message().lines().next().unwrap(),
+        "NAILS cannot tell whether a Nix install left traces on the decoy: NAILS does not look \
+         into /home/alice, behind the automount point /home, which the lookup would mount."
+    );
+
+    fs.mock_set_mount_table(&format!(
+        "{root_mount}30 1 0:50 / /home rw,relatime - autofs systemd-1 rw,fd=50\n\
+         31 30 8:2 / /home rw,relatime - ext4 /dev/sda2 rw\n"
+    ));
+    let result = check.run(&fs).unwrap();
+    assert_eq!(
+        result.message().lines().next().unwrap(),
+        "Nix is installed on the decoy, or was: it holds /home/alice/.nix-profile."
     );
 }
 

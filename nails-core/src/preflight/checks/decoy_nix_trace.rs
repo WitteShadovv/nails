@@ -21,17 +21,28 @@
 //!   (`.wants`, `.requires`, `.upholds`) of `/etc/systemd/system`, the
 //!   drop-in directory of one there, and `/etc/tmpfiles.d/nix-daemon.conf`;
 //! - `/etc/nix`, and a `nix` command in `/usr/bin` or `/usr/local/bin`;
-//! - the `nixbld` group of `/etc/group`, and the build users of
-//!   `/etc/passwd`: `nixbld<N>`, `_nixbld<N>`, and any whose group is
-//!   `nixbld`;
+//! - the `nixbld` group in `/etc/group` and `/etc/gshadow`, and the build
+//!   users in `/etc/passwd` and `/etc/shadow`: `nixbld<N>`, `_nixbld<N>`, and
+//!   in `/etc/passwd` any whose group is `nixbld`; the same in the copy of each
+//!   of these files that shadow-utils keeps as it was before its last change
+//!   (`/etc/passwd-` and the others), which still names the group and the last
+//!   build user after `groupdel` and `userdel` remove them;
 //! - the shell hooks: `/etc/profile.d/nix.sh` and `nix-daemon.sh`,
-//!   `/etc/fish/conf.d/nix.fish`, a line naming `/nix/var/nix/profiles/` in
-//!   `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/zshrc` or `/etc/zsh/zshrc`, and
-//!   the `.backup-before-nix` copy the installer keeps of each of these files
-//!   and of `/etc/profile.d/nix.sh`;
-//! - `.nix-profile`, `.nix-defexpr`, `.nix-channels`, `.local/state/nix`,
-//!   `.cache/nix` and `.config/nix` in `/root` and in each home `/etc/passwd`
-//!   names, but one on the hidden volume.
+//!   `conf.d/nix.fish` in `/etc/fish`, `/usr/local/etc/fish`,
+//!   `/opt/homebrew/etc/fish` and `/opt/local/etc/fish`, a line naming
+//!   `/nix/var/nix/profiles/` or `.nix-profile/etc/profile.d/` in
+//!   `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/profile`, `/etc/zshrc` or
+//!   `/etc/zsh/zshrc`, and the `.backup-before-nix` copy the installer keeps
+//!   of each of these files but `/etc/profile`, and of `/etc/profile.d/nix.sh`;
+//! - in `/root` and in each home `/etc/passwd` names: `.nix-profile`,
+//!   `.nix-defexpr`, `.nix-channels`, `.local/state/nix`, `.local/share/nix`,
+//!   `.cache/nix`, `.config/nix` and `.config/fish/conf.d/nix.fish`, and such a
+//!   line in `.bash_profile`, `.bash_login`, `.profile`, `.bashrc`, `.zshenv`
+//!   or `.zshrc`, as the single-user installer writes them. A home on the
+//!   hidden volume, as named or where its links lead, is not looked into, nor
+//!   one behind an automount point nothing is mounted on yet, as the mount
+//!   table shows it, since the lookup would mount it: the warning names that
+//!   one instead.
 //!
 //! Each one found is named in a warning; the check never refuses, as a
 //! decoy may need its own Nix. What it cannot look up or read it names in
@@ -43,12 +54,14 @@
 //! and a file is read as the locate-database check reads one
 //! ([`DecoyFiles`]): opened with `O_NOATIME`, so that run as root its access
 //! time stays, and never where a link leads onto the hidden volume. A link a
-//! lookup follows on the way still gets its access time.
+//! lookup follows on the way still gets its access time, and one onto an
+//! automount point that nothing is mounted on yet mounts it.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::locate_database::files::{DecoyFile, DecoyFiles};
 use super::locate_database::hidden_locations;
-use crate::filesystem::mountinfo::root_is_hidden_overlay;
+use crate::filesystem::mountinfo::{MountEntry, root_is_hidden_overlay};
+use crate::hidden_root::mount_holding;
 use crate::{Filesystem, Result};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -86,23 +99,43 @@ const DEPENDENCY_DIR_SUFFIXES: &[&str] = &[".wants", ".requires", ".upholds"];
 /// The installer's tmpfiles rule for the daemon.
 const TMPFILES_RULE: &str = "etc/tmpfiles.d/nix-daemon.conf";
 
-/// The shell hooks Nix installs as files of their own.
+/// The shell hooks Nix installs as files of their own: the profile scripts,
+/// and the multi-user installer's Fish hook below each Fish prefix it writes
+/// to.
 const HOOK_FILES: &[&str] = &[
     "etc/profile.d/nix.sh",
     "etc/profile.d/nix-daemon.sh",
     "etc/fish/conf.d/nix.fish",
+    "usr/local/etc/fish/conf.d/nix.fish",
+    "opt/homebrew/etc/fish/conf.d/nix.fish",
+    "opt/local/etc/fish/conf.d/nix.fish",
 ];
 
-/// The shell startup files the installer adds its hook to.
+/// The system's shell startup files: those the multi-user installer adds its
+/// hook to, and `/etc/profile`, which Nix's uninstall steps name as well.
 const HOOKED_FILES: &[&str] = &[
     "etc/bashrc",
     "etc/bash.bashrc",
+    "etc/profile",
     "etc/zshrc",
     "etc/zsh/zshrc",
 ];
 
-/// What every hook names: a script of the default profile.
-const HOOK_MARK: &[u8] = b"/nix/var/nix/profiles/";
+/// The shell startup files of a home: those the single-user installer adds
+/// its hook to, and `.bashrc`.
+const HOME_HOOKED_FILES: &[&str] = &[
+    ".bash_profile",
+    ".bash_login",
+    ".profile",
+    ".bashrc",
+    ".zshenv",
+    ".zshrc",
+];
+
+/// What a hook names: a script of the default profile, as the multi-user
+/// installer's does, or of a user's own profile, as the single-user
+/// installer's does.
+const HOOK_MARKS: &[&[u8]] = &[b"/nix/var/nix/profiles/", b".nix-profile/etc/profile.d/"];
 
 /// The suffix of the copy the installer keeps of each file it changes.
 const BACKUP_SUFFIX: &str = ".backup-before-nix";
@@ -117,18 +150,48 @@ const BACKED_UP_FILES: &[&str] = &[
 ];
 
 /// What Nix keeps in a home: the profile and channel links of `nix-env`,
-/// the newer profiles, and Nix's caches and settings.
+/// the newer profiles, Nix's data (the REPL's history, the flake settings it
+/// was told to trust, a store of its own where it cannot make `/nix`), its
+/// caches and settings, and the single-user installer's Fish hook.
 const HOME_PATHS: &[&str] = &[
     ".nix-profile",
     ".nix-defexpr",
     ".nix-channels",
     ".local/state/nix",
+    ".local/share/nix",
     ".cache/nix",
     ".config/nix",
+    ".config/fish/conf.d/nix.fish",
 ];
 
 /// The group of the build users.
 const BUILD_GROUP: &str = "nixbld";
+
+/// The group files `groupadd` and `useradd` write, each with whether it
+/// records the group's id: the group and its shadow file, and the copy of
+/// each that shadow-utils keeps as it was before its last change.
+const GROUP_FILES: &[(&str, bool)] = &[
+    ("etc/group", true),
+    ("etc/gshadow", false),
+    ("etc/group-", true),
+    ("etc/gshadow-", false),
+];
+
+/// The user files `useradd` writes, each with whether it records the user's
+/// group, and their copies.
+const USER_FILES: &[(&str, bool)] = &[
+    ("etc/passwd", true),
+    ("etc/shadow", false),
+    ("etc/passwd-", true),
+    ("etc/shadow-", false),
+];
+
+/// The user file that names the homes.
+const PASSWD: &str = "etc/passwd";
+
+/// The filesystem type of an automount point, which a lookup below mounts
+/// while nothing is mounted on it.
+const AUTOMOUNT_FS: &str = "autofs";
 
 /// Pre-flight check that warns when a decoy that is not NixOS holds what a
 /// Nix install leaves behind.
@@ -161,14 +224,15 @@ impl DecoyNixTraceCheck {
         self
     }
 
-    /// Whether `/` is the overlay of a hidden session. Only the running
-    /// system's mount table can say, so a tree read under another root never
-    /// is.
-    fn in_hidden_session<F: Filesystem>(&self, fs: &F) -> bool {
-        self.root == Path::new("/")
-            && fs
-                .mount_table()
-                .is_ok_and(|table| root_is_hidden_overlay(&table, &self.hidden_root).is_some())
+    /// The running system's mount table, which says whether `/` is the
+    /// overlay of a hidden session and where an automount point is. A tree
+    /// read under another root has none, nor a system whose table cannot be
+    /// read.
+    fn mount_table<F: Filesystem>(&self, fs: &F) -> Option<Vec<MountEntry>> {
+        if self.root != Path::new("/") {
+            return None;
+        }
+        fs.mount_table().ok()
     }
 }
 
@@ -192,6 +256,8 @@ struct Traces<'a, F: Filesystem> {
     /// The hidden volume's locations, resolved: what lies there is not the
     /// decoy's.
     hidden: &'a [PathBuf],
+    /// The running system's mount table, when it is read and can be.
+    table: Option<&'a [MountEntry]>,
     /// Each trace, as the warning names it.
     found: Vec<String>,
     /// Why NAILS cannot tell about the rest.
@@ -199,13 +265,20 @@ struct Traces<'a, F: Filesystem> {
 }
 
 impl<'a, F: Filesystem> Traces<'a, F> {
-    /// The traces under `root`; `hidden` are the hidden volume's locations.
-    fn read(fs: &'a F, root: &'a Path, hidden: &'a [PathBuf]) -> Self {
+    /// The traces under `root`; `hidden` are the hidden volume's locations,
+    /// and `table` the mount table of the system read.
+    fn read(
+        fs: &'a F,
+        root: &'a Path,
+        hidden: &'a [PathBuf],
+        table: Option<&'a [MountEntry]>,
+    ) -> Self {
         let mut traces = Self {
             fs,
             files: DecoyFiles::new(fs, root, hidden),
             root,
             hidden,
+            table,
             found: Vec::new(),
             unread: Vec::new(),
         };
@@ -315,10 +388,10 @@ impl<'a, F: Filesystem> Traces<'a, F> {
         self.note(&self.root.join(TMPFILES_RULE));
     }
 
-    /// The text of `rel`, a file under the root, or `None` when it is not
+    /// The text of `path`, a file under the root, or `None` when it is not
     /// there; why NAILS cannot read it goes to the reasons.
-    fn text(&mut self, rel: &str) -> Option<Vec<u8>> {
-        match self.files.read(&self.root.join(rel)) {
+    fn read_text(&mut self, path: &Path) -> Option<Vec<u8>> {
+        match self.files.read(path) {
             DecoyFile::Text(text) => Some(text),
             DecoyFile::Absent | DecoyFile::Null => None,
             DecoyFile::Unread(why) => {
@@ -328,34 +401,69 @@ impl<'a, F: Filesystem> Traces<'a, F> {
         }
     }
 
-    /// The build group and users, and the homes of `/root` and of
-    /// `/etc/passwd`.
+    /// [`read_text`](Self::read_text) of `rel`, relative to the root.
+    fn text(&mut self, rel: &str) -> Option<Vec<u8>> {
+        self.read_text(&self.root.join(rel))
+    }
+
+    /// The build group and users in each account file, and the homes of
+    /// `/root` and of `/etc/passwd`.
     fn accounts(&mut self) -> Vec<String> {
         let mut group_ids: Vec<String> = Vec::new();
-        if let Some(text) = self.text("etc/group") {
+        let mut group_files: Vec<String> = Vec::new();
+        for &(file, with_ids) in GROUP_FILES {
+            let Some(text) = self.text(file) else {
+                continue;
+            };
+            let mut named = false;
             for line in String::from_utf8_lossy(&text).lines() {
                 let fields: Vec<&str> = line.split(':').collect();
-                if fields.first() == Some(&BUILD_GROUP) {
-                    group_ids.push(fields.get(2).copied().unwrap_or_default().to_string());
+                if fields.first() != Some(&BUILD_GROUP) {
+                    continue;
+                }
+                named = true;
+                if with_ids
+                    && let Some(id) = fields.get(2).filter(|id| !id.is_empty())
+                    && !group_ids.iter().any(|known| known == id)
+                {
+                    group_ids.push((*id).to_string());
                 }
             }
-            if !group_ids.is_empty() {
-                self.found
-                    .push(format!("the {BUILD_GROUP} group in /etc/group"));
+            if named {
+                group_files.push(format!("/{file}"));
             }
+        }
+        if !group_files.is_empty() {
+            self.found.push(format!(
+                "the {BUILD_GROUP} group (in {})",
+                listing(&group_files)
+            ));
         }
         let mut homes = vec!["/root".to_string()];
         let mut builders: Vec<String> = Vec::new();
-        if let Some(text) = self.text("etc/passwd") {
+        let mut user_files: Vec<String> = Vec::new();
+        for &(file, with_ids) in USER_FILES {
+            let Some(text) = self.text(file) else {
+                continue;
+            };
+            let mut named = false;
             for line in String::from_utf8_lossy(&text).lines() {
                 let fields: Vec<&str> = line.split(':').collect();
                 let name = fields.first().copied().unwrap_or_default();
-                let gid = fields.get(3).copied().unwrap_or_default();
+                let gid = fields
+                    .get(3)
+                    .copied()
+                    .filter(|_| with_ids)
+                    .unwrap_or_default();
                 if is_build_user(name) || (!gid.is_empty() && group_ids.iter().any(|id| id == gid))
                 {
-                    builders.push(name.to_string());
+                    named = true;
+                    if !builders.iter().any(|known| known == name) {
+                        builders.push(name.to_string());
+                    }
                 }
-                if let Some(home) = fields.get(5)
+                if file == PASSWD
+                    && let Some(home) = fields.get(5)
                     && home.starts_with('/')
                     && *home != "/"
                     && !homes.iter().any(|known| known == home)
@@ -363,42 +471,94 @@ impl<'a, F: Filesystem> Traces<'a, F> {
                     homes.push((*home).to_string());
                 }
             }
+            if named {
+                user_files.push(format!("/{file}"));
+            }
         }
         if !builders.is_empty() {
-            self.found.push(build_users(&builders));
+            self.found.push(build_users(&builders, &user_files));
         }
         homes
     }
 
-    /// The shell startup files whose hook names a script of the default
-    /// profile.
+    /// The system's shell startup files that hold a hook.
     fn hooks(&mut self) {
         for file in HOOKED_FILES {
-            if let Some(text) = self.text(file)
-                && text
-                    .windows(HOOK_MARK.len())
-                    .any(|window| window == HOOK_MARK)
-            {
+            if self.text(file).is_some_and(|text| hooked(&text)) {
                 self.found.push(format!("the Nix lines in /{file}"));
             }
         }
     }
 
-    /// What Nix keeps in each of `homes`, but in one on the hidden volume.
-    /// Once NAILS cannot look into a home, the rest of it is not looked up.
+    /// Whether `path` lies on the hidden volume, as named.
+    fn on_hidden(&self, path: &Path) -> bool {
+        self.hidden.iter().any(|hidden| path.starts_with(hidden))
+    }
+
+    /// The automount point that a lookup below `path` would mount, as the
+    /// mount table shows: where the lookup ends in an automount that nothing
+    /// is mounted on yet.
+    fn automount_point(&self, path: &Path) -> Option<PathBuf> {
+        mount_holding(self.table?, path)
+            .filter(|mount| mount.fstype == AUTOMOUNT_FS)
+            .map(|mount| mount.mount_point.clone())
+    }
+
+    /// What Nix keeps in each of `homes`, and the hooks in its shell
+    /// startup files. A home on the hidden volume is left, as named or where
+    /// its links lead, and so is one behind an automount point nothing is
+    /// mounted on yet, which the lookup would mount: the reasons name that
+    /// one. Once NAILS cannot look into a home, the rest of it is not looked
+    /// up.
     fn homes(&mut self, homes: &[String]) {
         for home in homes {
             let home = self.root.join(home.trim_start_matches('/'));
-            if self.hidden.iter().any(|hidden| home.starts_with(hidden)) {
+            if self.on_hidden(&home) {
                 continue;
             }
+            if let Some(point) = self.automount_point(&home) {
+                self.unread.push(format!(
+                    "NAILS does not look into {}, behind the automount point {}, which the \
+                     lookup would mount",
+                    self.shown(&home),
+                    self.shown(&point)
+                ));
+                continue;
+            }
+            if self
+                .fs
+                .canonicalize(&home)
+                .is_ok_and(|real| self.on_hidden(&real))
+            {
+                continue;
+            }
+            let mut seen = true;
             for path in HOME_PATHS {
                 if !self.note(&home.join(path)) {
+                    seen = false;
                     break;
+                }
+            }
+            // A home that is no directory, such as /dev/null, holds no file.
+            if !seen || !self.fs.is_directory(&home).unwrap_or(false) {
+                continue;
+            }
+            for file in HOME_HOOKED_FILES {
+                let path = home.join(file);
+                if self.read_text(&path).is_some_and(|text| hooked(&text)) {
+                    self.found
+                        .push(format!("the Nix lines in {}", self.shown(&path)));
                 }
             }
         }
     }
+}
+
+/// Whether `text` holds a hook: a line naming a script of a Nix profile.
+fn hooked(text: &[u8]) -> bool {
+    HOOK_MARKS
+        .iter()
+        .any(|mark| text.windows(mark.len()).any(|window| window == *mark))
 }
 
 /// Whether `name` is the name the installer gives a build user:
@@ -410,16 +570,17 @@ fn is_build_user(name: &str) -> bool {
         .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The build users of `/etc/passwd`, as the warning names them: up to
-/// three by name, more by the first two and a count.
-fn build_users(names: &[String]) -> String {
+/// The build users of the account files `files`, as the warning names
+/// them: up to three by name, more by the first two and a count.
+fn build_users(names: &[String], files: &[String]) -> String {
+    let files = listing(files);
     let shown = match names {
         [] => return String::new(),
-        [one] => return format!("the Nix build user {one} in /etc/passwd"),
+        [one] => return format!("the Nix build user {one} (in {files})"),
         [_, _] | [_, _, _] => listing(names),
         [first, second, rest @ ..] => format!("{first}, {second} and {} more", rest.len()),
     };
-    format!("{} Nix build users in /etc/passwd ({shown})", names.len())
+    format!("{} Nix build users ({shown}, in {files})", names.len())
 }
 
 /// `items` as a list in a sentence: `a`, `a and b`, `a, b and c`.
@@ -476,7 +637,11 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyNixTraceCheck {
                 "the decoy is NixOS, whose own package manager Nix is".to_string(),
             ));
         }
-        if self.in_hidden_session(fs) {
+        let table = self.mount_table(fs);
+        if table
+            .as_ref()
+            .is_some_and(|table| root_is_hidden_overlay(table, &self.hidden_root).is_some())
+        {
             return Ok(CheckResult::skipped(
                 "a hidden session is running, and `/` shows its files over the decoy's: run the \
                  check on the decoy",
@@ -486,7 +651,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyNixTraceCheck {
             .into_iter()
             .map(|location| location.path)
             .collect();
-        let traces = Traces::read(fs, &self.root, &hidden);
+        let traces = Traces::read(fs, &self.root, &hidden, table.as_deref());
         Ok(verdict(&traces.found, &traces.unread))
     }
 }
