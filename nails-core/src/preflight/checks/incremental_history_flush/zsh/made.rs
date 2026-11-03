@@ -192,8 +192,8 @@ fn names_file(line: &str, base: &str, by_path: bool) -> usize {
 
 /// The commands that make or write the files their words name.
 const CREATES: &[&str] = &[
-    "cp", "mv", "ln", "install", "tee", "dd", "rsync", "touch", "curl", "wget", "tar", "unzip",
-    "zcompile", "zf_ln", "zf_mv", "mkfifo", "mknod",
+    "cp", "mv", "ln", "install", "tee", "dd", "rsync", "curl", "wget", "tar", "unzip", "zcompile",
+    "zf_ln", "zf_mv", "mkfifo", "mknod",
 ];
 
 /// Whether `command` makes or writes the files its words name.
@@ -206,8 +206,10 @@ impl<F: Filesystem> Reader<'_, F> {
     /// now, as the code may make it before zsh reads it ([the module](self)):
     /// where a file read names it beyond the `source` commands and the tests
     /// that name it ([`Reader::known_files`]), a function's file only by a
-    /// path, and where a write to a path an expansion makes that may be its
-    /// runs before zsh reads it, at the top or in a function the top runs.
+    /// path; and for each file it reads, there or not, where a write to a
+    /// path that may be its, or that of the compiled form zsh runs in its
+    /// place (`.zwc`), runs before zsh reads it, at the top or in a function
+    /// the top runs.
     pub(super) fn made(&mut self) {
         let mut files: Vec<(std::path::PathBuf, usize, bool)> = std::mem::take(&mut self.missing)
             .into_iter()
@@ -237,10 +239,10 @@ impl<F: Filesystem> Reader<'_, F> {
                     .filter(|known| last_part(known) == base)
                     .count()
             };
+            // zsh runs the compiled form beside a file in its place.
+            let compiled = format!("{base}.zwc");
             let why = if missing && named() > known() {
                 Some("a file the check reads names it".to_string())
-            } else if by_path {
-                None
             } else {
                 self.writes
                     .iter()
@@ -252,7 +254,7 @@ impl<F: Filesystem> Reader<'_, F> {
                                 .iter()
                                 .any(|(name, call)| *call < at && self.reaches(name, function)),
                         };
-                        before && may_name(last, base, true)
+                        before && (may_name(last, base, true) || may_name(last, &compiled, true))
                     })
                     .map(|(_, what, ..)| format!("{what} before zsh reads it"))
             };

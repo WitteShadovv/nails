@@ -1277,6 +1277,7 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
         "cp ~/.src ~/.zshrc.local\n. ~/.zshrc.local\n",
         "f=~/.zshrc.local\nprint -r -- \"$(<~/.src)\" >> $f\n. ~/.zshrc.local\n",
         "f=~/.zshrc.local\nlog() { cat ~/.src >> $f }\nlog\n. ~/.zshrc.local\n",
+        "zcompile ~/.zshrc.local.zwc ~/.src\n. ~/.zshrc.local\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
@@ -1284,10 +1285,12 @@ fn a_file_the_code_may_write_before_zsh_reads_it_is_a_doubt() {
         seed(&fs, "/home/alice/.src", "setopt share_history\n");
         assert!(warns(&fs), "{rc}");
     }
-    // A write after zsh reads it, or to another file, is none.
+    // A write after zsh reads it, or to another file, and a `touch`, which
+    // writes nothing in it, are none.
     for rc in [
         ". ~/.zshrc.local\nprint x >> ~/.zshrc.local\n",
         "print x >> ~/.cache/log\n. ~/.zshrc.local\n",
+        "touch $HISTFILE\n. ~/.zshrc.local\n",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
