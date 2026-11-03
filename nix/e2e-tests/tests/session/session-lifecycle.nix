@@ -21,10 +21,31 @@
 #      login session at once and soft-reboots back, with its phases timed in
 #      the log on the hidden volume;
 #   6. `nails recover` and `nails emergency` on the plain decoy are no-ops.
+#
+# Throughout, eth1 keeps the static addresses the test framework gives it on
+# the test network (`networking.interfaces.eth1`): in both hidden sessions,
+# and on the decoy after the deactivation and after the emergency. NixOS
+# applies them with network-addresses-eth1.service, whose stop deletes them,
+# and a soft-reboot never starts that unit again (it starts when eth1
+# appears), so they outlive the switches only because the session clears that
+# stop until the way back (STOP_GUARDED_UNITS in nails-teardown). Each of
+# those places that lacks one is recorded, and the test fails at the end
+# naming them all.
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
+
+  # The static addresses `node` has on eth1, as address/prefix, as NixOS's
+  # scripted networking adds them: the IPv6 ones only where IPv6 is enabled.
+  staticAddresses =
+    node:
+    let
+      inherit (node.networking.interfaces) eth1;
+    in
+    map (a: "${a.address}/${toString a.prefixLength}") (
+      eth1.ipv4.addresses ++ (if node.networking.enableIPv6 then eth1.ipv6.addresses else [ ])
+    );
 in
 {
   name = "session-lifecycle";
@@ -36,7 +57,8 @@ in
   # Three soft-reboot round trips at about 15 s each, plus setup.
   globalTimeout = 1500;
 
-  testScript = _: ''
+  testScript = { nodes, ... }: ''
+    import ipaddress
     import json
     import secrets
 
@@ -49,6 +71,34 @@ in
     CONFIG = "/mnt/data/config/nails.toml"
     UPPER = "/mnt/data/root/upper"
     PEEK = "/run/decoy-peek"
+    #: The static addresses the test framework gives eth1.
+    STATIC_ADDRESSES = [
+        ipaddress.ip_interface(a) for a in ${builtins.toJSON (staticAddresses nodes.machine)}
+    ]
+    #: Each place where eth1 lacked one of them, or was down.
+    address_gaps = []
+
+
+    def eth1_gaps(where):
+        """What eth1 lacks of its static addresses at `where`, and whether it
+        is down, one line each. Logs what it holds and the state of the unit
+        that added them."""
+        [link] = json.loads(machine.succeed("ip -j addr show dev eth1"))
+        held = {
+            ipaddress.ip_interface(f"{a['local']}/{a['prefixlen']}")
+            for a in link.get("addr_info", [])
+            if a.get("scope") == "global"
+        }
+        up = "UP" in link.get("flags", [])
+        _, unit = machine.execute("systemctl is-active network-addresses-eth1.service")
+        machine.log(
+            f"{where}: eth1 holds {sorted(map(str, held))}, up: {up}; "
+            f"network-addresses-eth1.service: {unit.strip()}"
+        )
+        gaps = [f"{where}: eth1 lacks {a}" for a in STATIC_ADDRESSES if a not in held]
+        if not up:
+            gaps.append(f"{where}: eth1 is down")
+        return gaps
 
 
     def peek_decoy(decoy_dev, command):
@@ -90,6 +140,17 @@ in
     machine.wait_for_unit("multi-user.target")
     decoy_dev = machine.succeed("findmnt -no SOURCE /").strip()
     machine.log(f"decoy root: {decoy_dev}")
+
+    with subtest("the decoy's eth1 holds its static addresses"):
+        # Their unit starts when eth1 appears, which multi-user.target does
+        # not wait for, and has the stop command that deletes them.
+        machine.wait_for_unit("network-addresses-eth1.service")
+        stop = machine.succeed(
+            "systemctl show -p ExecStop --value network-addresses-eth1.service"
+        ).strip()
+        assert stop, "network-addresses-eth1.service has no stop command"
+        gaps = eth1_gaps("the decoy at boot")
+        assert STATIC_ADDRESSES and not gaps, f"{STATIC_ADDRESSES}: {gaps}"
 
     with subtest("init and check on the decoy"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -145,6 +206,8 @@ in
         assert status["place"] == "hidden", status
         count = machine.succeed("systemctl show -p SoftRebootsCount --value").strip()
         assert count == "1", f"SoftRebootsCount={count}"
+        # Recorded, not asserted here: the later places are judged too.
+        address_gaps.extend(eth1_gaps("the hidden session"))
 
     with subtest("verify --deep in the session reports nothing critical"):
         # The quick start's check before the way back, through sudo as an
@@ -207,6 +270,7 @@ in
         machine.fail("systemctl is-active hidden-probe.service")
         residue = session.carried_run_residue(machine, run_before, wall)
         assert not residue, f"hidden /run residue on the decoy: {residue}"
+        address_gaps.extend(eth1_gaps("the decoy after deactivate"))
 
     with subtest("the way back resets the decoy's runtime journal"):
         # The decoy's journald and the hidden one wrote the same runtime
@@ -258,6 +322,7 @@ in
         assert status["place"] == "decoy", status
         canonical_activate(CONFIG, "--overlay-only", "activate-2")
         assert machine.succeed("cat /root/hidden-canary").strip() == canary
+        address_gaps.extend(eth1_gaps("the second hidden session"))
 
     with subtest("emergency in the hidden session kills it and returns at once"):
         # A unit gets systemd's default PATH, without coreutils on NixOS.
@@ -273,6 +338,7 @@ in
         session.assert_decoy_root(machine)
         machine.fail("systemctl is-active hidden-writer.service")
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        address_gaps.extend(eth1_gaps("the decoy after the emergency"))
 
     with subtest("the emergency logged its timed phases on the hidden volume"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -288,5 +354,8 @@ in
         out = machine.succeed(f"nails --config {CONFIG} emergency")
         assert "nothing to tear down" in out, out
         session.assert_decoy_root(machine)
+
+    with subtest("eth1 kept its static addresses through every switch"):
+        assert not address_gaps, "; ".join(address_gaps)
   '';
 }
