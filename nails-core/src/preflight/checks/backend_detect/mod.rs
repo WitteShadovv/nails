@@ -130,8 +130,8 @@ struct Layer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Header {
     /// The device read, by kernel name: the one below the mapping, or the
-    /// one below the integrity layer of a LUKS2 volume with authenticated
-    /// encryption.
+    /// one below the sub-devices cryptsetup builds below a LUKS2 volume, such
+    /// as its integrity layer.
     device: String,
     /// What its start holds.
     probe: HeaderProbe,
@@ -197,17 +197,37 @@ impl Layer {
 
     /// Whether this is a dm-integrity mapping: one integritysetup made, or
     /// the integrity layer cryptsetup puts below a LUKS2 volume with
-    /// authenticated encryption, which cryptsetup 2.8 and later name
-    /// `SUBDEV` (as they do the further cipher layers of a cascade), with
-    /// the volume's uuid.
+    /// authenticated encryption, `<name>_dif`, to which cryptsetup 2.8 and
+    /// later give the type `SUBDEV` (as they do the further cipher layers of
+    /// a cascade) and the volume's uuid.
     fn is_integrity_layer(&self) -> bool {
-        match &self.crypt {
-            Some(CryptType::Other(kind)) if kind == "INTEGRITY" => true,
-            Some(CryptType::Other(kind)) if kind == "SUBDEV" => {
-                luks2::names_a_volume(self.dm_uuid.as_deref().unwrap_or_default())
-            }
-            _ => false,
-        }
+        let integrity = matches!(&self.crypt, Some(CryptType::Other(kind)) if kind == "INTEGRITY");
+        integrity
+            || (self.is_luks2_subdevice()
+                && self
+                    .dm_name
+                    .as_deref()
+                    .is_some_and(luks2::is_integrity_layer_name))
+    }
+
+    /// Whether this is a `SUBDEV` mapping that names a volume uuid: one of
+    /// the sub-devices cryptsetup builds below a LUKS2 volume, such as its
+    /// integrity layer, or the overlay and the hotzone of an online
+    /// reencryption ([`luks2::names_a_volume`]).
+    fn is_luks2_subdevice(&self) -> bool {
+        matches!(&self.crypt, Some(CryptType::Other(kind)) if kind == "SUBDEV")
+            && luks2::names_a_volume(self.dm_uuid.as_deref().unwrap_or_default())
+    }
+
+    /// Whether this is a sub-device cryptsetup built below the LUKS volume
+    /// whose uuid, without its dashes, is `volume`: a `SUBDEV` mapping, or
+    /// the `INTEGRITY` layer of cryptsetup before 2.8, with that uuid.
+    fn is_subdevice_of(&self, volume: &str) -> bool {
+        let Some(CryptType::Other(kind)) = &self.crypt else {
+            return false;
+        };
+        matches!(kind.as_str(), "SUBDEV" | "INTEGRITY")
+            && luks2::volume_uuid_of(self.dm_uuid.as_deref().unwrap_or_default()) == Some(volume)
     }
 
     /// Whether this is a Shufflecake (`dm-sflc`) volume, which the tool names
@@ -489,28 +509,39 @@ fn rests_on_ram_only(layers: &[Layer]) -> bool {
 }
 
 /// The device whose start holds the header of `layer`, a LUKS mapping of the
-/// stack `layers`: the device below it, or, where that is the volume's own
-/// integrity layer (a LUKS2 volume with authenticated encryption, which
-/// cryptsetup builds on the device the header is on), the device below
-/// that. `None` for any other layer, and for a LUKS mapping whose device
-/// below is not known.
+/// stack `layers`: the device below it, or, where that is one of the
+/// volume's own sub-devices, the device below them, which holds the volume's
+/// data, and its header unless that is detached. cryptsetup builds the
+/// integrity layer of a LUKS2 volume with authenticated encryption on that
+/// device, and while `cryptsetup reencrypt` runs on the open volume, the
+/// overlay that holds its segments on that device and on the hotzone, a
+/// linear map of that device. `None` for any other layer, and for a LUKS
+/// mapping whose device below is not known.
 fn header_device<'a>(layers: &'a [Layer], layer: &'a Layer) -> Option<&'a str> {
     if layer.crypt != Some(CryptType::Luks) {
         return None;
     }
-    let below = layer.slaves.first()?;
     let volume = luks2::volume_uuid_of(layer.dm_uuid.as_deref().unwrap_or_default());
-    match layers.iter().find(|other| other.name == *below) {
-        Some(integrity)
-            if integrity.is_integrity_layer()
-                && volume.is_some()
-                && luks2::volume_uuid_of(integrity.dm_uuid.as_deref().unwrap_or_default())
-                    == volume =>
-        {
-            integrity.slaves.first().map(String::as_str)
-        }
-        _ => Some(below),
-    }
+    let subdevice = |name: &str| {
+        layers
+            .iter()
+            .find(|other| other.name == name)
+            .filter(|other| volume.is_some_and(|volume| other.is_subdevice_of(volume)))
+    };
+    // Down through the sub-devices, below each to the device that is none
+    // where there is one. A stack read from sysfs has no loops, so no way
+    // down from `layer` passes more devices than the others of the stack.
+    let down = |below: &&'a String| {
+        let sub = subdevice(below.as_str())?;
+        sub.slaves
+            .iter()
+            .find(|slave| subdevice(slave.as_str()).is_none())
+            .or_else(|| sub.slaves.first())
+    };
+    std::iter::successors(layer.slaves.first(), down)
+        .take(layers.len())
+        .find(|below| subdevice(below.as_str()).is_none())
+        .map(String::as_str)
 }
 
 // ============================================================================
@@ -561,6 +592,9 @@ fn describe(fstype: &str, layers: &[Layer]) -> String {
             }
             (Some(_), _) if layer.is_integrity_layer() => {
                 format!("dm-integrity mapping {} (encrypts nothing)", layer.name)
+            }
+            (Some(_), _) if layer.is_luks2_subdevice() => {
+                format!("LUKS2 sub-device {} (SUBDEV)", layer.name)
             }
             (Some(CryptType::Other(kind)), _) if kind == "SUBDEV" => {
                 format!("dm-crypt cascade layer {} (SUBDEV)", layer.name)

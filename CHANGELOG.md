@@ -501,13 +501,13 @@ of this changelog for that version becomes the release notes word for word, and
   root. The check takes the device below each TCRYPT, SUBDEV or VeraCrypt mapping of the hidden
   root, the loop devices over it, and the other loop devices over the same file from the same
   offset, and names the other mapping, the device it is on and where it is mounted. A SUBDEV
-  mapping with a volume uuid, the integrity layer cryptsetup 2.8 and later put below a LUKS2
-  volume with authenticated encryption, is no VeraCrypt or TrueCrypt mapping to it. It passes
-  when that mapping is read-only, as `cryptsetup open --readonly` makes it; one the VeraCrypt
-  application made warns even when the application mounted it read-only, as it leaves its
-  mapping writable. It reads sysfs and the mount table, never a mapping's table, warns when sysfs
-  does not let it list the devices below the hidden root or built on its storage, and never
-  fails. See docs/backends.md.
+  mapping with a volume uuid, a LUKS2 volume's own sub-device such as the integrity layer
+  cryptsetup 2.8 and later put below a volume with authenticated encryption, is no VeraCrypt or
+  TrueCrypt mapping to it. It passes when that mapping is read-only, as
+  `cryptsetup open --readonly` makes it; one the VeraCrypt application made warns even when the
+  application mounted it read-only, as it leaves its mapping writable. It reads sysfs and the
+  mount table, never a mapping's table, warns when sysfs does not let it list the devices below
+  the hidden root or built on its storage, and never fails. See docs/backends.md.
 - `check` and activation refuse (`backend-partition-type`) a hidden root stored on a partition of
   a disk the decoy boots from whose GPT type systemd-gpt-auto-generator acts on at every later
   boot of the decoy: a `/home`, `/srv`, `/var` or `/var/tmp` partition, which it mounts when no
@@ -593,13 +593,14 @@ of this changelog for that version becomes the release notes word for word, and
   into that device, and is no longer called a file container or warned about as one; one attached
   without autoclear warns that it stays bound after the volume is closed. A mapping the VeraCrypt
   application made is named as such, and refused like a cryptsetup mapping when it forwards
-  discards; cascade layers, dm-integrity and dm-verity are named for what they are. So is the
-  integrity layer below a LUKS2 volume with authenticated encryption, which cryptsetup 2.8 and
-  later name SUBDEV like a cascade layer but with the volume's uuid: the volume's header, its
-  flags and its tokens are read from the device below that layer, where cryptsetup keeps them. A
-  hidden root on a filesystem the decoy uses is no longer described as if the decoy's stack were
-  its backend: the check leaves it to `hidden-volume`, but refuses discards over that stack, which
-  keeps the root's data, as before. See docs/backends.md.
+  discards; cascade layers, dm-integrity and dm-verity are named for what they are. So are the
+  sub-devices cryptsetup builds below a LUKS2 volume, SUBDEV like a cascade layer but with the
+  volume's uuid: the integrity layer of a volume with authenticated encryption, from cryptsetup
+  2.8 on, and the overlay and the hotzone of an online reencryption while it runs. The volume's
+  header, its flags and its tokens are read from the device below them, where cryptsetup keeps
+  them. A hidden root on a filesystem the decoy uses is no longer described as if the decoy's
+  stack were its backend: the check leaves it to `hidden-volume`, but refuses discards over that
+  stack, which keeps the root's data, as before. See docs/backends.md.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an

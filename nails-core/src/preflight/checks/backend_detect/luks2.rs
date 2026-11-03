@@ -161,8 +161,8 @@ pub fn same_volume(header: &str, dm_uuid: &str) -> bool {
 
 /// The volume uuid a device-mapper uuid names, without its dashes: the
 /// `<hex>` of `CRYPT-<TYPE>-<hex>-<name>`. cryptsetup writes one for a
-/// volume that has a uuid (a LUKS volume, and the integrity layer below a
-/// LUKS2 volume with authenticated encryption) and none for a volume
+/// volume that has a uuid (a LUKS volume, and the sub-devices it builds
+/// below a LUKS2 volume, see [`names_a_volume`]) and none for a volume
 /// without one (`CRYPT-TCRYPT-<name>`, and `CRYPT-SUBDEV-<name>_<n>` for
 /// the further cipher layers below it).
 pub fn volume_uuid_of(dm_uuid: &str) -> Option<&str> {
@@ -175,13 +175,25 @@ pub fn volume_uuid_of(dm_uuid: &str) -> Option<&str> {
         .filter(|hex| !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Whether the `SUBDEV` mapping whose device-mapper uuid is `dm_uuid` is the
-/// integrity layer of a LUKS2 volume with authenticated encryption, which
-/// cryptsetup 2.8 and later name `CRYPT-SUBDEV-<uuid>-<name>_dif` (earlier
-/// versions `CRYPT-INTEGRITY-…`): its uuid names a whole volume uuid, 32 hex
+/// Whether the `SUBDEV` mapping whose device-mapper uuid is `dm_uuid` is a
+/// LUKS2 volume's own sub-device: its uuid names a whole volume uuid, 32 hex
 /// digits, which the further cipher layers of a TCRYPT volume never carry.
+/// cryptsetup gives the type `SUBDEV` and the volume's uuid to the integrity
+/// layer of a LUKS2 volume with authenticated encryption from cryptsetup 2.8
+/// on (`CRYPT-SUBDEV-<uuid>-<name>_dif`, `CRYPT-INTEGRITY-…` before), and to
+/// the overlay and the hotzone `cryptsetup reencrypt` builds below an open
+/// volume while it runs (`<name>-overlay`, `<name>-hotzone-forward` or
+/// `-backward`): the overlay holds the volume's segments, and the hotzone
+/// maps the device the volume's data is on.
 pub fn names_a_volume(dm_uuid: &str) -> bool {
     volume_uuid_of(dm_uuid).is_some_and(|hex| hex.len() == 32)
+}
+
+/// Whether `dm_name`, the device-mapper name of one of a LUKS2 volume's own
+/// sub-devices, is the one cryptsetup gives its integrity layer: the
+/// volume's name with `_dif` after it.
+pub fn is_integrity_layer_name(dm_name: &str) -> bool {
+    dm_name.trim().ends_with("_dif")
 }
 
 /// The uuid every test header carries, which the device-mapper uuid
@@ -362,15 +374,24 @@ mod tests {
     }
 
     #[test]
-    fn the_integrity_layer_of_a_luks2_volume_names_its_uuid_and_a_cascade_layer_none() {
+    fn the_sub_devices_of_a_luks2_volume_name_its_uuid_and_a_cascade_layer_none() {
         let hex = TEST_UUID.replace('-', "");
         let hex = hex.as_str();
         assert_eq!(
             volume_uuid_of(&format!("CRYPT-LUKS2-{hex}-data")),
             Some(hex)
         );
-        assert!(names_a_volume(&format!("CRYPT-SUBDEV-{hex}-data_dif")));
-        assert!(names_a_volume(&format!("CRYPT-INTEGRITY-{hex}-data_dif\n")));
+        // The integrity layer, and the overlay and the hotzone of an online
+        // reencryption.
+        for dm in [
+            format!("CRYPT-SUBDEV-{hex}-data_dif"),
+            format!("CRYPT-INTEGRITY-{hex}-data_dif\n"),
+            format!("CRYPT-SUBDEV-{hex}-data-overlay"),
+            format!("CRYPT-SUBDEV-{hex}-data-hotzone-forward"),
+            format!("CRYPT-SUBDEV-{hex}-data-hotzone-backward"),
+        ] {
+            assert!(names_a_volume(&dm), "{dm}");
+        }
         // The further cipher layers of a TCRYPT volume, which has no uuid,
         // even of one whose name starts with hex digits and a dash.
         for dm in [
@@ -380,6 +401,25 @@ mod tests {
             "",
         ] {
             assert!(!names_a_volume(dm), "{dm}");
+        }
+    }
+
+    #[test]
+    fn of_its_sub_devices_only_the_dif_one_is_a_luks2_volumes_integrity_layer() {
+        // dm_get_iname in cryptsetup's lib/libdevmapper.c: `<name>_dif`.
+        assert!(is_integrity_layer_name("data_dif"));
+        assert!(is_integrity_layer_name("data-overlay_dif\n"));
+        // The overlay and the hotzone of an online reencryption of `data`,
+        // and of `data_dif`.
+        for name in [
+            "data-overlay",
+            "data-hotzone-forward",
+            "data-hotzone-backward",
+            "data_dif-overlay",
+            "data_dif-hotzone-forward",
+            "",
+        ] {
+            assert!(!is_integrity_layer_name(name), "{name}");
         }
     }
 }

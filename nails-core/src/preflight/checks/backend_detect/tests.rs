@@ -1073,6 +1073,115 @@ fn the_stored_flags_of_a_luks2_volume_with_integrity_count() {
     assert!(result.is_fail(), "{result:?}");
 }
 
+/// A mock host with the hidden root on a LUKS2 volume that `cryptsetup
+/// reencrypt` re-encrypts while it is open, as cryptsetup 2.7 and 2.8 build
+/// it: the volume's mapping `dm-4` maps to the overlay `dm-6`, which holds
+/// the crypt segments, on `sdb2` and on the hotzone `dm-5`, a linear map of
+/// `sdb2`. Both carry the type `SUBDEV` and the volume's uuid, as the
+/// integrity layer does. The overlay's start is plaintext and the hotzone's
+/// ciphertext, written to `dev`.
+fn luks_under_reencryption(dev: &tempfile::TempDir) -> super::tests_host::Host {
+    let hex = luks2::TEST_UUID.replace('-', "");
+    std::fs::write(dev.path().join("dm-5"), vec![0x5Au8; 65536]).unwrap();
+    std::fs::write(dev.path().join("dm-6"), vec![0u8; 65536]).unwrap();
+    super::tests_host::Host::new("254:4", "ext4", "/dev/mapper/data")
+        .disk("sdb", "8:16")
+        .partition_at("sdb2", "8:18", "sdb", 2, 2048)
+        .mapping(
+            "dm-5",
+            "254:5",
+            "data-hotzone-forward",
+            &format!("CRYPT-SUBDEV-{hex}-data-hotzone-forward"),
+            &["sdb2"],
+        )
+        .mapping(
+            "dm-6",
+            "254:6",
+            "data-overlay",
+            &format!("CRYPT-SUBDEV-{hex}-data-overlay"),
+            &["dm-5", "sdb2"],
+        )
+        .mapping(
+            "dm-4",
+            "254:4",
+            "data",
+            &format!("CRYPT-LUKS2-{hex}-data"),
+            &["dm-6"],
+        )
+}
+
+#[test]
+fn a_luks2_volume_under_reencryption_has_its_header_read_below_its_sub_devices() {
+    // The overlay and the hotzone are no integrity layers, and the header is
+    // on sdb2, below both: not at the start of the hotzone, which sorts
+    // first below the overlay.
+    let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":[]}}"#);
+    let host = luks_under_reencryption(&dev);
+    let root = Path::new(super::tests_host::ROOT);
+    assert_eq!(
+        assess_with_dev_dir(&host.fs, root, dev.path(), false),
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on LUKS mapping dm-4 on LUKS2 sub-device dm-6 (SUBDEV) on \
+             LUKS2 sub-device dm-5 (SUBDEV) on block device sdb2; no backend-specific hazards \
+             detected. The LUKS2 header at the start of sdb2 shows anyone who reads the disk \
+             that an encrypted volume is there (cryptsetup isLuks, blkid), though not what it \
+             holds."
+                .into()
+        )
+    );
+    // So its stored flags count.
+    let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":["allow-discards"]}}"#);
+    let host = luks_under_reencryption(&dev);
+    let result = assess_with_dev_dir(&host.fs, root, dev.path(), false);
+    assert!(result.is_fail(), "{result:?}");
+}
+
+#[test]
+fn a_luks_volume_on_a_sub_device_of_another_volume_has_its_header_read_there() {
+    // A LUKS volume made on the integrity layer of another LUKS2 volume: a
+    // sub-device that names another volume uuid than the mapping's is no
+    // sub-device of its volume, and its start holds the header.
+    let dev = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dev.path().join("dm-8"),
+        luks2::header_image(r#"{"tokens":{},"config":{"flags":[]}}"#, 16384),
+    )
+    .unwrap();
+    let host = super::tests_host::Host::new("254:9", "ext4", "/dev/mapper/data")
+        .disk("sdb", "8:16")
+        .partition_at("sdb2", "8:18", "sdb", 2, 2048)
+        .mapping(
+            "dm-8",
+            "254:8",
+            "outer_dif",
+            "CRYPT-SUBDEV-ffffffffffffffffffffffffffffffff-outer_dif",
+            &["sdb2"],
+        )
+        .mapping(
+            "dm-9",
+            "254:9",
+            "data",
+            "CRYPT-LUKS2-0123456789abcdef0123456789abcdef-data",
+            &["dm-8"],
+        );
+    let result = assess_with_dev_dir(
+        &host.fs,
+        Path::new(super::tests_host::ROOT),
+        dev.path(),
+        false,
+    );
+    assert_eq!(
+        result,
+        CheckResult::Pass(
+            "Hidden root backend: ext4 on LUKS mapping dm-9 on dm-integrity mapping dm-8 \
+             (encrypts nothing) on block device sdb2; no backend-specific hazards detected. The \
+             LUKS2 header at the start of dm-8 shows anyone who reads the disk that an encrypted \
+             volume is there (cryptsetup isLuks, blkid), though not what it holds."
+                .into()
+        )
+    );
+}
+
 #[test]
 fn a_luks_volume_on_an_integrity_device_of_its_own_has_its_header_read_there() {
     // integritysetup's device, which names no volume uuid, with a LUKS
