@@ -15,9 +15,11 @@
 //!   loop device as far as [`LoopFollow`] allows.
 //! - [`walk()`] does the same within a given number of devices, and says where
 //!   it stopped short of the bottom.
-//! - [`device_of_mount`] finds the device a mount sits on.
+//! - [`device_of_mount`] finds the device a mount sits on, and
+//!   [`device_numbered`] the one with a given number.
 //! - [`resolve_spec`] finds the device an fstab or crypttab spec names.
-//! - [`btrfs_members`] lists every device of a btrfs filesystem.
+//! - [`btrfs_members`] lists every device of a btrfs filesystem, and
+//!   [`btrfs_filesystems`] those of all of them.
 //! - [`classify_dm`] says what a device-mapper uuid and name describe.
 //! - [`block_majors`] lists the drivers the kernel names by major number.
 
@@ -29,8 +31,8 @@ mod walk;
 mod tests;
 
 pub use driver::{PROC_DEVICES, block_majors, major_of, parse_block_majors};
-pub use spec::{btrfs_members, resolve_spec};
-pub use walk::{classify_dm, device_of_mount, stack, walk};
+pub use spec::{btrfs_filesystems, btrfs_members, resolve_spec};
+pub use walk::{classify_dm, device_numbered, device_of_mount, stack, walk};
 
 use std::path::{Path, PathBuf};
 
@@ -69,6 +71,9 @@ pub struct Layer {
     pub discard_max_bytes: u64,
     /// Kernel names of the devices below this one (`slaves/`), sorted.
     pub slaves: Vec<String>,
+    /// Whether `slaves/` is there but could not be listed, so `slaves` may
+    /// miss devices below this one. A partition has no `slaves/`.
+    pub slaves_unread: bool,
     /// Kernel names of the devices the walk went on into right below this
     /// one: its `slaves`, then, below a loop device, the device it reads from,
     /// as far as [`LoopFollow`] lets the walk go.

@@ -242,14 +242,27 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), Err(kind));
     }
 
-    /// Set the device of the file the loop device `node` is bound to, as
-    /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device)
+    /// Set the device of the regular file the loop device `node` is bound
+    /// to, as [`Filesystem::loop_record`](crate::Filesystem::loop_record)
     /// reports it. Unset, the node cannot be read, as without root.
     pub fn mock_set_loop_backing_device(&self, node: &Path, device_id: u64) {
-        self.loop_backing_devices
+        self.mock_set_loop_record(
+            node,
+            crate::filesystem::LoopRecord {
+                device: device_id,
+                rdevice: 0,
+            },
+        );
+    }
+
+    /// Set the record of what the loop device `node` is bound to, as
+    /// [`Filesystem::loop_record`](crate::Filesystem::loop_record) reports
+    /// it: a block device node among them.
+    pub fn mock_set_loop_record(&self, node: &Path, record: crate::filesystem::LoopRecord) {
+        self.loop_records
             .lock()
             .expect("MockFilesystem mutex poisoned")
-            .insert(node.to_path_buf(), device_id);
+            .insert(node.to_path_buf(), record);
     }
 
     /// Set whether copy_tree should fail for a source path
@@ -318,7 +331,9 @@ impl MockFilesystem {
     /// Mark a directory as unreadable, so
     /// [`Filesystem::scan_files_with_pattern`](crate::Filesystem::scan_files_with_pattern)
     /// reports it under [`PatternScan::unreadable`](crate::filesystem::PatternScan::unreadable)
-    /// rather than walking it. Models an `EACCES` on `/tmp/systemd-private-*`.
+    /// rather than walking it, and
+    /// [`Filesystem::list_directory`](crate::Filesystem::list_directory) fails
+    /// on it with `EACCES`. Models an `EACCES` on `/tmp/systemd-private-*`.
     pub fn mock_set_unreadable_dir(&self, dir: &str) {
         self.unreadable_dirs
             .lock()

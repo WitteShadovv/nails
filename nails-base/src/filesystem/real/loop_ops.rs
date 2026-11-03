@@ -3,11 +3,13 @@
 
 //! The loop driver's record of what a loop device is bound to.
 
+use crate::filesystem::LoopRecord;
 use crate::{IoResultExt, Result};
 use std::path::Path;
 
 /// `struct loop_info64` from `<linux/loop.h>`, which `LOOP_GET_STATUS64`
-/// fills. Only the device is read; the rest mirrors the kernel's layout.
+/// fills. Only the two devices are read; the rest mirrors the kernel's
+/// layout.
 #[repr(C)]
 #[allow(dead_code)]
 struct LoopInfo64 {
@@ -30,10 +32,10 @@ struct LoopInfo64 {
 /// argument's size.
 const LOOP_GET_STATUS64: rustix::ioctl::Opcode = 0x4C05;
 
-/// The device of the backing file of the loop device at `node`. The node is
-/// opened read-only and never written.
+/// The loop driver's record of the backing file of the loop device at
+/// `node`. The node is opened read-only and never written.
 #[allow(unsafe_code)]
-pub(super) fn loop_backing_device(node: &Path) -> Result<u64> {
+pub(super) fn loop_record(node: &Path) -> Result<LoopRecord> {
     use rustix::fs::{Mode, OFlags};
     let fd = rustix::fs::open(
         node,
@@ -52,7 +54,10 @@ pub(super) fn loop_backing_device(node: &Path) -> Result<u64> {
     }
     .map_err(std::io::Error::from)
     .at_path(node)?;
-    Ok(info.lo_device)
+    Ok(LoopRecord {
+        device: info.lo_device,
+        rdevice: info.lo_rdevice,
+    })
 }
 
 #[cfg(test)]
@@ -62,7 +67,7 @@ mod tests {
     #[test]
     fn a_node_that_is_no_loop_device_has_no_backing_device() {
         // /dev/null opens, but the loop driver does not answer for it.
-        assert!(loop_backing_device(Path::new("/dev/null")).is_err());
-        assert!(loop_backing_device(Path::new("/dev/nails-no-such-loop")).is_err());
+        assert!(loop_record(Path::new("/dev/null")).is_err());
+        assert!(loop_record(Path::new("/dev/nails-no-such-loop")).is_err());
     }
 }

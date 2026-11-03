@@ -58,8 +58,8 @@ impl MockFilesystem {
         Ok(Some(hasher.finish() | 1))
     }
 
-    pub(super) fn loop_backing_device_impl(&self, node: &Path) -> Result<u64> {
-        self.loop_backing_devices
+    pub(super) fn loop_record_impl(&self, node: &Path) -> Result<crate::filesystem::LoopRecord> {
+        self.loop_records
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .get(node)

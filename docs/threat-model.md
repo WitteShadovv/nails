@@ -333,8 +333,9 @@ rehearsal state all ask it first. It refuses:
   from: the writes would reach the disk on top;
 - a root whose storage cannot be judged because `/etc/fstab` or `/etc/crypttab`
   cannot be read (`storage_unjudged`; run the command with sudo), or the block
-  devices in `/sys/class/block` cannot be listed (`storage_unjudged`; run it as
-  root on the host, with `/sys` mounted), or because its filesystem shows no
+  devices in `/sys/class/block`, or the devices of a btrfs filesystem in
+  `/sys/fs/btrfs`, cannot be listed (`storage_unjudged`; run it as root on the
+  host, with `/sys` mounted), or because its filesystem shows no
   disk it stores its data on: an overlay, a FUSE, network or ZFS filesystem, or
   an image file on one that the decoy neither mounts at `/` or a system folder
   such as `/home` nor lists in its fstab (`storage_unjudged`), or because it
@@ -369,16 +370,21 @@ disk itself, a partition of it, an encrypted mapping, a logical volume or an
 md array on it, or an image file on a filesystem on it, a filesystem of the
 decoy's included. It refuses a root just the same when it cannot tell what a
 disk on that way is: when `/proc/devices` cannot be read (run the command
-where `/proc` is mounted), or names no driver for the disk's number, or when
-sysfs does not list a device that another names below it. It refuses a ZFS
-volume, and a disk or a way down it cannot tell, before it weighs the decoy's
-storage, so the override lifts that refusal for no root, not even one on a
-filesystem of the decoy's that lies on such a volume. An image file on a
+where `/proc` is mounted), or names no driver for the disk's number, when
+sysfs does not list a device that another names below it or cannot list what
+lies below a device, or when a loop device shows no file (as for a path longer
+than the kernel shows). It refuses a ZFS volume, and a disk or a way down it
+cannot tell, before it weighs the decoy's storage, so the override lifts that
+refusal for no root, not even one on a filesystem of the decoy's that lies on
+such a volume. An image file on a
 filesystem of the decoy's that lies on an `nbd` or `ublk` device is refused as
 an image file on that filesystem; an encrypted container there, which would
-only warn on another disk, is refused as on the device. A disk the root's data
-does not reach changes nothing, and the gate takes an ordinary disk, an iSCSI
-disk (a SCSI disk to the kernel) and a `zram` device for disks of their own.
+only warn on another disk, is refused as on the device. A loop device over the
+node of a device outside `/dev` lies on that device, as the loop driver's
+record shows, and a `zram` device on the device it writes pages back to, if it
+has one. A disk the root's data does not reach changes nothing, and the gate
+takes an ordinary disk, an iSCSI disk (a SCSI disk to the kernel) and a `zram`
+device that writes nothing back for disks of their own.
 When the filesystem that holds the root's image file lies in an image file
 itself, the gate judges that file as it judges the root's own, as deep as such
 files go.
@@ -414,14 +420,14 @@ uses, or a remote block device's other users. It does not follow a ZFS dataset
 or a ZFS volume to the disks of its pool, so it refuses a hidden root on ZFS
 even on a pool of its own, and it cannot see where the program behind an `nbd`
 or `ublk` device keeps the data. A remote disk that shows as an ordinary one,
-such as an iSCSI disk, counts as a disk of its own, and the writeback device of
-a `zram` device is not followed. Nor can it see the traces that creating the
-volume on this computer left behind (the setup tools' own files, shell history,
-a changed partition table): only preparing the volume elsewhere avoids them. A refusal names the
-storage and says nothing was written. The override is for storage the gate takes
-for the decoy's that the operator knows the decoy does not use (for example a
-disk its fstab lists but never mounts); everything written there lands on that
-storage.
+such as an iSCSI disk, counts as a disk of its own. Nor can it see the traces
+that creating the volume on this computer left behind (the setup tools' own
+files, shell history, a changed partition table): only preparing the volume
+elsewhere avoids them. A refusal names the storage and says nothing was
+written. The override is for storage the gate takes for the decoy's that the
+operator knows the decoy does not use (for example a disk its fstab lists but
+never mounts), and for an `nbd` or `ublk` device the operator knows is served
+from storage elsewhere; everything written there lands on that storage.
 
 ## Residual channels
 
