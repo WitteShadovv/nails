@@ -63,7 +63,10 @@ fn it_shows_in_a_hidden_session_and_nowhere_else() {
 #[test]
 fn firing_ends_the_page_once_and_nothing_comes_after_it() {
     let mut model = hidden();
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Finish::PowerOff.into()))
+    );
     let page = model.page();
     assert_eq!(page.heading, text::ENDING);
     assert_eq!(page.description, text::EMERGENCY_NOW);
@@ -101,7 +104,10 @@ fn firing_closes_an_open_question_without_answering_it() {
     })));
     assert!(model.page().question.is_some());
     assert!(model.page().emergency, "it shows over the question");
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Finish::PowerOff.into()))
+    );
     assert!(model.page().question.is_none());
 }
 
@@ -120,7 +126,12 @@ fn the_page_of_a_deactivation_that_ends_keeps_it() {
     assert_eq!(page.heading, text::ENDING);
     assert!(page.no_input, "nothing else acts");
     assert!(page.emergency, "the emergency does");
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+    // Its power-off comes at once: the return's switch would end the window
+    // within the grace it waits for the helper otherwise.
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Firing::POWER_OFF_AT_ONCE))
+    );
     assert_eq!(model.page().description, text::EMERGENCY_NOW);
 }
 
@@ -208,7 +219,7 @@ fn the_emergency_ends_as_the_setting_says_and_the_page_says_so_first() {
         // Before it is used: the page's fact and the control's description.
         assert_eq!(fact(&model), name, "{spelling}");
         assert_eq!(model.page().emergency_how, text::emergency_how(finish));
-        assert_eq!(model.emergency(), Some(Effect::Emergency(finish)));
+        assert_eq!(model.emergency(), Some(Effect::Emergency(finish.into())));
         let page = model.page();
         assert_eq!(page.heading, text::ENDING);
         assert_eq!((page.description.as_str(), page.fix.as_str()), (now, then));
@@ -229,7 +240,7 @@ fn a_setting_not_read_unreadable_or_unknown_powers_off_and_the_page_says_why() {
     let mut not_read = not_read;
     assert_eq!(
         not_read.emergency(),
-        Some(Effect::Emergency(Finish::PowerOff))
+        Some(Effect::Emergency(Finish::PowerOff.into()))
     );
 
     let mut missing: Value =
@@ -262,7 +273,7 @@ fn a_setting_not_read_unreadable_or_unknown_powers_off_and_the_page_says_why() {
         );
         assert_eq!(
             model.emergency(),
-            Some(Effect::Emergency(Finish::PowerOff)),
+            Some(Effect::Emergency(Finish::PowerOff.into())),
             "{what}"
         );
         assert_eq!(model.page().description, text::EMERGENCY_NOW);
@@ -275,7 +286,10 @@ fn a_setting_not_read_unreadable_or_unknown_powers_off_and_the_page_says_why() {
     model.apply(answered(Kind::Config, json!({"command": "config"})));
     assert_eq!(model.emergency_finish().0, Finish::PowerOff);
     model.apply(settings_with(json!("reboot")));
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::Reboot)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Finish::Reboot.into()))
+    );
 }
 
 #[test]
@@ -288,14 +302,20 @@ fn a_return_without_a_way_back_powers_off_and_a_restart_does_not() {
         fact(&model),
         format!("Power off, {}", text::EMERGENCY_NO_WAY_BACK)
     );
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Finish::PowerOff.into()))
+    );
 
     // A full restart needs no way back.
     let mut model = hidden();
     model.apply(settings_with(json!("reboot")));
     model.apply(status("hidden", json!("no_way_back")));
     assert_eq!(fact(&model), "Restart");
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::Reboot)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Finish::Reboot.into()))
+    );
 }
 
 #[test]
@@ -310,12 +330,15 @@ fn without_its_helper_the_window_powers_off_whatever_the_setting() {
         model.page().emergency_how,
         text::emergency_how(Finish::PowerOff)
     );
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Finish::PowerOff.into()))
+    );
     assert_eq!(model.page().description, text::EMERGENCY_NOW);
 
     // Also where the page stays that of a deactivation that ends.
     let mut model = hidden();
-    model.apply(settings_with(json!("reboot")));
+    model.apply(settings_with(json!("return")));
     model.action();
     model.apply(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
         poweroff: false,
@@ -324,11 +347,14 @@ fn without_its_helper_the_window_powers_off_whatever_the_setting() {
         token: "0".repeat(32),
     })));
     model.alternative();
-    assert!(fact_of(&model.page()).is_none(), "it restarts as set");
+    assert!(fact_of(&model.page()).is_none(), "it returns as set");
     model.apply(Update::Ended(Failure::Lost { in_flight: true }));
     assert_eq!(model.page().heading, text::ENDING, "the page stays");
     assert_eq!(fact(&model), no_helper);
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Firing::POWER_OFF_AT_ONCE))
+    );
 
     // A window that never had its helper, by its own reading of the mount
     // table.
@@ -352,7 +378,7 @@ fn without_its_helper_the_window_powers_off_whatever_the_setting() {
     );
     assert_eq!(
         waiting.emergency(),
-        Some(Effect::Emergency(Finish::PowerOff))
+        Some(Effect::Emergency(Finish::PowerOff.into()))
     );
 }
 
@@ -486,14 +512,14 @@ fn while_the_helper_verifies_or_rehearses_it_powers_off_and_says_why() {
             let mut fired = model.clone();
             assert_eq!(
                 fired.emergency(),
-                Some(Effect::Emergency(Finish::PowerOff)),
+                Some(Effect::Emergency(Finish::PowerOff.into())),
                 "{tool:?}, {spelling}"
             );
             assert_eq!(fired.page().description, text::EMERGENCY_NOW);
             // Once it is answered, the setting holds again.
             model.apply(answered(kind, recorded(answer)));
             assert_eq!(fact_of(&model.page()), None, "{tool:?}, {spelling}");
-            assert_eq!(model.emergency(), Some(Effect::Emergency(finish)));
+            assert_eq!(model.emergency(), Some(Effect::Emergency(finish.into())));
         }
     }
     // A short request of the session's own is no reason.
@@ -501,7 +527,10 @@ fn while_the_helper_verifies_or_rehearses_it_powers_off_and_says_why() {
     model.apply(settings_with(json!("return")));
     model.apply(Update::Running(Kind::Status));
     assert_eq!(fact(&model), "Return to the decoy");
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::Return)));
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Finish::Return.into()))
+    );
 }
 
 #[test]
@@ -537,16 +566,87 @@ fn while_a_deactivation_powers_off_a_return_or_a_restart_powers_off_too() {
             [Ask::Apply]
         );
         assert_eq!(fact_of(&model.page()), expected, "{spelling}, applied");
-        assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+        assert_eq!(
+            model.emergency(),
+            Some(Effect::Emergency(Finish::PowerOff.into()))
+        );
         assert_eq!(model.page().description, text::EMERGENCY_NOW);
     }
-    // Return to Decoy keeps what the setting says.
+}
+
+#[test]
+fn while_a_deactivation_returns_it_powers_off_at_once_unless_it_returns_too() {
+    let returning = format!("Power off, {}", text::EMERGENCY_RETURNING);
+    for (spelling, set, then, said) in [
+        ("return", Finish::Return, Firing::from(Finish::Return), None),
+        (
+            "poweroff",
+            Finish::PowerOff,
+            Firing::POWER_OFF_AT_ONCE,
+            None,
+        ),
+        (
+            "reboot",
+            Finish::Reboot,
+            Firing::POWER_OFF_AT_ONCE,
+            Some(returning.clone()),
+        ),
+    ] {
+        let mut model = hidden();
+        model.apply(settings_with(json!(spelling)));
+        deactivation_asked(&mut model, None);
+        // Asked, nothing is chosen yet.
+        assert_eq!(model.emergency_firing(), set.into(), "{spelling}");
+        // Return to Decoy: the helper reads the emergency only once it has
+        // answered the apply, and the switch the apply starts ends the window
+        // with the session. The window powers off at once itself then, and a
+        // restart, which it has none of its own for, is a power-off.
+        assert_eq!(model.alternative(), Some(Ask::Apply));
+        for (step, update) in [
+            ("asked", None),
+            ("running", Some(Update::Running(Kind::Apply))),
+            (
+                "answered",
+                Some(answered(
+                    Kind::Apply,
+                    json!({"schema_version": 2, "command": "deactivate", "ok": true,
+                        "data": {"status": "return_requested"}}),
+                )),
+            ),
+        ] {
+            if let Some(update) = update {
+                assert!(model.apply(update).is_empty(), "{spelling}, {step}");
+            }
+            let page = model.page();
+            assert_eq!(page.description, text::RETURNING, "{spelling}, {step}");
+            assert_eq!(fact_of(&page), said, "{spelling}, {step}");
+            assert_eq!(
+                page.emergency_how,
+                text::emergency_how(then.finish()),
+                "{spelling}, {step}"
+            );
+            assert_eq!(model.emergency_firing(), then, "{spelling}, {step}");
+        }
+        assert_eq!(model.emergency(), Some(Effect::Emergency(then)));
+        let now = if then.finish() == Finish::Return {
+            text::EMERGENCY_RETURNING_NOW
+        } else {
+            text::EMERGENCY_NOW
+        };
+        assert_eq!(model.page().description, now, "{spelling}");
+    }
+    // Before the setting is read, the power-off comes at once too.
     let mut model = hidden();
-    model.apply(settings_with(json!("reboot")));
     deactivation_asked(&mut model, None);
-    assert_eq!(model.alternative(), Some(Ask::Apply));
-    assert_eq!(model.page().description, text::RETURNING);
-    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::Reboot)));
+    model.alternative();
+    assert_eq!(
+        fact(&model),
+        format!("Power off, {}", text::EMERGENCY_NOT_READ)
+    );
+    assert_eq!(
+        model.emergency(),
+        Some(Effect::Emergency(Firing::POWER_OFF_AT_ONCE))
+    );
 }
 
 #[test]
@@ -563,7 +663,10 @@ fn a_return_its_plan_says_powers_off_anyway_powers_off_and_says_why() {
         text::emergency_how(Finish::PowerOff)
     );
     let mut fired = model.clone();
-    assert_eq!(fired.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
+    assert_eq!(
+        fired.emergency(),
+        Some(Effect::Emergency(Finish::PowerOff.into()))
+    );
     assert_eq!(fired.page().description, text::EMERGENCY_NOW);
     // Withdrawn, the window holds no such plan any more.
     assert_eq!(model.answer(false), Some(Ask::Withdraw));
@@ -590,6 +693,6 @@ fn a_return_its_plan_says_powers_off_anyway_powers_off_and_says_why() {
         model.apply(settings_with(json!(spelling)));
         deactivation_asked(&mut model, Some(plan));
         assert_eq!(fact(&model), said, "{spelling}, {plan}");
-        assert_eq!(model.emergency(), Some(Effect::Emergency(finish)));
+        assert_eq!(model.emergency(), Some(Effect::Emergency(finish.into())));
     }
 }

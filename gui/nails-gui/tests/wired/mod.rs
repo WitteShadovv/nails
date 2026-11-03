@@ -80,8 +80,8 @@ impl Wired {
             .in_hidden_session(in_hidden_session);
         let screen = Screen::with_emergency(
             model,
-            Box::new(move |finish| {
-                emergency.fire(finish);
+            Box::new(move |firing| {
+                emergency.fire(firing);
             }),
         );
         Self {

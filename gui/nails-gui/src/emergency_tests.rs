@@ -201,6 +201,55 @@ fn only_the_first_firings_finish_is_asked_for() {
 }
 
 #[test]
+fn every_firing_comes_back_from_its_flag() {
+    for (finish, _) in FINISHES {
+        let firing = Firing::from(finish);
+        assert_eq!(firing.finish(), finish);
+        assert!(!firing.at_once(), "{finish:?}: a grace after the request");
+        assert_ne!(firing.code(), NOT_FIRED);
+        assert_eq!(Firing::of_code(firing.code()), firing, "{finish:?}");
+    }
+    let at_once = Firing::POWER_OFF_AT_ONCE;
+    assert_eq!(
+        (at_once.finish(), at_once.at_once()),
+        (Finish::PowerOff, true)
+    );
+    assert_ne!(at_once.code(), NOT_FIRED);
+    assert_eq!(Firing::of_code(at_once.code()), at_once);
+}
+
+#[test]
+fn a_power_off_at_once_asks_the_helper_and_then_the_system_without_the_grace() {
+    let fake = FakePowerOff::new("exit 0");
+    let mut fallback = fake.fallback();
+    fallback.grace = Duration::from_secs(10);
+    let (tell, heard) = channel();
+    let emergency = Emergency::start(fallback, move |outcome| {
+        let _ = tell.send((outcome, Instant::now()));
+    });
+    let (line, helper) = pipe();
+    emergency.open(line);
+    let fired = Instant::now();
+    assert!(emergency.fire(Firing::POWER_OFF_AT_ONCE));
+    assert!(!emergency.fire(Finish::Return), "once");
+    let request = read_request(&helper);
+    assert_eq!(
+        (request.id, request.op),
+        (EMERGENCY_ID, Op::Emergency(Finish::PowerOff.args()))
+    );
+    let (asked, _) = heard.recv_timeout(PATIENCE).expect("a report");
+    assert_eq!(asked, Outcome::HelperAsked);
+    let (off, at) = heard.recv_timeout(PATIENCE).expect("a report");
+    assert_eq!(off, Outcome::PowerOffAsked);
+    assert!(
+        at - fired < Duration::from_secs(5),
+        "no grace after the request: {:?}",
+        at - fired
+    );
+    assert_eq!(fake.calls(), ["poweroff --no-ask-password"]);
+}
+
+#[test]
 fn without_a_helper_every_finish_is_the_windows_own_power_off() {
     for (finish, _) in FINISHES {
         let fake = FakePowerOff::new("exit 0");

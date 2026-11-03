@@ -15,7 +15,7 @@ mod support;
 use i_slint_backend_testing::{AccessibleLiveness, AccessibleRole, ElementHandle};
 use nails_api::protocol::DeactivatePlanData;
 use nails_gui::client::{Answer, PlanData, ours};
-use nails_gui::emergency::Finish;
+use nails_gui::emergency::{Finish, Firing};
 use nails_gui::text;
 use nails_gui::worker::{Failure, Kind, Update};
 use screen::Screen;
@@ -362,15 +362,28 @@ fn an_open_question_keeps_neither_the_pointer_nor_the_keyboard_from_it() {
 #[test]
 fn the_page_of_a_deactivation_that_ends_keeps_it_working() {
     let screen = hidden();
+    screen.tall();
+    screen.update(settings_with("reboot"));
     deactivation_asked(&screen);
     screen
         .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.update(Update::Running(Kind::Apply));
     assert!(screen.shows(text::RETURNING));
+    // NAILS reads a restart only after the return's apply, whose switch ends
+    // the window with the session: the page says the control powers off, and
+    // it asks for the power-off at once.
+    let row = screen.find_with(text::FACT_EMERGENCY, AccessibleRole::ListItem);
+    let said = format!("Power off, {}", text::EMERGENCY_RETURNING);
+    assert_eq!(row.accessible_description().as_deref(), Some(said.as_str()));
     let button = control(&screen);
     assert_eq!(button.accessible_enabled(), Some(true));
+    assert_eq!(
+        button.accessible_description().as_deref(),
+        Some(text::emergency_how(Finish::PowerOff))
+    );
     hold(&screen, 1100, None);
+    assert_eq!(screen.firings(), [Firing::POWER_OFF_AT_ONCE]);
     assert_ended(&screen);
 }
 
