@@ -150,9 +150,9 @@ pub fn build_registry<F: Filesystem>(
         BinaryLocationCheck, DecoyNixTraceCheck, DecoyPersistenceCheck, DmaProtectionCheck,
         HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
         InspectedShell, LocateDatabaseCheck, MemoryWipeCheck, MountNamespaceCheck,
-        NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck,
-        ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
-        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, OuterVolumeCheck,
+        PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
+        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
@@ -255,6 +255,12 @@ pub fn build_registry<F: Filesystem>(
     // its own: nothing encrypts it, only the decoy's own encryption does, the
     // stack cannot be judged, or the root is in RAM. Read-only.
     registry.add_check(Box::new(BackendEncryptionCheck::new(hidden_root.clone())));
+
+    // Warns (never fails) when another VeraCrypt or TrueCrypt mapping of the
+    // device the hidden root's volume is opened from, its outer volume most
+    // of all, is open read-write: cryptsetup has no hidden-volume protection,
+    // so a write to it can overwrite the hidden root. Read-only.
+    registry.add_check(Box::new(OuterVolumeCheck::new(hidden_root.clone())));
 
     // Refuses a hidden root stored on a partition of a disk the decoy boots
     // from whose GPT type systemd mounts or uses as swap at every later boot

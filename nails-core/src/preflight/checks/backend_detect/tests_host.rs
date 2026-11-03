@@ -194,6 +194,19 @@ impl Host {
         host
     }
 
+    /// A loop device bound to `backing` from the byte `offset` on.
+    pub(super) fn loop_at(self, name: &str, dev: &str, backing: &str, offset: u64) -> Self {
+        let host = self.loop_device(name, dev, backing);
+        host.attr(host.dir(name), "loop/offset", &offset.to_string());
+        host
+    }
+
+    /// The kernel holds the device `name` read-only.
+    pub(super) fn read_only(self, name: &str) -> Self {
+        self.attr(self.dir(name), "ro", "1");
+        self
+    }
+
     /// `path` is a file on the filesystem of the device `major:minor`, as
     /// `stat` reports it.
     pub(super) fn file_on(self, path: &str, major: u32, minor: u32) -> Self {

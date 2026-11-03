@@ -495,6 +495,16 @@ of this changelog for that version becomes the release notes word for word, and
   device, a filesystem that shows no block device, such as ZFS); and for a tmpfs or ramfs root,
   whose contents a power-off ends. dm-integrity and dm-verity encrypt nothing. It never fails a
   run. See docs/backends.md.
+- `check` and activation warn (`outer-volume`) when another VeraCrypt or TrueCrypt mapping of the
+  storage the hidden root's volume is opened from, its outer volume most of all, is open
+  read-write: cryptsetup has no hidden-volume protection, so a write to it can overwrite the hidden
+  root. The check takes the device below each TCRYPT, SUBDEV or VeraCrypt mapping of the hidden
+  root, the loop devices over it, and the other loop devices over the same file from the same
+  offset, and names the other mapping, the device it is on and where it is mounted. It passes
+  when that mapping is read-only, as `cryptsetup open --readonly` makes it; one the VeraCrypt
+  application made warns even when the application mounted it read-only, as it leaves its
+  mapping writable. It reads sysfs and the mount table, never a mapping's table, and never fails.
+  See docs/backends.md.
 - `check` and activation refuse (`backend-partition-type`) a hidden root stored on a partition of
   a disk the decoy boots from whose GPT type systemd-gpt-auto-generator acts on at every later
   boot of the decoy: a `/home`, `/srv`, `/var` or `/var/tmp` partition, which it mounts when no
