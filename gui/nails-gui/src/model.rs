@@ -990,12 +990,18 @@ impl Model {
             page.emergency_how = text::emergency_how(finish).to_string();
             // The page of a hidden session's status names what the control
             // does; any other page names it where it powers off instead of
-            // ending as the setting says.
+            // ending as the setting says. But the page of a switch stays as
+            // it is when the switch takes the helper with the session, as it
+            // does, until the switch is overdue and the page names the
+            // control as a way out.
             let named = page
                 .facts
                 .iter()
                 .any(|(title, _)| title == text::FACT_EMERGENCY);
-            if instead.is_some() && !named {
+            let switching = instead == Some(emergency_setting::Instead::NoHelper)
+                && self.switch_pending()
+                && !self.switch_overdue;
+            if instead.is_some() && !named && !switching {
                 page.facts.push(self.emergency_fact());
             }
         }

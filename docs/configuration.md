@@ -715,6 +715,11 @@ ends as the setting says, and the page then names that and why:
   question of a deactivation says that the return powers off instead,
   whatever happens before it runs.
 
+Where NAILS is gone because the switch of a deactivation took it with the
+session, as that switch does, the deactivation's page names this only once
+the session is still there a minute later, when the page points to the
+control as a way out.
+
 The window's own way out is a power-off too: where there is no helper, the
 request cannot be written within 3 seconds, or the window still runs 3
 seconds after it, it asks logind for the power-off itself (`systemctl
