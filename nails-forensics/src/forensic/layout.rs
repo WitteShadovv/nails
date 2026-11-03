@@ -9,11 +9,16 @@
 //! (LUKS, the usual filesystems, LVM, swap, BitLocker). The layout is fitted
 //! to the source; [`recorded_table`] keeps the table as the disk records it,
 //! for a source that ends before the disk did. Nothing here mounts or writes;
-//! every read is a bounded positioned read.
+//! every read is a bounded positioned read. [`discoverable`] says which GPT
+//! types systemd acts on at boot.
 
 use super::raw::RawSource;
 use serde::Serialize;
 use std::io;
+
+pub mod discoverable;
+#[cfg(any(test, feature = "test-support"))]
+pub mod images;
 
 /// Logical sector size assumed for MBR addressing and GPT on 512e disks.
 pub const SECTOR: u64 = 512;
@@ -29,6 +34,13 @@ pub struct Partition {
     pub size: u64,
     /// The type, as an MBR type byte (`0x83`) or a GPT type GUID.
     pub type_id: String,
+    /// A GPT entry's attribute flags (its bytes 48 to 55), such as the
+    /// no-auto flag of [`discoverable::NO_AUTO`]; 0 for an MBR entry.
+    pub attributes: u64,
+    /// A GPT entry's name (its bytes 56 to 127, UTF-16LE up to the first
+    /// NUL, a code unit that is no valid UTF-16 read as U+FFFD); empty for
+    /// an MBR entry.
+    pub name: String,
 }
 
 impl Partition {
@@ -490,6 +502,20 @@ fn guid(bytes: &[u8]) -> String {
     )
 }
 
+/// A GPT entry's name from its 72 bytes (fewer where the source ends first):
+/// UTF-16LE code units up to the first NUL, an unpaired surrogate read as
+/// U+FFFD, a lone last byte ignored.
+fn gpt_name(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|unit| u16::from_le_bytes(*unit))
+        .take_while(|&unit| unit != 0)
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
 /// The CRC-32 a GPT keeps of its header and of its entries (the IEEE
 /// polynomial, as zlib computes it).
 fn crc32(bytes: &[u8]) -> u32 {
@@ -552,7 +578,9 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
         if at + 48 > table.len() {
             break;
         }
-        let entry = &table[at..at + 48];
+        // An entry is 128 bytes at least; of one the source cuts short, the
+        // flags and the name are read as far as they were.
+        let entry = &table[at..(at + 128).min(table.len())];
         if entry[..16].iter().all(|&b| b == 0) {
             continue;
         }
@@ -567,6 +595,12 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
             start: first,
             size: last - first,
             type_id: guid(&entry[..16]),
+            attributes: if entry.len() >= 56 {
+                le_u64(entry, 48)
+            } else {
+                0
+            },
+            name: gpt_name(entry.get(56..).unwrap_or_default()),
         });
     }
     partitions.sort_by_key(|partition| partition.start);
@@ -599,6 +633,8 @@ fn parse_mbr(sector0: &[u8]) -> Option<RecordedTable> {
             start,
             size,
             type_id: format!("0x{type_byte:02x}"),
+            attributes: 0,
+            name: String::new(),
         });
     }
     if partitions.is_empty() {

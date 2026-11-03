@@ -27,7 +27,9 @@ test-hooks = [
     "nails-platform/test-hooks",
     "nails-session/test-hooks",
 ]
-# The test fixtures of the crates below, for this crate's test builds.
+# The test fixtures of the crates below, for this crate's test builds, and
+# its own disk images with a partition table (forensic::layout::images) for
+# the tests of the crates whose checks read one.
 test-support = [
     "nails-base/test-support",
     "nails-platform/test-support",

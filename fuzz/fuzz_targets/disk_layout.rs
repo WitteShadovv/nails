@@ -10,7 +10,11 @@
 //! an error (the image reads fine anywhere), and that it is consistent:
 //! partitions in start order, numbered once each, non-empty and on the disk;
 //! the free ranges in order, on the disk and outside every partition; at
-//! most four partitions in an MBR and 256 in a GPT, none without a table.
+//! most four partitions in an MBR and 256 in a GPT, none without a table. A
+//! GPT entry's name holds at most the 36 UTF-16 code units its field has room
+//! for and no NUL, which ends it; an MBR entry has no attribute flags and no
+//! name, and its type byte gives it no role systemd discovers partitions
+//! by.
 //!
 //! At the start of the disk and of each partition it also reads what a
 //! rehearsal scan classifies a region by: its signature, the magic of a
@@ -25,6 +29,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use nails_forensics::forensic::RawSource;
+use nails_forensics::forensic::layout::discoverable::auto_discovery_role;
 use nails_forensics::forensic::layout::{
     RecordedSize, Signature, TableKind, compressing_format_at, encryption_feature,
     f2fs_compression, read_layout, recorded_size, signature_at,
@@ -69,6 +74,20 @@ fuzz_target!(|data: &[u8]| {
         let end = partition.start.checked_add(partition.size);
         assert!(
             partition.size > 0 && end.is_some_and(|end| end <= size),
+            "{layout:?}"
+        );
+        match layout.table {
+            TableKind::Gpt => assert!(
+                partition.name.encode_utf16().count() <= 36 && !partition.name.contains('\0'),
+                "{layout:?}"
+            ),
+            _ => assert!(
+                partition.attributes == 0 && partition.name.is_empty(),
+                "{layout:?}"
+            ),
+        }
+        assert!(
+            auto_discovery_role(&partition.type_id).is_none() || layout.table == TableKind::Gpt,
             "{layout:?}"
         );
         classify(&source, partition.start);
