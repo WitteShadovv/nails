@@ -133,4 +133,12 @@ fn an_option_the_command_line_turns_on_counts() {
         line(&["zsh", "--emulate", "zsh"]).doubts,
         Vec::<String>::new()
     );
+    // GLOB_SUBST makes a glob qualifier in a value run.
+    assert_eq!(
+        line(&["zsh", "-o", "globsubst"]).doubts,
+        [
+            "it cannot tell what code zsh runs from the values it expands as patterns, as its \
+             command line turns GLOB_SUBST on, which makes a glob qualifier in a value run"
+        ]
+    );
 }

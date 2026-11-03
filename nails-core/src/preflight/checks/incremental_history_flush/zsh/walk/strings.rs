@@ -1,0 +1,220 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The code that zsh runs from a string a startup file holds: an alias's
+//! value as it is used, a trap's, a `sched`'s and a `zstyle -e`'s, and a
+//! prompt's when `PROMPT_SUBST` is on. A string the walk can read whole is
+//! read as an `eval`'s words are; one with an expansion in it, which may make
+//! any code, is a doubt.
+
+use super::super::lexer::Word;
+use super::{Event, Walker};
+
+/// The commands that take the words after them as options, code, names or
+/// paths, so that an alias whose value ends with one hands them the words it
+/// is used with (`alias so=setopt`, then `so $o`).
+const OPEN: &[&str] = &[
+    "setopt",
+    "unsetopt",
+    "set",
+    "emulate",
+    "source",
+    ".",
+    "eval",
+    "autoload",
+    "functions",
+    "typeset",
+    "declare",
+    "local",
+    "readonly",
+    "export",
+    "integer",
+    "float",
+    "unset",
+    "fc",
+    "trap",
+    "sched",
+    "zstyle",
+    "print",
+    "printf",
+    "read",
+    "alias",
+    "zmodload",
+    "builtin",
+    "command",
+    "exec",
+    "noglob",
+    "nocorrect",
+    "-",
+    "time",
+];
+
+/// The parameters whose value zsh shows as a prompt, which `PROMPT_SUBST`
+/// makes it expand, a command substitution and an assignment in an
+/// expansion among it, as it shows them.
+pub(super) const PROMPTS: &[&str] = &[
+    "PS1", "PROMPT", "RPS1", "RPROMPT", "PS2", "PROMPT2", "RPS2", "RPROMPT2", "PS3", "PROMPT3",
+    "PS4", "PROMPT4",
+];
+
+/// Whether `word`, a string of zsh code as the lexer gives it, holds an
+/// expansion, which may make any code: a backquote, or a `$` before a name,
+/// a `{`, a `(` or a special parameter, wherever quotes put it (not the `$`
+/// of `PS1='$ '`).
+fn computed(word: &Word) -> bool {
+    let mut chars = word.text.chars().peekable();
+    word.expands
+        || std::iter::from_fn(|| chars.next().map(|c| (c, chars.peek().copied()))).any(
+            |(c, next)| {
+                c == '`'
+                    || (c == '$'
+                        && next.is_some_and(|next| {
+                            next.is_ascii_alphanumeric() || "_{([#?!*@$-".contains(next)
+                        }))
+            },
+        )
+}
+
+impl Walker<'_> {
+    /// The events of an `alias` of `args`: what each value runs, read as an
+    /// `eval`'s words, where the walk can read it whole. One with an
+    /// expansion is a doubt, and so is one that ends with a command that
+    /// takes the words the alias is used with as code, options, names or
+    /// paths ([`OPEN`]), or with a blank, after which zsh expands the next
+    /// word as an alias too.
+    pub(super) fn alias(&mut self, args: &[Word], unconditional: bool) {
+        for arg in args {
+            self.mention(&arg.text);
+            if let Some((_, value)) = arg.text.split_once('=') {
+                self.alias_value(&arg.text, value, arg, unconditional);
+            }
+        }
+    }
+
+    /// The events of the value `value` an alias is given by the word `word`,
+    /// as [`Walker::alias`] reads it.
+    pub(super) fn alias_value(
+        &mut self,
+        text: &str,
+        value: &str,
+        word: &Word,
+        unconditional: bool,
+    ) {
+        let doubt = |place: &str| {
+            Event::Doubt(format!(
+                "it cannot tell what the alias `{text}` in {place} runs where it is used"
+            ))
+        };
+        if computed(word) {
+            self.events.push(doubt(self.place));
+            return;
+        }
+        self.nested(value, unconditional);
+        // The command the words the alias is used with go to: its value's
+        // last, past its assignments and precommands.
+        let last = value
+            .rsplit([';', '&', '|', '(', ')', '{', '}', '\n'])
+            .next()
+            .unwrap_or_default();
+        let command = last.split_whitespace().find(|word| {
+            !word.contains('=')
+                && !matches!(
+                    *word,
+                    "builtin" | "command" | "noglob" | "nocorrect" | "exec" | "-" | "time"
+                )
+        });
+        if command.is_none_or(|command| OPEN.contains(&command))
+            || value.ends_with(char::is_whitespace)
+        {
+            self.events.push(doubt(self.place));
+        }
+    }
+
+    /// The events of a `trap` of `args`: the code it runs as the signal or
+    /// the hook comes (`trap 'fc -AI' DEBUG`), read as an `eval`'s words,
+    /// where the walk can read it whole; with an expansion, a doubt.
+    pub(super) fn trap(&mut self, args: &[Word], unconditional: bool) {
+        let mut args = args.iter().peekable();
+        args.next_if(|arg| arg.text == "--");
+        if let Some(code) = args.next() {
+            if computed(code) {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell what code `trap {}` in {} runs",
+                    code.text, self.place
+                )));
+            } else if code.text != "-" {
+                self.nested(&code.text, unconditional);
+            }
+        }
+        for arg in args {
+            self.mention(&arg.text);
+        }
+    }
+
+    /// The events of a `sched` of `args`: the command it runs at its time
+    /// (`sched +60 fc -W`), read as an `eval`'s words, where the walk can
+    /// read them whole; with an expansion, a doubt.
+    pub(super) fn sched(&mut self, args: &[Word], unconditional: bool) {
+        let mut args = args.iter().peekable();
+        args.next_if(|arg| arg.text == "-o");
+        // The time, or the number of an item to take away (`-2`).
+        match args.next() {
+            Some(time) if time.text.starts_with('-') => return,
+            Some(time) if computed(time) => {}
+            Some(_) => {}
+            None => return,
+        }
+        let command: Vec<&Word> = args.collect();
+        if command.iter().any(|word| computed(word)) {
+            let words: Vec<&str> = command.iter().map(|word| word.text.as_str()).collect();
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell what command `sched ... {}` in {} runs",
+                words.join(" "),
+                self.place
+            )));
+            return;
+        }
+        let words: Vec<&str> = command.iter().map(|word| word.text.as_str()).collect();
+        self.nested(&words.join(" "), unconditional);
+    }
+
+    /// The events of a `zstyle` of `args`: with `-e`, the code each string
+    /// after the pattern and the style is, which zsh runs as it looks the
+    /// style up, read as an `eval`'s words where the walk can read it whole;
+    /// with an expansion, a doubt. Any other `zstyle` sets data, whose words
+    /// count for the options they name.
+    pub(super) fn zstyle(&mut self, args: &[Word], unconditional: bool) {
+        if args.first().is_none_or(|flag| flag.text != "-e") {
+            for arg in args {
+                self.mention(&arg.text);
+            }
+            return;
+        }
+        for (at, arg) in args.iter().enumerate().skip(1) {
+            if at < 3 {
+                self.mention(&arg.text);
+            } else if computed(arg) {
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell what code `zstyle -e ... {}` in {} runs",
+                    arg.text, self.place
+                )));
+            } else {
+                self.nested(&arg.text, unconditional);
+            }
+        }
+    }
+
+    /// Note a prompt that zsh expands as it shows it when `PROMPT_SUBST` is
+    /// on, `text` as written, when it holds an expansion or a command
+    /// substitution: what that runs, an `fc` or an assignment to `options`
+    /// among it, the check cannot follow ([`Event::Prompt`]).
+    pub(super) fn prompt(&mut self, text: &str, value: &Word) {
+        if computed(value) {
+            self.events.push(Event::Prompt(format!(
+                "it cannot follow the code that `{text}` in {} runs as zsh shows the prompt, as \
+                 PROMPT_SUBST may be on",
+                self.place
+            )));
+        }
+    }
+}
