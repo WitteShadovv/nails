@@ -95,8 +95,8 @@ data reaches a ZFS volume is never accepted, not even on a filesystem of the dec
 `backend-entries` check: remove it long
 before the next use and open the volume by hand each time. If the boot mounts
 the volume through such a line, the gate refuses it as the decoy's own
-filesystem and says to remove the line, unless it is a ZFS volume, which the
-gate refuses as one. A line the decoy's own boot needs, one
+filesystem and says to remove the line, unless it is on ZFS (a dataset or a
+volume), which the gate refuses as storage it cannot judge. A line the decoy's own boot needs, one
 that mounts its root or another of its filesystems or its swap or that opens a
 device below one of them, cannot go: the hidden root then lies on the decoy's
 own storage, and the check says to put it on storage of its own instead. The
@@ -1033,7 +1033,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   can leave that probe's file or directory on the hidden volume, never on the
   decoy; remove it from inside a hidden session, not from the decoy shell.
 - **With `--allow-decoy-storage`, on the decoy's storage.** The flag accepts a
-  hidden root on storage the attach gate takes for the decoy's. The write and
+  hidden root on storage the attach gate takes for the decoy's, or on an `nbd`
+  or `ublk` device you know is served from elsewhere. The write and
   symlink probes then write there, and the modification times they move and
   anything a killed `check` leaves are on that storage too.
   `upper-fs-capability` does not run on such a root: it reports itself

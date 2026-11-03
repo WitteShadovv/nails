@@ -778,14 +778,14 @@ of this changelog for that version becomes the release notes word for word, and
   device only with entries the decoy never mounts at boot, which only warns, no longer hides such a
   refusal, nor that of an image file whose filesystem cannot be told. Ordinary disks, iSCSI disks
   and `zram` devices that write nothing back are judged as before.
-- The attach gate judges an image file that holds the filesystem the root's image file is on as
-  it judges the root's own image file, as deep as such files go. On a decoy filesystem it is
-  refused, and where no filesystem mounted here holds it, its loop device's record cannot be read
-  or its filesystem shows no device, the root's storage cannot be judged (`storage_unjudged`).
-  Before, such a root attached. The gate also follows a stack of any width: a device the root
-  shares with the decoy counts however many devices an array or volume group spans (the walk
-  stopped after 32 before), and a device that sysfs does not list below another refuses the root
-  as storage that cannot be judged.
+- The attach gate judges an image file that holds the filesystem the root's image file is on as it
+  judges the root's own image file, as deep as such files go. On a decoy filesystem it is refused,
+  or only warns where it is an encrypted container, as the root's own would. Where no filesystem
+  mounted here holds it, its loop device's record cannot be read or its filesystem shows no device,
+  the root's storage cannot be judged (`storage_unjudged`). Before, such a root attached. The gate
+  also follows a stack of any width: a device the root shares with the decoy counts however many
+  devices an array or volume group spans (the walk stopped after 32 before), and a device that sysfs
+  does not list below another refuses the root as storage that cannot be judged.
 - `backend-entries` no longer says to remove a line the decoy's own boot needs. Where a flagged
   fstab line mounts the decoy's root, another of its filesystems or its swap, or a flagged crypttab
   line opens a device below one of them (the LUKS devices of the md array the decoy's root is on,
