@@ -54,6 +54,11 @@ pub(super) struct Named {
     /// A prompt (`PS1`, `PROMPT`, ...) where it is not read
     /// ([`prompt_writes`]).
     pub(super) prompts: usize,
+    /// A parameter that holds aliases (`aliases`, `galiases`) where it is
+    /// not read ([`alias_writes`]).
+    pub(super) alias_params: usize,
+    /// `functions` or `dis_functions` where it is not read ([`writes`]).
+    pub(super) function_params: usize,
 }
 
 impl Named {
@@ -75,11 +80,15 @@ impl Named {
             indirects: self.indirects.max(other.indirects),
             hooks: self.hooks.max(other.hooks),
             prompts: self.prompts.max(other.prompts),
+            alias_params: self.alias_params.max(other.alias_params),
+            function_params: self.function_params.max(other.function_params),
         }
     }
 
-    /// What `piece`, a line of code or a word of it, names.
-    fn add(&mut self, piece: &str) {
+    /// What `piece`, a line of code or a word of it (`word`), names. A word
+    /// that is nothing but `aliases` or `functions` is an array's element or
+    /// the builtin `functions`, which the walk reads.
+    fn add(&mut self, piece: &str, word: bool) {
         for (at, _) in options(piece) {
             self.options[at] += 1;
         }
@@ -93,6 +102,21 @@ impl Named {
         self.indirects += indirect_assignments(piece);
         self.hooks += hook_writes(piece);
         self.prompts += prompt_writes(piece);
+        let alone = matches!(
+            piece,
+            "functions"
+                | "dis_functions"
+                | "aliases"
+                | "galiases"
+                | "saliases"
+                | "dis_aliases"
+                | "dis_galiases"
+                | "dis_saliases"
+        );
+        if !(word && alone) {
+            self.alias_params += alias_writes(piece);
+            self.function_params += function_writes(piece);
+        }
     }
 }
 
@@ -104,13 +128,13 @@ pub(super) fn named(text: &str) -> Named {
     for form in &forms.texts {
         let mut named = Named::default();
         for line in code_lines(form) {
-            named.add(line);
+            named.add(line, false);
         }
         most = most.most(named);
     }
     let mut named = Named::default();
     for word in &forms.words {
-        named.add(word);
+        named.add(word, true);
     }
     most.most(named)
 }
@@ -194,6 +218,112 @@ impl Forms {
     pub(super) fn uses(&self, name: &str) -> usize {
         self.most(|line| whole_words(line, name))
     }
+
+    /// What the forms may change what a later command runs with, as the
+    /// warning names each: an alias, by `alias` with a value or the
+    /// parameters that hold them ([`alias_writes`]); a `disable`, after
+    /// which a name may be another command; a `trap`; a variable of the
+    /// dynamic loader (`LD_PRELOAD`), which may make a program print other
+    /// code.
+    pub(super) fn shadows(&self) -> Vec<&'static str> {
+        let mut found = Vec::new();
+        if self.most(|line| alias_writes(line) + alias_definitions(line)) > 0 {
+            found.push("defines an alias");
+        }
+        if self.uses("disable") > 0 {
+            found.push("names `disable`");
+        }
+        if self.uses("trap") > 0 {
+            found.push("names `trap`");
+        }
+        if self.most(loader_writes) > 0 {
+            found.push("sets a variable of the dynamic loader (`LD_...`)");
+        }
+        found
+    }
+
+    /// Whether the forms may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, which
+    /// split what an expansion gives an array or keep its first element:
+    /// they name either, in either form ([`names_any`]), run an `emulate` of
+    /// another mode than zsh's ([`emulates_other`]), or a `set`, `setopt` or
+    /// `unsetopt` with a word of flags that holds `y`, `SH_WORD_SPLIT`'s
+    /// letter.
+    pub(super) fn word_split(&self) -> bool {
+        self.texts.iter().any(|form| {
+            names_any(form, &["shwordsplit", "ksharrays"])
+                || emulates_other(form)
+                || code_lines(form).any(|line| {
+                    ["set", "setopt", "unsetopt"]
+                        .iter()
+                        .any(|command| whole_words(line, command) > 0)
+                        && line.split_whitespace().any(|word| {
+                            word.len() > 1
+                                && word.starts_with(['-', '+'])
+                                && word[1..].chars().all(|c| c.is_ascii_alphanumeric())
+                                && word.contains('y')
+                        })
+                })
+        })
+    }
+}
+
+/// How often `line` defines an alias with the `alias` builtin: the word
+/// `alias` of its own, with an `=` after it.
+fn alias_definitions(line: &str) -> usize {
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
+    line.match_indices("alias")
+        .filter(|&(at, found)| {
+            !line[..at].chars().next_back().is_some_and(part)
+                && !line[at + found.len()..].chars().next().is_some_and(part)
+                && line[at + found.len()..].contains('=')
+        })
+        .count()
+}
+
+/// How often `line` sets a variable of the dynamic loader, whose name starts
+/// with `LD_` (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`), otherwise than
+/// to read it ([`is_write`]).
+fn loader_writes(line: &str) -> usize {
+    let part = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    line.match_indices("LD_")
+        .filter(|&(at, _)| {
+            let len = line[at..]
+                .find(|c: char| !part(c))
+                .unwrap_or(line.len() - at);
+            // The name, not one that ends with it (`OLD_PATH`).
+            !line[..at].chars().next_back().is_some_and(part) && is_write(line, at, len)
+        })
+        .count()
+}
+
+/// Whether `text`, zsh code, runs an `emulate` of another mode than zsh's,
+/// which may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on: past its flags (and
+/// the option after `-o` or `+o`), its first word is not `zsh`. One with no
+/// word after it shows the mode and changes none.
+fn emulates_other(text: &str) -> bool {
+    code_lines(text).any(|line| {
+        let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
+        line.match_indices("emulate").any(|(at, found)| {
+            if line[..at].chars().next_back().is_some_and(part)
+                || line[at + found.len()..].chars().next().is_some_and(part)
+            {
+                return false;
+            }
+            let rest = line[at + found.len()..]
+                .split([';', '&', '|', '(', ')', '`'])
+                .next()
+                .unwrap_or_default();
+            let mut words = rest.split_whitespace();
+            while let Some(word) = words.next() {
+                if matches!(word, "-o" | "+o") {
+                    words.next();
+                } else if !word.starts_with(['-', '+']) {
+                    return word != "zsh";
+                }
+            }
+            false
+        })
+    })
 }
 
 /// `text` with what each of its lines holds from a `#` that starts a word
@@ -293,16 +423,25 @@ pub(super) fn is_fc_flag(word: &str) -> bool {
         .is_some_and(|flags| flags.starts_with(|c: char| c.is_ascii_alphabetic()))
 }
 
-/// How often an `fc` stands in `line` as a word of its own with a flag
-/// after it that writes the history file ([`FC_WRITES`]), or an expansion
-/// that may be one, before its options end or the command does.
+/// How often an `fc`, or a `history`, which takes its flags, stands in
+/// `line` as a word of its own with a flag after it that writes the history
+/// file ([`FC_WRITES`]), or an expansion that may be one, before its options
+/// end or the command does.
 fn fc_writes(line: &str) -> usize {
     let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
-    line.match_indices("fc")
+    ["fc", "history"]
+        .iter()
+        .flat_map(|command| line.match_indices(command))
         .filter(|&(at, found)| {
             let rest = &line[at + found.len()..];
-            if line[..at].chars().next_back().is_some_and(part)
-                || rest.chars().next().is_some_and(part)
+            let before = line[..at].chars().next_back();
+            if before.is_some_and(part) || rest.chars().next().is_some_and(part) {
+                return false;
+            }
+            // `history` as a command, not the parameter (`${history[1]}`).
+            if found == "history"
+                && (!before.is_none_or(|c| c.is_whitespace() || ";&|(`".contains(c))
+                    || !rest.starts_with(char::is_whitespace))
             {
                 return false;
             }
@@ -750,7 +889,8 @@ pub(super) fn hook_writes(text: &str) -> usize {
 /// How often `text` names a parameter whose value zsh shows as a prompt
 /// otherwise than to read it ([`writes`]); `prompt`, which also names the
 /// function `promptinit` defines (`prompt suse`), only where no word of its
-/// own names it, as in `prompt=...` or `${prompt::=...}`.
+/// own names it, as in `prompt=...` or `${prompt::=...}`, and not in a
+/// widget's name (`reset-prompt`).
 pub(super) fn prompt_writes(text: &str) -> usize {
     let word_end = |c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')');
     let bare = |at: usize, len: usize| {
@@ -764,7 +904,11 @@ pub(super) fn prompt_writes(text: &str) -> usize {
         .sum::<usize>()
         + text
             .match_indices("prompt")
-            .filter(|&(at, found)| is_write(text, at, found.len()) && !bare(at, found.len()))
+            .filter(|&(at, found)| {
+                // Not in a widget's name (`zle reset-prompt`).
+                let widget = text[..at].ends_with('-') || text[at + found.len()..].starts_with('-');
+                is_write(text, at, found.len()) && !bare(at, found.len()) && !widget
+            })
             .count()
 }
 
@@ -788,6 +932,41 @@ pub(super) fn indirect_assignments(text: &str) -> usize {
             let end = closing(bytes, at + 1).unwrap_or(text.len());
             let inner = text.get(at + found.len() + flags.len() + 1..end);
             inner.is_none_or(|inner| inner.contains('='))
+        })
+        .count()
+}
+
+/// How often `text` names a parameter that holds aliases (`aliases`,
+/// `galiases`, `saliases` and their `dis_` forms) otherwise than to read it
+/// ([`parameter_writes`]).
+pub(super) fn alias_writes(text: &str) -> usize {
+    ["aliases", "galiases", "saliases"]
+        .iter()
+        .map(|name| parameter_writes(text, name) + parameter_writes(text, &format!("dis_{name}")))
+        .sum()
+}
+
+/// How often `text` names `functions` or `dis_functions`, which hold the
+/// functions' bodies, otherwise than to read it ([`parameter_writes`]).
+pub(super) fn function_writes(text: &str) -> usize {
+    parameter_writes(text, "functions") + parameter_writes(text, "dis_functions")
+}
+
+/// How often `text` names the parameter `name`, a word that paths, patterns
+/// and styles hold too (`~/.zsh/aliases.zsh`, `site-functions`,
+/// `':completion:*:functions'`), otherwise than to read it ([`writes`]): as
+/// a word of its own, after a blank, a quote, a `;`, a `&`, a `{` (of
+/// `${name::=...}`) or the letters of an option (`-vname`), and before a
+/// blank, a quote, a subscript, an `=`, a `+`, a `;`, a `}` or a `)`.
+fn parameter_writes(text: &str, name: &str) -> usize {
+    text.match_indices(name)
+        .filter(|&(at, found)| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + found.len()..].chars().next();
+            before.is_none_or(|c| {
+                c.is_whitespace() || c.is_ascii_alphabetic() || "'\";&{\\".contains(c)
+            }) && after.is_none_or(|c| c.is_whitespace() || "'\"[=+;})".contains(c))
+                && is_write(text, at, found.len())
         })
         .count()
 }

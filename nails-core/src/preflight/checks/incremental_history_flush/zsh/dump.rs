@@ -8,8 +8,11 @@
 //! the keys bound to them (`bindkey`), every one named with a leading `_`;
 //! `zmodload -i zsh/complist`; the completion functions it marks to be
 //! autoloaded (`autoload -Uz _name ...`); and `_comp_assocs`. A file whose
-//! every line is one of those holds data and marks alone. One with any
-//! other line, edited by hand or written by another tool, is read as code.
+//! every line is one of those holds data and marks alone, but for a key
+//! bound to a widget otherwise than zsh's own completion functions bind
+//! theirs ([`BINDINGS`]), which may be a key a line is typed with (Space,
+//! Enter in any spelling). One with any other line, edited by hand or
+//! written by another tool, is read as code.
 
 /// The arrays `compdump` writes, each opened on a line of its own.
 const ARRAYS: [&str; 5] = [
@@ -76,21 +79,35 @@ fn quoted_words(mut line: &str) -> bool {
     line.is_empty()
 }
 
-/// Whether `line` is a `bindkey` of a dump file: a key sequence in single
-/// quotes, as written with no quote in it, and the completion widget bound to
-/// it. A binding of the keys that end a line (`^M`, `^J`) is none, as zsh
-/// would run the widget as each line is entered.
+/// The keys that zsh's own completion functions bind to their widgets
+/// (their first lines, `#compdef -k` and `-K`), as `compdump` writes them:
+/// a `^X` sequence or an escape and one key, none a line is typed with.
+const BINDINGS: [(&str, &str); 15] = [
+    ("^X^R", "_read_comp"),
+    ("^X?", "_complete_debug"),
+    ("^XC", "_correct_filename"),
+    ("^Xa", "_expand_alias"),
+    ("^Xc", "_correct_word"),
+    ("^Xd", "_list_expansions"),
+    ("^Xe", "_expand_word"),
+    ("^Xh", "_complete_help"),
+    ("^Xm", "_most_recent_file"),
+    ("^Xn", "_next_tags"),
+    ("^Xt", "_complete_tag"),
+    ("^X~", "_bash_list-choices"),
+    ("^[,", "_history-complete-newer"),
+    ("^[/", "_history-complete-older"),
+    ("^[~", "_bash_complete-word"),
+];
+
+/// Whether `line` is a `bindkey` of a dump file that binds keys the way
+/// zsh's own completion functions do ([`BINDINGS`]). Any other binding may
+/// be of a key a line is typed with (Space, a letter, Enter as `^M`, `^m`,
+/// `\C-M` or `\015`), which runs the widget as the line is typed.
 fn binding(line: &str) -> bool {
-    let Some(rest) = line.strip_prefix("bindkey '") else {
-        return false;
-    };
-    let Some((keys, widget)) = rest.split_once("' ") else {
-        return false;
-    };
-    !keys.is_empty()
-        && !keys.contains(['\'', '\n'])
-        && !matches!(keys, "^M" | "^J" | "\\r" | "\\n" | "\\C-m" | "\\C-j")
-        && completion_name(widget)
+    BINDINGS
+        .iter()
+        .any(|(keys, widget)| line == format!("bindkey '{keys}' {widget}"))
 }
 
 /// Whether `line` is a `zle -C` of a dump file: a completion widget, the
@@ -292,6 +309,17 @@ _comp_assocs=( '' )
             ),
             ("bindkey '^X^R' _read_comp", "bindkey '^M' _read_comp"),
             ("bindkey '^X^R' _read_comp", "bindkey '^X^R' accept-line"),
+            // Enter as bindkey also reads it, Space, and a key of zsh's own
+            // bound to another widget.
+            ("bindkey '^X^R' _read_comp", "bindkey '^m' _read_comp"),
+            ("bindkey '^X^R' _read_comp", "bindkey '^j' _read_comp"),
+            ("bindkey '^X^R' _read_comp", "bindkey '\\C-M' _read_comp"),
+            ("bindkey '^X^R' _read_comp", "bindkey '\\015' _read_comp"),
+            ("bindkey '^X^R' _read_comp", "bindkey '\\x0d' _read_comp"),
+            ("bindkey '^X^R' _read_comp", "bindkey ' ' _read_comp"),
+            ("bindkey '^X^R' _read_comp", "bindkey 'a' _read_comp"),
+            ("bindkey '^X^R' _read_comp", "bindkey '^X^R' _evil"),
+            ("bindkey '^X^R' _read_comp", "bindkey '^X^R'  _read_comp"),
             ("bindkey '^X^R'", "bindkey -s '^X^R'"),
             ("_abcde \\\n", "_abcde\n"),
             ("_zstyle _ztodo _zypper", "_zstyle _ztodo $f"),

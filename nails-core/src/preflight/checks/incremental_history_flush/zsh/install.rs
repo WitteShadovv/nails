@@ -18,7 +18,6 @@
 
 use super::{Reader, Word};
 use crate::Filesystem;
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 /// The variables of a shell's environment the check reads: where zsh looks
@@ -273,27 +272,33 @@ fn coreutils_dircolors<F: Filesystem>(fs: &F, name: &str) -> bool {
         })
 }
 
-/// `text`, the file at `path`, with the lines the check knows to do nothing
-/// that writes history left out: in the `/etc/zshrc` NixOS's `programs.zsh`
-/// writes, its `eval` of what `dircolors` prints ([`dircolors`]).
-pub(super) fn known_lines<'a, F: Filesystem>(fs: &F, path: &Path, text: &'a str) -> Cow<'a, str> {
-    if path != Path::new("/etc/zshrc")
-        || text.lines().next() != Some(NIXOS_ZSHRC)
-        || !text.lines().any(|line| dircolors(fs, line))
-    {
-        return Cow::Borrowed(text);
+/// `text`, the file at `path`, parted at the line the check knows to do
+/// nothing that writes history but what runs before it may change: in the
+/// `/etc/zshrc` NixOS's `programs.zsh` writes, the first `eval` of what
+/// `dircolors` prints ([`dircolors`]). The text before the line, the
+/// program it runs, and the text after it; `None` for any other file.
+pub(super) fn dircolors_split<'a, F: Filesystem>(
+    fs: &F,
+    path: &Path,
+    text: &'a str,
+) -> Option<(&'a str, String, &'a str)> {
+    if path != Path::new("/etc/zshrc") || text.lines().next() != Some(NIXOS_ZSHRC) {
+        return None;
     }
-    Cow::Owned(
-        text.split_inclusive('\n')
-            .map(|line| {
-                if dircolors(fs, line.strip_suffix('\n').unwrap_or(line)) {
-                    "\n"
-                } else {
-                    line
-                }
-            })
-            .collect(),
-    )
+    let mut start = 0;
+    for line in text.split_inclusive('\n') {
+        let bare = line.strip_suffix('\n').unwrap_or(line);
+        if dircolors(fs, bare) {
+            let program = bare
+                .strip_prefix("eval \"$(")
+                .and_then(|rest| rest.strip_suffix(" -b)\""))
+                .unwrap_or_default()
+                .to_string();
+            return Some((&text[..start], program, &text[start + line.len()..]));
+        }
+        start += line.len();
+    }
+    None
 }
 
 /// Whether `profile` is a Nix profile's path as the check can follow it: an
