@@ -9,10 +9,13 @@
 //! answered. The window does not wait for that: once its grace has passed
 //! (the real one, [`HELPER_GRACE`]), it asks for the power-off of its own,
 //! here through a stand-in for `systemctl` (no test reaches a real power
-//! action), though its settings, the recorded ones, return to the decoy. Each test holds the helper on a verify or a scan for longer than
-//! that and shows the power-off asked for while the helper is still busy,
-//! and the engine's emergency read only after it. Run with `--no-capture`,
-//! each prints how long each step took.
+//! action). So while the request runs, the control powers off whatever the
+//! settings say, the recorded ones a return to the decoy, and the page says
+//! so before it is used. Each test holds the helper on a verify or a scan
+//! for longer than the grace and shows the power-off asked for while the
+//! helper is still busy, and the engine's emergency, a power-off too, read
+//! only after it. Run with `--no-capture`, each prints how long each step
+//! took.
 
 mod screen;
 mod support;
@@ -165,9 +168,17 @@ fn fire_while_busy(window: &Window, seen: &Seen, what: &str) {
         !matches!(op, Op::Emergency(_)),
         "the long request reached the helper first: {op:?}"
     );
+    // Before it is used, the page and the control say it powers off, though
+    // the settings say to return.
+    let said = format!("Power off, {}", text::EMERGENCY_BUSY);
+    let row = window
+        .screen
+        .find_with(text::FACT_EMERGENCY, AccessibleRole::ListItem);
+    assert_eq!(row.accessible_description().as_deref(), Some(said.as_str()));
     let fired = Instant::now();
     hold(&window.screen);
-    assert!(window.screen.shows(text::EMERGENCY_RETURNING_NOW));
+    assert_eq!(window.screen.finishes(), [Finish::PowerOff]);
+    assert!(window.screen.shows(text::EMERGENCY_NOW));
     let (outcome, written) = window.outcome();
     assert_eq!(outcome, Outcome::HelperAsked, "the request is on the pipe");
     let (outcome, powered_off) = window.outcome();
@@ -175,8 +186,8 @@ fn fire_while_busy(window: &Window, seen: &Seen, what: &str) {
     let (op, read) = next(seen);
     assert_eq!(
         op,
-        Op::Emergency(Finish::Return.args()),
-        "as the settings say"
+        Op::Emergency(Finish::PowerOff.args()),
+        "the power-off the page said"
     );
     let to_written = written.duration_since(fired);
     let to_power_off = powered_off.duration_since(fired);

@@ -189,36 +189,34 @@ of this changelog for that version becomes the release notes word for word, and
   steps, and each change of its label is announced at once. It decides on the input event itself,
   and the emergency then goes its own way on a thread of its own: it writes the engine's emergency,
   ending the session as `window.emergency` chose in advance (below), onto the helper's pipe beside
-  whatever request the window waits on (a helper busy with another request reads it once that one
-  is done), and where there is no helper, the request cannot be written within 3 seconds, or the
-  window still runs 3 seconds after it (the engine's emergency ends the window with the session's
-  other programs, so only a helper that never ran it leaves the window running), it asks logind
-  for the power-off itself with `systemctl poweroff`, which needs neither root nor the helper,
-  whatever the setting chose. The page names the power button for a computer that still does not
-  turn off. The worker's updates
-  reach the window's thread through one task on its event loop at a time, at most 64 per turn, so no
-  flood of the helper's events can queue ahead of the person's input. A settled page of the session
-  has rows that open the window's tools, each a page with Back (Escape goes back too), which asks
-  for the session's status again. Verify runs `nails verify`, standard or with Deep Scan; its page
-  puts the verdict first and never more than the engine found (no known trace is no proof of none),
-  then each finding with the engine's fix, then every area the run did not check, as the engine
-  lists it. Scan an Image, from Verify's page, scans a decoy's disk or image mounted read-only
-  instead of this computer (`verify --offline --root`), with the examiner's view of its setup
-  traces, grouped by what they suggest, when its switch is on (`--examiner`), and the raw disk
-  behind it when one is named (`--disk`); the scan waits for full paths. A folder the engine refuses
-  as holding nothing to scan says why and, in the engine's words, how to mount the image so that
-  nothing writes to it, then to scan again. Rehearsal shows the rehearsal's three steps, where it
-  stands and the action of the next
-  one: Plant Test Words in a hidden session, for the account its field names (`rehearse plant
-  --user`) or else the window's own, and Scan for Test Words once they are planted. In the session
-  that planted them, which the engine refuses to scan and the window remembers for as long as it is
-  open, Scan in This Session… asks first, since such a scan proves little, and its button acts only
-  once the word "allow" is typed (`--allow-same-boot`), and whose result never reads as a pass.
-  Scan Other Disks, beside the scan, scans the
-  disk named instead of this computer's mounted
-  ones (`rehearse scan --device`), or with its switch an image (`--offline --image`, with
-  `--token-file` when one is named), and stops each read after the megabytes given (`--max-bytes`);
-  it waits for full paths and a whole number, and Scan Again repeats it. Removing the test words (Remove Test Words, `rehearse
+  whatever request the window waits on (a helper busy with another request reads it once that one is
+  done), and where there is no helper, the request cannot be written within 3 seconds, or the window
+  still runs 3 seconds after it (the engine's emergency ends the window with the session's other
+  programs, so the window still runs then only where the helper did not act on the request in time),
+  it asks logind for the power-off itself with `systemctl poweroff`, which needs neither root nor
+  the helper, whatever the setting chose. The page names the power button for a computer that still
+  does not turn off. The worker's updates reach the window's thread through one task on its event
+  loop at a time, at most 64 per turn, so no flood of the helper's events can queue ahead of the
+  person's input. A settled page of the session has rows that open the window's tools, each a page
+  with Back (Escape goes back too), which asks for the session's status again. Verify runs `nails
+  verify`, standard or with Deep Scan; its page puts the verdict first and never more than the
+  engine found (no known trace is no proof of none), then each finding with the engine's fix, then
+  every area the run did not check, as the engine lists it. Scan an Image, from Verify's page, scans
+  a decoy's disk or image mounted read-only instead of this computer (`verify --offline --root`),
+  with the examiner's view of its setup traces, grouped by what they suggest, when its switch is on
+  (`--examiner`), and the raw disk behind it when one is named (`--disk`); the scan waits for full
+  paths. A folder the engine refuses as holding nothing to scan says why and, in the engine's words,
+  how to mount the image so that nothing writes to it, then to scan again. Rehearsal shows the
+  rehearsal's three steps, where it stands and the action of the next one: Plant Test Words in a
+  hidden session, for the account its field names (`rehearse plant --user`) or else the window's
+  own, and Scan for Test Words once they are planted. In the session that planted them, which the
+  engine refuses to scan and the window remembers for as long as it is open, Scan in This Session…
+  asks first, since such a scan proves little, and its button acts only once the word "allow" is
+  typed (`--allow-same-boot`), and whose result never reads as a pass. Scan Other Disks, beside the
+  scan, scans the disk named instead of this computer's mounted ones (`rehearse scan --device`), or
+  with its switch an image (`--offline --image`, with `--token-file` when one is named), and stops
+  each read after the megabytes given (`--max-bytes`); it waits for full paths and a whole number,
+  and Scan Again repeats it. Removing the test words (Remove Test Words, `rehearse
   reset`) is the decoy's, where no
   window opens yet, so a hidden session's page gives that command instead. A scan's result lists
   first what the scan did not check, a disk whose storage can hide the test words among it, and
@@ -259,17 +257,22 @@ of this changelog for that version becomes the release notes word for word, and
   `nails` while the window is open: the helper runs as `<hidden-root>/nails helper --stdio`. Its
   tests run without a display, on Slint's testing platform.
 - `window.emergency` in `nails.toml` chooses in advance how the window's Emergency control ends a
-  hidden session, since its gesture asks nothing at that moment: `return`, the default, goes back
-  to the decoy's login screen as a plain `nails emergency` does, `poweroff` and `reboot` end it as
-  `--poweroff` and `--reboot` do. `config set`, `config unset` and the window's Settings page
-  change it as any other key. Only the window reads it: `nails emergency` still reads no
-  configuration, and its flags choose how each run ends. The window reads the setting once the
-  first status of a hidden session came in and again with every read of its Settings page, so a
-  change saved there holds from the read after the save. The hidden session's page names what the
-  control does, and so does the control's description. Until the window has read the setting,
-  where the settings cannot be read or hold a value the window does not know, and for a return in
-  a session without a way back, the control powers off and the page says why; once it fired, the
-  page says how the session ends and that the computer powers off where it does not end so.
+  hidden session, since its gesture asks nothing at that moment: `return`, the default, goes back to
+  the decoy's login screen as a plain `nails emergency` does, and so powers off instead where the
+  way back cannot undo what the session changed in the network, `poweroff` and `reboot` end it as
+  `--poweroff` and `--reboot` do. `config set`, `config unset` and the window's Settings page change
+  it as any other key. Only the window reads it: `nails emergency` still reads no configuration, and
+  its flags choose how each run ends. The window reads the setting once the first status of a hidden
+  session came in and again with every read of its Settings page, so a change saved there holds from
+  the read after the save. The hidden session's page names what the control does, and so does the
+  control's description. The control powers off instead where the window cannot be sure the session
+  ends so, and the page then says why: once the window cannot reach NAILS; while Verify or a step of
+  Rehearsal runs, since NAILS reads the emergency only after it and the window does not wait that
+  long; until the window has read the setting, and where the settings cannot be read or hold a value
+  the window does not know; for a return or a restart while a deactivation powers off; and for a
+  return in a session without a way back, or while the question of a deactivation says the return
+  powers off instead whatever happens before it runs. Once it fired, the page says how the session
+  ends and that the computer powers off where it does not end so.
 - `nails check` and activation refuse an updatedb that would list the hidden volume in the
   decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
   `services.locate`) writes the name of every file it finds into a database on the decoy disk,

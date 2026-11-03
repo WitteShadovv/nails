@@ -823,13 +823,15 @@ opt-in automatic emergency returns to the decoy the same way; the sleep guard's
 The window's Emergency control runs the same emergency through the window's
 helper, with no question at that moment, so how it ends is chosen in advance
 with `window.emergency`, on the window's Settings page: back to the decoy
-(the default, as a plain `emergency`), a power-off (`--poweroff`) or a full
-reboot (`--reboot`). The hidden session's page names the choice. The control
-powers off instead until the window has read the setting, where it cannot
-read it, and for a return in a session without a way back; where the window
-cannot reach NAILS, it asks logind for the power-off itself. Holding the
-power button always powers off. A plain `nails emergency` does not read this
-setting: its flags choose. See
+(the default, as a plain `emergency`, so it powers off instead wherever the
+way back does), a power-off (`--poweroff`) or a full reboot (`--reboot`).
+The hidden session's page names the choice. The control powers off instead
+where the window cannot be sure the session ends so, and the page then says
+why: for example while Verify or a step of Rehearsal runs, which NAILS
+finishes before it reads the emergency, or where the window cannot read the
+setting. Where the window cannot reach NAILS in time, it asks logind for the
+power-off itself. Holding the power button always powers off. A plain
+`nails emergency` does not read this setting: its flags choose. See
 [the window's Emergency control](configuration.md#the-windows-emergency-control).
 
 ### Panic switch

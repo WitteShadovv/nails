@@ -52,13 +52,15 @@ fn decoy() -> Screen {
     screen
 }
 
-/// A hidden session's window.
+/// A hidden session's window, with the recorded settings it reads before a
+/// tool can open.
 fn hidden() -> Screen {
     let screen = Screen::in_hidden_session();
     screen.tall();
     screen.update(Update::Connected(ours()));
     screen.update(status("hidden"));
-    screen.asks();
+    assert_eq!(screen.asks(), [Ask::Status, Ask::ConfigShow]);
+    screen.update(answered(Kind::Config, 0, fixture("config-show")));
     screen
 }
 
