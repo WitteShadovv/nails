@@ -77,10 +77,10 @@ pub const FACT_ALLOWED: &str = "Allowed by you";
 /// The risk of a decoy that keeps a persistent record, allowed by the
 /// person (`--allow-persistent-decoy`).
 pub const RISK_PERSISTENT_DECOY: &str = "a persistent record on this computer's disk";
-/// The risk of a hidden volume on storage this computer uses, allowed by the
-/// person (`--allow-decoy-storage`): what is written there lands on that
-/// storage.
-pub const RISK_DECOY_STORAGE: &str = "a hidden volume on this computer's disk";
+/// The risk of a hidden volume on storage this computer uses, or on a disk a
+/// program serves, which can keep it there, allowed by the person
+/// (`--allow-decoy-storage`): what is written there lands on that storage.
+pub const RISK_DECOY_STORAGE: &str = "a hidden volume that may lie on this computer's storage";
 /// The risk of discards over the hidden volume, allowed by the person
 /// (`--allow-discards`).
 pub const RISK_DISCARDS: &str = "discards over the hidden volume";
