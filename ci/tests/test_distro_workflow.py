@@ -1,14 +1,16 @@
-"""Tests for distro-e2e.yml: its path filter, its choice of suites and its result.
+"""Tests for distro-e2e.yml: its path filter, its choice of suites, its gating
+drivers and its result.
 
 The scripts of the workflow's steps run here as the runner runs them, with bash
-(and git and python3 for the choice of suites, jq for nothing: the result step
-reads plain values).
+(and git and python3 for the choice of suites, coreutils and a stand-in for nix
+for the drivers, jq for nothing: the result step reads plain values).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -482,8 +484,155 @@ class ResultTest(unittest.TestCase):
                 self.assertIn("::error::The plan set no suites", result.stdout)
 
 
+# A stand-in for nix. `nix build --print-build-logs --out-link <link> <attr>`
+# logs the attribute and links a copy of the stand-in driver, or fails when
+# FAKE_BUILD says so.
+FAKE_NIX = """\
+set -eu
+[ "$1" = build ] || exit 2
+shift
+link=
+attr=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --print-build-logs) ;;
+    --out-link) link=$2; shift ;;
+    *) attr=$1 ;;
+  esac
+  shift
+done
+echo "build $attr" >> "$FAKE_LOG"
+[ "${FAKE_BUILD:-pass}" = pass ] || exit 1
+mkdir -p "$link/bin"
+cp "$FAKE_DRIVER_SCRIPT" "$link/bin/test-driver"
+chmod +x "$link/bin/test-driver"
+"""
+
+# A stand-in for a driver's bin/test-driver. It logs where it runs and what
+# its stdin holds, then passes, fails or hangs as FAKE_DRIVER says.
+FAKE_DRIVER = """\
+stdin=$(cat)
+printf 'run %s %s %s [%s]\\n' "$PWD" "$TMPDIR" "$XDG_RUNTIME_DIR" "$stdin" \\
+  >> "$FAKE_LOG"
+case "$FAKE_DRIVER" in
+  pass) exit 0 ;;
+  fail) exit 3 ;;
+  *) exec sleep 30 ;;
+esac
+"""
+
+
+class GatingStepTest(unittest.TestCase):
+    """The gating job's step fails when its driver fails, hangs or is missing.
+
+    That step is all that turns a failed records scenario or refusal into a
+    failed job, and so into a red distro-result. It runs here as the runner
+    runs it, with coreutils' timeout and a stand-in for nix whose build links
+    a stand-in driver.
+    """
+
+    def setUp(self) -> None:
+        bash = shutil.which("bash")
+        if bash is None:
+            self.fail("bash, which the step runs in, is not installed")
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.runner_temp = tmp / "runner-temp"
+        self.runner_temp.mkdir()
+        self.log = tmp / "log"
+        tools = tmp / "tools"
+        tools.mkdir()
+        driver = tmp / "test-driver"
+        # bash from PATH, not /usr/bin/env, which does not exist in the
+        # hermetic Nix build sandbox the ci-python check runs in.
+        for path, text in ((tools / "nix", FAKE_NIX), (driver, FAKE_DRIVER)):
+            path.write_text(f"#!{bash}\n{text}", encoding="utf-8")
+            path.chmod(0o755)
+        self.environ = {
+            **os.environ,
+            "PATH": f"{tools}{os.pathsep}{os.environ.get('PATH', '')}",
+            "RUNNER_TEMP": str(self.runner_temp),
+            "FAKE_LOG": str(self.log),
+            "FAKE_DRIVER_SCRIPT": str(driver),
+        }
+
+    def run_step(self, driver: str = "pass", **env: str) -> tuple[int, str, list[str]]:
+        """The step's exit status, its output, and what nix and the driver logged."""
+        defaults = {
+            "TESTS": "ubuntu-24.04-records",
+            "DRIVER_SECONDS": "60",
+            "FAKE_DRIVER": driver,
+        }
+        result = subprocess.run(
+            [
+                "bash",
+                "--noprofile",
+                "--norc",
+                "-eo",
+                "pipefail",
+                "-c",
+                script(step(job("gating"), "driver")),
+            ],
+            env={**self.environ, **defaults, **env},
+            # The driver must not read the job's stdin.
+            input="a line on the step's stdin\n",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        logged: list[str] = []
+        if self.log.exists():
+            logged = self.log.read_text(encoding="utf-8").splitlines()
+        return result.returncode, result.stdout + result.stderr, logged
+
+    def test_a_driver_that_passes_passes_the_job(self) -> None:
+        code, output, logged = self.run_step()
+        self.assertEqual(code, 0, output)
+        scratch = self.runner_temp / "vm"
+        self.assertEqual(
+            logged,
+            [
+                'build .#legacyPackages.x86_64-linux.e2e-distro."ubuntu-24.04-records"',
+                f"run {scratch} {scratch} {scratch} []",
+            ],
+        )
+
+    def test_a_driver_that_fails_fails_the_job_with_its_status(self) -> None:
+        code, output, logged = self.run_step("fail")
+        self.assertEqual(code, 3, output)
+        self.assertEqual(len(logged), 2, logged)
+        self.assertNotIn("::error::", output)
+
+    def test_a_driver_past_its_time_limit_fails_the_job(self) -> None:
+        code, output, _ = self.run_step("hang", DRIVER_SECONDS="1")
+        self.assertEqual(code, 124, output)
+        self.assertIn(
+            "::error::ubuntu-24.04-records ran past its time limit of 1 s.", output
+        )
+
+    def test_a_job_without_a_driver_fails(self) -> None:
+        code, output, logged = self.run_step(TESTS="")
+        self.assertEqual(code, 1, output)
+        self.assertIn("::error::The plan gave this job no driver to run.", output)
+        self.assertEqual(logged, [])
+
+    def test_a_driver_that_does_not_build_fails_the_job(self) -> None:
+        code, output, logged = self.run_step(FAKE_BUILD="fail")
+        self.assertNotEqual(code, 0, output)
+        self.assertEqual(len(logged), 1, logged)
+
+    def test_a_job_without_a_time_limit_fails(self) -> None:
+        code, output, logged = self.run_step(DRIVER_SECONDS="")
+        self.assertNotEqual(code, 0, output)
+        self.assertFalse([line for line in logged if line.startswith("run ")])
+
+
 class WorkflowShapeTest(unittest.TestCase):
     """The jobs are wired so that no gating job escapes distro-result."""
+
+    def test_no_job_or_step_lets_a_failure_pass(self) -> None:
+        # continue-on-error would pass a job whose driver failed.
+        self.assertNotIn("continue-on-error", workflow_text())
 
     def test_the_result_waits_for_every_job(self) -> None:
         jobs = re.findall(

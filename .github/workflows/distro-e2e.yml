@@ -427,6 +427,7 @@ jobs:
 
       # A job with no driver would pass having tested nothing, so it fails.
       - name: Run the ${{ matrix.suite }} driver
+        id: driver
         env:
           TESTS: ${{ join(matrix.tests, ' ') }}
           DRIVER_SECONDS: ${{ matrix.seconds }}
