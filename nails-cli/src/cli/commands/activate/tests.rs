@@ -557,6 +557,37 @@ fn the_answer_decides_how_the_activation_ends() {
         super::stop_status(super::Answer::Cancelled).map(ExitStatus::code),
         Some(130)
     );
+    // So does the end of the input (Ctrl+D).
+    assert_eq!(
+        super::stop_status(super::Answer::EndOfInput).map(ExitStatus::code),
+        Some(130)
+    );
+}
+
+/// The question ends its own line whatever the answer: an answer typed with
+/// Enter ends it as the terminal echoes the Enter, while Ctrl+C and the end of
+/// the input (Ctrl+D), which echo no newline, leave it to the question, so
+/// the result never starts on the question's row.
+#[test]
+fn the_question_ends_its_line_for_every_answer() {
+    use super::Answer;
+    for (answer, ending) in [
+        (Answer::Yes, "Continue? [y/N]: "),
+        (Answer::No, "Continue? [y/N]: "),
+        (Answer::Cancelled, "Continue? [y/N]: \n"),
+        (Answer::EndOfInput, "Continue? [y/N]: \n"),
+    ] {
+        let mut err = Vec::new();
+        let got =
+            super::confirm_logout_on(&OutputSettings::default(), None, &[], &mut err, || answer);
+        assert_eq!(got, answer);
+        let shown = String::from_utf8(err).unwrap();
+        assert!(shown.ends_with(ending), "{answer:?}: {shown:?}");
+        assert!(
+            shown.contains("Activation soft-reboots into the hidden session.\n"),
+            "{shown:?}"
+        );
+    }
 }
 
 /// The activations that need the attach gate to accept the hidden root: each

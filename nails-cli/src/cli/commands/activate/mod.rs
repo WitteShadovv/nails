@@ -406,7 +406,7 @@ fn commit_and_report(
 fn stop_status(answer: Answer) -> Option<ExitStatus> {
     match answer {
         Answer::Yes => None,
-        Answer::No | Answer::Cancelled => Some(ExitStatus::Cancelled),
+        Answer::No | Answer::EndOfInput | Answer::Cancelled => Some(ExitStatus::Cancelled),
     }
 }
 
@@ -436,17 +436,33 @@ fn confirm_logout(
     accepted: Option<&Refusal>,
     advisories: &[Advisory],
 ) -> Answer {
-    use std::io::Write;
-    let mut stderr = std::io::stderr();
+    confirm_logout_on(
+        settings,
+        accepted,
+        advisories,
+        &mut std::io::stderr(),
+        read_answer_from_stdin,
+    )
+}
+
+/// [`confirm_logout`], asking on `err` and taking the operator's `answer`.
+/// Ctrl+C, or the end of the input, leaves the cursor after the question, as
+/// no Enter ended its line: the line is ended then, before the result.
+fn confirm_logout_on(
+    settings: &OutputSettings,
+    accepted: Option<&Refusal>,
+    advisories: &[Advisory],
+    err: &mut impl std::io::Write,
+    answer: impl FnOnce() -> Answer,
+) -> Answer {
     for line in prompt_lines(settings.stderr_style(), accepted, advisories) {
-        let _ = writeln!(stderr, "{line}");
+        let _ = writeln!(err, "{line}");
     }
-    let _ = write!(stderr, "    Continue? [y/N]: ");
-    let _ = stderr.flush();
-    let answer = read_answer_from_stdin();
-    if answer == Answer::Cancelled {
-        // End the prompt's line before the result.
-        let _ = writeln!(stderr);
+    let _ = write!(err, "    Continue? [y/N]: ");
+    let _ = err.flush();
+    let answer = answer();
+    if matches!(answer, Answer::Cancelled | Answer::EndOfInput) {
+        let _ = writeln!(err);
     }
     answer
 }

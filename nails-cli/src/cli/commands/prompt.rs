@@ -18,8 +18,12 @@ use std::os::fd::BorrowedFd;
 pub(crate) enum Answer {
     /// `y` or `yes`.
     Yes,
-    /// Anything else, or the end of the input.
+    /// Anything else, ended with Enter, or a line that could not be read.
     No,
+    /// The end of the input (Ctrl+D at a terminal) before an Enter: a no
+    /// that left the prompt's line open, since the terminal echoes no
+    /// newline for it.
+    EndOfInput,
     /// Ctrl+C (or a SIGTERM) while the prompt waited.
     Cancelled,
 }
@@ -41,7 +45,8 @@ pub(crate) fn read_answer_from_stdin() -> Answer {
 
 /// Wait for a line on `input` (read through `reader`) and judge it, giving up
 /// as soon as `cancelled` says so. Only `y` or `yes` (any case) confirms;
-/// anything else, the end of the input or a read error declines.
+/// anything else, the end of the input or a read error declines, the end of
+/// the input as [`Answer::EndOfInput`] when no Enter ended the line.
 pub(crate) fn read_answer(
     input: BorrowedFd<'_>,
     reader: &mut impl BufRead,
@@ -69,8 +74,10 @@ pub(crate) fn read_answer(
     }
     if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         Answer::Yes
-    } else {
+    } else if line.ends_with('\n') {
         Answer::No
+    } else {
+        Answer::EndOfInput
     }
 }
 
@@ -102,7 +109,11 @@ mod tests {
         for input in [&b"n\n"[..], b"\n", b"yep\n", b"sure\n"] {
             assert_eq!(answer_to(input, false), Answer::No, "{input:?}");
         }
-        assert_eq!(answer_to(b"", false), Answer::No, "end of input");
+        // The end of the input declines too, and says that no Enter ended
+        // the line: at once, or after an answer typed without one.
+        for input in [&b""[..], b"n"] {
+            assert_eq!(answer_to(input, false), Answer::EndOfInput, "{input:?}");
+        }
         // Input that is not UTF-8 is a read error, and declines.
         assert_eq!(answer_to(b"\xff\n", false), Answer::No);
     }
