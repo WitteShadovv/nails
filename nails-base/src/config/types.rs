@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use super::backend_watch::BackendWatchConfig;
 use super::persona::PersonaConfig;
 use super::session_mounts::SessionMountsConfig;
+use super::window::WindowConfig;
 
 /// Neutral placeholder hidden volume root path (single source of truth).
 ///
@@ -278,6 +279,12 @@ pub struct Config {
     #[serde(default)]
     pub sleep_policy: SleepPolicyConfig,
 
+    /// What the window does in a hidden session: how its Emergency control
+    /// ends the session. Only the window reads it; `nails emergency` reads no
+    /// configuration. See [`WindowConfig`].
+    #[serde(default)]
+    pub window: WindowConfig,
+
     /// NixOS flake reference (optional, auto-detected if not set)
     ///
     /// When set, the hidden system is built from this flake (`nix build` into
@@ -314,4 +321,5 @@ pub const CONFIG_KEYS: &[&str] = &[
     "backend_watch",
     "session_mounts",
     "sleep_policy",
+    "window",
 ];

@@ -111,6 +111,20 @@ fn unknown_sleep_policy_value_is_rejected_with_hint() {
     );
 }
 
+/// A setting the window reads is checked as strictly as the others: a value
+/// it does not take never reaches the window as a choice it cannot know.
+#[test]
+fn unknown_window_key_or_ending_is_rejected_with_hint() {
+    let message = load_error("[window]\nemergancy = \"return\"\n");
+    assert!(message.contains("did you mean `emergency`?"), "{message}");
+
+    let message = load_error("[window]\nemergency = \"rebot\"\n");
+    assert!(
+        message.contains("unknown value `rebot` (did you mean `reboot`?)"),
+        "{message}"
+    );
+}
+
 #[test]
 fn wrong_type_is_rejected_with_location() {
     let message = load_error("show_opsec_reminders = true\nminimum_space_mb = \"500\"\n");

@@ -400,6 +400,7 @@ pub fn draw(window: &AppWindow, page: &Page) {
     window.set_secondary(page.secondary.unwrap_or_default().into());
     window.set_takes_input(!page.no_input);
     window.set_emergency_shown(page.emergency);
+    window.set_emergency_how(page.emergency_how.as_str().into());
     match &page.question {
         Some(question) => {
             window.set_question_heading(question.heading.as_str().into());

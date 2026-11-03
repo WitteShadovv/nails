@@ -66,6 +66,9 @@ const PERSONA_MODES: &[&str] = &["shared-home", "fresh-home"];
 /// The spellings `sleep_policy.mode` takes.
 const SLEEP_MODES: &[&str] = &["warn", "block", "teardown"];
 
+/// The spellings `window.emergency` takes.
+const WINDOW_EMERGENCIES: &[&str] = &["return", "poweroff", "reboot"];
+
 /// Every key a value can be set for, in the order of the reference's key
 /// table. A unit test keeps it in step with the fields of
 /// [`Config`](super::Config).
@@ -133,6 +136,10 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         key: "sleep_policy.mode",
         kind: Kind::Choice(SLEEP_MODES),
+    },
+    Setting {
+        key: "window.emergency",
+        kind: Kind::Choice(WINDOW_EMERGENCIES),
     },
 ];
 

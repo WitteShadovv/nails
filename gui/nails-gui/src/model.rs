@@ -29,6 +29,10 @@
 //! ([`tools`]): Verify and Rehearsal on both sides, Discard Hidden Changes
 //! and Set Up Hidden Volume on the decoy. A tool's page has a Back of its
 //! own ([`Model::back`]), and Escape goes back too.
+//!
+//! In a hidden session the window also reads the settings once its first
+//! status came in, for how the Emergency control ends the session
+//! ([`emergency_setting`]).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -45,6 +49,7 @@ use crate::worker::{Ask, Failure, Kind, Update};
 
 pub mod activation;
 pub mod deactivation;
+mod emergency_setting;
 mod pages;
 pub mod tools;
 
@@ -208,6 +213,9 @@ pub struct Page {
     /// The Emergency control shows and acts: on every page of a hidden
     /// session until it fires.
     pub emergency: bool,
+    /// What the Emergency control's description says while it shows: how to
+    /// use it, and how it ends the session.
+    pub emergency_how: String,
     /// Which page this is.
     pub view: View,
     /// Which page of a tool this is, when the tool has more than one (a
@@ -335,7 +343,15 @@ pub struct Model {
     /// Whether the window runs in a hidden session, by its own reading of
     /// the mount table: the Emergency control shows from the start then.
     in_hidden_session: bool,
-    emergency_fired: bool,
+    /// The finish the emergency fired with, once it fired.
+    emergency_fired: Option<Finish>,
+    /// How the Emergency control ends the session, as far as the window read
+    /// it.
+    emergency_setting: emergency_setting::Chosen,
+    /// Whether the window asked for the settings for the Emergency control.
+    settings_asked: bool,
+    /// The helper ended the session, whatever the page shows since.
+    helper_gone: bool,
     /// The switch whose page shows did not come within [`SWITCH_OVERDUE`].
     switch_overdue: bool,
 }
@@ -369,7 +385,10 @@ impl Model {
             planted_here: false,
             hung_up: false,
             in_hidden_session: false,
-            emergency_fired: false,
+            emergency_fired: None,
+            emergency_setting: emergency_setting::Chosen::NotRead,
+            settings_asked: false,
+            helper_gone: false,
             switch_overdue: false,
         }
     }
@@ -379,7 +398,7 @@ impl Model {
     /// The window times it ([`SWITCH_OVERDUE`]).
     #[must_use]
     pub fn switch_pending(&self) -> bool {
-        !self.emergency_fired
+        self.emergency_fired.is_none()
             && self.stage == Stage::Connected
             && (matches!(self.activation, Some(Activation::PastThePoint))
                 || self.deactivation.is_some())
@@ -401,22 +420,23 @@ impl Model {
     }
 
     /// The person completed the Emergency control's gesture: the window
-    /// fires the emergency, closes any question and shows the session
-    /// ending, and from then on takes in nothing more. `None` where the
-    /// control does not show, and once it fired.
+    /// fires the emergency with the finish it knows now, closes any question
+    /// and shows the session ending, and from then on takes in nothing more.
+    /// `None` where the control does not show, and once it fired.
     pub fn emergency(&mut self) -> Option<Effect> {
         if !self.shows_emergency() {
             return None;
         }
-        self.emergency_fired = true;
+        let (finish, _) = self.emergency_finish();
+        self.emergency_fired = Some(finish);
         self.close_question();
-        Some(Effect::Emergency(Finish::PowerOff))
+        Some(Effect::Emergency(finish))
     }
 
     /// Whether the Emergency control shows: in a hidden session, by the
     /// window's own reading or the engine's status, until it fired.
     fn shows_emergency(&self) -> bool {
-        !self.emergency_fired
+        self.emergency_fired.is_none()
             && (self.in_hidden_session
                 || self
                     .status
@@ -426,7 +446,7 @@ impl Model {
 
     /// Take in `update` and return the asks that follow from it.
     pub fn apply(&mut self, update: Update) -> Vec<Ask> {
-        if matches!(self.stage, Stage::Over(_)) || self.emergency_fired {
+        if matches!(self.stage, Stage::Over(_)) || self.emergency_fired.is_some() {
             // The window hung up and has its answer, or the emergency fired:
             // nothing comes after it.
             return Vec::new();
@@ -449,6 +469,11 @@ impl Model {
             }
             Update::Answered(kind, answer) => {
                 self.running = None;
+                if kind == Kind::Config {
+                    // Every read of the settings says how the Emergency
+                    // control ends the session, a tool's read included.
+                    self.emergency_setting = emergency_setting::read(&answer.envelope);
+                }
                 if self.answers_tool(kind) {
                     return self.tool_answered(kind, &answer);
                 }
@@ -477,6 +502,7 @@ impl Model {
             }
             Update::Ended(failure) => {
                 self.running = None;
+                self.helper_gone = true;
                 if matches!(self.activation, Some(Activation::PastThePoint))
                     || matches!(self.deactivation, Some(Deactivation::Ending { .. }))
                 {
@@ -501,7 +527,7 @@ impl Model {
     /// The person's answer to the question that waits: the apply or the
     /// withdrawal of a plan, or the check that follows a risk allowed.
     pub fn answer(&mut self, confirmed: bool) -> Option<Ask> {
-        if self.emergency_fired {
+        if self.emergency_fired.is_some() {
             return None;
         }
         self.question = None;
@@ -797,14 +823,20 @@ impl Model {
                     self.status_error = envelope.error;
                     let check = self.check == Check::NotRun
                         && self.status.as_ref().is_some_and(checks_on_open);
+                    let mut asks = Vec::new();
                     if check {
-                        vec![Ask::Check(activation::check_args(
+                        asks.push(Ask::Check(activation::check_args(
                             &self.allowed,
                             &self.options,
-                        ))]
-                    } else {
-                        Vec::new()
+                        )));
                     }
+                    // How the Emergency control ends the session, read once,
+                    // in advance: firing asks nobody.
+                    if self.shows_emergency() && !self.settings_asked {
+                        self.settings_asked = true;
+                        asks.push(Ask::ConfigShow);
+                    }
+                    asks
                 }
                 Err(error) => {
                     self.stage = Stage::Unreadable(error.0);
@@ -918,8 +950,8 @@ impl Model {
     /// The page to draw now.
     #[must_use]
     pub fn page(&self) -> Page {
-        if self.emergency_fired {
-            return pages::ending_now_page();
+        if let Some(finish) = self.emergency_fired {
+            return pages::ending_now_page(finish);
         }
         let mut page = match &self.stage {
             Stage::Over(page) => return (**page).clone(),
@@ -952,6 +984,9 @@ impl Model {
         }
         page.question.clone_from(&self.question);
         page.emergency = self.shows_emergency();
+        if page.emergency {
+            page.emergency_how = text::emergency_how(self.emergency_finish().0).to_string();
+        }
         page
     }
 }

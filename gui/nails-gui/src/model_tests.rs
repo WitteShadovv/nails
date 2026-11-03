@@ -355,13 +355,24 @@ fn a_refused_switch_or_an_abnormal_end_is_said_above_the_check() {
 #[test]
 fn a_hidden_session_says_how_long_it_has_run() {
     let mut model = connected();
-    assert!(model.apply(status(json!({"place": "hidden", "attention": null, "uptime_seconds": 7800, "hidden_root": "/mnt/data"}))).is_empty());
+    // No check in a hidden session: the settings are read, once, for the
+    // Emergency control.
+    assert_eq!(
+        model.apply(status(json!({"place": "hidden", "attention": null, "uptime_seconds": 7800, "hidden_root": "/mnt/data"}))),
+        [Ask::ConfigShow]
+    );
     let page = model.page();
     assert_eq!(page.heading, "Hidden Session");
     assert_eq!(page.description, "Hidden session active for 2 h 10 min.");
     assert_eq!(
         page.facts,
-        vec![("Hidden volume".to_string(), "/mnt/data".to_string())]
+        vec![
+            ("Hidden volume".to_string(), "/mnt/data".to_string()),
+            (
+                text::FACT_EMERGENCY.to_string(),
+                format!("Power off, {}", text::EMERGENCY_NOT_READ)
+            ),
+        ]
     );
     // Its way out is the window's own Deactivate…, with no terminal line.
     assert_eq!(page.fix, "");
@@ -392,6 +403,7 @@ fn a_hidden_session_without_a_way_back_names_the_power_button() {
     assert_eq!(page.fix, text::HOLD_POWER_BUTTON);
     assert!(page.urgent);
     assert_eq!(page.action, None, "no way back to deactivate with");
+    assert_eq!(page.facts[0].0, text::FACT_EMERGENCY, "what Emergency does");
 }
 
 #[test]

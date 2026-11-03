@@ -17,11 +17,11 @@ use std::sync::mpsc::channel;
 
 use i_slint_backend_testing::AccessibleRole;
 use nails_api::Event;
-use nails_api::protocol::{ActivateArgs, DeactivateArgs, Op, Token};
+use nails_api::protocol::{ActivateArgs, ConfigShowArgs, DeactivateArgs, Op, Token};
 use nails_gui::text;
 use nails_gui::worker::{Connect, Kind, Update};
 use serde_json::{Value, json};
-use support::{FakePowerOff, event, result};
+use support::{FakePowerOff, event, fixture, result};
 use wired::{Wired, helper, next_request};
 
 /// The tokens the fake helper hands out: one for the plan of a return, one
@@ -53,6 +53,7 @@ fn deactivating(
         let id = request.id;
         match &request.op {
             Op::Status => vec![result(id, 0, status("hidden"))],
+            Op::ConfigShow(_) => vec![result(id, 0, fixture("config-show"))],
             Op::DeactivatePlan(args) => {
                 let (of, warnings) = if args.poweroff {
                     ("poweroff", json!([]))
@@ -84,7 +85,7 @@ fn deactivating(
     });
     let power_off = FakePowerOff::new("exit 0");
     let wired = Wired::new(Connect::Stream(stream), &power_off, true);
-    wired.pump_until(|update| matches!(update, Update::Answered(Kind::Status, _)));
+    wired.pump_until(|update| matches!(update, Update::Answered(Kind::Config, _)));
     wired
         .screen
         .find_with(text::DEACTIVATE, AccessibleRole::Button)
@@ -137,6 +138,7 @@ fn return_to_decoy_applies_the_plan_of_a_return_through_the_helper() {
         ops,
         [
             Op::Status,
+            Op::ConfigShow(ConfigShowArgs::default()),
             Op::DeactivatePlan(DeactivateArgs { poweroff: false }),
             Op::DeactivateApply(Token {
                 token: token("return")
@@ -161,6 +163,7 @@ fn power_off_applies_a_plan_of_its_own_and_never_the_returns() {
         ops,
         [
             Op::Status,
+            Op::ConfigShow(ConfigShowArgs::default()),
             Op::DeactivatePlan(DeactivateArgs { poweroff: false }),
             Op::DeactivatePlan(DeactivateArgs { poweroff: true }),
             Op::DeactivateApply(Token {

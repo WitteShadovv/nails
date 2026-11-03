@@ -19,13 +19,17 @@
 // nothing the window has queued delays it. The window puts it above an open
 // question, which keeps everything else out of reach.
 //
-// Its labels are the window's words for it (src/text.rs names them too).
+// Its labels are the window's words for it (src/text.rs names them too). Its
+// description says how it ends the session, which the window knows: the
+// setting chosen in advance (src/model/emergency_setting.rs).
 
 import { Adw } from "theme.slint";
 
 export component EmergencyButton {
     // The gesture is complete: end the session.
     callback fired();
+    // How to use it and how it ends the session, for its description.
+    in property <string> how;
 
     // How long the pointer holds it.
     property <duration> hold: 1000ms;
@@ -58,7 +62,7 @@ export component EmergencyButton {
     accessible-role: button;
     accessible-enabled: true;
     accessible-label: root.label;
-    accessible-description: "Press and hold to end the hidden session now";
+    accessible-description: root.how;
     accessible-live-region: AccessibleLiveness.assertive;
     accessible-action-default => {
         root.step();

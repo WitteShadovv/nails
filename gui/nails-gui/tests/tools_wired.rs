@@ -15,8 +15,8 @@ use std::sync::mpsc::{Receiver, channel};
 
 use i_slint_backend_testing::AccessibleRole;
 use nails_api::protocol::{
-    CheckArgs, DiscardPlanArgs, InitArgs, Op, RehearsePlantArgs, RehearseScanArgs, Request, Token,
-    VerifyArgs,
+    CheckArgs, ConfigShowArgs, DiscardPlanArgs, InitArgs, Op, RehearsePlantArgs, RehearseScanArgs,
+    Request, Token, VerifyArgs,
 };
 use nails_gui::text;
 use nails_gui::worker::{Connect, Kind, Update};
@@ -34,9 +34,10 @@ fn ready() -> Value {
         "ready": true, "checks": [], "summary": {"passed": 3, "warnings": 0, "failed": 0}}})
 }
 
-/// A window on a helper that answers status, check and each operation of
-/// the tools as `respond` says, the others with its recorded envelopes;
-/// shown once the session's page settled.
+/// A window on a helper that answers status, check, the settings and each
+/// operation of the tools as `respond` says, the others with its recorded
+/// envelopes; shown once the session's page settled: a decoy's with its
+/// check, a hidden session's with the settings its Emergency control reads.
 fn window(
     place: &'static str,
     mut respond: impl FnMut(&Op) -> Option<(u8, Value)> + Send + 'static,
@@ -46,6 +47,7 @@ fn window(
         let (exit, envelope) = match &request.op {
             Op::Status => (0, status(place)),
             Op::Check(_) => (0, ready()),
+            Op::ConfigShow(_) => (0, fixture("config-show")),
             op => respond(op).unwrap_or_else(|| panic!("no answer for {op:?}")),
         };
         vec![result(request.id, exit, envelope)]
@@ -55,7 +57,7 @@ fn window(
     let settled = if place == "decoy" {
         Kind::Check
     } else {
-        Kind::Status
+        Kind::Config
     };
     wired.pump_until(|update| matches!(update, Update::Answered(kind, _) if *kind == settled));
     wired.screen.tall();
@@ -90,9 +92,10 @@ fn verify_goes_through_the_helper_and_shows_its_answer() {
     until_answered(&wired, Kind::Verify);
     assert!(wired.screen.shows(text::TRACES_FOUND));
     assert_eq!(
-        ops(&requests, 2),
+        ops(&requests, 3),
         [
             Op::Status,
+            Op::ConfigShow(ConfigShowArgs::default()),
             Op::Verify(VerifyArgs {
                 deep: true,
                 ..VerifyArgs::default()
@@ -114,9 +117,10 @@ fn a_rehearsal_reads_its_status_and_plants_through_the_helper() {
     until_answered(&wired, Kind::Rehearse);
     assert!(wired.screen.shows(text::PLANTED));
     assert_eq!(
-        ops(&requests, 3),
+        ops(&requests, 4),
         [
             Op::Status,
+            Op::ConfigShow(ConfigShowArgs::default()),
             Op::RehearseStatus,
             Op::RehearsePlant(RehearsePlantArgs::default())
         ]

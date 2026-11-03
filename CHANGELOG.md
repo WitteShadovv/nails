@@ -188,13 +188,14 @@ of this changelog for that version becomes the release notes word for word, and
   is one press), and Escape or Tab cancels; a screen reader's activate action takes the same two
   steps, and each change of its label is announced at once. It decides on the input event itself,
   and the emergency then goes its own way on a thread of its own: it writes the engine's emergency,
-  a power-off, onto the helper's pipe beside whatever request the window waits on (a helper busy
-  with another request reads it once that one is done), and where there is no helper, the request
-  cannot be written within 3 seconds, or the window still runs 3 seconds after it (the engine's
-  emergency ends the window with the session's other programs, so only a helper that never ran it
-  leaves the window running), it asks logind for the power-off itself with `systemctl poweroff`,
-  which needs neither root nor the helper. The
-  page names the power button for a computer that still does not turn off. The worker's updates
+  ending the session as `window.emergency` chose in advance (below), onto the helper's pipe beside
+  whatever request the window waits on (a helper busy with another request reads it once that one
+  is done), and where there is no helper, the request cannot be written within 3 seconds, or the
+  window still runs 3 seconds after it (the engine's emergency ends the window with the session's
+  other programs, so only a helper that never ran it leaves the window running), it asks logind
+  for the power-off itself with `systemctl poweroff`, which needs neither root nor the helper,
+  whatever the setting chose. The page names the power button for a computer that still does not
+  turn off. The worker's updates
   reach the window's thread through one task on its event loop at a time, at most 64 per turn, so no
   flood of the helper's events can queue ahead of the person's input. A settled page of the session
   has rows that open the window's tools, each a page with Back (Escape goes back too), which asks
@@ -257,6 +258,18 @@ of this changelog for that version becomes the release notes word for word, and
   vet gui` holds it to the published crate plus its patch, byte for byte. A process list still shows
   `nails` while the window is open: the helper runs as `<hidden-root>/nails helper --stdio`. Its
   tests run without a display, on Slint's testing platform.
+- `window.emergency` in `nails.toml` chooses in advance how the window's Emergency control ends a
+  hidden session, since its gesture asks nothing at that moment: `return`, the default, goes back
+  to the decoy's login screen as a plain `nails emergency` does, `poweroff` and `reboot` end it as
+  `--poweroff` and `--reboot` do. `config set`, `config unset` and the window's Settings page
+  change it as any other key. Only the window reads it: `nails emergency` still reads no
+  configuration, and its flags choose how each run ends. The window reads the setting once the
+  first status of a hidden session came in and again with every read of its Settings page, so a
+  change saved there holds from the read after the save. The hidden session's page names what the
+  control does, and so does the control's description. Until the window has read the setting,
+  where the settings cannot be read or hold a value the window does not know, and for a return in
+  a session without a way back, the control powers off and the page says why; once it fired, the
+  page says how the session ends and that the computer powers off where it does not end so.
 - `nails check` and activation refuse an updatedb that would list the hidden volume in the
   decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
   `services.locate`) writes the name of every file it finds into a database on the decoy disk,
