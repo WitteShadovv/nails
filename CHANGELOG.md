@@ -595,7 +595,8 @@ of this changelog for that version becomes the release notes word for word, and
   later name SUBDEV like a cascade layer but with the volume's uuid: the volume's header, its
   flags and its tokens are read from the device below that layer, where cryptsetup keeps them. A
   hidden root on a filesystem the decoy uses is no longer described as if the decoy's stack were
-  its backend: the check skips it and leaves it to `hidden-volume`. See docs/backends.md.
+  its backend: the check leaves it to `hidden-volume`, but refuses discards over that stack, which
+  keeps the root's data, as before. See docs/backends.md.
 - `config show --json` now names in `data.sources` the source of each key of a table too, written
   `table.key` (`persona.mode`, `sleep_policy.mode`), beside the source of the table itself, which
   only says that the file holds the table. A table the file holds, even as the empty header an
