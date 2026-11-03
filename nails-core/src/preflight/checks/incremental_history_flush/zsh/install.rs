@@ -5,7 +5,7 @@
 //! where its `fpath` starts, which its program and its environment tell
 //! ([`Install`]), the Nix profiles NixOS's `/etc/zshenv` adds directories of
 //! to `fpath` (`NIX_PROFILES`), and the lines of NixOS's generated
-//! `/etc/zshrc` that it knows to write nothing ([`known_lines`]).
+//! `/etc/zshrc` that it knows to write nothing ([`dircolors_split`]).
 //!
 //! A zsh from the Nix store, as nixpkgs builds it, looks for the functions it
 //! autoloads in one directory of its own store path,
