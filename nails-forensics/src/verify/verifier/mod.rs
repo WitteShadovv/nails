@@ -202,15 +202,19 @@ impl<F: Filesystem> Verifier<F> {
     /// Where the decoy's `path` lies under the offline root, its links followed
     /// inside the root as the decoy itself follows them: an absolute link in
     /// the image resolves in the image, never on the machine that runs
-    /// verify ([`Filesystem::canonical_in_root`]). On the live host, `path`
-    /// itself. Following a link updates the link's own access time on a
-    /// read-write mount, which the advised read-only mounts are not.
-    fn place(&self, path: &Path) -> PathBuf {
+    /// verify ([`Filesystem::resolve_in_root`]). `None` where `path` does not
+    /// resolve inside the root, through a loop of links or where the kernel
+    /// refuses the lookup: the root joined with `path` would follow the
+    /// image's links out of it on this machine, so nothing is read there. On
+    /// the live host, `path` itself. Following a link updates the link's own
+    /// access time on a read-write mount, which the advised read-only mounts
+    /// are not.
+    fn place(&self, path: &Path) -> Option<PathBuf> {
         match &self.context {
-            VerifyContext::Host => path.to_path_buf(),
+            VerifyContext::Host => Some(path.to_path_buf()),
             VerifyContext::Offline { root } => {
-                let inside = self.filesystem.canonical_in_root(root, path);
-                root.join(inside.strip_prefix("/").unwrap_or(&inside))
+                let inside = self.filesystem.resolve_in_root(root, path)?;
+                Some(root.join(inside.strip_prefix("/").unwrap_or(&inside)))
             }
         }
     }

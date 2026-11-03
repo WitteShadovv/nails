@@ -243,16 +243,19 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// followed inside it, an absolute one and `..` included, so no link
     /// leads out of `root` (`openat2` with `RESOLVE_IN_ROOT`), and a trailing
     /// part that does not exist is appended to as much as does. The result is
-    /// absolute, as seen from `root`. The default, for a filesystem that
-    /// records no links, is `path` itself.
-    fn canonical_in_root(&self, root: &Path, path: &Path) -> PathBuf {
+    /// absolute, as seen from `root`. `None` where `path` does not resolve
+    /// inside `root`, through a loop of links or where the kernel refuses the
+    /// lookup: `root` joined with `path` would follow the links of `root` on
+    /// this machine, out of it, so a caller reads nothing through it. The
+    /// default, for a filesystem that records no links, is `path` itself.
+    fn resolve_in_root(&self, root: &Path, path: &Path) -> Option<PathBuf> {
         let _ = root;
-        path.to_path_buf()
+        Some(path.to_path_buf())
     }
 
     /// The text of the file `path` of the system whose root is `root`, its
     /// links followed inside `root` as
-    /// [`canonical_in_root`](Self::canonical_in_root) follows them, read
+    /// [`resolve_in_root`](Self::resolve_in_root) follows them, read
     /// without updating its access time. The default reads `path` below
     /// `root` with [`read_file_content`](Self::read_file_content).
     fn read_file_in_root(&self, root: &Path, path: &Path) -> Result<String> {

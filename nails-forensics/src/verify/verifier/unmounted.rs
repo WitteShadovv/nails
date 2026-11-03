@@ -21,6 +21,10 @@ const FSTAB_FILE: &str = "/etc/fstab";
 /// The decoy's table of the encrypted volumes it opens.
 const CRYPTTAB_FILE: &str = "/etc/crypttab";
 
+/// Why a place of the decoy that does not resolve inside the root is listed:
+/// nothing is looked up through it on the machine running verify.
+const NOT_RESOLVED: &str = "it does not resolve inside the root, so nothing there was read";
+
 /// How the device an fstab entry names is mounted on the machine that runs
 /// verify, by the superblock its mounts share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,26 +92,36 @@ impl<F: Filesystem> Verifier<F> {
             if unmounted.iter().any(|seen| entry.file.starts_with(seen)) {
                 continue;
             }
-            let place = self.place(&entry.file);
-            if self.holds_nothing(&place) {
-                areas.push(format!(
-                    "{}, which the decoy's /etc/fstab mounts (missing or empty under the root. {})",
-                    entry.file.display(),
+            let why = match self.place(&entry.file) {
+                None => NOT_RESOLVED.to_string(),
+                Some(place) if self.holds_nothing(&place) => format!(
+                    "missing or empty under the root. {}",
                     self.how_to_mount(&entry, &place, &table)
-                ));
-                unmounted.push(entry.file);
-            }
+                ),
+                Some(_) => continue,
+            };
+            areas.push(format!(
+                "{}, which the decoy's /etc/fstab mounts ({why})",
+                entry.file.display()
+            ));
+            unmounted.push(entry.file);
         }
         for (user, home) in self.login_homes() {
-            if !unmounted.iter().any(|seen| home.starts_with(seen))
-                && self.holds_nothing(&self.place(&home))
-            {
-                areas.push(format!(
-                    "{}, the home of {user} in the decoy's /etc/passwd (missing or empty under \
-                     the root: mount what holds it there without writing to it before the scan)",
-                    home.display()
-                ));
+            if unmounted.iter().any(|seen| home.starts_with(seen)) {
+                continue;
             }
+            let why = match self.place(&home) {
+                None => NOT_RESOLVED,
+                Some(place) if self.holds_nothing(&place) => {
+                    "missing or empty under the root: mount what holds it there without writing \
+                     to it before the scan"
+                }
+                Some(_) => continue,
+            };
+            areas.push(format!(
+                "{}, the home of {user} in the decoy's /etc/passwd ({why})",
+                home.display()
+            ));
         }
         areas
     }
@@ -146,15 +160,17 @@ impl<F: Filesystem> Verifier<F> {
             return Some("it could not be read".to_string());
         }
         let inside = match &self.context {
-            VerifyContext::Offline { root } => self.filesystem.canonical_in_root(root, path),
-            VerifyContext::Host => path.to_path_buf(),
+            VerifyContext::Offline { root } => self.filesystem.resolve_in_root(root, path),
+            VerifyContext::Host => Some(path.to_path_buf()),
         };
-        (inside != Path::new("/dev/null")).then(|| {
-            format!(
+        match inside {
+            Some(inside) if inside == Path::new("/dev/null") => None,
+            Some(inside) => Some(format!(
                 "a link that leads to {} inside the root, where no file can be read",
                 inside.display()
-            )
-        })
+            )),
+            None => Some("a link that does not resolve inside the root".to_string()),
+        }
     }
 
     /// Whether `place`, a decoy path resolved under the root, is missing or
@@ -206,7 +222,14 @@ impl<F: Filesystem> Verifier<F> {
             }
         };
         let replay_free = with(Some(replay_free(&entry.vfstype)));
-        if let Some(file) = self.loop_file(entry) {
+        if is_loop_file(entry) {
+            let Some(file) = self.place(Path::new(&entry.spec)) else {
+                return format!(
+                    "Its device is the file {} of the image, which does not resolve inside the \
+                     root, so no command is given",
+                    entry.spec
+                );
+            };
             return format!(
                 "Its device is a file in the image: attach it read-only, with `sudo losetup \
                  --read-only --find --show {}{}`, then mount the loop device that prints there \
@@ -242,14 +265,6 @@ impl<F: Filesystem> Verifier<F> {
         }
     }
 
-    /// The file of the image that `entry` mounts, resolved inside the root:
-    /// a spec that is a path outside `/dev`, which mount(8) attaches to a
-    /// loop device of its own.
-    fn loop_file(&self, entry: &FstabEntry) -> Option<PathBuf> {
-        let spec = Path::new(&entry.spec);
-        (spec.is_absolute() && !spec.starts_with("/dev")).then(|| self.place(spec))
-    }
-
     /// The name of the device-mapper mapping that `entry` mounts, when the
     /// mapping is not open here: its `/dev/mapper` node is missing.
     fn closed_mapping<'e>(&self, entry: &'e FstabEntry) -> Option<&'e str> {
@@ -283,10 +298,22 @@ impl<F: Filesystem> Verifier<F> {
             );
         };
         let opening = opening(&volume, |path| self.here(path));
+        let source = self.here(&volume.source);
         let mut how = format!(
             "Its device is a mapping of the decoy's /etc/crypttab that is not open here: {}",
-            open_and_mount(&opening.options, &self.here(&volume.source), name, mounting)
+            open_and_mount(
+                &opening.options,
+                source.as_deref().unwrap_or("<source>"),
+                name,
+                mounting
+            )
         );
+        if source.is_none() {
+            how.push_str(&format!(
+                ", where <source> is {} of the image, which does not resolve inside the root",
+                volume.source
+            ));
+        }
         if !opening.left_out.is_empty() {
             how.push_str(&format!(
                 ". It needs parameters of its own for what its line there also opens it with, \
@@ -299,10 +326,14 @@ impl<F: Filesystem> Verifier<F> {
 
     /// Where a device or file that the decoy's `/etc/crypttab` names lies
     /// here, shell-quoted: a device node (a `UUID=` and its like by udev's
-    /// link) as it is, a file of the image resolved inside the root.
-    fn here(&self, path: &str) -> String {
-        let here = spec_device(path).unwrap_or_else(|| self.place(Path::new(path)));
-        shell_word(here.as_os_str())
+    /// link) as it is, a file of the image resolved inside the root. `None`
+    /// for a file that does not resolve there.
+    fn here(&self, path: &str) -> Option<String> {
+        let here = match spec_device(path) {
+            Some(device) => device,
+            None => self.place(Path::new(path))?,
+        };
+        Some(shell_word(here.as_os_str()))
     }
 
     /// How the device `entry` names is mounted here now: the device node of
@@ -331,6 +362,13 @@ impl<F: Filesystem> Verifier<F> {
             Some(_) => Mounted::ReadWrite,
         }
     }
+}
+
+/// Whether `entry` mounts a file of the image, which mount(8) attaches to a
+/// loop device of its own: a spec that is a path outside `/dev`.
+fn is_loop_file(entry: &FstabEntry) -> bool {
+    let spec = Path::new(&entry.spec);
+    spec.is_absolute() && !spec.starts_with("/dev")
 }
 
 /// The `losetup` options that set the loop device of `entry` up as its

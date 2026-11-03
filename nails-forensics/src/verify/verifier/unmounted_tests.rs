@@ -489,26 +489,173 @@ fn an_fstab_that_cannot_be_read_inside_the_root_is_not_read() {
     std::os::unix::fs::symlink("/dev/null", &fstab).unwrap();
     let result = scan(root.path(), false, false).unwrap();
     assert!(unmounted(&result.areas_not_checked).is_empty());
+    // A link that comes back through itself inside the image.
+    std::fs::remove_file(&fstab).unwrap();
+    std::os::unix::fs::symlink("../etc/fstab", &fstab).unwrap();
+    let result = scan(root.path(), false, false).unwrap();
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [not_read("a link that does not resolve inside the root")]
+    );
+}
+
+/// A temporary folder that holds the decoy root `root`, with the accounts
+/// of [`PASSWD`] and bob's home in place, and beside it, out of the image,
+/// what `files` names (path from the folder, and text).
+fn beside_a_decoy(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path().join("root");
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(root.join("etc/passwd"), PASSWD).unwrap();
+    std::fs::create_dir_all(root.join("srv/bob")).unwrap();
+    std::fs::write(root.join("srv/bob/.profile"), "").unwrap();
+    for (file, text) in files {
+        let path = tree.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    tree
+}
+
+/// What the scan says of a decoy place that does not resolve inside the root.
+fn not_resolved(place: &str, of: &str) -> String {
+    format!("{place}, {of} (it does not resolve inside the root, so nothing there was read)")
 }
 
 #[test]
 fn a_deep_scan_does_not_follow_a_link_out_of_the_image() {
-    // The image's /home is an absolute link: on the machine running verify it
-    // leads to a folder with a history that names the tool, which was read
-    // and reported as a trace on the decoy. Inside the image it leads to
-    // nothing, so alice's home is not checked instead.
-    let outside = tempfile::tempdir().unwrap();
-    std::fs::create_dir(outside.path().join("alice")).unwrap();
+    // On the machine running verify each link leads beside the image, to a
+    // history that names the tool, which was read and reported as a trace on
+    // the decoy. Inside the image alice's home as an absolute link and /home
+    // climbing out of it lead to nothing, so her home is not checked. /home
+    // linked to ../home comes back through itself inside the image, as an
+    // absolute link to a folder below the machine's own /home does: it does
+    // not resolve there, and nothing is read through it.
+    let history = "sudo /mnt/data/nails activate\n";
+    let missing = home_of("alice", "/home/alice");
+    let looped = not_resolved(
+        "/home/alice",
+        "the home of alice in the decoy's /etc/passwd",
+    );
+    for (link, absolute, target, listed) in [
+        ("home/alice", true, "outside/alice", &missing),
+        ("home", false, "../outside", &missing),
+        ("home", false, "../home", &looped),
+    ] {
+        let tree = beside_a_decoy(&[
+            ("outside/alice/.bash_history", history),
+            ("home/alice/.bash_history", history),
+        ]);
+        // The absolute target must not lead back through alice's home.
+        assert!(!tree.path().starts_with("/home/alice"));
+        let root = tree.path().join("root");
+        let target = if absolute {
+            tree.path().join(target)
+        } else {
+            Path::new(target).to_path_buf()
+        };
+        std::fs::create_dir_all(root.join(link).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, root.join(link)).unwrap();
+        let shown = format!("{link} -> {}", target.display());
+
+        let result = scan(&root, true, false).unwrap();
+        assert_eq!(
+            result.status,
+            VerifyStatus::Secure,
+            "{shown}: {:?}",
+            result.findings
+        );
+        assert_eq!(
+            unmounted(&result.areas_not_checked),
+            [listed.as_str()],
+            "{shown}"
+        );
+        let home_not_checked = result.findings.iter().any(|finding| {
+            finding.message == "Home not checked (it does not resolve inside the root): /home/alice"
+        });
+        assert_eq!(
+            home_not_checked,
+            listed == &looped,
+            "{shown}: {:?}",
+            result.findings
+        );
+    }
+}
+
+#[test]
+fn nothing_is_read_through_a_place_that_does_not_resolve_inside_the_root() {
+    // Each link comes back through itself inside the image while it leads
+    // beside it on the machine running verify: the deep scan's folders, a
+    // mount point, the file a loop device is set up on, the source of a
+    // mapping and the fstab itself. None is read, and each is named.
+    let tree = beside_a_decoy(&[
+        ("var/log/nails.log", ""),
+        ("data/notes", ""),
+        ("srv/disk.img", ""),
+    ]);
+    let root = tree.path().join("root");
+    let link = |target: &str, at: &str| std::os::unix::fs::symlink(target, root.join(at)).unwrap();
+    link("../var", "var");
+    link("../data", "data");
+    std::fs::create_dir_all(root.join("home/alice")).unwrap();
+    std::fs::write(root.join("home/alice/.profile"), "").unwrap();
     std::fs::write(
-        outside.path().join("alice/.bash_history"),
-        "sudo /mnt/data/nails activate\n",
+        root.join("etc/fstab"),
+        "UUID=1 /data ext4 defaults 0 2\n\
+         /srv/disk.img /mnt/x ext4 loop 0 0\n\
+         /dev/mapper/nails-test-looped /mnt/vault ext4 defaults 0 2\n",
     )
     .unwrap();
-    let root = decoy(&["srv/bob"], &[("srv/bob/.profile", "")]);
-    std::os::unix::fs::symlink(outside.path(), root.path().join("home")).unwrap();
-    let result = scan(root.path(), true, false).unwrap();
+    std::fs::write(
+        root.join("etc/crypttab"),
+        "nails-test-looped /srv/vault.hc none luks\n",
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.join("srv")).unwrap();
+    link("../srv", "srv");
+
+    let result = scan(&root, true, false).unwrap();
     assert_eq!(result.status, VerifyStatus::Secure, "{:?}", result.findings);
-    assert_eq!(places(&result.areas_not_checked), ["/home/alice"]);
+    for base in ["/var/tmp", "/var/log"] {
+        let note = format!("Directory not checked (it does not resolve inside the root): {base}");
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.message == note),
+            "{note}: {:?}",
+            result.findings
+        );
+    }
+    let mounts = "which the decoy's /etc/fstab mounts";
+    let lines = unmounted(&result.areas_not_checked);
+    assert_eq!(lines[0], not_resolved("/data", mounts));
+    assert!(
+        lines[1].starts_with(&format!(
+            "/mnt/vault, {mounts} (missing or empty under the root. Its device is a mapping of \
+             the decoy's /etc/crypttab that is not open here: open it read-only and mount it \
+             there without a journal replay before the scan, with `sudo cryptsetup open \
+             --readonly <source> nails-test-looped && "
+        )) && lines[1].ends_with(
+            ", where <source> is /srv/vault.hc of the image, which does not resolve inside the \
+             root)"
+        ),
+        "{}",
+        lines[1]
+    );
+    assert_eq!(
+        lines[2],
+        format!(
+            "/mnt/x, {mounts} (missing or empty under the root. Its device is the file \
+             /srv/disk.img of the image, which does not resolve inside the root, so no command \
+             is given)"
+        )
+    );
+    assert_eq!(
+        lines[3],
+        not_resolved("/srv/bob", "the home of bob in the decoy's /etc/passwd")
+    );
+    assert_eq!(lines.len(), 4, "{lines:#?}");
 }
 
 /// The access time of `path`, to the nanosecond.

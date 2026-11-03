@@ -106,7 +106,7 @@ pub fn examine(root: &Path, options: &ExaminerOptions) -> ExaminerReport {
     let mut checks_run = Vec::new();
     let mut not_checked = Vec::new();
 
-    findings.extend(catalog_paths(root));
+    findings.extend(catalog_paths(root, &mut not_checked));
     checks_run.push("examiner-catalog-paths");
 
     findings.extend(files::config_entries(root, &mut not_checked));
@@ -157,8 +157,10 @@ pub fn examine(root: &Path, options: &ExaminerOptions) -> ExaminerReport {
     }
 }
 
-/// The setup rows' data-driven path probes, read under `root`.
-fn catalog_paths(root: &Path) -> Vec<ExaminerFinding> {
+/// The setup rows' data-driven path probes, read under `root`. A path that
+/// does not resolve inside the root is not probed, and goes to
+/// `not_checked`.
+fn catalog_paths(root: &Path, not_checked: &mut Vec<String>) -> Vec<ExaminerFinding> {
     let fs = crate::RealFilesystem;
     let mut out = Vec::new();
     for row in residue_catalog::catalog() {
@@ -169,7 +171,10 @@ fn catalog_paths(root: &Path) -> Vec<ExaminerFinding> {
             continue;
         };
         for path in paths {
-            let probe = in_root(root, path);
+            let Some(probe) = in_root(root, path) else {
+                not_checked.push(format!("{path}, probed for {} ({NOT_RESOLVED})", row.title));
+                continue;
+            };
             if residue_catalog::path_probe_hit(&fs, &probe) {
                 out.push(ExaminerFinding {
                     catalog_id: row.id,
@@ -213,23 +218,30 @@ fn group(findings: Vec<ExaminerFinding>) -> Vec<ExaminerGroup> {
     groups
 }
 
+/// Why the audit read nothing at a decoy path that does not resolve inside
+/// the root.
+pub(crate) const NOT_RESOLVED: &str = "it does not resolve inside the root";
+
 /// The decoy's `path` (absolute on the decoy) under the image root `root`,
 /// its links followed inside the root as the decoy itself follows them
 /// (`openat2` with `RESOLVE_IN_ROOT`): an absolute link in the image resolves
 /// in the image, never on the machine running verify. For the files the audit
-/// reads and the folders it lists or probes.
-pub(crate) fn in_root(root: &Path, path: impl AsRef<Path>) -> PathBuf {
-    let inside = crate::RealFilesystem.canonical_in_root(root, path.as_ref());
-    root.join(inside.strip_prefix("/").unwrap_or(&inside))
+/// reads and the folders it lists or probes. `None` where `path` does not
+/// resolve inside the root, through a loop of links or where the kernel
+/// refuses the lookup: the root joined with `path` would follow the image's
+/// links out of it on this machine, so nothing is read there.
+pub(crate) fn in_root(root: &Path, path: impl AsRef<Path>) -> Option<PathBuf> {
+    let inside = crate::RealFilesystem.resolve_in_root(root, path.as_ref())?;
+    Some(root.join(inside.strip_prefix("/").unwrap_or(&inside)))
 }
 
 /// The entry the decoy's `path` names under `root`: its folder resolved
 /// inside the root as [`in_root`] resolves it, its last part as it is, so a
 /// link there is seen, and counts, as a link.
-pub(crate) fn in_root_entry(root: &Path, path: impl AsRef<Path>) -> PathBuf {
+pub(crate) fn in_root_entry(root: &Path, path: impl AsRef<Path>) -> Option<PathBuf> {
     let path = path.as_ref();
     match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => in_root(root, parent).join(name),
+        (Some(parent), Some(name)) => Some(in_root(root, parent)?.join(name)),
         _ => in_root(root, path),
     }
 }

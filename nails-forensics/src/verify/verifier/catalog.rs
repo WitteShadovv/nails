@@ -64,8 +64,19 @@ impl<F: Filesystem> Verifier<F> {
                 continue;
             };
             for path in paths {
-                // Inside the root, as the decoy sees the path.
-                let probe = self.place(Path::new(path));
+                // Inside the root, as the decoy sees the path. One that does
+                // not resolve there is not looked up on this machine.
+                let Some(probe) = self.place(Path::new(path)) else {
+                    findings.push(Finding::new(
+                        Severity::Info,
+                        "catalog",
+                        format!(
+                            "{} not checked: {path} does not resolve inside the root [{}]",
+                            row.title, row.id
+                        ),
+                    ));
+                    continue;
+                };
                 if !residue_catalog::path_probe_hit(&self.filesystem, &probe) {
                     continue;
                 }
@@ -247,6 +258,45 @@ mod tests {
             "{:?}",
             result.findings
         );
+    }
+
+    #[test]
+    fn a_catalog_path_that_does_not_resolve_inside_the_root_is_not_probed() {
+        // /var/log links to ../../var/log: inside the image it comes back
+        // through itself, as an absolute link to a folder below one of the
+        // link's own name does, while on the machine running verify it leads
+        // beside the image to a sudo I/O log. Nothing is probed through it,
+        // and the scan says what it did not check.
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tree.path().join("var/log/sudo-io/00/00")).unwrap();
+        std::fs::write(tree.path().join("var/log/sudo-io/00/00/log"), "session").unwrap();
+        let root = tree.path().join("root");
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::create_dir(root.join("var")).unwrap();
+        std::os::unix::fs::symlink("../../var/log", root.join("var/log")).unwrap();
+
+        let result = offline_scan(&root);
+
+        let sudo_io: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("[sudo-io-log]"))
+            .collect();
+        assert!(!sudo_io.is_empty(), "{:?}", result.findings);
+        for finding in sudo_io {
+            assert_eq!(
+                finding.severity,
+                crate::Severity::Info,
+                "{}",
+                finding.message
+            );
+            assert!(
+                finding.message.contains("not checked: /var/log/")
+                    && finding.message.contains("does not resolve inside the root"),
+                "{}",
+                finding.message
+            );
+        }
     }
 
     #[test]

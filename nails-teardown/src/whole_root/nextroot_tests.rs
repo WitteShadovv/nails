@@ -276,6 +276,32 @@ fn canonical_in_root_resolves_symlinked_mount_points() {
 }
 
 #[test]
+fn a_path_that_does_not_resolve_inside_the_root_resolves_to_nothing() {
+    // An absolute link out of the root whose target lies below a folder of
+    // the link's own name, as a /home link to a folder under /home does:
+    // inside the root it leads back through itself. canonical_in_root hands
+    // the path back as it is, and a reader that looks it up on the running
+    // system follows the link out of the root, so resolve_in_root says it
+    // does not resolve.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("etc")).unwrap();
+    symlink("/home/runner/outside", root.path().join("home")).unwrap();
+    let history = Path::new("/home/alice/.bash_history");
+    assert_eq!(resolve_in_root(root.path(), history), None);
+    assert_eq!(canonical_in_root(root.path(), history), history);
+    // A root that cannot be opened resolves nothing either.
+    assert_eq!(
+        resolve_in_root(&root.path().join("absent"), Path::new("/etc")),
+        None
+    );
+    // What resolves, resolves as canonical_in_root resolves it.
+    assert_eq!(
+        resolve_in_root(root.path(), Path::new("/etc/fstab")),
+        Some(PathBuf::from("/etc/fstab"))
+    );
+}
+
+#[test]
 fn canonical_in_root_follows_a_link_whose_target_is_not_there_yet() {
     // systemd's fstab generator follows a link to a mount point that does not
     // exist yet and mounts at the target, so the unit to mask is the target's.

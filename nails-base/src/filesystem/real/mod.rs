@@ -124,8 +124,8 @@ impl Filesystem for RealFilesystem {
         file_ops::canonicalize(path)
     }
 
-    fn canonical_in_root(&self, root: &Path, path: &Path) -> PathBuf {
-        nails_teardown::whole_root::nextroot::canonical_in_root(root, path)
+    fn resolve_in_root(&self, root: &Path, path: &Path) -> Option<PathBuf> {
+        nails_teardown::whole_root::nextroot::resolve_in_root(root, path)
     }
 
     fn read_file_in_root(&self, root: &Path, path: &Path) -> Result<String> {

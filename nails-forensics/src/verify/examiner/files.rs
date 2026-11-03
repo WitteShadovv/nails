@@ -3,7 +3,7 @@
 
 //! The examiner checks that read files on the mounted decoy root.
 
-use super::{ExaminerFinding, ExaminerOptions, in_root, in_root_entry};
+use super::{ExaminerFinding, ExaminerOptions, NOT_RESOLVED, in_root, in_root_entry};
 use crate::filesystem::real::{OpenKind, open_noatime, read_dir_noatime};
 use crate::forensic::entropy;
 use crate::forensic::tree::{WalkLimits, walk_files};
@@ -47,21 +47,27 @@ fn read_text(path: &Path, limit: u64) -> Option<String> {
 /// leads to no readable file inside the root among them, goes to
 /// `not_checked`, with what it is read `for` and, for a link, where it leads.
 /// A link to `/dev/null`, as a history kept from being written is, holds
-/// nothing by design and is passed over.
+/// nothing by design and is passed over. A file that does not resolve inside
+/// the root is not read at all.
 fn read_decoy(
     root: &Path,
     rel: &str,
     purpose: &str,
     not_checked: &mut Vec<String>,
 ) -> Option<String> {
-    let place = in_root(root, rel);
+    let Some(place) = in_root(root, rel) else {
+        not_checked.push(format!("{rel}, read for {purpose} ({NOT_RESOLVED})"));
+        return None;
+    };
     if let Some(text) = read_text(&place, TEXT_LIMIT) {
         return Some(text);
     }
     if place == root.join("dev/null") {
         return None;
     }
-    if let Ok(meta) = std::fs::symlink_metadata(in_root_entry(root, rel)) {
+    if let Some(entry) = in_root_entry(root, rel)
+        && let Ok(meta) = std::fs::symlink_metadata(entry)
+    {
         let why = if meta.file_type().is_symlink() {
             let target = place.strip_prefix(root).unwrap_or(&place);
             format!(
@@ -181,7 +187,9 @@ fn lvm_vg_name(text: &str) -> Option<&str> {
 pub(super) fn lvm_metadata(root: &Path) -> Vec<ExaminerFinding> {
     let mut out = Vec::new();
     for dir in ["/etc/lvm/archive", "/etc/lvm/backup"] {
-        let path = in_root(root, dir);
+        let Some(path) = in_root(root, dir) else {
+            continue;
+        };
         let Ok(entries) = read_dir_noatime(&path) else {
             continue;
         };
@@ -250,13 +258,16 @@ pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
     for (tool, severity) in TOOLS {
         for dir in TOOL_DIRS {
             let rel = format!("{dir}/{tool}");
-            let path = in_root_entry(root, &rel);
-            if std::fs::symlink_metadata(&path).is_ok() {
+            if let Some(path) = in_root_entry(root, &rel)
+                && std::fs::symlink_metadata(&path).is_ok()
+            {
                 found.push((rel, path, *severity));
             }
         }
     }
-    if let Ok(entries) = read_dir_noatime(&in_root(root, "/nix/store")) {
+    if let Some(store) = in_root(root, "/nix/store")
+        && let Ok(entries) = read_dir_noatime(&store)
+    {
         for entry in entries {
             let name = entry.name.to_string_lossy();
             for (tool, severity) in TOOLS {
@@ -264,8 +275,9 @@ pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
                 if name.to_lowercase().contains(&marker) && !name.ends_with(".drv") {
                     for sub in ["bin", "sbin"] {
                         let rel = format!("/nix/store/{name}/{sub}/{tool}");
-                        let path = in_root_entry(root, &rel);
-                        if std::fs::symlink_metadata(&path).is_ok() {
+                        if let Some(path) = in_root_entry(root, &rel)
+                            && std::fs::symlink_metadata(&path).is_ok()
+                        {
                             found.push((rel, path, *severity));
                         }
                     }
@@ -299,8 +311,9 @@ pub(super) fn tooling(root: &Path) -> Vec<ExaminerFinding> {
 /// cannot be listed, as when the decoy's `/nix` is a filesystem of its own
 /// that is not mounted there. A root without `/nix` keeps no store.
 pub(super) fn store_unread(root: &Path) -> bool {
-    std::fs::metadata(in_root(root, "/nix")).is_ok_and(|meta| meta.is_dir())
-        && read_dir_noatime(&in_root(root, "/nix/store")).map_or(true, |entries| entries.is_empty())
+    in_root(root, "/nix").is_some_and(|nix| std::fs::metadata(nix).is_ok_and(|meta| meta.is_dir()))
+        && in_root(root, "/nix/store")
+            .is_none_or(|store| read_dir_noatime(&store).map_or(true, |entries| entries.is_empty()))
 }
 
 fn stamp(secs: i64) -> String {
@@ -455,7 +468,9 @@ fn homes(root: &Path, not_checked: &mut Vec<String>) -> Vec<String> {
             }
         }
     }
-    if let Ok(entries) = read_dir_noatime(&in_root(root, "/home")) {
+    if let Some(home) = in_root(root, "/home")
+        && let Ok(entries) = read_dir_noatime(&home)
+    {
         for entry in entries {
             let home = format!("/home/{}", entry.name.to_string_lossy());
             if !homes.contains(&home) {
@@ -495,6 +510,12 @@ pub(super) fn history(
             })
     };
     for home in homes(root, not_checked) {
+        // Each file of a home that does not resolve inside the root would
+        // say so: the home says it once.
+        if in_root(root, &home).is_none() {
+            not_checked.push(format!("{home}, read for {PURPOSE} ({NOT_RESOLVED})"));
+            continue;
+        }
         let recent = format!("{home}/.local/share/recently-used.xbel");
         if let Some(text) = read_decoy(root, &recent, PURPOSE, not_checked) {
             for line in text.lines().filter(|line| line.contains("href=")) {

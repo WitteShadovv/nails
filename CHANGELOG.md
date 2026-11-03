@@ -724,9 +724,11 @@ of this changelog for that version becomes the release notes word for word, and
   NixOS the examiner's view never read `/etc/fstab` or `/etc/crypttab`, links into the store it
   refused to follow, and said nothing: they are now read from the image's store, and a file that
   is there but does not resolve inside the root is listed as not checked, with where it leads,
-  except for a link to `/dev/null`, which holds nothing. The probe for the known NAILS paths,
-  mostly under `/run` and `/etc/nixos`, still follows a link on the way on the machine running
-  verify.
+  except for a link to `/dev/null`, which holds nothing. A path that does not resolve inside the
+  root at all, through a loop of links or where the kernel refuses the lookup, is read nowhere and
+  listed as not checked: looked up on the machine running verify, it would follow the image's
+  links out of it. The probe for the known NAILS paths, mostly under `/run` and `/etc/nixos`,
+  still follows a link on the way on the machine running verify.
 - The operator guide, the `--root` help and the message of a refused root mount the decoy so that
   nothing writes to its disk. They said `mount -o ro`, but on a filesystem that was not cleanly
   unmounted ext4 replays its journal and cleans up orphaned files on a read-only mount, btrfs

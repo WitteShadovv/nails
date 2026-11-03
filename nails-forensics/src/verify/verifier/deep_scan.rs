@@ -16,7 +16,10 @@ impl<F: Filesystem> Verifier<F> {
         for base_path in deep_scan_paths {
             // Inside the root, so a link in the image never leads to the
             // folders of the machine running verify.
-            let path_buf = self.place(Path::new(base_path));
+            let Some(path_buf) = self.place(Path::new(base_path)) else {
+                findings.push(not_resolved("Directory", Path::new(base_path)));
+                continue;
+            };
             if self.filesystem.path_exists(&path_buf)? && self.filesystem.is_directory(&path_buf)? {
                 let scan = self
                     .filesystem
@@ -56,10 +59,17 @@ impl<F: Filesystem> Verifier<F> {
     /// desktop recency files that name the configured hidden root.
     fn scan_home(&self, home: &Path) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
+        if self.place(home).is_none() {
+            return Ok(vec![not_resolved("Home", home)]);
+        }
 
+        // A file that does not resolve inside the root, as a link that leads
+        // back through itself, holds nothing that can be read.
         for history in HISTORY_FILES {
             let path = home.join(history);
-            let probe = self.place(&path);
+            let Some(probe) = self.place(&path) else {
+                continue;
+            };
             if !self.filesystem.path_exists(&probe)? {
                 continue;
             }
@@ -100,7 +110,9 @@ impl<F: Filesystem> Verifier<F> {
             let needle = hidden_root.to_string_lossy().to_string();
             for recent in DESKTOP_RECENT_FILES {
                 let path = home.join(recent);
-                let probe = self.place(&path);
+                let Some(probe) = self.place(&path) else {
+                    continue;
+                };
                 if !self.filesystem.path_exists(&probe)? {
                     continue;
                 }
@@ -177,6 +189,19 @@ impl<F: Filesystem> Verifier<F> {
 
         homes.into_iter().collect()
     }
+}
+
+/// What the deep scan says of the decoy's `path`, a `what` (a directory or a
+/// home) that does not resolve inside the root: it read nothing there.
+fn not_resolved(what: &str, path: &Path) -> Finding {
+    Finding::new(
+        Severity::Info,
+        "file",
+        format!(
+            "{what} not checked (it does not resolve inside the root): {}",
+            path.display()
+        ),
+    )
 }
 
 /// Whether `shell`, the last field of an `/etc/passwd` line, lets its account
