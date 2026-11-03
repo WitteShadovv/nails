@@ -1316,6 +1316,12 @@ of this changelog for that version becomes the release notes word for word, and
   profile blocked them, as reading it waits for a writer, and a link to a device such as `/dev/zero`
   was read without end. Such an entry, a directory or a link to nothing is now skipped unread, and a
   file of the same name in a later directory of the search path decides.
+- `verify --offline` no longer reports the state file on the hidden volume. Run from a hidden
+  session, as the operator guide suggests for a scan of the decoy, it printed
+  `State file status: present at /mnt/data/state.json (active)` in a report about the decoy
+  image: the record of the live session, which says nothing about the image. An offline scan now
+  leaves the file unread, and `state_file_status` is `not_checked` under `--json`; a live scan
+  reports it as before.
 
 ### Security
 

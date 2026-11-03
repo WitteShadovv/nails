@@ -8,7 +8,7 @@
 //! decoy image with the examiner's view) and runs it. The result is a
 //! [`VerifyResult`] a front end renders; this never prints.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{
     Config, ExaminerOptions, RealFilesystem, Result, RuntimeEnv, StateFile, StateFileStatus,
@@ -33,48 +33,29 @@ pub struct VerifyOptions {
 
 /// Run a verification for the resolved configuration and options.
 ///
-/// Reads the state file status for the report (missing, present with its
-/// recorded state, or an error), builds the verifier and runs it. An error
-/// means the verification itself could not run. Options that do not go
-/// together are refused, never dropped: an offline scan without the root of
-/// its image, which would run as a scan of the live host, and an image root
-/// or the examiner's view without an offline scan, or the examiner's disk
-/// without the examiner's view, which would be ignored. The verifier refuses
-/// an image root that holds nothing to scan
+/// For a live scan it reads the state file status for the report (missing,
+/// present with its recorded state, or an error); an offline scan leaves the
+/// state file out ([`StateFileStatus::NotChecked`]). Then it builds the
+/// verifier and runs it. An error means the verification itself could not
+/// run. Options that do not go together are refused, never dropped: an
+/// offline scan without the root of its image, which would run as a scan of
+/// the live host, and an image root or the examiner's view without an offline
+/// scan, or the examiner's disk without the examiner's view, which would be
+/// ignored. The verifier refuses an image root that holds nothing to scan
 /// ([`NailsError::RefusedOfflineRoot`](crate::NailsError::RefusedOfflineRoot)),
 /// which would read as a clean image.
 pub fn verify(env: &RuntimeEnv, config: Config, options: &VerifyOptions) -> Result<VerifyResult> {
     if let Some(reason) = refused_combination(options) {
         return Err(crate::NailsError::InvalidArgument(reason.to_string()));
     }
-    let state_path = config.state_file_path.clone();
-    let (state, state_file_status) = if !state_path.exists() {
-        (
-            None,
-            StateFileStatus::Missing {
-                path: state_path.clone(),
-            },
-        )
+    // The state file is the record of this computer's sessions on the hidden
+    // volume, not part of a decoy image: an offline scan, run from a hidden
+    // session as often as not, would report the live session's record in a
+    // report about the image.
+    let (state, state_file_status) = if options.offline {
+        (None, StateFileStatus::NotChecked)
     } else {
-        match StateFile::load(&state_path) {
-            Ok(loaded_state) => {
-                let state_name = loaded_state.state.label().to_string();
-                (
-                    Some(loaded_state),
-                    StateFileStatus::Present {
-                        path: state_path.clone(),
-                        state: state_name,
-                    },
-                )
-            }
-            Err(error) => (
-                None,
-                StateFileStatus::Error {
-                    path: state_path.clone(),
-                    message: error.to_string(),
-                },
-            ),
-        }
+        read_state(&config.state_file_path)
     };
 
     let mut verifier = Verifier::with_config(RealFilesystem, config, state, state_file_status)
@@ -91,6 +72,39 @@ pub fn verify(env: &RuntimeEnv, config: Config, options: &VerifyOptions) -> Resu
         }
     }
     verifier.run(options.deep)
+}
+
+/// The state file at `state_path` for the report of a live scan: missing,
+/// present with its recorded state, or an error, with the state itself when
+/// it loaded.
+fn read_state(state_path: &Path) -> (Option<StateFile>, StateFileStatus) {
+    if !state_path.exists() {
+        return (
+            None,
+            StateFileStatus::Missing {
+                path: state_path.to_path_buf(),
+            },
+        );
+    }
+    match StateFile::load(state_path) {
+        Ok(loaded_state) => {
+            let state_name = loaded_state.state.label().to_string();
+            (
+                Some(loaded_state),
+                StateFileStatus::Present {
+                    path: state_path.to_path_buf(),
+                    state: state_name,
+                },
+            )
+        }
+        Err(error) => (
+            None,
+            StateFileStatus::Error {
+                path: state_path.to_path_buf(),
+                message: error.to_string(),
+            },
+        ),
+    }
 }
 
 /// Why `options` cannot run as given, if they cannot.
@@ -141,24 +155,19 @@ mod tests {
 
     #[test]
     fn a_missing_state_file_is_reported_as_missing_not_loaded() {
-        // The state file does not exist. `verify` must report it Missing by the
-        // `!state_path.exists()` guard, before ever calling `StateFile::load`.
-        // Deleting the `!` sends a missing path down the load branch instead,
-        // where `StateFile::load` collapses an absent file to the inactive
-        // default and the status comes back `Present` rather than `Missing`.
+        // The state file does not exist. A live scan must report it Missing by
+        // the `!state_path.exists()` guard, before ever calling
+        // `StateFile::load`. Deleting the `!` sends a missing path down the
+        // load branch instead, where `StateFile::load` collapses an absent
+        // file to the inactive default and the status comes back `Present`
+        // rather than `Missing`.
         let root = tempfile::tempdir().unwrap();
-        let config = config_rooted_at(root.path());
-        let expected_path = config.state_file_path.clone();
-        decoy_root(root.path());
+        let expected_path = config_rooted_at(root.path()).state_file_path;
 
-        let result = verify(
-            &RuntimeEnv::default(),
-            config,
-            &offline_options(root.path()),
-        )
-        .unwrap();
+        let (state, status) = read_state(&expected_path);
 
-        match result.state_file_status {
+        assert!(state.is_none());
+        match status {
             StateFileStatus::Missing { path } => assert_eq!(path, expected_path),
             other => panic!("a missing state file must be reported Missing, got {other:?}"),
         }
@@ -166,31 +175,64 @@ mod tests {
 
     #[test]
     fn a_present_state_file_is_reported_present_with_its_state() {
-        // A valid state file exists, so `verify` takes the load branch and
+        // A valid state file exists, so a live scan takes the load branch and
         // reports it Present with its recorded state label. Deleting the `!`
         // inverts the guard, sending an existing file down the Missing branch.
         let root = tempfile::tempdir().unwrap();
-        decoy_root(root.path());
-        let config = config_rooted_at(root.path());
-        let state_path = config.state_file_path.clone();
+        let state_path = config_rooted_at(root.path()).state_file_path;
         StateFile::default()
             .save_with_custom_root(&state_path, root.path())
             .unwrap();
         let expected_label = StateFile::default().state.label().to_string();
 
-        let result = verify(
-            &RuntimeEnv::default(),
-            config,
-            &offline_options(root.path()),
-        )
-        .unwrap();
+        let (state, status) = read_state(&state_path);
 
-        match result.state_file_status {
+        assert!(state.is_some());
+        match status {
             StateFileStatus::Present { path, state } => {
                 assert_eq!(path, state_path);
                 assert_eq!(state, expected_label);
             }
             other => panic!("an existing state file must be reported Present, got {other:?}"),
+        }
+    }
+
+    /// An offline scan reports on a decoy image, and the state file on the
+    /// hidden volume is the record of this computer's own session, active
+    /// when the scan runs from a hidden session: it is neither read nor
+    /// reported, whether it is there, damaged or missing.
+    #[test]
+    fn an_offline_scan_leaves_the_live_state_file_out() {
+        for case in ["active", "damaged", "missing"] {
+            let root = tempfile::tempdir().unwrap();
+            decoy_root(root.path());
+            let config = config_rooted_at(root.path());
+            let state_path = &config.state_file_path;
+            match case {
+                "active" => StateFile {
+                    state: crate::SystemState::Active {
+                        activated_at: chrono::Utc::now(),
+                    },
+                    ..StateFile::default()
+                }
+                .save_with_custom_root(state_path, root.path())
+                .unwrap(),
+                "damaged" => std::fs::write(state_path, b"{ not a state file").unwrap(),
+                _ => {}
+            }
+
+            let result = verify(
+                &RuntimeEnv::default(),
+                config,
+                &offline_options(root.path()),
+            )
+            .unwrap();
+
+            assert_eq!(
+                result.state_file_status,
+                StateFileStatus::NotChecked,
+                "{case}"
+            );
         }
     }
 

@@ -585,4 +585,19 @@ mod tests {
             Some("State file status: present at /mnt/hidden/state.json (INACTIVE)")
         );
     }
+
+    /// An offline scan of a decoy image leaves the hidden volume's state file
+    /// out, so its report has no state-file line at all.
+    #[test]
+    fn a_state_file_that_was_not_checked_prints_no_line() {
+        let result = VerifyResult::new_config_aware(
+            VerifyStatus::Secure,
+            vec![],
+            ScanDepth::Standard,
+            0,
+            StateFileStatus::NotChecked,
+        );
+
+        assert_eq!(state_file_status_summary(&result), None);
+    }
 }

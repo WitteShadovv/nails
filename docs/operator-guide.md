@@ -1127,7 +1127,10 @@ sudo /mnt/data/nails verify --offline --root /mnt/decoy
 
 In offline mode every path is read under `--root`, and the live-only checks
 (running processes, the kernel mount table, open block devices, platform package
-drift) are skipped.
+drift) are skipped. So is the state file on the hidden volume: it records this
+computer's own session, active when you scan from a hidden session, and says
+nothing about the image, so the report shows no state-file line (under `--json`,
+`state_file_status` is `not_checked`).
 
 Mount the decoy so that nothing can write to its disk. A plain `mount -o ro` is
 not enough: on a filesystem that was not cleanly unmounted, ext4 replays its
