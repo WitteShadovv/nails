@@ -408,10 +408,9 @@ filesystem journals and copy-on-write snapshots of that filesystem can keep old
 copies of the parts of the container that changed. `--allow-decoy-storage` (on
 `init`, `activate`, `check` and `discard`) turns the refusal of the decoy's
 storage into a warning; activation then repeats it in the logout confirmation, the session
-plan records it for `status`, and `rehearse plant` refuses: a rehearsal runs
-only on a root the gate judged a volume of its own, since on the decoy's
-storage it cannot pass, and on a disk a program serves nothing shows where the
-canary lands. It also turns the refusal of an `nbd` or `ublk`
+plan records it for `status`, and `rehearse plant` refuses a root the override
+accepted: on the decoy's storage a rehearsal cannot pass, and on a disk a
+program serves nothing shows where the canary lands. It also turns the refusal of an `nbd` or `ublk`
 device into a warning, for one you know is served from storage the decoy does
 not use, such as another computer. The override never covers a folder, a
 covered root, storage that cannot be judged (a ZFS volume among it), or

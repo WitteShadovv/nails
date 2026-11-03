@@ -49,6 +49,24 @@ impl RehearseFailure {
     }
 }
 
+/// The refusal of `plant` in a session whose activation accepted its root
+/// with `--allow-decoy-storage`, which the plan records with `reason`, the
+/// gate's sentence for the root. On the decoy's storage the canary lands on
+/// the decoy's disk, and on a disk a program serves nothing shows where it
+/// lands, so no rehearsal runs on such a root, and no override changes that.
+/// A root that only warns by itself (a container file) was not accepted with
+/// the override, and rehearses.
+fn accepted_root(reason: &str) -> RehearseFailure {
+    RehearseFailure::new(
+        ExitStatus::PreflightRefused,
+        refusal::NOT_SEPARATE_VOLUME,
+        format!(
+            "{reason}. A rehearsal does not run on a root accepted with \
+             --allow-decoy-storage. Nothing was written."
+        ),
+    )
+}
+
 /// Why `plant` could not run: an ordinary failure, or the attach gate's refusal
 /// (which a front end renders with its own text and hint).
 pub enum PlantError {
@@ -277,20 +295,8 @@ impl Rehearsal {
                 )));
             }
         }
-        // A session whose activation accepted its root with the override runs
-        // on storage the gate did not judge a volume of its own: on the
-        // decoy's storage the canary lands on the decoy's disk, and on a disk
-        // a program serves nothing shows where it lands. A rehearsal needs a
-        // root the gate judged of its own, and no override changes that.
         if let Some(reason) = recorded_acceptance(&RealFilesystem) {
-            return Err(PlantError::Fail(RehearseFailure::new(
-                ExitStatus::PreflightRefused,
-                refusal::NOT_SEPARATE_VOLUME,
-                format!(
-                    "a rehearsal runs only on a volume of its own: {reason} (accepted with \
-                     --allow-decoy-storage). Nothing was written."
-                ),
-            )));
+            return Err(PlantError::Fail(accepted_root(&reason)));
         }
         match HiddenRoot::verify_attached(&RealFilesystem, hidden_root, true) {
             Ok(attach) if attach.is_attached() => {}
