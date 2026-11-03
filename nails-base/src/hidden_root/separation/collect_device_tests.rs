@@ -10,6 +10,9 @@
 //! or read a device node, zram devices and what they write back to, and
 //! sysfs listings that cannot be read; and the disks that stay accepted.
 
+#[path = "collect_extra_tests.rs"]
+mod extra;
+
 use super::{Decoy, NVME, P3, SDB};
 use crate::filesystem::{Filesystem, LoopRecord};
 use crate::hidden_root::separation::{Served, Untraced, Verdict};

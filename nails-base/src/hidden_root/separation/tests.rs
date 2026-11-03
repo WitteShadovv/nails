@@ -11,6 +11,8 @@ use crate::filesystem::mountinfo::{parse_mountinfo, top_mount_at};
 use crate::fstab::parse_fstab;
 use std::path::Path;
 
+#[path = "extra_tests.rs"]
+mod extra;
 #[path = "reach_tests.rs"]
 mod reach;
 
@@ -128,6 +130,12 @@ impl World {
         self.devices
             .btrfs
             .push(members.iter().map(|m| m.to_string()).collect());
+        self
+    }
+
+    /// The filesystem whose mounts show `dev` keeps data on `extra` too.
+    fn extra(mut self, dev: &str, extra: Extra) -> Self {
+        self.devices.extra.insert(dev.to_string(), extra);
         self
     }
 

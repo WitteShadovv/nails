@@ -4,8 +4,8 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::{
-    CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, FSTAB, FileHolder, Judgement, LoopFile,
-    Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Untraced, Verdict,
+    CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, Extra, FSTAB, FileHolder, Judgement,
+    LoopFile, Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Untraced, Verdict,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::hidden_root::mount_holding;
@@ -19,9 +19,13 @@ struct Claim {
     superblocks: Vec<String>,
     /// The devices it names, with everything below them.
     nodes: BTreeSet<String>,
-    /// The devices it names directly.
+    /// The devices it names directly, and for a mounted filesystem those it
+    /// keeps data on besides the one it is mounted from.
     tops: Vec<String>,
     noauto: bool,
+    /// Why what a mounted filesystem keeps data on besides the device it is
+    /// mounted from cannot be told, when it cannot.
+    unknown: Option<Verdict>,
 }
 
 /// Judge where the mount `hidden` (the visible mount at the hidden root)
@@ -66,8 +70,9 @@ pub fn claimed_devices(scene: &Scene<'_>, hidden: &MountEntry) -> BTreeMap<Strin
 }
 
 /// The device `hidden` sits on, and that device with everything below it,
-/// into an md array below a partition too: the stack the judge walks, and
-/// the one the claims are built from.
+/// into an md array below a partition too, then the same of each device its
+/// filesystem keeps data on besides that one (an XFS log, say): the stack the
+/// judge walks, and the one the claims are built from.
 fn hidden_stack(devices: &DeviceMap, hidden: &MountEntry) -> (Option<String>, Vec<String>) {
     // A stacked filesystem names no device of its own: whatever its source
     // says, its storage is elsewhere.
@@ -75,11 +80,26 @@ fn hidden_stack(devices: &DeviceMap, hidden: &MountEntry) -> (Option<String>, Ve
         .then(|| devices.node_of_mount(hidden))
         .flatten()
         .map(str::to_string);
-    let stack = top
-        .as_deref()
-        .map(|t| devices.full_stack(t))
-        .unwrap_or_default();
+    let mut stack = Vec::new();
+    for start in starts(devices, hidden, top.as_deref()) {
+        for node in devices.full_stack(&start) {
+            if !stack.contains(&node) {
+                stack.push(node);
+            }
+        }
+    }
     (top, stack)
+}
+
+/// Where the root's data starts: `top`, the device `hidden` sits on, and the
+/// devices its filesystem keeps data on besides that one. None without `top`.
+fn starts(devices: &DeviceMap, hidden: &MountEntry, top: Option<&str>) -> Vec<String> {
+    top.map(|top| {
+        std::iter::once(top.to_string())
+            .chain(devices.extra_devices(hidden).iter().cloned())
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 fn verdict(
@@ -90,12 +110,21 @@ fn verdict(
     claims: &[Claim],
 ) -> Verdict {
     let devices = scene.devices;
+    // What a filesystem of the decoy's keeps data on besides its device must
+    // be told to tell what the decoy claims, as its files must be read.
+    if let Some(verdict) = claims.iter().find_map(|claim| claim.unknown.clone()) {
+        return verdict;
+    }
     // Wherever the root's data reaches, the decoy's own storage included:
     // what cannot be followed to the disks that hold it. The override lifts
     // none of that, so it decides before anything that places the root on
     // the decoy's storage, which the override does lift.
-    let reach = reach(scene, stack, &BTreeSet::new());
-    if let Some(verdict) = untraceable(scene, claims, &reach) {
+    let starts = starts(devices, hidden, top);
+    let reach = reach(scene, &starts, &BTreeSet::new());
+    let untraced = top
+        .and_then(|_| extra_unknown(devices, hidden, NOT_FOUND))
+        .or_else(|| untraceable(scene, claims, &reach));
+    if let Some(verdict) = untraced {
         return verdict;
     }
 
@@ -159,7 +188,7 @@ fn verdict(
     // data lands, wherever the device below that filesystem keeps it, so it
     // comes before a disk that a program serves, below it or elsewhere; an
     // encrypted container, which only warns, comes after.
-    let images = images_on_decoy(scene, claims, stack);
+    let images = images_on_decoy(scene, claims, &starts);
     if let Some(image) = images.iter().find(|image| !image.encrypted) {
         return Verdict::ImageFileOnDecoy {
             file: image.file.clone(),
@@ -198,9 +227,7 @@ fn untraceable(scene: &Scene<'_>, claims: &[Claim], reach: &[String]) -> Option<
     let devices = scene.devices;
     for name in reach {
         let Some(node) = devices.nodes.get(name) else {
-            return Some(Verdict::UntracedDevice {
-                kind: Untraced::NotFound,
-            });
+            return Some(NOT_FOUND);
         };
         match &node.kind {
             NodeKind::Unidentified(input) => {
@@ -220,6 +247,9 @@ fn untraceable(scene: &Scene<'_>, claims: &[Claim], reach: &[String]) -> Option<
                     Ok(holder) => holder,
                     Err(verdict) => return Some(verdict),
                 };
+                if let Some(verdict) = extra_unknown(devices, holder, NOT_FOUND) {
+                    return Some(verdict);
+                }
                 // An image file on a filesystem that is not the decoy's: that
                 // filesystem must itself be on a device that can be traced.
                 if claimed_holder(claims, devices, holder).is_none()
@@ -249,16 +279,16 @@ struct DecoyImage {
 }
 
 /// The image files on a filesystem the decoy claims that the root's data
-/// reaches from `stack` before it reaches the decoy's own storage, in the
+/// reaches from `starts` before it reaches the decoy's own storage, in the
 /// order it reaches them: an image file that a filesystem of the decoy's
 /// holds lies below that filesystem, and is the decoy's own business.
-fn images_on_decoy(scene: &Scene<'_>, claims: &[Claim], stack: &[String]) -> Vec<DecoyImage> {
+fn images_on_decoy(scene: &Scene<'_>, claims: &[Claim], starts: &[String]) -> Vec<DecoyImage> {
     let devices = scene.devices;
     let decoys: BTreeSet<String> = claims
         .iter()
         .flat_map(|claim| claim.nodes.iter().cloned())
         .collect();
-    let outside = reach(scene, stack, &decoys);
+    let outside = reach(scene, starts, &decoys);
     outside
         .iter()
         .filter_map(|node| {
@@ -312,18 +342,18 @@ fn holding_mount<'a>(
     })
 }
 
-/// Every device the root's data reaches from `stack`, the hidden stack, its
-/// top first and each once: the devices below each as the full stack goes,
+/// Every device the root's data reaches from `starts` (see [`starts`]), in
+/// their order and each once: the devices below each as the full stack goes,
 /// every other device of a btrfs filesystem among them, and below a loop
-/// device over a file the device of the filesystem that holds the file, as
+/// device over a file the devices of the filesystem that holds the file, as
 /// the loop driver recorded it, the decoy's own filesystems included. The
 /// reach goes into no device of `stops`. It needs no bound: the map holds
 /// the devices sysfs lists, and each is gone into once.
-pub(super) fn reach(scene: &Scene<'_>, stack: &[String], stops: &BTreeSet<String>) -> Vec<String> {
+pub(super) fn reach(scene: &Scene<'_>, starts: &[String], stops: &BTreeSet<String>) -> Vec<String> {
     let devices = scene.devices;
     let mut seen = BTreeSet::new();
     let mut reached = Vec::new();
-    let mut pending: Vec<String> = stack.first().into_iter().cloned().collect();
+    let mut pending: Vec<String> = starts.iter().rev().cloned().collect();
     while let Some(next) = pending.pop() {
         if stops.contains(&next) || !seen.insert(next.clone()) {
             continue;
@@ -337,17 +367,18 @@ pub(super) fn reach(scene: &Scene<'_>, stack: &[String], stops: &BTreeSet<String
                 .flatten()
                 .cloned(),
         );
-        below.extend(holding_device(scene, &next));
+        below.extend(holding_devices(scene, &next));
         reached.push(next);
         pending.extend(below.into_iter().rev());
     }
     reached
 }
 
-/// The device of the filesystem that holds the image file of the loop device
-/// `name`, as the loop driver recorded it; none for a filesystem stacked on
+/// The devices of the filesystem that holds the image file of the loop
+/// device `name`, as the loop driver recorded it: the one it is mounted from
+/// and those it keeps data on besides; none for a filesystem stacked on
 /// others or on no device here, which the judge cannot follow.
-fn holding_device(scene: &Scene<'_>, name: &str) -> Option<String> {
+fn holding_devices(scene: &Scene<'_>, name: &str) -> Vec<String> {
     let Some(Node {
         kind:
             NodeKind::Loop {
@@ -360,15 +391,36 @@ fn holding_device(scene: &Scene<'_>, name: &str) -> Option<String> {
         ..
     }) = scene.devices.nodes.get(name)
     else {
-        return None;
+        return Vec::new();
     };
-    scene
+    let Some(holder) = scene
         .mounts
         .iter()
         .find(|m| &m.dev == dev)
         .filter(|m| !is_stacked(&m.fstype))
-        .and_then(|m| scene.devices.node_of_mount(m))
-        .map(str::to_string)
+    else {
+        return Vec::new();
+    };
+    let top = scene.devices.node_of_mount(holder);
+    starts(scene.devices, holder, top)
+}
+
+/// The verdict of a root whose data reaches a device that cannot be found.
+const NOT_FOUND: Verdict = Verdict::UntracedDevice {
+    kind: Untraced::NotFound,
+};
+
+/// The verdict when what the filesystem mounted as `mount` keeps data on
+/// besides the device it is mounted from cannot be told: an input could not
+/// be read, or it names a device that cannot be found (`not_found`).
+fn extra_unknown(devices: &DeviceMap, mount: &MountEntry, not_found: Verdict) -> Option<Verdict> {
+    match devices.extra.get(&mount.dev)? {
+        Extra::Devices(_) => None,
+        Extra::Unreadable(input) => Some(Verdict::CouldNotJudge {
+            unreadable: vec![input.clone()],
+        }),
+        Extra::NotFound => Some(not_found),
+    }
 }
 
 /// Whether `fstype` is a RAM filesystem, which keeps nothing on a disk.
@@ -640,23 +692,21 @@ fn same_drive(devices: &DeviceMap, node: &str, stack: &[String]) -> bool {
         .any(|disk| disks.contains(&disk))
 }
 
-/// A claim on a live mount: its superblock and its device.
+/// A claim on a live mount: its superblock, its device and the devices its
+/// filesystem keeps data on besides that one.
 fn mount_claim(scene: &Scene<'_>, mount: &MountEntry, noauto: bool) -> Claim {
-    let tops: Vec<String> = scene
-        .devices
-        .node_of_mount(mount)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let top = scene.devices.node_of_mount(mount);
     let mut claim = device_claim(
         scene,
         Claimed::Mount(mount.mount_point.clone()),
-        tops,
+        starts(scene.devices, mount, top),
         noauto,
     );
     if !claim.superblocks.contains(&mount.dev) {
         claim.superblocks.push(mount.dev.clone());
     }
+    claim.unknown =
+        top.and_then(|_| extra_unknown(scene.devices, mount, Verdict::ClaimedDeviceNotFound));
     claim
 }
 
@@ -680,5 +730,6 @@ fn device_claim(scene: &Scene<'_>, what: Claimed, tops: Vec<String>, noauto: boo
         nodes,
         tops,
         noauto,
+        unknown: None,
     }
 }

@@ -32,14 +32,16 @@
 //! lies on the decoy's own storage and has to move, since removing the entry
 //! would break the decoy.
 //!
-//! The [`Verdict`], first match wins: the inputs could not all be read; the
-//! root's data reaches, wherever it goes, the decoy's own storage included,
-//! something that cannot be followed to the disks that hold it: a device
-//! sysfs does not list, a disk whose kind cannot be read, a ZFS volume, a
-//! disk of a driver the kernel does not name, a partition whose disk is not
-//! found, or an image file whose filesystem cannot be told (its loop record
-//! cannot be read, no filesystem mounted here holds it, or that filesystem
-//! shows no device and is not the decoy's); the root is on a claimed
+//! The [`Verdict`], first match wins: the inputs could not all be read, or
+//! what a claimed filesystem keeps data on besides its device cannot be told;
+//! the root's data reaches, wherever it goes, the decoy's own storage
+//! included, something that cannot be followed to the disks that hold it: a
+//! device that cannot be found, a disk whose kind cannot be read, a ZFS
+//! volume, a disk of a driver the kernel does not name, a partition whose
+//! disk is not found, a filesystem whose other devices cannot be told, or an
+//! image file whose filesystem cannot be told (its loop record cannot be
+//! read, no filesystem mounted here holds it, or that filesystem shows no
+//! device and is not the decoy's); the root is on a claimed
 //! filesystem (a bind, a subvolume, the filesystem itself); no block device
 //! of the root can be found, so its storage cannot be followed (an overlay,
 //! FUSE, a network filesystem); it shares a device with a claim the decoy's
@@ -59,9 +61,14 @@
 //! is the one on the device the loop driver recorded for the file
 //! ([`FileHolder`]), not the one its path leads to today.
 //!
-//! Where the root's data reaches is its stack, every other device of a btrfs
-//! filesystem in it, and below an image file the devices of the filesystem
-//! that holds the file, the decoy's own included, as far down as these go.
+//! A filesystem keeps data on the device it is mounted from, and some on
+//! others too ([`DeviceMap::extra`]): an XFS log or realtime device, an ext3
+//! or ext4 journal on a device of its own, the other devices of a bcachefs
+//! filesystem. These belong to the root's stack, and to a claim on a mounted
+//! filesystem. Where the root's data reaches is its stack, every other device
+//! of a btrfs filesystem in it, and below an image file the devices of the
+//! filesystem that holds the file, the decoy's own included, as far down as
+//! these go.
 //! An image file on a claimed filesystem counts where the data reaches it
 //! before the decoy's own storage: below that, the image files are the
 //! decoy's. A whole disk that sysfs shows nothing below is known by the
@@ -77,6 +84,7 @@
 //! hold, for a check that weighs the hidden root's own stack against them.
 
 mod collect;
+mod extra;
 mod judge;
 #[cfg(test)]
 mod tests;
@@ -185,8 +193,9 @@ pub enum Untraced {
     /// A disk whose major number `/proc/devices` names no driver for.
     UnnamedDriver,
     /// A device that cannot be found among those sysfs lists, though the
-    /// root's data reaches it: one another device names below it, or the
-    /// device a loop device's record or a zram device names.
+    /// root's data reaches it: one another device names below it, the device
+    /// a loop device's record or a zram device names, or one a filesystem
+    /// keeps data on besides the device it is mounted from.
     NotFound,
 }
 
@@ -243,6 +252,18 @@ impl Node {
     }
 }
 
+/// What a mounted filesystem keeps data on besides the device it is mounted
+/// from (see [`DeviceMap::extra`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Extra {
+    /// These devices, by kernel name.
+    Devices(Vec<String>),
+    /// Which they are cannot be told: this input could not be read.
+    Unreadable(PathBuf),
+    /// It names a device that cannot be found among those sysfs lists.
+    NotFound,
+}
+
 /// The block devices the judge may meet, and the names that lead to them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceMap {
@@ -255,9 +276,24 @@ pub struct DeviceMap {
     pub by_spec: BTreeMap<String, String>,
     /// The devices of each btrfs filesystem, by kernel name.
     pub btrfs: Vec<BTreeSet<String>>,
+    /// What a mounted filesystem keeps data on besides the device it is
+    /// mounted from, by the `major:minor` of its mounts: an XFS log or
+    /// realtime device, an ext3 or ext4 journal on a device of its own, the
+    /// other devices of a bcachefs filesystem. One that keeps none has no
+    /// entry.
+    pub extra: BTreeMap<String, Extra>,
 }
 
 impl DeviceMap {
+    /// The devices the filesystem mounted as `mount` keeps data on besides
+    /// the one it is mounted from, as far as they can be told.
+    fn extra_devices(&self, mount: &MountEntry) -> &[String] {
+        match self.extra.get(&mount.dev) {
+            Some(Extra::Devices(names)) => names,
+            _ => &[],
+        }
+    }
+
     /// The device a mount sits on: by its `major:minor`, else by its source
     /// (btrfs reports an anonymous device).
     pub fn node_of_mount(&self, mount: &MountEntry) -> Option<&str> {
@@ -482,6 +518,10 @@ pub enum Verdict {
         /// What the disk is.
         kind: Untraced,
     },
+    /// A filesystem the decoy claims keeps data on a device that cannot be
+    /// found besides the one it is mounted from, so what the decoy's storage
+    /// holds, and whether the root shares it, cannot be told.
+    ClaimedDeviceNotFound,
     /// The root is separate from everything the decoy claims.
     Separate,
 }
@@ -576,6 +616,10 @@ impl Verdict {
             Verdict::UntracedDevice {
                 kind: Untraced::NotFound,
             } => "it is stored on a device that cannot be found".into(),
+            Verdict::ClaimedDeviceNotFound => "it cannot be told apart from this computer's own \
+                                               storage, which keeps data on a device that cannot \
+                                               be found"
+                .into(),
             Verdict::Separate => "it is separate from this computer's own storage".to_string(),
         }
     }

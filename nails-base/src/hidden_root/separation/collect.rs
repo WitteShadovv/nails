@@ -6,9 +6,10 @@
 //! `<etc_root>/etc/fstab` and `<etc_root>/etc/crypttab` (read with
 //! `O_NOATIME` by the real filesystem), and from the running system the block
 //! devices in `/sys/class/block`, their stacks, the btrfs filesystems in
-//! `/sys/fs/btrfs`, the names in `/dev/disk` and the drivers `/proc/devices`
-//! lists. `etc_root` is `/` for the running decoy; another root lets an
-//! offline scan judge a decoy's files.
+//! `/sys/fs/btrfs`, the names in `/dev/disk`, the drivers `/proc/devices`
+//! lists and the ext3 and ext4 journals jbd2 lists in `/proc/fs/jbd2`, with
+//! the threads that write them. `etc_root` is `/` for the running decoy;
+//! another root lets an offline scan judge a decoy's files.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
 //! encrypted volume at boot. A file that exists but cannot be read is listed as
@@ -47,6 +48,11 @@
 //! device whose `partition` cannot be read is still a partition of the disk
 //! whose sysfs directory holds it. A btrfs filesystem whose devices cannot be
 //! listed is listed as unreadable, since it could be any root's.
+//!
+//! What a mounted filesystem keeps data on besides the device it is mounted
+//! from, an XFS log or realtime device, an ext3 or ext4 journal on a device
+//! of its own or the other devices of a bcachefs filesystem, is read last
+//! (see the `extra` module).
 
 #[cfg(test)]
 #[path = "collect_tests.rs"]
@@ -173,6 +179,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         }
         Err(unread) => collected.unreadable.push(unread),
     }
+    collected.devices.extra = super::extra::extra_devices(fs, mounts, &collected.devices);
     collected
 }
 
