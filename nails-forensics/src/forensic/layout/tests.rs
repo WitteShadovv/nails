@@ -36,42 +36,9 @@ pub(crate) fn mbr_image(
     (path, file)
 }
 
-/// A GPT entry for a partition from block `first` to block `last`.
-pub(crate) fn gpt_entry(first: u64, last: u64) -> [u8; 128] {
-    let mut entry = [0u8; 128];
-    entry[..16].copy_from_slice(&[0xAF; 16]);
-    entry[32..40].copy_from_slice(&first.to_le_bytes());
-    entry[40..48].copy_from_slice(&last.to_le_bytes());
-    entry
-}
-
-/// A GPT header for block 1 of a 512-byte-block disk, keeping both
-/// checksums: its entry array is `entries` from block 2, its usable blocks
-/// run from `first_usable` to `last_usable`, and its backup header lies at
-/// block `backup`.
-pub(crate) fn gpt_header(
-    first_usable: u64,
-    last_usable: u64,
-    backup: u64,
-    entries: &[u8],
-) -> [u8; 92] {
-    let count = u32::try_from(entries.len() / 128).unwrap();
-    let mut header = [0u8; 92];
-    header[..8].copy_from_slice(b"EFI PART");
-    header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes()); // revision 1.0
-    header[12..16].copy_from_slice(&92u32.to_le_bytes()); // header size
-    header[24..32].copy_from_slice(&1u64.to_le_bytes()); // this header's block
-    header[32..40].copy_from_slice(&backup.to_le_bytes());
-    header[40..48].copy_from_slice(&first_usable.to_le_bytes());
-    header[48..56].copy_from_slice(&last_usable.to_le_bytes());
-    header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries block
-    header[80..84].copy_from_slice(&count.to_le_bytes());
-    header[84..88].copy_from_slice(&128u32.to_le_bytes());
-    header[88..92].copy_from_slice(&crc32(entries).to_le_bytes());
-    let own = crc32(&header);
-    header[16..20].copy_from_slice(&own.to_le_bytes());
-    header
-}
+// The GPT builders the examiner and rehearse tests share live with the
+// images other crates' tests build.
+pub(crate) use super::images::{gpt_entry, gpt_header};
 
 #[test]
 fn the_gpt_checksum_is_the_one_zlib_computes() {
@@ -701,4 +668,107 @@ fn a_boot_sector_or_a_luks_header_is_never_read_as_an_mbr() {
         assert_eq!(read_table(&source).unwrap(), no_table(), "{magic:?}");
         assert_eq!(read_layout(&source).unwrap(), no_table(), "{magic:?}");
     }
+}
+
+#[test]
+fn a_gpt_entry_keeps_its_attribute_flags_and_its_name() {
+    use super::discoverable::{AutoRole, NO_AUTO, auto_discovery_role};
+    use super::images::{gpt_disk, typed_gpt_entry};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gpt.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(64 << 20).unwrap();
+    let srv = "3B8F8425-20E0-4F3B-907F-1A25A76F98E8";
+    let disk = gpt_disk(
+        131_072,
+        &[
+            typed_gpt_entry(srv, 2048, 10_239, NO_AUTO | 1, "Données"),
+            // A name of all 36 code units has no NUL to end it.
+            typed_gpt_entry(srv, 10_240, 20_479, 0, &"n".repeat(36)),
+        ],
+    );
+    put(&mut file, 0, &disk);
+    file.sync_all().unwrap();
+
+    let recorded = recorded_table(&RawSource::open(&path).unwrap()).unwrap();
+    assert_eq!(recorded.table, TableKind::Gpt);
+    assert!(recorded.consistent);
+    let first = &recorded.partitions[0];
+    assert_eq!(first.type_id, srv);
+    assert_eq!(first.attributes, NO_AUTO | 1);
+    assert_eq!(first.name, "Données");
+    assert_eq!(auto_discovery_role(&first.type_id), Some(AutoRole::Srv));
+    let second = &recorded.partitions[1];
+    assert_eq!(second.attributes, 0);
+    assert_eq!(second.name, "n".repeat(36));
+}
+
+#[test]
+fn a_gpt_entry_the_source_cuts_short_keeps_what_was_read_of_it() {
+    use super::images::{gpt_disk, typed_gpt_entry};
+
+    // The disk ends 80 bytes into the second entry's slot: its flags are
+    // there, and the first twelve code units of its name.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gpt.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    let swap = "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F";
+    let disk = gpt_disk(
+        131_072,
+        &[
+            typed_gpt_entry(swap, 2048, 4095, 0, "a"),
+            typed_gpt_entry(swap, 4096, 8191, 4, "abcdefghijklmnopq"),
+        ],
+    );
+    put(&mut file, 0, &disk[..1024 + 128 + 80]);
+    file.sync_all().unwrap();
+
+    let recorded = recorded_table(&RawSource::open(&path).unwrap()).unwrap();
+    assert_eq!(recorded.partitions.len(), 2);
+    assert_eq!(recorded.partitions[1].attributes, 4);
+    assert_eq!(recorded.partitions[1].name, "abcdefghijkl");
+
+    // Cut inside its flags, the entry has none and no name.
+    file.set_len(1024 + 128 + 52).unwrap();
+    file.sync_all().unwrap();
+    let recorded = recorded_table(&RawSource::open(&path).unwrap()).unwrap();
+    assert_eq!(recorded.partitions[1].attributes, 0);
+    assert_eq!(recorded.partitions[1].name, "");
+}
+
+#[test]
+fn a_gpt_name_reads_up_to_its_first_nul_and_marks_broken_code_units() {
+    assert_eq!(gpt_name(b"d\0a\0t\0a\0\0\0x\0"), "data");
+    // An unpaired surrogate, then a lone last byte.
+    assert_eq!(gpt_name(&[0x00, 0xD8, b'x', 0, b'y']), "\u{FFFD}x");
+    assert_eq!(gpt_name(b""), "");
+}
+
+#[test]
+fn an_mbr_entry_has_no_flags_and_no_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768)]);
+    file.sync_all().unwrap();
+
+    let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
+    assert_eq!(layout.partitions[0].attributes, 0);
+    assert_eq!(layout.partitions[0].name, "");
+}
+
+#[test]
+fn a_guid_built_for_an_image_reads_back_as_written() {
+    use super::images::guid_bytes;
+
+    for text in [
+        "0FC63DAF-8483-4772-8E79-3D69D8477DE4",
+        "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+    ] {
+        assert_eq!(guid(&guid_bytes(text)), text);
+    }
+    // The first three fields are stored little-endian.
+    assert_eq!(
+        &guid_bytes("0FC63DAF-8483-4772-8E79-3D69D8477DE4")[..8],
+        &[0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47]
+    );
 }
