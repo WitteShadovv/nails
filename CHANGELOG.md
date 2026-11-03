@@ -312,6 +312,19 @@ of this changelog for that version becomes the release notes word for word, and
   `PRUNEPATHS`, or masking and stopping the timer or service, stopping a transient timer, or
   removing the cron job it found. Fedora installs and enables plocate by default, and the default
   `PRUNEPATHS` of Debian 13, Ubuntu 26.04, Fedora 44 and NixOS do not skip `/mnt`.
+- `nails check` and activation warn when a decoy that is not NixOS holds what a Nix install
+  leaves behind (the `decoy-nix-trace` check). There Nix belongs inside the hidden session, where
+  everything it writes lands on the hidden volume, while a Nix installed on the decoy writes what it
+  installs or builds there to the decoy disk, under the name of each package. The check looks for
+  `/nix`, whatever it is; `nix-daemon.service` and `nix-daemon.socket` in the unit directories on
+  the disk, a link that enables one in a dependency directory of `/etc/systemd/system` and a
+  drop-in directory for one there, and `/etc/tmpfiles.d/nix-daemon.conf`; `/etc/nix` and a `nix`
+  command in `/usr/bin` or `/usr/local/bin`; the `nixbld` group and the build users; the shell
+  hooks (`/etc/profile.d/nix.sh` and `nix-daemon.sh`, `/etc/fish/conf.d/nix.fish`, the hook lines
+  in `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/zshrc` and `/etc/zsh/zshrc`, and the installer's
+  `.backup-before-nix` copies); and what Nix keeps in `/root` and the homes `/etc/passwd` names.
+  It names each one it finds, and what it cannot look up or read, and never refuses. It passes on
+  NixOS and is skipped inside a hidden session, whose `/` shows the session's own files.
 - `nails check` and activation warn when hidden sessions cannot load the running kernel's modules
   (the `kernel-modules` check). A kernel package update in a hidden session (on Arch Linux, a
   `pacman -Syu` that brings a new `linux`) deletes `/usr/lib/modules/<release>` in the overlay

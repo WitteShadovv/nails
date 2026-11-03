@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The decoy's files, as the locate-database check reads them: nothing is
-//! written, a file is opened only once it is seen to be a regular file of a
-//! sane size, with `O_NOATIME` (the filesystem's reads), and none is read, nor
-//! a directory listed, where its links lead onto the hidden volume.
+//! The decoy's files, as the locate-database and decoy-nix-trace checks read
+//! them: nothing is written, a file is opened only once it is seen to be a
+//! regular file of a sane size, with `O_NOATIME` (the filesystem's reads), and
+//! none is read, nor a directory listed, where its links lead onto the hidden
+//! volume.
 
 use crate::Filesystem;
 use std::path::{Path, PathBuf};

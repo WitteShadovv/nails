@@ -1104,6 +1104,58 @@ fn locate_database_runs_right_after_decoy_persistence() {
     assert_eq!(names[at + 1], "locate-database", "{names:?}");
 }
 
+#[test]
+fn decoy_nix_trace_runs_right_after_locate_database() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    let at = names
+        .iter()
+        .position(|name| *name == "locate-database")
+        .expect("a locate-database row");
+    assert_eq!(names[at + 1], "decoy-nix-trace", "{names:?}");
+}
+
+/// The decoy-nix-trace row of the registry built with `layer`, on a decoy
+/// whose `/nix` exists.
+fn nix_trace_row(layer: Option<&dyn crate::platform::ConfigLayer<MockFilesystem>>) -> CheckResult {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/nix", crate::PathKind::Dir);
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator: None,
+        caller_path: None,
+        typed_shell: None,
+        host_profile: None,
+        systemd_version: None,
+    };
+    build_registry(&fs, &explicit_config(), &inputs, layer)
+        .expect("registry builds")
+        .run_all_detailed(&fs)
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "decoy-nix-trace")
+        .map(|(_, result)| result)
+        .expect("a decoy-nix-trace row")
+}
+
+/// A NixOS decoy's own /nix passes; on a host without the NixOS config layer
+/// it is a trace, which warns and never fails.
+#[test]
+fn the_decoy_nix_trace_row_passes_nixos_and_warns_elsewhere() {
+    let nixos = nix_trace_row(Some(&NixOsConfigLayer));
+    assert!(nixos.is_pass(), "{nixos:?}");
+    let fhs = nix_trace_row(None);
+    assert!(fhs.is_warn(), "{fhs:?}");
+    assert!(fhs.message().contains("it holds /nix."), "{fhs:?}");
+}
+
 /// The locate database fails closed whatever the run accepts: no flag of
 /// `check` or activation turns its refusal into a warning.
 #[test]

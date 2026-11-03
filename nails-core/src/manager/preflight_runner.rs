@@ -147,11 +147,12 @@ pub fn build_registry<F: Filesystem>(
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
         BackendDetectCheck, BackendEncryptionCheck, BackendEntriesCheck, BinaryLocationCheck,
-        DecoyPersistenceCheck, DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck,
-        IncrementalHistoryFlushCheck, InheritedAutostartCheck, InspectedShell, LocateDatabaseCheck,
-        MemoryWipeCheck, MountNamespaceCheck, NetworkToolsCheck, NixOSBuildTargetCheck,
-        OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck,
-        StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        DecoyNixTraceCheck, DecoyPersistenceCheck, DmaProtectionCheck, HiddenVolumeCheck,
+        HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, InspectedShell,
+        LocateDatabaseCheck, MemoryWipeCheck, MountNamespaceCheck, NetworkToolsCheck,
+        NixOSBuildTargetCheck, OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck,
+        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
@@ -351,6 +352,17 @@ pub fn build_registry<F: Filesystem>(
     // disk. No flag lifts this refusal. One NAILS cannot read the prune lists
     // of, or one only a person starts, warns. Read-only.
     registry.add_check(Box::new(LocateDatabaseCheck::new(
+        hidden_root.clone(),
+        config_layer.is_some(),
+    )));
+
+    // Warns (never fails) when a decoy that is not NixOS holds what a Nix
+    // install leaves behind: /nix, the daemon's units, the build users and
+    // group, the shell hooks, Nix's files in a home. There Nix belongs inside
+    // the hidden session, where everything it writes lands on the hidden
+    // volume. Skipped inside a hidden session, whose `/` shows its own files.
+    // Read-only.
+    registry.add_check(Box::new(DecoyNixTraceCheck::new(
         hidden_root.clone(),
         config_layer.is_some(),
     )));
