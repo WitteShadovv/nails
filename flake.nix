@@ -281,15 +281,36 @@
         };
       };
 
-      # fontconfig's stock rules, which the gui/ tests' fonts.conf in the dev
-      # shell includes, less 50-user.conf and 51-local.conf: those two read
-      # the rules of the user's ~/.config/fontconfig and of the host's
-      # /etc/fonts/local.conf, which could pick another font or hide DejaVu.
-      # A fontconfig that drops or renames one of them fails this build.
+      # The fonts of the gui/ tests in the dev shell (NAILS_GUI_FONTS there).
+      # fontconfig's stock rules, less 50-user.conf and 51-local.conf: those
+      # two read the rules of the user's ~/.config/fontconfig and of the
+      # host's /etc/fonts/local.conf, which could pick another font or hide
+      # DejaVu. A fontconfig that drops or renames one of them fails this
+      # build.
       guiTestFontRules = pkgs.runCommand "gui-test-font-rules" { } ''
         mkdir $out
         cp -L ${pkgs.fontconfig.out}/etc/fonts/conf.d/*.conf $out/
         rm $out/50-user.conf $out/51-local.conf
+      '';
+      # A fonts.conf with those rules that knows DejaVu's fonts alone.
+      guiTestFontsConf = pkgs.writeText "fonts.conf" ''
+        <?xml version="1.0"?>
+        <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+        <fontconfig>
+          <include>${guiTestFontRules}</include>
+          <dir>${pkgs.dejavu_fonts}/share/fonts</dir>
+          <cachedir prefix="xdg">fontconfig</cachedir>
+        </fontconfig>
+      '';
+      # Run a command with nixpkgs' fontconfig on the loader's path, ahead of
+      # what LD_LIBRARY_PATH held, with that fonts.conf, and without the
+      # toolkit's own font variables, whose fonts would replace DejaVu as the
+      # sans-serif.
+      guiTestFonts = pkgs.writeShellScript "gui-test-fonts" ''
+        export FONTCONFIG_FILE=${guiTestFontsConf}
+        export LD_LIBRARY_PATH=${lib.getLib pkgs.fontconfig}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+        unset SLINT_DEFAULT_FONT SLINT_FONT_PATH
+        exec "$@"
       '';
 
       nails-release =
@@ -439,26 +460,18 @@
 
         # The window lays its text out with the fonts fontconfig finds, and
         # its toolkit opens fontconfig at run time, through the loader's
-        # search path. A program built in this shell has nixpkgs' loader,
-        # which searches no library folder of the host, so without these the
-        # gui/ tests lay their text out with no font at all, and a page that
-        # the CI's Ubuntu wraps over many lines with DejaVu fits its window
-        # here. They put nixpkgs' fontconfig on the loader's path and name a
-        # fonts.conf that knows DejaVu's fonts alone, with fontconfig's stock
-        # rules less the two that read the user's and the host's own
-        # (50-user.conf and 51-local.conf), so no font folder or rule of the
-        # machine's or the user's fontconfig reaches the tests. The golden
-        # test hands its child a fonts.conf of its own.
-        LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.fontconfig ];
-        FONTCONFIG_FILE = pkgs.writeText "fonts.conf" ''
-          <?xml version="1.0"?>
-          <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
-          <fontconfig>
-            <include>${guiTestFontRules}</include>
-            <dir>${pkgs.dejavu_fonts}/share/fonts</dir>
-            <cachedir prefix="xdg">fontconfig</cachedir>
-          </fontconfig>
-        '';
+        # search path. A test built in this shell has nixpkgs' loader, which
+        # searches no library folder of the host, so on its own it finds no
+        # fontconfig and lays its text out with no font at all, and a page
+        # that CI's runner wraps over many lines fits its window. The
+        # justfile therefore runs the gui/ tests through the wrapper named
+        # here (guiTestFonts), which gives them nixpkgs' fontconfig and
+        # DejaVu, the font that the fontconfig of CI's runner image gives for
+        # sans-serif, and no font setting of the user or the host. The shell
+        # itself sets no font or loader variable: what runs in it keeps the
+        # host's fonts and LD_LIBRARY_PATH. The golden test hands its child a
+        # fonts.conf of its own.
+        NAILS_GUI_FONTS = guiTestFonts;
 
         # A fresh clone has no git hooks. Install them on first shell entry so
         # the pre-commit, pre-push and commit-msg checks run without a manual

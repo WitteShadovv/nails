@@ -24,6 +24,14 @@ shipped_targets := "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu"
 
 gui_deny_config := justfile_directory() / "gui" / "deny.toml"
 
+# The fonts the gui/ tests lay their text out with. In the dev shell
+# NAILS_GUI_FONTS names a wrapper that runs a command with nixpkgs' fontconfig
+# and DejaVu alone (flake.nix): `test` and `coverage gui` run the gui/ tests
+# through it, and no other command. Outside the dev shell, as on CI, it is
+# unset and the tests take the machine's fontconfig and fonts.
+
+gui_fonts := env("NAILS_GUI_FONTS", "")
+
 # --- Rust quality gate ---
 
 # Check formatting without rewriting files: the workspace, then the fuzz, setup
@@ -60,11 +68,11 @@ lock-check:
     cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
 # Run the unit and integration suite through nextest; the setup and gui crates
-# too.
+# too, the gui crate's with the dev shell's fonts (`gui_fonts`).
 test:
     cargo nextest run --workspace --all-features --locked --no-fail-fast
     cargo nextest run --manifest-path setup/Cargo.toml --all-features --locked --no-fail-fast
-    cargo nextest run --manifest-path gui/Cargo.toml --all-features --locked --no-fail-fast
+    {{ gui_fonts }} cargo nextest run --manifest-path gui/Cargo.toml --all-features --locked --no-fail-fast
 
 # Long property-based run of the parser tests (the `fuzz_` proptests): the
 # same properties `test` runs with the default case count, here with `cases`
@@ -240,7 +248,8 @@ coverage workspace=".":
     # Start from no profile data: old runs leave profiles behind (some of files
     # since deleted) that would shift a local figure away from CI's clean one.
     cargo llvm-cov clean --workspace
-    cargo llvm-cov --no-report nextest --workspace --all-features --locked
+    # The gui/ tests run with the dev shell's fonts (`gui_fonts`).
+    {{ if workspace == "gui" { gui_fonts } else { "" } }} cargo llvm-cov --no-report nextest --workspace --all-features --locked
     cargo llvm-cov report --ignore-filename-regex "$ignore" --cobertura --output-path "$out/cobertura.xml"
     cargo llvm-cov report --ignore-filename-regex "$ignore" --lcov --output-path "$out/lcov.info"
     cargo llvm-cov report --ignore-filename-regex "$ignore" --html --output-dir "$out/html"
