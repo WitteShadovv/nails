@@ -3,8 +3,8 @@
 # was: the request alone, and its own power-off only once it outlives its
 # grace of 3 seconds. "at-once" is the window now: the request, then its own
 # power-off (`systemctl poweroff --no-ask-password`) right after it, with the
-# press 0, 100 or 200 ms after the apply. What each case ended in goes to the
-# test's log ("PROBE RESULTS").
+# press 0, 100 or 200 ms after the apply. What each case ended in goes to
+# probe-results.txt in the test's output.
 #
 # Each client speaks the window's half of the protocol to
 # `nails helper --stdio`, as the window does, and stands in for the window:
@@ -130,6 +130,9 @@ in
     UPPER = "/mnt/data/root/upper"
     results: list[str] = []
 
+    def write_results():
+        (machine.out_dir / "probe-results.txt").write_text("\n".join(results) + "\n")
+
     def lines_of(since, name):
         return [line for line in machine.full_console_log[since:] if name in line]
 
@@ -180,6 +183,7 @@ in
         except AssertionError as error:
             if machine.process is not None and machine.process.poll() is None:
                 note(label, since, name, f"no soft-reboot, the machine still runs: {str(error)[:300]}")
+                write_results()
                 raise
             outcome = ended(since)
             note(label, since, name, f"{outcome} ({str(error)[:200]})")
@@ -227,6 +231,7 @@ in
             soft_reboot_or_off(label, trigger, name)
             logged(label)
 
+    write_results()
     machine.log("PROBE RESULTS:\n" + "\n".join(results))
   '';
 }
