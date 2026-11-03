@@ -29,11 +29,12 @@ pub(super) fn option(word: &str) -> Option<(usize, bool)> {
         .or_else(|| find(name.strip_prefix("no")?).map(|at| (at, false)))
 }
 
-/// The options that `text` names without a `no` prefix, in any word of it.
-pub(super) fn mentioned(text: &str) -> impl Iterator<Item = usize> + '_ {
-    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter_map(option)
-        .filter_map(|(at, on)| on.then_some(at))
+/// The options that `text` names, in either form ([`backstop::options`]).
+pub(super) fn mentioned(text: &str) -> Vec<usize> {
+    backstop::options(text)
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// What a file's code does, in order, as [`Walker`] finds it.
@@ -553,6 +554,15 @@ impl Walker<'_> {
             Some(name) => (name.to_string(), true),
             None => (name, false),
         };
+        if name == "options"
+            && let Some(item) = items.iter().find(|item| item.expands)
+        {
+            // An option whose name an expansion makes.
+            self.events.push(Event::Doubt(format!(
+                "it cannot tell which options `options=(... {} ...)` in {} sets",
+                item.text, self.place
+            )));
+        }
         if matches!(name.as_str(), "fpath" | "FPATH") {
             self.fpaths += 1;
             for item in &items {
@@ -660,6 +670,7 @@ impl Walker<'_> {
                         self.tokens.next_if(|token| matches!(token, Token::Word(_)))
                     {
                         self.mention_options(&target.text);
+                        self.qualifier(&target.text);
                     }
                 }
                 Token::Text(text) => self.mention_options(&text),

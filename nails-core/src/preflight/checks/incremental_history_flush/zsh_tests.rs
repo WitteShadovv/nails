@@ -1286,14 +1286,15 @@ fn any_other_word_that_names_an_option_turns_it_on() {
         "[[ -o share_history ]] && print shared",
         "zstyle ':prezto:module:history' options 'share_history'",
         "local opt=inc_append_history; setopt $opt",
+        // Its `no` form too, as any mention counts.
+        "opts=(NO_SHARE_HISTORY)",
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", &format!("{line}\n"));
         assert!(!on(&fs, NOT_LOGIN).is_empty(), "{line}");
     }
-    // Its `no` form, a line that is a comment and an unrelated name do not.
+    // A line that is a comment and an unrelated name do not.
     for line in [
-        "opts=(NO_SHARE_HISTORY)",
         "# setopt share_history",
         "  # setopt share_history",
         "HISTFILE=~/.zsh_history",

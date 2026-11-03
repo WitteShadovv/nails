@@ -757,31 +757,36 @@ of this changelog for that version becomes the release notes word for word, and
   the fix on NixOS too, whose generated `/etc/zshrc` sets `SHARE_HISTORY` by default and, with it
   taken out of `programs.zsh.setOptions`, still runs an `eval` of what `dircolors` prints and
   autoloads `compinit` from directories added to `fpath` that the check cannot resolve, and with
-  Home Manager, which names the options whether it turns them on or off. The check warns that it
-  cannot tell at a `setopt` with an expansion it cannot list, a sourced file or a `ZDOTDIR` it
-  cannot follow (a process substitution, `: ${ZDOTDIR:=...}`), a path zsh expands into others (a
-  glob, `{a,b}`), a function the files autoload that may be in an `fpath` directory it cannot follow
-  (NixOS's profiles, `$p/share/zsh/site-functions`), compiled code that zsh may run in place of a
-  file (a `.zwc` beside it or for an `fpath` directory), a `source` without a file, a quote, an
-  expansion or a here-document that runs to the end of the file, an expansion that holds what it
-  cannot read as zsh does (a `case` in a `$(...)`, a `${ command }`), a command whose name an
-  expansion makes (`$cmd`), a startup file that is there but cannot be read, which it passed over
-  before, and a shell other than bash, zsh, fish and dash. The lexer reads zsh's code as zsh does
-  where that matters for what it can hide: a `<<` in `(( ... ))` is a shift and a quote there a
-  character, a `)` or `}` in quotes closes nothing, a `\'` does not end a `$'...'`, `$$` is a
-  parameter, glob flags such as `(#i)` start a word, a command in an arm of a `case` starts after
-  the pattern's `)`, the number of a descriptor before a redirection is no command, and zsh's short
-  forms (`repeat 3 cmd`, `for x (a) cmd`, `if [[ ... ]] cmd`) take their body. zsh's files are
-  counted line by line too, without reading the code and wherever the words stand, for the three
-  options, `source`, a `.` with a word after it, `eval`, an alias that stands for `.`, `autoload`
-  and the `ZDOTDIR` and `fpath` settings, a line that is a comment left out: what a line names
-  beyond what was read as code the check follows counts as on, for an option, adds a directory the
-  check cannot follow, for `fpath`, or makes the check warn that it cannot tell, so a `source` or
-  `eval` in an `echo`, a string, an alias or a here-document, or an `eval` of what a command prints,
-  warns too. bash's files are read for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line
-  ending in a backslash going on in the next. It still only warns: such a shell has written the
-  decoy commands before activation starts, so a refusal would take none of them back, and for a
-  shell that writes a line once its command ends, a refused activation would add its own.
+  Home Manager, which names the options whether it turns them on or off. An option counts as on in a
+  word as brace expansion may make it too (`setopt {share,inc_append}_history`, a `{y}` group as
+  `BRACE_CCL` reads it), and after an `o` among flags (`set -oshare_history`). The check warns that
+  it cannot tell at a `setopt` with an expansion it cannot list, an option whose name an expansion
+  makes (`options[$o]=on`, `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a
+  parameter whose name an expansion makes), a glob qualifier that runs code as zsh expands a word
+  (`*(e:'...':)`, `*(+func)`), a sourced file or a `ZDOTDIR` it cannot follow (a process
+  substitution, `: ${ZDOTDIR:=...}`), a path zsh expands into others (a glob, `{a,b}`), a function
+  the files autoload that may be in an `fpath` directory it cannot follow (NixOS's profiles,
+  `$p/share/zsh/site-functions`), compiled code that zsh may run in place of a file (a `.zwc` beside
+  it or for an `fpath` directory), a `source` without a file, a quote, an expansion or a
+  here-document that runs to the end of the file, an expansion that holds what it cannot read as zsh
+  does (a `case` in a `$(...)`, a `${ command }`), a command whose name an expansion makes (`$cmd`),
+  a startup file that is there but cannot be read, which it passed over before, and a shell other
+  than bash, zsh, fish and dash. The lexer reads zsh's code as zsh does where that matters for what
+  it can hide: a `<<` in `(( ... ))` is a shift and a quote there a character, a `)` or `}` in
+  quotes closes nothing, a `\'` does not end a `$'...'`, `$$` is a parameter, glob flags such as
+  `(#i)` start a word, a command in an arm of a `case` starts after the pattern's `)`, the number of
+  a descriptor before a redirection is no command, and zsh's short forms (`repeat 3 cmd`,
+  `for x (a) cmd`, `if [[ ... ]] cmd`) take their body. zsh's files are counted line by line too,
+  without reading the code and wherever the words stand, for the three options, `source`, a `.` with
+  a word after it, `eval`, an alias that stands for `.`, `autoload` and the `ZDOTDIR` and `fpath`
+  settings, a line that is a comment left out: what a line names beyond what was read as code the
+  check follows counts as on, for an option, adds a directory the check cannot follow, for `fpath`,
+  or makes the check warn that it cannot tell, so a `source` or `eval` in an `echo`, a string, an
+  alias or a here-document, or an `eval` of what a command prints, warns too. bash's files are read
+  for `history -a` or `history -w` beside `PROMPT_COMMAND`, a line ending in a backslash going on in
+  the next. It still only warns: such a shell has written the decoy commands before activation
+  starts, so a refusal would take none of them back, and for a shell that writes a line once its
+  command ends, a refused activation would add its own.
 - Activation and `deactivate` soft-reboot through logind, as `systemctl soft-reboot` does, so
   the programs that wait for logind's shutdown signal end on it before the switch, as at an
   ordinary shutdown. They enqueued `soft-reboot.target` with PID 1 directly, and the decoy's

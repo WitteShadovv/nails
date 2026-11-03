@@ -1321,37 +1321,42 @@ afterwards:
     `typeset -fu`), by its path or by its name in each directory they add
     to `fpath`, where zsh looks for it as it first runs it, but not in the
     directories zsh was built with;
-  - an option counts as on wherever a file zsh reads names it, outside a
-    line that is a comment: a `setopt`, an `unsetopt`, Home Manager's
-    `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a
-    comment at the end of a line. No turn-off counts. zsh can still end with
-    the option on after one: a function or an alias can stand in for
-    `unsetopt`, a trap, a hook or a plugin loaded after the first prompt can
-    set it again, and an error zsh meets as it runs, a glob that matches
-    nothing among them, can stop the file before the line. No reading of the
-    files can show that a turn-off holds, so the check does not try.
+  - an option counts as on wherever a file zsh reads names it, outside a line
+    that is a comment: a `setopt`, an `unsetopt`, Home Manager's
+    `set_opts=(... NO_SHARE_HISTORY ...)` array, an alias, a test or a comment
+    at the end of a line, and in a word as brace expansion may make it
+    (`setopt {share,inc_append}_history`, a `{y}` as `BRACE_CCL` reads it) or
+    after an `o` among flags (`set -oshare_history`). No turn-off counts. zsh
+    can still end with the option on after one: a function or an alias can
+    stand in for `unsetopt`, a trap, a hook or a plugin loaded after the first
+    prompt can set it again, and an error zsh meets as it runs, a glob that
+    matches nothing among them, can stop the file before the line. No reading
+    of the files can show that a turn-off holds, so the check does not try.
 
   It knows that Oh My Zsh turns `SHARE_HISTORY` on, and it reads the
   `/etc/zshrc` where NixOS's `programs.zsh` sets that option by default. It
   warns that it cannot tell when one of those files is there but cannot be
-  read, when a `setopt` takes an expansion it cannot list, when a sourced
-  file's path or a `ZDOTDIR` does not resolve (as for
-  `source <(tool init zsh)`) or zsh expands it into others (a glob, `{a,b}`),
-  when a function they autoload may be in a directory added to `fpath` that
-  does not resolve (as for NixOS's profiles, `$p/share/zsh/site-functions`),
-  when zsh may run compiled code in place of a file (the `.zwc` that
-  `zcompile` writes beside a file or for an `fpath` directory), when a
-  `source` names no file, when `ZDOTDIR` is set otherwise than by an
-  assignment (`: ${ZDOTDIR:=...}`), when a quote, an expansion or a
-  here-document runs to the end of the file without closing, when an expansion
-  holds what it cannot read as zsh does (a `case` in a `$(...)`, a
-  `${ command }`), or when the shell is not bash, zsh, fish or dash (dash
-  keeps no history file). It does not see a setting made by a plugin manager's
-  function, one in a function zsh autoloads from the directories it was built
-  with, one you typed into the shell, a file a bash startup file sources, or a
-  shell started with other startup files (`bash --rcfile`, a `ZDOTDIR` from
-  the environment), nor a history tool that keeps its own record of each
-  command, such as atuin.
+  read, when a `setopt` takes an expansion it cannot list, when an expansion
+  makes the name of an option a file may set (`options[$o]=on`,
+  `emulate zsh -o $o`, `read -A options`, a `typeset` or `print -v` of a
+  parameter whose name an expansion makes), when a glob qualifier runs code as
+  zsh expands a word (`*(e:'...':)`, `*(+func)`), when a sourced file's path
+  or a `ZDOTDIR` does not resolve (as for `source <(tool init zsh)`) or zsh
+  expands it into others (a glob, `{a,b}`), when a function they autoload may
+  be in a directory added to `fpath` that does not resolve (as for NixOS's
+  profiles, `$p/share/zsh/site-functions`), when zsh may run compiled code in
+  place of a file (the `.zwc` that `zcompile` writes beside a file or for an
+  `fpath` directory), when a `source` names no file, when `ZDOTDIR` is set
+  otherwise than by an assignment (`: ${ZDOTDIR:=...}`), when a quote, an
+  expansion or a here-document runs to the end of the file without closing,
+  when an expansion holds what it cannot read as zsh does (a `case` in a
+  `$(...)`, a `${ command }`), or when the shell is not bash, zsh, fish or
+  dash (dash keeps no history file). It does not see a setting made by a
+  plugin manager's function, one in a function zsh autoloads from the
+  directories it was built with, one you typed into the shell, a file a bash
+  startup file sources, or a shell started with other startup files
+  (`bash --rcfile`, a `ZDOTDIR` from the environment), nor a history tool that
+  keeps its own record of each command, such as atuin.
 
   It reads an `eval` of words it can read as code, and warns that it cannot
   tell what a command runs whose name an expansion makes (`$cmd`,
