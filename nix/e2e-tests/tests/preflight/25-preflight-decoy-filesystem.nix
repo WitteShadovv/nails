@@ -18,21 +18,25 @@
 #   6. a network block device that qemu-nbd serves from an image on /srv is
 #      refused, whole and partitioned, naming --allow-decoy-storage for it in
 #      check's report, and init with that flag uses it with a warning;
-#   7. a zram device that writes its pages back to a loop device over an
+#   7. an XFS filesystem and an ext4 one on RAM disks of their own are
+#      refused when the XFS log, or the ext4 journal, is on a network block
+#      device served from an image on /srv, and init with
+#      --allow-decoy-storage uses the XFS one with a warning;
+#   8. a zram device that writes its pages back to a loop device over an
 #      image on /srv is refused as that image file;
-#   8. `init --allow-decoy-storage` uses the bind of the /srv folder with a
+#   9. `init --allow-decoy-storage` uses the bind of the /srv folder with a
 #      warning, while the folder itself stays refused;
-#   9. a LUKS container file on /srv passes the hidden-volume check with a
+#  10. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
-#  10. a LUKS volume on the separate data disk passes the hidden-volume check;
-#  11. a tmpfs mounted over that volume is refused with root_covered, and
+#  11. a LUKS volume on the separate data disk passes the hidden-volume check;
+#  12. a tmpfs mounted over that volume is refused with root_covered, and
 #      neither the tmpfs nor the volume below receives anything;
-#  12. a decoy crypttab line that opens the data disk, then one with
+#  13. a decoy crypttab line that opens the data disk, then one with
 #      tcrypt-hidden for it or for a device that cannot be found, fails the
 #      backend-entries check (exit 4), and so does `activate`;
 #      a line for another device passes, tcrypt-hidden or not; a decoy fstab
 #      line for the data disk or its mapping fails it too;
-#  13. the accepted case: a whole session runs on a LUKS container file on
+#  14. the accepted case: a whole session runs on a LUKS container file on
 #      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
 #      hidden write lands in the container, and deactivate returns to a decoy
 #      that does not see it.
@@ -60,6 +64,7 @@ in
         self.packages.${pkgs.stdenv.hostPlatform.system}.nails
         pkgs.btrfs-progs
         pkgs.qemu-utils
+        pkgs.xfsprogs
       ];
       virtualisation.emptyDiskImages = [
         {
@@ -310,6 +315,57 @@ in
         )
         machine.succeed("test -f /mnt/nbd/state.json")
         machine.succeed("umount /mnt/nbd && qemu-nbd --disconnect /dev/nbd0 && rm -f /srv/nbd.img")
+
+    with subtest("a root whose XFS log or ext4 journal is served from /srv is refused"):
+        # Each filesystem keeps its data on a RAM disk of its own, and its
+        # log or journal on a network block device that qemu-nbd serves from
+        # an image on /srv. The mount table names the XFS log; jbd2 lists the
+        # ext4 journal and the filesystem's journal thread names it. mkfs.xfs
+        # makes a filesystem smaller than it supports only for its test suite.
+        machine.succeed(
+            "modprobe brd rd_nr=2 rd_size=131072 && modprobe xfs && "
+            "truncate -s 64M /srv/log.img /srv/journal.img && "
+            "qemu-nbd --connect=/dev/nbd1 --format=raw /srv/log.img && "
+            "qemu-nbd --connect=/dev/nbd2 --format=raw /srv/journal.img && "
+            "TEST_DIR=1 TEST_DEV=1 QA_CHECK_FS=1 "
+            "mkfs.xfs -q -f -l logdev=/dev/nbd1,size=32m /dev/ram0 && "
+            "mkdir -p /mnt/xfslog && mount -o logdev=/dev/nbd1 /dev/ram0 /mnt/xfslog && "
+            "mke2fs -q -F -O journal_dev -b 4096 /dev/nbd2 && "
+            "mkfs.ext4 -q -F -b 4096 -J device=/dev/nbd2 /dev/ram1 && "
+            "mkdir -p /mnt/journal && mount /dev/ram1 /mnt/journal && "
+            "touch -m -d '2001-02-03 04:05:06' /mnt/xfslog /mnt/journal"
+        )
+        assert "logdev=/dev/nbd1" in machine.succeed("findmnt -no OPTIONS /mnt/xfslog")
+        assert machine.succeed("ls /proc/fs/jbd2").split().count("nbd2") == 1
+        for root in ["/mnt/xfslog", "/mnt/journal"]:
+            refused_untouched(
+                f"gate-{root.rsplit('/', 1)[1]}",
+                root,
+                f"nails init --no-hardware-config {root}",
+                [
+                    f"error: {root} is not a volume of its own: it is stored on a network "
+                    "block device, which a program can serve from a file on this computer's "
+                    "own disk. Nothing was written.",
+                ],
+            )
+        result = run_command_capture(
+            "gate-xfslog-allow",
+            "nails init --no-hardware-config --allow-decoy-storage /mnt/xfslog",
+        )
+        assert_exit_code(result, 0)
+        assert_result_contains(
+            result,
+            [
+                "warning: --allow-decoy-storage: using /mnt/xfslog although it is stored on a "
+                "network block device"
+            ],
+        )
+        machine.succeed("test -f /mnt/xfslog/state.json")
+        machine.succeed(
+            "umount /mnt/xfslog /mnt/journal && "
+            "qemu-nbd --disconnect /dev/nbd1 && qemu-nbd --disconnect /dev/nbd2 && "
+            "rm -f /srv/log.img /srv/journal.img"
+        )
 
     with subtest("a zram device that writes back to the decoy's storage is refused"):
         # zram keeps its pages in RAM until it writes them back to its backing
