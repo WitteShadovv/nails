@@ -13,7 +13,7 @@ use nails_base::crypttab::parse_crypttab;
 /// out, each path the line names in `<>` as `here` gives it.
 fn open(line: &str) -> (String, Vec<String>) {
     let volume = parse_crypttab(line).pop().expect("one volume");
-    let Opening { options, left_out } = opening(&volume, |path| format!("<{path}>"));
+    let Opening { options, left_out } = opening(&volume, |path| Some(format!("<{path}>")));
     (options, left_out)
 }
 

@@ -1178,7 +1178,10 @@ there but does not resolve inside the root, such as a link into a store that
 is not mounted there, is listed as not read, with where it leads, and the
 examiner's view says when the decoy's `/nix/store` is missing or empty, so
 that its tool check had nothing to read. A link to `/dev/null`, as a history
-kept from being written is, holds nothing and is passed over.
+kept from being written is, holds nothing and is passed over. A path that
+does not resolve inside the root at all, as through a loop of links, is not
+read on the machine running verify either, where it would leave the image:
+it is listed as not checked.
 These checks write nothing and, run as root, change no access time of the
 folder `--root` names or of what it holds, except that following a link
 updates the link's own access time on a read-write mount, which the mounts

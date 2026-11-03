@@ -16,7 +16,7 @@ use super::RealFilesystem;
 use crate::NailsError;
 use crate::filesystem::{Filesystem, MockFilesystem, MountRoot};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ========================================================================
 // Tests for Tmpfs Operations for Extended Overlays
@@ -1148,13 +1148,13 @@ fn a_file_of_a_root_is_read_and_placed_with_its_links_followed_inside_it() {
         text
     );
     assert_eq!(
-        real.canonical_in_root(r, Path::new("/etc/fstab")),
-        Path::new("/store/etc/fstab")
+        real.resolve_in_root(r, Path::new("/etc/fstab")),
+        Some(PathBuf::from("/store/etc/fstab"))
     );
     // A part that does not exist is appended to what resolves.
     assert_eq!(
-        real.canonical_in_root(r, Path::new("/etc/static/absent")),
-        Path::new("/store/etc/absent")
+        real.resolve_in_root(r, Path::new("/etc/static/absent")),
+        Some(PathBuf::from("/store/etc/absent"))
     );
 
     // A link to a file of the machine leads to nothing inside the root.
@@ -1163,8 +1163,16 @@ fn a_file_of_a_root_is_read_and_placed_with_its_links_followed_inside_it() {
     std::os::unix::fs::symlink(outside.path().join("secret"), r.join("etc/secret")).unwrap();
     assert!(real.read_file_in_root(r, Path::new("/etc/secret")).is_err());
     assert_eq!(
-        real.canonical_in_root(r, Path::new("/etc/secret")),
-        outside.path().join("secret")
+        real.resolve_in_root(r, Path::new("/etc/secret")),
+        Some(outside.path().join("secret"))
+    );
+    // A link that leads back through itself inside the root resolves to
+    // nothing, and nothing is read through it.
+    std::os::unix::fs::symlink("/etc/loop/x", r.join("etc/loop")).unwrap();
+    assert_eq!(real.resolve_in_root(r, Path::new("/etc/loop/fstab")), None);
+    assert!(
+        real.read_file_in_root(r, Path::new("/etc/loop/fstab"))
+            .is_err()
     );
     // Bytes that are no text are an error.
     fs::write(r.join("store/etc/binary"), [0xff, 0xfe]).unwrap();

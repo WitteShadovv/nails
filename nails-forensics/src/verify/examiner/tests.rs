@@ -328,36 +328,76 @@ fn a_clean_disk_reports_nothing() {
     assert!(report.checks_run.contains(&"examiner-disk"));
 }
 
-/// A decoy root with alice's account and `/home` an absolute link to
-/// `target`, a folder of the machine running verify.
-fn root_with_home_linked_to(target: &Path) -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
-    write(
-        root.path(),
-        "/etc/passwd",
-        b"alice:x:1000:100::/home/alice:/bin/bash\n",
-    );
-    std::os::unix::fs::symlink(target, root.path().join("home")).unwrap();
-    root
+#[test]
+fn a_home_that_leads_out_of_the_image_is_not_read() {
+    // On the machine running verify each link leads beside the image, to a
+    // history that opens a VeraCrypt volume, which was reported as the
+    // decoy's. Inside the image alice's home as an absolute link and /home
+    // climbing out of it lead to nothing. /home linked to ../home comes back
+    // through itself inside the image, as an absolute link to a folder below
+    // the machine's own /home does: it does not resolve there, nothing is read
+    // through it, and the home is named as not checked.
+    let unresolved = "/home/alice, read for history naming a container or unlock (it does not resolve inside \
+         the root)";
+    for (link, absolute, target, named) in [
+        ("home/alice", true, "outside/alice", false),
+        ("home", false, "../outside", false),
+        ("home", false, "../home", true),
+    ] {
+        let tree = tempfile::tempdir().unwrap();
+        // The absolute target must not lead back through alice's home.
+        assert!(!tree.path().starts_with("/home/alice"));
+        for home in ["outside/alice", "home/alice"] {
+            write(
+                tree.path(),
+                &format!("/{home}/.bash_history"),
+                b"veracrypt --mount /home/alice/vault.hc /mnt/v\n",
+            );
+        }
+        let root = tree.path().join("root");
+        write(
+            &root,
+            "/etc/passwd",
+            b"alice:x:1000:100::/home/alice:/bin/bash\n",
+        );
+        let target = if absolute {
+            tree.path().join(target)
+        } else {
+            Path::new(target).to_path_buf()
+        };
+        std::fs::create_dir_all(root.join(link).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, root.join(link)).unwrap();
+        let shown = format!("{link} -> {}", target.display());
+
+        let report = examine(&root, &ExaminerOptions::default());
+        assert!(
+            !ids(&report).contains("container-history"),
+            "{shown}: {:#?}",
+            report.groups
+        );
+        assert_eq!(
+            report.not_checked.iter().any(|area| area == unresolved),
+            named,
+            "{shown}: {:#?}",
+            report.not_checked
+        );
+    }
 }
 
 #[test]
-fn a_home_that_leads_out_of_the_image_is_not_read() {
-    // On the machine running verify the link leads to a history that opens
-    // a VeraCrypt volume, which was reported as the decoy's. Inside the image
-    // it leads to nothing.
-    let outside = tempfile::tempdir().unwrap();
-    write(
-        outside.path(),
-        "/alice/.bash_history",
-        b"veracrypt --mount /home/alice/vault.hc /mnt/v\n",
-    );
-    let root = root_with_home_linked_to(outside.path());
+fn a_file_that_comes_back_through_itself_inside_the_root_is_not_read() {
+    // /etc/fstab linked to ../etc/fstab loops inside the image: nothing is
+    // read through it, and it is named.
+    let root = tempfile::tempdir().unwrap();
+    write(root.path(), "/etc/passwd", b"");
+    std::os::unix::fs::symlink("../etc/fstab", root.path().join("etc/fstab")).unwrap();
     let report = examine(root.path(), &ExaminerOptions::default());
+    let area = "/etc/fstab, read for the crypttab and fstab entries (it does not resolve inside \
+                the root)";
     assert!(
-        !ids(&report).contains("container-history"),
+        report.not_checked.iter().any(|line| line == area),
         "{:#?}",
-        report.groups
+        report.not_checked
     );
 }
 

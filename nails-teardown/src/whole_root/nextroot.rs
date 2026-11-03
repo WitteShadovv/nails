@@ -676,7 +676,7 @@ pub fn regular_file_in_root(root: &Path, path: &Path) -> io::Result<bool> {
     Ok((stat.st_mode & libc::S_IFMT) == libc::S_IFREG)
 }
 
-/// How many symlinks [`canonical_in_root`] follows by their text before it
+/// How many symlinks [`resolve_in_root`] follows by their text before it
 /// gives a path up, as the kernel's own limit for one lookup.
 const MAX_LINK_HOPS: usize = 40;
 
@@ -690,16 +690,26 @@ const MAX_LINK_HOPS: usize = 40;
 /// exist yet is followed all the same, as systemd's fstab generator follows it,
 /// so `/home` linking to a missing `var/home` yields `/var/home` too. The
 /// result is absolute, as seen from `root`. A path that resolves to nothing (a
-/// loop of links), or any failure, returns `path` unchanged. `path` must be
-/// absolute; a relative path is returned as is.
+/// loop of links), or any failure, returns `path` unchanged: a reader that
+/// must never follow a link of `root` on the running system takes
+/// [`resolve_in_root`] instead. `path` must be absolute; a relative path is
+/// returned as is.
 pub fn canonical_in_root(root: &Path, path: &Path) -> PathBuf {
     if !path.is_absolute() {
         return path.to_path_buf();
     }
-    let unresolved = || path.to_path_buf();
-    let Ok(root_real) = open_mount_root(root).and_then(|fd| real_path(&fd)) else {
-        return unresolved();
-    };
+    resolve_in_root(root, path).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// `path` as it resolves inside `root`, as [`canonical_in_root`] resolves it,
+/// or `None` where it does not resolve there: through a loop of links (an
+/// absolute link out of `root` whose target lies below a folder of the link's
+/// own name leads back through the link), when `root` cannot be opened, or
+/// when the kernel refuses the lookup, as without `openat2`. `root` joined
+/// with `path` itself would follow the links of `root` on the running system
+/// then, out of `root`, so a reader takes `None` as nothing it may read.
+pub fn resolve_in_root(root: &Path, path: &Path) -> Option<PathBuf> {
+    let root_real = open_mount_root(root).and_then(|fd| real_path(&fd)).ok()?;
     // The path of the opened `fd` as seen from `root`.
     let seen = |fd: &OwnedFd| {
         real_path(fd).map(|real| {
@@ -718,10 +728,10 @@ pub fn canonical_in_root(root: &Path, path: &Path) -> PathBuf {
         loop {
             if let Ok(mut out) = open_in_root(root, &prefix).and_then(|fd| seen(&fd)) {
                 out.extend(tail.iter().rev());
-                return out;
+                return Some(out);
             }
             let (Some(parent), Some(name)) = (prefix.parent(), prefix.file_name()) else {
-                return unresolved();
+                return None;
             };
             // A link that leads to nothing yet: go on from its target.
             if let Ok(dir) = open_dir_in_root(root, parent)
@@ -742,7 +752,7 @@ pub fn canonical_in_root(root: &Path, path: &Path) -> PathBuf {
             prefix = parent.to_path_buf();
         }
     }
-    unresolved()
+    None
 }
 
 /// Read the file at `path` as if `root` were `/` (absolute symlinks resolve

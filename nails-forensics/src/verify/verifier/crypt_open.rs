@@ -52,8 +52,9 @@ pub(super) struct Opening {
 
 /// The options that open `volume` as systemd-cryptsetup does, `here` giving
 /// where a device or file the line names lies on this machine, shell-quoted:
-/// a detached header and a TrueCrypt key file are read from there.
-pub(super) fn opening(volume: &CrypttabEntry, here: impl Fn(&str) -> String) -> Opening {
+/// a detached header and a TrueCrypt key file are read from there. One that
+/// `here` cannot place is left out.
+pub(super) fn opening(volume: &CrypttabEntry, here: impl Fn(&str) -> Option<String>) -> Opening {
     let kind = kind(volume);
     let mut options: Vec<String> = Vec::new();
     let mut left_out: Vec<String> = volume
@@ -64,15 +65,30 @@ pub(super) fn opening(volume: &CrypttabEntry, here: impl Fn(&str) -> String) -> 
     match kind {
         Kind::Luks => {}
         Kind::Plain => options = plain(volume),
-        Kind::Tcrypt => options = tcrypt(volume, &here),
+        Kind::Tcrypt => options = tcrypt(volume),
         Kind::Bitlk => options.push("--type bitlk".to_string()),
     }
     for option in &volume.options {
-        match option.strip_prefix("header=") {
-            Some(header) if matches!(kind, Kind::Luks | Kind::Tcrypt) && is_header_path(header) => {
-                options.push(format!("--header {}", here(header)));
+        // The file an option names, and the option that reads it here.
+        let file = if let Some(header) = option.strip_prefix("header=") {
+            let carried = matches!(kind, Kind::Luks | Kind::Tcrypt) && is_header_path(header);
+            Some((carried.then_some(header), "--header"))
+        } else if let Some(key_file) = option.strip_prefix("tcrypt-keyfile=") {
+            // systemd hands these to cryptsetup as --key-file does, and drops
+            // a relative one.
+            if kind != Kind::Tcrypt || !key_file.starts_with('/') {
+                continue;
             }
-            Some(_) => left_out.push(option.clone()),
+            Some((Some(key_file), "--key-file"))
+        } else {
+            None
+        };
+        match file {
+            Some((Some(file), flag)) => match here(file) {
+                Some(at) => options.push(format!("{flag} {at}")),
+                None => left_out.push(option.clone()),
+            },
+            Some((None, _)) => left_out.push(option.clone()),
             None if needs_its_own(option) => left_out.push(option.clone()),
             None => {}
         }
@@ -99,11 +115,9 @@ fn plain(volume: &CrypttabEntry) -> Vec<String> {
     options
 }
 
-/// The options of a TrueCrypt or VeraCrypt volume: which header it opens,
-/// its PIM, and its key files, which systemd hands to cryptsetup as
-/// `--key-file` does and drops when relative. cryptsetup looks for a
-/// VeraCrypt volume by itself.
-fn tcrypt(volume: &CrypttabEntry, here: impl Fn(&str) -> String) -> Vec<String> {
+/// The options of a TrueCrypt or VeraCrypt volume: which header it opens
+/// and its PIM. cryptsetup looks for a VeraCrypt volume by itself.
+fn tcrypt(volume: &CrypttabEntry) -> Vec<String> {
     let mut options = vec!["--type tcrypt".to_string()];
     if volume.is_tcrypt_hidden() {
         options.push("--tcrypt-hidden".to_string());
@@ -114,12 +128,6 @@ fn tcrypt(volume: &CrypttabEntry, here: impl Fn(&str) -> String) -> Vec<String> 
     if let Some(pim) = volume.option_value("veracrypt-pim") {
         options.push(format!("--veracrypt-pim {}", word(pim)));
     }
-    let key_files = volume
-        .options
-        .iter()
-        .filter_map(|option| option.strip_prefix("tcrypt-keyfile="))
-        .filter(|file| file.starts_with('/'));
-    options.extend(key_files.map(|file| format!("--key-file {}", here(file))));
     options
 }
 

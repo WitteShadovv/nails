@@ -4,7 +4,7 @@
 use super::MockFilesystem;
 use super::PathKind;
 use crate::filesystem::Filesystem;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn test_mock_filesystem_new_starts_empty() {
@@ -372,7 +372,7 @@ fn a_file_of_a_root_is_read_and_placed_below_it_without_links() {
             .is_err()
     );
     assert_eq!(
-        fs.canonical_in_root(root, Path::new("/home/alice")),
-        Path::new("/home/alice")
+        fs.resolve_in_root(root, Path::new("/home/alice")),
+        Some(PathBuf::from("/home/alice"))
     );
 }
