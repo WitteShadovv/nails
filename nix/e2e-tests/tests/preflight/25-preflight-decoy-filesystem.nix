@@ -15,19 +15,22 @@
 #   4. /srv itself, the filesystem the decoy's fstab mounts there, is refused;
 #   5. an unencrypted ext4 image on /srv, loop-mounted, is refused, also with a
 #      tmpfs mounted over the image's folder;
-#   6. `init --allow-decoy-storage` uses the bind of the /srv folder with a
+#   6. a network block device that qemu-nbd serves from an image on /srv is
+#      refused, whole and partitioned, naming --allow-decoy-storage for it in
+#      check's report, and init with that flag uses it with a warning;
+#   7. `init --allow-decoy-storage` uses the bind of the /srv folder with a
 #      warning, while the folder itself stays refused;
-#   7. a LUKS container file on /srv passes the hidden-volume check with a
+#   8. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
-#   8. a LUKS volume on the separate data disk passes the hidden-volume check;
-#   9. a tmpfs mounted over that volume is refused with root_covered, and
+#   9. a LUKS volume on the separate data disk passes the hidden-volume check;
+#  10. a tmpfs mounted over that volume is refused with root_covered, and
 #      neither the tmpfs nor the volume below receives anything;
-#  10. a decoy crypttab line that opens the data disk, then one with
+#  11. a decoy crypttab line that opens the data disk, then one with
 #      tcrypt-hidden for it or for a device that cannot be found, fails the
 #      backend-entries check (exit 4), and so does `activate`;
 #      a line for another device passes, tcrypt-hidden or not; a decoy fstab
 #      line for the data disk or its mapping fails it too;
-#  11. the accepted case: a whole session runs on a LUKS container file on
+#  12. the accepted case: a whole session runs on a LUKS container file on
 #      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
 #      hidden write lands in the container, and deactivate returns to a decoy
 #      that does not see it.
@@ -54,6 +57,7 @@ in
       environment.systemPackages = [
         self.packages.${pkgs.stdenv.hostPlatform.system}.nails
         pkgs.btrfs-progs
+        pkgs.qemu-utils
       ];
       virtualisation.emptyDiskImages = [
         {
@@ -243,6 +247,67 @@ in
             ["it is an unencrypted image file (/srv/imgs/disk.img) on /srv"],
         )
         machine.succeed("umount /srv/imgs && umount /mnt/img && rm -rf /srv/imgs")
+
+    with subtest("a network block device served from a decoy filesystem is refused"):
+        # qemu-nbd serves an image file on /srv through /dev/nbd0: sysfs shows
+        # nothing below the device, and /proc/devices names its driver.
+        machine.succeed(
+            "modprobe nbd max_part=8 && grep -Eq '^ *43 nbd$' /proc/devices && "
+            "truncate -s 64M /srv/nbd.img && "
+            "qemu-nbd --connect=/dev/nbd0 --format=raw /srv/nbd.img && "
+            "mkfs.ext4 -q /dev/nbd0 && mkdir -p /mnt/nbd && mount /dev/nbd0 /mnt/nbd && "
+            "touch -m -d '2001-02-03 04:05:06' /mnt/nbd"
+        )
+        refused_untouched(
+            "gate-nbd",
+            "/mnt/nbd",
+            "nails init --no-hardware-config /mnt/nbd",
+            [
+                "error: /mnt/nbd is not a volume of its own: it is stored on a network "
+                "block device, which a program can serve from a file on this computer's "
+                "own disk. Nothing was written.",
+                "Where setup happens",
+            ],
+        )
+        result = run_command_capture(
+            "gate-nbd-check",
+            f"nails --config {config_for('/mnt/nbd')} --json check --overlay-only",
+        )
+        assert_exit_code(result, 4)
+        report = last_json(result)
+        refusal = report["data"]["refusal"]
+        assert refusal["code"] == "not_separate_volume", report
+        assert refusal["allowable"] == "decoy_storage", report
+        row = check_row(report, "hidden-volume")
+        assert row["status"] == "fail", row
+        assert row["allowable"] == "decoy_storage", row
+
+        # A partition of the device is judged with the device.
+        machine.succeed(
+            "umount /mnt/nbd && echo type=83 | sfdisk -q /dev/nbd0 && udevadm settle && "
+            "mkfs.ext4 -q /dev/nbd0p1 && mount /dev/nbd0p1 /mnt/nbd && "
+            "touch -m -d '2001-02-03 04:05:06' /mnt/nbd"
+        )
+        refused_untouched(
+            "gate-nbd-partition",
+            "/mnt/nbd",
+            "nails init --no-hardware-config /mnt/nbd",
+            ["it is stored on a network block device"],
+        )
+        result = run_command_capture(
+            "gate-nbd-allow", "nails init --no-hardware-config --allow-decoy-storage /mnt/nbd"
+        )
+        assert_exit_code(result, 0)
+        assert_result_contains(
+            result,
+            [
+                "warning: --allow-decoy-storage: using /mnt/nbd although it is stored on a "
+                "network block device, which a program can serve from a file on this "
+                "computer's own disk; everything written there lands on that storage"
+            ],
+        )
+        machine.succeed("test -f /mnt/nbd/state.json")
+        machine.succeed("umount /mnt/nbd && qemu-nbd --disconnect /dev/nbd0 && rm -f /srv/nbd.img")
 
     with subtest("--allow-decoy-storage uses decoy storage with a warning, never a folder"):
         refused_untouched(
