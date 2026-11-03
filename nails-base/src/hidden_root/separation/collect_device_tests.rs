@@ -582,8 +582,7 @@ fn a_loop_device_that_shows_no_file_is_refused_where_the_root_reaches_it() {
     assert_eq!(
         refusal.hint(None),
         [
-            "Set the loop device up again from a file whose path is shorter than 4096 bytes, \
-             then run the command again."
+            "Set the loop device up again from a file with a shorter path, then run the command again."
         ]
     );
     let loop0 = "/sys/devices/virtual/block/loop0";
@@ -639,12 +638,12 @@ fn a_zram_device_is_judged_with_the_device_it_writes_back_to() {
         decoys.assess()
     );
     // A device it cannot name, or an attribute it cannot read.
-    let input = "/sys/devices/virtual/block/zram0/backing_dev";
-    assert_unjudged(
+    assert_untraced(
         "a device node outside /dev",
         &on_zram(Some("/tmp/blk")),
-        input,
+        Untraced::NotFound,
     );
+    let input = "/sys/devices/virtual/block/zram0/backing_dev";
     let unread = on_zram(None).unreadable(input);
     assert_unjudged("an attribute it cannot read", &unread, input);
 }
@@ -751,5 +750,5 @@ fn a_loop_device_over_a_device_node_outside_dev_lies_on_that_device() {
             rdevice: rustix::fs::makedev(43, 9),
         },
     );
-    assert_unjudged("a device sysfs does not show", &gone, "/sys/dev/block/43:9");
+    assert_untraced("a device sysfs does not show", &gone, Untraced::NotFound);
 }

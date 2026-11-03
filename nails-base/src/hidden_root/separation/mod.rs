@@ -176,7 +176,7 @@ impl Served {
     }
 }
 
-/// What a whole disk is whose data lies on disks the gate does not follow.
+/// What a device is whose data lies on disks the gate does not follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Untraced {
     /// A ZFS volume (`zvol`, named `zd<N>`): its data lies in its pool, and
@@ -184,6 +184,10 @@ pub enum Untraced {
     ZfsVolume,
     /// A disk whose major number `/proc/devices` names no driver for.
     UnnamedDriver,
+    /// A device that cannot be found among those sysfs lists, though the
+    /// root's data reaches it: one another device names below it, or the
+    /// device a loop device's record or a zram device names.
+    NotFound,
 }
 
 /// The regular file behind a loop device.
@@ -471,8 +475,9 @@ pub enum Verdict {
         /// What serves the disk.
         kind: Served,
     },
-    /// The root's data reaches a disk whose data lies on disks the gate does
-    /// not follow ([`Untraced`]). Where its writes land cannot be told.
+    /// The root's data reaches a device whose data lies on disks the gate
+    /// does not follow, or one it cannot find ([`Untraced`]). Where its writes
+    /// land cannot be told.
     UntracedDevice {
         /// What the disk is.
         kind: Untraced,
@@ -568,6 +573,9 @@ impl Verdict {
             Verdict::UntracedDevice {
                 kind: Untraced::UnnamedDriver,
             } => "it is stored on a device whose driver the kernel does not name".into(),
+            Verdict::UntracedDevice {
+                kind: Untraced::NotFound,
+            } => "it is stored on a device that cannot be found".into(),
             Verdict::Separate => "it is separate from this computer's own storage".to_string(),
         }
     }

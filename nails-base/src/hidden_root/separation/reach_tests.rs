@@ -466,8 +466,8 @@ fn a_way_down_that_cannot_be_followed_is_refused_wherever_it_is() {
     );
     assert_eq!(
         unlisted.verdict("/mnt"),
-        Verdict::CouldNotJudge {
-            unreadable: vec![PathBuf::from("/sys/class/block/sdq")]
+        Verdict::UntracedDevice {
+            kind: Untraced::NotFound
         }
     );
     // A partition whose disk sysfs does not show, below the filesystem that

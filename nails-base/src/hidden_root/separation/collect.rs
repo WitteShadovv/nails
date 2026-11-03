@@ -27,7 +27,8 @@
 //! readable by root only) is marked so, and only counts when the hidden
 //! root's data reaches it. A record that shows the file is a block device
 //! node, which its path outside `/dev` does not tell, puts that device below
-//! the loop device.
+//! the loop device, and a loop device whose record names a device sysfs does
+//! not show is [`Untraced::NotFound`].
 //!
 //! A whole disk with nothing below it in sysfs is told apart by the driver
 //! `/proc/devices` lists for its major number: `nbd` is a network block
@@ -41,11 +42,11 @@
 //! file (one bound to none, which nothing reaches, or one whose file's path
 //! the kernel cannot show), and a device whose `slaves/` is there but cannot
 //! be listed. A zram device lies on the device it writes pages back to
-//! (`backing_dev`), when it names one, and is unidentified when that
-//! attribute cannot be read or names no device here. A device whose
-//! `partition` cannot be read is still a partition of the disk whose sysfs
-//! directory holds it. A btrfs filesystem whose devices cannot be listed is
-//! listed as unreadable, since it could be any root's.
+//! (`backing_dev`), when it names one; it is unidentified when that
+//! attribute cannot be read, and not found when it names no device here. A
+//! device whose `partition` cannot be read is still a partition of the disk
+//! whose sysfs directory holds it. A btrfs filesystem whose devices cannot be
+//! listed is listed as unreadable, since it could be any root's.
 
 #[cfg(test)]
 #[path = "collect_tests.rs"]
@@ -199,9 +200,6 @@ fn read_optional<F: Filesystem>(
     }
 }
 
-/// Block devices by `major:minor`.
-const SYS_DEV_BLOCK: &str = "/sys/dev/block";
-
 /// Record one device of a walked stack. `majors` are the drivers
 /// `/proc/devices` lists, `None` when it cannot be read.
 fn add_layer<F: Filesystem>(
@@ -241,13 +239,12 @@ fn add_layer<F: Filesystem>(
                     // A block device node outside /dev, which its path does
                     // not tell: the loop device reads that device.
                     Ok(record) if record.rdevice != 0 => {
-                        let number = device_number(record.rdevice);
-                        match blockdev::device_numbered(fs, &number) {
+                        match blockdev::device_numbered(fs, &device_number(record.rdevice)) {
                             Some(backing) => {
                                 below.push(backing);
                                 NodeKind::Loop { file: None }
                             }
-                            None => NodeKind::Unidentified(Path::new(SYS_DEV_BLOCK).join(number)),
+                            None => NodeKind::Untraced(Untraced::NotFound),
                         }
                     }
                     record => NodeKind::Loop {
@@ -318,7 +315,8 @@ fn leaf_kind<F: Filesystem>(
     } else if driver == "loop" || named("loop") {
         // A loop device that shows no file was bound to none when it was
         // read, which nothing can reach, or the kernel could not show its
-        // file: a path longer than a page, say. Nothing tells what it reads.
+        // file: a path that does not fit in the page it writes it to, less
+        // two bytes, say. Nothing tells what it reads.
         NodeKind::Unidentified(layer.sysfs.join("loop/backing_file"))
     } else if driver == "zram" || named("zram") {
         match zram_backing(fs, layer) {
@@ -326,7 +324,7 @@ fn leaf_kind<F: Filesystem>(
                 below.extend(backing);
                 NodeKind::Disk
             }
-            Err(input) => NodeKind::Unidentified(input),
+            Err(kind) => kind,
         }
     } else {
         NodeKind::Disk
@@ -335,17 +333,18 @@ fn leaf_kind<F: Filesystem>(
 
 /// The device a zram device writes the pages it holds back to, by kernel
 /// name (`backing_dev`): none when it writes none back, or its kernel cannot.
-/// The attribute is the error when it cannot be read or names no device sysfs
-/// shows, since the pages could go anywhere.
-fn zram_backing<F: Filesystem>(fs: &F, layer: &Layer) -> Result<Option<String>, PathBuf> {
+/// The error is what the zram device is when the attribute cannot be read or
+/// names no device sysfs shows, since the pages could go anywhere.
+fn zram_backing<F: Filesystem>(fs: &F, layer: &Layer) -> Result<Option<String>, NodeKind> {
     let attribute = layer.sysfs.join("backing_dev");
+    let unread = || NodeKind::Unidentified(attribute.clone());
     match fs.path_exists(&attribute) {
         Ok(false) => return Ok(None),
         Ok(true) => {}
-        Err(_) => return Err(attribute),
+        Err(_) => return Err(unread()),
     }
     let Ok(text) = fs.read_file_content(&attribute) else {
-        return Err(attribute);
+        return Err(unread());
     };
     let path = text.trim_end_matches('\n');
     if path == "none" {
@@ -355,7 +354,7 @@ fn zram_backing<F: Filesystem>(fs: &F, layer: &Layer) -> Result<Option<String>, 
         .as_deref()
         .and_then(file_name)
         .map(Some)
-        .ok_or(attribute)
+        .ok_or(NodeKind::Untraced(Untraced::NotFound))
 }
 
 /// The disk whose sysfs directory holds `sysfs`, the directory of a device:
