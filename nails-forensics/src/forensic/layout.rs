@@ -62,6 +62,25 @@ pub enum TableKind {
     Gpt,
 }
 
+/// What the checksums a GPT keeps say of the table read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checksums {
+    /// The header matches the checksum it keeps of itself, and its entries
+    /// the one it keeps of them; or the table is an MBR or none, which keep
+    /// no checksum.
+    Hold,
+    /// The header does not match the checksum it keeps of itself, so
+    /// nothing it says, the checksum of its entries included, is vouched for.
+    HeaderFails,
+    /// The header holds, but its entries do not match the checksum it keeps
+    /// of them.
+    EntriesFail,
+    /// The header holds, but not every entry it lists could be checked
+    /// against the checksum it keeps of them: the source ends first, or the
+    /// header lists more entries, or larger ones, than the parser reads.
+    EntriesUnchecked,
+}
+
 /// The parsed layout of a source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Layout {
@@ -94,6 +113,8 @@ pub struct RecordedTable {
     /// front of a filesystem made on the whole disk since breaks them, its
     /// entries written over. An MBR has no such rules and always keeps them.
     pub consistent: bool,
+    /// What the checksums a GPT keeps say of its header and its entries.
+    pub checksums: Checksums,
     /// The bytes the partitions may use: from the first usable block to one
     /// past the last.
     usable: (u64, u64),
@@ -107,6 +128,7 @@ impl RecordedTable {
             partitions: Vec::new(),
             disk_end: None,
             consistent: true,
+            checksums: Checksums::Hold,
             usable: (0, 0),
         }
     }
@@ -578,10 +600,19 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
     };
     // The entries' checksum vouches for them only when the header's own
     // holds and every entry it lists was read.
-    let checked = read == table.len()
-        && (le_u32(&header, 80), le_u32(&header, 84)) == (count, entry_size)
-        && header_checksum_holds(&header);
-    let mut consistent = !checked || u64::from(crc32(&table)) == le_u32(&header, 88);
+    let header_holds = header_checksum_holds(&header);
+    let all_read =
+        read == table.len() && (le_u32(&header, 80), le_u32(&header, 84)) == (count, entry_size);
+    let checksums = if !header_holds {
+        Checksums::HeaderFails
+    } else if !all_read {
+        Checksums::EntriesUnchecked
+    } else if u64::from(crc32(&table)) != le_u32(&header, 88) {
+        Checksums::EntriesFail
+    } else {
+        Checksums::Hold
+    };
+    let mut consistent = checksums != Checksums::EntriesFail;
     table.truncate(read);
 
     let mut partitions = Vec::new();
@@ -621,6 +652,7 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
         partitions,
         disk_end: Some(last_usable.max(backup_end)),
         consistent,
+        checksums,
         usable: (first_usable, last_usable),
     }))
 }
@@ -660,6 +692,7 @@ fn parse_mbr(sector0: &[u8]) -> Option<RecordedTable> {
         partitions,
         disk_end: None,
         consistent: true,
+        checksums: Checksums::Hold,
         usable: (SECTOR, u64::MAX),
     })
 }

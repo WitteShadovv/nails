@@ -470,6 +470,14 @@ fn a_table_that_does_not_list_the_partition_where_the_kernel_has_it_warns() {
         &devices("nvme0n1", &gpt_disk(BLOCKS, &entries[..4])),
     );
     assert_eq!(warning(&result), unlisted);
+    // The kernel's start, listed under another number.
+    let mut entries = vec![[0u8; 128]; 2];
+    entries.push(typed_gpt_entry(SRV, P5_START, P5_END, 0, "data"));
+    let result = check(
+        &on_the_decoys_disk().fs,
+        &devices("nvme0n1", &gpt_disk(BLOCKS, &entries)),
+    );
+    assert_eq!(warning(&result), unlisted);
     // No table at all.
     let result = check(&on_the_decoys_disk().fs, &devices("nvme0n1", &[]));
     assert_eq!(warning(&result), unlisted);
@@ -493,6 +501,72 @@ fn a_damaged_table_warns_unless_it_names_a_type_systemd_uses() {
         "{result:?}"
     );
     assert!(damaged(SRV).is_fail());
+
+    // A header whose own checksum fails vouches for nothing it says.
+    let mut image = gpt(LINUX_FILESYSTEM, 0);
+    image[512 + 20] ^= 0xFF;
+    let result = check(&on_the_decoys_disk().fs, &devices("nvme0n1", &image));
+    assert!(
+        warning(&result).ends_with(
+            "The partition table on nvme0n1 does not match the checksum its header keeps of \
+             itself, so the type read for partition 5 of nvme0n1 (nvme0n1p5) cannot be trusted."
+        ),
+        "{result:?}"
+    );
+
+    // An entry past the blocks the partitions may use, checksums intact.
+    let mut entries = vec![[0u8; 128]; 4];
+    entries.push(typed_gpt_entry(
+        LINUX_FILESYSTEM,
+        P5_START,
+        P5_END,
+        0,
+        "data",
+    ));
+    entries.push(typed_gpt_entry(
+        LINUX_FILESYSTEM,
+        P5_END + 1,
+        BLOCKS,
+        0,
+        "past",
+    ));
+    let result = check(
+        &on_the_decoys_disk().fs,
+        &devices("nvme0n1", &gpt_disk(BLOCKS, &entries)),
+    );
+    assert!(
+        warning(&result).ends_with(
+            "The partition table on nvme0n1 lists an entry that does not fit within the blocks \
+             its partitions may use, so the type read for partition 5 of nvme0n1 (nvme0n1p5) \
+             cannot be trusted."
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_table_whose_entries_could_not_all_be_checked_warns() {
+    let place = Place {
+        partition: "nvme0n1p5".into(),
+        number: 5,
+        disk: "nvme0n1".into(),
+        node: "/dev/nvme0n1".into(),
+    };
+    let entry = Entry::Gpt {
+        type_id: LINUX_FILESYSTEM.into(),
+        flags: Some(0),
+        damage: Some(Damage::Unchecked),
+    };
+    assert_eq!(
+        Finding::of(place, entry),
+        Finding::Warn(
+            "Not every entry of the partition table on nvme0n1 could be checked against the \
+             checksum the table keeps of them, so the type read for partition 5 of nvme0n1 \
+             (nvme0n1p5) cannot be trusted."
+                .into(),
+            None
+        )
+    );
 }
 
 #[test]

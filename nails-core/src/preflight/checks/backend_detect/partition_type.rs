@@ -45,7 +45,7 @@ mod judge;
 #[cfg(test)]
 mod tests;
 
-use judge::{DOC, Entry, Finding, Place, verdict};
+use judge::{DOC, Damage, Entry, Finding, Place, verdict};
 
 /// Where the device nodes the partition tables are read from live.
 const DEV_DIR: &str = "/dev";
@@ -74,8 +74,10 @@ const BOOT_MOUNTS: &[&str] = &["/boot", "/boot/efi", "/efi"];
 ///   still names a use the partition does not have;
 /// - passes for any other type, and for an MBR;
 /// - warns where the table does not list the partition where the kernel has
-///   it, where the GPT is damaged, and where neither the disk nor udev's
-///   record of the partition can be read.
+///   it, where the GPT is damaged (its header or its entries do not match
+///   the checksums it keeps, not every entry could be checked against them,
+///   or an entry does not fit within its usable blocks), and where neither
+///   the disk nor udev's record of the partition can be read.
 ///
 /// A hidden root on no partition of such a disk passes: a disk of its own,
 /// such as an external drive, a container file, or a RAM filesystem. Each
@@ -255,7 +257,7 @@ impl BackendPartitionTypeCheck {
                     .map_or(Entry::Unlisted, |entry| Entry::Gpt {
                         type_id: entry.type_id.clone(),
                         flags: Some(entry.attributes),
-                        damaged: !table.consistent,
+                        damage: Damage::of(&table),
                     }),
             },
             Err(error) => udev_entry(fs, layer, partition)
@@ -279,7 +281,7 @@ fn udev_entry<F: Filesystem>(fs: &F, layer: &Layer, partition: &Partition) -> Op
         "gpt" => Some(Entry::Gpt {
             type_id: entry.type_id,
             flags: entry.flags,
-            damaged: false,
+            damage: None,
         }),
         _ => None,
     }

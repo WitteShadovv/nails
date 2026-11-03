@@ -655,6 +655,66 @@ fn a_gpt_is_consistent_only_while_its_entries_keep_its_rules() {
 }
 
 #[test]
+fn a_gpt_says_what_its_checksums_vouch_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gpt.img");
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.set_len(16 << 20).unwrap();
+    let mut entries = vec![0u8; 128 * 128];
+    entries[..128].copy_from_slice(&gpt_entry(2048, 10_239));
+    let header = gpt_header(34, 32_734, 32_767, &entries);
+    put(&mut file, 512, &header);
+    put(&mut file, 1024, &entries);
+    file.sync_all().unwrap();
+    let checksums = || {
+        recorded_table(&RawSource::open(&path).unwrap())
+            .unwrap()
+            .checksums
+    };
+    assert_eq!(checksums(), Checksums::Hold);
+
+    // Entries written over.
+    put(&mut file, 1024 + 56, b"o\0v\0e\0r\0");
+    file.sync_all().unwrap();
+    assert_eq!(checksums(), Checksums::EntriesFail);
+
+    // A header whose own checksum fails, whatever its entries hold.
+    let mut broken = header;
+    broken[20] ^= 0xFF;
+    put(&mut file, 512, &broken);
+    file.sync_all().unwrap();
+    assert_eq!(checksums(), Checksums::HeaderFails);
+    put(&mut file, 1024, &entries);
+    file.sync_all().unwrap();
+    assert_eq!(checksums(), Checksums::HeaderFails);
+
+    // A header that lists more entries than the parser reads, its own
+    // checksum intact.
+    let mut many = vec![0u8; 512 * 128];
+    many[..128].copy_from_slice(&gpt_entry(2048, 10_239));
+    put(&mut file, 512, &gpt_header(34, 32_734, 32_767, &many));
+    put(&mut file, 1024, &many);
+    file.sync_all().unwrap();
+    assert_eq!(checksums(), Checksums::EntriesUnchecked);
+
+    // A source that ends inside the entries.
+    put(&mut file, 512, &header);
+    put(&mut file, 1024, &entries);
+    file.set_len(4096).unwrap();
+    file.sync_all().unwrap();
+    assert_eq!(checksums(), Checksums::EntriesUnchecked);
+
+    // An MBR keeps no checksum, and none fails.
+    let (path, _file) = mbr_image(&dir, 1 << 20, &[(0x83, 2048, 1024)]);
+    assert_eq!(
+        recorded_table(&RawSource::open(&path).unwrap())
+            .unwrap()
+            .checksums,
+        Checksums::Hold
+    );
+}
+
+#[test]
 fn a_boot_sector_or_a_luks_header_is_never_read_as_an_mbr() {
     // A FAT32 boot sector and a LUKS header, each with the 0x55AA
     // signature and an entry where an MBR keeps its first partition.
