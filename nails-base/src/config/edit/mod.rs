@@ -44,7 +44,7 @@ pub enum Kind {
     Path,
     /// A string, such as a flake reference.
     Text,
-    /// One of a fixed set of strings.
+    /// One of a fixed set of strings, its default first.
     Choice(&'static [&'static str]),
     /// A list of entry names, or `*`.
     Names,

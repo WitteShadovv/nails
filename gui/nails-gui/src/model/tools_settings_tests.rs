@@ -214,9 +214,19 @@ fn a_choice_plans_its_change_asks_with_before_and_after_and_applies_its_token() 
         ]
     );
     assert_eq!(page.choices[0].title, "Decoy home");
-    assert!(page.choices[0].subtitle.starts_with("Now. "));
+    assert_eq!(
+        page.choices[0].subtitle,
+        format!(
+            "{}. {}",
+            text::CHOSEN_DEFAULT,
+            text::choice("persona.mode", "shared-home").1
+        )
+    );
     assert_eq!(page.choices[1].title, "Empty home");
-    assert!(!page.choices[1].subtitle.starts_with("Now"));
+    assert_eq!(
+        page.choices[1].subtitle,
+        text::choice("persona.mode", "fresh-home").1
+    );
     assert_eq!(page.secondary, None, "the file does not set it");
     assert_eq!(model.choose(0), None, "what holds already asks nothing");
 
@@ -498,6 +508,13 @@ fn use_the_default_comes_where_the_file_sets_a_key() {
     let page = model.page();
     assert_eq!(page.facts[0].1, "Empty home");
     assert_eq!(page.facts[1].1, "The settings file");
+    // The default is marked apart from the choice in force.
+    let marks: Vec<&str> = page
+        .choices
+        .iter()
+        .map(|choice| choice.subtitle.split(". ").next().unwrap_or_default())
+        .collect();
+    assert_eq!(marks, [text::DEFAULT_CHOICE, text::CHOSEN]);
     assert_eq!(page.action, Some(text::USE_DEFAULT));
     assert_eq!(page.secondary, None);
     assert_eq!(
