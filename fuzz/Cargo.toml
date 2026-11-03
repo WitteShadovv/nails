@@ -210,6 +210,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "udev_partition_entry"
+path = "fuzz_targets/udev_partition_entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "locate_database"
 path = "fuzz_targets/locate_database.rs"
 test = false

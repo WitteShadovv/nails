@@ -18,27 +18,79 @@
 //! link, named by the label in the same encoding, points at one of all the
 //! devices that carry that label, so of two filesystems with one label only
 //! one has a link. The links serve only for a device udev keeps no record of.
+//!
+//! The record of a partition also holds what libblkid read of its entry in
+//! the partition table, `ID_PART_ENTRY_*` ([`partition_entry`]): which table,
+//! the type, the attribute flags, the number and where it starts.
 
 use std::path::Path;
 
 #[cfg(test)]
 mod tests;
 
+/// The value of the property `key` in `record`, udev's record of a device:
+/// what follows `E:<key>=` on the first such line.
+pub fn property<'a>(record: &'a str, key: &str) -> Option<&'a str> {
+    record.lines().find_map(|line| {
+        line.strip_prefix("E:")?
+            .strip_prefix(key)?
+            .strip_prefix('=')
+    })
+}
+
 /// The filesystem label in `record`, udev's record of a device: the decoded
 /// `ID_FS_LABEL_ENC`, or else `ID_FS_LABEL`. `None` for no label, and for an
 /// empty one.
 pub fn filesystem_label(record: &str) -> Option<String> {
-    let property = |key: &str| {
-        record.lines().find_map(|line| {
-            line.strip_prefix("E:")?
-                .strip_prefix(key)?
-                .strip_prefix('=')
-        })
-    };
-    property("ID_FS_LABEL_ENC")
+    property(record, "ID_FS_LABEL_ENC")
         .map(decode)
-        .or_else(|| property("ID_FS_LABEL").map(str::to_string))
+        .or_else(|| property(record, "ID_FS_LABEL").map(str::to_string))
         .filter(|label| !label.is_empty())
+}
+
+/// What udev's record of a partition says of its entry in the partition
+/// table, as libblkid read it when the device appeared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionEntry {
+    /// The kind of table, `gpt` or `dos` (`ID_PART_ENTRY_SCHEME`).
+    pub scheme: String,
+    /// The type: a GPT type GUID, which libblkid writes in lower case, or an
+    /// MBR type byte such as `0x83` (`ID_PART_ENTRY_TYPE`).
+    pub type_id: String,
+    /// The attribute flags of a GPT entry, the boot flag of an MBR one
+    /// (`ID_PART_ENTRY_FLAGS`, in hexadecimal): 0 when the record has none,
+    /// as libblkid writes the property only for flags that are set; `None`
+    /// when the record holds a value that is no number.
+    pub flags: Option<u64>,
+    /// The entry's number in the table (`ID_PART_ENTRY_NUMBER`).
+    pub number: Option<u32>,
+    /// Where the partition starts, in 512-byte sectors
+    /// (`ID_PART_ENTRY_OFFSET`).
+    pub offset: Option<u64>,
+}
+
+/// The partition entry in `record`, udev's record of a device; `None` for a
+/// record that names no table or no type, as a whole disk's does.
+pub fn partition_entry(record: &str) -> Option<PartitionEntry> {
+    let value = |key: &str| {
+        property(record, key)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let flags = match value("ID_PART_ENTRY_FLAGS") {
+        None => Some(0),
+        Some(text) => text
+            .strip_prefix("0x")
+            .or_else(|| text.strip_prefix("0X"))
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok()),
+    };
+    Some(PartitionEntry {
+        scheme: value("ID_PART_ENTRY_SCHEME")?.to_string(),
+        type_id: value("ID_PART_ENTRY_TYPE")?.to_string(),
+        flags,
+        number: value("ID_PART_ENTRY_NUMBER").and_then(|n| n.parse().ok()),
+        offset: value("ID_PART_ENTRY_OFFSET").and_then(|n| n.parse().ok()),
+    })
 }
 
 /// `value` with each `\xNN` udev wrote turned back into its byte. A
