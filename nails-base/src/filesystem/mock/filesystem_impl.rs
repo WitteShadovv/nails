@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::super::{Filesystem, MountEntry, MountSource};
+use super::super::{Filesystem, LoopRecord, MountEntry, MountSource};
 use super::MockFilesystem;
 use crate::Result;
 use crate::target_user::TargetUser;
@@ -48,8 +48,8 @@ impl Filesystem for MockFilesystem {
         self.inode_impl(path)
     }
 
-    fn loop_backing_device(&self, node: &Path) -> Result<u64> {
-        self.loop_backing_device_impl(node)
+    fn loop_record(&self, node: &Path) -> Result<LoopRecord> {
+        self.loop_record_impl(node)
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {

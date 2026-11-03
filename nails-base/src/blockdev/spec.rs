@@ -27,3 +27,30 @@ pub fn btrfs_members<F: Filesystem>(fs: &F, name: &str) -> Vec<String> {
         .find(|members| members.iter().any(|member| member == name))
         .unwrap_or_default()
 }
+
+/// The devices of every btrfs filesystem `/sys/fs/btrfs` lists, by kernel
+/// name, each sorted: the entries of each `<fsid>/devices/`. None without
+/// btrfs. The error is a listing that is there but could not be read
+/// (`/sys/fs/btrfs`, or one filesystem's `devices/`): any filesystem could
+/// then have devices this does not name.
+pub fn btrfs_filesystems<F: Filesystem>(fs: &F) -> Result<Vec<Vec<String>>, PathBuf> {
+    let listing = |dir: &Path| match fs.list_directory(dir) {
+        Ok(mut entries) => {
+            entries.sort();
+            Ok(Some(entries))
+        }
+        Err(error) if error.io_kind() == Some(std::io::ErrorKind::NotFound) => Ok(None),
+        Err(_) => Err(dir.to_path_buf()),
+    };
+    let Some(filesystems) = listing(Path::new(SYS_FS_BTRFS))? else {
+        return Ok(Vec::new());
+    };
+    let mut members = Vec::new();
+    for filesystem in filesystems {
+        // `features/` lists no devices.
+        if let Some(devices) = listing(&filesystem.join("devices"))? {
+            members.push(names(&devices));
+        }
+    }
+    Ok(members)
+}

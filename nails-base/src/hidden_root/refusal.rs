@@ -31,6 +31,9 @@ use std::path::Path;
 /// Where the kernel's block devices and their attributes are read.
 const SYS: &str = "/sys";
 
+/// The attribute in which a loop device's directory shows its file.
+const LOOP_FILE: &str = "loop/backing_file";
+
 /// What to use instead of storage the gate cannot follow to its disks.
 const OWN_VOLUME: &str = "Use a volume on a disk or partition of its own, or an encrypted volume \
                           opened from one: only such a volume can be told apart from this \
@@ -188,6 +191,17 @@ impl Refusal {
             }
             RefusalKind::NotTheSessionVolume { .. } => {
                 vec!["Unmount what was mounted over it, then run the command again.".into()]
+            }
+            // The kernel shows no file of a loop device whose path does not
+            // fit in a page.
+            RefusalKind::StorageUnjudged { unreadable }
+                if unreadable.iter().any(|p| p.ends_with(LOOP_FILE)) =>
+            {
+                vec![
+                    "Set the loop device up again from a file whose path is shorter than 4096 \
+                     bytes, then run the command again."
+                        .into(),
+                ]
             }
             // sudo alone does not bring back a list of block devices, or a
             // device's number, that is missing because /sys is not mounted.
@@ -421,6 +435,11 @@ mod tests {
             RefusalKind::StorageUnjudged {
                 unreadable: vec![PathBuf::from("/proc/devices")],
             },
+            RefusalKind::StorageUnjudged {
+                unreadable: vec![PathBuf::from(
+                    "/sys/devices/virtual/block/loop1/loop/backing_file",
+                )],
+            },
         ]
         .into_iter()
         .map(|kind| Refusal::new(kind, root))
@@ -435,7 +454,7 @@ mod tests {
             .collect();
         assert_eq!(&codes[..15], &[NOT_SEPARATE_VOLUME; 15]);
         assert_eq!(&codes[15..17], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 8]);
+        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 9]);
     }
 
     #[test]
@@ -606,6 +625,15 @@ mod tests {
         assert_eq!(
             hint(&["/proc/devices"]),
             ["Run the command where /proc is mounted and readable."]
+        );
+        // A loop device's file the kernel cannot show: running the command
+        // as root does not bring it back.
+        assert_eq!(
+            hint(&["/sys/devices/virtual/block/loop1/loop/backing_file"]),
+            [
+                "Set the loop device up again from a file whose path is shorter than 4096 \
+                 bytes, then run the command again."
+            ]
         );
     }
 

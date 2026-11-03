@@ -764,9 +764,13 @@ of this changelog for that version becomes the release notes word for word, and
   (`storage_unjudged`), as a ZFS dataset is, and no flag lifts that, not even for a root on a
   filesystem of the decoy's on the volume or one the decoy's fstab mounts from it. A disk whose
   driver the kernel does not name is refused the same way, and so is a root on any disk where
-  `/proc/devices` cannot be read. A root that shares a device only with entries the decoy never
-  mounts at boot, which only warns, no longer hides such a refusal, nor that of an image file whose
-  filesystem cannot be told. Ordinary disks, iSCSI disks and `zram` devices are judged as before.
+  `/proc/devices` cannot be read, on a loop device that shows no file (its path is longer than the
+  kernel shows), or below a device whose devices sysfs cannot list. A loop device over the node of
+  a device outside `/dev` is judged as that device, by the loop driver's record, and a `zram`
+  device with the device it writes pages back to. A root that shares a device only with entries
+  the decoy never mounts at boot, which only warns, no longer hides such a refusal, nor that of an
+  image file whose filesystem cannot be told. Ordinary disks, iSCSI disks and `zram` devices that
+  write nothing back are judged as before.
 - The attach gate judges an image file that holds the filesystem the root's image file is on as
   it judges the root's own image file, as deep as such files go. On a decoy filesystem it is
   refused, and where no filesystem mounted here holds it, its loop device's record cannot be read

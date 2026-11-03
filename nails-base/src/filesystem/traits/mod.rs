@@ -21,6 +21,17 @@ pub enum MountRoot {
     Entry(Option<bool>),
 }
 
+/// What the loop driver recorded of the file a loop device is bound to, as
+/// [`Filesystem::loop_record`] gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopRecord {
+    /// The device the file is on (its `st_dev`, `lo_device`).
+    pub device: u64,
+    /// The device the file is, when it is a block device node (its
+    /// `st_rdev`, `lo_rdevice`); 0 for a regular file.
+    pub rdevice: u64,
+}
+
 /// Total and available space for a filesystem, taken from a single `statvfs`
 /// call so the status path never has to walk directories to report usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,15 +210,15 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// when the two share that namespace.
     fn inode(&self, path: &Path) -> Result<Option<u64>>;
 
-    /// The device (`st_dev`) of the file the loop device `node` is bound to,
-    /// as the loop driver recorded it when the file was attached
-    /// (`LOOP_GET_STATUS64`'s `lo_device`).
+    /// What the loop driver recorded of the file the loop device `node` is
+    /// bound to when the file was attached (`LOOP_GET_STATUS64`).
     ///
     /// The path in `loop/backing_file` is only a name: a filesystem mounted
-    /// over a folder on that path later leads a lookup elsewhere. The device
-    /// is what the file is really on. Reading it opens the device node, which
-    /// most systems let only root and the `disk` group do.
-    fn loop_backing_device(&self, node: &Path) -> Result<u64>;
+    /// over a folder on that path later leads a lookup elsewhere, and a block
+    /// device node outside `/dev` reads as a file by its path. The record is
+    /// what the file really is and is on. Reading it opens the device node,
+    /// which most systems let only root and the `disk` group do.
+    fn loop_record(&self, node: &Path) -> Result<LoopRecord>;
 
     /// What `path` itself is, as one `statx` says that neither follows a
     /// symbolic link there nor triggers an automount: a link, an automount

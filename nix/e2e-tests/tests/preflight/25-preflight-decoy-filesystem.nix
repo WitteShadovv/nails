@@ -18,19 +18,21 @@
 #   6. a network block device that qemu-nbd serves from an image on /srv is
 #      refused, whole and partitioned, naming --allow-decoy-storage for it in
 #      check's report, and init with that flag uses it with a warning;
-#   7. `init --allow-decoy-storage` uses the bind of the /srv folder with a
+#   7. a zram device that writes its pages back to a loop device over an
+#      image on /srv is refused as that image file;
+#   8. `init --allow-decoy-storage` uses the bind of the /srv folder with a
 #      warning, while the folder itself stays refused;
-#   8. a LUKS container file on /srv passes the hidden-volume check with a
+#   9. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
-#   9. a LUKS volume on the separate data disk passes the hidden-volume check;
-#  10. a tmpfs mounted over that volume is refused with root_covered, and
+#  10. a LUKS volume on the separate data disk passes the hidden-volume check;
+#  11. a tmpfs mounted over that volume is refused with root_covered, and
 #      neither the tmpfs nor the volume below receives anything;
-#  11. a decoy crypttab line that opens the data disk, then one with
+#  12. a decoy crypttab line that opens the data disk, then one with
 #      tcrypt-hidden for it or for a device that cannot be found, fails the
 #      backend-entries check (exit 4), and so does `activate`;
 #      a line for another device passes, tcrypt-hidden or not; a decoy fstab
 #      line for the data disk or its mapping fails it too;
-#  12. the accepted case: a whole session runs on a LUKS container file on
+#  13. the accepted case: a whole session runs on a LUKS container file on
 #      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
 #      hidden write lands in the container, and deactivate returns to a decoy
 #      that does not see it.
@@ -308,6 +310,31 @@ in
         )
         machine.succeed("test -f /mnt/nbd/state.json")
         machine.succeed("umount /mnt/nbd && qemu-nbd --disconnect /dev/nbd0 && rm -f /srv/nbd.img")
+
+    with subtest("a zram device that writes back to the decoy's storage is refused"):
+        # zram keeps its pages in RAM until it writes them back to its backing
+        # device, here a loop device over an image file on /srv; sysfs shows
+        # that device in backing_dev, not below the zram device.
+        loop = machine.succeed(
+            "modprobe zram num_devices=1 && truncate -s 64M /srv/zram.img && "
+            "losetup --find --show /srv/zram.img"
+        ).strip()
+        machine.succeed(
+            f"echo {loop} > /sys/block/zram0/backing_dev && "
+            "echo 64M > /sys/block/zram0/disksize && mkfs.ext4 -q /dev/zram0 && "
+            "mkdir -p /mnt/zram && mount /dev/zram0 /mnt/zram && "
+            "touch -m -d '2001-02-03 04:05:06' /mnt/zram"
+        )
+        refused_untouched(
+            "gate-zram",
+            "/mnt/zram",
+            "nails init --no-hardware-config /mnt/zram",
+            ["it is an unencrypted image file (/srv/zram.img) on /srv"],
+        )
+        machine.succeed(
+            f"umount /mnt/zram && echo 1 > /sys/block/zram0/reset && losetup -d {loop} && "
+            "rm -f /srv/zram.img"
+        )
 
     with subtest("--allow-decoy-storage uses decoy storage with a warning, never a folder"):
         refused_untouched(

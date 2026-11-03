@@ -358,6 +358,17 @@ impl MockFilesystem {
     }
 
     pub(super) fn list_directory_impl(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        if self
+            .unreadable_dirs
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(dir)
+        {
+            return Err(NailsError::io(
+                dir,
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            ));
+        }
         let contents = self
             .directory_contents
             .lock()

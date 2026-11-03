@@ -40,7 +40,16 @@ pub fn walk<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow, limit: usize)
         }
         seen.insert(dir.clone());
         let mut layer = read_layer(fs, &dir);
-        let slaves = sorted_listing(fs, &dir.join("slaves"));
+        let slaves = match fs.list_directory(&dir.join("slaves")) {
+            Ok(mut slaves) => {
+                slaves.sort();
+                slaves
+            }
+            Err(error) => {
+                layer.slaves_unread = error.io_kind() != Some(std::io::ErrorKind::NotFound);
+                Vec::new()
+            }
+        };
         layer.slaves = names(&slaves);
         layer.below = layer.slaves.clone();
         pending.extend(slaves);
@@ -55,6 +64,14 @@ pub fn walk<F: Filesystem>(fs: &F, top: &Path, follow: LoopFollow, limit: usize)
         walk.layers.push(layer);
     }
     walk
+}
+
+/// The kernel name of the block device numbered `major:minor`, by its link
+/// in `/sys/dev/block`.
+pub fn device_numbered<F: Filesystem>(fs: &F, number: &str) -> Option<String> {
+    block_dir(fs, &Path::new(SYS_DEV_BLOCK).join(number))
+        .as_deref()
+        .and_then(file_name)
 }
 
 /// The sysfs directory of the block device a mount sits on, if any.
@@ -201,6 +218,7 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
             .and_then(parse_u64)
             .unwrap_or(0),
         slaves: Vec::new(),
+        slaves_unread: false,
         below: Vec::new(),
         holders: names(&sorted_listing(fs, &dir.join("holders"))),
         partition: read_partition(fs, dir, &uevent),

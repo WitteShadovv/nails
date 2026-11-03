@@ -24,8 +24,10 @@
 //! that `major:minor`, or, on btrfs, whose files report a subvolume's own
 //! device that no mount line shows, the mount the path leads to when the file
 //! there is on that device. A loop whose record cannot be read (its node is
-//! readable by root only) is marked so, and only counts when the hidden root
-//! is stored on it.
+//! readable by root only) is marked so, and only counts when the hidden
+//! root's data reaches it. A record that shows the file is a block device
+//! node, which its path outside `/dev` does not tell, puts that device below
+//! the loop device.
 //!
 //! A whole disk with nothing below it in sysfs is told apart by the driver
 //! `/proc/devices` lists for its major number: `nbd` is a network block
@@ -35,7 +37,15 @@
 //! names `nbd<N>` and `zd<N>` count as well. A disk whose major number no
 //! driver is listed for is untraced, and one whose number or list cannot be
 //! read is unidentified: like an unread loop record, that only counts when
-//! the hidden root's data reaches the disk.
+//! the hidden root's data reaches the disk. So is a loop device that shows no
+//! file (one bound to none, which nothing reaches, or one whose file's path
+//! the kernel cannot show), and a device whose `slaves/` is there but cannot
+//! be listed. A zram device lies on the device it writes pages back to
+//! (`backing_dev`), when it names one, and is unidentified when that
+//! attribute cannot be read or names no device here. A device whose
+//! `partition` cannot be read is still a partition of the disk whose sysfs
+//! directory holds it. A btrfs filesystem whose devices cannot be listed is
+//! listed as unreadable, since it could be any root's.
 
 #[cfg(test)]
 #[path = "collect_tests.rs"]
@@ -46,6 +56,7 @@ use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
 use crate::crypttab::{CrypttabEntry, parse_crypttab};
+use crate::filesystem::LoopRecord;
 use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::{FstabEntry, parse_fstab};
 use std::collections::{BTreeMap, BTreeSet};
@@ -149,15 +160,17 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         }
     }
 
-    let names: Vec<String> = devices.nodes.keys().cloned().collect();
-    for name in names {
-        if devices.btrfs.iter().any(|members| members.contains(&name)) {
-            continue;
+    // A btrfs filesystem whose devices cannot be listed could be any root's,
+    // with devices nothing here names.
+    match blockdev::btrfs_filesystems(fs) {
+        Ok(filesystems) => {
+            devices.btrfs = filesystems
+                .into_iter()
+                .map(|members| members.into_iter().collect::<BTreeSet<String>>())
+                .filter(|members| members.iter().any(|name| devices.nodes.contains_key(name)))
+                .collect();
         }
-        let members: BTreeSet<String> = blockdev::btrfs_members(fs, &name).into_iter().collect();
-        if !members.is_empty() {
-            devices.btrfs.push(members);
-        }
+        Err(unread) => collected.unreadable.push(unread),
     }
     collected
 }
@@ -186,6 +199,9 @@ fn read_optional<F: Filesystem>(
     }
 }
 
+/// Block devices by `major:minor`.
+const SYS_DEV_BLOCK: &str = "/sys/dev/block";
+
 /// Record one device of a walked stack. `majors` are the drivers
 /// `/proc/devices` lists, `None` when it cannot be read.
 fn add_layer<F: Filesystem>(
@@ -200,10 +216,15 @@ fn add_layer<F: Filesystem>(
         return;
     }
     let mut below = layer.slaves.clone();
-    let kind = if let Some(dm) = &layer.dm {
+    if let Some(dm) = &layer.dm {
         devices
             .by_spec
             .insert(format!("/dev/mapper/{}", dm.name), name.clone());
+    }
+    let kind = if layer.slaves_unread {
+        // Nothing shows what lies below it.
+        NodeKind::Unidentified(layer.sysfs.join("slaves"))
+    } else if let Some(dm) = &layer.dm {
         match dm.kind {
             DmKind::Crypt(_) | DmKind::CryptSubdev | DmKind::VeraCrypt => NodeKind::Crypt {
                 name: dm.name.clone(),
@@ -214,12 +235,29 @@ fn add_layer<F: Filesystem>(
         }
     } else if let Some(loop_device) = &layer.loop_device {
         match &loop_device.backing {
-            LoopBacking::File(file) => NodeKind::Loop {
-                file: Some(LoopFile {
-                    path: file.clone(),
-                    holder: file_holder(fs, mounts, &name, file),
-                }),
-            },
+            LoopBacking::File(file) => {
+                let node = Path::new("/dev").join(&name);
+                match fs.loop_record(&node) {
+                    // A block device node outside /dev, which its path does
+                    // not tell: the loop device reads that device.
+                    Ok(record) if record.rdevice != 0 => {
+                        let number = device_number(record.rdevice);
+                        match blockdev::device_numbered(fs, &number) {
+                            Some(backing) => {
+                                below.push(backing);
+                                NodeKind::Loop { file: None }
+                            }
+                            None => NodeKind::Unidentified(Path::new(SYS_DEV_BLOCK).join(number)),
+                        }
+                    }
+                    record => NodeKind::Loop {
+                        file: Some(LoopFile {
+                            path: file.clone(),
+                            holder: file_holder(fs, mounts, file, record.map_err(|_| node)),
+                        }),
+                    },
+                }
+            }
             LoopBacking::Block { name: backing, .. } => {
                 below.push(backing.clone());
                 NodeKind::Loop { file: None }
@@ -229,8 +267,11 @@ fn add_layer<F: Filesystem>(
         NodeKind::Partition {
             disk: partition.disk.clone().unwrap_or_default(),
         }
+    } else if let Some(disk) = disk_holding(fs, &layer.sysfs) {
+        // A partition whose `partition` attribute could not be read.
+        NodeKind::Partition { disk }
     } else if below.is_empty() {
-        leaf_kind(&name, layer, majors)
+        leaf_kind(fs, &name, layer, majors, &mut below)
     } else {
         // An md array: its data lies on the devices below it.
         NodeKind::Disk
@@ -244,8 +285,15 @@ fn add_layer<F: Filesystem>(
 
 /// What the whole disk `name` (read as `layer`) is, with nothing below it in
 /// sysfs: by the driver `majors` names for its major number, and by the name
-/// that driver gives its disks (see the module docs).
-fn leaf_kind(name: &str, layer: &Layer, majors: Option<&BTreeMap<u32, String>>) -> NodeKind {
+/// that driver gives its disks (see the module docs). The device a zram
+/// device writes pages back to lands in `below`.
+fn leaf_kind<F: Filesystem>(
+    fs: &F,
+    name: &str,
+    layer: &Layer,
+    majors: Option<&BTreeMap<u32, String>>,
+    below: &mut Vec<String>,
+) -> NodeKind {
     let Some(majors) = majors else {
         return NodeKind::Unidentified(PathBuf::from(blockdev::PROC_DEVICES));
     };
@@ -267,24 +315,74 @@ fn leaf_kind(name: &str, layer: &Layer, majors: Option<&BTreeMap<u32, String>>) 
         NodeKind::Served(Served::Network)
     } else if named("ublkb") {
         NodeKind::Served(Served::Userspace)
+    } else if driver == "loop" || named("loop") {
+        // A loop device that shows no file was bound to none when it was
+        // read, which nothing can reach, or the kernel could not show its
+        // file: a path longer than a page, say. Nothing tells what it reads.
+        NodeKind::Unidentified(layer.sysfs.join("loop/backing_file"))
+    } else if driver == "zram" || named("zram") {
+        match zram_backing(fs, layer) {
+            Ok(backing) => {
+                below.extend(backing);
+                NodeKind::Disk
+            }
+            Err(input) => NodeKind::Unidentified(input),
+        }
     } else {
         NodeKind::Disk
     }
 }
 
-/// The filesystem that holds `file`, the backing file of the loop device
-/// `name`, found by the device the loop driver recorded (see the module docs).
+/// The device a zram device writes the pages it holds back to, by kernel
+/// name (`backing_dev`): none when it writes none back, or its kernel cannot.
+/// The attribute is the error when it cannot be read or names no device sysfs
+/// shows, since the pages could go anywhere.
+fn zram_backing<F: Filesystem>(fs: &F, layer: &Layer) -> Result<Option<String>, PathBuf> {
+    let attribute = layer.sysfs.join("backing_dev");
+    match fs.path_exists(&attribute) {
+        Ok(false) => return Ok(None),
+        Ok(true) => {}
+        Err(_) => return Err(attribute),
+    }
+    let Ok(text) = fs.read_file_content(&attribute) else {
+        return Err(attribute);
+    };
+    let path = text.trim_end_matches('\n');
+    if path == "none" {
+        return Ok(None);
+    }
+    blockdev::resolve_spec(fs, path)
+        .as_deref()
+        .and_then(file_name)
+        .map(Some)
+        .ok_or(attribute)
+}
+
+/// The disk whose sysfs directory holds `sysfs`, the directory of a device:
+/// only a partition's lies in another block device's.
+fn disk_holding<F: Filesystem>(fs: &F, sysfs: &Path) -> Option<String> {
+    let parent = sysfs.parent()?;
+    let name = file_name(parent)?;
+    let listed = fs
+        .canonicalize(&Path::new(SYS_CLASS_BLOCK).join(&name))
+        .ok()?;
+    (listed == parent).then_some(name)
+}
+
+/// The filesystem that holds `file`, a loop device's backing file, found by
+/// the device the loop driver recorded for it (see the module docs); the
+/// error is the loop device's node, whose record could not be read.
 fn file_holder<F: Filesystem>(
     fs: &F,
     mounts: &[MountEntry],
-    name: &str,
     file: &Path,
+    record: Result<LoopRecord, PathBuf>,
 ) -> FileHolder {
-    let node = Path::new("/dev").join(name);
-    let Ok(dev) = fs.loop_backing_device(&node) else {
-        return FileHolder::Unreadable(node);
+    let dev = match record {
+        Ok(record) => record.device,
+        Err(node) => return FileHolder::Unreadable(node),
     };
-    let number = format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+    let number = device_number(dev);
     if mounts.iter().any(|m| m.dev == number) {
         return FileHolder::Mount(number);
     }
@@ -292,6 +390,11 @@ fn file_holder<F: Filesystem>(
         Some(mount) if fs.device_id(file).ok() == Some(dev) => FileHolder::Mount(mount.dev.clone()),
         _ => FileHolder::Unplaced,
     }
+}
+
+/// A device number as sysfs and the mount table write it, `major:minor`.
+fn device_number(dev: u64) -> String {
+    format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev))
 }
 
 fn file_name(path: &Path) -> Option<String> {

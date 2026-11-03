@@ -32,7 +32,7 @@ pub use noatime::{EntryType, NoatimeEntry, OpenKind, open_noatime, read_dir_noat
 /// user-home write path.
 pub(crate) use file_ops::unique_temp_name;
 
-use super::{Filesystem, MountEntry, MountRoot, MountSource};
+use super::{Filesystem, LoopRecord, MountEntry, MountRoot, MountSource};
 use crate::target_user::TargetUser;
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
@@ -104,8 +104,8 @@ impl Filesystem for RealFilesystem {
         file_ops::inode(path)
     }
 
-    fn loop_backing_device(&self, node: &Path) -> Result<u64> {
-        loop_ops::loop_backing_device(node)
+    fn loop_record(&self, node: &Path) -> Result<LoopRecord> {
+        loop_ops::loop_record(node)
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {

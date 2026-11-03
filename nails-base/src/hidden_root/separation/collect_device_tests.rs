@@ -6,11 +6,12 @@
 //! (`nbd`), a userspace block device (`ublk`) and a ZFS volume (`zvol`), each
 //! as the root's own disk and below a partition, an encrypted mapping, a
 //! logical volume, an md array and an image file, with the override and
-//! without; disks whose kind cannot be read; and the disks that stay
-//! accepted.
+//! without; disks whose kind cannot be read, loop devices that show no file
+//! or read a device node, zram devices and what they write back to, and
+//! sysfs listings that cannot be read; and the disks that stay accepted.
 
 use super::{Decoy, NVME, P3, SDB};
-use crate::filesystem::Filesystem;
+use crate::filesystem::{Filesystem, LoopRecord};
 use crate::hidden_root::separation::{Served, Untraced, Verdict};
 use crate::hidden_root::{Allow, Assessment, HiddenRoot, RefusalKind};
 use std::path::{Path, PathBuf};
@@ -546,4 +547,209 @@ fn an_image_file_on_a_decoy_filesystem_on_a_served_disk_is_refused_as_the_image_
         "--allow-decoy-storage: using /mnt although it is an unencrypted image file \
          (/home/op/x.img) on /home; everything written there lands on that storage"
     );
+}
+
+/// `decoy` refuses its root, with the override too, as storage whose `input`
+/// could not be read.
+fn assert_unjudged(what: &str, decoy: &Decoy, input: &str) {
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        match assess(decoy, allow) {
+            Assessment::Refused(refusal) => assert_eq!(
+                refusal.kind,
+                RefusalKind::StorageUnjudged {
+                    unreadable: vec![PathBuf::from(input)]
+                },
+                "{what}, {allow:?}"
+            ),
+            other => panic!("{what}, {allow:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_loop_device_that_shows_no_file_is_refused_where_the_root_reaches_it() {
+    // The kernel shows no file of a loop device whose path does not fit in a
+    // page: the root on it, and one in an image file on a filesystem on it,
+    // cannot be judged.
+    let loop1 = "/sys/devices/virtual/block/loop1";
+    let file = "/sys/devices/virtual/block/loop1/loop/backing_file";
+    let itself =
+        decoy("5 1 7:1 / /mnt rw - ext4 /dev/loop1 rw\n").device(loop1, "loop1", "7:1", &[]);
+    assert_unjudged("the loop device itself", &itself, file);
+    let Assessment::Refused(refusal) = itself.assess() else {
+        unreachable!()
+    };
+    assert_eq!(
+        refusal.hint(None),
+        [
+            "Set the loop device up again from a file whose path is shorter than 4096 bytes, \
+             then run the command again."
+        ]
+    );
+    let loop0 = "/sys/devices/virtual/block/loop0";
+    let image = decoy(
+        "4 1 7:1 / /media/x rw - ext4 /dev/loop1 rw\n\
+         5 1 7:0 / /mnt rw - ext4 /dev/loop0 rw\n",
+    )
+    .device(loop1, "loop1", "7:1", &[])
+    .device(loop0, "loop0", "7:0", &[]);
+    image.attr(loop0, "loop/backing_file", "/media/x/disk.img");
+    image
+        .fs
+        .mock_set_loop_backing_device(Path::new("/dev/loop0"), rustix::fs::makedev(7, 1));
+    assert_unjudged("an image file on a filesystem on it", &image, file);
+    // A loop device bound to nothing holds no data, and nothing reaches it.
+    let apart = decoy("5 1 8:16 / /mnt rw - ext4 /dev/sdb rw\n")
+        .device(SDB, "sdb", "8:16", &[])
+        .device(loop1, "loop1", "7:1", &[]);
+    assert_eq!(apart.assess(), Assessment::Attached);
+}
+
+#[test]
+fn a_zram_device_is_judged_with_the_device_it_writes_back_to() {
+    let zram = "/sys/devices/virtual/block/zram0";
+    let on_zram = |backing: Option<&str>| {
+        let decoy = decoy("5 1 252:0 / /mnt rw - ext4 /dev/zram0 rw\n")
+            .device(zram, "zram0", "252:0", &[])
+            .device(NBD0, "nbd0", "43:0", &[])
+            .device(SDB, "sdb", "8:16", &[]);
+        if let Some(backing) = backing {
+            decoy.attr(zram, "backing_dev", backing);
+        }
+        decoy
+    };
+    // Without writeback, or with none set up, its pages stay in RAM.
+    assert_eq!(on_zram(None).assess(), Assessment::Attached);
+    assert_eq!(on_zram(Some("none")).assess(), Assessment::Attached);
+    assert_eq!(on_zram(Some("/dev/sdb")).assess(), Assessment::Attached);
+    assert_served(
+        "pages written back to an nbd device",
+        &on_zram(Some("/dev/nbd0")),
+        Served::Network,
+    );
+    // Pages written back to the decoy's own disk.
+    let decoys = on_zram(Some("/dev/nvme0n1p3"));
+    assert!(
+        matches!(
+            decoys.assess(),
+            Assessment::Refused(ref refusal)
+                if matches!(refusal.kind, RefusalKind::DecoyStorage { .. })
+        ),
+        "{:?}",
+        decoys.assess()
+    );
+    // A device it cannot name, or an attribute it cannot read.
+    let input = "/sys/devices/virtual/block/zram0/backing_dev";
+    assert_unjudged(
+        "a device node outside /dev",
+        &on_zram(Some("/tmp/blk")),
+        input,
+    );
+    let unread = on_zram(None).unreadable(input);
+    assert_unjudged("an attribute it cannot read", &unread, input);
+}
+
+#[test]
+fn what_sysfs_cannot_list_on_the_way_down_cannot_be_judged() {
+    // The devices below the root's mapping.
+    let dm5 = "/sys/devices/virtual/block/dm-5";
+    let mapping = decoy("5 1 254:5 / /mnt rw - ext4 /dev/mapper/data rw\n")
+        .device(NBD0, "nbd0", "43:0", &[])
+        .mapping(
+            dm5,
+            "dm-5",
+            "254:5",
+            ("data", "CRYPT-LUKS2-0c-data"),
+            &[("nbd0", NBD0)],
+        );
+    mapping.fs.mock_set_unreadable_dir(&format!("{dm5}/slaves"));
+    assert_unjudged(
+        "the devices below a mapping",
+        &mapping,
+        &format!("{dm5}/slaves"),
+    );
+
+    // The devices of a btrfs filesystem.
+    let fsid = "/sys/fs/btrfs/0a1b2c3d-0000-4000-8000-000000000009";
+    let btrfs = decoy("5 1 0:60 / /mnt rw - btrfs /dev/sdb rw,subvol=/\n")
+        .device(SDB, "sdb", "8:16", &[])
+        .device(NBD0, "nbd0", "43:0", &[]);
+    btrfs
+        .fs
+        .mock_set_directory_contents(Path::new("/sys/fs/btrfs"), vec![PathBuf::from(fsid)]);
+    btrfs.fs.mock_set_unreadable_dir(&format!("{fsid}/devices"));
+    assert_unjudged(
+        "the devices of a btrfs filesystem",
+        &btrfs,
+        &format!("{fsid}/devices"),
+    );
+
+    // A partition whose `partition` attribute cannot be read is still a
+    // partition of the disk whose directory holds it.
+    let ublk = Disk {
+        name: "ublkb0",
+        dir: UBLKB0,
+        dev: "259:7",
+        part: "259:8",
+    };
+    let part = decoy("5 1 259:8 / /mnt rw - ext4 /dev/ublkb0p1 rw\n")
+        .device(ublk.dir, ublk.name, ublk.dev, &[])
+        .device(&ublk.partition_dir(), "ublkb0p1", ublk.part, &[]);
+    assert_served(
+        "a partition read without its number",
+        &part,
+        Served::Userspace,
+    );
+}
+
+#[test]
+fn a_loop_device_over_a_device_node_outside_dev_lies_on_that_device() {
+    // The loop driver's record shows the loop device reads the node of a
+    // device, which the node's path outside /dev does not tell.
+    let loop1 = "/sys/devices/virtual/block/loop1";
+    let over = |dir: &str, name: &str, dev: &str, node: &str, on: (u32, u32), lines: &str| {
+        let decoy = decoy(&format!("{lines}5 1 7:1 / /mnt rw - ext4 /dev/loop1 rw\n"))
+            .device(dir, name, dev, &[])
+            .device(loop1, "loop1", "7:1", &[]);
+        decoy.attr(loop1, "loop/backing_file", node);
+        decoy.link(&format!("/sys/dev/block/{dev}"), dir);
+        let (major, minor) = dev.split_once(':').unwrap();
+        decoy.fs.mock_set_loop_record(
+            Path::new("/dev/loop1"),
+            LoopRecord {
+                device: rustix::fs::makedev(on.0, on.1),
+                rdevice: rustix::fs::makedev(major.parse().unwrap(), minor.parse().unwrap()),
+            },
+        );
+        decoy
+    };
+    // A node on a tmpfs, which keeps nothing on a disk itself.
+    let tmpfs = over(
+        NBD0,
+        "nbd0",
+        "43:0",
+        "/media/tmp/blk",
+        (0, 46),
+        "3 1 0:46 / /media/tmp rw - tmpfs tmpfs rw\n",
+    );
+    assert_served("an nbd node on a tmpfs", &tmpfs, Served::Network);
+    // A node on the decoy's own /: not an image file there, but the volume.
+    let on_root = over(ZD0, "zd0", "230:0", "/root/blk", (259, 3), "");
+    assert_untraced(
+        "a zvol node on the decoy's /",
+        &on_root,
+        Untraced::ZfsVolume,
+    );
+    let plain = over(SDB, "sdb", "8:16", "/root/blk", (259, 3), "");
+    assert_eq!(plain.assess(), Assessment::Attached);
+    // A device sysfs shows by no such number.
+    let gone = over(SDB, "sdb", "8:16", "/root/blk", (259, 3), "");
+    gone.fs.mock_set_loop_record(
+        Path::new("/dev/loop1"),
+        LoopRecord {
+            device: rustix::fs::makedev(259, 3),
+            rdevice: rustix::fs::makedev(43, 9),
+        },
+    );
+    assert_unjudged("a device sysfs does not show", &gone, "/sys/dev/block/43:9");
 }

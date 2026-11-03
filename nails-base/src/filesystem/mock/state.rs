@@ -153,10 +153,10 @@ pub struct MockFilesystem {
     /// unset path that exists gets a per-path distinct inode (see
     /// [`MockFilesystem::inode_impl`]), and one that does not, none.
     pub(super) inodes: Arc<Mutex<HashMap<PathBuf, std::result::Result<u64, std::io::ErrorKind>>>>,
-    /// Backing-file devices reported by
-    /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device),
-    /// keyed by loop device node. An unset node cannot be read.
-    pub(super) loop_backing_devices: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    /// The loop driver's records reported by
+    /// [`Filesystem::loop_record`](crate::Filesystem::loop_record), keyed by
+    /// loop device node. An unset node cannot be read.
+    pub(super) loop_records: Arc<Mutex<HashMap<PathBuf, crate::filesystem::LoopRecord>>>,
     pub(super) written_files: Arc<Mutex<HashMap<PathBuf, String>>>,
     pub(super) remove_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) directory_contents: Arc<Mutex<HashMap<PathBuf, Vec<PathBuf>>>>,
@@ -214,7 +214,7 @@ impl MockFilesystem {
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
             device_ids: Arc::new(Mutex::new(HashMap::new())),
             inodes: Arc::new(Mutex::new(HashMap::new())),
-            loop_backing_devices: Arc::new(Mutex::new(HashMap::new())),
+            loop_records: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
             directory_contents: Arc::new(Mutex::new(HashMap::new())),
@@ -289,7 +289,7 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
-        self.loop_backing_devices
+        self.loop_records
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
