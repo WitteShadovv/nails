@@ -519,6 +519,7 @@ mod kernel_tests {
     use super::*;
     use nails_base::test_support::{Rerun, skip_host};
     use nails_teardown::whole_root::fresh_pids::{self, Anchor, Lowered, Places};
+    use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
 
@@ -529,15 +530,33 @@ mod kernel_tests {
     /// Ubuntu 26.04's, by the path the kernel ran rather than argv[0], so
     /// through a link named after another program it runs that program, or
     /// none, and ends at once.
+    ///
+    /// It returns once the shell has printed the empty line it starts with,
+    /// when the kernel is done with its exec. `spawn` returns sooner: std
+    /// spawns it through `posix_spawn`, which lets this process go on as soon
+    /// as the child's exec lets go of this process's memory, and only after
+    /// that does the kernel name the child after its program and set out its
+    /// arguments. A reading of the process table right after `spawn` could
+    /// find the child still under this process's name and with no argv[0],
+    /// and on a busy host the entry then found no getty. `echo` and `read`
+    /// are built into the shell, so it starts no process of its own.
     fn waiting(program: &Path, arg0: &str) -> Child {
-        Command::new(program)
+        let mut child = Command::new(program)
             .arg0(arg0)
-            .args(["-c", "read line"])
+            .args(["-c", "echo; read line"])
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
+            .unwrap();
+        let mut line = [0; 1];
+        child
+            .stdout
+            .as_mut()
             .unwrap()
+            .read_exact(&mut line)
+            .expect("a stand-in ended before it printed its line");
+        child
     }
 
     /// A process named `comm` that runs until the test ends it: a waiting
