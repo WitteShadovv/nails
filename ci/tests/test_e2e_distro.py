@@ -1,4 +1,4 @@
-"""Tests for ci/e2e/distro.py, the distribution VM smoke matrix planner.
+"""Tests for ci/e2e/distro.py, the distribution VM matrix planner.
 
 Nix is not needed here: the metadata is handed in as the plain data the flake's
 ``e2e-distro-metadata`` attribute exposes, and the planner is pure.
@@ -21,6 +21,8 @@ def sample_metadata(
     scenarios: dict[str, list[str]] | None = None,
     timeouts: dict[str, int] | None = None,
     probes: dict[str, str] | None = None,
+    records: dict[str, str] | None = None,
+    refusals: dict[str, str] | None = None,
 ) -> distro.DistroMetadata:
     scenarios = scenarios or {
         "debian-12": ["debian-12-smoke"],
@@ -32,14 +34,22 @@ def sample_metadata(
             name: f"{name}-probe"
             for name in ("arch-boxes", "fedora-44", "fedora-44-enforcing")
         }
+    if records is None:
+        records = {name: f"{name}-records" for name in ("debian-13", "ubuntu-24.04")}
+    if refusals is None:
+        refusals = {name: f"{name}-refusal" for name in ("arch-boxes", "fedora-44")}
     if timeouts is None:
         timeouts = {name: 2400 for members in scenarios.values() for name in members}
         timeouts.update({attr: 1200 for attr in probes.values()})
+        timeouts.update({attr: 1800 for attr in records.values()})
+        timeouts.update({attr: 900 for attr in refusals.values()})
     return distro.DistroMetadata(
         distros=list(scenarios),
         scenarios=scenarios,
         timeouts=timeouts,
         probes=probes,
+        records=records,
+        refusals=refusals,
     )
 
 
@@ -118,6 +128,45 @@ class ParseMetadataTest(unittest.TestCase):
         with self.assertRaises(distro.DistroError):
             distro.parse_distro_metadata(payload)
 
+    def test_records_and_refusals_are_optional(self) -> None:
+        payload: dict[str, object] = {"distros": [], "scenarios": {}, "timeouts": {}}
+        meta = distro.parse_distro_metadata(payload)
+        self.assertEqual((meta.records, meta.refusals), ({}, {}))
+
+    def test_parses_records_and_refusals(self) -> None:
+        payload = {
+            "distros": [],
+            "scenarios": {},
+            "timeouts": {"debian-13-records": 1800, "fedora-44-refusal": 1200},
+            "records": {"debian-13": "debian-13-records"},
+            "refusals": {"fedora-44": "fedora-44-refusal"},
+        }
+        meta = distro.parse_distro_metadata(payload)
+        self.assertEqual(meta.records, {"debian-13": "debian-13-records"})
+        self.assertEqual(meta.refusals, {"fedora-44": "fedora-44-refusal"})
+
+    def test_rejects_a_driver_without_timeout(self) -> None:
+        for key, table in (
+            ("records", {"debian-13": "debian-13-records"}),
+            ("refusals", {"fedora-44": "fedora-44-refusal"}),
+        ):
+            with self.subTest(key=key):
+                payload = {"distros": [], "scenarios": {}, "timeouts": {}, key: table}
+                with self.assertRaises(distro.DistroError):
+                    distro.parse_distro_metadata(payload)
+
+    def test_rejects_driver_tables_that_are_not_a_mapping(self) -> None:
+        for key in ("records", "refusals"):
+            with self.subTest(key=key):
+                payload: dict[str, object] = {
+                    "distros": [],
+                    "scenarios": {},
+                    "timeouts": {},
+                    key: ["debian-13-records"],
+                }
+                with self.assertRaises(distro.DistroError):
+                    distro.parse_distro_metadata(payload)
+
 
 class ResolveTest(unittest.TestCase):
     def test_empty_request_returns_all(self) -> None:
@@ -195,14 +244,19 @@ class PlanMatrixTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             distro.plan_distro_matrix(meta, max_jobs=0)
 
-    def test_smoke_plan_never_runs_a_probe(self) -> None:
+    def test_smoke_plan_never_runs_a_driver(self) -> None:
         meta = sample_metadata()
         tests: set[str] = set()
         for job in distro.plan_distro_matrix(meta)["include"]:
             members = job["tests"]
             assert isinstance(members, list)
             tests.update(str(test) for test in members)
-        self.assertFalse(tests & set(meta.probes.values()))
+        drivers = {*meta.probes.values(), *meta.records.values()}
+        self.assertFalse(tests & (drivers | set(meta.refusals.values())))
+
+    def test_smoke_jobs_are_marked_and_do_not_gate(self) -> None:
+        for job in distro.plan_distro_matrix(sample_metadata())["include"]:
+            self.assertEqual((job["suite"], job["gating"]), ("smoke", False))
 
 
 class PlanProbeMatrixTest(unittest.TestCase):
@@ -238,6 +292,144 @@ class PlanProbeMatrixTest(unittest.TestCase):
         with self.assertRaises(distro.DistroError):
             distro.plan_probe_matrix(meta)
 
+    def test_probe_jobs_are_marked_and_do_not_gate(self) -> None:
+        for job in distro.plan_probe_matrix(sample_metadata())["include"]:
+            self.assertEqual((job["suite"], job["gating"]), ("probe", False))
+
+
+class PlanDriverMatrixTest(unittest.TestCase):
+    def test_one_gating_job_per_records_scenario_and_refusal(self) -> None:
+        meta = sample_metadata()
+        for suite, table, seconds in (
+            ("records", meta.records, 1800),
+            ("refusal", meta.refusals, 900),
+        ):
+            with self.subTest(suite=suite):
+                include = distro.plan_driver_matrix(meta, suite)["include"]
+                self.assertEqual([job["distro"] for job in include], list(table))
+                for job in include:
+                    self.assertEqual(job["suite"], suite)
+                    self.assertIs(job["gating"], True)
+                    self.assertEqual((job["index"], job["count"]), (1, 1))
+                    self.assertEqual(job["tests"], [table[str(job["distro"])]])
+                    self.assertEqual(job["seconds"], seconds)
+                    timeout = job["timeout"]
+                    assert isinstance(timeout, int)
+                    self.assertGreater(timeout * 60, seconds)
+
+    def test_unknown_driver_names_its_suite(self) -> None:
+        meta = sample_metadata()
+        with self.assertRaisesRegex(distro.DistroError, "unknown refusal: debian-13"):
+            distro.plan_driver_matrix(meta, "refusal", ["debian-13"])
+        with self.assertRaisesRegex(
+            distro.DistroError, "unknown records scenario: fedora-44"
+        ):
+            distro.plan_driver_matrix(meta, "records", ["fedora-44"])
+
+    def test_a_suite_with_nothing_to_run_raises(self) -> None:
+        meta = sample_metadata(records={}, refusals={})
+        for suite in ("records", "refusal"):
+            with self.subTest(suite=suite):
+                with self.assertRaises(distro.DistroError):
+                    distro.plan_driver_matrix(meta, suite)
+
+    def test_smoke_is_no_driver_suite(self) -> None:
+        with self.assertRaises(distro.DistroError):
+            distro.plan_driver_matrix(sample_metadata(), "smoke")
+
+
+class ExpandSuitesTest(unittest.TestCase):
+    def test_all_is_smoke_records_and_refusal(self) -> None:
+        self.assertEqual(distro.expand_suites(["all"]), ["smoke", "records", "refusal"])
+
+    def test_suites_come_once_in_plan_order(self) -> None:
+        self.assertEqual(
+            distro.expand_suites(["probe", "refusal", "records", "refusal"]),
+            ["records", "refusal", "probe"],
+        )
+        self.assertEqual(
+            distro.expand_suites(["records", "all"]), ["smoke", "records", "refusal"]
+        )
+
+    def test_rejects_an_unknown_or_empty_selection(self) -> None:
+        with self.assertRaises(distro.DistroError):
+            distro.expand_suites(["oracle"])
+        with self.assertRaises(distro.DistroError):
+            distro.expand_suites([])
+
+
+class PlanSuitesTest(unittest.TestCase):
+    def suites_and_tests(
+        self, *suites: str, names: tuple[str, ...] = ()
+    ) -> list[tuple[object, object]]:
+        include = distro.plan_matrix(sample_metadata(), suites, names)["include"]
+        return [(job["suite"], job["tests"]) for job in include]
+
+    def test_all_plans_smoke_records_and_refusal(self) -> None:
+        self.assertEqual(
+            self.suites_and_tests("all"),
+            [
+                ("smoke", ["debian-12-smoke"]),
+                ("smoke", ["debian-13-smoke"]),
+                ("smoke", ["ubuntu-24.04-smoke"]),
+                ("records", ["debian-13-records"]),
+                ("records", ["ubuntu-24.04-records"]),
+                ("refusal", ["arch-boxes-refusal"]),
+                ("refusal", ["fedora-44-refusal"]),
+            ],
+        )
+
+    def test_only_the_records_and_refusal_jobs_gate(self) -> None:
+        include = distro.plan_matrix(sample_metadata(), ["all", "probe"])["include"]
+        gating = {str(job["suite"]) for job in include if job["gating"]}
+        informational = {str(job["suite"]) for job in include if not job["gating"]}
+        self.assertEqual(gating, {"records", "refusal"})
+        self.assertEqual(informational, {"smoke", "probe"})
+
+    def test_each_suite_runs_what_it_has_of_the_names(self) -> None:
+        self.assertEqual(
+            self.suites_and_tests("all", names=("fedora-44", "debian-13")),
+            [
+                ("smoke", ["debian-13-smoke"]),
+                ("records", ["debian-13-records"]),
+                ("refusal", ["fedora-44-refusal"]),
+            ],
+        )
+        self.assertEqual(
+            self.suites_and_tests("records", "refusal", names=("ubuntu-24.04",)),
+            [("records", ["ubuntu-24.04-records"])],
+        )
+
+    def test_a_name_no_selected_suite_has_raises(self) -> None:
+        with self.assertRaisesRegex(distro.DistroError, "unknown name: debian-12"):
+            distro.plan_matrix(sample_metadata(), ["records", "refusal"], ["debian-12"])
+
+    def test_a_plan_without_a_job_raises(self) -> None:
+        meta = sample_metadata(records={}, refusals={})
+        with self.assertRaisesRegex(distro.DistroError, "the plan holds no job"):
+            distro.plan_matrix(meta, ["records", "refusal"])
+
+    def test_an_empty_suite_is_left_out_of_a_wider_plan(self) -> None:
+        meta = sample_metadata(refusals={})
+        include = distro.plan_matrix(meta, ["records", "refusal"])["include"]
+        self.assertEqual({job["suite"] for job in include}, {"records"})
+
+    def test_a_suite_alone_plans_as_its_own_planner(self) -> None:
+        meta = sample_metadata()
+        self.assertEqual(
+            distro.plan_matrix(meta, ["smoke"], ["debian-13"]),
+            distro.plan_distro_matrix(meta, ["debian-13"]),
+        )
+        self.assertEqual(
+            distro.plan_matrix(meta, ["probe"]), distro.plan_probe_matrix(meta)
+        )
+        with self.assertRaises(distro.DistroError):
+            distro.plan_matrix(meta, ["smoke"], ["fedora-44"])
+
+    def test_rejects_non_positive_ceiling(self) -> None:
+        with self.assertRaises(ValueError):
+            distro.plan_matrix(sample_metadata(), ["all"], max_jobs=0)
+
 
 class DistroPlanCommandTest(unittest.TestCase):
     def plan(self, *argv: str) -> dict[str, list[dict[str, object]]]:
@@ -250,8 +442,23 @@ class DistroPlanCommandTest(unittest.TestCase):
         matrix: dict[str, list[dict[str, object]]] = json.loads(out.getvalue())
         return matrix
 
-    def test_smoke_is_the_default_suite(self) -> None:
+    def test_all_is_the_default_suite(self) -> None:
         include = self.plan()["include"]
+        self.assertEqual(
+            [job["tests"] for job in include],
+            [
+                ["debian-12-smoke"],
+                ["debian-13-smoke"],
+                ["ubuntu-24.04-smoke"],
+                ["debian-13-records"],
+                ["ubuntu-24.04-records"],
+                ["arch-boxes-refusal"],
+                ["fedora-44-refusal"],
+            ],
+        )
+
+    def test_smoke_suite_plans_the_smokes_alone(self) -> None:
+        include = self.plan("--suite", "smoke")["include"]
         self.assertEqual(
             [job["tests"] for job in include],
             [["debian-12-smoke"], ["debian-13-smoke"], ["ubuntu-24.04-smoke"]],
@@ -260,6 +467,22 @@ class DistroPlanCommandTest(unittest.TestCase):
     def test_probe_suite_plans_the_named_probes(self) -> None:
         include = self.plan("--suite", "probe", "fedora-44")["include"]
         self.assertEqual([job["tests"] for job in include], [["fedora-44-probe"]])
+
+    def test_suites_combine(self) -> None:
+        include = self.plan("--suite", "records", "--suite", "refusal", "fedora-44")
+        self.assertEqual(
+            [job["tests"] for job in include["include"]], [["fedora-44-refusal"]]
+        )
+
+    def test_an_error_is_bad_input(self) -> None:
+        err = io.StringIO()
+        with mock.patch.object(
+            cli.distro, "load_distro_metadata", return_value=sample_metadata()
+        ):
+            with contextlib.redirect_stderr(err):
+                code = cli.main(["distro-plan", "--suite", "records", "fedora-44"])
+        self.assertEqual(code, cli.EXIT_BAD_INPUT)
+        self.assertIn("unknown records scenario: fedora-44", err.getvalue())
 
 
 if __name__ == "__main__":

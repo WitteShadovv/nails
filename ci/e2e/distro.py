@@ -1,21 +1,33 @@
-"""Plan the portable distribution VM smoke matrix.
+"""Plan the portable distribution VM matrix.
 
 The NixOS E2E suite (``plan.py``/``resolve.py``) shards one distribution's
-tests on the NixOS test driver. The distro tier instead runs a small smoke
-scenario set on several Linux distributions through ``numtide/nix-vm-test``, so
-a regression on a non-NixOS host is caught instead of passing unseen.
+tests on the NixOS test driver. The distro tier instead boots several Linux
+distributions through ``numtide/nix-vm-test``, so a regression on a non-NixOS
+host is caught instead of passing unseen. It has four suites:
+
+- ``smoke``: the smoke scenarios of the admitted distributions, each built with
+  ``nix build``, so an unchanged scenario's pass comes from the binary cache;
+- ``records``: the login- and boot-record scenarios, one per distribution that
+  has one;
+- ``refusal``: the refusal of each pinned image of a family the family table
+  does not admit;
+- ``probe``: the fact probes of the images not admitted yet whose image is
+  pinned.
+
+A records scenario, a refusal and a probe are each a host driver, one job of
+its own that builds the driver and runs it on the runner, so every run boots
+its image. ``all`` plans the smoke, records and refusal suites together, the
+default run; the probes boot no NAILS and run only when asked for. The records
+and refusal jobs gate (:data:`GATING_SUITES`): the workflow fails its result on
+them, while a smoke scenario or a probe that fails only warns.
 
 The distro list is plain data the flake exposes as
 ``legacyPackages.<system>.e2e-distro-metadata``. Each distribution names its
 smoke scenarios, so bringing another distribution online once its backend lands
 is a single entry in ``nix/distro-tests/images.nix`` -- this module and the
-workflow enumerate whatever the metadata reports. The matrix is bounded so the
-total number of parallel jobs (distributions times their shards) never exceeds a
-ceiling, because every job holds a dedicated KVM runner.
-
-The metadata also names the fact probes of the families not admitted yet whose
-image is pinned. A dispatch can run those instead of the smokes
-(:func:`plan_probe_matrix`), one job per probe.
+workflow enumerate whatever the metadata reports. The smoke shards are bounded
+so their number (distributions times their shards) never exceeds a ceiling,
+because every job holds a dedicated KVM runner.
 """
 
 from __future__ import annotations
@@ -31,10 +43,38 @@ from . import plan
 # works from any host with an x86_64-linux builder.
 DISTRO_METADATA_ATTR = ".#legacyPackages.x86_64-linux.e2e-distro-metadata"
 
-# At most this many distro VM jobs run in parallel: distributions times the
-# shards each is split into. One smoke scenario per distribution stays well
-# under it; the cap only bites once several scenarios per distribution exist.
+# At most this many smoke jobs run in parallel: distributions times the shards
+# each is split into. One smoke scenario per distribution stays well under it;
+# the cap only bites once several scenarios per distribution exist.
 MAX_DISTRO_JOBS = 8
+
+SMOKE = "smoke"
+RECORDS = "records"
+REFUSAL = "refusal"
+PROBE = "probe"
+# Every suite, in the order a plan lists their jobs.
+SUITES = (SMOKE, RECORDS, REFUSAL, PROBE)
+# The name that selects ALL_SUITES.
+ALL = "all"
+# What ``all`` plans: every suite that runs NAILS.
+ALL_SUITES = (SMOKE, RECORDS, REFUSAL)
+# The suites whose failure fails the run, not only warns.
+GATING_SUITES = frozenset({RECORDS, REFUSAL})
+
+# How each driver suite names what it runs, for its error messages.
+_DRIVER_NOUNS = {
+    RECORDS: "records scenario",
+    REFUSAL: "refusal",
+    PROBE: "probe",
+}
+# Why a driver suite can have nothing to run.
+_NOTHING_TO_RUN = {
+    RECORDS: "no records scenario can run: the metadata lists none",
+    REFUSAL: (
+        "no refusal can run: no image of a family the family table refuses is pinned"
+    ),
+    PROBE: "no probe can run: no image of the probe table is pinned",
+}
 
 
 class DistroError(Exception):
@@ -47,15 +87,32 @@ class DistroMetadata:
 
     ``distros`` is every distribution name, in declaration order. ``scenarios``
     maps each distribution to its smoke scenario attribute names, and
-    ``timeouts`` maps each scenario, and each probe attribute, to its effective
+    ``timeouts`` maps each scenario, and each driver attribute, to its effective
     timeout in seconds. ``probes`` maps each probe a run can boot to its
-    attribute name.
+    attribute name, ``records`` each distribution with a records scenario to
+    that scenario's attribute, and ``refusals`` each image a refusal can boot
+    to the refusal's attribute.
     """
 
     distros: list[str]
     scenarios: dict[str, list[str]]
     timeouts: dict[str, int]
     probes: dict[str, str] = field(default_factory=dict)
+    records: dict[str, str] = field(default_factory=dict)
+    refusals: dict[str, str] = field(default_factory=dict)
+
+    def drivers(self, suite: str) -> dict[str, str]:
+        """The drivers of a driver suite: each name to its attribute."""
+        tables = {PROBE: self.probes, RECORDS: self.records, REFUSAL: self.refusals}
+        if suite not in tables:
+            raise DistroError(f"{suite} is not a suite of host drivers")
+        return tables[suite]
+
+    def names(self, suite: str) -> list[str]:
+        """What a suite can run: distributions, or the names of its drivers."""
+        if suite == SMOKE:
+            return list(self.distros)
+        return list(self.drivers(suite))
 
     def resolve(self, requested: Sequence[str]) -> list[str]:
         """Return the requested distributions, or all of them when none given."""
@@ -70,20 +127,34 @@ class DistroMetadata:
                 resolved.append(name)
         return resolved
 
-    def resolve_probes(self, requested: Sequence[str]) -> list[str]:
-        """Return the requested probes, or every probe when none are named."""
-        if not self.probes:
-            raise DistroError("no probe can run: no image of the probe table is pinned")
+    def resolve_drivers(self, suite: str, requested: Sequence[str]) -> list[str]:
+        """Return the requested drivers of a suite, or all of them."""
+        drivers = self.drivers(suite)
+        if not drivers:
+            raise DistroError(_NOTHING_TO_RUN[suite])
         if not requested:
-            return list(self.probes)
+            return list(drivers)
         resolved: list[str] = []
         for name in requested:
-            if name not in self.probes:
-                known = ", ".join(self.probes)
-                raise DistroError(f"unknown probe: {name} (probes: {known})")
+            if name not in drivers:
+                known = ", ".join(drivers)
+                noun = _DRIVER_NOUNS[suite]
+                raise DistroError(f"unknown {noun}: {name} ({noun}s: {known})")
             if name not in resolved:
                 resolved.append(name)
         return resolved
+
+    def resolve_probes(self, requested: Sequence[str]) -> list[str]:
+        """Return the requested probes, or every probe when none are named."""
+        return self.resolve_drivers(PROBE, requested)
+
+
+def _driver_table(payload: Mapping[str, object], key: str) -> dict[str, str]:
+    """An optional table of drivers: a name to its attribute."""
+    raw = payload.get(key, {})
+    if not isinstance(raw, Mapping):
+        raise DistroError(f"distro metadata {key} must map a name to its attribute")
+    return {str(name): str(attr) for name, attr in raw.items()}
 
 
 def parse_distro_metadata(payload: object) -> DistroMetadata:
@@ -114,15 +185,20 @@ def parse_distro_metadata(payload: object) -> DistroMetadata:
         for scenario in scenarios[distro]:
             if scenario not in timeouts:
                 raise DistroError(f"distro metadata has no timeout for {scenario}")
-    raw_probes = payload.get("probes", {})
-    if not isinstance(raw_probes, Mapping):
-        raise DistroError("distro metadata probes must map a probe to its attribute")
-    probes = {str(name): str(attr) for name, attr in raw_probes.items()}
-    for attr in probes.values():
-        if attr not in timeouts:
-            raise DistroError(f"distro metadata has no timeout for {attr}")
+    tables = {
+        key: _driver_table(payload, key) for key in ("probes", "records", "refusals")
+    }
+    for table in tables.values():
+        for attr in table.values():
+            if attr not in timeouts:
+                raise DistroError(f"distro metadata has no timeout for {attr}")
     return DistroMetadata(
-        distros=distros, scenarios=scenarios, timeouts=timeouts, probes=probes
+        distros=distros,
+        scenarios=scenarios,
+        timeouts=timeouts,
+        probes=tables["probes"],
+        records=tables["records"],
+        refusals=tables["refusals"],
     )
 
 
@@ -153,6 +229,22 @@ def load_distro_metadata(attr: str = DISTRO_METADATA_ATTR) -> DistroMetadata:
     return parse_distro_metadata(payload)
 
 
+def expand_suites(names: Sequence[str]) -> list[str]:
+    """The suites ``names`` select, ``all`` expanded, each once, in plan order."""
+    selected: set[str] = set()
+    for name in names:
+        if name == ALL:
+            selected.update(ALL_SUITES)
+        elif name in SUITES:
+            selected.add(name)
+        else:
+            known = ", ".join((ALL, *SUITES))
+            raise DistroError(f"unknown suite: {name} (suites: {known})")
+    if not selected:
+        raise DistroError("no suite selected")
+    return [suite for suite in SUITES if suite in selected]
+
+
 def _shards_per_distro(distro_count: int, max_jobs: int) -> int:
     """How many shards each distribution may use under the job ceiling.
 
@@ -166,22 +258,10 @@ def _shards_per_distro(distro_count: int, max_jobs: int) -> int:
     return max(1, max_jobs // distro_count)
 
 
-def plan_distro_matrix(
-    metadata: DistroMetadata,
-    requested: Sequence[str] = (),
-    *,
-    max_jobs: int = MAX_DISTRO_JOBS,
-) -> dict[str, list[dict[str, object]]]:
-    """Return a GitHub matrix (``{"include": [...]}``) for the distro suite.
-
-    One ``include`` entry is one job: a distribution, the shard index, and the
-    scenario attribute names that shard builds. Scenarios are split with the
-    same greedy longest-first allocator the NixOS suite uses, weighted by each
-    scenario's timeout, so a distribution with several scenarios balances them.
-    """
-    if max_jobs < 1:
-        raise ValueError("max_jobs must be at least 1")
-    distros = metadata.resolve(requested)
+def _smoke_jobs(
+    metadata: DistroMetadata, distros: Sequence[str], max_jobs: int
+) -> list[dict[str, object]]:
+    """The smoke jobs of ``distros``: each distribution's scenarios in shards."""
     shard_cap = _shards_per_distro(len(distros), max_jobs)
     include: list[dict[str, object]] = []
     for distro in distros:
@@ -197,6 +277,8 @@ def plan_distro_matrix(
         for index, (shard, load) in enumerate(shards, start=1):
             include.append(
                 {
+                    "suite": SMOKE,
+                    "gating": SMOKE in GATING_SUITES,
                     "distro": distro,
                     "index": index,
                     "count": len(shards),
@@ -204,7 +286,66 @@ def plan_distro_matrix(
                     "timeout": plan.shard_timeout_minutes(load),
                 }
             )
-    return {"include": include}
+    return include
+
+
+def _driver_jobs(
+    metadata: DistroMetadata, suite: str, names: Sequence[str]
+) -> list[dict[str, object]]:
+    """One job per driver of ``suite`` among ``names``, in the shape of a shard.
+
+    ``seconds`` is the driver's own time limit, which the job puts on it;
+    ``timeout`` is the job's, in minutes.
+    """
+    drivers = metadata.drivers(suite)
+    include: list[dict[str, object]] = []
+    for name in names:
+        attr = drivers[name]
+        seconds = metadata.timeouts[attr]
+        include.append(
+            {
+                "suite": suite,
+                "gating": suite in GATING_SUITES,
+                "distro": name,
+                "index": 1,
+                "count": 1,
+                "tests": [attr],
+                "timeout": plan.shard_timeout_minutes(seconds),
+                "seconds": seconds,
+            }
+        )
+    return include
+
+
+def plan_distro_matrix(
+    metadata: DistroMetadata,
+    requested: Sequence[str] = (),
+    *,
+    max_jobs: int = MAX_DISTRO_JOBS,
+) -> dict[str, list[dict[str, object]]]:
+    """Return a GitHub matrix (``{"include": [...]}``) for the smoke suite.
+
+    One ``include`` entry is one job: a distribution, the shard index, and the
+    scenario attribute names that shard builds. Scenarios are split with the
+    same greedy longest-first allocator the NixOS suite uses, weighted by each
+    scenario's timeout, so a distribution with several scenarios balances them.
+    """
+    if max_jobs < 1:
+        raise ValueError("max_jobs must be at least 1")
+    distros = metadata.resolve(requested)
+    return {"include": _smoke_jobs(metadata, distros, max_jobs)}
+
+
+def plan_driver_matrix(
+    metadata: DistroMetadata, suite: str, requested: Sequence[str] = ()
+) -> dict[str, list[dict[str, object]]]:
+    """Return a GitHub matrix for one suite of host drivers, one job per driver.
+
+    Every driver of the suite runs when none is named. A suite with no driver
+    to run is an error, so a run that asked for it cannot pass on nothing.
+    """
+    names = metadata.resolve_drivers(suite, requested)
+    return {"include": _driver_jobs(metadata, suite, names)}
 
 
 def plan_probe_matrix(
@@ -216,18 +357,60 @@ def plan_probe_matrix(
     same shape as a smoke job. ``seconds`` is the probe's own time limit, which
     the job puts on its driver; ``timeout`` is the job's, in minutes.
     """
+    return plan_driver_matrix(metadata, PROBE, requested)
+
+
+def plan_matrix(
+    metadata: DistroMetadata,
+    suites: Sequence[str],
+    requested: Sequence[str] = (),
+    *,
+    max_jobs: int = MAX_DISTRO_JOBS,
+) -> dict[str, list[dict[str, object]]]:
+    """Return one GitHub matrix for the selected suites, in plan order.
+
+    A suite selected alone plans as :func:`plan_distro_matrix` or
+    :func:`plan_driver_matrix` do. With several, each runs what it has of the
+    named entries (every one when none is named): ``debian-13`` names that
+    distribution's smoke and records scenarios, ``fedora-44`` the refusal of
+    that image. A name that no selected suite has is an error, and so is a plan
+    that holds no job, so that a gate cannot pass having run nothing. Every
+    entry carries its ``suite``, and in ``gating`` whether its failure fails
+    the run. ``max_jobs`` bounds the smoke shards; each driver is a job of its
+    own.
+    """
+    if max_jobs < 1:
+        raise ValueError("max_jobs must be at least 1")
+    selected = expand_suites(suites)
+    if len(selected) == 1:
+        (suite,) = selected
+        if suite == SMOKE:
+            return plan_distro_matrix(metadata, requested, max_jobs=max_jobs)
+        return plan_driver_matrix(metadata, suite, requested)
+    names = {suite: metadata.names(suite) for suite in selected}
+    wanted: list[str] = []
+    for name in requested:
+        if not any(name in names[suite] for suite in selected):
+            raise DistroError(
+                f"unknown name: {name} (no {', '.join(selected)} entry has it)"
+            )
+        if name not in wanted:
+            wanted.append(name)
     include: list[dict[str, object]] = []
-    for name in metadata.resolve_probes(requested):
-        attr = metadata.probes[name]
-        seconds = metadata.timeouts[attr]
-        include.append(
-            {
-                "distro": name,
-                "index": 1,
-                "count": 1,
-                "tests": [attr],
-                "timeout": plan.shard_timeout_minutes(seconds),
-                "seconds": seconds,
-            }
+    for suite in selected:
+        chosen = (
+            [name for name in wanted if name in names[suite]]
+            if wanted
+            else names[suite]
+        )
+        if not chosen:
+            continue
+        if suite == SMOKE:
+            include.extend(_smoke_jobs(metadata, chosen, max_jobs))
+        else:
+            include.extend(_driver_jobs(metadata, suite, chosen))
+    if not include:
+        raise DistroError(
+            f"the plan holds no job: no {', '.join(selected)} entry can run"
         )
     return {"include": include}
