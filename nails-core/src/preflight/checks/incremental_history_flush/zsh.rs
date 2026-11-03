@@ -65,13 +65,19 @@
 //! otherwise than by an assignment (`${ZDOTDIR:=...}`), a quote, an expansion
 //! or a here-document that runs to the end of the file without closing, and an
 //! expansion that holds what the check cannot read as zsh does (a `case` in a
-//! `$(...)`, a `${ command }`) are doubts. Beside the code, the lines of each
+//! `$(...)`, a `${ command }`) are doubts, and so are arithmetic that may set
+//! a parameter by a name the check cannot read ([`arith`]), a global alias
+//! the code uses, which zsh puts in place of that word, a file the code may
+//! make or write before zsh reads it, and a program a hook runs where a hook
+//! may give it the command line in its environment ([`made`]). Beside the
+//! code, the lines of each
 //! file are counted for what they name ([`backstop`]): an option named beyond
 //! what the code names counts as on, an `fpath` setting beyond what the walk
 //! read adds a directory the check cannot follow, and a `source`, `.`, `eval`,
 //! `autoload`, `fc` or `ZDOTDIR` setting beyond that is a doubt. The structure
 //! of the code still decides which `ZDOTDIR` zsh reads its files in.
 
+mod arith;
 mod backstop;
 mod builtins;
 mod command_line;
@@ -79,6 +85,7 @@ mod dump;
 mod functions;
 mod install;
 mod lexer;
+mod made;
 mod runs;
 mod shadows;
 mod stock;
@@ -90,7 +97,7 @@ use backstop::Forms;
 pub(super) use command_line::{CommandLine, Start};
 #[cfg(test)]
 pub(super) use install::tests::seed_coreutils;
-pub(super) use install::{ENVIRONMENT, Install};
+pub(super) use install::{ENVIRONMENT, Install, LOADER};
 use install::{dircolors_split, profile_words};
 use lexer::Word;
 #[cfg(test)]
@@ -193,8 +200,45 @@ struct Reader<'a, F: Filesystem> {
     /// the target as written, and where. Each writes no file while no global
     /// alias may stand for it and no file sets `TTY`.
     devices: Vec<(Option<String>, String, String)>,
-    /// The words the global aliases the files define stand for, as written.
+    /// The words the global aliases the files define stand for, as written,
+    /// and each one's definition (its name, the word that defines it and
+    /// where), which runs where a word of the code is its name.
     global_aliases: Vec<String>,
+    global_alias_defs: Vec<(String, String, String)>,
+    /// The forms of the dump files read as data, whose words but the quoted
+    /// ones a global alias may stand for.
+    dump_texts: Vec<Forms>,
+    /// The lines keys type as zsh reads them (`bindkey -s`, `zle -U`), and
+    /// where, and where a file first binds a key a line is typed with or
+    /// changes a keymap, which may make them type others.
+    typed_keys: Vec<(String, String)>,
+    rebound: Option<String>,
+    /// The arithmetic the files hold, of each kind and where
+    /// ([`Event::Arith`]); the parameters they declare to hold numbers and
+    /// the arrays whose keys are strings; and the parameters they unset, an
+    /// empty name for one an expansion or a pattern names.
+    arith: Vec<(String, walk::Arith, String)>,
+    integers: Vec<String>,
+    keyed_arrays: Vec<String>,
+    unset: Vec<String>,
+    /// The files the check would read that are not there now, and the
+    /// words the files source and test, the paths of the functions they
+    /// autoload among them ([`Reader::made`]).
+    missing: Vec<(PathBuf, usize)>,
+    read_files: Vec<(PathBuf, usize)>,
+    known_files: Vec<String>,
+    /// The writes to a path an expansion makes (`cp ~/.src $f`, `> $f`):
+    /// its last part, what the warning names, where in the files read it is
+    /// and the function it is in; the commands the files run where no
+    /// function does, and where; and how many events were applied so far,
+    /// which orders them ([`Reader::made`]).
+    writes: Vec<(String, String, usize, Option<String>)>,
+    top_calls: Vec<(String, usize)>,
+    order: usize,
+    /// The parameters a function sets to what an expansion makes: the
+    /// function, the parameter, whether it is the function's own, and where
+    /// ([`Event::Computed`]).
+    computed: Vec<(String, String, bool, String)>,
     /// The aliases that stand for an `fc` that writes nothing
     /// ([`Event::FcAlias`]): their names, as written, and where.
     fc_aliases: Vec<(String, String, String)>,
@@ -208,7 +252,7 @@ struct Reader<'a, F: Filesystem> {
     /// read what the shell's code may make the command line, and where: in a
     /// hook, one that is no function may write the file the word names
     /// (`tee -a $f`), or what it reads (`print -r -- "$1" | tee -a file`).
-    computed_calls: Vec<(String, String, String, runs::Fed, bool)>,
+    computed_calls: Vec<(String, String, String, runs::Fed)>,
     /// The commands the files run by name ([`Event::Call`]), and where.
     calls: Vec<(String, Vec<Word>, String)>,
     /// Each function the files define and a command it runs by name.
@@ -346,8 +390,14 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         self.compiled(&zwc(path));
         let text = match read(self.fs, path) {
-            Ok(Some(text)) => text,
-            Ok(None) => return None,
+            Ok(Some(text)) => {
+                self.missing(path, true);
+                text
+            }
+            Ok(None) => {
+                self.missing(path, false);
+                return None;
+            }
             Err(why) => {
                 self.doubt(format!("it could not read {why}"));
                 return None;
@@ -385,6 +435,31 @@ impl<F: Filesystem> Reader<'_, F> {
         }
         if self.compdir.is_none() && forms.uses("_compdir") > 0 {
             self.compdir = Some(place.to_string());
+        }
+        // Parameters whose values zsh runs or loads code from: the messages
+        // MAILPATH names, which it expands before a prompt, the command it
+        // runs for a redirection with none, and the directories it loads its
+        // modules from.
+        for (names, what) in [
+            (
+                ["MAILPATH", "mailpath"],
+                "the mail messages it sets, which zsh expands before a prompt",
+            ),
+            (
+                ["NULLCMD", "READNULLCMD"],
+                "the command it sets, which zsh runs for a redirection that has none",
+            ),
+            (
+                ["module_path", "MODULE_PATH"],
+                "the modules zsh may load from where it sets them, whose code it cannot read",
+            ),
+        ] {
+            if names.iter().any(|name| forms.writes(name) > 0) {
+                self.doubt(format!(
+                    "it cannot tell what code runs from {} in {place}, as it cannot read {what}",
+                    names[0]
+                ));
+            }
         }
         self.texts.push(forms.clone());
         forms
@@ -485,6 +560,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Apply one event of the file at `place`; `certain` when zsh certainly
     /// runs the file whole and the check followed its structure.
     fn apply(&mut self, event: Event, place: &str, certain: bool) {
+        self.order += 1;
         match event {
             // A turn-off names the option as much as a turn-on: no reading
             // of the files can show that it holds.
@@ -499,19 +575,22 @@ impl<F: Filesystem> Reader<'_, F> {
                 path,
                 unconditional,
                 function,
-            } => match self.resolve(&path) {
-                Some(files) => {
-                    let one = files.len() == 1;
-                    for file in files {
-                        // Sourced in a function, its code runs as that one's.
-                        self.file_in(&file, certain && unconditional && one, function.clone());
+            } => {
+                self.known_files.push(path.text.clone());
+                match self.resolve(&path) {
+                    Some(files) => {
+                        let one = files.len() == 1;
+                        for file in files {
+                            // Sourced in a function, its code runs as that one's.
+                            self.file_in(&file, certain && unconditional && one, function.clone());
+                        }
                     }
+                    None => self.doubt(format!(
+                        "it cannot follow the file {place} sources as `{}`",
+                        path.text
+                    )),
                 }
-                None => self.doubt(format!(
-                    "it cannot follow the file {place} sources as `{}`",
-                    path.text
-                )),
-            },
+            }
             Event::Assign {
                 name: "NIX_PROFILES",
                 value,
@@ -538,32 +617,7 @@ impl<F: Filesystem> Reader<'_, F> {
                 args,
                 function,
                 input,
-            } => {
-                if let Some(function) = function {
-                    let fed = if args.iter().any(|arg| arg.expands) {
-                        Some(runs::Fed::Word)
-                    } else {
-                        match input {
-                            Input::None => None,
-                            Input::Computed => Some(runs::Fed::Input),
-                            Input::Piped(feeders) => Some(runs::Fed::Pipe(feeders)),
-                        }
-                    };
-                    if let Some(fed) = fed {
-                        self.computed_calls.push((
-                            function.clone(),
-                            name.clone(),
-                            place.to_string(),
-                            fed,
-                            runs::names_file(&name, &args),
-                        ));
-                    }
-                    if !self.edges.contains(&(function.clone(), name.clone())) {
-                        self.edges.push((function, name.clone()));
-                    }
-                }
-                self.calls.push((name, args, place.to_string()));
-            }
+            } => self.call(name, args, function, input, place),
             Event::Define(name) => {
                 self.shadow_function(&name, place, "defines");
                 if !self.defined.contains(&name) {
@@ -571,14 +625,15 @@ impl<F: Filesystem> Reader<'_, F> {
                 }
             }
             Event::HookDoubt { function, doubt } => self.in_functions.push((function, Err(doubt))),
-            Event::GlobalAlias(name) => {
-                // It stands for any word of a later command, as zsh reads it.
-                self.shadow(format!("{place} defines the global alias `{name}`"));
-                if !self.global_aliases.contains(&name) {
-                    self.global_aliases.push(name);
-                }
-            }
-            Event::FpathSplits(text) => self.fpath_splits.push((text, place.to_string())),
+            event @ (Event::GlobalAlias { .. }
+            | Event::FpathSplits(_)
+            | Event::Typed { .. }
+            | Event::Rebind
+            | Event::Arith { .. }
+            | Event::Declared { .. }
+            | Event::Unset(_)
+            | Event::Tested(_)
+            | Event::Computed { .. }) => self.note(event, place),
             Event::Assign {
                 name,
                 value,
@@ -588,7 +643,9 @@ impl<F: Filesystem> Reader<'_, F> {
                 dir: Some(dir),
                 first,
             } => match self.resolve(&dir) {
-                Some(dirs) => {
+                // A `:` in it parts it in two where FPATH's value is set from
+                // FPATH again (`FPATH=$FPATH:/x`).
+                Some(dirs) if !dirs.iter().any(|dir| dir.to_string_lossy().contains(':')) => {
                     for dir in dirs {
                         let entry = Ok((dir, first));
                         if !self.fpath.contains(&entry) {
@@ -596,7 +653,7 @@ impl<F: Filesystem> Reader<'_, F> {
                         }
                     }
                 }
-                None => self.fpath.push(Err(format!(
+                _ => self.fpath.push(Err(format!(
                     "it cannot follow the directory that {place} adds to fpath as `{}`, where \
                      zsh looks for the functions the files autoload",
                     dir.text
@@ -607,6 +664,9 @@ impl<F: Filesystem> Reader<'_, F> {
                  for the functions the files autoload"
             ))),
             Event::Autoload(function) => {
+                if function.text.contains('/') {
+                    self.known_files.push(function.text.clone());
+                }
                 let name = function
                     .text
                     .rsplit('/')
@@ -651,6 +711,113 @@ impl<F: Filesystem> Reader<'_, F> {
                     self.hooks.push(name);
                 }
             }
+        }
+    }
+
+    /// Note that the file at `place` runs the command `name` with `args`, in
+    /// the function `function` when in one, reading `input`
+    /// ([`Event::Call`]).
+    fn call(
+        &mut self,
+        name: String,
+        args: Vec<Word>,
+        function: Option<String>,
+        input: Input,
+        place: &str,
+    ) {
+        if made::creates(&name) {
+            for arg in args.iter().filter(|arg| !arg.text.starts_with('-')) {
+                let what = format!("`{name}` in {place} writes to `{}`", arg.text);
+                self.makes(&arg.text, what, function.clone());
+            }
+        }
+        if function.is_none() {
+            self.top_calls.push((name.clone(), self.order));
+        }
+        if let Some(function) = function {
+            let fed = if args.iter().any(|arg| arg.expands) {
+                Some(runs::Fed::Word)
+            } else {
+                match input {
+                    Input::None => None,
+                    Input::Computed => Some(runs::Fed::Input),
+                    Input::Piped(feeders) => Some(runs::Fed::Pipe(feeders)),
+                }
+            };
+            if let Some(fed) = fed {
+                self.computed_calls
+                    .push((function.clone(), name.clone(), place.to_string(), fed));
+            }
+            if !self.edges.contains(&(function.clone(), name.clone())) {
+                self.edges.push((function, name.clone()));
+            }
+        }
+        self.calls.push((name, args, place.to_string()));
+    }
+
+    /// Note what the file at `place` defines, declares, tests or types that
+    /// the check counts once the files are read: a global alias, an element
+    /// given `fpath` that may split, a line keys type, a key bound, an
+    /// arithmetic expression, a parameter declared, unset or set in a
+    /// function, a file a test asks about.
+    fn note(&mut self, event: Event, place: &str) {
+        match event {
+            Event::GlobalAlias { name, text } => {
+                let definition = (name.clone(), text, place.to_string());
+                if !self.global_alias_defs.contains(&definition) {
+                    self.global_alias_defs.push(definition);
+                }
+                // It stands for any word of a later command, as zsh reads it.
+                self.shadow(format!("{place} defines the global alias `{name}`"));
+                if !self.global_aliases.contains(&name) {
+                    self.global_aliases.push(name);
+                }
+            }
+            Event::FpathSplits(text) => self.fpath_splits.push((text, place.to_string())),
+            Event::Typed { text, keys } => {
+                // What it types counts for the names the files use.
+                self.lines(&text, place);
+                if keys {
+                    self.typed_keys.push((text, place.to_string()));
+                }
+            }
+            Event::Rebind => {
+                if self.rebound.is_none() {
+                    self.rebound = Some(place.to_string());
+                }
+            }
+            Event::Arith { text, kind } => {
+                let entry = (text, kind, place.to_string());
+                if !self.arith.contains(&entry) {
+                    self.arith.push(entry);
+                }
+            }
+            Event::Declared {
+                name,
+                keyed,
+                numeric,
+            } => {
+                if keyed && !self.keyed_arrays.contains(&name) {
+                    self.keyed_arrays.push(name.clone());
+                }
+                if numeric && !self.integers.contains(&name) {
+                    self.integers.push(name);
+                }
+            }
+            Event::Unset(name) => {
+                if !self.unset.contains(&name) {
+                    self.unset.push(name);
+                }
+            }
+            Event::Tested(word) => self.known_files.push(word),
+            Event::Computed {
+                function,
+                name,
+                local,
+            } => self
+                .computed
+                .push((function, name, local, place.to_string())),
+            _ => {}
         }
     }
 
@@ -729,6 +896,17 @@ pub(super) fn zsh<F: Filesystem>(
         }
         None => homes.to_vec(),
     };
+    if install
+        .env
+        .as_ref()
+        .is_some_and(|env| env.mailpath.is_some())
+    {
+        scan.doubts.push(
+            "it cannot tell what code the mail messages that MAILPATH in the shell's \
+             environment names run, which zsh expands before a prompt"
+                .to_string(),
+        );
+    }
     let homes: Vec<Option<&Path>> = if homes.is_empty() {
         vec![None]
     } else {
@@ -813,6 +991,21 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
         expanding: Vec::new(),
         devices: Vec::new(),
         global_aliases: Vec::new(),
+        global_alias_defs: Vec::new(),
+        dump_texts: Vec::new(),
+        typed_keys: Vec::new(),
+        rebound: None,
+        arith: Vec::new(),
+        integers: Vec::new(),
+        keyed_arrays: Vec::new(),
+        unset: Vec::new(),
+        missing: Vec::new(),
+        read_files: Vec::new(),
+        known_files: Vec::new(),
+        writes: Vec::new(),
+        top_calls: Vec::new(),
+        order: 0,
+        computed: Vec::new(),
         fc_aliases: Vec::new(),
         texts: Vec::new(),
         defined: Vec::new(),
@@ -881,6 +1074,8 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start, install: &I
     reader.startup_changers = reader.changers.len();
     reader.autoloaded();
     reader.runs();
+    reader.arithmetic();
+    reader.made();
     // A prompt's code runs only when PROMPT_SUBST is on; whether a command
     // line turns it on, the check reads beside the files.
     let mut doubts = reader.doubts;

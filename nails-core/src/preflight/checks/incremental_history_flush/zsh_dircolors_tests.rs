@@ -130,7 +130,8 @@ fn what_runs_before_the_dircolors_line_may_change_what_it_runs() {
 #[test]
 fn what_comes_after_the_dircolors_line_or_names_none_of_its_words_leaves_it_known() {
     // An alias of any kind after the line, as NixOS's shellAliases and
-    // shellGlobalAliases put them there, and in ~/.zshrc.
+    // shellGlobalAliases put them there, and in ~/.zshrc: zsh has run the
+    // line before it reads the alias.
     for after in ["alias -g -- -b='-b; :'\n", "alias -- l='ls -alh'\n"] {
         assert_eq!(nixos_with("", "", after, &[]), Scan::default(), "{after}");
     }
@@ -157,7 +158,7 @@ fn what_comes_after_the_dircolors_line_or_names_none_of_its_words_leaves_it_know
         "/home/alice/.zshrc",
         "fpath=(~/zfn $fpath)\nautoload -Uz myfn\nmyfn\n",
     );
-    seed(&fs, "/home/alice/zfn/myfn", "alias -g -- -b='-b; :'\n");
+    seed(&fs, "/home/alice/zfn/myfn", "alias -g -- G='-b; :'\n");
     assert_eq!(
         scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),
         Scan::default()
@@ -175,4 +176,108 @@ fn what_comes_after_the_dircolors_line_or_names_none_of_its_words_leaves_it_know
         &NIXOS_ZSHRC.replacen(line, &format!("if true; then\n{line}fi\n"), 1),
     );
     assert!(warned(&scan_with(&fs, UNKNOWN, &install(&fs, &SESSION))));
+}
+
+#[test]
+fn what_the_environment_or_a_file_gives_every_program_may_change_the_dircolors_line() {
+    // zsh 5.9.2 gives an exported ARGV0 to every program it runs as its
+    // name, which makes the multi-call coreutils run `ls -b` in the line, so
+    // its `eval` runs a file named `$(<.x)`; set in ~/.zshenv, in
+    // ~/.zprofile or in the shell's environment, it turns SHARE_HISTORY on.
+    for zshenv in [
+        "export ARGV0=ls\n",
+        "typeset -x ARGV0=ls\n",
+        "AR''GV0=ls; export ARGV0\n",
+        ": ${ARGV0::=ls}\n",
+    ] {
+        let found = nixos_with(zshenv, "", "", &[]);
+        assert_eq!(
+            found.doubts,
+            [changed(
+                "/home/alice/.zshenv sets ARGV0, the name zsh gives every program it runs"
+            )],
+            "{zshenv}"
+        );
+    }
+    let fs = MockFilesystem::new();
+    nixos(&fs);
+    seed(&fs, "/home/alice/.zprofile", "export ARGV0=ls\n");
+    assert!(warned(&scan_with(&fs, LOGIN, &install(&fs, &SESSION))));
+    // ARGV0 or a variable of the dynamic loader in the shell's environment,
+    // and an environment the check does not know, alike.
+    for (vars, why) in [
+        (
+            &[("ARGV0", "ls")][..],
+            "the shell's environment sets ARGV0, which names the program coreutils runs",
+        ),
+        (
+            &[(LOADER, "")][..],
+            "the shell's environment sets a variable of the dynamic loader (`LD_...`)",
+        ),
+    ] {
+        let fs = MockFilesystem::new();
+        nixos(&fs);
+        let mut all = SESSION.to_vec();
+        all.extend_from_slice(vars);
+        let found = scan_with(&fs, UNKNOWN, &install(&fs, &all));
+        assert!(
+            found.doubts.contains(&format!(
+                "it cannot tell what the `eval` of what dircolors prints in /etc/zshrc runs, as \
+                 {why}"
+            )),
+            "{found:?}"
+        );
+    }
+    let fs = MockFilesystem::new();
+    nixos(&fs);
+    let unknown = Install::of(
+        &fs,
+        Some(Path::new(
+            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-zsh-5.9.2/bin/zsh",
+        )),
+        None,
+    );
+    assert!(warned(&scan_with(&fs, UNKNOWN, &unknown)));
+    // ARGV0 set after the line, as in ~/.zshrc, runs after it, and one read
+    // changes nothing.
+    let fs = MockFilesystem::new();
+    nixos(&fs);
+    seed(&fs, "/home/alice/.zshrc", "export ARGV0=ls\n");
+    seed(&fs, "/home/alice/.zshenv", "print -r -- $ARGV0\n");
+    assert_eq!(
+        scan_with(&fs, UNKNOWN, &install(&fs, &SESSION)),
+        Scan::default()
+    );
+}
+
+#[test]
+fn a_function_named_like_the_dircolors_program_in_any_form_zsh_reads_changes_it() {
+    // zsh 5.9.2 defines the program's name or TRAPDEBUG with each, as zsh
+    // reads every name of a definition and expands braces, globs and `=`
+    // in them, and the line's `eval` turns SHARE_HISTORY on.
+    let body = "{ printf 'setopt %s%s\\n' share history }";
+    for zshenv in [
+        format!("function {{{DIRCOLORS},x}} {body}"),
+        format!("function x {DIRCOLORS} {body}"),
+        format!("x {DIRCOLORS} () {body}"),
+        format!("function /nix/store/*-coreutils-*/bin/dircolor[s] {body}"),
+        format!("p={DIRCOLORS}; PATH=${{p%/*}}:$PATH\nfunction =dircolors {body}"),
+        format!("function {{TRAPDEBUG,x}} {body}"),
+        format!("function x TRAPDEBUG {body}"),
+    ] {
+        let found = nixos_with(&format!("{zshenv}\n"), "", "", &[]);
+        assert!(warned(&found), "{zshenv}");
+    }
+    // Two names that are neither.
+    let found = nixos_with(&format!("function x y {body}\n"), "", "", &[]);
+    assert_eq!(found, Scan::default());
+}
+
+#[test]
+fn a_global_alias_after_the_dircolors_line_that_no_code_uses_leaves_it_known() {
+    // As NixOS's shellGlobalAliases writes one below the line.
+    assert_eq!(
+        nixos_with("", "", "alias -g -- G='| grep'\n", &[]),
+        Scan::default()
+    );
 }

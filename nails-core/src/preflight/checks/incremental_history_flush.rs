@@ -156,8 +156,10 @@ impl InspectedShell {
 
 /// The variables of [`zsh::ENVIRONMENT`] that `bytes`, a process's
 /// `/proc/<pid>/environ`, holds, each once, as the first that names it sets
-/// it, as zsh takes it; no other is kept. `None` when one of them holds what
-/// is no UTF-8, a path the check cannot name as zsh reads it.
+/// it, as zsh takes it; no other is kept, but that a variable of the dynamic
+/// loader is set, kept as [`zsh::LOADER`] without its value. `None` when one
+/// of them holds what is no UTF-8, a path the check cannot name as zsh reads
+/// it.
 fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
     let mut found: Vec<(String, String)> = Vec::new();
     for entry in bytes.split(|byte| *byte == 0) {
@@ -165,6 +167,12 @@ fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
             continue;
         };
         let (name, value) = (&entry[..at], &entry[at + 1..]);
+        if name.starts_with(zsh::LOADER.as_bytes()) {
+            if !found.iter().any(|(known, _)| known == zsh::LOADER) {
+                found.push((zsh::LOADER.to_string(), String::new()));
+            }
+            continue;
+        }
         let Some(name) = zsh::ENVIRONMENT
             .iter()
             .find(|known| known.as_bytes() == name)

@@ -9,17 +9,32 @@ use super::super::lexer::Word;
 use super::command::assigned;
 use super::{Event, Frame, Walker};
 
-/// Whether `text` stands for what `fpath` or `FPATH` holds, or some of it,
-/// each element as it is: `$fpath`, `${fpath[@]}`, `${(@)fpath}`,
-/// `${(u)fpath}`, `${fpath[1]}`, `${fpath[2,-1]}`, `${fpath:#pat}`, and
-/// `$FPATH` and `${FPATH}` whole; not a directory made from it
-/// (`${fpath[1]}/sub`, `${fpath/a/b}`), one that flags change
-/// (`${(s:/:)fpath}`), an element a subscript flag finds (`${fpath[(I)x]}`,
-/// an index), or a slice of `FPATH`'s characters (`$FPATH[2,10]`). A
-/// subscript outside braces (`$fpath[1]`) is an element only while
-/// `KSH_ARRAYS` is off ([`Event::FpathSplits`]).
-fn holds_fpath(text: &str) -> bool {
-    let Some(rest) = text.strip_prefix('$') else {
+/// Where an element given `fpath` stands: among an array's elements
+/// (`fpath=(...)`), as the one value of an element (`fpath+=x`,
+/// `fpath[1]=x`), or as a part of `FPATH`'s value (`FPATH=a:b`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Given {
+    Array,
+    Value,
+    Parts,
+}
+
+/// Whether `word`, an element given `fpath` where `given` says, stands for
+/// what `fpath` or `FPATH` holds, or some of it, each element as it is:
+/// among an array's elements, `$fpath`, `${fpath[@]}`, `${(@)fpath}`,
+/// `${(u)fpath}`, `${fpath[2,-1]}` and `${fpath:#pat}`, and in quotes only
+/// `"${fpath[@]}"` and `"${(@)fpath}"`, as quotes join the others into one
+/// element; one element (`${fpath[1]}`) anywhere; and `$FPATH` and
+/// `${FPATH}` whole as a part of `FPATH`'s value, which a `:` parts. Not a
+/// directory made from it (`${fpath[1]}/sub`, `${fpath/a/b}`), one that
+/// flags change (`${(s:/:)fpath}`), an element a subscript flag finds
+/// (`${fpath[(I)x]}`, an index), `FPATH` among an array's elements or as one
+/// element's value, which is all of it joined by `:`, or a slice of its
+/// characters (`$FPATH[2,10]`), and nothing a quote or a backslash keeps as
+/// written (`'$fpath'`). A subscript outside braces (`$fpath[1]`) is an
+/// element only while `KSH_ARRAYS` is off ([`Event::FpathSplits`]).
+fn holds_fpath(word: &Word, given: Given) -> bool {
+    let Some(rest) = word.text.strip_prefix('$').filter(|_| word.expands) else {
         return false;
     };
     let (inner, braced) = match rest.strip_prefix('{') {
@@ -29,16 +44,16 @@ fn holds_fpath(text: &str) -> bool {
         },
         None => (rest, false),
     };
-    let inner = match inner.strip_prefix('(') {
+    let (flags, inner) = match inner.strip_prefix('(') {
         Some(flagged) if braced => match flagged.split_once(')') {
             Some((flags, name))
                 if !flags.is_empty() && flags.chars().all(|c| matches!(c, '@' | 'u')) =>
             {
-                name
+                (flags, name)
             }
             _ => return false,
         },
-        _ => inner,
+        _ => ("", inner),
     };
     let end = inner
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -48,15 +63,21 @@ fn holds_fpath(text: &str) -> bool {
         let n = n.strip_prefix('-').unwrap_or(n);
         !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
     };
-    let subscript = after
+    let key = after
         .strip_prefix('[')
-        .and_then(|key| key.strip_suffix(']'))
-        .is_some_and(|key| {
-            matches!(key, "@" | "*") || (key.split(',').count() <= 2 && key.split(',').all(number))
-        });
-    match name {
-        "fpath" => after.is_empty() || subscript || (braced && after.starts_with(":#")),
-        "FPATH" => after.is_empty(),
+        .and_then(|key| key.strip_suffix(']'));
+    let one = key.is_some_and(number);
+    let elements = after.is_empty()
+        || one
+        || key.is_some_and(|key| {
+            matches!(key, "@" | "*") || (key.split(',').count() == 2 && key.split(',').all(number))
+        })
+        || (braced && after.starts_with(":#"));
+    match (name, given) {
+        ("fpath", Given::Array) if !word.quoted => elements,
+        ("fpath", Given::Array) => one || (braced && (key == Some("@") || flags.contains('@'))),
+        ("fpath", _) => one,
+        ("FPATH", Given::Parts) => after.is_empty(),
         _ => false,
     }
 }
@@ -66,11 +87,12 @@ impl Walker<'_> {
     /// for what `fpath` holds already ([`holds_fpath`]); a loop's variable
     /// stands for each item the check can list. Either, in an array
     /// (`array`), may split into others ([`Event::FpathSplits`]).
-    pub(super) fn fpath_dir(&mut self, word: &Word, first: bool, array: bool) {
+    pub(super) fn fpath_dir(&mut self, word: &Word, first: bool, given: Given) {
+        let array = given == Given::Array;
         // An array's element, which zsh splits under SH_WORD_SPLIT, unlike a
         // value assigned, and a subscript outside braces, which KSH_ARRAYS
         // makes the first element and `[1]` (`$fpath[1]`).
-        if holds_fpath(&word.text) {
+        if holds_fpath(word, given) {
             if array || word.text.ends_with(']') && !word.text.starts_with("${") {
                 self.events.push(Event::FpathSplits(word.text.clone()));
             }
@@ -89,6 +111,7 @@ impl Walker<'_> {
                     dir: Some(Word {
                         text: text.clone(),
                         expands: false,
+                        quoted: false,
                     }),
                     first,
                 })
@@ -102,15 +125,14 @@ impl Walker<'_> {
         });
     }
 
-    /// The events of `items` assigned to `fpath` as an array's elements
-    /// (`array`) or a value, or appended to it (`append`): those before what
-    /// `fpath` held (`$fpath`), or all where it held nothing they keep, come
-    /// first ([`Event::Fpath`]).
-    pub(super) fn fpath_items(&mut self, items: &[Word], append: bool, array: bool) {
-        let held = items.iter().position(|item| holds_fpath(&item.text));
+    /// The events of `items` given `fpath` where `given` says, or appended
+    /// to it (`append`): those before what `fpath` held (`$fpath`), or all
+    /// where it held nothing they keep, come first ([`Event::Fpath`]).
+    pub(super) fn fpath_items(&mut self, items: &[Word], append: bool, given: Given) {
+        let held = items.iter().position(|item| holds_fpath(item, given));
         for (at, item) in items.iter().enumerate() {
             let first = !append && held.is_none_or(|held| at < held);
-            self.fpath_dir(item, first, array);
+            self.fpath_dir(item, first, given);
         }
     }
 
@@ -180,6 +202,7 @@ impl Walker<'_> {
             .map(|part| Word {
                 text: part.to_string(),
                 expands: part.contains(['$', '`']),
+                quoted: word.quoted,
             })
             .collect();
         // `fpath+=dir` appends; `fpath[1,0]=dir` and `fpath[1]=dir` put it
@@ -187,7 +210,12 @@ impl Walker<'_> {
         let subscript = target.split_once('[').map(|(_, key)| key);
         let append = target.ends_with('+')
             || subscript.is_some_and(|key| !(key.starts_with("1]") || key.starts_with("1,")));
-        self.fpath_items(&items, append, false);
+        let given = if name == "FPATH" {
+            Given::Parts
+        } else {
+            Given::Value
+        };
+        self.fpath_items(&items, append, given);
         true
     }
 }

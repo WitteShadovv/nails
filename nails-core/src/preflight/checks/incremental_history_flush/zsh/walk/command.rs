@@ -239,6 +239,7 @@ impl Walker<'_> {
                     Some(Word {
                         text: base.to_string(),
                         expands: name.expands,
+                        quoted: false,
                     })
                 })
                 .collect();
@@ -525,17 +526,20 @@ impl Walker<'_> {
         let mut words = words.into_iter().peekable();
         // Assignments before the command word, which put what they assign in
         // its environment.
+        let mut assignments = Vec::new();
         while let Some(word) = words.next_if(|word| is_assignment(&word.text)) {
             if word.expands {
                 input = Input::Computed;
             }
             self.assignment(&word, unconditional);
+            assignments.push(word);
         }
         while words
             .next_if(|word| PRECOMMANDS.contains(&word.text.as_str()))
             .is_some()
         {}
         let Some(command) = words.next() else {
+            self.computed_assignments(&assignments);
             return;
         };
         let args: Vec<Word> = words.collect();
@@ -555,6 +559,9 @@ impl Walker<'_> {
             return;
         }
         self.parameters(&command, &args);
+        self.command_arithmetic(&command.text, &args);
+        self.tested(&command.text, &args);
+        self.computed_sets(&command.text, &args);
         // `functions` as a command prints, copies or marks functions.
         self.function_params += usize::from(command.text == "functions");
         match command.text.as_str() {
@@ -600,11 +607,17 @@ impl Walker<'_> {
             "trap" => self.trap(&args, unconditional),
             "sched" => self.sched(&args, unconditional),
             "zstyle" => self.zstyle(&args, unconditional),
-            "print" => self.print(&args),
+            "print" => {
+                self.print_descriptor(&args);
+                self.print_line(&args);
+                self.print(&args);
+            }
             "return" | "exit" => self.may_stop = true,
             // `history` takes the flags of `fc`, as `fc -l` does.
             "fc" | "history" => self.fc(&command.text, &args),
             "sysopen" => self.sysopen(&args),
+            "zsystem" => self.zsystem(&args),
+            "zsocket" | "ztcp" => self.connection(&command.text, &args),
             "autoload" => {
                 self.autoloads += 1;
                 self.autoload(&command.text, &args);
@@ -615,7 +628,10 @@ impl Walker<'_> {
                 self.autoload(&command.text, &args);
             }
             "export" | "typeset" | "declare" | "local" | "readonly" | "integer" | "float"
-            | "private" => self.declare(&command.text, &args, unconditional),
+            | "private" => {
+                self.declared(&command.text, &args);
+                self.declare(&command.text, &args, unconditional);
+            }
             _ => {
                 self.mention(&command.text);
                 for arg in &args {
@@ -860,6 +876,7 @@ impl Walker<'_> {
     /// The events of `word` when it assigns `ZDOTDIR`, `XDG_CONFIG_HOME`,
     /// `fpath` or `FPATH`, and its mentions.
     pub(super) fn assignment(&mut self, word: &Word, unconditional: bool) {
+        self.assignment_arithmetic(word);
         if self.fpath_assignment(word) {
             return;
         }
@@ -872,6 +889,7 @@ impl Walker<'_> {
                 let value = Word {
                     text: value.to_string(),
                     expands: word.expands,
+                    quoted: false,
                 };
                 self.hook_value(&value);
             }
@@ -881,8 +899,8 @@ impl Walker<'_> {
                 self.alias_params += 1;
                 self.mention(&word.text);
                 if target.contains('[') && !target.ends_with('+') && !name.starts_with("dis_") {
-                    let regular = name == "aliases";
-                    self.alias_value(&word.text, value, word, unconditional, regular);
+                    let kind = (name == "aliases", name == "galiases");
+                    self.alias_value(&word.text, value, word, unconditional, kind);
                 } else {
                     self.events.push(Event::Doubt(format!(
                         "it cannot tell what alias `{}` in {} gives, which zsh then expands",
@@ -904,6 +922,7 @@ impl Walker<'_> {
                 let value = Word {
                     text: value.to_string(),
                     expands: word.expands,
+                    quoted: false,
                 };
                 self.prompt(&word.text, &value);
             }
@@ -932,6 +951,7 @@ impl Walker<'_> {
             value: Word {
                 text: value,
                 expands: word.expands,
+                quoted: false,
             },
             unconditional,
         });

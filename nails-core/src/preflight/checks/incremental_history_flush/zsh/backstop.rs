@@ -59,6 +59,8 @@ pub(super) struct Named {
     pub(super) alias_params: usize,
     /// `functions` or `dis_functions` where it is not read ([`writes`]).
     pub(super) function_params: usize,
+    /// `((` and `$[`, which start arithmetic.
+    pub(super) arith: usize,
 }
 
 impl Named {
@@ -82,6 +84,7 @@ impl Named {
             prompts: self.prompts.max(other.prompts),
             alias_params: self.alias_params.max(other.alias_params),
             function_params: self.function_params.max(other.function_params),
+            arith: self.arith.max(other.arith),
         }
     }
 
@@ -102,6 +105,7 @@ impl Named {
         self.indirects += indirect_assignments(piece);
         self.hooks += hook_writes(piece);
         self.prompts += prompt_writes(piece);
+        self.arith += piece.matches("((").count() + piece.matches("$[").count();
         let alone = matches!(
             piece,
             "functions"
@@ -195,7 +199,7 @@ impl Forms {
 
     /// The most that `count` finds in the lines of a form that are no
     /// comment, or in the words of the code.
-    fn most(&self, count: impl Fn(&str) -> usize) -> usize {
+    pub(super) fn most(&self, count: impl Fn(&str) -> usize) -> usize {
         let lines = self
             .texts
             .iter()
@@ -224,7 +228,7 @@ impl Forms {
     /// parameters that hold them ([`alias_writes`]); a `disable`, after
     /// which a name may be another command; a `trap`; a variable of the
     /// dynamic loader (`LD_PRELOAD`), which may make a program print other
-    /// code.
+    /// code; and `ARGV0`, which picks the program a multi-call coreutils runs.
     pub(super) fn shadows(&self) -> Vec<&'static str> {
         let mut found = Vec::new();
         if self.most(|line| alias_writes(line) + alias_definitions(line)) > 0 {
@@ -239,7 +243,47 @@ impl Forms {
         if self.most(loader_writes) > 0 {
             found.push("sets a variable of the dynamic loader (`LD_...`)");
         }
+        if self.writes("ARGV0") > 0 {
+            found.push("sets ARGV0, the name zsh gives every program it runs");
+        }
         found
+    }
+
+    /// Whether the forms may make zsh export every parameter set: they name
+    /// `ALL_EXPORT`, in either form, or run a `set` with a word of flags that
+    /// holds `a` (`set -a`).
+    pub(super) fn all_export(&self) -> bool {
+        self.texts.iter().any(|form| {
+            names_any(form, &["allexport"])
+                || code_lines(form).any(|line| {
+                    whole_words(line, "set") > 0
+                        && line.split_whitespace().any(|word| {
+                            word.len() > 1 && word.starts_with(['-', '+']) && word.contains('a')
+                        })
+                })
+        })
+    }
+
+    /// Whether the forms may hide what a special parameter is: a
+    /// `typeset`, a `local` or the like with a flag word that holds `h`
+    /// (`local -h SECONDS`), after which it holds what is assigned to it.
+    pub(super) fn hides_specials(&self) -> bool {
+        self.texts.iter().any(|form| {
+            code_lines(form).any(|line| {
+                [
+                    "typeset", "declare", "local", "private", "export", "readonly", "integer",
+                    "float",
+                ]
+                .iter()
+                .any(|command| whole_words(line, command) > 0)
+                    && line.split_whitespace().any(|word| {
+                        word.len() > 1
+                            && word.starts_with(['-', '+'])
+                            && word[1..].chars().all(|c| c.is_ascii_alphanumeric())
+                            && word.contains('h')
+                    })
+            })
+        })
     }
 
     /// Whether the forms may turn `SH_WORD_SPLIT` or `KSH_ARRAYS` on, which

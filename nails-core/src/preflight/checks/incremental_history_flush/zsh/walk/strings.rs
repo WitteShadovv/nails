@@ -168,32 +168,39 @@ impl Walker<'_> {
         // `-g` and `-s` make an alias zsh expands elsewhere than as a
         // command's name; `-r` is the default, and `--` ends the flags.
         let mut regular = true;
+        let mut global = false;
+        let mut suffix = false;
         let mut flags = true;
         for arg in args {
             self.mention(&arg.text);
             if flags && arg.text.starts_with(['-', '+']) && !arg.text.contains('=') {
                 flags = arg.text != "--";
                 regular &= matches!(arg.text.as_str(), "--" | "-r");
+                global |= arg.text.contains('g');
+                suffix |= arg.text.contains('s');
                 continue;
             }
             flags = false;
             if let Some((_, value)) = arg.text.split_once('=') {
-                self.alias_value(&arg.text, value, arg, unconditional, regular);
+                let global = global && !suffix;
+                self.alias_value(&arg.text, value, arg, unconditional, (regular, global));
             }
         }
     }
 
     /// The events of the value `value` an alias is given by the word `word`,
-    /// as [`Walker::alias`] reads it; `regular` when zsh expands the alias
-    /// only as a command's name.
+    /// as [`Walker::alias`] reads it; of `kind`, `regular` when zsh expands
+    /// the alias only as a command's name, and `global` when it expands it as
+    /// any word.
     pub(super) fn alias_value(
         &mut self,
         text: &str,
         value: &str,
         word: &Word,
         unconditional: bool,
-        regular: bool,
+        kind: (bool, bool),
     ) {
+        let (regular, global) = kind;
         let doubt = |place: &str| {
             Event::Doubt(format!(
                 "it cannot tell what the alias `{text}` in {place} runs where it is used"
@@ -205,25 +212,32 @@ impl Walker<'_> {
         }
         let name = alias_name(text);
         // A regular alias's value runs where its name is used, as a function
-        // of that name would; a global or suffix alias's anywhere, as a hook.
+        // of that name would; a global alias's where a word is its name, which
+        // the check counts where the files are read ([`Event::GlobalAlias`]);
+        // a suffix alias's, or one whose name the check cannot read, anywhere,
+        // as a hook.
         let outer = match name.filter(|_| regular) {
             Some(name) => {
                 self.events.push(Event::Define(name.to_string()));
                 name.to_string()
             }
             None => {
-                let hook = format!("alias {text}");
-                self.events.push(Event::Hook(hook.clone()));
-                if !regular {
+                let outer = format!("alias {text}");
+                if global {
                     // The word it stands for, past `galiases[`.
                     let (target, _) = text.split_once('=').unwrap_or((text, ""));
                     let named = target
                         .split_once('[')
                         .and_then(|(_, key)| key.strip_suffix(']'))
                         .unwrap_or(target);
-                    self.events.push(Event::GlobalAlias(named.to_string()));
+                    self.events.push(Event::GlobalAlias {
+                        name: named.to_string(),
+                        text: text.to_string(),
+                    });
+                } else {
+                    self.events.push(Event::Hook(outer.clone()));
                 }
-                hook
+                outer
             }
         };
         if !regular && history_path(value) {

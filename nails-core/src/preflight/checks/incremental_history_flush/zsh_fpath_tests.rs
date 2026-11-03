@@ -163,3 +163,44 @@ fn a_completion_function_bound_to_keys_is_a_hook() {
         );
     }
 }
+
+#[test]
+fn an_expansion_of_fpath_that_joins_its_elements_is_one_the_check_cannot_follow() {
+    // zsh 5.9.2 joins fpath into one element with each, a directory whose
+    // name holds a blank or a `:` that it loads compinit from in place of its
+    // own, or a function the files autoload.
+    for setup in [
+        "fpath=(~/a $fpath)\nfpath=(\"$fpath\")\n",
+        "fpath=(~/a $fpath)\nfpath=(\"${fpath}\")\n",
+        "fpath=(~/a $fpath)\nfpath=(\"${fpath[*]}\")\n",
+        "fpath=(~/a $fpath)\nfpath=(\"${fpath[2,-1]}\")\n",
+        "fpath=(~/a $fpath)\nfpath=(\"${(u)fpath}\")\n",
+        "fpath=(~/a $fpath)\nfpath=($FPATH)\n",
+        "fpath=(~/a $fpath)\nfpath=(${FPATH})\n",
+        "fpath=(~/a $fpath)\nfpath+=\"$fpath\"\n",
+        "fpath=(~/a $fpath)\nfpath[1]=$fpath\n",
+        "fpath=(~/a $fpath)\nfpath+=$FPATH\n",
+        "fpath=(~/a $fpath)\nFPATH=$fpath\n",
+        "fpath=(~/a $fpath)\nFPATH=(x)\n",
+        "fpath=('$fpath' $fpath)\n",
+        "fpath=(\\$fpath $fpath)\n",
+        "fpath=(~/a:b $fpath)\n",
+    ] {
+        let found = known_with(&format!("{setup}autoload -Uz compinit && compinit -D\n"));
+        assert!(warned(&found), "{setup}");
+    }
+    // Its elements as they are, in quotes too where `@` keeps them apart, and
+    // FPATH as a part of FPATH's value, are what fpath holds.
+    for setup in [
+        "fpath=(~/zfn \"${fpath[@]}\")\n",
+        "fpath=(~/zfn \"${(@)fpath}\")\n",
+        "fpath=(~/zfn ${fpath[@]})\n",
+        "fpath=(~/zfn ${(u)fpath})\n",
+        "fpath=(~/zfn \"${fpath[1]}\")\n",
+        "FPATH=~/zfn:$FPATH\n",
+        "FPATH=\"$HOME/zfn:$FPATH\"\n",
+    ] {
+        let found = known_with(&format!("{setup}autoload -Uz compinit && compinit -D\n"));
+        assert_eq!(found, Scan::default(), "{setup}");
+    }
+}

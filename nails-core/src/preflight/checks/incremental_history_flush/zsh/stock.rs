@@ -182,12 +182,30 @@ impl<F: Filesystem> Reader<'_, F> {
         let Some(text) = self.text(path) else {
             return;
         };
+        // compinit reads the second word of its first line as arithmetic
+        // (`$_i_line[2] -eq $#_i_files`), which may set a parameter whose name
+        // the check cannot read, unless it is a number.
+        let first = text.split('\n').next().unwrap_or_default();
+        if first
+            .split([' ', '\t'])
+            .filter(|word| !word.is_empty())
+            .nth(1)
+            .is_some_and(|count| !count.chars().all(|c| c.is_ascii_digit()))
+        {
+            self.doubt(format!(
+                "it cannot tell which parameters the first line of {} sets, as compinit reads its \
+                 second word as arithmetic",
+                path.display()
+            ));
+        }
         match dump::marks(&text) {
             Some(marks) => {
                 let place = path.to_string_lossy().into_owned();
                 // Its quoted words are data; an alias zsh may expand is one
-                // named like a command of its lines (`zle`, `autoload`).
+                // named like a command of its lines (`zle`, `autoload`), and
+                // a global alias like any word.
                 self.texts.push(Forms::of(&dump::commands(&text)));
+                self.dump_texts.push(Forms::of(&text));
                 for (at, &count) in backstop::named(&text).options.iter().enumerate() {
                     if count > 0 {
                         self.options[at] = Some(format!("{place} names"));
@@ -436,6 +454,17 @@ impl<F: Filesystem> Reader<'_, F> {
             };
             for entry in entries {
                 let Some(name) = entry.file_name().and_then(|name| name.to_str()) else {
+                    // A name that is no UTF-8, which compinit reads all the
+                    // same when it starts with `_`.
+                    if entry
+                        .file_name()
+                        .is_some_and(|name| name.as_encoded_bytes().starts_with(b"_"))
+                    {
+                        self.doubt(format!(
+                            "it cannot tell what the first line of {} makes compinit mark",
+                            entry.display()
+                        ));
+                    }
                     continue;
                 };
                 if !name.starts_with('_') || name.ends_with('~') || name.ends_with(".zwc") {
@@ -520,13 +549,18 @@ impl<F: Filesystem> Reader<'_, F> {
 }
 
 /// The first line of the file at `path`, as `read -r` reads it, when it is
-/// a regular file; `None` for anything else; `Err` when the check cannot
-/// read it or the line runs past the bytes it reads.
+/// a regular file; `None` for a directory, which compinit cannot read a line
+/// of; `Err` for anything else (a named pipe, a device), whose line the check
+/// cannot know, when the check cannot read it or the line runs past the
+/// bytes it reads.
 fn first_line<F: Filesystem>(fs: &F, path: &Path) -> Result<Option<String>, String> {
     const LINE_LIMIT: usize = 4096;
     let path = fs.canonicalize(path).map_err(|error| error.to_string())?;
-    if !matches!(fs.is_regular_file(&path), Ok(true)) {
+    if matches!(fs.is_directory(&path), Ok(true)) {
         return Ok(None);
+    }
+    if !matches!(fs.is_regular_file(&path), Ok(true)) {
+        return Err("it is no regular file".to_string());
     }
     let bytes = fs
         .read_file_range(&path, 0, LINE_LIMIT)
@@ -571,19 +605,31 @@ const KEY_LINES: [(&str, &str); 12] = [
 /// Whether `line`, the first line of the completion function `name`, is
 /// one whose marks the check knows, as the stock `compinit` reads it (its
 /// words split at blanks): any but an `#autoload` with a word other than
-/// `+X`, which loads the function at once without running it, and a
-/// `#compdef` that binds keys (`-k`, `-K`) that is not one of zsh's own
-/// ([`KEY_LINES`]), which may bind a key a line is typed with. compinit runs
-/// `autoload -rUz` with the words of an `#autoload` line and the function's
-/// name; a `#compdef` line names the commands and keys whose completion runs
-/// the function.
+/// `+X`, which loads the function at once without running it, a `#compdef`
+/// whose first word may bind keys, one of `-k`, `-kn`, `-K` and `-Kn` as
+/// compinit takes them (`-[kK](n|)`, and any other that starts so), that is
+/// not one of zsh's own ([`KEY_LINES`]), which may bind a key a line is
+/// typed with, and a line with a control character but a tab, which the
+/// check may not split as zsh does. compinit runs `autoload -rUz` with the
+/// words of an `#autoload` line and the function's name; a `#compdef` line
+/// names the commands and keys whose completion runs the function, and only
+/// its first word can make it bind keys (its others go to `compdef -na`).
 fn known_first_line(name: &str, line: &str) -> bool {
+    if line.chars().any(|c| c.is_control() && c != '\t') {
+        return false;
+    }
     let mut words = line.split([' ', '\t']).filter(|word| !word.is_empty());
     match words.next() {
         Some("#autoload") => words.all(|word| word == "+X"),
-        Some("#compdef") if words.any(|word| matches!(word, "-k" | "-K")) => KEY_LINES
-            .iter()
-            .any(|(stock, known)| *stock == name && *known == line),
+        Some("#compdef")
+            if words
+                .next()
+                .is_some_and(|word| word.starts_with("-k") || word.starts_with("-K")) =>
+        {
+            KEY_LINES
+                .iter()
+                .any(|(stock, known)| *stock == name && *known == line)
+        }
         _ => true,
     }
 }

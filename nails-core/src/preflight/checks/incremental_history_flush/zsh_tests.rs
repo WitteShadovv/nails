@@ -341,8 +341,8 @@ fn a_zdotdir_or_a_source_the_check_cannot_read_is_a_doubt() {
 fn a_shift_in_an_arithmetic_command_opens_no_here_document() {
     for arithmetic in [
         "(( bits = 1 << 2 ))",
-        "(( flags <<= 1 ))",
-        "for (( i = 0; i < 3; i++ )); do (( m <<= 1 )); done",
+        "(( SECONDS <<= 1 ))",
+        "for (( i = 0; i < 3; i++ )); do (( SECONDS <<= 1 )); done",
         "if (( 1 << 2 )); then true; fi",
     ] {
         let fs = MockFilesystem::new();
@@ -485,7 +485,18 @@ fn a_quote_in_an_expansion_closes_nothing() {
             "/home/alice/.zsh/history.zsh",
             "setopt share_history\n",
         );
-        assert_eq!(scan(&fs, NOT_LOGIN).doubts, Vec::<String>::new(), "{line}");
+        // What a command's output gives arithmetic may set any parameter.
+        let doubts: Vec<String> = if line.starts_with("((") {
+            vec![
+                "it cannot tell which parameters `$(echo \")\")` in /home/alice/.zshrc sets, as zsh \
+                 reads what `$(echo \")\")` gives there as arithmetic, which may set one by a name \
+                 the check cannot read"
+                    .to_string(),
+            ]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(scan(&fs, NOT_LOGIN).doubts, doubts, "{line}");
         assert_eq!(
             on(&fs, NOT_LOGIN),
             ["/home/alice/.zsh/history.zsh names SHARE_HISTORY"],
@@ -593,6 +604,10 @@ fn what_an_expansion_holds_that_the_check_cannot_read_is_a_doubt() {
 
 /// The doubt of a quote that runs to the end of `/home/alice/.zshrc`.
 const OPEN_QUOTE: &str = "it cannot tell where the `'` that /home/alice/.zshrc opens ends";
+// What `$'` gives arithmetic may set any parameter.
+const ANSI_ARITHMETIC: &str = "it cannot tell which parameters `EUID ==$' 1` in \
+    /home/alice/.zshrc sets, as zsh reads what `$'` gives there as arithmetic, which may set \
+    one by a name the check cannot read";
 
 #[test]
 fn what_zsh_reads_as_code_after_a_glob_flag_an_arithmetic_quote_or_a_pid_is_read() {
@@ -615,12 +630,15 @@ fn what_zsh_reads_as_code_after_a_glob_flag_an_arithmetic_quote_or_a_pid_is_read
         ("[[ $x == (a|b) ]] && source ~/.zsh/history.zsh\n", &[]),
         // In arithmetic a quote is a character.
         (
-            "(( x ==$' 1 ))\nsource ~/.zsh/history.zsh\n'\n",
-            &[OPEN_QUOTE],
+            "(( EUID ==$' 1 ))\nsource ~/.zsh/history.zsh\n'\n",
+            &[OPEN_QUOTE, ANSI_ARITHMETIC],
         ),
-        ("(( y == ' 1 ))\nsource ~/.zsh/history.zsh\n# it's\n", &[]),
         (
-            "x=$(( y == ' 1 ))\nsource ~/.zsh/history.zsh\n# it's\n",
+            "(( EUID == ' 1 ))\nsource ~/.zsh/history.zsh\n# it's\n",
+            &[],
+        ),
+        (
+            "x=$(( EUID == ' 1 ))\nsource ~/.zsh/history.zsh\n# it's\n",
             &[],
         ),
         (
@@ -695,7 +713,7 @@ fn a_source_in_a_case_arm_a_short_form_or_after_a_descriptor_is_followed() {
         "if [[ -n 1 ]] {}",
         "if [[ -n 1 ]] { {} }",
         "if (( 1 )) {}",
-        "n=0; while (( n++ < 1 )) {}",
+        "while (( SECONDS++ < 1 )) {}",
         "foreach x (a) {}\nend",
         // An `eval` of words the walk can read.
         "eval '{}'",
@@ -1419,15 +1437,18 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
                 vec![
                     Word {
                         text: "x".to_string(),
-                        expands: false
+                        expands: false,
+                        quoted: false,
                     },
                     Word {
                         text: "y".to_string(),
-                        expands: false
+                        expands: false,
+                        quoted: false,
                     },
                     Word {
                         text: "z".to_string(),
-                        expands: false
+                        expands: false,
+                        quoted: false,
                     },
                 ]
             ),
@@ -1473,7 +1494,8 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
             Token::End(End::Line),
             Token::Word(Word {
                 text: "c".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
         ]
     );
@@ -1482,36 +1504,43 @@ fn the_tokens_keep_expansions_whole_and_drop_comments() {
         [
             Token::Word(Word {
                 text: "f".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
             Token::Open,
             Token::Close,
             Token::Word(Word {
                 text: "{".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
             Token::Word(Word {
                 text: "x".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
             Token::Word(Word {
                 text: "}".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
             Token::End(End::Condition),
             Token::Word(Word {
                 text: "y".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
             Token::End(End::Condition),
             Token::Word(Word {
                 text: "z".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
             Token::End(End::Pipe),
             Token::Word(Word {
                 text: "w".to_string(),
-                expands: false
+                expands: false,
+                quoted: false,
             }),
             Token::End(End::Background),
         ]

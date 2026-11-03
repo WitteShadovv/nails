@@ -362,3 +362,58 @@ fn what_a_sched_a_zstyle_e_or_a_bindkey_s_runs_is_a_hook_s() {
         assert!(!read(rc).doubts.is_empty(), "{rc}");
     }
 }
+
+#[test]
+fn keys_that_edit_the_line_or_a_name_glued_to_a_key_in_a_bindkey_s_count() {
+    // zsh 5.9.2 runs `setopt sharehistory` or `fc -AI` with each, as Ctrl-A
+    // moves to the start and Backspace erases, uses the alias `h` and sets
+    // TTY with the last two, which a key glued to the word hides.
+    for rc in [
+        "bindkey -e\nbindkey -s '^M' '^Jhistory^Asetopt share^J'\n",
+        "bindkey -e\nbindkey -s '^M' '^Jsetopt sharehistorx^Hy^J'\n",
+        "bindkey -e\nbindkey -s '^M' '^Jfc -IX ^H^H^HAI^J'\n",
+        "bindkey -e\nalias h='fc -l'\nbindkey -s '^M' '^Jh -W^J'\n",
+        "bindkey -e\npreexec() { print -r -- \"$1\" >> $TTY }\n\
+         bindkey -s '^M' '^JTTY=~/.zsh_history^J'\n",
+        // A string bound in another keymap, where keys are commands.
+        "bindkey -M vicmd -s Q 'x^M'\n",
+        "bindkey -a -s Q 'x^M'\n",
+    ] {
+        assert_ne!(read(rc), Scan::default(), "{rc}");
+    }
+    // A key a line is typed with bound to a widget, unbound, a widget made
+    // or a keymap linked may change what a string's keys type.
+    for more in [
+        "bindkey jk vi-cmd-mode",
+        "bindkey -r a",
+        "bindkey -s xx 'y'",
+        "zle -N self-insert f\nf() { zle .self-insert }",
+        "bindkey -A vicmd main",
+    ] {
+        let rc = format!("bindkey -s '^o' 'lfcd^M'\n{more}\n");
+        assert_ne!(read(&rc), Scan::default(), "{rc}");
+    }
+    for rc in [
+        "bindkey -s '^o' 'lfcd^M'\nbindkey '^R' history-incremental-search-backward\n",
+        "bindkey -s '^o' 'lfcd^M'\nbindkey a self-insert\n",
+    ] {
+        assert_eq!(read(rc), Scan::default(), "{rc}");
+    }
+}
+
+#[test]
+fn what_print_z_puts_in_the_line_is_read_as_a_hook_s_code() {
+    // zsh 5.9.2 edits the line `print -z` gives next, which a widget may
+    // accept (`zle-line-init() { zle accept-line }`).
+    for rc in [
+        "print -z 'setopt sharehistory'\n",
+        "print -z -- \"$cmd\"\n",
+        "print -z 'fc -AI'\n",
+        "alias h='fc -l'\nprint -z 'h -W'\n",
+        "print -z 'x\\ny'\n",
+    ] {
+        assert_ne!(read(rc), Scan::default(), "{rc}");
+    }
+    assert_eq!(read("print -z 'ls -l'\n"), Scan::default());
+    assert_eq!(read("print -rz -- 'cd ~/src'\n"), Scan::default());
+}
