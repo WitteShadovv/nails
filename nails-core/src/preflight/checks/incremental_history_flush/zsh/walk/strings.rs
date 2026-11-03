@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The code that zsh runs from a string a startup file holds: an alias's
-//! value as it is used, a trap's, a `sched`'s, a `zstyle -e`'s and the keys
-//! a `bindkey -s` types, and a prompt's when `PROMPT_SUBST` is on. A string
+//! value as it is used, a trap's, a `sched`'s, a `zstyle -e`'s and a
+//! prompt's when `PROMPT_SUBST` is on (the keys a `bindkey -s` types are
+//! read in [`super::keys`]). A string
 //! the walk can read whole is read as an `eval`'s words are; one with an
 //! expansion in it, which may make any code, is a doubt. What runs as zsh
 //! looks a style up, at a time or as keys are pressed counts as a hook's, and
@@ -11,7 +12,6 @@
 
 use super::super::backstop::{FC_WRITES, history_path, is_fc_flag};
 use super::super::lexer::{Token, Word, lex};
-use super::hooks::completes;
 use super::{Event, Walker};
 
 /// The commands that take the words after them as options, code, names or
@@ -120,7 +120,7 @@ pub(in super::super) const PROMPTS: &[&str] = &[
 /// expansion, which may make any code: a backquote, or a `$` before a name,
 /// a `{`, a `(` or a special parameter, wherever quotes put it (not the `$`
 /// of `PS1='$ '`).
-fn computed(word: &Word) -> bool {
+pub(super) fn computed(word: &Word) -> bool {
     let mut chars = word.text.chars().peekable();
     word.expands
         || std::iter::from_fn(|| chars.next().map(|c| (c, chars.peek().copied()))).any(
@@ -153,60 +153,6 @@ fn listing_fc(command: &str) -> bool {
     flaws.is_empty()
         && words.next().is_some_and(|word| word == "fc")
         && words.all(|word| !is_fc_flag(word) || !word.contains(FC_WRITES))
-}
-
-/// The line that the keys `text` types, a `bindkey -s` string as written,
-/// as zsh reads it: `^M`, `^J`, `\r`, `\n`, `\C-m` and `\C-j` end a line,
-/// another `^` or `\` escape is a key that edits the line, which types
-/// nothing; `None` when it holds an escape key (`^[`, `\e`, `\M-`), which
-/// may run a widget by its name, a key that completes a word as zsh binds it
-/// (Tab, `^D` at the end of a line) or starts one that may (`^X`), or a
-/// character given by its number.
-fn typed_line(text: &str) -> Option<String> {
-    let mut line = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '^' => match chars.next()? {
-                'M' | 'm' | 'J' | 'j' => line.push('\n'),
-                '[' | 'I' | 'i' | 'D' | 'd' | 'X' | 'x' => return None,
-                _ => {}
-            },
-            '\\' => match chars.next()? {
-                'n' | 'r' => line.push('\n'),
-                // An escape key, Tab, or a character by its number.
-                'e' | 'E' | 'M' | 'x' | 'u' | 'U' | 't' | '0'..='9' => return None,
-                'C' => {
-                    chars.next_if_eq(&'-');
-                    match chars.next()? {
-                        'm' | 'M' | 'j' | 'J' => line.push('\n'),
-                        '[' | 'I' | 'i' | 'D' | 'd' | 'X' | 'x' => return None,
-                        _ => {}
-                    }
-                }
-                c if c.is_ascii_alphanumeric() => {}
-                c => line.push(c),
-            },
-            // Tab itself.
-            '\t' => return None,
-            c => line.push(c),
-        }
-    }
-    Some(line)
-}
-
-/// Whether `keys`, a key sequence as `bindkey` is given it, is one the
-/// check takes the operator to press only to complete a word, as zsh binds
-/// such keys: Tab, `^D` (which zsh binds to `delete-char-or-list`), or a
-/// sequence that starts with `^X` or an escape (`^[`, `\e`, `\M-`), past
-/// which no key types a command line.
-fn completion_keys(keys: &str) -> bool {
-    matches!(
-        keys,
-        "^I" | "^i" | "\\t" | "\t" | "\\C-i" | "\\C-I" | "^D" | "^d" | "\\C-d" | "\\C-D"
-    ) || ["^X", "^x", "\\C-x", "\\C-X", "^[", "\\e", "\\E", "\\M-"]
-        .iter()
-        .any(|prefix| keys.len() > prefix.len() && keys.starts_with(prefix))
 }
 
 impl Walker<'_> {
@@ -374,80 +320,9 @@ impl Walker<'_> {
     /// The events of zsh code `text` that zsh runs later as a hook would,
     /// at a time, as a style is looked up or as keys are pressed, read as the
     /// code of a hook named `hook`.
-    fn hooked(&mut self, text: &str, unconditional: bool, hook: String) {
+    pub(super) fn hooked(&mut self, text: &str, unconditional: bool, hook: String) {
         self.events.push(Event::Hook(hook.clone()));
         self.nested_in(text, unconditional, Some(hook));
-    }
-
-    /// The events of a `bindkey` of `args`: with `-s`, the keys each string
-    /// after a key types, which zsh reads as the line typed when the key is
-    /// pressed, read as a hook's code (a line ends at `^M`, `^J`, `\r` or
-    /// `\n`, and another escape is a key that moves or erases); with an
-    /// expansion among its words, or an escape key (`^[`, `\e`) in a string,
-    /// which may run a widget by its name, a doubt.
-    pub(super) fn bindkey(&mut self, args: &[Word], unconditional: bool) {
-        let mut flags = Vec::new();
-        let mut strings = Vec::new();
-        let mut words = args.iter();
-        while let Some(arg) = words.next() {
-            if strings.is_empty() && arg.text.starts_with('-') && arg.text.len() > 1 {
-                if arg.text.contains('M') {
-                    // The keymap it binds in.
-                    words.next();
-                }
-                flags.push(arg.text.as_str());
-                continue;
-            }
-            strings.push(arg);
-        }
-        let macros = flags.iter().any(|flag| flag.contains('s'));
-        if !macros {
-            for arg in args {
-                self.mention(&arg.text);
-            }
-            // A widget that completes a word bound to a key typed as a line
-            // is (Space, a letter, Enter) runs completion functions the check
-            // does not read as each line is typed.
-            let keymaps = flags
-                .iter()
-                .any(|flag| flag.contains(['A', 'N', 'l', 'L', 'r', 'd']));
-            for pair in strings.chunks(2) {
-                let [keys, widget] = pair else {
-                    continue;
-                };
-                if !keymaps && completes(widget) && (computed(keys) || !completion_keys(&keys.text))
-                {
-                    self.events.push(Event::Doubt(format!(
-                        "it cannot tell what the completion functions that `bindkey {} {}` in {} \
-                         runs as a line is typed write",
-                        keys.text, widget.text, self.place
-                    )));
-                }
-            }
-            return;
-        }
-        let place = self.place;
-        let doubt = |text: &str| {
-            Event::Doubt(format!(
-                "it cannot tell what the keys `bindkey -s ... {text}` in {place} types run"
-            ))
-        };
-        for pair in strings.chunks(2) {
-            let [keys, typed] = pair else {
-                continue;
-            };
-            if computed(keys) || computed(typed) {
-                self.events.push(doubt(&typed.text));
-                continue;
-            }
-            match typed_line(&typed.text) {
-                Some(code) => {
-                    let hook = format!("bindkey -s {} {}", keys.text, typed.text);
-                    self.hooked(&code, unconditional, hook);
-                }
-                None => self.events.push(doubt(&typed.text)),
-            }
-        }
     }
 
     /// The events of a `zstyle` of `args`: with `-e`, the code each string

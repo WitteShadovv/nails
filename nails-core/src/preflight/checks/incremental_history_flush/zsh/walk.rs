@@ -15,9 +15,11 @@ use super::lexer::{End, Flaw, Token, Word, lex};
 use std::collections::BTreeMap;
 
 mod command;
+mod descriptors;
 mod event;
 mod fpath;
 mod hooks;
+mod keys;
 mod loops;
 mod names;
 mod strings;
