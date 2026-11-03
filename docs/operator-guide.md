@@ -827,8 +827,8 @@ with `window.emergency`, on the window's Settings page: back to the decoy
 way back does), a power-off (`--poweroff`) or a full reboot (`--reboot`).
 The hidden session's page names the choice. The control powers off instead
 where the window cannot be sure the session ends so, and the page then says
-why: for example while Verify or a step of Rehearsal runs, which NAILS
-finishes before it reads the emergency, or where the window cannot read the
+why: for example while Verify or Rehearsal waits for NAILS, which finishes
+that before it reads the emergency, or where the window cannot read the
 setting. Where the window cannot reach NAILS in time, it asks logind for the
 power-off itself, and while a deactivation returns to the decoy it asks for
 a power-off right away, since that return can end the window and NAILS

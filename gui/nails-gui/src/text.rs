@@ -244,7 +244,7 @@ pub const EMERGENCY_UNREADABLE: &str = "as the window could not read its setting
 pub const EMERGENCY_NO_WAY_BACK: &str = "as this session has no way back to the decoy";
 /// The window has no helper to ask for anything else.
 pub const EMERGENCY_NO_HELPER: &str = "as the window cannot reach NAILS";
-/// The helper runs a verify or a step of the rehearsal, and reads the
+/// The helper runs a request of Verify or of Rehearsal, and reads the
 /// emergency only after it.
 pub const EMERGENCY_BUSY: &str = "while NAILS is busy";
 /// A deactivation powers the computer off: a return or a restart would be

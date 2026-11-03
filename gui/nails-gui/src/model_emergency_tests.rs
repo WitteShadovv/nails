@@ -524,7 +524,12 @@ fn while_the_helper_verifies_or_rehearses_it_powers_off_and_says_why() {
                 .iter()
                 .position(|link| link.tool == tool)
                 .unwrap();
-            model.open(index);
+            let asked = model.open(index);
+            if tool == ToolKind::Rehearsal {
+                // Rehearsal opens with the read of where the rehearsal
+                // stands, a request of its own as much as a step is.
+                assert_eq!(asked, Some(Ask::Rehearse(crate::worker::Rehearse::Status)));
+            }
             assert_eq!(fact_of(&model.page()), None, "{spelling}: as set, at rest");
             // The helper reads the emergency only once the request that runs
             // is answered, and the window does not wait that long.
