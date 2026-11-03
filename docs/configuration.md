@@ -705,8 +705,9 @@ The control powers off instead where the window cannot be sure the session
 ends as the setting says, and the page then names that and why:
 
 - once the window cannot reach NAILS;
-- while Verify or a step of Rehearsal runs: NAILS reads the emergency only
-  after it, and the window does not wait that long (below);
+- while Verify or Rehearsal waits for NAILS (a step, or the read of where
+  the rehearsal stands): NAILS reads the emergency only after that, and the
+  window does not wait that long (below);
 - until the window has read the setting, and where the settings cannot be
   read or hold a value the window does not know;
 - for a return or a restart while a deactivation powers the computer off,
