@@ -468,6 +468,58 @@ fn a_hidden_volume_on_this_computers_disk_is_allowed_with_the_typed_word() {
     );
 }
 
+/// The check's words, word for word, for a hidden volume on a disk the attach
+/// gate cannot follow.
+const OWN_VOLUME: &str = "Use a volume on a disk or partition of its own, or an encrypted volume \
+                          opened from one: only such a volume can be told apart from this \
+                          computer's own storage.";
+
+/// A hidden volume on a network block device, which the check refuses and
+/// names `--allow-decoy-storage` for, gets the button and the typed word as
+/// any other storage of this computer's does; one on a ZFS volume, which no
+/// flag accepts, gets none.
+#[test]
+fn a_served_disk_can_be_allowed_and_a_zfs_volume_cannot() {
+    let screen = decoy(
+        json!([{"name": "hidden-volume", "status": "fail",
+            "message": "/mnt/data is not a volume of its own: it is stored on a network block \
+                device, which a program can serve from a file on this computer's own disk",
+            "remediation": format!("{OWN_VOLUME}\nIf the device keeps its data on storage this \
+                computer does not use, read \"Where setup happens\" in the operator guide on \
+                another device: opening it here leaves traces such as ~/.lesshst."),
+            "allowable": "decoy_storage"}]),
+        1,
+    );
+    let buttons = allow_buttons(&screen);
+    assert_eq!(buttons.len(), 1);
+    buttons[0].invoke_accessible_default_action();
+    screen
+        .find_with(
+            &text::type_to_continue(text::ALLOW_WORD),
+            AccessibleRole::TextInput,
+        )
+        .set_accessible_value("allow");
+    screen
+        .find_with(text::ALLOW_CONFIRM, AccessibleRole::Button)
+        .invoke_accessible_default_action();
+    assert_eq!(
+        screen.asks(),
+        vec![Ask::Check(CheckArgs {
+            allow_decoy_storage: true,
+            ..CheckArgs::default()
+        })]
+    );
+
+    let screen = decoy(
+        json!([{"name": "hidden-volume", "status": "fail",
+            "message": "/mnt/data is stored on a ZFS volume, which shows no disk it stores its \
+                data on, so where it lives cannot be told",
+            "remediation": OWN_VOLUME}]),
+        1,
+    );
+    assert!(allow_buttons(&screen).is_empty());
+}
+
 /// Discards over the hidden volume, which the check refuses and the CLI's
 /// `--allow-discards` accepts for one run, get the same button and the same
 /// typed word as a persistent record; the next check carries the flag. The
