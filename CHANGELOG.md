@@ -238,41 +238,42 @@ of this changelog for that version becomes the release notes word for word, and
   (`nails config show`): each key a value can be set for, its value and where it comes from. A
   key's page offers its states or options, the default among the options marked, or a field for a
   number, a path, a flake or a list of names, and Use the Default… where the settings file sets it.
-  A change goes through the plan of
-  `config set` or `config unset`, its token and its apply: the question names each key with its
-  value before and after, a file that changed before Save writes nothing and is read again, and an
-  answer the window does not expect changes nothing more. The hidden volume and the record cannot
-  move during a hidden session, so their pages say why and offer no change. Every control and row
-  is a Tab stop with an accessible name. The window's own names are neutral: its title is "Session", and its
-  app id, its program (`<hidden-root>/gui/bin/session`), its process name and the application name a
-  screen reader reads are all `session`. Its command line is its name alone, `session` (`session
-  --engine -` once a menu entry's start ran again), so a log that quotes it, such as dbus-daemon's
-  line for a service the window's bus traffic starts, names no place. Its toolkit starts no program,
-  on X11 or on Wayland: its winit backend is a patched copy of Slint's
-  (`gui/patches/i-slint-backend-winit`) that builds winit without sctk-adwaita. winit still builds
-  its Wayland client-side frame and hides it, since the window has no frame, but that frame is now
-  smithay's fallback frame, which starts no program, where sctk-adwaita's ran `dbus-send`,
-  `gsettings` and `fc-match`. The copy also reads the settings portal without starting it, and `just
-  vet gui` holds it to the published crate plus its patch, byte for byte. A process list still shows
-  `nails` while the window is open: the helper runs as `<hidden-root>/nails helper --stdio`. Its
-  tests run without a display, on Slint's testing platform.
+  A change goes through the plan of `config set` or `config unset`, its token and its apply: the
+  question names each key with its value before and after, a file that changed before Save writes
+  nothing and is read again, and an answer the window does not expect changes nothing more. The
+  hidden volume and the record cannot move during a hidden session, so their pages say why and offer
+  no change. Every control and row is a Tab stop with an accessible name. The window's own names are
+  neutral: its title is "Session", and its app id, its program (`<hidden-root>/gui/bin/session`),
+  its process name and the application name a screen reader reads are all `session`. Its command
+  line is its name alone, `session` (`session --engine -` once a menu entry's start ran again), so a
+  log that quotes it, such as dbus-daemon's line for a service the window's bus traffic starts,
+  names no place. Its toolkit starts no program, on X11 or on Wayland: its winit backend is a
+  patched copy of Slint's (`gui/patches/i-slint-backend-winit`) that builds winit without
+  sctk-adwaita. winit still builds its Wayland client-side frame and hides it, since the window has
+  no frame, but that frame is now smithay's fallback frame, which starts no program, where
+  sctk-adwaita's ran `dbus-send`, `gsettings` and `fc-match`. The copy also reads the settings
+  portal without starting it, and `just vet gui` holds it to the published crate plus its patch,
+  byte for byte. A process list still shows `nails` while the window is open: the helper runs as
+  `<hidden-root>/nails helper --stdio`. Its tests run without a display, on Slint's testing
+  platform.
 - `window.emergency` in `nails.toml` chooses in advance how the window's Emergency control ends a
   hidden session, since its gesture asks nothing at that moment: `return`, the default, goes back to
   the decoy's login screen as a plain `nails emergency` does, and so powers off instead where the
   way back cannot undo what the session changed in the network, `poweroff` and `reboot` end it as
   `--poweroff` and `--reboot` do. `config set`, `config unset` and the window's Settings page change
-  it as any other key. Only the window reads it: `nails emergency` still reads no configuration, and
-  its flags choose how each run ends. The window reads the setting once the first status of a hidden
-  session came in and again with every read of its Settings page, so a change saved there holds from
-  the read after the save. The hidden session's page names what the control does, and so does the
-  control's description. The control powers off instead where the window cannot be sure the session
-  ends so, and the page then says why: once the window cannot reach NAILS; while Verify or a step of
-  Rehearsal runs, since NAILS reads the emergency only after it and the window does not wait that
-  long; until the window has read the setting, and where the settings cannot be read or hold a value
-  the window does not know; for a return or a restart while a deactivation powers off; and for a
-  return in a session without a way back, or while the question of a deactivation says the return
-  powers off instead whatever happens before it runs. Once it fired, the page says how the session
-  ends and that the computer powers off where it does not end so.
+  it as any other key. Only the window reads it: the hot path of `nails emergency` still acts before
+  any configuration is read, and its flags choose how each run ends. The window reads the setting
+  once the first status of a hidden session came in and again with every read of its Settings page,
+  so a change saved there holds from the read after the save. The hidden session's page names what
+  the control does, and so does the control's description. The control powers off instead where the
+  window cannot be sure the session ends so, and the page then says why: once the window cannot
+  reach NAILS; while Verify or a step of Rehearsal runs, since NAILS reads the emergency only after
+  it and the window does not wait that long; until the window has read the setting, and where the
+  settings cannot be read or hold a value the window does not know; for a return or a restart while
+  a deactivation powers off; and for a return in a session without a way back, or while the question
+  of a deactivation says the return powers off instead whatever happens before it runs. Once it
+  fired, the page says how the session ends and that the computer powers off where it does not end
+  so.
 - `nails check` and activation refuse an updatedb that would list the hidden volume in the
   decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
   `services.locate`) writes the name of every file it finds into a database on the decoy disk,

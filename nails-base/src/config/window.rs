@@ -5,8 +5,9 @@
 //!
 //! The window's Emergency control ends a hidden session with one gesture and
 //! asks nothing at that moment, so how it ends is chosen in advance, here.
-//! Only the window reads it: `nails emergency` reads no configuration at all
-//! and takes `--poweroff` or `--reboot` on its command line instead.
+//! Only the window reads it: the hot path of `nails emergency` acts before
+//! any configuration is read, and takes `--poweroff` or `--reboot` on its
+//! command line instead.
 
 use serde::{Deserialize, Serialize};
 
