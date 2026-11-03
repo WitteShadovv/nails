@@ -772,8 +772,8 @@ of this changelog for that version becomes the release notes word for word, and
   way, as is a disk on the range of numbers the kernel shares between drivers that sits below no
   other device and is no `ublk` disk (a zoned loop device, which keeps its zones in files), and so
   is a root on any disk where `/proc/devices` cannot be read, on a loop device that shows no file
-  (its path is longer than the kernel shows), or below a device whose devices sysfs cannot list. A
-  loop device over the node of a device outside `/dev` is judged as that device, by the loop
+  (its path is longer than the kernel shows), or on top of a device whose devices sysfs cannot list.
+  A loop device over the node of a device outside `/dev` is judged as that device, by the loop
   driver's record, and a `zram` device with the device it writes pages back to. A root that shares a
   device only with entries the decoy never mounts at boot, which only warns, no longer hides such a
   refusal, nor that of an image file whose filesystem cannot be told. Ordinary disks, iSCSI disks
