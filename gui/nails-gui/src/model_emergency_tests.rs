@@ -62,7 +62,7 @@ fn it_shows_in_a_hidden_session_and_nowhere_else() {
 #[test]
 fn firing_ends_the_page_once_and_nothing_comes_after_it() {
     let mut model = hidden();
-    assert_eq!(model.emergency(), Some(Effect::Emergency));
+    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
     let page = model.page();
     assert_eq!(page.heading, text::ENDING);
     assert_eq!(page.description, text::EMERGENCY_NOW);
@@ -100,7 +100,7 @@ fn firing_closes_an_open_question_without_answering_it() {
     })));
     assert!(model.page().question.is_some());
     assert!(model.page().emergency, "it shows over the question");
-    assert_eq!(model.emergency(), Some(Effect::Emergency));
+    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
     assert!(model.page().question.is_none());
 }
 
@@ -119,6 +119,6 @@ fn the_page_of_a_deactivation_that_ends_keeps_it() {
     assert_eq!(page.heading, text::ENDING);
     assert!(page.no_input, "nothing else acts");
     assert!(page.emergency, "the emergency does");
-    assert_eq!(model.emergency(), Some(Effect::Emergency));
+    assert_eq!(model.emergency(), Some(Effect::Emergency(Finish::PowerOff)));
     assert_eq!(model.page().description, text::EMERGENCY_NOW);
 }

@@ -21,6 +21,7 @@ use std::rc::{Rc, Weak};
 use nails_api::CheckOutcome;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
+use crate::emergency::Finish;
 use crate::model::{
     ActionKind, Asker, CheckView, Effect, Field, Model, Page, SWITCH_OVERDUE, View,
 };
@@ -36,8 +37,9 @@ pub struct Hooks {
     pub hang_up: Box<dyn Fn()>,
     /// Close the window (the person's Close, or a dismissed password dialog).
     pub close: Box<dyn Fn()>,
-    /// Fire the emergency. It must not wait for anything.
-    pub emergency: Box<dyn Fn()>,
+    /// Fire the emergency to end the session with this finish. It must not
+    /// wait for anything.
+    pub emergency: Box<dyn Fn(Finish)>,
 }
 
 /// The window's half of a session.
@@ -166,7 +168,7 @@ impl Controller {
         match effect {
             Some(Effect::Ask(ask)) => (self.hooks.ask)(ask),
             Some(Effect::HangUp) => (self.hooks.hang_up)(),
-            Some(Effect::Emergency) => (self.hooks.emergency)(),
+            Some(Effect::Emergency(finish)) => (self.hooks.emergency)(finish),
             None => {}
         }
     }
