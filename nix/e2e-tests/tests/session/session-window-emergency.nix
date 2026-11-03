@@ -1,55 +1,17 @@
-# Session: the window's emergency, through the engine's helper and through
-# the operator's own power-off
+# Probe, not for merging: the window's emergency requests where they overlap
+# a deactivation, or come in a session without a plan, and how long the
+# window's stand-in lives after each. What each case ended in goes to
+# probe-results.txt in the test's output.
 #
-# The window's Emergency control does not ask the person anything and does
-# not go through the window's worker: it writes the engine's emergency onto
-# the helper's pipe itself, ending as `window.emergency` chose in advance.
-# The way back to the decoy, its default, is the request
-#
-#   {"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":false}}}
-#
-# and a power-off, which is also the window's ending before it read the
-# setting, the request
-#
-#   {"v":1,"id":0,"op":{"emergency":{"poweroff":true,"reboot":false}}}
-#
-# (the window's `emergency::request_line`, which a unit test of the window
-# pins to these bytes). Here the static engine with the `gui` cargo feature
-# serves each request in a hidden NixOS session: a shell client speaks the
-# window's half of the protocol to `nails helper --stdio`, run as root as the
-# launcher and pkexec run it, the hello the helper names and then that line.
-# Where no helper takes the request in time, the window asks logind for the
-# power-off itself, as the operator: `systemctl poweroff --no-ask-password`
-# from its fixed path, with no terminal (the window's streams are
-# /dev/null) and, here, no environment at all. It does so once it still
-# runs 3 seconds after the request (`emergency::HELPER_GRACE`): the engine's
-# emergency ends the window with the session's other programs, and the
-# client stands in for the window there. It marks each quarter of a second
-# it lives on the serial console, and says so once it outlives the grace,
-# which fails the test: a window still running then would power off a
-# return. The second session runs the window's power-off command line from
-# the operator's login on tty1, in a scope of the user's service manager,
-# where a desktop or a terminal runs the window. The test shows:
-#
-#   - the helper takes the request for the way back, and the engine's
-#     emergency returns to the plain decoy, with the hidden volume closed,
-#     ending the client within the window's grace;
-#   - the helper takes the request for a power-off, and the engine's
-#     emergency powers the machine off, ending the client within the grace;
-#   - polkit and logind let the operator's power-off through without a
-#     password, and the machine powers off;
-#   - each cold boot after is the plain decoy, with the hidden volume closed.
-#
-# Each power-off is proved, not taken from QEMU's exit: the driver starts the
-# machine with -no-reboot, so a reboot or a kernel panic ends QEMU too. Only
-# the kernel's own "reboot: Power down" on the console, with no reboot or
-# panic before it, passes (`session.wait_for_real_power_off`).
+# Each client speaks the window's half of the protocol to
+# `nails helper --stdio`, as the window does, and stands in for the window:
+# it marks each quarter of a second it lives on the serial console after its
+# emergency request, and once it outlives the window's grace of 3 seconds it
+# runs the window's own power-off, `systemctl poweroff --no-ask-password`.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   packages = self.packages.x86_64-linux;
-  # The release binary with the window's helper built in: the `gui` cargo
-  # feature, which no release enables yet.
   windowEngine = packages.nails.overrideAttrs (old: {
     pname = "nails-window";
     cargoBuildFlags = old.cargoBuildFlags ++ [
@@ -57,89 +19,190 @@ let
       "gui"
     ];
   });
-  # The window's half of the protocol up to its emergency, which asks for
-  # `request`. The helper reads requests from a pipe of its own; its hello is
-  # echoed back as the window's, which names the same release and protocol.
-  client =
-    name: request:
-    pkgs.writeShellScript "window-emergency-${name}" ''
-      set -eu
-      coproc HELPER { exec /mnt/data/nails --config /mnt/data/config/nails.toml helper --stdio 2>/dev/null; }
-      IFS= read -r -t 60 hello <&"''${HELPER[0]}"
-      theirs=''${hello#'{"hello":'}
-      theirs=''${theirs%'}'}
-      printf '{"v":1,"id":1,"op":{"hello":%s}}\n' "$theirs" >&"''${HELPER[1]}"
-      IFS= read -r -t 60 answer <&"''${HELPER[0]}"
-      case "$answer" in
-        *'"id":1'*'"ok":true'*) ;;
-        *) echo "the helper did not take the hello: $answer" >&2; exit 1 ;;
-      esac
-      printf '%s\n' '${request}' >&"''${HELPER[1]}"
-      # The engine's emergency ends the session, this client with it, as it
-      # ends the window: each quarter of a second the client still lives is
-      # on the console, and the window's grace running out too.
-      for beat in 1 2 3 4 5 6 7 8 9 10 11; do
-        sleep 0.25
-        echo "window-emergency-${name}: alive $((beat * 250)) ms after the request" >/dev/ttyS0
-      done
+  helperStart = ''
+    coproc HELPER { exec /mnt/data/nails --config /mnt/data/config/nails.toml helper --stdio 2>/dev/null; }
+    IFS= read -r -t 60 hello <&"''${HELPER[0]}" || { say "no hello"; exit 1; }
+    theirs=''${hello#'{"hello":'}
+    theirs=''${theirs%'}'}
+    printf '{"v":1,"id":1,"op":{"hello":%s}}\n' "$theirs" >&"''${HELPER[1]}"
+    IFS= read -r -t 60 answer <&"''${HELPER[0]}"
+    case "$answer" in
+      *'"id":1'*'"ok":true'*) ;;
+      *) say "the helper did not take the hello: $answer"; exit 1 ;;
+    esac
+  '';
+  # The window's stand-in after its request: the beats, then the window's
+  # own power-off once it outlives the grace.
+  standIn = ''
+    for beat in 1 2 3 4 5 6 7 8 9 10 11 12; do
       sleep 0.25
-      echo "window-emergency-${name}: still running after the window's grace" >/dev/ttyS0
-      sleep 600
+      say "alive $((beat * 250)) ms after the request"
+    done
+    say "outlived the grace: the window's own power-off"
+    /run/current-system/sw/bin/systemctl poweroff --no-ask-password </dev/null >/dev/null 2>&1
+    say "the window's own power-off returned $?"
+    sleep 600
+  '';
+  # The emergency `request` alone.
+  alone =
+    name: request:
+    pkgs.writeShellScript "window-alone-${name}" ''
+      set -u
+      say() { echo "window-alone-${name}: $*" >/dev/ttyS0; }
+      ${helperStart}
+      printf '%s\n' '${request}' >&"''${HELPER[1]}"
+      say "request written"
+      ${standIn}
     '';
-  # The Emergency control with `window.emergency` at its default, and set to
-  # a power-off.
-  returnClient = client "return" ''{"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":false}}}'';
-  powerOffClient = client "poweroff" ''{"v":1,"id":0,"op":{"emergency":{"poweroff":true,"reboot":false}}}'';
+  # The plan of a return to the decoy, its apply, and right behind the apply
+  # the emergency `request`, as the window writes it while Ending the Hidden
+  # Session shows.
+  overlap =
+    name: request:
+    pkgs.writeShellScript "window-overlap-${name}" ''
+      set -u
+      say() { echo "window-overlap-${name}: $*" >/dev/ttyS0; }
+      ${helperStart}
+      printf '%s\n' '{"v":1,"id":2,"op":{"deactivate_plan":{"poweroff":false}}}' >&"''${HELPER[1]}"
+      token=
+      while IFS= read -r -t 60 line <&"''${HELPER[0]}"; do
+        case "$line" in
+          *'"result"'*'"id":2'*)
+            token=$(printf '%s' "$line" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+            break
+            ;;
+          *'"error"'*) say "plan refused: ''${line:0:400}"; exit 1 ;;
+        esac
+      done
+      [ -n "$token" ] || { say "no token"; exit 1; }
+      printf '{"v":1,"id":3,"op":{"deactivate_apply":{"token":"%s"}}}\n%s\n' "$token" '${request}' >&"''${HELPER[1]}"
+      say "request written"
+      exec 7<&"''${HELPER[0]}"
+      (
+        while IFS= read -r -t 120 line <&7; do
+          say "frame ''${line:0:700}"
+        done
+      ) &
+      ${standIn}
+    '';
+  returnLine = ''{"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":false}}}'';
+  powerOffLine = ''{"v":1,"id":0,"op":{"emergency":{"poweroff":true,"reboot":false}}}'';
+  rebootLine = ''{"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":true}}}'';
+  aloneReturn = alone "return" returnLine;
+  aloneReboot = alone "reboot" rebootLine;
+  aloneRebootNoPlan = alone "reboot-no-plan" rebootLine;
+  overlapReturn = overlap "return" returnLine;
+  overlapPowerOff = overlap "poweroff" powerOffLine;
 in
 {
   name = "session-window-emergency";
   meta.tags = [ "session" ];
 
-  # Four soft-reboots, two power-offs and two cold boots.
-  globalTimeout = 2100;
+  globalTimeout = 2400;
 
   nodes.machine =
     { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
-      # What decides the operator's own power-off, as on every desktop.
       security.polkit.enable = true;
       system.extraDependencies = [
         windowEngine
-        returnClient
-        powerOffClient
+        aloneReturn
+        aloneReboot
+        aloneRebootNoPlan
+        overlapReturn
+        overlapPowerOff
       ];
     };
 
   testScript = _: ''
-    import re
-
     from nails_e2e import session
 
     CONFIG = "/mnt/data/config/nails.toml"
     UPPER = "/mnt/data/root/upper"
-    # The window's grace before its own power-off, `emergency::HELPER_GRACE`.
-    GRACE_MS = 3000
+    results: list[str] = []
 
-    def ended_within_the_grace(since, name):
-        """The client `name` that stood in for the window, by the beats it
-        left on the console after line `since`: it did not outlive the
-        window's grace. Logs how long it lived."""
-        lines = machine.full_console_log[since:]
-        late = [line for line in lines if f"window-emergency-{name}: still running" in line]
-        assert not late, f"the stand-in for the window outlived its grace: {late}"
-        beat = re.compile(rf"window-emergency-{name}: alive (\d+) ms after the request")
-        lived = max((int(m.group(1)) for m in map(beat.search, lines) if m), default=0)
-        machine.log(
-            f"window emergency {name}: the stand-in for the window ended "
-            f"{lived} to {lived + 250} ms after its request, within the "
-            f"window's grace of {GRACE_MS} ms"
+    def write_results():
+        (machine.out_dir / "probe-results.txt").write_text("\n".join(results) + "\n")
+
+    def lines_of(since, name):
+        return [line for line in machine.full_console_log[since:] if name in line]
+
+    def ended(since):
+        reader = getattr(machine, "serial_thread", None)
+        if reader is not None:
+            reader.join(timeout=30)
+        console = "\n".join(machine.full_console_log[since:])
+        if session.PANIC_MARKER in console:
+            return "kernel panic"
+        if session.RESTART_MARKER in console:
+            return "full reboot"
+        if session.POWER_DOWN_MARKER in console:
+            return "power-off"
+        return "QEMU exited without a marker"
+
+    def note(label, since, name, outcome):
+        seen = lines_of(since, name)
+        results.append(f"== {label}: {outcome}")
+        results.extend(seen[-40:])
+        machine.log(f"PROBE {label}: {outcome}")
+
+    def activate(label):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        session.follow_soft_reboot(
+            machine,
+            f"su testuser -c 'sudo /mnt/data/nails --config {CONFIG} activate -y --overlay-only' "
+            f"> /mnt/data/activate-{label}.log 2>&1",
+            f"activate for {label}",
         )
+        session.assert_hidden_root(machine, UPPER)
+
+    def logged(label):
+        # What the engine logged on the hidden volume about it.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        out = machine.succeed(
+            "grep -rh -e 'emergency hot path finished' -e 'the way back is enqueued' "
+            "/mnt/data/logs 2>/dev/null | tail -n 6 || true"
+        )
+        results.append(f"-- engine log after {label}:")
+        results.extend(line[:900] for line in out.splitlines())
+        machine.succeed("""${hiddenVolume.unmountHiddenVolumeStrict}""")
+
+    def soft_reboot_or_off(label, trigger, name):
+        since = len(machine.full_console_log)
+        try:
+            session.follow_soft_reboot(machine, trigger, label)
+        except AssertionError as error:
+            if machine.process is not None and machine.process.poll() is None:
+                note(label, since, name, f"no soft-reboot, the machine still runs: {str(error)[:300]}")
+                write_results()
+                raise
+            outcome = ended(since)
+            note(label, since, name, f"{outcome} ({str(error)[:200]})")
+            machine.start()
+            machine.wait_for_unit("multi-user.target")
+            return
+        root = machine.succeed("findmnt -no FSTYPE,SOURCE /").strip()
+        note(label, since, name, f"soft-reboot, / is now {root}")
+        session.assert_decoy_root(machine)
+        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+
+    def until_qemu_exits(label, client, name):
+        since = len(machine.full_console_log)
+        machine.execute(
+            f"({client}) </dev/null >/dev/null 2>/dev/null &",
+            check_return=False,
+            check_output=False,
+        )
+        session.wait_for_power_off(machine, 300)
+        note(label, since, name, ended(since))
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    with subtest("a build with the window's helper on the hidden volume"):
+    with subtest("set up and activate"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("install -m 0755 ${windowEngine}/bin/nails /mnt/data/nails")
         machine.succeed(
@@ -149,8 +212,6 @@ in
             "minimum_space_mb = 100\n"
             "EOF"
         )
-
-    with subtest("activate through sudo as the operator"):
         session.follow_soft_reboot(
             machine,
             f"su testuser -c 'sudo /mnt/data/nails --config {CONFIG} activate -y --overlay-only' "
@@ -159,84 +220,35 @@ in
         )
         session.assert_hidden_root(machine, UPPER)
 
-    with subtest("the window's emergency request for the way back returns to the decoy"):
-        # A client that fails on the hello ends at once, which fails the wait:
-        # nothing soft-reboots.
-        since = len(machine.full_console_log)
-        session.follow_soft_reboot(
-            machine,
-            "${returnClient} 2>/mnt/data/client-return.err",
-            "window emergency return",
-        )
-        ended_within_the_grace(since, "return")
-        session.assert_decoy_root(machine)
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+    with subtest("A: the emergency's return alone"):
+        soft_reboot_or_off("A return alone", "${aloneReturn}", "window-alone-return")
+        logged("A")
 
-    with subtest("activate again, for the power-off"):
-        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        session.follow_soft_reboot(
-            machine,
-            f"su testuser -c 'sudo /mnt/data/nails --config {CONFIG} activate -y --overlay-only' "
-            "> /mnt/data/activate-power-off.log 2>&1",
-            "activate for the power-off",
-        )
-        session.assert_hidden_root(machine, UPPER)
+    with subtest("B: the emergency's return right behind a deactivation's return"):
+        activate("B")
+        soft_reboot_or_off("B overlap return", "${overlapReturn}", "window-overlap-return")
+        logged("B")
 
-    with subtest("the window's emergency request through the helper powers off"):
-        # The helper answers the hello before anything else: a client that
-        # fails on it ends at once, and the machine stays on.
-        since = len(machine.full_console_log)
-        machine.execute(
-            "(${powerOffClient}) </dev/null >/dev/null 2>/mnt/data/client.err &",
-            check_return=False,
-            check_output=False,
-        )
-        session.wait_for_real_power_off(machine, 300)
-        ended_within_the_grace(since, "poweroff")
+    with subtest("C: the emergency's power-off right behind a deactivation's return"):
+        activate("C")
+        soft_reboot_or_off("C overlap poweroff", "${overlapPowerOff}", "window-overlap-poweroff")
+        logged("C")
 
-    with subtest("the next cold boot is the plain decoy with the hidden volume closed"):
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        session.assert_decoy_root(machine)
-        machine.fail("test -e /dev/mapper/data")
+    with subtest("D: the emergency's restart alone"):
+        activate("D")
+        until_qemu_exits("D reboot alone", "${aloneReboot}", "window-alone-reboot")
+        logged("D")
 
-    with subtest("activate again, and log the operator in on tty1"):
-        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        session.follow_soft_reboot(
-            machine,
-            f"su testuser -c 'sudo /mnt/data/nails --config {CONFIG} activate -y --overlay-only' "
-            "> /mnt/data/activate-again.log 2>&1",
-            "activate again",
+    with subtest("E: the emergency's restart in a session without a plan"):
+        activate("E")
+        machine.succeed("rm -f /run/overlay-runtime/plan.json")
+        status = machine.succeed(
+            f"/mnt/data/nails --config {CONFIG} --no-log-file status --json || true"
         )
-        session.assert_hidden_root(machine, UPPER)
-        machine.wait_for_unit("getty@tty1.service")
-        # Clear tty1 first, so an earlier prompt cannot match; wait for the
-        # password prompt before typing (login flushes typeahead).
-        machine.succeed("printf '\\033[H\\033[2J' > /dev/tty1")
-        machine.send_chars("testuser\n")
-        machine.wait_until_tty_matches("1", "Password: ", timeout=60)
-        machine.send_chars("test\n")
-        machine.wait_until_succeeds(
-            "loginctl list-sessions --no-legend | grep -q testuser", timeout=60
-        )
-        uid = machine.succeed("id -u testuser").strip()
-        machine.wait_until_succeeds(f"systemctl is-active user@{uid}.service", timeout=60)
+        results.append(f"-- E status before: {status.strip()[:600]}")
+        until_qemu_exits("E reboot without a plan", "${aloneRebootNoPlan}", "window-alone-reboot-no-plan")
 
-    with subtest("the operator's own power-off, as the window asks for it, powers off"):
-        # The window's fallback command line (`Fallback::system` on NixOS,
-        # which a unit test of the window pins), in a scope of the user's
-        # manager, with no terminal and an empty environment.
-        machine.send_chars(
-            "setsid -f systemd-run --user --scope --quiet -- env -i "
-            "/run/current-system/sw/bin/systemctl poweroff --no-ask-password "
-            "</dev/null >/dev/null 2>&1\n"
-        )
-        session.wait_for_real_power_off(machine, 300)
-
-    with subtest("the cold boot after it is the plain decoy too"):
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        session.assert_decoy_root(machine)
-        machine.fail("test -e /dev/mapper/data")
+    write_results()
+    machine.log("PROBE RESULTS:\n" + "\n".join(results))
   '';
 }
