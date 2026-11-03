@@ -315,13 +315,16 @@ pub struct ActivateArgs {
     /// By default activation refuses a root that this computer's own storage
     /// holds (a subvolume or a bind mount of one of its filesystems, a volume
     /// inside its storage, an image file on it): everything the session writes
-    /// there lands on this computer's disk. Use this flag only for storage you
-    /// know this computer does not use, such as a disk its fstab lists but
-    /// never mounts. It turns those refusals into a warning, adds a line to the
+    /// there lands on this computer's disk. It refuses a root on a network or
+    /// userspace block device (nbd, ublk) too, since the program that serves
+    /// it can keep the data on this computer's disk. Use this flag only for
+    /// storage you know this computer does not use, such as a disk its fstab
+    /// lists but never mounts, or a device you know is served from such
+    /// storage. It turns those refusals into a warning, adds a line to the
     /// logout confirmation and records the choice for `status`. A folder that
     /// is no mount point, a root with a second filesystem mounted over it,
-    /// storage that cannot be judged, and a decoy entry that opens the volume
-    /// are still refused.
+    /// storage that cannot be judged (a ZFS volume among it), and a decoy entry
+    /// that opens the volume are still refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 
@@ -635,9 +638,10 @@ pub struct CheckArgs {
     /// Report a hidden root on this computer's own storage as a warning
     ///
     /// Mirrors `activate --allow-decoy-storage`: a root this computer's own
-    /// storage seems to hold then warns instead of failing. A folder that is
-    /// no mount point, a covered root and storage that cannot be judged still
-    /// fail.
+    /// storage seems to hold, or one on a network or userspace block device
+    /// (nbd, ublk), then warns instead of failing. A folder that is no mount
+    /// point, a covered root and storage that cannot be judged (a ZFS volume
+    /// among it) still fail.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 
@@ -738,11 +742,14 @@ pub struct InitArgs {
     /// By default `init` refuses a target that this computer's own storage
     /// holds (a subvolume or a bind mount of one of its filesystems, a volume
     /// inside its storage, an image file on it), because writing the NAILS
-    /// layout there leaves an identifying tree on this computer's disk. Use
-    /// this flag only for storage you know this computer does not use; it
-    /// turns those refusals into a warning. A folder that is no mount point, a
-    /// target with a second filesystem mounted over it, and one whose storage
-    /// cannot be judged are still refused.
+    /// layout there leaves an identifying tree on this computer's disk, and
+    /// one on a network or userspace block device (nbd, ublk), whose server
+    /// can keep the data there. Use this flag only for storage you know this
+    /// computer does not use, or a device you know is served from such
+    /// storage; it turns those refusals into a warning. A folder that is no
+    /// mount point, a target with a second filesystem mounted over it, and one
+    /// whose storage cannot be judged (a ZFS volume among it) are still
+    /// refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 
@@ -780,10 +787,11 @@ pub struct DiscardArgs {
     /// Discard on a hidden root that this computer's own storage seems to hold
     ///
     /// Mirrors `activate --allow-decoy-storage`: by default discard refuses a
-    /// root that this computer's own storage holds, as activation does. Give
-    /// it for a root you activate with that flag. A folder that is no mount
-    /// point, a root with a second filesystem mounted over it and storage
-    /// that cannot be judged are still refused.
+    /// root that this computer's own storage holds, or one on a network or
+    /// userspace block device (nbd, ublk), as activation does. Give it for a
+    /// root you activate with that flag. A folder that is no mount point, a
+    /// root with a second filesystem mounted over it and storage that cannot
+    /// be judged (a ZFS volume among it) are still refused.
     #[arg(long)]
     pub allow_decoy_storage: bool,
 }
