@@ -151,6 +151,36 @@ encrypted volume exists, and whether a VeraCrypt hidden volume can be told
 from the free space of its outer volume depends on how it is used (see
 [Deniability hazards](#deniability-hazards)).
 
+## Outer volume in preflight
+
+A VeraCrypt hidden volume lies in the free space of its outer volume, so a
+write to the outer volume can land on the hidden one. VeraCrypt guards against
+that only with its hidden-volume protection, which cryptsetup does not offer
+and which the VeraCrypt application applies only through FUSE. The
+`outer-volume` check warns, and never fails, when another VeraCrypt or
+TrueCrypt mapping of the storage the hidden root's volume is opened from is
+open read-write beside it.
+
+For each TCRYPT, SUBDEV or VeraCrypt mapping of the hidden root's stack, the
+check takes the device below it and the devices that hold the same data: a
+loop device over that device, and, where that device is itself a loop device,
+the device or file behind it with every other loop device over it (over a
+file, only those that read it from the same offset). A TCRYPT, SUBDEV or
+VeraCrypt mapping built on any of them that is no part of the hidden root's
+stack is another mapping of the volume, most likely its outer volume.
+
+| Result | When |
+|---|---|
+| Warns | Such a mapping is writable: the kernel does not hold it read-only (`ro` is `0`). The warning names its topmost mapping (`outer (dm-4)`), the device it is opened from and where it is mounted, read-write or read-only. A mapping the VeraCrypt application made stays writable even when the application mounted the volume read-only. |
+| Passes | Every such mapping is read-only, as `cryptsetup open --readonly` makes it; there is none; or the hidden root is in no VeraCrypt or TrueCrypt volume. |
+
+Close the outer volume before activating, or open it with
+`cryptsetup open --readonly` when it has to be shown. The check reads sysfs
+and the mount table only, never a mapping's table. It does not see a volume
+the VeraCrypt application opened through FUSE (as it does with hidden-volume
+protection), which holds no kernel link to the device, nor a mapping of
+another kind over the same device.
+
 ## Partition type in preflight
 
 systemd-gpt-auto-generator runs at every boot and looks at the partitions of
@@ -279,6 +309,9 @@ VeraCrypt's hidden-volume protection, so writing to an outer volume opened by
 cryptsetup can overwrite the hidden volume. Open the outer volume with
 `--readonly` when you only need to show it, and refresh decoy content in the
 outer volume with the VeraCrypt application and its hidden-volume protection.
+The `outer-volume` check warns while another mapping of the volume is open
+read-write beside the hidden one (see
+[Outer volume in preflight](#outer-volume-in-preflight)).
 
 VeraCrypt's own [Security Requirements for Hidden Volumes](https://veracrypt.jp/en/Security%20Requirements%20for%20Hidden%20Volumes.html)
 go further for Linux: mount a hidden volume only while a live system runs whose

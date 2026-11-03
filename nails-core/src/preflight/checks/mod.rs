@@ -37,6 +37,7 @@ pub use backend_detect::BackendDetectCheck;
 pub use backend_detect::BackendEncryptionCheck;
 pub use backend_detect::BackendPartitionTypeCheck;
 pub use backend_detect::CryptsetupArgon2idCheck;
+pub use backend_detect::OuterVolumeCheck;
 pub use backend_entries::BackendEntriesCheck;
 pub use binary_location::BinaryLocationCheck;
 pub use decoy_nix_trace::DecoyNixTraceCheck;

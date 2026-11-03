@@ -755,7 +755,7 @@ fn backend_encryption_runs_right_after_backend_detect() {
 }
 
 #[test]
-fn backend_partition_type_runs_right_after_backend_encryption() {
+fn outer_volume_and_backend_partition_type_run_right_after_backend_encryption() {
     let manager = manager_with(MockFilesystem::new());
     let names = manager
         .preflight_registry(&PreflightOptions::default())
@@ -765,7 +765,11 @@ fn backend_partition_type_runs_right_after_backend_encryption() {
         .iter()
         .position(|name| *name == "backend-encryption")
         .expect("backend-encryption is registered");
-    assert_eq!(names[encryption + 1], "backend-partition-type", "{names:?}");
+    assert_eq!(
+        &names[encryption + 1..encryption + 3],
+        &["outer-volume", "backend-partition-type"],
+        "{names:?}"
+    );
 }
 
 /// Register one block device under `dir` in the mock sysfs, as the
