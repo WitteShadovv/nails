@@ -1269,8 +1269,9 @@ afterwards:
 - The `incremental-history-flush` **preflight** warns when the shell you typed
   the command into writes each command line to its history file as it runs:
   zsh with
-  `INC_APPEND_HISTORY` or `SHARE_HISTORY` as you enter a line, and with
-  `INC_APPEND_HISTORY_TIME` once its command ends, bash with `history -a` or
+  `INC_APPEND_HISTORY` or `SHARE_HISTORY` as you enter a line, with
+  `INC_APPEND_HISTORY_TIME` once its command ends, and with an `fc -A` or
+  `fc -W` that a hook runs after each command, bash with `history -a` or
   `history -w` in `PROMPT_COMMAND` at the next prompt, and fish, unless it runs
   in private mode, as it starts a command. Such a shell has written the unlock
   and mount commands before activation starts, and the activation command too
@@ -1311,6 +1312,11 @@ afterwards:
     code, in a `$(...)` too, and a file they source read where it is sourced
     when its path resolves, so it follows Home Manager's `dotDir`, whose
     `.zshenv` the home's sources and which sets `ZDOTDIR`;
+  - an `fc` that writes the history file (`fc -A`, `fc -W` or `fc -P`,
+    with other flags too, as in `fc -AI`) counts as a write wherever it
+    stands: a hook (`precmd`, `preexec`, `zshaddhistory`, `TRAPDEBUG`) runs
+    it after every command, as bash's `history -a` from `PROMPT_COMMAND`.
+    One with an expansion among its words is a doubt;
   - the file of each function they autoload (`autoload`, `functions -u`,
     `typeset -fu`), by its path or by its name in each directory they add
     to `fpath`, where zsh looks for it as it first runs it, but not in the

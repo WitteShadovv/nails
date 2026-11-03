@@ -8,8 +8,9 @@
 //! commands ([`nails_teardown::shells`]). A shell that writes each command
 //! line to its history file as it runs has written them before activation
 //! starts, and no kill takes that back: zsh with `INC_APPEND_HISTORY` or
-//! `SHARE_HISTORY` as each line is entered, and with `INC_APPEND_HISTORY_TIME`
-//! once each command ends, bash with `history -a` or `history -w` in
+//! `SHARE_HISTORY` as each line is entered, with `INC_APPEND_HISTORY_TIME`
+//! once each command ends, and with an `fc -A` or `fc -W` that a hook runs
+//! after each command, bash with `history -a` or `history -w` in
 //! `PROMPT_COMMAND` at the next prompt, and fish, unless it runs in private
 //! mode, as it starts each command. Refusing the activation would take none
 //! of those lines back, and with a shell that writes once a command ends it
@@ -267,7 +268,8 @@ fn judge_zsh(scan: &startup::Scan, program: &str, part: &str, fix: &str) -> Chec
         return match doubts {
             None => CheckResult::Pass(format!(
                 "{program} ({part}): no startup file the check reads names \
-                 INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY"
+                 INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY, or holds an `fc` \
+                 that writes the history file"
             )),
             Some(doubts) => CheckResult::Warn(format!(
                 "The check cannot tell whether {program}, {part}, writes each command line to \
@@ -288,10 +290,15 @@ fn judge_zsh(scan: &startup::Scan, program: &str, part: &str, fix: &str) -> Chec
     let unread = doubts
         .map(|doubts| format!(" Beyond that, {doubts}."))
         .unwrap_or_default();
+    let counts = if scan.writes.iter().any(|write| write.option) {
+        " The check counts any mention of these options as on, as no reading of the startup \
+         files can show that a turn-off holds."
+    } else {
+        ""
+    };
     CheckResult::Warn(format!(
-        "{program}, {part}, may write each command line to its history file {when}: {}. The \
-         check counts any mention of these options as on, as no reading of the startup files \
-         can show that a turn-off holds. So {ON_DISK}. {fix}{unread}",
+        "{program}, {part}, may write each command line to its history file {when}: {}.{counts} \
+         So {ON_DISK}. {fix}{unread}",
         what.join("; ")
     ))
 }

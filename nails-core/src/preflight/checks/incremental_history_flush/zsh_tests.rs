@@ -9,6 +9,11 @@ use crate::filesystem::MockFilesystem;
 #[path = "zsh_autoload_tests.rs"]
 mod autoload;
 
+// What zsh writes or turns on as it runs that no word of the files names as
+// one of the options.
+#[path = "zsh_runtime_tests.rs"]
+mod runtime;
+
 const HOME: &str = "/home/alice";
 
 /// A login shell that reads every startup file.
@@ -98,6 +103,7 @@ fn home_manager_s_options_are_read_item_by_item() {
         vec![Write {
             what: "/home/alice/.zshrc names SHARE_HISTORY".to_string(),
             entered: true,
+            option: true,
         }]
     );
     assert!(found.doubts.is_empty(), "{:?}", found.doubts);

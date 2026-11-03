@@ -9,7 +9,7 @@
 //! other word names.
 
 use super::super::OH_MY_ZSH;
-use super::super::backstop::zdotdir_writes;
+use super::super::backstop::{FC_WRITES, is_fc_flag, zdotdir_writes};
 use super::super::lexer::{Word, is_name};
 use super::{Event, Frame, Walker, mentioned, option, walk_text};
 
@@ -193,6 +193,37 @@ impl Walker<'_> {
         self.events.extend(names.into_iter().map(Event::Autoload));
     }
 
+    /// The events of an `fc` of `args`. One that writes the history file, by
+    /// a flag ([`FC_WRITES`]: `fc -AI`, `fc -W`), does so whenever it runs,
+    /// as it does after every command from a hook (`precmd`, `preexec`,
+    /// `zshaddhistory`, `TRAPDEBUG`), the way bash's `history -a` does from
+    /// `PROMPT_COMMAND`. One whose words hold an expansion, which may be such
+    /// a flag, is a doubt.
+    pub(super) fn fc(&mut self, args: &[Word]) {
+        let mut flags = Vec::new();
+        for arg in args {
+            if arg.expands {
+                self.fcs += 1;
+                let words: Vec<&str> = args.iter().map(|arg| arg.text.as_str()).collect();
+                self.events.push(Event::Doubt(format!(
+                    "it cannot tell whether `fc {}` in {} writes the history file",
+                    words.join(" "),
+                    self.place
+                )));
+                return;
+            }
+            if !is_fc_flag(&arg.text) {
+                break;
+            }
+            flags.push(arg.text.as_str());
+        }
+        if flags.iter().any(|flag| flag.contains(FC_WRITES)) {
+            self.fcs += 1;
+            self.events
+                .push(Event::Fc(format!("fc {}", flags.join(" "))));
+        }
+    }
+
     /// The event of a `setopt`-like command turning the option `word` names
     /// on (`on`), or of none when it names another.
     pub(super) fn set(&mut self, word: &str, on: bool, unconditional: bool) {
@@ -330,6 +361,7 @@ impl Walker<'_> {
                 self.zdotdirs += nested.zdotdirs;
                 self.autoloads += nested.autoloads;
                 self.fpaths += nested.fpaths;
+                self.fcs += nested.fcs;
                 self.may_stop |= nested.may_stop;
                 let uncertain = !unconditional || nested.confused;
                 for mut event in nested.events {
@@ -344,6 +376,7 @@ impl Walker<'_> {
                 }
             }
             "return" | "exit" => self.may_stop = true,
+            "fc" => self.fc(&args),
             "autoload" => {
                 self.autoloads += 1;
                 self.autoload(&command.text, &args);

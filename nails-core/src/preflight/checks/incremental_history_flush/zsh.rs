@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Whether zsh's startup files name the options that write each command
-//! line to the history file as zsh runs, read in zsh's order and failing
-//! closed on what the check cannot follow.
+//! line to the history file as zsh runs, or hold an `fc` that writes it,
+//! read in zsh's order and failing closed on what the check cannot follow.
 //!
 //! zsh reads `zshenv`, then `zprofile` for a login shell, `zshrc` for an
 //! interactive one and `zlogin` for a login shell: each stage's file in `/etc`
@@ -26,8 +26,10 @@
 //!
 //! An option counts as on wherever a file zsh reads names it, outside a line
 //! that is a comment, in either form: a `setopt` or an `unsetopt`, an array, a
-//! string, an alias, a test, a here-document's body or a comment at the end
-//! of a line. No turn-off counts: zsh can end with the option on after one,
+//! string, an alias, a test, a here-document's body or a comment at the end of
+//! a line. An `fc` with a flag that writes the history file (`-A`, `-W`, `-P`)
+//! counts as such a write wherever it stands, as a hook may run it after every
+//! command. No turn-off counts: zsh can end with the option on after one,
 //! through a redefined `unsetopt`, a trap or a hook, a plugin loaded later or
 //! an error that stops the file before the line, and no reading of the files
 //! shows that it holds. A `setopt` with an expansion the check cannot list, a
@@ -39,10 +41,9 @@
 //! `$(...)`, a `${ command }`) are doubts. Beside the code, the lines of each
 //! file are counted for what they name ([`backstop`]): an option named beyond
 //! what the code names counts as on, an `fpath` setting beyond what the walk
-//! read adds a directory the check cannot follow, and a `source`, `.`,
-//! `eval`, `autoload` or `ZDOTDIR` setting beyond that is a doubt. The
-//! structure of the code still decides which `ZDOTDIR` zsh reads its files
-//! in.
+//! read adds a directory the check cannot follow, and a `source`, `.`, `eval`,
+//! `autoload`, `fc` or `ZDOTDIR` setting beyond that is a doubt. The structure of the
+//! code still decides which `ZDOTDIR` zsh reads its files in.
 
 mod backstop;
 mod lexer;
@@ -166,6 +167,9 @@ struct Reader<'a, F: Filesystem> {
     fpath: Vec<Result<PathBuf, String>>,
     /// The functions the files read autoload by name.
     autoloads: Vec<String>,
+    /// The `fc` commands that write the history file, as the warning names
+    /// them (`/etc/zshrc names \`fc -AI\``).
+    fc: Vec<String>,
     /// What the check could not follow.
     doubts: Vec<String>,
 }
@@ -374,6 +378,12 @@ impl<F: Filesystem> Reader<'_, F> {
                  for the functions the files autoload"
             ))),
             Event::Autoload(function) => self.autoload(function, place),
+            Event::Fc(command) => {
+                let what = format!("{place} names `{command}`");
+                if !self.fc.contains(&what) {
+                    self.fc.push(what);
+                }
+            }
         }
     }
 
@@ -490,6 +500,7 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
         stack: Vec::new(),
         fpath: Vec::new(),
         autoloads: Vec::new(),
+        fc: Vec::new(),
         doubts: Vec::new(),
     };
     for stage in ["zshenv", "zprofile", "zshrc", "zlogin"] {
@@ -536,9 +547,16 @@ fn in_home<F: Filesystem>(fs: &F, home: Option<&Path>, start: Start) -> Scan {
             scan.writes.push(Write {
                 what: format!("{named} {shown}"),
                 entered: *entered,
+                option: true,
             });
         }
     }
+    // A hook may run it as each line is entered (`preexec`).
+    scan.writes.extend(reader.fc.into_iter().map(|what| Write {
+        what,
+        entered: true,
+        option: false,
+    }));
     scan
 }
 

@@ -525,9 +525,9 @@ hangs it up itself (see **Terminal multiplexers** below and
 [bash-history-forensics.md](bash-history-forensics.md)). NAILS does
 **not** configure the decoy's own shells, and a shell that writes each command
 line to its history file as it runs has written it before any kill: zsh with
-`INC_APPEND_HISTORY`, `SHARE_HISTORY` or `INC_APPEND_HISTORY_TIME`, bash with
-`history -a` or `history -w` in `PROMPT_COMMAND`, and fish outside private
-mode. The `incremental-history-flush` check warns about the settings it can
+`INC_APPEND_HISTORY`, `SHARE_HISTORY` or `INC_APPEND_HISTORY_TIME` or an
+`fc -A` or `fc -W` in a hook, bash with `history -a` or `history -w` in
+`PROMPT_COMMAND`, and fish outside private mode. The `incremental-history-flush` check warns about the settings it can
 see (see [Shell history](operator-guide.md#shell-history)). If you type on the decoy — and the
 pre-activation unlock and mount commands must be typed there — harden the decoy's
 history yourself so an interactive shell has nowhere to write:
@@ -554,8 +554,9 @@ history yourself so an interactive shell has nowhere to write:
   `SHARE_HISTORY` and `INC_APPEND_HISTORY_TIME` (NixOS's `programs.zsh` sets
   `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, Home
   Manager's `programs.zsh` through `history.share`, which is on by default,
-  and so does Oh My Zsh), keep `history -a` and `history -w` out of bash's
-  `PROMPT_COMMAND`, and type the decoy commands in fish only as
+  and so does Oh My Zsh), keep `fc -A` and `fc -W` out of zsh's hooks and
+  `history -a` and `history -w` out of bash's `PROMPT_COMMAND`, and type the
+  decoy commands in fish only as
   `fish --private`. For zsh, the check counts any mention of the three
   options in a file zsh reads as on, an `unsetopt` too, as no reading of the
   files can show that a turn-off holds: leave them out of every startup file
@@ -577,8 +578,8 @@ history yourself so an interactive shell has nowhere to write:
 If the decoy's home is on a wiped-on-boot tmpfs, the history file is discarded
 at power-off anyway, so these steps are defence in depth. In the decoy shell you
 unlock from, do **not** re-enable history recording or run
-`history -a`/`history -w`: each of those writes the commands you typed to the
-decoy disk. (Inside the hidden session, history lands in the upper.)
+`history -a`/`history -w` (in zsh `fc -A`/`fc -W`): each of those writes the
+commands you typed to the decoy disk. (Inside the hidden session, history lands in the upper.)
 
 ## Writes that bypass the overlays
 
