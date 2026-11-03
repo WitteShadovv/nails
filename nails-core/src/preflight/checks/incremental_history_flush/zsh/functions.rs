@@ -48,7 +48,7 @@ impl<F: Filesystem> Reader<'_, F> {
     }
 
     /// Note each element given `fpath` that SH_WORD_SPLIT or KSH_ARRAYS
-    /// may change ([`Event::FpathSplits`]) as a directory the check cannot
+    /// may change ([`super::Event::FpathSplits`]) as a directory the check cannot
     /// follow, once a file read may turn either on.
     fn split_fpath(&mut self) {
         let Some(place) = self.word_split.clone() else {
@@ -66,7 +66,7 @@ impl<F: Filesystem> Reader<'_, F> {
     /// Read the files of the functions the files read autoload by name in
     /// each directory they add to `fpath`, where zsh looks for them as they
     /// first run, and in those zsh's `fpath` starts with when the check
-    /// knows them ([`Install::fpath`]), until those files add no more, and
+    /// knows them ([`super::Install::fpath`]), until those files add no more, and
     /// what the stock functions among them read and mark
     /// ([`Reader::marked`]). Once a function is autoloaded, a directory the
     /// check cannot follow is a doubt. When the check does not know where

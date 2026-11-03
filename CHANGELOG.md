@@ -844,8 +844,9 @@ of this changelog for that version becomes the release notes word for word, and
   and `/etc/set-environment` where there is no `/etc/zshenv`, and the fix `zsh -f` names it. A zsh
   from elsewhere, or one the check reads without a typed shell, warns that it cannot tell where
   `compinit` is, as before.
-- The `incremental-history-flush` check no longer passes these zsh setups, with each of which zsh
-  5.9.2 wrote each command line to the history file or turned one of the three options on. It reads
+- The `incremental-history-flush` check no longer passes these zsh setups. With a setup of each of
+  these kinds zsh 5.9.2 wrote each command line to the history file or turned one of the three
+  options on, and the forms beside them that the same rule takes warn too. It reads
   a function's body set by its name (`functions[preexec]='...'`) as that function's code, a
   function's own file and a file a hook sources as the hook's code, and the names a line holds in
   every form zsh may read a word in: with quotes and backslashes taken off (`print -v T\TY`),
