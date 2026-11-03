@@ -1916,6 +1916,34 @@ disk. The next `activate` or `deactivate` clears it.
   /run/overlay-runtime/control emergency` takes the way back again or powers
   off.
 
+**The switch stops halfway** (the programs have closed, but the screen stays
+dark or still and no login screen comes). Once the old system's units have
+stopped, PID 1 can go to sleep with work still queued and wait until something
+wakes it. This matches a fault in systemd,
+[systemd issue #44107](https://github.com/systemd/systemd/issues/44107). In
+NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way, all on the
+way in, and one on the way back in a test run set up to provoke it. Press Alt+Up
+with the left Alt key on the computer's keyboard: in the tests that woke PID 1
+and the switch went on. If nothing happens, power off. Do not wait it out: after
+30 minutes systemd switches by force and skips NAILS's last step before the
+switch. On the way in the hidden session then starts without the masks that
+keep its systemd from swapping onto a decoy disk or mounting one read-write, and
+on the way back the decoy starts with the hidden session's files in `/run`.
+Power off as well if the switch went on by itself after such a wait. The decoy
+then comes up as after a power loss (see below).
+
+systemd fixed that issue in 259.10, 260.6, 261.4 and 262.1. The releases before
+them in each series have it (259 to 259.9, 260 to 260.5, 261 to 261.3 and 262).
+On 3 November 2026 every release of 254 to 258 had it too (258.12 was the
+newest), and no supported decoy had the fix, neither in its systemd release nor
+as a patch of its package: Debian 13 had systemd 257.13, Ubuntu 24.04 255.4,
+Ubuntu 26.04 259.9, NixOS 26.05 260.5 and NixOS unstable 262. The nixpkgs
+update to 262.1
+([NixOS/nixpkgs#577812](https://github.com/NixOS/nixpkgs/pull/577812)) was not
+merged yet. On NixOS a hidden system that activation builds runs its own
+systemd in the session, and that systemd runs the way back, so its release
+counts too.
+
 **The hidden session hangs.** Switch to a text console (Ctrl+Alt+F2), log in and
 run `nails emergency`; if nothing responds, power off. A stuck user service can
 delay an orderly `deactivate` by up to `DefaultTimeoutStopSec` (90 s by
