@@ -31,7 +31,7 @@
 //!   and of `/etc/profile.d/nix.sh`;
 //! - `.nix-profile`, `.nix-defexpr`, `.nix-channels`, `.local/state/nix`,
 //!   `.cache/nix` and `.config/nix` in `/root` and in each home `/etc/passwd`
-//!   names.
+//!   names, but one on the hidden volume.
 //!
 //! Each one found is named in a warning; the check never refuses, as a
 //! decoy may need its own Nix. What it cannot look up or read it names in
