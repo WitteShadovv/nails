@@ -336,25 +336,49 @@ fn without_its_helper_the_window_powers_off_whatever_the_setting() {
     );
     assert_eq!(model.page().description, text::EMERGENCY_NOW);
 
-    // Also where the page stays that of a deactivation that ends.
-    let mut model = hidden();
-    model.apply(settings_with(json!("return")));
-    model.action();
-    model.apply(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
-        poweroff: false,
-        warnings: vec![],
-        powers_off_instead: None,
-        token: "0".repeat(32),
-    })));
-    model.alternative();
-    assert!(fact_of(&model.page()).is_none(), "it returns as set");
-    model.apply(Update::Ended(Failure::Lost { in_flight: true }));
-    assert_eq!(model.page().heading, text::ENDING, "the page stays");
-    assert_eq!(fact(&model), no_helper);
-    assert_eq!(
-        model.emergency(),
-        Some(Effect::Emergency(Firing::POWER_OFF_AT_ONCE))
-    );
+    // The page of a deactivation that ends stays as it is when the switch
+    // takes the helper with the session, as it does for either ending. Once
+    // the switch is overdue and the page names the control as a way out, it
+    // says the control powers off, and why.
+    for (returns, ending, firing) in [
+        (true, text::RETURNING, Firing::POWER_OFF_AT_ONCE),
+        (false, text::POWERING_OFF, Finish::PowerOff.into()),
+    ] {
+        let mut model = hidden();
+        model.apply(settings_with(json!("return")));
+        deactivation_asked(&mut model, None);
+        if returns {
+            assert_eq!(model.alternative(), Some(Ask::Apply));
+            assert!(fact_of(&model.page()).is_none(), "it returns as set");
+        } else {
+            assert_eq!(
+                model.answer(true),
+                Some(Ask::Plan(Plan::Deactivate(Ending::PowerOff.args())))
+            );
+            let planned = PlanData::Deactivate(DeactivatePlanData {
+                poweroff: true,
+                warnings: vec![],
+                powers_off_instead: None,
+                token: "1".repeat(32),
+            });
+            assert_eq!(model.apply(Update::Planned(planned)), [Ask::Apply]);
+        }
+        model.apply(Update::Running(Kind::Apply));
+        model.apply(Update::Ended(Failure::Lost { in_flight: true }));
+        let page = model.page();
+        assert_eq!(page.heading, text::ENDING, "the page stays");
+        assert_eq!(page.description, ending);
+        assert_eq!(fact_of(&page), None, "{ending}");
+        assert_eq!(page.emergency_how, text::emergency_how(Finish::PowerOff));
+        model.set_switch_overdue(true);
+        let page = model.page();
+        assert_eq!(
+            (page.description.as_str(), page.fix.as_str()),
+            (text::ENDING_LATE, text::END_ANOTHER_WAY)
+        );
+        assert_eq!(fact(&model), no_helper, "{ending}, overdue");
+        assert_eq!(model.emergency(), Some(Effect::Emergency(firing)));
+    }
 
     // A window that never had its helper, by its own reading of the mount
     // table.
