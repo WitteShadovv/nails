@@ -109,12 +109,17 @@ header are in its file. An unreadable device leaves the description as it is.
 A mapping the VeraCrypt application made (`veracrypt<N>`, with no uuid) is
 named as such, the further cipher layers of a cascade cryptsetup opened
 (`SUBDEV`) as cascade layers, and dm-integrity and dm-verity mappings as
-mappings that encrypt nothing. A LUKS mapping on a whole device, a Shufflecake
-volume, or anything the check cannot identify, passes with a one-line
-description of the stack. A hidden root that is not a mount point is skipped,
-and so is one on a filesystem the decoy uses (a bind of one of its folders, a
-btrfs subvolume of it, or the filesystem itself), whose stack is the decoy's:
-the `hidden-volume` check reports either.
+mappings that encrypt nothing. cryptsetup 2.8 and later name the integrity
+layer below a LUKS2 volume with authenticated encryption
+(`luksFormat --integrity`) `SUBDEV` too, but with the volume's uuid, which no
+cascade layer carries: the check names that layer a dm-integrity mapping and
+reads the volume's header from the device below it, where cryptsetup keeps
+it. A LUKS mapping on a whole device, a Shufflecake volume, or anything the
+check cannot identify, passes with a one-line description of the stack. A
+hidden root that is not a mount point is skipped, and so is one on a
+filesystem the decoy uses (a bind of one of its folders, a btrfs subvolume of
+it, or the filesystem itself), whose stack is the decoy's: the `hidden-volume`
+check reports either.
 
 ### Leftover LUKS headers
 
@@ -197,7 +202,10 @@ loop device over that device, and, where that device is itself a loop device,
 the device or file behind it with every other loop device over it (over a
 file, only those that read it from the same offset). A TCRYPT, SUBDEV or
 VeraCrypt mapping built on any of them that is no part of the hidden root's
-stack is another mapping of the volume, most likely its outer volume.
+stack is another mapping of the volume, most likely its outer volume. A
+SUBDEV mapping whose uuid names a volume uuid is the integrity layer of a
+LUKS2 volume, not part of a VeraCrypt or TrueCrypt volume, and counts as
+neither.
 
 | Result | When |
 |---|---|

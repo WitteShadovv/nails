@@ -982,6 +982,104 @@ fn a_header_of_another_volume_warns_and_its_flags_are_not_the_mappings() {
     );
 }
 
+/// A mock host with the hidden root on a LUKS2 volume with authenticated
+/// encryption: the LUKS mapping `dm-9` on its integrity layer `dm-8`, whose
+/// device-mapper uuid has the type `integrity` (`SUBDEV` from cryptsetup 2.8
+/// on, `INTEGRITY` before), on `sdb2`. The integrity layer's start is
+/// ciphertext, written to `dev`.
+fn luks_with_integrity(integrity: &str, dev: &tempfile::TempDir) -> super::tests_host::Host {
+    let hex = luks2::TEST_UUID.replace('-', "");
+    std::fs::write(dev.path().join("dm-8"), vec![0x5Au8; 65536]).unwrap();
+    super::tests_host::Host::new("254:9", "ext4", "/dev/mapper/data")
+        .disk("sdb", "8:16")
+        .partition_at("sdb2", "8:18", "sdb", 2, 2048)
+        .mapping(
+            "dm-8",
+            "254:8",
+            "data_dif",
+            &format!("CRYPT-{integrity}-{hex}-data_dif"),
+            &["sdb2"],
+        )
+        .mapping(
+            "dm-9",
+            "254:9",
+            "data",
+            &format!("CRYPT-LUKS2-{hex}-data"),
+            &["dm-8"],
+        )
+}
+
+#[test]
+fn a_luks2_volume_with_integrity_has_its_header_read_below_its_integrity_layer() {
+    for integrity in ["SUBDEV", "INTEGRITY"] {
+        let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":[]}}"#);
+        let host = luks_with_integrity(integrity, &dev);
+        let root = Path::new(super::tests_host::ROOT);
+        assert_eq!(
+            assess_with_dev_dir(&host.fs, root, dev.path(), false),
+            CheckResult::Pass(
+                "Hidden root backend: ext4 on LUKS mapping dm-9 on dm-integrity mapping dm-8 \
+                 (encrypts nothing) on block device sdb2; no backend-specific hazards detected. \
+                 The LUKS2 header at the start of sdb2 shows anyone who reads the disk that an \
+                 encrypted volume is there (cryptsetup isLuks, blkid), though not what it holds."
+                    .into()
+            ),
+            "{integrity}"
+        );
+    }
+}
+
+#[test]
+fn the_stored_flags_of_a_luks2_volume_with_integrity_count() {
+    let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":["allow-discards"]}}"#);
+    let host = luks_with_integrity("SUBDEV", &dev);
+    let result = assess_with_dev_dir(
+        &host.fs,
+        Path::new(super::tests_host::ROOT),
+        dev.path(),
+        false,
+    );
+    assert!(result.is_fail(), "{result:?}");
+}
+
+#[test]
+fn a_luks_volume_on_an_integrity_device_of_its_own_has_its_header_read_there() {
+    // integritysetup's device, which names no volume uuid, with a LUKS
+    // volume made on it: the header is at the start of the integrity device.
+    let dev = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dev.path().join("dm-8"),
+        luks2::header_image(r#"{"tokens":{},"config":{"flags":[]}}"#, 16384),
+    )
+    .unwrap();
+    let host = super::tests_host::Host::new("254:9", "ext4", "/dev/mapper/data")
+        .disk("sdb", "8:16")
+        .partition_at("sdb2", "8:18", "sdb", 2, 2048)
+        .mapping("dm-8", "254:8", "integ", "CRYPT-INTEGRITY-integ", &["sdb2"])
+        .mapping(
+            "dm-9",
+            "254:9",
+            "data",
+            "CRYPT-LUKS2-0123456789abcdef0123456789abcdef-data",
+            &["dm-8"],
+        );
+    let result = assess_with_dev_dir(
+        &host.fs,
+        Path::new(super::tests_host::ROOT),
+        dev.path(),
+        false,
+    );
+    assert!(
+        result.message().contains(
+            "ext4 on LUKS mapping dm-9 on dm-integrity mapping dm-8 (encrypts nothing) on block \
+             device sdb2"
+        ) && result
+            .message()
+            .contains("The LUKS2 header at the start of dm-8 shows anyone"),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn an_unreadable_device_leaves_the_description_as_it_is() {
     let fs = luks_on_partition_fixture();

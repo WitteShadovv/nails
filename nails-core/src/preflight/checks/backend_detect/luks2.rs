@@ -152,18 +152,36 @@ pub fn probe_header(device: &Path) -> HeaderProbe {
 /// uuid without its dashes). A device-mapper uuid that names none matches
 /// any header.
 pub fn same_volume(header: &str, dm_uuid: &str) -> bool {
-    let Some(named) = dm_uuid
+    let Some(named) = volume_uuid_of(dm_uuid) else {
+        return true;
+    };
+    let digits: String = header.chars().filter(|c| *c != '-').collect();
+    digits.eq_ignore_ascii_case(named)
+}
+
+/// The volume uuid a device-mapper uuid names, without its dashes: the
+/// `<hex>` of `CRYPT-<TYPE>-<hex>-<name>`. cryptsetup writes one for a
+/// volume that has a uuid (a LUKS volume, and the integrity layer below a
+/// LUKS2 volume with authenticated encryption) and none for a volume
+/// without one (`CRYPT-TCRYPT-<name>`, and `CRYPT-SUBDEV-<name>_<n>` for
+/// the further cipher layers below it).
+pub fn volume_uuid_of(dm_uuid: &str) -> Option<&str> {
+    dm_uuid
         .trim()
         .strip_prefix("CRYPT-")
         .and_then(|rest| rest.split_once('-'))
         .and_then(|(_, rest)| rest.split_once('-'))
         .map(|(hex, _)| hex)
         .filter(|hex| !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-    else {
-        return true;
-    };
-    let digits: String = header.chars().filter(|c| *c != '-').collect();
-    digits.eq_ignore_ascii_case(named)
+}
+
+/// Whether the `SUBDEV` mapping whose device-mapper uuid is `dm_uuid` is the
+/// integrity layer of a LUKS2 volume with authenticated encryption, which
+/// cryptsetup 2.8 and later name `CRYPT-SUBDEV-<uuid>-<name>_dif` (earlier
+/// versions `CRYPT-INTEGRITY-…`): its uuid names a whole volume uuid, 32 hex
+/// digits, which the further cipher layers of a TCRYPT volume never carry.
+pub fn names_a_volume(dm_uuid: &str) -> bool {
+    volume_uuid_of(dm_uuid).is_some_and(|hex| hex.len() == 32)
 }
 
 /// The uuid every test header carries, which the device-mapper uuid
@@ -305,6 +323,28 @@ mod tests {
         // A device-mapper uuid that names no volume uuid matches any.
         for dm in ["", "CRYPT-LUKS2-", "CRYPT-LUKS2-data", "LVM-x-y"] {
             assert!(same_volume("ffffffff", dm), "{dm}");
+        }
+    }
+
+    #[test]
+    fn the_integrity_layer_of_a_luks2_volume_names_its_uuid_and_a_cascade_layer_none() {
+        let hex = TEST_UUID.replace('-', "");
+        let hex = hex.as_str();
+        assert_eq!(
+            volume_uuid_of(&format!("CRYPT-LUKS2-{hex}-data")),
+            Some(hex)
+        );
+        assert!(names_a_volume(&format!("CRYPT-SUBDEV-{hex}-data_dif")));
+        assert!(names_a_volume(&format!("CRYPT-INTEGRITY-{hex}-data_dif\n")));
+        // The further cipher layers of a TCRYPT volume, which has no uuid,
+        // even of one whose name starts with hex digits and a dash.
+        for dm in [
+            "CRYPT-SUBDEV-outer_1",
+            "CRYPT-SUBDEV-abc-def_1",
+            "CRYPT-TCRYPT-outer",
+            "",
+        ] {
+            assert!(!names_a_volume(dm), "{dm}");
         }
     }
 }

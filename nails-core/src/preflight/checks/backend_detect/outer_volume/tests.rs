@@ -239,6 +239,51 @@ fn a_root_in_no_veracrypt_or_truecrypt_volume_passes() {
 }
 
 #[test]
+fn the_integrity_layer_of_a_luks2_volume_is_no_veracrypt_or_truecrypt_mapping() {
+    // cryptsetup 2.8 and later name the integrity layer of a LUKS2 volume
+    // with authenticated encryption SUBDEV, with the volume's uuid.
+    let hex = super::super::luks2::TEST_UUID.replace('-', "");
+    let host = drive(Host::new("254:9", "ext4", "/dev/mapper/data"))
+        .mapping(
+            "dm-8",
+            "254:8",
+            "data_dif",
+            &format!("CRYPT-SUBDEV-{hex}-data_dif"),
+            &["sdb2"],
+        )
+        .mapping(
+            "dm-9",
+            "254:9",
+            "data",
+            &format!("CRYPT-LUKS2-{hex}-data"),
+            &["dm-8"],
+        );
+    assert_eq!(
+        run(&host),
+        CheckResult::Pass(format!(
+            "The hidden root at {ROOT} is in no VeraCrypt or TrueCrypt volume, so no outer \
+             volume of it can be open."
+        ))
+    );
+    // Beside a hidden VeraCrypt volume, such a layer is no other mapping of
+    // it.
+    let host = hidden("").mapping(
+        "dm-4",
+        "254:4",
+        "other_dif",
+        &format!("CRYPT-SUBDEV-{hex}-other_dif"),
+        &["sdb2"],
+    );
+    assert_eq!(
+        run(&host),
+        CheckResult::Pass(format!(
+            "No other VeraCrypt or TrueCrypt mapping is open on the storage the hidden root's \
+             volume at {ROOT} is opened from (sdb2)."
+        ))
+    );
+}
+
+#[test]
 fn a_mapping_that_is_no_veracrypt_or_truecrypt_one_is_left_alone() {
     // A linear mapping over the partition, such as one that fences the
     // hidden volume off while the outer one is filled.

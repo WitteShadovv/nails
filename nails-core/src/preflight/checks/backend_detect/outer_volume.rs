@@ -14,17 +14,19 @@
 //! can overwrite the hidden root while a session runs on it: one write of
 //! its filesystem's own, a journal replay at a mount, a file someone saves.
 //!
-//! For each TCRYPT, SUBDEV or VeraCrypt mapping of the hidden root's stack,
-//! the check takes the device below it and the devices that hold the same
-//! data: a loop device over that device, and, where the device is itself a
-//! loop device, the device or file below it with every other loop device
-//! over that device, or over that file from the same offset. A VeraCrypt or
-//! TrueCrypt mapping built on any of these that is no part of the hidden
-//! root's stack is another mapping of the volume, and it warns unless the
-//! kernel holds it read-only (`ro`). It reads sysfs and the mount table
-//! alone, never a mapping's table.
+//! For each TCRYPT, SUBDEV or VeraCrypt mapping of the hidden root's stack
+//! (a SUBDEV mapping that names a volume uuid is the integrity layer of a
+//! LUKS2 volume, and none of them), the check takes the device below it and
+//! the devices that hold the same data: a loop device over that device,
+//! and, where the device is itself a loop device, the device or file below
+//! it with every other loop device over that device, or over that file from
+//! the same offset. A VeraCrypt or TrueCrypt mapping built on any of these
+//! that is no part of the hidden root's stack is another mapping of the
+//! volume, and it warns unless the kernel holds it read-only (`ro`). It
+//! reads sysfs and the mount table alone, never a mapping's table.
 
 use super::graph::{Graph, filesystem_devices};
+use super::luks2::names_a_volume;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow, MAX_STACK_DEVICES};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
@@ -182,11 +184,15 @@ enum OuterKind {
     VeraCrypt,
 }
 
-/// What kind of VeraCrypt or TrueCrypt mapping `layer` is, if it is one.
+/// What kind of VeraCrypt or TrueCrypt mapping `layer` is, if it is one. A
+/// `SUBDEV` mapping that names a volume uuid is none: cryptsetup 2.8 and
+/// later give that name to the integrity layer of a LUKS2 volume with
+/// authenticated encryption too, and a TCRYPT volume has no uuid.
 fn outer_kind(layer: &Layer) -> Option<OuterKind> {
-    match &layer.dm.as_ref()?.kind {
+    let dm = layer.dm.as_ref()?;
+    match &dm.kind {
         DmKind::Crypt(kind) if kind == "TCRYPT" => Some(OuterKind::Cryptsetup),
-        DmKind::CryptSubdev => Some(OuterKind::Cryptsetup),
+        DmKind::CryptSubdev if !names_a_volume(&dm.uuid) => Some(OuterKind::Cryptsetup),
         DmKind::VeraCrypt => Some(OuterKind::VeraCrypt),
         _ => None,
     }
