@@ -8,6 +8,7 @@
 use crate::forensic::layout::discoverable::{
     AutoRole, LINUX_FILESYSTEM, NO_AUTO, auto_discovery_role,
 };
+use crate::forensic::layout::{Checksums, RecordedTable};
 use crate::preflight::CheckResult;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -42,11 +43,12 @@ impl Place {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Entry {
     /// A GPT entry: its type, its flags (`None` when udev's record holds a
-    /// value that is no number) and whether the table is damaged.
+    /// value that is no number) and what damage of the table makes the
+    /// entry untrustworthy, if any.
     Gpt {
         type_id: String,
         flags: Option<u64>,
-        damaged: bool,
+        damage: Option<Damage>,
     },
     /// An MBR entry.
     Mbr,
@@ -54,6 +56,56 @@ pub(super) enum Entry {
     Unlisted,
     /// Neither the disk nor udev's record could be read, and why.
     Unreadable(String),
+}
+
+/// What of a GPT breaks its own rules, so that its entries cannot be
+/// trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Damage {
+    /// The header does not match the checksum it keeps of itself.
+    Header,
+    /// The entries do not match the checksum the header keeps of them.
+    Entries,
+    /// Not every entry could be checked against that checksum.
+    Unchecked,
+    /// An entry does not fit within the blocks the partitions may use.
+    Range,
+}
+
+impl Damage {
+    /// The damage of `table`, a GPT, if any.
+    pub(super) fn of(table: &RecordedTable) -> Option<Self> {
+        match table.checksums {
+            Checksums::HeaderFails => Some(Damage::Header),
+            Checksums::EntriesFail => Some(Damage::Entries),
+            Checksums::EntriesUnchecked => Some(Damage::Unchecked),
+            Checksums::Hold if !table.consistent => Some(Damage::Range),
+            Checksums::Hold => None,
+        }
+    }
+
+    /// What is wrong with the table on `disk`, for a sentence that goes on
+    /// with what follows from it.
+    fn shown(self, disk: &str) -> String {
+        match self {
+            Damage::Header => format!(
+                "The partition table on {disk} does not match the checksum its header keeps of \
+                 itself"
+            ),
+            Damage::Entries => format!(
+                "The partition table on {disk} does not match the checksum it keeps of its \
+                 entries"
+            ),
+            Damage::Unchecked => format!(
+                "Not every entry of the partition table on {disk} could be checked against the \
+                 checksum the table keeps of them"
+            ),
+            Damage::Range => format!(
+                "The partition table on {disk} lists an entry that does not fit within the \
+                 blocks its partitions may use"
+            ),
+        }
+    }
 }
 
 /// What the check found for one partition, the least serious first.
@@ -73,12 +125,12 @@ impl Finding {
     /// `place`, as sentences that start with the partition.
     pub(super) fn of(place: Place, entry: Entry) -> Self {
         let shown = capitalized(&place.shown());
-        let (type_id, flags, damaged) = match entry {
+        let (type_id, flags, damage) = match entry {
             Entry::Gpt {
                 type_id,
                 flags,
-                damaged,
-            } => (type_id, flags, damaged),
+                damage,
+            } => (type_id, flags, damage),
             Entry::Mbr => {
                 return Finding::Pass(format!(
                     "{shown} is in an MBR partition table, from which systemd discovers no \
@@ -109,20 +161,18 @@ impl Finding {
         };
         let no_auto = flags.is_some_and(|flags| flags & NO_AUTO != 0);
         let Some(role) = auto_discovery_role(&type_id) else {
-            return if damaged {
-                Finding::Warn(
+            return match damage {
+                Some(damage) => Finding::Warn(
                     format!(
-                        "The partition table on {} does not match the checksum it keeps of its \
-                         entries, so the type read for {} cannot be trusted.",
-                        place.disk,
+                        "{}, so the type read for {} cannot be trusted.",
+                        damage.shown(&place.disk),
                         place.shown()
                     ),
                     None,
-                )
-            } else {
-                Finding::Pass(format!(
+                ),
+                None => Finding::Pass(format!(
                     "{shown} has a GPT type that systemd discovers nothing by."
-                ))
+                )),
             };
         };
         let typed = format!("{shown} has the GPT type of {}", role.describe());

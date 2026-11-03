@@ -261,7 +261,7 @@ partition the decoy uses itself is left to the `hidden-volume` check.
 | Result | When |
 |---|---|
 | Refuses | The partition has the GPT type of a `/home`, `/srv`, `/var`, `/var/tmp` or swap partition. A swap partition is refused with the no-auto flag too, though systemd leaves it alone then. |
-| Warns | The partition has one of the first four types with the no-auto flag, which systemd honours; or the type of a root, EFI system or extended boot loader partition, which systemd acts on only under the conditions above; or the table does not list the partition where the kernel has it, or does not match the checksum it keeps of its entries; or neither the disk nor udev's record of the partition could be read. |
+| Warns | The partition has one of the first four types with the no-auto flag, which systemd honours; or the type of a root, EFI system or extended boot loader partition, which systemd acts on only under the conditions above; or the table does not list the partition where the kernel has it, or is damaged: its header or its entries do not match the checksums it keeps, not every entry could be checked against them, or an entry does not fit within the blocks its partitions may use; or neither the disk nor udev's record of the partition could be read. |
 | Passes | Any other type, an MBR, or no partition of a disk the decoy boots from: a disk of its own such as an external drive, a container file, a RAM filesystem. |
 
 The fix is the generic Linux type, given from a live system or where setup
