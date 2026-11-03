@@ -44,6 +44,10 @@ pub(super) struct Scan {
     /// Whether the files a zsh started with `-f` or `-d` reads may turn
     /// `RCS` or `GLOBAL_RCS` on again, so that it reads what it would skip.
     pub reopened: bool,
+    /// The doubts of the prompts that hold code zsh runs as it shows them,
+    /// which hold when `PROMPT_SUBST` is on: the files do not turn it on,
+    /// but a command line may.
+    pub prompts: Vec<String>,
 }
 
 /// The text of the startup file at `path`, read through `fs`: `Ok(None)` when

@@ -9,8 +9,11 @@
 //! other word names.
 
 use super::super::OH_MY_ZSH;
-use super::super::backstop::{self, FC_WRITES, is_fc_flag, qualifier_code, zdotdir_writes};
+use super::super::backstop::{
+    self, FC_WRITES, is_fc_flag, qualifier_code, reexpands, zdotdir_writes,
+};
 use super::super::lexer::{Word, is_name};
+use super::strings::PROMPTS;
 use super::{Event, Frame, Walker, mentioned, walk_text};
 
 /// The precommand words that run the word after them as the command.
@@ -350,11 +353,25 @@ impl Walker<'_> {
     }
 
     /// Note a doubt when `text`, a word of the file's code, holds a glob
-    /// qualifier that runs code ([`qualifier_code`]).
+    /// qualifier that runs code ([`qualifier_code`]), or expands a
+    /// parameter's value again ([`reexpands`]).
     pub(super) fn qualifier(&mut self, text: &str) {
         if qualifier_code(text) {
             self.events.push(Event::Doubt(format!(
                 "it cannot follow the code that a glob qualifier in `{text}` in {} runs",
+                self.place
+            )));
+        }
+        self.reexpansion(text);
+    }
+
+    /// Note a doubt when `text` expands a parameter's value again
+    /// ([`reexpands`]), which may run code.
+    pub(super) fn reexpansion(&mut self, text: &str) {
+        if reexpands(text) {
+            self.events.push(Event::Doubt(format!(
+                "it cannot follow the code that `{text}` in {} may run, as it expands a \
+                 parameter's value again",
                 self.place
             )));
         }
@@ -381,6 +398,7 @@ impl Walker<'_> {
     /// it, and what `${+name}` tests sets nothing.
     pub(super) fn mention_arithmetic(&mut self, text: &str) {
         self.mention_options(text);
+        self.reexpansion(text);
         if ["ZDOTDIR=", "ZDOTDIR:=", "ZDOTDIR::=", "ZDOTDIR+="]
             .iter()
             .any(|form| text.contains(form))
@@ -497,14 +515,28 @@ impl Walker<'_> {
                 self.nested(&text.join(" "), unconditional);
             }
             "emulate" => self.emulate(&args, unconditional),
+            "alias" => self.alias(&args, unconditional),
+            "trap" => self.trap(&args, unconditional),
+            "sched" => self.sched(&args, unconditional),
+            "zstyle" => self.zstyle(&args, unconditional),
             "print" | "printf" | "read" => {
                 let mut target = command.text == "read";
+                // `print -P` expands its words as a prompt.
+                let mut prompt = false;
+                let mut options = true;
                 for arg in &args {
                     if target && arg.expands && computed_target(&arg.text) {
                         self.events.push(Event::Doubt(format!(
                             "it cannot tell which parameter `{} {}` in {} sets",
                             command.text, arg.text, self.place
                         )));
+                    }
+                    let flag = options && arg.text.starts_with('-') && arg.text.len() > 1;
+                    options &= flag && arg.text != "--";
+                    prompt |= flag && command.text == "print" && arg.text.contains('P');
+                    if prompt && !flag {
+                        let text = format!("print -P {}", arg.text);
+                        self.prompt(&text, arg);
                     }
                     // `-v` names the parameter `print` and `printf` set.
                     target = command.text == "read" || arg.text == "-v";
@@ -547,6 +579,22 @@ impl Walker<'_> {
     pub(super) fn assignment(&mut self, word: &Word, unconditional: bool) {
         if self.fpath_assignment(word) {
             return;
+        }
+        if let Some((target, value)) = word.text.split_once('=') {
+            let name = assigned(target);
+            if matches!(name, "aliases" | "galiases" | "saliases") && target.contains('[') {
+                // An alias, by the parameter that holds them.
+                self.mention(&word.text);
+                self.alias_value(&word.text, value, word, unconditional);
+                return;
+            }
+            if PROMPTS.contains(&name) {
+                let value = Word {
+                    text: value.to_string(),
+                    expands: word.expands,
+                };
+                self.prompt(&word.text, &value);
+            }
         }
         let name = match word.text.split_once('=') {
             Some(("ZDOTDIR", _)) => "ZDOTDIR",

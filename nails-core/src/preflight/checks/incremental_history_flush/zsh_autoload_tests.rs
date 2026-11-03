@@ -169,7 +169,9 @@ fn an_autoloaded_function_the_check_cannot_find_is_a_doubt() {
         ),
         (
             "alias al='autoload -Uz'\n",
-            "it cannot follow an `autoload` that a line of /home/alice/.zshrc may run".to_string(),
+            "it cannot tell what the alias `al=autoload -Uz` in /home/alice/.zshrc runs where it \
+             is used"
+                .to_string(),
         ),
     ] {
         let fs = MockFilesystem::new();

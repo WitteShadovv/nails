@@ -1163,6 +1163,21 @@ fn a_zsh_f_whose_command_line_or_zshenv_turns_more_on_warns() {
 }
 
 #[test]
+fn a_prompt_s_code_is_a_doubt_where_the_command_line_turns_prompt_subst_on() {
+    let fs = MockFilesystem::new();
+    seed(&fs, "/home/alice/.zshrc", "PS1='$(git_branch) %# '\n");
+    assert!(matches!(zsh(&fs), CheckResult::Pass(_)));
+    let message = warning(run(&fs, typed("zsh", &["zsh", "-o", "promptsubst"])));
+    assert!(
+        message.contains(
+            "it cannot follow the code that `PS1=$(git_branch) %# ` in /home/alice/.zshrc runs \
+             as zsh shows the prompt, as PROMPT_SUBST may be on"
+        ),
+        "{message}"
+    );
+}
+
+#[test]
 fn without_a_typed_shell_a_zsh_beside_a_login_bash_is_read() {
     let operator = TargetUser::for_test(1000, 100, "alice", HOME, "/bin/bash");
     let fs = MockFilesystem::new();

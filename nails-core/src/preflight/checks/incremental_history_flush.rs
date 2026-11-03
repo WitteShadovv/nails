@@ -262,6 +262,10 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
             };
             scan.writes.extend(writes);
             scan.doubts.extend(line.doubts);
+            if line.prompt_subst {
+                let prompts = std::mem::take(&mut scan.prompts);
+                scan.doubts.extend(prompts);
+            }
             judge_zsh(&scan, program, part, fix)
         }
         Kind::Bash => judge_bash(&startup::bash(fs, shell.homes), program, part),

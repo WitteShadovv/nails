@@ -48,9 +48,11 @@ fn an_fc_that_writes_the_history_file_counts_as_a_write() {
             "precmd() { fc -l $n }\n",
             "it cannot tell whether `fc -l $n` in /home/alice/.zshrc writes the history file",
         ),
-        ("alias save='fc -AI'\nprecmd() { save }\n", beyond),
-        ("sched +60 fc -W\n", beyond),
         ("precmd() { print -r -- fc -AI }\n", beyond),
+        (
+            "zle -N fc-widget; bindkey '^X' fc-widget; print fc -W\n",
+            beyond,
+        ),
     ] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
@@ -59,12 +61,7 @@ fn an_fc_that_writes_the_history_file_counts_as_a_write() {
         assert_eq!(found.doubts, [doubt], "{rc}");
     }
     // One that reads or lists the history writes nothing.
-    for rc in [
-        "fc -R\n",
-        "alias h='fc -l 1'\n",
-        "fc -l -10\n",
-        "fc-list : family\n",
-    ] {
+    for rc in ["fc -R\n", "fc -l -10\n", "fc-list : family\n"] {
         let fs = MockFilesystem::new();
         seed(&fs, "/home/alice/.zshrc", rc);
         assert_eq!(scan(&fs, UNKNOWN), Scan::default(), "{rc}");

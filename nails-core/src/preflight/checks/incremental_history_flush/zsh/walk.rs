@@ -5,8 +5,9 @@
 //! the options a `setopt`, `unsetopt` or `set -o` turns on or off, and
 //! whether that certainly runs at the top level; every other word that names
 //! an option; what the check cannot follow; the files it sources; the
-//! `ZDOTDIR` and `XDG_CONFIG_HOME` it sets; and the directories it adds to
-//! `fpath` and the functions it autoloads.
+//! `ZDOTDIR` and `XDG_CONFIG_HOME` it sets; the directories it adds to
+//! `fpath` and the functions it autoloads; and the code it holds in strings
+//! that zsh runs ([`strings`]).
 
 use super::OPTIONS;
 use super::backstop;
@@ -14,6 +15,7 @@ use super::lexer::{End, Flaw, Token, Word, is_name, lex};
 use std::collections::BTreeMap;
 
 mod command;
+mod strings;
 
 /// The option that `word` names, by its place in [`OPTIONS`], and whether the
 /// name turns it on (`false` for its `no` form); `None` for any other word.
@@ -75,6 +77,9 @@ pub(super) enum Event {
     Autoload(Word),
     /// An `fc` that writes the history file, as written (`fc -AI`).
     Fc(String),
+    /// A prompt that holds code zsh runs as it shows it when
+    /// `PROMPT_SUBST` is on: the doubt it is then.
+    Prompt(String),
 }
 
 /// How a loop's body ends.
