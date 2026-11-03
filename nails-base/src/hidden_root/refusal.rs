@@ -20,10 +20,10 @@
 //! paths of this computer, the root the operator typed and filesystem types. It
 //! names no device either: a device-mapper name (`/dev/mapper/<name>`) can name
 //! the tool that opened a volume, so a filesystem is named by where it is
-//! mounted and its type, and a loop device whose record could not be read by
-//! what it is.
+//! mounted and its type, and what could not be read of a device (a loop
+//! device's record, an attribute in sysfs) by what it is.
 
-use super::separation::{Sharing, Verdict};
+use super::separation::{SYS_CLASS_BLOCK, Sharing, Verdict};
 use super::{Refusal, RefusalKind};
 use crate::blockdev::PROC_DEVICES;
 use std::path::Path;
@@ -31,8 +31,20 @@ use std::path::Path;
 /// Where the kernel's block devices and their attributes are read.
 const SYS: &str = "/sys";
 
+/// Where the kernel lists the devices of each btrfs filesystem.
+const SYS_FS_BTRFS: &str = "/sys/fs/btrfs";
+
 /// The attribute in which a loop device's directory shows its file.
 const LOOP_FILE: &str = "loop/backing_file";
+
+/// What an attribute in a block device's sysfs directory says, as the text
+/// names it, by the attribute's name.
+const DEVICE_ATTRIBUTES: &[(&str, &str)] = &[
+    (LOOP_FILE, "the path of a loop device's file"),
+    ("slaves", "the devices below a block device"),
+    ("backing_dev", "the writeback device of a zram device"),
+    ("dev", "the number of a block device"),
+];
 
 /// What to use instead of storage the gate cannot follow to its disks.
 const OWN_VOLUME: &str = "Use a volume on a disk or partition of its own, or an encrypted volume \
@@ -127,15 +139,29 @@ impl RefusalKind {
     }
 }
 
-/// An input the gate could not read, as the text names it: a file by its
-/// path, a device node (a loop device's record) by what it is, never by its
-/// name.
+/// An input the gate could not read, as the text names it: a file and a
+/// listing of the kernel's by its path, and what is read of one device or
+/// filesystem (a device node, which is a loop device's record, an attribute
+/// in sysfs) by what it is, never by the name of the device.
 fn shown_input(path: &Path) -> String {
     if path.starts_with("/dev") {
-        "the record of a loop device".to_string()
-    } else {
-        path.display().to_string()
+        return "the record of a loop device".to_string();
     }
+    let listing = [SYS_CLASS_BLOCK, SYS_FS_BTRFS]
+        .iter()
+        .any(|listing| path == Path::new(listing));
+    if !path.starts_with(SYS) || listing {
+        return path.display().to_string();
+    }
+    let what = if path.starts_with(SYS_FS_BTRFS) {
+        "the devices of a btrfs filesystem"
+    } else {
+        DEVICE_ATTRIBUTES
+            .iter()
+            .find(|(attribute, _)| path.ends_with(attribute))
+            .map_or("an attribute of a block device", |(_, what)| what)
+    };
+    what.to_string()
 }
 
 impl Refusal {
@@ -193,13 +219,14 @@ impl Refusal {
                 vec!["Unmount what was mounted over it, then run the command again.".into()]
             }
             // The kernel shows no file of a loop device whose path does not
-            // fit in a page.
+            // fit in the page it writes it to, less two bytes: 4094 bytes on
+            // most computers, more where a page is larger.
             RefusalKind::StorageUnjudged { unreadable }
                 if unreadable.iter().any(|p| p.ends_with(LOOP_FILE)) =>
             {
                 vec![
-                    "Set the loop device up again from a file whose path is shorter than 4096 \
-                     bytes, then run the command again."
+                    "Set the loop device up again from a file with a shorter path, then run the \
+                     command again."
                         .into(),
                 ]
             }
@@ -432,19 +459,55 @@ mod tests {
                     kind: Untraced::UnnamedDriver,
                 },
             },
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::UntracedDevice {
+                    kind: Untraced::NotFound,
+                },
+            },
             RefusalKind::StorageUnjudged {
                 unreadable: vec![PathBuf::from("/proc/devices")],
             },
-            RefusalKind::StorageUnjudged {
-                unreadable: vec![PathBuf::from(
-                    "/sys/devices/virtual/block/loop1/loop/backing_file",
-                )],
-            },
         ]
         .into_iter()
+        .chain(
+            DEVICE_INPUTS
+                .iter()
+                .map(|(input, _)| RefusalKind::StorageUnjudged {
+                    unreadable: vec![PathBuf::from(input)],
+                }),
+        )
         .map(|kind| Refusal::new(kind, root))
         .collect()
     }
+
+    /// What the gate reads of one device or filesystem, and what the text
+    /// calls it.
+    const DEVICE_INPUTS: &[(&str, &str)] = &[
+        (
+            "/sys/devices/virtual/block/loop1/loop/backing_file",
+            "the path of a loop device's file",
+        ),
+        (
+            "/sys/devices/virtual/block/dm-5/slaves",
+            "the devices below a block device",
+        ),
+        (
+            "/sys/devices/virtual/block/zram0/backing_dev",
+            "the writeback device of a zram device",
+        ),
+        (
+            "/sys/devices/virtual/block/zd0/dev",
+            "the number of a block device",
+        ),
+        (
+            "/sys/fs/btrfs/0a1b2c3d-0000-4000-8000-000000000009/devices",
+            "the devices of a btrfs filesystem",
+        ),
+        (
+            "/sys/devices/virtual/block/zd0/size",
+            "an attribute of a block device",
+        ),
+    ];
 
     #[test]
     fn each_kind_has_its_code() {
@@ -454,7 +517,59 @@ mod tests {
             .collect();
         assert_eq!(&codes[..15], &[NOT_SEPARATE_VOLUME; 15]);
         assert_eq!(&codes[15..17], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 9]);
+        assert_eq!(&codes[17..], &[STORAGE_UNJUDGED; 15]);
+    }
+
+    #[test]
+    fn what_was_read_of_a_device_is_named_by_what_it_is() {
+        for (input, what) in DEVICE_INPUTS {
+            let refusal = Refusal::new(
+                RefusalKind::StorageUnjudged {
+                    unreadable: vec![PathBuf::from(input)],
+                },
+                Path::new("/mnt"),
+            );
+            assert_eq!(
+                refusal.message(),
+                format!("could not read {what} to tell where /mnt lives. Nothing was written."),
+                "{input}"
+            );
+        }
+        // A file, and a listing of the kernel's, by its path.
+        for input in [
+            "/etc/crypttab",
+            "/proc/devices",
+            "/sys/class/block",
+            "/sys/fs/btrfs",
+        ] {
+            let refusal = Refusal::new(
+                RefusalKind::StorageUnjudged {
+                    unreadable: vec![PathBuf::from(input)],
+                },
+                Path::new("/mnt"),
+            );
+            assert!(refusal.reason.contains(input), "{}", refusal.reason);
+        }
+    }
+
+    #[test]
+    fn a_device_that_cannot_be_found_is_named_by_nothing() {
+        use crate::hidden_root::Allow;
+        let refusal = Refusal::new(
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::UntracedDevice {
+                    kind: Untraced::NotFound,
+                },
+            },
+            Path::new("/mnt"),
+        );
+        assert_eq!(
+            refusal.message(),
+            "/mnt is stored on a device that cannot be found, so where it lives cannot be told. \
+             Nothing was written."
+        );
+        assert_eq!(refusal.hint(None), [OWN_VOLUME]);
+        assert!(!Allow::DecoyStorage.covers(&refusal.kind));
     }
 
     #[test]
@@ -544,8 +659,11 @@ mod tests {
                 "veracrypt",
                 "tcrypt",
                 "cryptsetup",
-                // No device either: a mapping's name can name what opened it.
+                // No device either: a mapping's name can name what opened it,
+                // and a device's directory in sysfs names the device.
                 "/dev/",
+                "/sys/devices",
+                "/sys/fs/btrfs/",
             ] {
                 assert!(!text.contains(word), "{word} in {text}");
             }
@@ -627,12 +745,13 @@ mod tests {
             ["Run the command where /proc is mounted and readable."]
         );
         // A loop device's file the kernel cannot show: running the command
-        // as root does not bring it back.
+        // as root does not bring it back, and how long a path it shows
+        // depends on the computer's page size.
         assert_eq!(
             hint(&["/sys/devices/virtual/block/loop1/loop/backing_file"]),
             [
-                "Set the loop device up again from a file whose path is shorter than 4096 \
-                 bytes, then run the command again."
+                "Set the loop device up again from a file with a shorter path, then run the \
+                 command again."
             ]
         );
     }

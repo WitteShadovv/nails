@@ -5,7 +5,7 @@
 
 use super::{
     CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, FSTAB, FileHolder, Judgement, LoopFile,
-    Node, NodeKind, SYS_CLASS_BLOCK, SYSTEM_MOUNTS, Scene, Severity, Sharing, Verdict,
+    Node, NodeKind, SYSTEM_MOUNTS, Scene, Severity, Sharing, Untraced, Verdict,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::hidden_root::mount_holding;
@@ -198,8 +198,8 @@ fn untraceable(scene: &Scene<'_>, claims: &[Claim], reach: &[String]) -> Option<
     let devices = scene.devices;
     for name in reach {
         let Some(node) = devices.nodes.get(name) else {
-            return Some(Verdict::CouldNotJudge {
-                unreadable: vec![Path::new(SYS_CLASS_BLOCK).join(name)],
+            return Some(Verdict::UntracedDevice {
+                kind: Untraced::NotFound,
             });
         };
         match &node.kind {
